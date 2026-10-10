@@ -25,8 +25,6 @@
 //! This module owns capability and state outside the renderer so
 //! `widgets/mod.rs` / `ui.rs` stay projection-only.
 
-#![allow(dead_code)] // Public API; worktree manager wiring continues post-render polish.
-
 use crate::dependencies::{ExternalTool, Git};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -715,6 +713,7 @@ fn repository_name_from_common_dir(worktree_root: &Path, common_dir: &Path) -> O
 /// Omits the segment when Git has not named a location or ref. A known
 /// location without a branch still renders — the header must not invent a
 /// ref to fill the slot.
+#[cfg(test)]
 #[must_use]
 pub fn chrome_label(snap: &GitStatusSnapshot) -> Option<String> {
     let worktree_name = snap
@@ -750,6 +749,7 @@ pub fn chrome_label(snap: &GitStatusSnapshot) -> Option<String> {
 
 /// Status-bar ink for repository chrome. Location is metadata, not a
 /// failure — dirtiness is the `*` on the same gray string.
+#[cfg(test)]
 #[must_use]
 pub fn chrome_ink() -> codewhale_palette::ChromeInk {
     codewhale_palette::ChromeInk::Metadata

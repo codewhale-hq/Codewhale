@@ -6,7 +6,6 @@
 //! facts so future route resolution can combine catalog offerings, user
 //! overrides, live hints, and auth readiness without scattering provider/model
 //! string checks through prompt, tool, and Fleet code.
-#![allow(dead_code)]
 
 use crate::config::{ProviderKind, RequestPayloadMode, provider_capability};
 pub use codewhale_config::catalog::reviewed::ModelFamily as ModelProvider;
@@ -31,7 +30,6 @@ pub enum ToolSurfaceBudget {
 pub enum FactProvenance {
     ResolvedRouteCandidate,
     SeededModelRegistry,
-    LegacyModelHeuristics,
     ConservativeUnknownFallback,
     LegacyProviderFallback,
     UserOverride,
@@ -104,21 +102,25 @@ impl CapabilityProfile {
         self.reasoning.is_supported()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn supports_image_input(&self) -> bool {
         self.image_input.is_supported()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn has_large_context(&self) -> bool {
         self.context_window.is_some_and(|window| window >= 400_000)
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn prefers_full_tool_surface(&self) -> bool {
         matches!(self.tool_surface_budget, ToolSurfaceBudget::Full)
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn suitable_for_broad_fleet_worker(&self) -> bool {
         self.has_large_context()

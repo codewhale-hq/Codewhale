@@ -27,8 +27,6 @@
 //!   when project-level config is trusted for the launch; `--no-project-config`
 //!   opts the whole layer out, same as `.codewhale/config.toml` (#485).
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -238,6 +236,7 @@ impl FleetRoster {
         )
     }
 
+    #[cfg(test)]
     fn load_with_personal_dir(
         fleet_config: &FleetConfigToml,
         workspace: &Path,
@@ -722,6 +721,7 @@ impl FleetRoster {
     }
 
     /// Shadow records for one member id (trimmed, case-insensitive).
+    #[cfg(test)]
     pub fn shadowed_for<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a ShadowedProfile> {
         let id = id.trim().to_lowercase();
         self.shadowed

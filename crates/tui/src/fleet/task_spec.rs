@@ -1,7 +1,5 @@
 //! Typed task-spec loading, artifact refs, deterministic scorers, and receipts.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -12,6 +10,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(test)]
 use super::ledger::FleetLedger;
 
 const MAX_SCORER_READ_BYTES: u64 = 1_000_000;
@@ -591,6 +590,7 @@ pub fn prepare_verification_receipt(
     Ok(receipt)
 }
 
+#[cfg(test)]
 pub fn record_verification_receipt(
     ledger: &FleetLedger,
     workspace: &Path,
