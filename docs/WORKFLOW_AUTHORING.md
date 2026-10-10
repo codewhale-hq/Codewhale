@@ -137,7 +137,10 @@ gates: [{
 }]
 ```
 
-A gate that blocks its own role deadlocks the run. The failure reads
+A gate that blocks its own role can never pass, so the plan is rejected when it
+is submitted, before any child is dispatched; the error names the gate and both
+fields. A `blocks_role` that names a role from an **earlier** phase is not
+caught there and still deadlocks the run. That failure reads
 `spawn rejected: workflow gate blocks role \`implement\`: waiting for required
  gate outcome`, the run ends `Failed`, and because the blocked phase never
 started, **the work its children would have done never happens and produces no

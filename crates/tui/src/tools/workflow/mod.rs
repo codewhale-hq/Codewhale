@@ -3160,6 +3160,13 @@ fn validate_runtime_gates(gates: &mut [GateSpec]) -> Result<(), ToolError> {
                 "Workflow role_start gates are not supported; use role_complete with an explicit prerequisite role",
             ));
         }
+        if gate.blocks_role.as_deref() == Some(gate.role.as_str()) {
+            return Err(ToolError::invalid_input(format!(
+                "Workflow gate `{}` has role and blocks_role both set to `{}`; a gate cannot block \
+                 the role whose completion triggers it, so set blocks_role to a later role",
+                gate.id, gate.role
+            )));
+        }
     }
     Ok(())
 }
@@ -13442,6 +13449,25 @@ FINAL RECEIPT
                 [serde_json::from_value(candidate).expect("syntactically valid gate")];
             assert!(validate_runtime_gates(&mut candidate).is_err(), "{field}");
         }
+    }
+
+    #[test]
+    fn native_gate_that_blocks_its_own_role_is_rejected_at_admission() {
+        let mut gates: Vec<GateSpec> = serde_json::from_value(json!([{
+            "id": "v1", "gate": "verify", "on": "role_complete", "role": "implement",
+            "blocks_role": "implement", "on_fail": "escalate", "max_retries": 1,
+            "require_explicit_verdict": true
+        }]))
+        .expect("gates");
+        let error = validate_runtime_gates(&mut gates).expect_err("gate blocks its own role");
+        let message = error.to_string();
+        for needle in ["`v1`", "blocks_role", "`implement`"] {
+            assert!(message.contains(needle), "{message}");
+        }
+        gates[0].blocks_role = Some(" Implement ".to_string());
+        assert!(validate_runtime_gates(&mut gates).is_err());
+        gates[0].blocks_role = Some("verify".to_string());
+        validate_runtime_gates(&mut gates).expect("blocking a later role stays valid");
     }
 
     #[tokio::test]
