@@ -3315,15 +3315,14 @@ pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-/// Unified login status. Account device flow stays on the CLI so this
-/// command never freezes the TUI and never invents a second OAuth broker.
-/// The internal cloud-agent credential is not user surface: membership
-/// (`codewhale login`) is the only door, never a provider key.
 pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
-    let token = raw.split_whitespace().next().unwrap_or("");
-    match token {
-        "" | "status" => CommandResult::message(login_status_text(app)),
+    if raw.split_whitespace().count() > 1 {
+        return CommandResult::error("Usage: /login [status|account|key|<provider>]");
+    }
+    match raw {
+        "" => CommandResult::action(AppAction::OpenProviderPicker),
+        "status" => CommandResult::message(login_status_text(app)),
         "key" | "provider" => CommandResult::with_message_and_action(
             "Open the provider picker to store an API key. Account sign-in is `codewhale login`.",
             AppAction::OpenProviderPicker,
@@ -3331,11 +3330,22 @@ pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
         "account" => CommandResult::message(
             "TUI cannot start the browser device flow without freezing the session.\n\
              Run `codewhale login` (same as `codewhale account login`) in a terminal.\n\
-             Then `/login` to confirm the session landed."
+             Then `/login status` to confirm the session landed."
                 .to_string(),
         ),
+        provider
+            if app
+                .plugin_registry
+                .active_plugins()
+                .into_iter()
+                .any(|plugin| plugin.manifest.providers.contains_key(provider)) =>
+        {
+            CommandResult::action(AppAction::StartPluginLogin {
+                provider: provider.to_owned(),
+            })
+        }
         other => CommandResult::error(format!(
-            "Usage: /login [status|account|key]\nUnknown argument: {other}"
+            "Usage: /login [status|account|key|<provider>]\nUnknown or inactive provider: {other}"
         )),
     }
 }

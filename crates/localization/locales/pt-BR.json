@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Começar pelo plano. Ações arriscadas são revisadas automaticamente e ainda podem perguntar a você.",
   "PlanHandoffKeepPlanning": "Continuar planejando",
   "PlanHandoffKeepPlanningDetail": "Permanecer em Plan. Nada é alterado.",
-  "PlanHandoffProceed": "Pode seguir com o plano."
+  "PlanHandoffProceed": "Pode seguir com o plano.",
+  "PluginOAuthBrowser": "Pressione Enter para entrar pelo navegador ou Esc para voltar. Não é necessária uma chave de API.",
+  "PluginOAuthReady": "{provider}: sessão iniciada. Escolha um modelo.",
+  "PluginOAuthLocalLogout": "{provider}: sessão local removida. O acesso remoto não foi alterado."
 }

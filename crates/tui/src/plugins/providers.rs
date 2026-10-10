@@ -274,6 +274,18 @@ fn model_preference(entry: &ProviderConfig) -> Option<&str> {
     }
 }
 
+pub(crate) fn is_account_catalog_scope(provider: &str, fingerprint: &str) -> bool {
+    STARTUP_REGISTRY.get().is_some_and(|registry| {
+        registry.active_plugins().into_iter().any(|plugin| {
+            plugin.manifest.providers.iter().any(|(name, declaration)| {
+                provider == format!("custom:{name}")
+                    && fingerprint
+                        == codewhale_config::catalog::base_url_fingerprint(&declaration.base_url)
+            })
+        })
+    })
+}
+
 pub fn apply_providers(config: &mut Config, registry: &PluginRegistry) -> anyhow::Result<()> {
     // Validate every collision and authority before mutating configuration.
     let mut additions = BTreeMap::new();

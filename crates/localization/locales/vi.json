@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Bắt đầu làm theo kế hoạch. Thao tác rủi ro được tự động xem lại và vẫn có thể hỏi bạn.",
   "PlanHandoffKeepPlanning": "Tiếp tục lập kế hoạch",
   "PlanHandoffKeepPlanningDetail": "Ở lại Plan. Không có gì thay đổi.",
-  "PlanHandoffProceed": "Hãy làm theo kế hoạch."
+  "PlanHandoffProceed": "Hãy làm theo kế hoạch.",
+  "PluginOAuthBrowser": "Nhấn Enter để đăng nhập bằng trình duyệt hoặc Esc để quay lại. Không cần khóa API.",
+  "PluginOAuthReady": "{provider}: đã đăng nhập. Hãy chọn mô hình.",
+  "PluginOAuthLocalLogout": "{provider}: đã xóa thông tin đăng nhập cục bộ. Quyền truy cập từ xa không đổi."
 }

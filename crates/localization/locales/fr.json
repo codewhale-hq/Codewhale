@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Commencer le plan. Les actions risquées sont examinées automatiquement et peuvent encore demander votre accord.",
   "PlanHandoffKeepPlanning": "Continuer à planifier",
   "PlanHandoffKeepPlanningDetail": "Rester en Plan. Rien n'est modifié.",
-  "PlanHandoffProceed": "Allez-y, appliquez le plan."
+  "PlanHandoffProceed": "Allez-y, appliquez le plan.",
+  "PluginOAuthBrowser": "Appuyez sur Entrée pour vous connecter dans le navigateur, ou Échap pour revenir. Aucune clé API nécessaire.",
+  "PluginOAuthReady": "{provider} : connexion établie. Choisissez un modèle.",
+  "PluginOAuthLocalLogout": "{provider} : connexion locale supprimée. L’accès distant reste inchangé."
 }

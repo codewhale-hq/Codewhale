@@ -568,6 +568,12 @@ pub enum AppAction {
     /// temporarily suspended. Produces a durable `sk-orca-...` key in the
     /// ordinary `orcarouter` credential slot — the same slot the API-key path
     /// writes — so nothing downstream knows which adapter was used.
+    StartPluginLogin {
+        provider: String,
+    },
+    StartPluginLogout {
+        provider: String,
+    },
     StartOrcarouterPkceLogin,
     /// Clear the saved OrcaRouter credential.
     StartOrcarouterRevoke,

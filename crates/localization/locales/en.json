@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Start on the plan. Risky actions are reviewed automatically and may still ask you.",
   "PlanHandoffKeepPlanning": "Keep planning",
   "PlanHandoffKeepPlanningDetail": "Stay in Plan. Nothing is changed.",
-  "PlanHandoffProceed": "Go ahead with the plan."
+  "PlanHandoffProceed": "Go ahead with the plan.",
+  "PluginOAuthBrowser": "Press Enter to sign in with your browser. Esc returns. No API key is needed.",
+  "PluginOAuthReady": "{provider}: signed in. Choose a model.",
+  "PluginOAuthLocalLogout": "{provider}: local sign-in removed. Remote access is unchanged."
 }

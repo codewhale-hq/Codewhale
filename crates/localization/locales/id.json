@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Mulai kerjakan rencana. Tindakan berisiko ditinjau otomatis dan masih bisa bertanya kepada Anda.",
   "PlanHandoffKeepPlanning": "Lanjutkan merencanakan",
   "PlanHandoffKeepPlanningDetail": "Tetap di Plan. Tidak ada yang diubah.",
-  "PlanHandoffProceed": "Silakan jalankan rencananya."
+  "PlanHandoffProceed": "Silakan jalankan rencananya.",
+  "PluginOAuthBrowser": "Tekan Enter untuk masuk melalui peramban atau Esc untuk kembali. Kunci API tidak diperlukan.",
+  "PluginOAuthReady": "{provider}: berhasil masuk. Pilih model.",
+  "PluginOAuthLocalLogout": "{provider}: data masuk lokal dihapus. Akses jarak jauh tidak berubah."
 }

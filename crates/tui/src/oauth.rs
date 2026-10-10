@@ -4532,8 +4532,8 @@ impl PluginOAuthConfig {
             revoke_path: None,
             callback_path: &self.callback_path,
             loopback_ports: &[],
-            relogin_hint: "codewhale auth plugin-login",
-            session_login_hint: "/auth plugin-login",
+            relogin_hint: "codewhale auth plugin-login --provider <provider>",
+            session_login_hint: "/login <provider>",
             callback_conflict_hint: "",
         }
     }
@@ -4794,7 +4794,7 @@ fn plugin_oauth_access_token_with_store(
 ) -> Result<String> {
     let resolve = |raw: &mut Option<String>| -> Result<String> {
         let stored = raw.as_ref().context(
-            "Plugin OAuth login missing; run codewhale auth plugin-login --provider <provider>",
+            "Plugin OAuth login missing; use /login <provider> in Codewhale or codewhale auth plugin-login --provider <provider> in a terminal",
         )?;
         let mut token: PluginOAuthTokens = serde_json::from_str(stored)
             .map_err(|_| anyhow::anyhow!("Plugin OAuth credential store contains invalid data"))?;

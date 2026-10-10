@@ -576,7 +576,7 @@ owner = "crates/tui/src/commands/groups/core/home.rs"
 [[feature]]
 id = "account-login"
 name = "Account login"
-summary = "/login signs in to Codewhale or stores provider keys."
+summary = "/login selects providers; /login <id> runs reviewed plugin OAuth; status and account remain explicit."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"
@@ -690,7 +690,7 @@ owner = "crates/tui/src/oauth.rs"
 [[feature]]
 id = "plugin-oauth-providers"
 name = "Reviewed plugin OAuth providers"
-summary = "Reviewed plugins add OpenAI-compatible routes; the host owns PKCE grants and rechecks approval at each request."
+summary = "Reviewed plugins appear in /login and /provider; the host owns PKCE, model discovery and per-request approvals."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "unreleased"
@@ -727,3 +727,13 @@ surfaces = { tui = "preview", api = "preview" }
 since = "unreleased"
 docs = "docs/RUNTIME_API.md#profile-constitution"
 owner = "crates/tui/src/profile_constitution.rs"
+
+[[feature]]
+id = "plugin-shell-install"
+name = "Plugin shell installation"
+summary = "codewhale install uses the reviewed bundle installer with local, GitHub and version-pinned npm sources."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/PLUGINS.md"
+owner = "crates/tui/src/plugins/mutation.rs"

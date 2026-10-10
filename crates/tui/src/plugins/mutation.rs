@@ -95,6 +95,47 @@ pub async fn execute(
     }
 }
 
+pub async fn install_from_cli(
+    source: String,
+    config: crate::config::Config,
+    mut registry: PluginRegistry,
+) -> Result<()> {
+    let runtime = tokio::runtime::Handle::current();
+    let policy = crate::plugins::activation::extension_host_policy_enabled();
+    let receipt = tokio::task::spawn_blocking(move || {
+        let _scope = crate::plugins::activation::PolicyScope::propagate(policy);
+        let network = config
+            .network
+            .map(|network| network.into_runtime())
+            .unwrap_or_default();
+        let source = PluginInstallSource::parse(&source)?;
+        runtime.block_on(execute(
+            PluginMutationRequest::Install { source },
+            &PluginMutationContext {
+                network: &network,
+                max_size: install::DEFAULT_MAX_SIZE_BYTES,
+            },
+            &mut registry,
+        ))
+    })
+    .await??;
+    match receipt.outcome {
+        PluginMutationOutcome::Installed => {
+            println!("Installed {} (disabled, untrusted).", receipt.name);
+            println!(
+                "Open Codewhale, review `/plugin trust {}`, then enable it with `/plugin enable {}`. Start a new session after enabling provider declarations.",
+                receipt.name, receipt.name
+            );
+            Ok(())
+        }
+        PluginMutationOutcome::NeedsApproval(host) => {
+            bail!("Network approval required for {host}; use /network allow {host}, then retry")
+        }
+        PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
+        _ => bail!("Unexpected plugin install outcome"),
+    }
+}
+
 fn user_plugins_dir(registry: &PluginRegistry) -> Result<PathBuf> {
     registry
         .user_plugins_dir()

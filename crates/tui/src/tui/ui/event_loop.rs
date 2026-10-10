@@ -7528,6 +7528,112 @@ pub(crate) async fn run_claude_login_from_tui(
     Ok(switched)
 }
 
+pub(crate) async fn run_plugin_oauth_from_tui(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    config: &mut Config,
+    provider: String,
+    logout: bool,
+) -> Result<()> {
+    let entry = match crate::plugins::providers::plugin_auth_entry(config, &provider) {
+        Ok(entry) => entry,
+        Err(error) => {
+            app.push_status_toast(
+                error.to_string(),
+                StatusToastLevel::Error,
+                Some(App::STICKY_ERROR_TTL_MS),
+            );
+            return Ok(());
+        }
+    };
+    let identity = config
+        .resolve_provider_pin_identity(&provider)
+        .map_err(anyhow::Error::msg)?;
+    pause_terminal(
+        terminal,
+        app.use_alt_screen(),
+        app.use_mouse_capture,
+        app.use_bracketed_paste,
+    )?;
+    let result: Result<()> = async {
+        let base_url = entry.base_url.clone().context("Missing plugin endpoint")?;
+        let oauth = entry
+            .oauth
+            .clone()
+            .context("Missing plugin OAuth declaration")?;
+        let authority = entry
+            .plugin_authority
+            .clone()
+            .context("Missing plugin review")?;
+        if logout {
+            let provider = provider.clone();
+            let policy = crate::plugins::activation::extension_host_policy_enabled();
+            tokio::task::spawn_blocking(move || {
+                let _scope = crate::plugins::activation::PolicyScope::propagate(policy);
+                crate::plugins::providers::verify_provider_binding(
+                    &authority, &provider, &base_url, &oauth, None,
+                )
+                .map_err(anyhow::Error::msg)?;
+                crate::oauth::plugin_oauth_logout(&provider, &base_url, &oauth)
+            })
+            .await??;
+        } else {
+            crate::oauth::plugin_oauth_login(provider.clone(), base_url, oauth, authority).await?;
+        }
+        let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+            identity.provider,
+            &provider,
+            &config.base_url_for_route(&identity),
+        );
+        if !logout {
+            let mut scoped = config.clone();
+            scoped
+                .scope_to_provider_identity(&identity)
+                .map_err(anyhow::Error::msg)?;
+            let client = crate::client::CodewhaleClient::for_catalog_refresh(&scoped)?;
+            let delta = client
+                .fetch_catalog_delta()
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            crate::provider_catalog_live::record_success_if_current(&ticket, delta)
+                .context("Catalog refresh superseded")?;
+        }
+        Ok(())
+    }
+    .await;
+    resume_terminal(
+        terminal,
+        app.use_alt_screen(),
+        app.use_mouse_capture,
+        app.use_bracketed_paste,
+        app.synchronized_output_enabled,
+    )?;
+    match result {
+        Ok(()) => {
+            let message = if logout {
+                MessageId::PluginOAuthLocalLogout
+            } else {
+                MessageId::PluginOAuthReady
+            };
+            app.push_status_toast(
+                tr(app.ui_locale, message).replace("{provider}", &provider),
+                StatusToastLevel::Success,
+                Some(8_000),
+            );
+            if !logout {
+                open_model_picker_for_provider(app, config, &identity);
+            }
+        }
+        Err(error) => app.push_status_toast(
+            format!("{provider}: {error}"),
+            StatusToastLevel::Error,
+            Some(App::STICKY_ERROR_TTL_MS),
+        ),
+    }
+    app.needs_redraw = true;
+    Ok(())
+}
+
 pub(crate) async fn run_chatgpt_pkce_login_from_tui(
     terminal: &mut AppTerminal,
     app: &mut App,

@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Mit dem Plan beginnen. Riskante Aktionen werden automatisch geprüft und können trotzdem nachfragen.",
   "PlanHandoffKeepPlanning": "Weiter planen",
   "PlanHandoffKeepPlanningDetail": "In Plan bleiben. Nichts wird geändert.",
-  "PlanHandoffProceed": "Setze den Plan jetzt um."
+  "PlanHandoffProceed": "Setze den Plan jetzt um.",
+  "PluginOAuthBrowser": "Mit Eingabe im Browser anmelden, mit Esc zurück. Kein API-Schlüssel erforderlich.",
+  "PluginOAuthReady": "{provider}: angemeldet. Wählen Sie ein Modell.",
+  "PluginOAuthLocalLogout": "{provider}: lokale Anmeldung entfernt. Der Fernzugriff bleibt unverändert."
 }

@@ -951,6 +951,46 @@ fn parse_routes_remote_and_local_specs() {
     assert!(PluginInstallSource::parse("").is_err());
     assert!(PluginInstallSource::parse("   ").is_err());
     assert!(PluginInstallSource::parse("path:").is_err());
+    assert_eq!(
+        PluginInstallSource::parse("git:github.com/owner/repo").unwrap(),
+        PluginInstallSource::Remote(InstallSource::GitHubRepo("owner/repo".into()))
+    );
+    for (spec, url) in [
+        (
+            "git:github.com/owner/repo@v1.2.3",
+            "https://github.com/owner/repo/archive/v1.2.3.tar.gz",
+        ),
+        (
+            "npm:@owner/plugin@1.2.3",
+            "https://registry.npmjs.org/@owner/plugin/-/plugin-1.2.3.tgz",
+        ),
+        (
+            "npm:plugin@1.2.3-alpha.1",
+            "https://registry.npmjs.org/plugin/-/plugin-1.2.3-alpha.1.tgz",
+        ),
+    ] {
+        let source = PluginInstallSource::parse(spec).unwrap();
+        assert_eq!(
+            source,
+            PluginInstallSource::Remote(InstallSource::DirectUrl(url.into()))
+        );
+        assert_eq!(
+            PluginInstallSource::parse(&plugin_spec_string(&source, None)).unwrap(),
+            source
+        );
+    }
+    for spec in [
+        "git:gitlab.com/owner/repo",
+        "git:github.com/owner/repo@../x",
+        "git:github.com/owner/repo@",
+        "npm:plugin",
+        "npm:plugin@latest",
+        "npm:plugin@^1.2.3",
+        "npm:@owner/../plugin@1.2.3",
+        "npm:../plugin@1.2.3",
+    ] {
+        assert!(PluginInstallSource::parse(spec).is_err(), "{spec}");
+    }
 }
 
 // ── remote fetch against a loopback server ────────────────────────────

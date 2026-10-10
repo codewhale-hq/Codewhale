@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Comença amb el pla. Les accions de risc es revisen automàticament i encara et poden preguntar.",
   "PlanHandoffKeepPlanning": "Continua planificant",
   "PlanHandoffKeepPlanningDetail": "Segueix a Plan. No es canvia res.",
-  "PlanHandoffProceed": "Endavant amb el pla."
+  "PlanHandoffProceed": "Endavant amb el pla.",
+  "PluginOAuthBrowser": "Prem Retorn per iniciar sessió al navegador o Esc per tornar. No cal cap clau API.",
+  "PluginOAuthReady": "{provider}: sessió iniciada. Tria un model.",
+  "PluginOAuthLocalLogout": "{provider}: sessió local eliminada. L’accés remot no ha canviat."
 }

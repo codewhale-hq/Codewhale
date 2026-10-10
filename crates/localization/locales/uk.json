@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Почати роботу за планом. Ризиковані дії перевіряються автоматично й усе одно можуть запитати вас.",
   "PlanHandoffKeepPlanning": "Планувати далі",
   "PlanHandoffKeepPlanningDetail": "Залишитися в Plan. Нічого не змінюється.",
-  "PlanHandoffProceed": "Беріться до плану."
+  "PlanHandoffProceed": "Беріться до плану.",
+  "PluginOAuthBrowser": "Натисніть Enter для входу через браузер або Esc для повернення. Ключ API не потрібен.",
+  "PluginOAuthReady": "{provider}: вхід виконано. Виберіть модель.",
+  "PluginOAuthLocalLogout": "{provider}: локальні дані входу видалено. Віддалений доступ не змінено."
 }

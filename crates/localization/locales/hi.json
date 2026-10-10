@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "योजना पर काम शुरू करें। जोखिम वाले कामों की स्वतः समीक्षा होती है और वे फिर भी आपसे पूछ सकते हैं।",
   "PlanHandoffKeepPlanning": "योजना बनाना जारी रखें",
   "PlanHandoffKeepPlanningDetail": "Plan में बने रहें। कुछ भी नहीं बदलता।",
-  "PlanHandoffProceed": "योजना के अनुसार काम शुरू करें।"
+  "PlanHandoffProceed": "योजना के अनुसार काम शुरू करें।",
+  "PluginOAuthBrowser": "ब्राउज़र से साइन इन करने के लिए Enter दबाएँ। वापस जाने के लिए Esc दबाएँ। API कुंजी की ज़रूरत नहीं है।",
+  "PluginOAuthReady": "{provider}: साइन इन हो गया। मॉडल चुनें।",
+  "PluginOAuthLocalLogout": "{provider}: स्थानीय साइन इन हटाया गया। दूरस्थ पहुँच नहीं बदली है।"
 }

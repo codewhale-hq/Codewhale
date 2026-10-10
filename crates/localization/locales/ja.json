@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "計画に着手します。リスクのある操作は自動でレビューされ、確認を求めることもあります。",
   "PlanHandoffKeepPlanning": "計画を続ける",
   "PlanHandoffKeepPlanningDetail": "Plan のままにします。何も変更されません。",
-  "PlanHandoffProceed": "計画どおりに進めてください。"
+  "PlanHandoffProceed": "計画どおりに進めてください。",
+  "PluginOAuthBrowser": "Enter でブラウザーからログインします。Esc で戻ります。API キーは不要です。",
+  "PluginOAuthReady": "{provider}：ログインしました。モデルを選択してください。",
+  "PluginOAuthLocalLogout": "{provider}：この端末の認証情報を削除しました。サーバーの認可は解除されていません。"
 }

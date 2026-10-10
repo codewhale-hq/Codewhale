@@ -73,7 +73,26 @@ None of these is offered to you proactively. Add the one that fits the job.
 
 ## Sources
 
-`/plugin install <spec>` accepts three source kinds:
+`codewhale install <spec>` and `/plugin install <spec>` use the same installer.
+The shell entry does not start a model or require model credentials. Both keep
+bundles disabled and untrusted until you explicitly review and enable them.
+
+```sh
+codewhale install git:github.com/example/plugin@v1.0.0
+codewhale install npm:@example/plugin@1.0.0
+codewhale install ./local-plugin
+```
+
+Git shorthand supports GitHub archives only; refs must be a single safe segment.
+Use the existing HTTPS archive URL plus `#path=...` for a nested bundle.
+Npm requires an exact version and a native plugin manifest in the tarball.
+No git hooks, npm lifecycle scripts, dependency installation or Pi executable
+extensions run. A ref names the requested revision, not an integrity signature;
+review still binds the exact downloaded bytes. Tags can move: pin a commit for
+immutable GitHub selection. Updates of version-pinned sources retain that version.
+Network approval and archive safety checks are unchanged.
+
+The original source forms remain available:
 
 ```text
 /plugin install ./path/to/bundle            # local directory (copied)

@@ -250,6 +250,8 @@ enum Commands {
     Doctor(DoctorArgs),
     /// Summarize failure signals from a local JSONL session log without raw content
     SessionDiagnostics(SessionDiagnosticsArgs),
+    #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
+    Install { source: String },
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge)
@@ -2543,6 +2545,15 @@ async fn run_async_main_dispatch(
                 }
             }
             Commands::SessionDiagnostics(args) => run_session_diagnostics(args),
+            Commands::Install { source } => {
+                let config = load_config_from_cli(&cli)?;
+                crate::plugins::mutation::install_from_cli(
+                    source,
+                    config,
+                    (*plugin_registry).clone(),
+                )
+                .await
+            }
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);

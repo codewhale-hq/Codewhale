@@ -49,7 +49,25 @@ the extension host is enabled. Receipts from the previous policy require an
 explicit review again, including bundles without provider declarations. An
 old review is never silently upgraded.
 
-## Sign in and use the route
+## Sign in inside Codewhale
+
+After installation, review and enable the bundle, then start a new session.
+Run `/login` to open the provider picker, or `/login <provider-id>` to authorize
+an enabled plugin directly. The host runs its existing PKCE flow and then
+refreshes the provider’s standard `/models` roster. Choose the model explicitly;
+login never chooses the first model, changes billing groups, or copies another
+application’s credentials. A provider selected from `/provider` uses the same
+flow instead of asking for an API key.
+
+`/login status` retains account status. `/logout <provider-id>` removes only that
+plugin’s local grant. Bare `/logout` retains Codewhale account logout.
+Plugin rosters are account-scoped and not reused from the disk cache.
+The terminal is temporarily suspended during browser authorization, like the
+built-in PKCE flows; device-code and remote revocation are not added here.
+A successful authorization followed by a catalog failure retains the grant;
+retry catalog refresh rather than copying a token or running a companion login.
+
+## Terminal and noninteractive clients
 
 ```sh
 codewhale auth plugin-login --provider example-oauth

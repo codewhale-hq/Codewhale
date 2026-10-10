@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "계획을 시작합니다. 위험한 작업은 자동으로 검토되며 확인을 요청할 수도 있습니다.",
   "PlanHandoffKeepPlanning": "계속 계획하기",
   "PlanHandoffKeepPlanningDetail": "Plan 에 머뭅니다. 아무것도 변경되지 않습니다.",
-  "PlanHandoffProceed": "계획대로 진행해 주세요."
+  "PlanHandoffProceed": "계획대로 진행해 주세요.",
+  "PluginOAuthBrowser": "Enter를 눌러 브라우저에서 로그인하세요. Esc를 누르면 돌아갑니다. API 키는 필요하지 않습니다.",
+  "PluginOAuthReady": "{provider}: 로그인했습니다. 모델을 선택하세요.",
+  "PluginOAuthLocalLogout": "{provider}: 이 기기의 로그인 정보를 삭제했습니다. 서버 권한은 유지됩니다."
 }

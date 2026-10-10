@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "开始执行计划。有风险的操作会自动审核，仍可能向你确认。",
   "PlanHandoffKeepPlanning": "继续规划",
   "PlanHandoffKeepPlanningDetail": "留在 Plan。不做任何更改。",
-  "PlanHandoffProceed": "按计划开始执行。"
+  "PlanHandoffProceed": "按计划开始执行。",
+  "PluginOAuthBrowser": "按 Enter 打开浏览器登录，按 Esc 返回。不需要 API Key。",
+  "PluginOAuthReady": "{provider}：已登录，请选择模型。",
+  "PluginOAuthLocalLogout": "{provider}：已删除本机登录凭据，未撤销服务端授权。"
 }

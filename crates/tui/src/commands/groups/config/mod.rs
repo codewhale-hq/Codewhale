@@ -54,7 +54,7 @@ static IMPORT_CLAUDE_INFO: CommandInfo = CommandInfo {
 static LOGIN_INFO: CommandInfo = CommandInfo {
     name: "login",
     aliases: &[],
-    usage: "/login [status|account|key]",
+    usage: "/login [status|account|key|<provider>]",
     description_id: MessageId::CmdLoginDescription,
 };
 static AUTH_INFO: CommandInfo = CommandInfo {
@@ -128,7 +128,7 @@ static TRUST_INFO: CommandInfo = CommandInfo {
 static LOGOUT_INFO: CommandInfo = CommandInfo {
     name: "logout",
     aliases: &[],
-    usage: "/logout",
+    usage: "/logout [<provider>]",
     description_id: MessageId::CmdLogoutDescription,
 };
 fn run_registered(app: &mut App, name: &str, arg: Option<&str>) -> CommandResult {
@@ -230,7 +230,21 @@ pub(in crate::commands) fn dispatch(
         "theme" => config::theme(app, arg),
         "verbose" => config::verbose(app, arg),
         "trust" | "xinren" => config::trust(app, arg),
-        "logout" => config::logout(app),
+        "logout" => match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
+            None => config::logout(app),
+            Some(provider)
+                if app
+                    .plugin_registry
+                    .active_plugins()
+                    .into_iter()
+                    .any(|plugin| plugin.manifest.providers.contains_key(provider)) =>
+            {
+                CommandResult::action(crate::tui::app::AppAction::StartPluginLogout {
+                    provider: provider.to_owned(),
+                })
+            }
+            Some(_) => CommandResult::error("Usage: /logout [<enabled-plugin-provider>]"),
+        },
         _ => return None,
     };
     Some(result)

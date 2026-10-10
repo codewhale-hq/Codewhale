@@ -2514,5 +2514,8 @@
   "PlanHandoffWorkAutoDetail": "Начать работу по плану. Рискованные действия проверяются автоматически и всё же могут спросить вас.",
   "PlanHandoffKeepPlanning": "Продолжить планирование",
   "PlanHandoffKeepPlanningDetail": "Остаться в Plan. Ничего не меняется.",
-  "PlanHandoffProceed": "Приступайте к плану."
+  "PlanHandoffProceed": "Приступайте к плану.",
+  "PluginOAuthBrowser": "Нажмите Enter для входа через браузер или Esc для возврата. Ключ API не нужен.",
+  "PluginOAuthReady": "{provider}: вход выполнен. Выберите модель.",
+  "PluginOAuthLocalLogout": "{provider}: локальные данные входа удалены. Удалённый доступ не изменён."
 }

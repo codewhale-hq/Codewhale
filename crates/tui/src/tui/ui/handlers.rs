@@ -3071,6 +3071,9 @@ pub(crate) async fn handle_view_events(
                     switched,
                 );
             }
+            ViewEvent::ProviderPickerPluginOAuthRequested { provider } => {
+                run_plugin_oauth_from_tui(terminal, app, config, provider, false).await?;
+            }
             ViewEvent::ProviderPickerOrcarouterOAuthRequested => {
                 let switched =
                     run_orcarouter_pkce_login_from_tui(terminal, app, engine_handle, config)

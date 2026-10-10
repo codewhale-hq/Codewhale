@@ -220,6 +220,8 @@ enum Commands {
     Fork(TuiPassthroughArgs),
     /// Create a default AGENTS.md in the current directory.
     Init(TuiPassthroughArgs),
+    #[command(about = "Install a plugin bundle without trusting or enabling it")]
+    Install(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
@@ -2340,6 +2342,11 @@ fn run() -> Result<()> {
         Some(Commands::Init(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("init", args))
+        }
+        Some(Commands::Install(args)) => {
+            let resolved_runtime =
+                resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            run_tui_in_process(&cli, &resolved_runtime, tui_args("install", args))
         }
         Some(Commands::Setup(args)) => {
             let resolved_runtime = if setup_is_status_report(&args) {

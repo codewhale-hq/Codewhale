@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn login_slash_command_reports_status_and_key_opens_picker() {
         let mut app = create_test_app();
-        let status = execute("/login", &mut app);
+        let status = execute("/login status", &mut app);
         assert!(!status.is_error);
         let message = status.message.expect("login status");
         assert!(message.contains("Codewhale login"), "{message}");
@@ -711,6 +711,11 @@ mod tests {
         assert!(!message.contains("Daytona"), "{message}");
         assert!(!message.contains("set-slot"), "{message}");
 
+        assert_eq!(
+            execute("/login", &mut app).action,
+            Some(AppAction::OpenProviderPicker)
+        );
+        assert!(execute("/login status extra", &mut app).is_error);
         let key = execute("/login key", &mut app);
         assert!(!key.is_error);
         assert_eq!(key.action, Some(AppAction::OpenProviderPicker));
@@ -718,7 +723,10 @@ mod tests {
         let daytona = execute("/login daytona", &mut app);
         assert!(daytona.is_error);
         let err = daytona.message.expect("usage");
-        assert!(err.contains("Usage: /login [status|account|key]"), "{err}");
+        assert!(
+            err.contains("Usage: /login [status|account|key|<provider>]"),
+            "{err}"
+        );
 
         let unknown = execute("/login oauth", &mut app);
         assert!(unknown.is_error);

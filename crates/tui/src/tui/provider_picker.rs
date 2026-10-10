@@ -1792,7 +1792,17 @@ impl ProviderPickerView {
     /// OAuth-only providers never collect a typed credential: the key entry
     /// stage for them is a routing step (device flow / external consent), so
     /// typed input and pastes are accepted events but never stored.
+    fn selected_plugin_provider(&self) -> Option<String> {
+        let identity = self.selected_identity()?;
+        crate::plugins::providers::plugin_auth_entry(&self.route_config, identity.key.as_str())
+            .ok()
+            .map(|_| identity.key.as_str().to_owned())
+    }
+
     fn key_entry_is_oauth_locked(&self) -> bool {
+        if self.selected_plugin_provider().is_some() {
+            return true;
+        }
         self.selected_provider()
             .provider()
             .credential_help()
@@ -3558,6 +3568,15 @@ impl ProviderPickerView {
     }
 
     fn render_key_entry(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(provider) = self.selected_plugin_provider() {
+            let block = Block::default().title(provider).borders(Borders::ALL);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            Paragraph::new(self.tr(MessageId::PluginOAuthBrowser).into_owned())
+                .wrap(Wrap { trim: true })
+                .render(inner, buf);
+            return;
+        }
         let row = &self.rows[self.selected_idx];
         let codex_oauth = row.provider == ProviderKind::OpenaiCodex;
         let oauth_provider = codex_oauth;
@@ -4440,6 +4459,15 @@ impl ProviderPickerView {
         if !self.row_visible(self.selected_idx) {
             return ViewAction::None;
         }
+        if let Some(provider) = self.selected_plugin_provider() {
+            return if self.selected_has_key() && !self.selected_credential_rejected() {
+                ViewAction::EmitAndClose(ViewEvent::ProviderPickerOpenModels {
+                    identity: self.selected_identity().expect("admitted plugin provider"),
+                })
+            } else {
+                ViewAction::EmitAndClose(ViewEvent::ProviderPickerPluginOAuthRequested { provider })
+            };
+        }
         let provider = self.selected_provider();
         if provider == ProviderKind::Custom && !self.rows[self.selected_idx].is_configured {
             // A bundled-descriptor row already knows the host; only the blank
@@ -4905,6 +4933,11 @@ impl ModalView for ProviderPickerView {
                     ViewAction::None
                 }
                 KeyCode::Enter => {
+                    if let Some(provider) = self.selected_plugin_provider() {
+                        return ViewAction::EmitAndClose(
+                            ViewEvent::ProviderPickerPluginOAuthRequested { provider },
+                        );
+                    }
                     if self.selected_provider() == ProviderKind::OpenaiCodex {
                         return ViewAction::EmitAndClose(
                             ViewEvent::ProviderPickerChatgptOAuthRequested,

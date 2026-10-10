@@ -2515,6 +2515,12 @@ async fn apply_command_result_inner(
             AppAction::StartChatgptRevoke => {
                 run_chatgpt_revoke_from_tui(app, config).await;
             }
+            AppAction::StartPluginLogin { provider } => {
+                run_plugin_oauth_from_tui(terminal, app, config, provider, false).await?;
+            }
+            AppAction::StartPluginLogout { provider } => {
+                run_plugin_oauth_from_tui(terminal, app, config, provider, true).await?;
+            }
             AppAction::StartOrcarouterPkceLogin => {
                 let _switched =
                     run_orcarouter_pkce_login_from_tui(terminal, app, engine_handle, config)
