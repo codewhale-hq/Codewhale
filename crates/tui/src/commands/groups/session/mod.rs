@@ -28,6 +28,30 @@ mod session;
 
 pub(in crate::commands) const MAX_TITLE_LEN: usize = 100;
 
+/// The one way the lifecycle commands report a closed transition gate: the
+/// verb, the named blockers, and the exits that actually clear them.
+pub(in crate::commands) fn transition_blocked_message(verb: &str, blockers: &[String]) -> String {
+    let mut message = format!("Cannot {verb} while runtime work is active");
+    if blockers.is_empty() {
+        message.push('.');
+    } else {
+        message.push(':');
+        for blocker in blockers {
+            message.push_str("\n  • ");
+            message.push_str(blocker);
+        }
+    }
+    // `/jobs cancel-all` only kills shell processes and answers "No running
+    // commands to cancel." for everything else, so it must not read as the
+    // exit for a turn, dispatch, compaction, or cleanup blocker. Name both
+    // exits with the scope each one actually clears.
+    message.push_str(
+        "\n\nWait for the work to finish, or stop what you can: \
+         Ctrl+C stops a running turn, and /jobs cancel-all cancels running shell jobs.",
+    );
+    message
+}
+
 /// Promote the no-action structcopy result to the group's action vocabulary.
 /// The leaf itself retains its narrower, impossible-action return type.
 pub(in crate::commands) struct StructcopyRegistration;

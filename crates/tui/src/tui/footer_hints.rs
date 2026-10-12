@@ -39,10 +39,11 @@ pub(crate) fn retired(uses: &BTreeMap<String, u8>, key: &str) -> bool {
 impl App {
     /// Record one use of the binding behind footer hint `key`.
     ///
-    /// Persistence is best-effort and never blocks the input path: once a
-    /// hint is retired on disk the transaction is abandoned without a write,
-    /// so each key costs at most [`USES_TO_RETIRE`] writes per install. A
-    /// read-only home still retires the hint for the running session.
+    /// Persistence is best-effort. Once the in-memory count (seeded from
+    /// settings at startup) retires the hint, a use touches no file at all;
+    /// before that each of at most [`USES_TO_RETIRE`] uses per key runs one
+    /// settings transaction on this thread. A read-only home still retires
+    /// the hint for the running session.
     pub(crate) fn note_footer_hint_used(&mut self, key: &str) {
         if cfg!(test) {
             // Tests never touch the settings file here, so only the
@@ -50,6 +51,9 @@ impl App {
             // one transaction, exactly like the behavioral-tip impressions.
             let count = self.footer_hint_uses.entry(key.to_string()).or_default();
             *count = count.saturating_add(1);
+            return;
+        }
+        if retired(&self.footer_hint_uses, key) {
             return;
         }
         let owned = key.to_string();

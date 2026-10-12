@@ -116,6 +116,68 @@ impl PluginInstallSource {
         if trimmed.is_empty() {
             bail!("install source must not be empty");
         }
+        if let Some(spec) = trimmed.strip_prefix("git:") {
+            let spec = spec.strip_prefix("https://").unwrap_or(spec);
+            let spec = spec
+                .strip_prefix("github.com/")
+                .context("git plugin sources must use git:github.com/owner/repo[@ref]")?;
+            let (repo, revision) = spec
+                .rsplit_once('@')
+                .map_or((spec, None), |(repo, revision)| (repo, Some(revision)));
+            let repo = repo.strip_suffix(".git").unwrap_or(repo);
+            let valid = |part: &str| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part
+                        .bytes()
+                        .all(|ch| ch.is_ascii_alphanumeric() || b"-_.".contains(&ch))
+            };
+            let parts: Vec<_> = repo.split('/').collect();
+            if parts.len() != 2 || !parts.iter().all(|part| valid(part)) {
+                bail!("git plugin source must name one GitHub owner/repository");
+            }
+            return match revision {
+                None => Ok(Self::Remote(InstallSource::GitHubRepo(repo.to_owned()))),
+                Some(revision) if valid(revision) => Ok(Self::Remote(InstallSource::DirectUrl(
+                    format!("https://github.com/{repo}/archive/{revision}.tar.gz"),
+                ))),
+                _ => bail!("git plugin ref must be a single safe tag, branch name or commit"),
+            };
+        }
+        if let Some(spec) = trimmed.strip_prefix("npm:") {
+            let (package, version) = spec
+                .rsplit_once('@')
+                .context("npm plugin sources require an exact version: npm:package@1.2.3")?;
+            let valid = |part: &str| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part.bytes().all(|ch| {
+                        ch.is_ascii_lowercase() || ch.is_ascii_digit() || b"-_.".contains(&ch)
+                    })
+            };
+            let name = if let Some(scoped) = package.strip_prefix('@') {
+                let (scope, name) = scoped.split_once('/').context("invalid npm scope/name")?;
+                if !valid(scope) || !valid(name) {
+                    bail!("invalid npm scope/name");
+                }
+                name
+            } else {
+                if !valid(package) {
+                    bail!("invalid npm package name");
+                }
+                package
+            };
+            let parsed =
+                semver::Version::parse(version).context("npm plugin version must be exact")?;
+            if parsed.to_string() != version {
+                bail!("npm plugin version must be canonical");
+            }
+            return Ok(Self::Remote(InstallSource::DirectUrl(format!(
+                "https://registry.npmjs.org/{package}/-/{name}-{version}.tgz"
+            ))));
+        }
         if let Some(path) = trimmed.strip_prefix("path:") {
             return Self::local(path);
         }

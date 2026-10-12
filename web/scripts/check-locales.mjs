@@ -42,6 +42,7 @@ const OPTIONAL_FILES = [
   "docs-auth.ts",
   "docs-trust.ts",
   "docs-work.ts",
+  "docs-pet.ts",
   "docs-review.ts",
   "docs-vocabulary.ts",
   "states.ts",

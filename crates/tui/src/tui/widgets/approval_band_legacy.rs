@@ -176,7 +176,7 @@ impl<'a> ApprovalWidget<'a> {
         } else {
             let mut rendered_detail = false;
             for detail in details.iter().take(4) {
-                let is_change_preview = matches!(detail.label.as_str(), "Preview" | "预览");
+                let is_change_preview = detail.is_preview;
                 if let Some(shell_lines) = detail.shell_lines.as_deref() {
                     let command_width = area.width.saturating_sub(10) as usize;
                     // A short approval band has room for only one detail row

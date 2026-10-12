@@ -160,9 +160,9 @@ turn is included.
 
 **The list is shown once, at that spawn, and never re-sent.** No sub-agent
 request re-states a To-do list, and neither does a parent request. Each agent
-keeps its own private list (#4810); what it knows about that list comes from the
-tool results its own `todo_write` calls returned, which are ordinary messages in
-its own transcript. A worker therefore cannot read or write a parent's or a
+keeps its own private list (#4810); what it knows about that list comes from its
+own `todo_write` calls (each sends the whole list) and the short receipts they
+returned, which are ordinary messages in its own transcript. A worker therefore cannot read or write a parent's or a
 sibling's list, and a forked child cannot mutate the snapshot it was handed or
 keep reading later parent changes.
 

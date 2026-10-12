@@ -65,8 +65,8 @@ pub(crate) const COMPATIBILITY_DISCOVERY_COMMANDS: &[&str] = &["subagents"];
 /// control-plane actions through that registry, so it is a substrate rather
 /// than a place to browse. The entry here only stops the product from
 /// *teaching* a route it is not standing behind yet. Founder, 2026-09-03:
-/// "remove /lane", "hide dispatch for now".
-pub(crate) const UNLISTED_COMMANDS: &[&str] = &["lane", "dispatch"];
+/// "remove /lane".
+pub(crate) const UNLISTED_COMMANDS: &[&str] = &["lane"];
 
 /// Small, task-oriented starting set for a bare `/` in the composer.
 ///
@@ -216,7 +216,7 @@ fn leading_literal_token(alternative: &str) -> Option<&str> {
         .unwrap_or(alternative.len());
     let token = &alternative[..end];
     // A word only counts when it is spelled the way a typed verb is spelled:
-    // starting lowercase (or a digit, for `/mode [act|plan|1|2|3]`) and made
+    // starting lowercase (or a digit, for `/mode [work|plan|1|2|3]`) and made
     // of ASCII word characters. `N`, `entry_id`, `--force` and
     // `path/to/export.json` are all values, not verbs.
     let mut chars = token.chars();

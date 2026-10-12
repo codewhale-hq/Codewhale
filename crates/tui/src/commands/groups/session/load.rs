@@ -1,6 +1,6 @@
 //! `/load` command.
 
-use super::CommandResult;
+use super::{CommandResult, transition_blocked_message};
 
 use codewhale_command_contract::facets::CommandSessionLifecycleContext;
 use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
@@ -56,10 +56,10 @@ pub(in crate::commands) fn load_portable(
     arg: Option<&str>,
 ) -> CommandResult {
     if lifecycle.transition_blocked() {
-        return CommandResult::error(
-            "Cannot load a session while runtime work is active. Wait for the current turn, maintenance, and background tasks to finish, or cancel that specific work first."
-                .to_string(),
-        );
+        return CommandResult::error(transition_blocked_message(
+            "load a session",
+            &lifecycle.transition_blockers(),
+        ));
     }
     let Some(path) = arg.map(str::trim).filter(|p| !p.is_empty()) else {
         return CommandResult::error("Usage: /load <path>".to_string());

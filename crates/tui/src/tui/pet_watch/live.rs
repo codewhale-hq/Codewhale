@@ -55,6 +55,8 @@ pub struct Scene {
     pub still: Pose,
     #[serde(default)]
     pub appearance: super::appearance::Appearance,
+    #[serde(default)]
+    pub display_language: Option<String>,
     /// Owner activity is an overlay on the body, never a reason to drop the
     /// frame. A long-lived `pet serve` owner can predate this binary (the
     /// activity shape changed without a frame version bump), so an activity
@@ -123,6 +125,7 @@ pub struct Presentation {
 }
 #[derive(Clone, Default)]
 pub struct View {
+    pub locale: String,
     pub width: u16,
     pub height: u16,
     pub cell_width: f64,
@@ -135,6 +138,10 @@ pub struct View {
 }
 #[derive(Clone)]
 pub enum Command {
+    Appearance {
+        body: Option<super::BodyStyle>,
+        language: Option<super::TextLanguage>,
+    },
     Observe(String),
     Select,
     Browser,
@@ -142,6 +149,7 @@ pub enum Command {
     Export,
 }
 pub enum Notice {
+    AppearanceLegacy,
     Exported(PathBuf),
     Message(String),
     /// The companion cannot be reached: the view thread stopped, or a frame
@@ -407,6 +415,17 @@ impl Worker {
         })
     }
 }
+pub(super) fn session_source(session: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "session:{}",
+        Sha256::digest(session.as_bytes())
+            .iter()
+            .take(10)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
 fn run(
     rx: mpsc::Receiver<Command>,
     output: &Mutex<Option<Presentation>>,
@@ -414,17 +433,7 @@ fn run(
     settings: &Mutex<View>,
     session: Option<String>,
 ) -> io::Result<()> {
-    use sha2::{Digest, Sha256};
-    let source = session.as_ref().map(|s| {
-        format!(
-            "session:{}",
-            Sha256::digest(s.as_bytes())
-                .iter()
-                .take(10)
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        )
-    });
+    let source = session.as_deref().map(session_source);
     let mut renderer = graphics::Renderer::default();
     let id = uuid::Uuid::new_v4().to_string();
     let mut client = Client::connect()?;
@@ -438,6 +447,8 @@ fn run(
     let mut producer_seq = None;
     let mut sequence = 0u64;
     let mut action: Option<Value> = None;
+    let mut appearance_patch: Option<(Option<super::BodyStyle>, Option<super::TextLanguage>)> =
+        None;
     let mut last_action = Instant::now() - Duration::from_secs(1);
     let mut last_produce = Instant::now();
     let mut last_audio = Instant::now();
@@ -449,6 +460,11 @@ fn run(
             .clone();
         match rx.recv_timeout(Duration::from_millis(2)) {
             Ok(command) => match command {
+                Command::Appearance { body, language } => {
+                    let patch = appearance_patch.get_or_insert((None, None));
+                    patch.0 = body.or(patch.0);
+                    patch.1 = language.or(patch.1);
+                }
                 Command::Observe(text) => {
                     if !events.push(&text)? {
                         // Overflow is a coverage gap, never a truncated batch:
@@ -550,6 +566,24 @@ fn run(
             }
         }
         let Some(s) = &scene else { continue };
+        if action.is_none()
+            && let Some((body, language)) = appearance_patch.take()
+        {
+            if s.display_language.is_none() {
+                let _ = notices.try_send(Notice::AppearanceLegacy);
+            } else {
+                let mut appearance = s.appearance.clone();
+                if let Some(body) = body {
+                    appearance.body_style = body;
+                }
+                if let Some(language) = language {
+                    appearance.text_language = language;
+                }
+                action = Some(
+                    json!({"identity":s.identity,"client":id,"seq":sequence+1,"source_revision":s.source_revision,"action":{"kind":"appearance","appearance":appearance}}),
+                );
+            }
+        }
         if last_action.elapsed() >= Duration::from_millis(250)
             && let Some(pending) = &action
         {
@@ -560,6 +594,7 @@ fn run(
                     sequence += 1;
                     action = None;
                     if selected {
+                        fetched = Instant::now() - Duration::from_secs(1);
                         producer_seq = None;
                         events.clear();
                     }
@@ -582,7 +617,10 @@ fn run(
             if seq == 0 {
                 events.clear();
             }
-            let body = json!({"identity":s.identity,"epoch":s.epoch,"client":id,"source":s.source,"source_revision":s.source_revision,"seq":seq,"waiting":view.waiting,"events":events.events});
+            let mut body = json!({"identity":s.identity,"epoch":s.epoch,"client":id,"source":s.source,"source_revision":s.source_revision,"seq":seq,"waiting":view.waiting,"events":events.events});
+            if s.display_language.is_some() {
+                body["locale"] = json!(view.locale);
+            }
             producer_seq = client.post("/v1/producer", &body).ok().map(|_| seq);
             events.clear();
             last_produce = Instant::now();

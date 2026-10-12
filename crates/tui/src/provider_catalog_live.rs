@@ -548,7 +548,8 @@ pub(crate) fn provider_owns_live_catalog(provider: ProviderKind) -> bool {
 /// endpoint fingerprint — never by table name. The Codewhale API's own rows
 /// are fenced the same way.
 fn is_account_scoped_scope(provider: &str, fingerprint: &str) -> bool {
-    provider.starts_with("codewhale:")
+    crate::plugins::providers::is_account_catalog_scope(provider, fingerprint)
+        || provider.starts_with("codewhale:")
         || fingerprint == base_url_fingerprint(codewhale_config::catalog::BASETEN_BASE_URL)
         || fingerprint
             == base_url_fingerprint(ProviderKind::Codewhale.provider().default_base_url())

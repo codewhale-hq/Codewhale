@@ -25,8 +25,8 @@ export default function manifest(): MetadataRoute.Manifest {
     ],
     // The ocean floor (tokens-roles.css --ocean-floor): the dark ground the
     // site prefers, so the splash and chrome sit in the same water.
-    theme_color: "#061431",
-    background_color: "#061431",
+    theme_color: "#142638",
+    background_color: "#142638",
     display: "standalone",
   };
 }

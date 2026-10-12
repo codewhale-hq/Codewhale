@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -78,7 +78,7 @@ Fix the failing tests and explain what changed.
 A mesma tarefa pode rodar sem interface, a partir de um script ou job de CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Execute `/help` para ver os comandos e atalhos de teclado.
@@ -91,7 +91,7 @@ ferramentas e permissões se comportam da mesma forma em qualquer lugar.
 | Comando | O que faz |
 | --- | --- |
 | `codewhale` | A interface interativa de terminal |
-| `codewhale exec "…"` | Um turno sem interface, a partir de um script ou CI, com saída JSON em streaming |
+| `codewhale exec "…"` | Um turno sem interface, a partir de um script ou CI; `--auto` permite as ferramentas de arquivos e de shell, `--output-format stream-json` transmite JSON em streaming |
 | `codewhale web` | O [cliente de navegador local](docs/WEB.md) incluído, em `127.0.0.1` |
 | `codewhale review --pr N` | Uma [revisão de pull request](docs/GITHUB_ACTION.md) apenas consultiva; publicá-la é opcional |
 | Runtime API | Uma [API HTTP local](docs/RUNTIME_API.md) para threads, eventos e aprovações |
@@ -141,7 +141,7 @@ O Full Access continua respeitando os limites rígidos de política. O
 O Codewhale roda na sua máquina com o acesso que você conceder. As posturas de
 aprovação e as regras do repositório limitam o que o agente pode fazer, e os
 comandos rodam dentro de um sandbox do sistema operacional onde há suporte
-(Seatbelt no macOS; bubblewrap no Linux é opcional).
+(Seatbelt no macOS; bubblewrap no Linux quando instalado e funcionando).
 `/preview-request` mostra a requisição exata, com dados sensíveis ocultados,
 antes de qualquer envio. Preços de modelos desconhecidos continuam
 desconhecidos, em vez de serem apresentados como gratuitos.

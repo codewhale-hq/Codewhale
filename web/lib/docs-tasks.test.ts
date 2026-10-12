@@ -53,7 +53,7 @@ describe("task-based docs index", () => {
 
   it("searches across both languages regardless of locale", () => {
     const hay = DOC_TASKS.map(docTaskHaystack);
-    expect(hay.some((h) => h.includes("daytona"))).toBe(true);
+    expect(hay.some((h) => h.includes("dispatch"))).toBe(true);
     expect(hay.some((h) => h.includes("云端"))).toBe(true);
     expect(hay.some((h) => h.includes("/docs/trust"))).toBe(true);
   });

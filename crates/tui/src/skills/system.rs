@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 /// Bundled catalog generation for the default CodeWhale skill pack (#4691).
 ///
 /// Generation 7 adds the explicit-only `help` router (#4698 parity slice).
@@ -37,7 +39,9 @@ use std::path::Path;
 /// generation-15 body allows a safe upgrade.
 /// Generation 17 adds the tested native author loop and keeps trust with the
 /// person; the exact generation-16 body allows a safe upgrade.
-const BUNDLED_SKILL_VERSION: &str = "17";
+/// Generation 18 recognizes previously shipped bodies by SHA-256 as well as by
+/// retained bytes, so an untouched copy from any earlier generation upgrades.
+const BUNDLED_SKILL_VERSION: &str = "18";
 
 // ── system & extension (meta) ───────────────────────────────────────────────
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
@@ -162,12 +166,48 @@ const SUPERSEDED_BODIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Whether `existing` is byte-for-byte a body CodeWhale previously shipped for
-/// `name` (and therefore safe to replace on upgrade).
+/// `name sha256` lines for every body a bundled skill carried in canonical
+/// history, plus bodies found installed in the field that no ref contains.
+const SHIPPED_BODY_HASHES: &str = include_str!("system/shipped_hashes.txt");
+
+fn body_sha256(body: &str) -> String {
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hash_is_listed(table: &str, name: &str, body: &str) -> bool {
+    let digest = body_sha256(body);
+    table
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .any(|(skill, listed)| skill == name && listed == digest)
+}
+
+/// Whether `existing` is a body CodeWhale previously shipped for `name` (and
+/// therefore safe to replace on upgrade): retained bytes or a listed hash.
 fn is_superseded_shipped_body(name: &str, existing: &str) -> bool {
     SUPERSEDED_BODIES
         .iter()
         .any(|(skill, body)| *skill == name && *body == existing)
+        || hash_is_listed(SHIPPED_BODY_HASHES, name, existing)
+}
+
+/// Bundled skills whose installed body is neither the current one nor any
+/// shipped one: customized by the user or from a generation this build cannot
+/// identify. The installer never refreshes these.
+#[must_use]
+pub fn unrecognized_system_skills(skills_dir: &Path) -> Vec<&'static str> {
+    BUNDLED_SKILLS
+        .iter()
+        .filter(|skill| {
+            fs::read_to_string(skills_dir.join(skill.name).join("SKILL.md")).is_ok_and(|existing| {
+                existing != skill.body && !is_superseded_shipped_body(skill.name, &existing)
+            })
+        })
+        .map(|skill| skill.name)
+        .collect()
 }
 
 struct BundledSkill {

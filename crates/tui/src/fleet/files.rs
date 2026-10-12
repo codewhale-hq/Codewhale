@@ -81,6 +81,19 @@ impl WorkspaceFile {
         Self::open_confined(workspace, relative, false, false, false)
     }
 
+    /// Open under a root that may itself be reached through user-owned links:
+    /// the application's own state directory, which a user may have relocated
+    /// behind a symlink. The Unix opener already resolves the root and still
+    /// refuses every link below it, so this is the same call under a name that
+    /// says why a caller wants it. Not for a caller-supplied workspace root.
+    pub(crate) fn open_resolved_root(
+        workspace: &Path,
+        relative: &Path,
+        create: bool,
+    ) -> io::Result<Self> {
+        Self::open(workspace, relative, create)
+    }
+
     fn open_confined(
         workspace: &Path,
         relative: &Path,
@@ -616,6 +629,21 @@ impl WorkspaceFile {
         })
     }
 
+    /// Open under a root that may itself be reached through user-owned links:
+    /// the application's own state directory, which a user may have relocated
+    /// behind a junction. The root is resolved once to its real directory and
+    /// the same link-refusing walk then runs, so links below the root are still
+    /// refused. The caller must have created the root already. Not for a
+    /// caller-supplied workspace root.
+    pub(crate) fn open_resolved_root(
+        workspace: &Path,
+        relative: &Path,
+        create: bool,
+    ) -> io::Result<Self> {
+        let resolved = workspace.canonicalize()?;
+        Self::open(&resolved, relative, create)
+    }
+
     pub(crate) fn open_delivery(workspace: &Path, relative: &Path) -> io::Result<Self> {
         Self::open(workspace, relative, false)
     }
@@ -1067,6 +1095,61 @@ mod windows_publication_tests {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_root_link_tests {
+    use super::*;
+
+    fn make_junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("invoke Windows junction creation");
+        assert!(
+            output.status.success(),
+            "failed to create junction: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A state root relocated behind a junction: the strict opener refuses the
+    /// root link, `open_resolved_root` resolves it once and writes through,
+    /// and a link below the root stays refused either way.
+    #[test]
+    fn linked_state_root_resolves_once_and_keeps_the_inner_rule() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        make_junction(&link, &real);
+
+        let relative = Path::new("state/entry.txt");
+        assert!(
+            WorkspaceFile::open(&link, relative, true).is_err(),
+            "the strict opener must refuse a linked root"
+        );
+
+        WorkspaceFile::open_resolved_root(&link, relative, true)
+            .unwrap()
+            .publish(b"payload")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(real.join("state").join("entry.txt")).unwrap(),
+            b"payload"
+        );
+
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        make_junction(&real.join("linked-child"), &elsewhere);
+        assert!(
+            WorkspaceFile::open_resolved_root(&link, Path::new("linked-child/x.txt"), true)
+                .is_err(),
+            "a link below the resolved root must stay refused"
+        );
+    }
+}
+
 #[cfg(all(not(unix), not(windows)))]
 #[derive(Debug)]
 pub(crate) struct WorkspaceFile;
@@ -1079,6 +1162,13 @@ impl WorkspaceFile {
         ))
     }
     pub(crate) fn open_shared(workspace: &Path, relative: &Path, create: bool) -> io::Result<Self> {
+        Self::open(workspace, relative, create)
+    }
+    pub(crate) fn open_resolved_root(
+        workspace: &Path,
+        relative: &Path,
+        create: bool,
+    ) -> io::Result<Self> {
         Self::open(workspace, relative, create)
     }
     pub(crate) fn sibling(&self, _: &str) -> io::Result<Self> {

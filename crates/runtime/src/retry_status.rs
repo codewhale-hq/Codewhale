@@ -41,7 +41,6 @@ type RateLimitPauses = HashMap<String, Instant>;
 /// next request will fire — the UI subtracts `Instant::now()` from it
 /// to render a live countdown.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct RetryBanner {
     /// 1-indexed retry attempt number (the first retry is attempt 1).
     pub attempt: u32,
@@ -58,7 +57,7 @@ pub enum RetryState {
     #[default]
     Idle,
     /// A request is sleeping before retrying. Show countdown banner.
-    Active(#[cfg_attr(not(test), allow(dead_code))] RetryBanner),
+    Active(RetryBanner),
     /// All retries exhausted; show failure row until the next turn
     /// starts. `since` records when the row was set so a future polish
     /// pass can age it out automatically; today the engine clears it on

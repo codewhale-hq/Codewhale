@@ -1489,14 +1489,14 @@ mod tests {
     #[test]
     fn substring_filter_narrows_to_command() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "mode [act");
+        type_filter(&mut view, "mode [work");
         assert!(!view.filtered.is_empty());
         // Every filtered entry should genuinely contain the query in its
         // searchable haystack — no false positives slipped past.
         for idx in &view.filtered {
             assert!(
-                view.entries[*idx].haystack.contains("mode [act"),
-                "entry {:?} leaked through `mode [act` filter",
+                view.entries[*idx].haystack.contains("mode [work"),
+                "entry {:?} leaked through `mode [work` filter",
                 view.entries[*idx]
             );
         }
@@ -1506,7 +1506,7 @@ mod tests {
             view.filtered
                 .iter()
                 .any(|idx| view.entries[*idx].label == "/mode"),
-            "/mode should match the `mode [act` filter"
+            "/mode should match the `mode [work` filter"
         );
     }
 
@@ -2182,14 +2182,14 @@ mod tests {
     #[test]
     fn render_with_filter_shows_only_matching_section_and_status() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "mode [act");
+        type_filter(&mut view, "mode [work");
         let area = Rect::new(0, 0, 96, 24);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
 
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("Filter: mode [act"),
+            dump.contains("Filter: mode [work"),
             "filter echo missing:\n{dump}"
         );
         assert!(
@@ -2202,7 +2202,7 @@ mod tests {
         );
         assert!(
             !dump.contains("/model"),
-            "non-matching commands should not render under a `mode [act` filter:\n{dump}"
+            "non-matching commands should not render under a `mode [work` filter:\n{dump}"
         );
     }
 

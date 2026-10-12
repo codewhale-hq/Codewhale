@@ -2161,8 +2161,7 @@ impl Engine {
                             !child.authority.runtime.has_foreground_ownership()
                         }) {
                             // A detached child's caller remains background even
-                            // for a synchronous tool. Full Access cannot bypass
-                            // the existing catastrophic-background safety floor.
+                            // for a synchronous tool.
                             RunOrigin::Background
                         } else {
                             auto_review_run_origin_for_plan(detached_start)
@@ -8254,7 +8253,12 @@ mod tests {
     async fn goal_continuation_publishes_current_usage_without_accruing_twice() {
         let tmp = tempdir().expect("tempdir");
         let (engine, handle) = goal_continuation_cadence_engine(&tmp, 0, true);
-        engine.config.goal_state.lock().unwrap().record_usage(5, 0);
+        engine
+            .config
+            .goal_state
+            .lock()
+            .unwrap()
+            .record_usage(5, 0, std::time::Instant::now());
         let registry = goal_continuation_registry(&engine);
         let mut count = 0;
         let usage = Usage {

@@ -502,7 +502,7 @@ fn sanitize_code(code: &str) -> String {
 /// Server prose is untrusted output. Strip control characters and bound it so
 /// a hostile or broken body cannot rewrite the terminal.
 fn sanitize_message(message: &str) -> String {
-    printable(message)
+    super::vendor_safe_prose(printable(message))
 }
 
 // ---------------------------------------------------------------------------

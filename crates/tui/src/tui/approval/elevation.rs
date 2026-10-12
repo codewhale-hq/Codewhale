@@ -50,7 +50,7 @@ impl ElevationOption {
             ElevationOption::FullAccess => {
                 "Retry without sandbox limits; grants unrestricted filesystem and network access"
             }
-            ElevationOption::Abort => "Cancel this run",
+            ElevationOption::Abort => "Skip only this tool call",
         }
     }
 

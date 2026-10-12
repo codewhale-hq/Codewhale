@@ -32,7 +32,7 @@ jobs:
       # CodeQL treats a *sha* ref as an untrusted checkout on workflow_dispatch
       # (default-branch cache write).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-07-18
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-07-18
         with:
           toolchain: stable
           components: clippy, rustfmt

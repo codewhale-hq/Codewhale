@@ -18,7 +18,7 @@ use crate::core::events::TurnRoute;
 use crate::snapshot::{SnapshotRepo, TakenSnapshot};
 use codewhale_models::Usage;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Which configured limit governs a turn's step budget (#5994).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,11 +184,6 @@ impl TurnContext {
     #[must_use]
     pub fn steps_used(&self) -> u32 {
         self.step
-    }
-
-    /// Get the elapsed time
-    pub fn elapsed(&self) -> Duration {
-        self.started_at.elapsed()
     }
 
     /// Complete the existing request projection with observed turn-exit facts.

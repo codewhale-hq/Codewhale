@@ -29,6 +29,7 @@ pub(crate) struct FakeControl {
     pub(crate) start_info: Option<RemoteStartInfo>,
     pub(crate) stop_refusal: Option<Option<String>>,
     pub(crate) hosted: Option<Option<HostedWorkTarget>>,
+    pub(crate) blockers: Vec<String>,
     pub(crate) calls: RefCell<Vec<String>>,
 }
 
@@ -54,6 +55,10 @@ impl CommandSessionControlContext for FakeControl {
     fn transition_blocked(&self) -> bool {
         self.call("transition_blocked", None);
         self.blocked
+    }
+    fn transition_blockers(&self) -> Vec<String> {
+        self.call("transition_blockers", None);
+        self.blockers.clone()
     }
     fn relay_projection(&self) -> RelayProjection {
         self.call("relay_projection", None);

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 Lo stesso compito gira senza interfaccia da uno script o da un job di CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Esegui `/help` per i comandi e le scorciatoie da tastiera.
@@ -90,7 +90,7 @@ permessi si comportano allo stesso modo ovunque.
 | Comando | Cosa fa |
 | --- | --- |
 | `codewhale` | L’interfaccia interattiva nel terminale |
-| `codewhale exec "…"` | Un turno senza interfaccia da uno script o dalla CI, con JSON in streaming |
+| `codewhale exec "…"` | Un turno senza interfaccia da uno script o dalla CI; `--auto` consente gli strumenti per file e shell, `--output-format stream-json` trasmette JSON in streaming |
 | `codewhale web` | Il [client browser locale](docs/WEB.md) incluso, su `127.0.0.1` |
 | `codewhale review --pr N` | Una [revisione di pull request](docs/GITHUB_ACTION.md) a scopo consultivo; la pubblicazione è facoltativa |
 | Runtime API | Una [API HTTP locale](docs/RUNTIME_API.md) per thread, eventi e approvazioni |
@@ -137,8 +137,8 @@ Full Access rispetta comunque i limiti rigidi delle policy. La
 
 Codewhale gira sulla tua macchina con gli accessi che gli concedi. Le posture di approvazione
 e le regole del repository limitano ciò che l’agente può fare, e i comandi vengono eseguiti in
-una sandbox del sistema operativo dove supportata (Seatbelt su macOS; bubblewrap su Linux è
-facoltativo). `/preview-request` mostra la richiesta esatta, con i dati oscurati, prima che
+una sandbox del sistema operativo dove supportata (Seatbelt su macOS; bubblewrap su Linux quando è
+installato e funzionante). `/preview-request` mostra la richiesta esatta, con i dati oscurati, prima che
 venga inviato qualcosa. I prezzi dei modelli sconosciuti restano sconosciuti invece di essere
 indicati come gratuiti.
 

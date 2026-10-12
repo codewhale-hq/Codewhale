@@ -210,10 +210,12 @@ every workspace crate.
 
 ### A2 nextest in CI
 
-`cargo test --workspace --all-features --locked --doc` inventories
-**3 passing / 8 ignored doctests across 21 crates**; CI keeps them as a
-separate step next to `cargo nextest run --workspace --all-features
---locked --profile ci`.
+`cargo test --workspace --all-features --locked --doc` inventoried
+**3 passing / 8 ignored doctests across 21 crates**. All 8 ignored fences
+were in codewhale-tui, which has no runnable doc example and now sets
+`doctest = false`, so its doc pass is skipped (the new inventory is not
+re-measured yet). CI keeps the doc run as a separate step next to
+`cargo nextest run --workspace --all-features --locked --profile ci`.
 
 ### A3/A4 (not adopted, measured)
 

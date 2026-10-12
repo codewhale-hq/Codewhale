@@ -353,7 +353,7 @@ pub(crate) async fn handle_setup_constitution_model_draft(
     app.status_message = Some(match locale {
         codewhale_localization::Locale::ZhHans => {
             format!(
-                "{model_label} 正在生成协作准则草案……（最多 {}s）",
+                "{model_label} 正在生成宪章草案……（最多 {}s）",
                 DRAFT_TIMEOUT.as_secs()
             )
         }
@@ -646,6 +646,10 @@ pub(crate) fn poll_mcp_login(app: &mut App) {
         McpLoginProgress::Finished(outcome) => {
             app.mcp_login = None;
             match outcome {
+                Ok(()) if crate::mcp::mcp_name_is_command_safe(&server) => {
+                    app.mcp_login_reconnect = Some(server);
+                    return;
+                }
                 Ok(()) => (
                     app.tr(MessageId::McpLoginStored)
                         .replace("{server}", &server)
@@ -732,7 +736,7 @@ fn refresh_open_extensions(app: &mut App) {
 /// on the UI loop. While a turn runs, the op waits in the engine mailbox and
 /// runs as soon as the turn ends — the person asked once, so they are not
 /// told to ask again.
-fn start_mcp_retry(app: &mut App, engine_handle: &EngineHandle, name: String) {
+pub(crate) fn start_mcp_retry(app: &mut App, engine_handle: &EngineHandle, name: String) {
     use crate::tui::app::PendingMcpRetry;
 
     let already = app
@@ -1131,6 +1135,7 @@ pub(crate) async fn handle_mcp_ui_action(
                 // the reload-started line.
                 app.mcp_reload_required = false;
                 app.mcp_reload_in_flight = true;
+                app.mcp_initializing = true;
                 if is_reload {
                     add_mcp_message(
                         app,
@@ -1230,14 +1235,7 @@ pub(crate) fn handle_shell_job_action(app: &mut App, action: crate::tui::app::Sh
     match action {
         crate::tui::app::ShellJobAction::List => {
             let jobs = manager.list_jobs_for_session(&active_session_id);
-            let mut text = format_shell_job_list(&jobs);
-            if let Ok(cloud) =
-                crate::cloud_dispatch::CloudJobStore::from_env().and_then(|store| store.list())
-                && !cloud.is_empty()
-            {
-                text.push_str("\n\n");
-                text.push_str(&crate::cloud_dispatch::format_job_list(&cloud));
-            }
+            let text = format_shell_job_list(&jobs);
             add_shell_job_message(app, text);
         }
         crate::tui::app::ShellJobAction::Show { id } => {
@@ -1246,30 +1244,20 @@ pub(crate) fn handle_shell_job_action(app: &mut App, action: crate::tui::app::Sh
                 Err(err) => add_shell_job_message(app, format!("Command lookup failed: {err}")),
             }
         }
-        crate::tui::app::ShellJobAction::Poll { id, wait } => {
-            match manager.poll_delta_for_session(
-                &active_session_id,
-                &id,
-                wait,
-                if wait { 5_000 } else { 1_000 },
-            ) {
-                Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
-                Err(err) => add_shell_job_message(app, format!("Command poll failed: {err}")),
-            }
-        }
         crate::tui::app::ShellJobAction::SendStdin { id, input, close } => {
             match manager.write_stdin_for_session(&active_session_id, &id, &input, close) {
-                Ok(()) => {
-                    match manager.poll_delta_for_session(&active_session_id, &id, false, 1_000) {
-                        Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
-                        Err(err) => {
-                            add_shell_job_message(
-                                app,
-                                format!("Command input sent; poll failed: {err}"),
-                            );
-                        }
+                Ok(()) => match manager.inspect_job_for_session(&active_session_id, &id) {
+                    Ok(detail) => add_shell_job_message(
+                        app,
+                        format_shell_job_list(std::slice::from_ref(&detail.snapshot)),
+                    ),
+                    Err(err) => {
+                        add_shell_job_message(
+                            app,
+                            format!("Command input sent; poll failed: {err}"),
+                        );
                     }
-                }
+                },
                 Err(err) => add_shell_job_message(app, format!("Command input failed: {err}")),
             }
         }
@@ -3070,6 +3058,9 @@ pub(crate) async fn handle_view_events(
                     ProviderKind::OpenaiCodex,
                     switched,
                 );
+            }
+            ViewEvent::ProviderPickerPluginOAuthRequested { provider } => {
+                run_plugin_oauth_from_tui(terminal, app, config, provider, false).await?;
             }
             ViewEvent::ProviderPickerOrcarouterOAuthRequested => {
                 let switched =

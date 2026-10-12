@@ -52,7 +52,7 @@
   background: var(--ocean-floor);
   border: 1px solid var(--line);
   border-radius: var(--radius-sheet);
-  box-shadow: 0 30px 70px -30px rgb(3 10 28 / 0.7);
+  box-shadow: 0 30px 70px -30px rgb(15 30 45 / 0.7);
 }
 .not-found-poster { display: block; width: 100%; height: auto; border-radius: var(--radius-surface); }
 @media (max-width: 760px) {

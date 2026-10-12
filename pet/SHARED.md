@@ -36,12 +36,21 @@ In the running application:
 | --- | --- |
 | `/pet` | Toggle pet mode for this terminal: the habitat takes the whole content viewport now and on every accepted turn |
 | `/pet on` / `/pet off` | Enable or disable explicitly; `off` closes the view and stops automatic entry while the companion keeps the pet alive |
-| `/pet appearance` | Configure the shared palette in the authenticated local browser studio |
+| `/pet appearance` | Configure the shared palette, whale style and large-text language in the authenticated local browser studio |
+| `/pet style smooth\|pixel` | Choose the smooth aurora or pixel whale |
+| `/pet language auto\|en\|zh-Hans\|zh-Hant\|ja` | Choose large activity phrases independently of the interface language |
 | `/pet window` | Open the independently closable native macOS window |
 | `/pet source` | Explicitly select this terminal session as the source |
 | `/pet sound on\|off` | Request/release the companion's audio device |
 | `/pet export` | Save a replay to this saved session's artifacts |
 | `/pet status` | Mode, view, identity and measured terminal output counters |
+
+Large text follows the interface language by default. English, Simplified
+Chinese, Traditional Chinese and Japanese phrases are available; other
+interface languages currently use English large text. A fixed choice lets an
+English reader learn Chinese or Japanese phrases beside the normal English
+status. Both whale styles turn their 980 drones into these same activity words.
+The saved presentation settings leave the pet’s identity and recording intact.
 
 The pet has no workbar panel; the habitat is its only terminal view. Escape
 leaves it without cancelling the turn or touching the composer draft. F6

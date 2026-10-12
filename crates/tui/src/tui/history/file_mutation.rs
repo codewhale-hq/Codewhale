@@ -6,8 +6,8 @@
 
 use std::path::{Component, Path};
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::settings::InlineDiffMode;
@@ -166,23 +166,9 @@ impl FileMutationReceipt {
 
     pub fn render_inline(&self, width: u16, mode: InlineDiffMode) -> Vec<Line<'static>> {
         match mode {
-            InlineDiffMode::Off => vec![exact_evidence_hint()],
-            InlineDiffMode::Summary => vec![
-                Line::from(Span::styled(
-                    self.semantic_summary(),
-                    Style::default()
-                        .fg(palette::TEXT_PRIMARY)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                exact_evidence_hint(),
-            ],
+            InlineDiffMode::Off | InlineDiffMode::Summary => vec![exact_evidence_hint()],
             InlineDiffMode::Full => {
-                let mut lines = vec![Line::from(Span::styled(
-                    self.semantic_summary(),
-                    Style::default()
-                        .fg(palette::TEXT_PRIMARY)
-                        .add_modifier(Modifier::BOLD),
-                ))];
+                let mut lines = Vec::new();
                 if !self.display_diff.trim().is_empty() {
                     let rendered = diff_render::render_diff_body_bounded(
                         &self.display_diff,
@@ -412,8 +398,8 @@ mod tests {
         assert!(!full_text.contains("summary:"), "{full_text}");
 
         let summary = plain(&receipt.render_inline(80, InlineDiffMode::Summary));
-        assert!(summary.contains("Created src/lib.rs"), "{summary}");
-        assert!(summary.contains("+30 -0"), "{summary}");
+        assert!(!summary.contains("Created src/lib.rs"), "{summary}");
+        assert!(!summary.contains("+30 -0"), "{summary}");
         assert!(!summary.contains("line 0"), "{summary}");
         assert!(summary.contains(":change"), "{summary}");
 

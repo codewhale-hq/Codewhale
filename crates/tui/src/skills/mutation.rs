@@ -108,7 +108,6 @@ pub struct SkillMutationReceipt {
     #[allow(dead_code)] // surfaced by manager detail / future receipt toast
     pub action: SkillActionKind,
     pub name: String,
-    #[allow(dead_code)] // surfaced by manager detail / future receipt toast
     pub scope: SkillScope,
     pub safe_target_path: String,
     #[allow(dead_code)] // reserved for digest-diff UI

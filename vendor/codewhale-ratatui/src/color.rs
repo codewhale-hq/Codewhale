@@ -7,7 +7,9 @@
 //! here name roles, and [`crate::theme::Theme`] resolves a role for the
 //! terminal's depth when it paints.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
+
+use crate::theme::{Role, Theme};
 
 /// How many colors the terminal can show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -203,6 +205,37 @@ pub fn contrast_ratio(fg: Color, bg: Color) -> Option<f32> {
     let b = relative_luminance(bg)?;
     let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
     Some((hi + 0.05) / (lo + 0.05))
+}
+
+pub(crate) fn prepared_ink(
+    pigment: [u8; 3],
+    alpha: f32,
+    background: Color,
+    theme: &Theme,
+) -> Style {
+    if !theme.paints_grounds() {
+        return theme.fg(Role::Primary);
+    }
+    let ground = resolvable_rgb(background)
+        .map(|(r, g, b)| Color::Rgb(r, g, b))
+        .unwrap_or_else(|| theme.token(Role::Background));
+    let base = blend(
+        Color::Rgb(pigment[0], pigment[1], pigment[2]),
+        ground,
+        alpha,
+    );
+    let quantize = |color| match (theme.depth(), color) {
+        (ColorDepth::Ansi256, Color::Rgb(r, g, b)) => Color::Indexed(rgb_to_ansi256(r, g, b)),
+        (_, color) => color,
+    };
+    let mut result = quantize(base);
+    for step in 1..=8 {
+        if contrast_ratio(result, ground).is_none_or(|ratio| ratio >= 3.0) {
+            break;
+        }
+        result = quantize(blend(theme.token(Role::Primary), base, step as f32 / 8.0));
+    }
+    Style::default().fg(result)
 }
 
 /// `hex` moved `amount` of the way toward `toward`, then rescaled so its

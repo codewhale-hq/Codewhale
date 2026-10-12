@@ -16,6 +16,7 @@ use std::path::PathBuf;
 /// facet call. Unconfigured result slots return a descriptive canned error.
 pub(crate) struct CannedLifecycle {
     pub blocked: bool,
+    pub blockers: Vec<String>,
     pub transition_checks: Cell<usize>,
     pub leaf_hint: Option<String>,
     pub branch: Result<SessionBranchOutcome, String>,
@@ -41,6 +42,7 @@ impl Default for CannedLifecycle {
     fn default() -> Self {
         Self {
             blocked: false,
+            blockers: Vec::new(),
             transition_checks: Cell::new(0),
             leaf_hint: None,
             branch: Err("canned: branch_to not configured".to_string()),
@@ -80,6 +82,9 @@ impl CommandSessionLifecycleContext for CannedLifecycle {
         self.transition_checks
             .set(self.transition_checks.get().saturating_add(1));
         self.blocked
+    }
+    fn transition_blockers(&self) -> Vec<String> {
+        self.blockers.clone()
     }
     fn branch_current_leaf_hint(&self) -> Option<String> {
         self.leaf_hint.clone()

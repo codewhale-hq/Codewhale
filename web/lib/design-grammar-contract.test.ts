@@ -32,7 +32,7 @@ describe("design grammar contract", () => {
     expect(CSS).toMatch(/::selection \{ background: var\(--selection\); \}/);
     // The light ring on the dark stage would fall under 3:1, so the stage
     // re-declares it.
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-primary\);/);
+    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--kit-bioluminescence\);/);
   });
 
   it("paints every primary fill with the logo gradient and white text", () => {

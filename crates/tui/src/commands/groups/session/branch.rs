@@ -1,4 +1,4 @@
-use super::CommandResult;
+use super::{CommandResult, transition_blocked_message};
 
 use codewhale_command_contract::facets::CommandSessionLifecycleContext;
 use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
@@ -54,10 +54,10 @@ pub(in crate::commands) fn branch_portable(
     arg: Option<&str>,
 ) -> CommandResult {
     if lifecycle.transition_blocked() {
-        return CommandResult::error(
-            "Cannot branch while runtime work is active. Wait for the turn to finish, or cancel it first."
-                .to_string(),
-        );
+        return CommandResult::error(transition_blocked_message(
+            "branch",
+            &lifecycle.transition_blockers(),
+        ));
     }
     let Some(entry_id) = arg.map(str::trim).filter(|s| !s.is_empty()) else {
         if let Some(leaf) = lifecycle.branch_current_leaf_hint() {

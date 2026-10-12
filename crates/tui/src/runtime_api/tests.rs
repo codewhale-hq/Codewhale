@@ -9695,6 +9695,8 @@ async fn approvals_endpoint_lists_decided_and_pending_newest_first() -> Result<(
             outcome: ApprovalOutcome::Denied,
             created_at: at(11),
             decided_by: Some(crate::approval_log::ApprovalDecider::User),
+            grant_id: None,
+            matched_label: None,
         },
     )?;
     store.append(

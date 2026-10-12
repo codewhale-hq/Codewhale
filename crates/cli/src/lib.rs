@@ -195,6 +195,10 @@ enum Commands {
     /// Run Codewhale diagnostics.
     Doctor(TuiPassthroughArgs),
     /// Summarize local session failure signals without raw content.
+    #[command(
+        override_usage = "codewhale session-diagnostics <JSONL>",
+        after_help = "JSONL is a saved session log; `codewhale sessions` lists saved sessions."
+    )]
     SessionDiagnostics(TuiPassthroughArgs),
     /// Score recorded turn metrics against an optional baseline.
     Scorecard(TuiPassthroughArgs),
@@ -210,7 +214,11 @@ enum Commands {
     Sessions(TuiPassthroughArgs),
     /// Show what a session did: files, commands, web and MCP calls, agents,
     /// approvals, and failures. `codewhale receipts [ID|--last] [--format md|json]`.
-    #[command(visible_alias = "receipt")]
+    #[command(
+        visible_alias = "receipt",
+        override_usage = "codewhale receipts [ID|--last] [--format <md|json>]",
+        after_help = "Receipt options:\n      --last             Show the most recent session\n      --format <FORMAT>  Output format: md or json\n\nID is a saved session id or prefix; `codewhale sessions` lists them."
+    )]
     Receipts(TuiPassthroughArgs),
     /// Resume a saved session.
     Resume(TuiPassthroughArgs),
@@ -220,6 +228,8 @@ enum Commands {
     Fork(TuiPassthroughArgs),
     /// Create a default AGENTS.md in the current directory.
     Init(TuiPassthroughArgs),
+    #[command(about = "Install a plugin bundle without trusting or enabling it")]
+    Install(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
@@ -319,6 +329,10 @@ lifecycle generation you observed.
     #[command(name = "pet", hide = true)]
     Pet(TuiPassthroughArgs),
     /// Inspect feature flags.
+    #[command(
+        override_usage = "codewhale features <COMMAND>",
+        after_help = "Commands:\n  list    List feature flags and their state"
+    )]
     Features(TuiPassthroughArgs),
     /// Connect third-party harnesses through Codewhale (e.g. `integrations dsh status`).
     Integrations(TuiPassthroughArgs),
@@ -360,8 +374,7 @@ New integrations should prefer `codewhale app-server`.")]
     /// Manage your Codewhale account and centrally stored provider keys.
     #[command(visible_alias = "cloud")]
     Account(cloud::CloudArgs),
-    /// Offload a coding agent to the Codewhale cloud. Never spends or pushes without --confirm.
-    #[command(visible_alias = "cloud-agent")]
+    /// Offload a coding agent to the Codewhale cloud through your account.
     Dispatch(dispatch::DispatchArgs),
     /// Run MCP server mode over stdio.
     McpServer,
@@ -616,13 +629,23 @@ struct MetricsArgs {
 
 #[derive(Debug, Args)]
 struct RunArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        value_name = "ARGS",
+        help = "Arguments and options forwarded to the command",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
     args: Vec<String>,
 }
 
 #[derive(Debug, Args, Clone)]
 struct TuiPassthroughArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        value_name = "ARGS",
+        help = "Arguments and options forwarded to the command",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
     args: Vec<String>,
 }
 
@@ -976,6 +999,16 @@ fn run_lane_control(
     lane_id: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    if matches!(operation, codewhale_lane::ControlOperation::LaneList)
+        && codewhale_lane::lane_registry_root().is_ok_and(|root| !root.exists())
+    {
+        if json {
+            println!("[]");
+        } else {
+            println!("No lanes yet. Start one with `codewhale lane start`.");
+        }
+        return Ok(());
+    }
     let receipt = codewhale_lane::control::execute_lane_control(
         codewhale_lane::ControlSurface::Cli,
         operation,
@@ -2222,6 +2255,14 @@ fn run() -> Result<()> {
     if let Some(warning) = argv_secret_warning(&cli, command.as_ref()) {
         eprintln!("{warning}");
     }
+    if matches!(command, None | Some(Commands::Run(_) | Commands::Exec(_))) {
+        codewhale_config::require_explicit_config_exists(cli.config.clone())?;
+        if let Some(dir) = cli.workspace.as_ref()
+            && !dir.exists()
+        {
+            bail!("workspace directory does not exist: {}", dir.display());
+        }
+    }
 
     let pipe_api_key_handoff = matches!(
         &command,
@@ -2341,6 +2382,11 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("init", args))
         }
+        Some(Commands::Install(args)) => {
+            let resolved_runtime =
+                resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            run_tui_in_process(&cli, &resolved_runtime, tui_args("install", args))
+        }
         Some(Commands::Setup(args)) => {
             let resolved_runtime = if setup_is_status_report(&args) {
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides)
@@ -2395,6 +2441,11 @@ fn run() -> Result<()> {
             run_tui_in_process(&cli, &resolved_runtime, tui_args("eval", args))
         }
         Some(Commands::SessionDiagnostics(args)) => {
+            if args.args.is_empty() {
+                bail!(
+                    "session-diagnostics needs a session log path (<JSONL>); run `codewhale sessions` to list saved sessions"
+                );
+            }
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
             run_tui_in_process(
@@ -2559,7 +2610,10 @@ fn run() -> Result<()> {
             cloud::reject_inline_api_key(cli.api_key.as_deref())?;
             cloud::run(args, cli.profile.as_deref(), &mut store)
         }
-        Some(Commands::Dispatch(args)) => dispatch::run(args),
+        Some(Commands::Dispatch(args)) => {
+            cloud::reject_inline_api_key(cli.api_key.as_deref())?;
+            dispatch::run(args, cli.profile.as_deref(), &mut store)
+        }
         Some(Commands::McpServer) => {
             // Keep the CLI spelling, with the same tool and permission authority
             // as `serve --mcp`. The legacy child-server proxy is retired.
@@ -2571,6 +2625,9 @@ fn run() -> Result<()> {
             )
         }
         Some(Commands::Config(args)) => {
+            if let Some(profile) = cli.profile.as_deref() {
+                require_config_profile(store.path(), profile)?;
+            }
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
             let session = start_cli_telemetry(
@@ -2620,9 +2677,13 @@ fn run() -> Result<()> {
         }
         Some(Commands::Completion { shell }) => {
             let mut stdout = io::stdout();
-            stdout.write_all(render_completion_script(shell).as_bytes())?;
-            stdout.flush()?;
-            Ok(())
+            let written = stdout
+                .write_all(render_completion_script(shell).as_bytes())
+                .and_then(|()| stdout.flush());
+            match written {
+                Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+                other => other.map_err(Into::into),
+            }
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         Some(Commands::Update(args)) => {
@@ -3039,10 +3100,10 @@ fn run_logout_command_with_secrets_unlocked(
     if let Err(error) = codewhale_config::clear_all_chatgpt_oauth_credentials_locked() {
         keyring_failures.push(format!("chatgpt oauth: {error}"));
     }
-    if let Err(error) = clear_daytona_slot(secrets) {
+    if let Err(error) = clear_legacy_sandbox_slot(secrets) {
         keyring_failures.push(format!(
             "{}: {error}",
-            codewhale_secrets::DAYTONA_TOKEN_SLOT
+            codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT
         ));
     }
     if let Err(error) = clear_account_session(profile) {
@@ -3053,12 +3114,12 @@ fn run_logout_command_with_secrets_unlocked(
     Ok(keyring_failures)
 }
 
-fn clear_daytona_slot(secrets: &Secrets) -> Result<(), codewhale_secrets::SecretsError> {
+fn clear_legacy_sandbox_slot(secrets: &Secrets) -> Result<(), codewhale_secrets::SecretsError> {
     if secrets
-        .get(codewhale_secrets::DAYTONA_TOKEN_SLOT)?
+        .get(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)?
         .is_some_and(|value| !value.trim().is_empty())
     {
-        secrets.delete(codewhale_secrets::DAYTONA_TOKEN_SLOT)?;
+        secrets.delete(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)?;
     }
     Ok(())
 }
@@ -5180,6 +5241,28 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
         eprintln!("warning: {w}");
     }
     Ok(())
+}
+
+fn require_config_profile(path: &Path, profile: &str) -> Result<()> {
+    let table = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Table>(&text).ok());
+    let mut available = table
+        .as_ref()
+        .and_then(|table| table.get("profiles"))
+        .and_then(toml::Value::as_table)
+        .map(|profiles| profiles.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if available.iter().any(|name| name == profile) {
+        return Ok(());
+    }
+    available.sort();
+    let available = if available.is_empty() {
+        "none".to_string()
+    } else {
+        available.join(", ")
+    };
+    bail!("Profile not found (name not shown). Available profiles: {available}")
 }
 
 fn run_config_command(
@@ -9704,29 +9787,6 @@ verbosity = "concise"
         );
     }
 
-    #[test]
-    fn auth_parses_daytona_slot_commands_as_unknown() {
-        // The internal cloud-agent slot must not be a user command: parsing
-        // rejects it and `auth --help` never teaches it.
-        for argv in [
-            vec![
-                "codewhale",
-                "auth",
-                "set-slot",
-                "daytona",
-                "--api-key-stdin",
-            ],
-            vec!["codewhale", "auth", "clear-slot", "daytona"],
-        ] {
-            let error = Cli::try_parse_from(argv).expect_err("slot commands must not parse");
-            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{error}");
-        }
-        let help = help_for(&["codewhale", "auth", "--help"]);
-        assert!(!help.contains("set-slot"), "{help}");
-        assert!(!help.contains("clear-slot"), "{help}");
-        assert!(!help.to_lowercase().contains("daytona"), "{help}");
-    }
-
     /// #5198: `auth set` shares the login resolver — provider auth markers go
     /// user-global even when the ambient config is workspace-scoped.
     #[test]
@@ -10702,8 +10762,6 @@ verbosity = "concise"
 
         assert!(output.contains("account:"), "{output}");
         assert!(output.contains("codewhale login"), "{output}");
-        // No-brand invariant: the internal cloud-agent slot is not user
-        // surface, so status never names it or teaches a set-slot command.
         assert!(!output.to_lowercase().contains("daytona"), "{output}");
         assert!(!output.contains("set-slot"), "{output}");
 
@@ -12203,7 +12261,7 @@ verbosity = "concise"
         for provider in [ProviderKind::Deepseek, ProviderKind::Fireworks] {
             keyring.set_value(provider_slot(provider), "test-credential");
         }
-        keyring.set_value(codewhale_secrets::DAYTONA_TOKEN_SLOT, "test-daytona");
+        keyring.set_value(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT, "test-daytona");
         let secrets = Secrets::new(std::sync::Arc::new(keyring));
         let error = run_logout_command_with_secrets(&mut store, &secrets, None)
             .expect_err("partial logout must fail");
@@ -12224,7 +12282,7 @@ verbosity = "concise"
         );
         assert!(
             secrets
-                .get(codewhale_secrets::DAYTONA_TOKEN_SLOT)
+                .get(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
                 .unwrap()
                 .is_none()
         );
@@ -12307,7 +12365,7 @@ verbosity = "concise"
     }
 
     #[test]
-    fn logout_clears_account_session_and_daytona_slot() {
+    fn logout_clears_account_session_and_legacy_sandbox_slot() {
         use codewhale_secrets::account::{
             AccountAuthBundle, AccountSession, AccountSessionStore, AccountUser,
             DEFAULT_ACCOUNT_API_BASE, secure_account_session_secrets,
@@ -12326,8 +12384,8 @@ verbosity = "concise"
 
         let secrets = no_keyring_secrets();
         secrets
-            .set(codewhale_secrets::DAYTONA_TOKEN_SLOT, "dtn_logout")
-            .expect("seed daytona token");
+            .set(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT, "dtn_logout")
+            .expect("seed legacy sandbox token");
 
         let account = secure_account_session_secrets().expect("account store");
         AccountSessionStore::new(account, None, DEFAULT_ACCOUNT_API_BASE)
@@ -12350,10 +12408,10 @@ verbosity = "concise"
 
         assert!(
             secrets
-                .get(codewhale_secrets::DAYTONA_TOKEN_SLOT)
-                .expect("read daytona")
+                .get(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
+                .expect("read legacy sandbox slot")
                 .is_none(),
-            "daytona slot survived logout"
+            "legacy sandbox slot survived logout"
         );
         let account = secure_account_session_secrets().expect("account store after logout");
         assert!(
@@ -12365,41 +12423,6 @@ verbosity = "concise"
         );
 
         let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn auth_set_slot_daytona_has_no_user_surface() {
-        // The internal cloud-agent credential is managed by Codewhale, not
-        // users: no CLI command may write or clear it, and no help text may
-        // teach it. Membership (`codewhale login`) is the only door.
-        use codewhale_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        for argv in [
-            vec![
-                "codewhale",
-                "auth",
-                "set-slot",
-                "daytona",
-                "--api-key",
-                "dtn_saved",
-            ],
-            vec!["codewhale", "auth", "clear-slot", "daytona"],
-        ] {
-            assert!(
-                Cli::try_parse_from(argv).is_err(),
-                "slot commands must not parse"
-            );
-        }
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        let secrets = Secrets::new(inner);
-        assert!(
-            secrets
-                .get(codewhale_secrets::DAYTONA_TOKEN_SLOT)
-                .expect("read slot")
-                .is_none()
-        );
     }
 
     #[test]

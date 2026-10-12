@@ -1692,7 +1692,7 @@ impl<'a> ApprovalWidget<'a> {
         } else {
             let mut rendered_detail = false;
             for detail in details.iter().take(4) {
-                let is_change_preview = matches!(detail.label.as_str(), "Preview" | "预览");
+                let is_change_preview = detail.is_preview;
                 if let Some(shell_lines) = detail.shell_lines.as_deref() {
                     let command_width = area.width.saturating_sub(10) as usize;
                     // A short approval band has room for only one detail row
@@ -2528,16 +2528,15 @@ impl Renderable for ElevationWidget<'_> {
 
         let popup_width = 70.min(area.width.saturating_sub(4));
 
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                tr(self.locale, MessageId::ElevationTitleSandboxDenied),
-                Style::default()
-                    .fg(palette::STATUS_ERROR)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(vec![
+        let mut lines = vec![match self.request.command.as_deref() {
+            Some(command) => Line::from(vec![
+                Span::raw(tr(self.locale, MessageId::ElevationFieldCmd)),
+                Span::styled(
+                    crate::utils::truncate_with_ellipsis(command, 45, "..."),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+            ]),
+            None => Line::from(vec![
                 Span::raw(tr(self.locale, MessageId::ElevationFieldTool)),
                 Span::styled(
                     &self.request.tool_name,
@@ -2546,15 +2545,7 @@ impl Renderable for ElevationWidget<'_> {
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
-        ];
-
-        if let Some(ref command) = self.request.command {
-            let cmd_display = crate::utils::truncate_with_ellipsis(command, 45, "...");
-            lines.push(Line::from(vec![
-                Span::raw(tr(self.locale, MessageId::ElevationFieldCmd)),
-                Span::styled(cmd_display, Style::default().fg(palette::TEXT_MUTED)),
-            ]));
-        }
+        }];
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
@@ -3844,7 +3835,7 @@ mod tests {
             !settled.contains("run running"),
             "flushed terminal state reused the active cache entry:\n{settled}"
         );
-        assert!(settled.contains("run issue"), "{settled}");
+        assert!(settled.contains("run failed"), "{settled}");
     }
 
     fn render_approval_request(
@@ -4300,7 +4291,7 @@ mod tests {
             !settled.contains("run running"),
             "history cell reused the active slow-path cache entry:\n{settled}"
         );
-        assert!(settled.contains("run issue"), "{settled}");
+        assert!(settled.contains("run failed"), "{settled}");
     }
 
     #[test]

@@ -90,10 +90,10 @@ mod tests {
         assert!(log_value_enables_verbose("debug"));
         assert!(log_value_enables_verbose("codewhale_cli=debug"));
         assert!(log_value_enables_verbose(
-            "warn,codewhale_tui::client=trace"
+            "warn,codewhale_runtime::client=trace"
         ));
         assert!(!log_value_enables_verbose("warn"));
-        assert!(!log_value_enables_verbose("codewhale_tui=off"));
+        assert!(!log_value_enables_verbose("codewhale_runtime=off"));
     }
 
     #[test]

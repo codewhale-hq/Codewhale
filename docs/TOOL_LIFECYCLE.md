@@ -88,8 +88,9 @@ not a progress surface, must not duplicate To-do items, and plan-only state is
 never rendered as a To-do snapshot.
 
 **No request re-states the list.** The model learns what is on the To-do the way
-it learns anything else: from the result its own `todo_write` call returned,
-which is ordinary persisted history. Nothing is appended to a parent turn-loop
+it learns anything else: from its own `todo_write` call, whose input is the
+whole list, and the short receipt it returned (counts and the item in
+progress). Both are ordinary persisted history. Nothing is appended to a parent turn-loop
 step or a sub-agent step. The complete list stays visible in the UI, which is a
 different surface from the request.
 

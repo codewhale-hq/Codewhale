@@ -367,6 +367,7 @@ fn set_uses(app: &mut App, key: &str, uses: u8) {
 #[test]
 fn cycle_keys_show_at_zero_and_one_use_and_go_bare_at_two() {
     let mut app = session_app();
+    app.approval_mode = codewhale_execpolicy::ApprovalMode::Suggest;
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(facts.permission_key.as_deref(), Some("Shift+Tab to change"));
     assert_eq!(facts.mode_key, Some("Tab"));

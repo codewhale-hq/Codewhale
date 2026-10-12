@@ -5,7 +5,7 @@ import type { DocsMcpDict } from "../types";
  * ("Connect tools with MCP"). Commands and flags are checked against
  * `McpCommand` in crates/tui/src/lib.rs and docs/MCP.md; the code-mode
  * section against crates/tui/src/tools/codemode.rs and
- * crates/tui/src/features.rs (`code_mode`: Experimental stage, on by default).
+ * crates/runtime/src/features.rs (`code_mode`: Experimental stage, on by default).
  */
 export const docsMcp: DocsMcpDict = {
   metaTitle: "Connect tools with MCP · Codewhale Docs",

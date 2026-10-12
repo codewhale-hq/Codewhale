@@ -964,7 +964,7 @@ impl SnapshotRepo {
             let checkout = run_git(
                 &self.git_dir,
                 &self.work_tree,
-                &["checkout", "--end-of-options", id.as_str(), "--", ":/"],
+                &["checkout", id.as_str(), "--", ":/"],
             )?;
             if !checkout.status.success() {
                 return Err(io_other(format!(
@@ -1363,7 +1363,6 @@ impl SnapshotRepo {
             let mut args: Vec<String> = vec![
                 "--literal-pathspecs".to_string(),
                 "checkout".to_string(),
-                "--end-of-options".to_string(),
                 source.as_str().to_string(),
                 "--".to_string(),
             ];

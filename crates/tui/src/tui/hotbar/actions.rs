@@ -17,7 +17,7 @@ use codewhale_localization::{Locale, MessageId, tr};
 pub const HOTBAR_COMPACT_LABEL_MAX_WIDTH: usize = 7;
 
 /// Result of firing a hotbar action.
-#[allow(dead_code, clippy::large_enum_variant)] // AppAction is intentionally large; boxing would force clone churn on the hot path
+#[allow(clippy::large_enum_variant)] // AppAction is intentionally large; boxing would force clone churn on the hot path
 #[derive(Debug, Clone, PartialEq)]
 pub enum HotbarDispatch {
     /// The action was fully handled by mutating [`App`].

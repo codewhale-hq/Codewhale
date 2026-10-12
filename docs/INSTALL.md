@@ -1170,7 +1170,7 @@ codewhale exec --auto "run pwd"
 Known limitations:
 
 - Commands inherit Android's per-app UID, SELinux, and seccomp protections and
-  any permissions granted to Termux. Codewhale's opt-in bubblewrap
+  any permissions granted to Termux. Codewhale's bubblewrap
   child-process sandbox is Linux-only and is not built on Android, so approved
   commands receive no Codewhale-specific filesystem narrowing.
 - The Termux build has no supported Android Keystore or desktop Secret Service

@@ -745,7 +745,12 @@ pub(crate) fn render_parsed_tagged_with_palette(
                 let style = Style::default()
                     .fg(palette::WHALE_ACTION)
                     .add_modifier(Modifier::BOLD);
-                out.extend(render_wrapped_line_tagged(text, width, style, false, false));
+                out.extend(render_line_with_links_tagged(
+                    text,
+                    width,
+                    style,
+                    link_style(),
+                ));
             }
             Block::HeadingRule => {
                 out.push(RenderedMarkdownLine {
@@ -1075,10 +1080,11 @@ fn last_plain_break_pos(text: &str) -> Option<usize> {
 fn parse_heading(line: &str) -> Option<(usize, &str)> {
     let trimmed = line.trim_start();
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
-    if hashes == 0 {
+    let rest = &trimmed[hashes..];
+    if !(1..=6).contains(&hashes) || !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
         return None;
     }
-    let text = trimmed[hashes..].trim();
+    let text = rest.trim();
     if text.is_empty() {
         None
     } else {
@@ -1360,54 +1366,6 @@ fn render_wrapped_code_spans_tagged(
             }
         })
         .collect()
-}
-
-fn render_wrapped_line_tagged(
-    line: &str,
-    width: usize,
-    style: Style,
-    indent_code: bool,
-    is_code: bool,
-) -> Vec<RenderedMarkdownLine> {
-    let prefix = if indent_code { "  " } else { "" };
-    let prefix_width = prefix.width();
-    let available = width.saturating_sub(prefix_width).max(1);
-    // Code blocks must preserve leading whitespace (indentation is semantic).
-    // Use hard character-width wrapping instead of word-wrap.
-    let wrapped = if indent_code {
-        wrap_code_line(line, available)
-    } else {
-        wrap_text(line, available)
-    };
-    let mut out = Vec::new();
-
-    let last_index = wrapped.len().saturating_sub(1);
-    for (idx, chunk) in wrapped.into_iter().enumerate() {
-        let line = if idx == 0 {
-            Line::from(vec![Span::raw(prefix), Span::styled(chunk, style)])
-        } else {
-            Line::from(vec![
-                Span::raw(" ".repeat(prefix_width)),
-                Span::styled(chunk, style),
-            ])
-        };
-        let copy_separator_after = if idx == last_index {
-            CopyLineSeparator::Newline
-        } else if is_code {
-            CopyLineSeparator::None
-        } else {
-            CopyLineSeparator::Space
-        };
-        out.push(RenderedMarkdownLine {
-            line,
-            links: Vec::new(),
-            is_code,
-            copy_prefix_width: if indent_code { prefix_width } else { 0 },
-            copy_separator_after,
-        });
-    }
-
-    out
 }
 
 fn render_list_line_tagged(
@@ -2108,18 +2066,21 @@ fn wrap_cell_text(cell: &str, col_width: usize) -> Vec<String> {
     lines
 }
 
-fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Line<'static>> {
-    if cells.is_empty() {
-        return vec![Line::from("")];
-    }
-    let col_width = (width.saturating_sub(3 * cells.len() + 1)) / cells.len();
-    let col_width = col_width.max(4);
+fn render_table_row(
+    cells: &[String],
+    num_cols: usize,
+    width: usize,
+    base_style: Style,
+) -> Vec<Line<'static>> {
+    let col_width = table_col_width(num_cols, width);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
 
     // Wrap each cell into one or more visual segments. The row's visual
     // height equals the tallest column. Cells that wrap to fewer segments
     // get blank-padded continuation lines so column separators stay aligned.
-    let wrapped: Vec<Vec<String>> = cells.iter().map(|c| wrap_cell_text(c, col_width)).collect();
+    let wrapped: Vec<Vec<String>> = (0..num_cols)
+        .map(|i| wrap_cell_text(cells.get(i).map_or("", String::as_str), col_width))
+        .collect();
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_height);
@@ -2134,7 +2095,7 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
                 spans.push(token.into_span());
             }
             spans.push(Span::raw(" ".repeat(pad)));
-            if i + 1 < cells.len() {
+            if i + 1 < num_cols {
                 spans.push(Span::styled(" │ ".to_string(), sep_style));
             } else {
                 spans.push(Span::styled(" │".to_string(), sep_style));
@@ -2209,13 +2170,20 @@ fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<
         )
     };
 
-    for i in 0..blocks.len() {
-        match &blocks[i] {
+    let header_end = blocks
+        .iter()
+        .position(|b| matches!(b, Block::TableSeparator))
+        .unwrap_or(0);
+
+    for (i, block) in blocks.iter().enumerate() {
+        match block {
             Block::TableRow(cells) => {
-                lines.extend(render_table_row(cells, width, base_style));
-                if i + 1 < blocks.len() && matches!(&blocks[i + 1], Block::TableRow(_)) {
-                    lines.push(mid_border());
-                }
+                let style = if i < header_end {
+                    base_style.add_modifier(Modifier::BOLD)
+                } else {
+                    base_style
+                };
+                lines.extend(render_table_row(cells, num_cols, width, style));
             }
             Block::TableSeparator => {
                 lines.push(mid_border());
@@ -2274,86 +2242,11 @@ fn markdown_grapheme_width(grapheme: &str, col: usize) -> usize {
     grapheme.width()
 }
 
-/// Hard-wrap a code line at `width` display columns, preserving all
-/// whitespace (including leading indentation). Unlike [`wrap_text`], this
-/// does not split on word boundaries — code indentation is semantic.
-fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
-    if width == 0 || line.is_empty() {
-        return vec![line.to_string()];
-    }
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0usize;
-
-    for grapheme in line.graphemes(true) {
-        let grapheme_width = markdown_grapheme_width(grapheme, current_width);
-        if current_width + grapheme_width > width && !current.is_empty() {
-            chunks.push(current);
-            current = String::new();
-            current_width = 0;
-        }
-        current.push_str(grapheme);
-        current_width += grapheme_width;
-    }
-    chunks.push(current);
-    chunks
-}
-
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0;
-
-    for word in text.split_whitespace() {
-        let word_width = word.width();
-        // If this single word is wider than the entire line, hard-break it
-        // at grapheme boundaries so wrapping always makes progress
-        // (#1344, #1351). Without this, long URLs / paths / hashes overflow
-        // the right edge silently.
-        if word_width > width {
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-                current_width = 0;
-            }
-            push_word_breaking_graphemes(word, width, &mut current, &mut current_width, &mut lines);
-            continue;
-        }
-        let additional = if current.is_empty() {
-            word_width
-        } else {
-            word_width + 1
-        };
-        if current_width + additional > width && !current.is_empty() {
-            lines.push(current);
-            current = word.to_string();
-            current_width = word_width;
-        } else {
-            if !current.is_empty() {
-                current.push(' ');
-                current_width += 1;
-            }
-            current.push_str(word);
-            current_width += word_width;
-        }
-    }
-
-    if current.is_empty() {
-        lines.push(String::new());
-    } else {
-        lines.push(current);
-    }
-
-    lines
-}
-
 /// Push graphemes from `word` into `current`, flushing to `lines` when the
 /// running display width would exceed `width`. String-level Unicode width
 /// matches Ratatui for emoji and combining sequences.
-/// Used by `wrap_text` and `wrap_cell_text` so a word longer than the
-/// allotted width never silently overflows the right edge.
+/// Used by `wrap_cell_text` so a word longer than the allotted width never
+/// silently overflows the right edge.
 fn push_word_breaking_graphemes(
     word: &str,
     width: usize,
@@ -3134,38 +3027,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_code_line_preserves_leading_whitespace() {
-        // A short line must not be modified.
-        assert_eq!(wrap_code_line("    let x = 1;", 80), vec!["    let x = 1;"]);
-
-        // A line that exceeds the width must be hard-wrapped, keeping the
-        // leading whitespace on the first chunk.
-        let chunks = wrap_code_line("    abcdefgh", 8);
-        assert_eq!(chunks[0], "    abcd", "first chunk keeps leading spaces");
-        assert_eq!(chunks[1], "efgh");
-
-        // Empty line produces one empty chunk.
-        assert_eq!(wrap_code_line("", 80), vec![""]);
-    }
-
-    #[test]
-    fn wrap_code_line_tab_counts_toward_width() {
-        // tab (8 cols) + "xy" (2 cols) = 10 ≤ 10 — fits on one line.
-        let chunks = wrap_code_line("\txy", 10);
-        assert_eq!(chunks, vec!["\txy"], "tab + 2 chars fits in width 10");
-
-        // tab (8 cols) + "x" (1 col) = 9 ≤ 9 — "x" fits; "y" overflows.
-        let chunks = wrap_code_line("\txy", 9);
-        assert_eq!(chunks[0], "\tx", "tab + first char fits exactly");
-        assert_eq!(chunks[1], "y", "second char wraps");
-
-        // tab alone (8 cols) fits in width 8; the next "x" overflows.
-        let chunks = wrap_code_line("\tx", 8);
-        assert_eq!(chunks[0], "\t");
-        assert_eq!(chunks[1], "x");
-    }
-
-    #[test]
     fn markdown_grapheme_width_uses_tab_stop_and_string_width() {
         // At column 0 a tab fills to column 8.
         assert_eq!(markdown_grapheme_width("\t", 0), 8);
@@ -3785,12 +3646,12 @@ mod tests {
 
     // ─── Paragraph wrap regression suite (#1344, #1351) ────────────────────
     //
-    // The bug: paragraph wrap (render_line_with_links) and code-block wrap
-    // (wrap_text) are word-based. A single word wider than the available
-    // width was placed alone on a line and silently overflowed the right
-    // edge of the transcript. Long URLs / paths / hashes / no-whitespace
-    // CJK runs all hit this. The fix hard-breaks overlong words at
-    // grapheme boundaries; these tests pin that across widths 40/60/80/120.
+    // The bug: paragraph wrap (render_line_with_links) is word-based. A
+    // single word wider than the available width was placed alone on a line
+    // and silently overflowed the right edge of the transcript. Long URLs /
+    // paths / hashes / no-whitespace CJK runs all hit this. The fix
+    // hard-breaks overlong words at grapheme boundaries; these tests pin
+    // that across widths 40/60/80/120.
 
     fn rendered_widths(rendered: &[Line<'static>]) -> Vec<usize> {
         rendered
@@ -3908,24 +3769,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_text_breaks_overlong_word_for_code_blocks() {
-        // The standalone code-block wrap (wrap_text) had the same overflow
-        // bug; pin the fix at widths 40 and 80.
-        for &width in &[40usize, 80] {
-            let long = "z".repeat(200);
-            let lines = wrap_text(&long, width);
-            for line in &lines {
-                assert!(
-                    line.width() <= width,
-                    "wrap_text line {line:?} exceeds {width}"
-                );
-            }
-            let combined: String = lines.join("");
-            assert_eq!(combined.matches('z').count(), 200);
-        }
-    }
-
-    #[test]
     fn wrap_cell_text_already_handled_long_words_remains_correct() {
         // Regression guard for the v0.8.25 table-cell fix. After consolidating
         // the char-break helper, wrap_cell_text must continue to handle
@@ -4019,32 +3862,6 @@ mod tests {
                 12,
                 "width={width}: emoji content lost"
             );
-        }
-    }
-
-    #[test]
-    fn lower_level_wrap_text_keeps_unicode_runs_within_qa_widths() {
-        let cases = [
-            ("cjk", "中".repeat(140)),
-            ("emoji", "😀".repeat(110)),
-            ("combining", "e\u{301}".repeat(140)),
-        ];
-
-        for (label, input) in cases {
-            for &width in &[80usize, 100, 120] {
-                let lines = wrap_text(&input, width);
-                for line in &lines {
-                    assert!(
-                        line.width() <= width,
-                        "{label} width={width}: wrap_text line {line:?} exceeds budget"
-                    );
-                }
-                let combined: String = lines.join("");
-                assert_eq!(
-                    combined, input,
-                    "{label} width={width}: wrap_text changed content"
-                );
-            }
         }
     }
 

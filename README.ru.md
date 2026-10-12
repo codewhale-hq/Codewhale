@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -81,7 +81,7 @@ Fix the failing tests and explain what changed.
 Ту же задачу можно выполнить без интерфейса — из скрипта или задания CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Команды и сочетания клавиш показывает `/help`.
@@ -94,7 +94,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | Команда | Что делает |
 | --- | --- |
 | `codewhale` | Интерактивный терминальный интерфейс |
-| `codewhale exec "…"` | Один ход без интерфейса из скрипта или CI, с потоковым выводом JSON |
+| `codewhale exec "…"` | Один ход без интерфейса из скрипта или CI; `--auto` разрешает инструменты работы с файлами и оболочкой, `--output-format stream-json` выводит JSON потоком |
 | `codewhale web` | Встроенный [локальный браузерный клиент](docs/WEB.md) на `127.0.0.1` |
 | `codewhale review --pr N` | Рекомендательный [обзор pull request](docs/GITHUB_ACTION.md); публикация включается отдельно |
 | Runtime API | [Локальный HTTP API](docs/RUNTIME_API.md) для тредов, событий и подтверждений |
@@ -146,7 +146,7 @@ Full Access по-прежнему соблюдает жёсткие границ
 Codewhale работает на вашей машине с теми правами доступа, которые вы ему
 дали. Режимы подтверждения и правила репозитория ограничивают действия агента,
 а команды выполняются внутри песочницы ОС там, где она поддерживается (Seatbelt
-в macOS; bubblewrap в Linux включается отдельно). `/preview-request` показывает
+в macOS; bubblewrap в Linux, если установлен и работает). `/preview-request` показывает
 точный запрос с вычеркнутыми секретами до того, как что-либо будет отправлено.
 Неизвестные цены моделей остаются неизвестными, а не выдаются за бесплатные.
 

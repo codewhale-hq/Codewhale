@@ -865,7 +865,7 @@ This stage was read-only. I changed no source, branch, tracker or checkout. The 
 - **Lane code:**
   - `NestedCallGate { mcp_pool, … }` is at `codemode.rs:200`. `refusal_before_gate` is at :250 and `ungated_admission` at :502. The MCP branch in `execute` is at :533–556.
   - `gate_nested_call` plans through `plan_tool_calls(…, ToolCallSource::CodeMode)` with `<parent>.<seq>` ids (lane `turn_loop.rs`, around line 4706).
-- **Feature flags:** `Feature` and `Stage::{Experimental, Beta, Stable}` live in `crates/tui/src/features.rs`, with a `[features]` table in `config.example.toml:1228`.
+- **Feature flags:** `Feature` and `Stage::{Experimental, Beta, Stable}` live in `crates/runtime/src/features.rs`, with a `[features]` table in `config.example.toml:1228`.
 - **Activation policy:** `ACTIVATION_POLICY_VERSION = 3` (`plugins/activation.rs:22`). Its capability set already has a **`Native` capability that is inventoried but inactive** (`activation.rs:93`), and a manifest field `native` with the alias `native_extension` (`manifest.rs:51`).
 - **Built-in bundles:** `plugins/builtin.rs` embeds `crates/tui/plugins/computer-use` with `include_bytes!` and materializes it under `$CODEWHALE_HOME/builtin-plugins` as a digest-named snapshot. **This is the shipping path the host bundle will reuse.**
 - **ToolCallSource:** `crates/tools/src/lib.rs:386` has `ToolCallSource { Direct, JsRepl }`. The lane adds a second, private `ToolCallSource { Model, CodeMode }` at `turn_loop.rs:39`.
@@ -1668,7 +1668,7 @@ below are historical proposals unless that table leaves the choice open.
 
 **Engine** (`/private/tmp/cw-wt-6446` @ `8a835d7c4`):
 - `crates/tui/src/plugins/{activation.rs:22,26-37,80-100, manifest.rs:35-59,254, agent_plugin.rs:649, builtin.rs:1-30, install/{dsh.rs,stage.rs}}`
-- `crates/tui/src/features.rs`
+- `crates/runtime/src/features.rs`
 - `config.example.toml:1228`
 - `crates/tui/src/mcp.rs:536-575,753-756,2852-2865`
 - `crates/tui/src/dependencies.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)

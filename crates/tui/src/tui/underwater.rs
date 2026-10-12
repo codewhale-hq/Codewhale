@@ -154,7 +154,11 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
             LaunchRecentEntry {
                 id: session.id.clone(),
                 title,
-                detail: age,
+                detail: if session.interrupted {
+                    format!("interrupted · {age}")
+                } else {
+                    age
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -911,22 +915,8 @@ fn mode_label(locale: Locale, mode: AppMode) -> Cow<'static, str> {
 /// Tool-approval posture only. Filesystem scope is a separate fact and only
 /// earns header columns when it is worth reading — see
 /// [`filesystem_scope_notice`].
-fn permission_label(app: &App) -> Cow<'static, str> {
-    let locale = app.ui_locale;
-    if app.mode == AppMode::Plan {
-        return tr(locale, MessageId::ChipPermissionReadOnly);
-    }
-    match app.approval_mode {
-        ApprovalMode::Suggest => tr(locale, MessageId::ChipPermissionAsk),
-        ApprovalMode::Auto => tr(locale, MessageId::ChipPermissionAuto),
-        // Keep the effective permission explicit. `bypass` is an
-        // implementation detail and, more importantly, can imply that
-        // repository law no longer applies. Full Access never bypasses
-        // constitution rules. This is **tool-approval posture**, not
-        // filesystem scope — see filesystem_scope_notice.
-        ApprovalMode::Bypass => tr(locale, MessageId::ChipPermissionFullAccess),
-        ApprovalMode::Never => tr(locale, MessageId::ChipPermissionNever),
-    }
+pub(crate) fn permission_label(app: &App) -> Cow<'static, str> {
+    crate::core::authority::permission_label_for(app.ui_locale, app.mode, app.approval_mode)
 }
 
 /// The effective filesystem scope — but only when it says something the
@@ -2009,6 +1999,7 @@ mod launch_card_tests {
                 updated_at: chrono::Utc::now()
                     - chrono::Duration::hours(i64::try_from(index).unwrap_or(0) + 1),
                 message_count: 40 + index,
+                interrupted: false,
             })
             .collect();
         app.launch.total_workspace_sessions = total;

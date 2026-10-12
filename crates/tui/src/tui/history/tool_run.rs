@@ -312,12 +312,11 @@ pub fn tool_run_summary(run: &ToolRun) -> String {
 }
 
 fn activity_family_summary(run: &ToolRun, activities: &[ToolRunActivity]) -> Option<String> {
-    let mut families = Vec::new();
+    let mut families: Vec<String> = Vec::new();
     for family in &run.tool_families {
-        if activities.contains(&classify_tool_name_activity(family))
-            && !families.iter().any(|existing| existing == family)
-        {
-            families.push(family.as_str());
+        let label = family.replace('_', " ");
+        if activities.contains(&classify_tool_name_activity(family)) && !families.contains(&label) {
+            families.push(label);
         }
     }
 

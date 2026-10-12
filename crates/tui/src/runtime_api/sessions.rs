@@ -1395,7 +1395,7 @@ pub(super) fn resolve_session_artifact(
         }
     };
     let relative = PathBuf::from(id).join(&relative_path);
-    let opened = super::workspace::open_confined_file(sessions_dir, &relative, false)
+    let opened = super::workspace::open_confined_file_resolved(sessions_dir, &relative, false)
         .and_then(|file| super::workspace::read_confined_bytes(&file));
     let read = match (opened, &authority) {
         (Ok(read), _) => read,
@@ -1481,7 +1481,7 @@ fn image_evidence_summary(
 > {
     let relative = PathBuf::from(id)
         .join(crate::tools::large_output_router::evidence_metadata_relative_path(artifact_id));
-    let file = super::workspace::open_confined_file(sessions_dir, &relative, false)?;
+    let file = super::workspace::open_confined_file_resolved(sessions_dir, &relative, false)?;
     let evidence = crate::tools::large_output_router::read_evidence_metadata_file(&file)
         .map_err(|error| super::workspace::map_fs_error(error, "evidence metadata"))?;
     let expected_path =

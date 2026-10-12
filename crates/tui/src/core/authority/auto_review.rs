@@ -1578,11 +1578,12 @@ fn shell_params_are_destructive_like(params: &Value, workspace: Option<&std::pat
         })
 }
 
-/// The non-bypassable floor must hold genuinely catastrophic writes even when
-/// `command_safety` (tuned to avoid over-blocking build/test chains) rates
-/// them merely `RequiresApproval`: `dd`/`shred`/`wipefs` onto a device,
-/// `mkfs`, and a forced recursive delete of an absolute path that is not
-/// provably inside a safe workspace (#3883 follow-up).
+/// The background/headless floor, which Full Access skips, must hold
+/// genuinely catastrophic writes even when `command_safety` (tuned to avoid
+/// over-blocking build/test chains) rates them merely `RequiresApproval`:
+/// `dd`/`shred`/`wipefs` onto a device, `mkfs`, and a forced recursive delete
+/// of an absolute path that is not provably inside a safe workspace (#3883
+/// follow-up).
 fn argv_is_destroyer(argv: &[String], workspace: Option<&std::path::Path>) -> bool {
     let Some((command, args)) = argv.split_first() else {
         return false;

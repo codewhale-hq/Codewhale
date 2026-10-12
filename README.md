@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 The same task runs headless from a script or CI job:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Run `/help` for commands and keyboard shortcuts.
@@ -90,7 +90,7 @@ sessions, tools, and permissions behave the same everywhere.
 | Command | What it does |
 | --- | --- |
 | `codewhale` | The interactive terminal interface |
-| `codewhale exec "…"` | One headless turn from a script or CI, streaming JSON |
+| `codewhale exec "…"` | One headless turn from a script or CI; `--auto` allows file and shell tools, `--output-format stream-json` streams JSON |
 | `codewhale web` | The bundled [local browser client](docs/WEB.md) on `127.0.0.1` |
 | `codewhale review --pr N` | An advisory [pull request review](docs/GITHUB_ACTION.md); posting is opt-in |
 | Runtime API | A [local HTTP API](docs/RUNTIME_API.md) for threads, events, and approvals |
@@ -137,7 +137,7 @@ Full Access still respects hard policy boundaries. The
 
 Codewhale runs on your machine with the access you grant it. Approval postures
 and repository rules limit what the agent may do, and commands run inside an OS
-sandbox where supported (Seatbelt on macOS; bubblewrap on Linux is opt-in).
+sandbox where supported (Seatbelt on macOS; bubblewrap on Linux when installed and working).
 `/preview-request` shows the exact redacted request before anything is sent.
 Unknown model prices stay unknown instead of being reported as free.
 

@@ -197,6 +197,7 @@ pub struct ProviderPickerView {
     /// the advanced management hotkeys from the decision surface. They remain
     /// available from `/provider` after onboarding.
     onboarding_mode: bool,
+    local_runtime_detected: bool,
     query: String,
     /// Explicit search keeps provider names from invoking legacy letter actions.
     search_mode: bool,
@@ -1792,7 +1793,17 @@ impl ProviderPickerView {
     /// OAuth-only providers never collect a typed credential: the key entry
     /// stage for them is a routing step (device flow / external consent), so
     /// typed input and pastes are accepted events but never stored.
+    fn selected_plugin_provider(&self) -> Option<String> {
+        let identity = self.selected_identity()?;
+        crate::plugins::providers::plugin_auth_entry(&self.route_config, identity.key.as_str())
+            .ok()
+            .map(|_| identity.key.as_str().to_owned())
+    }
+
     fn key_entry_is_oauth_locked(&self) -> bool {
+        if self.selected_plugin_provider().is_some() {
+            return true;
+        }
         self.selected_provider()
             .provider()
             .credential_help()
@@ -1920,6 +1931,7 @@ impl ProviderPickerView {
             view,
             setup_mode: false,
             onboarding_mode: false,
+            local_runtime_detected: true,
             query: String::new(),
             search_mode: false,
             api_key_input: String::new(),
@@ -1968,6 +1980,29 @@ impl ProviderPickerView {
     pub(crate) fn with_locale(mut self, locale: Locale) -> Self {
         self.locale = locale;
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_local_runtime_detected(mut self, detected: bool) -> Self {
+        self.local_runtime_detected = detected;
+        if !self.rows.is_empty() && !self.row_visible(self.selected_idx) {
+            self.selected_idx = (0..self.rows.len())
+                .find(|idx| self.row_visible(*idx))
+                .unwrap_or(0);
+        }
+        self
+    }
+
+    fn hides_undetected_local(&self, idx: usize) -> bool {
+        self.onboarding_mode
+            && !self.local_runtime_detected
+            && !self.rows[idx].is_configured
+            && self.rows[idx]
+                .provider
+                .provider()
+                .credential_help()
+                .acquisition
+                == CredentialAcquisition::LocalOptional
     }
 
     fn tr(&self, id: MessageId) -> Cow<'static, str> {
@@ -2130,6 +2165,9 @@ impl ProviderPickerView {
     }
 
     fn row_visible(&self, idx: usize) -> bool {
+        if self.hides_undetected_local(idx) {
+            return false;
+        }
         let query = self.query.trim();
         if !query.is_empty() {
             return self.rows[idx].matches_query(query);
@@ -2844,14 +2882,23 @@ impl ProviderPickerView {
         } else {
             self.tr(MessageId::PickerActionSetKey)
         };
-        let title = if !self.onboarding_mode && (self.search_mode || !self.query.is_empty()) {
+        let title = if self.onboarding_mode {
+            if self.search_mode || !self.query.is_empty() {
+                format!(
+                    " {} · {}: {} ",
+                    self.tr(MessageId::OnboardProviderTitle),
+                    self.tr(MessageId::SessionsActionSearch),
+                    self.query
+                )
+            } else {
+                format!(" {} ", self.tr(MessageId::OnboardProviderTitle))
+            }
+        } else if self.search_mode || !self.query.is_empty() {
             format!(
                 "{}: {}",
                 self.tr(MessageId::SessionsActionSearch),
                 self.query
             )
-        } else if self.onboarding_mode {
-            format!(" {} ", self.tr(MessageId::OnboardProviderTitle))
         } else {
             match (self.setup_mode, self.view) {
                 (true, ProviderListView::Configured) => {
@@ -3558,6 +3605,15 @@ impl ProviderPickerView {
     }
 
     fn render_key_entry(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(provider) = self.selected_plugin_provider() {
+            let block = Block::default().title(provider).borders(Borders::ALL);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            Paragraph::new(self.tr(MessageId::PluginOAuthBrowser).into_owned())
+                .wrap(Wrap { trim: true })
+                .render(inner, buf);
+            return;
+        }
         let row = &self.rows[self.selected_idx];
         let codex_oauth = row.provider == ProviderKind::OpenaiCodex;
         let oauth_provider = codex_oauth;
@@ -3604,8 +3660,8 @@ impl ProviderPickerView {
                 inner,
                 buf,
                 &[
-                    ActionHint::new("Enter", "continue"),
-                    ActionHint::new("Esc", "back"),
+                    ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
+                    ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
                 ],
             )
         };
@@ -3704,10 +3760,13 @@ impl ProviderPickerView {
         };
 
         if let Some(ref error) = self.key_entry_error {
-            hint_lines.push(Line::from(Span::styled(
-                error.clone(),
-                Style::default().fg(palette::STATUS_ERROR),
-            )));
+            hint_lines.insert(
+                0,
+                Line::from(Span::styled(
+                    error.clone(),
+                    Style::default().fg(palette::STATUS_ERROR),
+                )),
+            );
         }
 
         // `Line` count is not rendered row count: long environment-variable
@@ -3975,8 +4034,8 @@ impl ProviderPickerView {
             buf,
             &[
                 ActionHint::new("↑↓", "move"),
-                ActionHint::new("Enter", "continue"),
-                ActionHint::new("Esc", "back"),
+                ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
+                ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
 
@@ -4092,8 +4151,8 @@ impl ProviderPickerView {
             buf,
             &[
                 ActionHint::new("↑↓", "choose"),
-                ActionHint::new("Enter", "continue"),
-                ActionHint::new("Esc", "back"),
+                ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
+                ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
         self.render_setup_choices(
@@ -4131,8 +4190,8 @@ impl ProviderPickerView {
             buf,
             &[
                 ActionHint::new("↑↓", "choose"),
-                ActionHint::new("Enter", "continue"),
-                ActionHint::new("Esc", "back"),
+                ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
+                ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
         // Keep the actual endpoint with each route; choosing only stages
@@ -4440,6 +4499,15 @@ impl ProviderPickerView {
         if !self.row_visible(self.selected_idx) {
             return ViewAction::None;
         }
+        if let Some(provider) = self.selected_plugin_provider() {
+            return if self.selected_has_key() && !self.selected_credential_rejected() {
+                ViewAction::EmitAndClose(ViewEvent::ProviderPickerOpenModels {
+                    identity: self.selected_identity().expect("admitted plugin provider"),
+                })
+            } else {
+                ViewAction::EmitAndClose(ViewEvent::ProviderPickerPluginOAuthRequested { provider })
+            };
+        }
         let provider = self.selected_provider();
         if provider == ProviderKind::Custom && !self.rows[self.selected_idx].is_configured {
             // A bundled-descriptor row already knows the host; only the blank
@@ -4708,7 +4776,8 @@ impl ModalView for ProviderPickerView {
                 KeyCode::Char(c)
                     if key.modifiers.is_empty()
                         && self.query.is_empty()
-                        && c.eq_ignore_ascii_case(&'l') =>
+                        && c.eq_ignore_ascii_case(&'l')
+                        && (!self.onboarding_mode || self.local_runtime_detected) =>
                 {
                     self.show_local_routes();
                     ViewAction::None
@@ -4905,6 +4974,11 @@ impl ModalView for ProviderPickerView {
                     ViewAction::None
                 }
                 KeyCode::Enter => {
+                    if let Some(provider) = self.selected_plugin_provider() {
+                        return ViewAction::EmitAndClose(
+                            ViewEvent::ProviderPickerPluginOAuthRequested { provider },
+                        );
+                    }
                     if self.selected_provider() == ProviderKind::OpenaiCodex {
                         return ViewAction::EmitAndClose(
                             ViewEvent::ProviderPickerChatgptOAuthRequested,
@@ -8368,7 +8442,7 @@ mod tests {
             "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
              [providers.openai]\nbase_url = \"https://fixture.invalid/v1\"\nauth_mode = \"api_key\"\n",
             |app, config| {
-                assert_eq!(app.onboarding, crate::tui::app::OnboardingState::Provider);
+                assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
                 assert!(app.onboarding_recovers_configured_route());
                 let picker = ProviderPickerView::new_for_onboarding(
                     app.api_provider,
@@ -8386,7 +8460,7 @@ mod tests {
     #[test]
     fn first_run_unconfigured_route_keeps_picker_and_local_discovery() {
         with_first_run_config("", |mut app, config| {
-            assert_eq!(app.onboarding, crate::tui::app::OnboardingState::Provider);
+            assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
             assert!(!app.onboarding_recovers_configured_route());
             assert!(app.should_adopt_live_local_ollama());
             let picker =

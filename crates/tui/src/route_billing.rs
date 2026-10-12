@@ -62,7 +62,6 @@ impl BillingPresentation {
     }
 
     #[must_use]
-    #[allow(dead_code)] // label helpers for non-metered chip copy (TUI-DOG-010)
     pub const fn label(self) -> Option<&'static str> {
         match self {
             Self::Metered => None,
@@ -919,7 +918,6 @@ pub fn usage_chip(
 
 /// Compact footer/header chip text. `None` means omit the chip.
 #[must_use]
-#[allow(dead_code)] // shared chip formatter for footer/sidebar siblings (TUI-DOG-010)
 pub fn format_usage_chip(chip: &UsageChip, locale: Locale) -> Option<String> {
     match chip {
         UsageChip::Money(amount) => Some(amount.clone()),

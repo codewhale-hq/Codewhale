@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -76,7 +76,7 @@ Fix the failing tests and explain what changed.
 تعمل المهمة نفسها دون واجهة من سكربت أو من مهمة CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 شغّل `/help` لعرض الأوامر واختصارات لوحة المفاتيح.
@@ -89,7 +89,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | الأمر | ما يفعله |
 | --- | --- |
 | `codewhale` | واجهة الطرفية التفاعلية |
-| `codewhale exec "…"` | دورة واحدة دون واجهة من سكربت أو CI، مع بث JSON |
+| `codewhale exec "…"` | دورة واحدة دون واجهة من سكربت أو CI؛ يسمح `--auto` بأدوات الملفات والصدفة، ويبث `--output-format stream-json` بيانات JSON |
 | `codewhale web` | [عميل المتصفح المحلي](docs/WEB.md) المضمَّن على `127.0.0.1` |
 | `codewhale review --pr N` | [مراجعة pull request](docs/GITHUB_ACTION.md) استشارية؛ والنشر اختياري |
 | Runtime API | [واجهة HTTP محلية](docs/RUNTIME_API.md) للخيوط والأحداث والموافقات |
@@ -135,7 +135,7 @@ codewhale exec "fix the failing tests and explain what changed"
 
 يعمل Codewhale على جهازك بالصلاحيات التي تمنحها له. تحدّ أوضاع الموافقة وقواعد
 المستودع مما يجوز للوكيل فعله، وتعمل الأوامر داخل صندوق حماية لنظام التشغيل حيثما
-كان مدعومًا (Seatbelt على macOS؛ وbubblewrap على Linux اختياري). يعرض
+كان مدعومًا (Seatbelt على macOS؛ وbubblewrap على Linux عند تثبيته وعمله). يعرض
 `/preview-request` الطلب المحجوب بياناته الحساسة (redacted) كما هو تمامًا قبل إرسال أي شيء.
 تبقى أسعار النماذج غير المعروفة غير معروفة بدل أن تُعرض على أنها مجانية.
 

@@ -182,7 +182,7 @@ pub(super) fn apply_subagent_terminal_projection(
     true
 }
 
-fn worker_status_for_terminal_projection(status: &SubAgentStatus) -> AgentWorkerStatus {
+pub(crate) fn worker_status_for_terminal_projection(status: &SubAgentStatus) -> AgentWorkerStatus {
     match status {
         SubAgentStatus::Running => AgentWorkerStatus::Running,
         SubAgentStatus::Completed => AgentWorkerStatus::Completed,

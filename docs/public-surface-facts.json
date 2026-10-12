@@ -22,7 +22,7 @@
   "sourceCandidate": {
     "version": "0.10.2",
     "providerCount": 50,
-    "toolCount": 80,
+    "toolCount": 79,
     "sandboxBackends": [
       "seatbelt (macOS, when available)",
       "bubblewrap (Linux, default when installed and working)"

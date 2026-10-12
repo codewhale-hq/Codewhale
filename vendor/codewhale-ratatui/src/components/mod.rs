@@ -123,5 +123,8 @@ mod whale_pet;
 pub use whale_pet::*;
 mod subagents;
 pub use subagents::*;
+mod dot_whale;
+pub use dot_whale::*;
+
 mod pet_mode;
 pub use pet_mode::*;

@@ -68,7 +68,7 @@ pub mod search;
 pub mod send_later;
 pub mod session;
 pub mod shell;
-mod shell_output;
+pub(crate) mod shell_output;
 pub mod skill;
 pub mod spec;
 pub mod speech;

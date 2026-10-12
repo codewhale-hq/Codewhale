@@ -63,7 +63,7 @@ pub enum ToolFamily {
 pub fn tool_family_for_title(title: &str) -> ToolFamily {
     match title {
         "Shell" => ToolFamily::Run,
-        "Patch" | "Diff" => ToolFamily::Patch,
+        "Patch" | "Diff" | "File" => ToolFamily::Patch,
         "Workspace" | "Image" => ToolFamily::Read,
         "Search" => ToolFamily::Find,
         "Plan" | "Legacy plan" | "Review" => ToolFamily::Generic,
@@ -222,7 +222,7 @@ fn summary_value(summary: &str, key: &str) -> Option<String> {
     None
 }
 
-fn should_show_tool_name_in_header(name: &str, family: ToolFamily) -> bool {
+pub(crate) fn should_show_tool_name_in_header(name: &str, family: ToolFamily) -> bool {
     (matches!(family, ToolFamily::Generic) && !is_known_metadata_tool_name(name))
         || matches!(name, "git_log" | "git_show" | "git_blame")
 }
@@ -315,7 +315,6 @@ pub fn family_label(family: ToolFamily) -> &'static str {
 /// Position of a line within a multi-line card — drives the left-rail
 /// glyph so the box reads as a contiguous group from top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub enum CardRail {
     /// First line of the card — the header. `╭`.
     Top,
@@ -330,7 +329,6 @@ pub enum CardRail {
 /// Map a [`CardRail`] position to its rail glyph. Returned as a `&str`
 /// because callers paste it into a span.
 #[must_use]
-#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub fn rail_glyph(rail: CardRail) -> &'static str {
     match rail {
         CardRail::Top => "\u{256D}",    // ╭

@@ -583,7 +583,7 @@ pub(crate) fn shell_completion_runtime_message(
     let payload = events
         .iter()
         .map(|event| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "task_id": event.task_id,
                 "command": event.command,
                 "status": format!("{:?}", event.status),
@@ -599,8 +599,15 @@ pub(crate) fn shell_completion_runtime_message(
                 "owner_agent_name": event.owner_agent_name,
                 "origin_tool_call_id": event.origin_tool_call_id,
                 "origin_turn_id": event.origin_turn_id,
-            })
-            .to_string()
+            });
+            if event.status == crate::tools::shell::ShellStatus::Killed {
+                entry["kill_note"] =
+                    serde_json::json!(crate::tools::shell_output::kill_outcome_note(&format!(
+                        "{}{}",
+                        event.stdout_tail, event.stderr_tail
+                    )));
+            }
+            entry.to_string()
         })
         .collect::<Vec<_>>()
         .join("\n");

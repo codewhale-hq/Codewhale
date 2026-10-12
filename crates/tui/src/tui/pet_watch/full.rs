@@ -3,7 +3,7 @@
 //! durable world and audio. No prompt, worker or execution authority lives here.
 use super::{PetWatch, habitat};
 use crate::{
-    agent_roster::RosterState,
+    agent_roster::{AgentRosterRow, RosterState},
     tools::subagent::AgentWorkerStatus,
     tui::{
         app::App,
@@ -12,10 +12,10 @@ use crate::{
         underwater::ShellPhase,
     },
 };
-use codewhale_localization::{MessageId, tr};
-use codewhale_protocol::engine_owner::OwnerFreshness;
+use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_protocol::engine_owner::{OwnerActivityKind, OwnerFreshness, OwnerPresence};
 use codewhale_ratatui::{
-    AgentCard, Caps, MotionMode, PetMode, PetModeAreas, State, StatusMark, Subagent,
+    AgentCard, Caps, DotWhale, MotionMode, PetMode, PetModeAreas, State, StatusMark, Subagent,
     SubagentControls, SubagentUsage, SubagentViewWords, Theme,
     whale_motion::{Activity, Context, Inputs, Presence, Span},
 };
@@ -41,8 +41,76 @@ fn theme(app: &App) -> Theme {
         .map_or(theme, |palette| theme.tui_palette(palette))
 }
 
+fn live_rows(app: &App) -> Vec<AgentRosterRow> {
+    use crate::tui::subagent_routing::{subagent_is_parked, worker_status_for_terminal_projection};
+    let mut rows = app.current_agent_roster().to_vec();
+    let name = |id: &str| app.agent_label_map.get(id).cloned();
+    let blank = |id: &str, display_name: String| AgentRosterRow {
+        worker_id: id.to_string(),
+        display_name,
+        model: String::new(),
+        state: RosterState::Running,
+        status: AgentWorkerStatus::Running,
+        activity: None,
+        outcome: None,
+        millis: None,
+        input_tokens: None,
+        output_tokens: None,
+        cost_microusd: None,
+        steps_taken: 0,
+        parent_run_id: None,
+        run_id: id.to_string(),
+    };
+    for agent in &app.subagent_cache {
+        let index = rows
+            .iter()
+            .position(|row| row.worker_id == agent.agent_id)
+            .unwrap_or_else(|| {
+                let display_name = name(&agent.agent_id)
+                    .or_else(|| agent.nickname.clone())
+                    .unwrap_or_else(|| agent.name.clone());
+                let usage = agent.usage.as_ref();
+                rows.push(AgentRosterRow {
+                    model: agent.model.clone(),
+                    millis: Some(agent.duration_ms),
+                    input_tokens: usage.and_then(|usage| usage.input_tokens),
+                    output_tokens: usage.and_then(|usage| usage.output_tokens),
+                    cost_microusd: usage.and_then(|usage| usage.cost_microusd),
+                    steps_taken: agent.steps_taken,
+                    parent_run_id: agent.parent_run_id.clone(),
+                    ..blank(&agent.agent_id, display_name)
+                });
+                rows.len() - 1
+            });
+        let row = &mut rows[index];
+        row.status = agent
+            .worker_status
+            .unwrap_or_else(|| worker_status_for_terminal_projection(&agent.status));
+        row.state = if subagent_is_parked(agent) {
+            RosterState::Parked
+        } else {
+            RosterState::from_worker(row.status)
+        };
+        if row.state == RosterState::Running
+            && let Some(started) = agent.started_at
+        {
+            row.millis = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        }
+    }
+    for (id, progress) in &app.agent_progress {
+        match rows.iter_mut().find(|row| &row.worker_id == id) {
+            Some(row) => row.activity = Some(progress.clone()),
+            None => rows.push(AgentRosterRow {
+                activity: Some(progress.clone()),
+                ..blank(id, name(id).unwrap_or_else(|| id.clone()))
+            }),
+        }
+    }
+    rows
+}
+
 pub(super) fn agents(app: &App) -> Vec<Subagent<'static>> {
-    app.current_agent_roster()
+    live_rows(app)
         .iter()
         .map(|row| {
             let (state, label) = match row.state {
@@ -80,6 +148,37 @@ pub(super) fn agents(app: &App) -> Vec<Subagent<'static>> {
         })
         .collect()
 }
+fn presentation<'a>(
+    raster: Option<&'a super::live::Presentation>,
+    session: Option<&str>,
+    now: Instant,
+) -> Option<&'a super::live::Presentation> {
+    let source = session.map(super::live::session_source);
+    raster.filter(|r| {
+        r.scene.producer_connected
+            && now.saturating_duration_since(r.frame_changed) < Duration::from_millis(800)
+            && Some(r.scene.source.as_str()) == source.as_deref()
+    })
+}
+fn activity_words(kind: OwnerActivityKind, locale: Locale) -> std::borrow::Cow<'static, str> {
+    tr(
+        locale,
+        match kind {
+            OwnerActivityKind::Reading => MessageId::ToolFamilyRead,
+            OwnerActivityKind::Editing => MessageId::ToolFamilyPatch,
+            OwnerActivityKind::Searching => MessageId::ToolFamilyFind,
+            OwnerActivityKind::Testing => MessageId::ToolFamilyVerify,
+            OwnerActivityKind::Executing => MessageId::ToolFamilyRun,
+            OwnerActivityKind::Browsing => MessageId::PetActivityBrowsing,
+            OwnerActivityKind::Computer => MessageId::PetActivityComputer,
+            OwnerActivityKind::Memory => MessageId::PetActivityMemory,
+            OwnerActivityKind::Tool => MessageId::ToolFamilyGeneric,
+            OwnerActivityKind::Thinking => MessageId::ToolFamilyThink,
+            OwnerActivityKind::Responding => MessageId::PetModeReplyTitle,
+            OwnerActivityKind::Delegating => MessageId::PhaseSubagents,
+        },
+    )
+}
 fn inputs(app: &App, now: Instant) -> Inputs {
     let presence = match ShellPhase::from_app(app) {
         ShellPhase::Working | ShellPhase::Verifying => Presence::Working,
@@ -88,13 +187,17 @@ fn inputs(app: &App, now: Instant) -> Inputs {
         ShellPhase::Done => Presence::Done,
         ShellPhase::Idle | ShellPhase::Failed => Presence::Idle,
     };
-    let raster = app.pet_watch.raster.as_ref().filter(|r| {
-        r.scene.producer_connected
-            && now.saturating_duration_since(r.frame_changed) < Duration::from_millis(800)
-            && Some(r.scene.source.as_str()) == app.current_session_id.as_deref()
-    });
-    let owner = raster.and_then(|r| r.scene.activity.as_ref()).filter(|a| {
-        a.observed && a.freshness == OwnerFreshness::Fresh && a.session_id == app.current_session_id
+    let raster = presentation(
+        app.pet_watch.raster.as_ref(),
+        app.current_session_id.as_deref(),
+        now,
+    );
+    let owner = raster.and_then(|r| {
+        r.scene.activity.as_ref().filter(|a| {
+            a.observed
+                && a.freshness == OwnerFreshness::Fresh
+                && a.session_id.as_deref() == Some(r.scene.source.as_str())
+        })
     });
     Inputs {
         presence,
@@ -170,6 +273,12 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
     });
     let motion = motion(app);
     let theme = theme(app);
+    let prepared = presentation(
+        app.pet_watch.raster.as_ref(),
+        app.current_session_id.as_deref(),
+        now,
+    )
+    .is_some_and(|r| r.scene.materials.is_some());
     let state = &mut app.pet_watch;
     state.full.update(
         app.current_session_id.as_deref(),
@@ -183,7 +292,9 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
         state.full_next = None;
         app.needs_redraw = true;
     }
-    if let Some(interval) = state.full.next_frame_in(&agents, &theme) {
+    if prepared {
+        state.full_next = None;
+    } else if let Some(interval) = state.full.next_frame_in(&agents, &theme) {
         if state.full_next.is_none_or(|deadline| now >= deadline) {
             state.full_next = now.checked_add(interval);
             app.needs_redraw = true;
@@ -214,6 +325,29 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
             codewhale_palette::chrome_style(&app.ui_theme, toast.level.ink()),
         )
     });
+    let now = Instant::now();
+    let prepared = presentation(
+        app.pet_watch.raster.as_ref(),
+        app.current_session_id.as_deref(),
+        now,
+    )
+    .filter(|r| r.scene.materials.is_some());
+    let activity = prepared.and_then(|r| {
+        r.scene.activity.as_ref().filter(|a| {
+            a.observed
+                && a.freshness == OwnerFreshness::Fresh
+                && a.session_id.as_deref() == Some(r.scene.source.as_str())
+        })
+    });
+    let words = if matches!(phase, ShellPhase::Working | ShellPhase::Verifying) {
+        activity
+            .filter(|a| a.authoritative_presence == OwnerPresence::Working)
+            .and_then(|a| a.activity_kind)
+            .map(|kind| activity_words(kind, app.ui_locale))
+            .unwrap_or_else(|| phase.label(app.ui_locale))
+    } else {
+        phase.label(app.ui_locale)
+    };
     let mark = StatusMark::new(match phase {
         ShellPhase::Working | ShellPhase::Verifying => State::Working,
         ShellPhase::Approval | ShellPhase::Waiting => State::NeedsYou,
@@ -221,7 +355,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
         ShellPhase::Failed => State::Failed,
         ShellPhase::Idle | ShellPhase::Typing => State::Ready,
     })
-    .word(phase.label(app.ui_locale).into_owned());
+    .word(words.clone().into_owned());
     // ActiveCell is the same live transcript the normal shell reads. Include
     // streamed replies and terminal errors, without waiting for a successful turn.
     let response_index = inspect
@@ -354,6 +488,26 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
         };
     }
     let mut view = PetMode::new(&theme, mark);
+    view.dot_whale = prepared.and_then(|r| {
+        let (points, materials, hollow) = if motion.animates() {
+            (
+                &r.scene.points,
+                r.scene.materials.as_ref(),
+                r.scene.style.hollow,
+            )
+        } else {
+            (
+                &r.scene.still.points,
+                r.scene.still.materials.as_ref(),
+                r.scene.still.style.hollow,
+            )
+        };
+        materials.map(|materials| {
+            DotWhale::new(points, materials)
+                .caption(&words)
+                .hollow(hollow)
+        })
+    });
     view.notice = notice;
     view.title = "Codewhale".into();
     view.agents = if inspect { &agents } else { &[] };

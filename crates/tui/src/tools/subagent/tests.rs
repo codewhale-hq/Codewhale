@@ -6017,9 +6017,7 @@ fn subagent_tool_schemas_advertise_real_type_and_role_vocabulary() {
         "offset",
         "profile",
         "prompt",
-        "remote",
         "resume_from",
-        "runtime",
         "thinking",
         "type",
         "until",
@@ -7534,7 +7532,7 @@ async fn issue_5633_catalog_and_dispatch_are_one_grant() {
         // can never call what it cannot see. `Bash`/`exec_shell` are hidden
         // execution-compatibility aliases, so they never appear in any
         // catalog — under a non-Full grant they are still refused by name.
-        for name in ["terminal/run", "terminal/send", "task_shell_start"] {
+        for name in ["terminal/run", "terminal/send"] {
             assert_eq!(
                 catalog.contains(name),
                 full_shell,
@@ -8042,7 +8040,6 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "session_get",
         "session_search",
         "speech",
-        "task_shell_start",
         "task_shell_wait",
         "tasks",
         "terminal/cancel",

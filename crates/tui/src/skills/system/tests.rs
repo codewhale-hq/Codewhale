@@ -549,6 +549,7 @@ fn upgrade_preserves_user_modified_bundled_skill_body() {
         body.contains("customized"),
         "user edit must not be overwritten by name alone"
     );
+    assert_eq!(unrecognized_system_skills(tmp.path()), vec!["debug"]);
 }
 
 /// A generation-10 install carries the Registry-first `mcp-discovery` body.
@@ -667,6 +668,12 @@ fn procedural_skill_homes_remain_bundled_and_lazy() {
 
 #[test]
 fn generation_14_refreshes_known_bodies_and_preserves_customizations_and_deletions() {
+    for line in SHIPPED_BODY_HASHES.lines() {
+        let (name, digest) = line.split_once(' ').expect("name and digest");
+        assert!(is_bundled_skill_name(name), "{name} is not bundled");
+        assert_eq!(digest.len(), 64, "{name}");
+        assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+    }
     for (name, old) in SUPERSEDED_BODIES
         .iter()
         .filter(|(name, _)| *name != "mcp-discovery")
@@ -676,6 +683,12 @@ fn generation_14_refreshes_known_bodies_and_preserves_customizations_and_deletio
             .find(|skill| skill.name == *name)
             .unwrap();
         assert_ne!(*old, skill.body);
+        assert!(hash_is_listed(SHIPPED_BODY_HASHES, name, old), "{name}");
+        assert!(!hash_is_listed(
+            SHIPPED_BODY_HASHES,
+            name,
+            &format!("{old}\nMy instructions.\n")
+        ));
         for customized in [false, true] {
             let tmp = TempDir::new().unwrap();
             let file = skill_file(&tmp, name);

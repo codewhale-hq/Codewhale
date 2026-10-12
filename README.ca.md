@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 La mateixa tasca es pot executar sense interfície des d’un script o una tasca de CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Executa `/help` per veure les ordres i les dreceres de teclat.
@@ -90,7 +90,7 @@ les sessions, les eines i els permisos es comporten igual a tot arreu.
 | Ordre | Què fa |
 | --- | --- |
 | `codewhale` | La interfície interactiva de terminal |
-| `codewhale exec "…"` | Un torn sense interfície des d’un script o CI, amb sortida JSON en streaming |
+| `codewhale exec "…"` | Un torn sense interfície des d’un script o CI; `--auto` permet les eines de fitxers i de shell, `--output-format stream-json` emet JSON en streaming |
 | `codewhale web` | El [client de navegador local](docs/WEB.md) inclòs, a `127.0.0.1` |
 | `codewhale review --pr N` | Una [revisió de pull request](docs/GITHUB_ACTION.md) merament orientativa; publicar-la és opcional |
 | Runtime API | Una [API HTTP local](docs/RUNTIME_API.md) per a fils, esdeveniments i aprovacions |
@@ -139,7 +139,7 @@ Full Access continua respectant els límits estrictes de les polítiques. La
 Codewhale s’executa al teu equip amb l’accés que li concedeixis. Les postures
 d’aprovació i les regles del repositori limiten el que l’agent pot fer, i les
 ordres s’executen dins d’un sandbox del sistema operatiu on és compatible
-(Seatbelt a macOS; bubblewrap a Linux és opcional). `/preview-request` mostra la
+(Seatbelt a macOS; bubblewrap a Linux quan està instal·lat i funciona). `/preview-request` mostra la
 sol·licitud exacta, amb les dades sensibles ocultades, abans d’enviar res. Els
 preus de models desconeguts continuen sent desconeguts en lloc de presentar-se
 com a gratuïts.

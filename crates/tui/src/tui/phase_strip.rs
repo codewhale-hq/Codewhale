@@ -54,7 +54,7 @@ pub(crate) fn route_identity_fields(
     // A route that cannot prove its effective tier states no effort field
     // rather than `high→effective unavailable` (#5950): a placeholder that
     // can never resolve is noise, not a reading. First-party routes keep
-    // their tier, `auto: tier` and `req→eff` labels.
+    // their tier and `req→eff` labels.
     // Labeled, so a bare "max" never sits on the row unexplained (mark 8).
     let effort = app
         .provable_reasoning_effort_label()
@@ -1099,7 +1099,9 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     // MCP or plugin boot chip, else the remote-control state when it is on.
     // Clause-shed against half the row — the posture facts own the other
     // half.
-    let notice_budget = (usize::from(width) / 2).max(8);
+    let notice_budget = (usize::from(width) / 2)
+        .max(8)
+        .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
         .map(|(text, ink, _urgent)| {
             (
@@ -1128,9 +1130,14 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         })
         .and_then(|(text, ink)| fit_notice(&text, notice_budget).map(|fitted| (fitted, ink)))
         .or_else(|| {
+            let ink = if app.remote_control.status() == crate::remote_control::Status::Failed {
+                ChromeInk::Failure
+            } else {
+                ChromeInk::Info
+            };
             app.remote_control
                 .status_word()
-                .map(|word| (format!("/rc {word}"), ChromeInk::Info))
+                .map(|word| (format!("/rc {word}"), ink))
         });
 
     let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);
@@ -1139,7 +1146,11 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         permission_chip,
         permission_key: live_chord(ShellBindingId::PermissionCycle)
             .filter(|_| {
-                !crate::tui::footer_hints::retired(
+                matches!(
+                    app.approval_mode,
+                    codewhale_execpolicy::ApprovalMode::Auto
+                        | codewhale_execpolicy::ApprovalMode::Bypass
+                ) || !crate::tui::footer_hints::retired(
                     &app.footer_hint_uses,
                     crate::tui::footer_hints::PERMISSION_CYCLE,
                 )

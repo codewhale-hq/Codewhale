@@ -2,8 +2,8 @@
 //! the host still owns sessions, roster receipts, responses and every action.
 
 use crate::{
-    MotionMode, Role, StatusMark, Subagent, SubagentIntent, SubagentView, SubagentViewState,
-    SubagentViewWords, Theme, WhalePet, text,
+    DotWhale, MotionMode, Paint, Role, StatusMark, Subagent, SubagentIntent, SubagentView,
+    SubagentViewState, SubagentViewWords, Theme, WhalePet, text,
     whale_motion::{Inputs, Presence, Stage, Tier},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
@@ -68,7 +68,7 @@ impl PetModeAreas {
         } else {
             body
         };
-        if output && main.height >= 8 {
+        if output && main.height >= 27 && main.width >= 16 {
             // Reading has priority over scenery, including at 80x24.
             let height = (u32::from(main.height) * 2 / 3).max(6) as u16;
             plan.output = Rect::new(main.x, main.bottom() - height, main.width, height);
@@ -155,7 +155,8 @@ impl PetModeState {
         if !self.visible || !self.motion.animates() {
             return None;
         }
-        let pet = (!self.areas.pet.is_empty() && self.stage_animates)
+        let art = WhalePet::art_area(self.areas.pet);
+        let pet = (!theme.ascii() && art.width >= 16 && art.height >= 8 && self.stage_animates)
             .then(|| {
                 self.stage.cadence(if theme.paints_grounds() {
                     Tier::Hero
@@ -316,6 +317,7 @@ pub struct PetMode<'a> {
     pub theme: &'a Theme,
     pub title: Cow<'a, str>,
     pub status: StatusMark,
+    pub dot_whale: Option<DotWhale<'a>>,
     /// The host's existing notice, using its semantic severity ink.
     pub notice: Option<Line<'a>>,
     pub agents: &'a [Subagent<'a>],
@@ -334,6 +336,7 @@ impl<'a> PetMode<'a> {
             theme,
             title: "Codewhale".into(),
             status,
+            dot_whale: None,
             notice: None,
             agents: &[],
             agent_words: SubagentViewWords::default(),
@@ -411,9 +414,13 @@ impl StatefulWidget for PetMode<'_> {
             );
         }
         if !plan.pet.is_empty() {
-            WhalePet::new(self.theme)
-                .words("")
-                .paint(plan.pet, buf, &mut state.stage);
+            if let Some(whale) = self.dot_whale {
+                whale.paint(plan.pet, buf, self.theme);
+            } else {
+                WhalePet::new(self.theme)
+                    .words("")
+                    .paint(plan.pet, buf, &mut state.stage);
+            }
         }
         let marker = if self.theme.ascii() { "> " } else { "› " };
         let mut agent_words = self.agent_words;

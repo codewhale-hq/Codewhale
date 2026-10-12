@@ -1,5 +1,47 @@
 //! Presentation preferences never enter the simulation or its replay journal.
 use serde::{Deserialize, Serialize};
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BodyStyle {
+    #[default]
+    Smooth,
+    Pixel,
+}
+impl BodyStyle {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "smooth" => Some(Self::Smooth),
+            "pixel" => Some(Self::Pixel),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum TextLanguage {
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "en")]
+    En,
+    #[serde(rename = "zh-Hans")]
+    ZhHans,
+    #[serde(rename = "zh-Hant")]
+    ZhHant,
+    #[serde(rename = "ja")]
+    Ja,
+}
+impl TextLanguage {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "en" => Some(Self::En),
+            "zh-hans" => Some(Self::ZhHans),
+            "zh-hant" => Some(Self::ZhHant),
+            "ja" => Some(Self::Ja),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Appearance {
@@ -11,6 +53,10 @@ pub struct Appearance {
     pub dot_scale: f64,
     pub glow: f64,
     pub environment: bool,
+    #[serde(default)]
+    pub body_style: BodyStyle,
+    #[serde(default)]
+    pub text_language: TextLanguage,
 }
 impl Default for Appearance {
     fn default() -> Self {
@@ -23,6 +69,8 @@ impl Default for Appearance {
             dot_scale: 1.0,
             glow: 0.5,
             environment: true,
+            body_style: BodyStyle::default(),
+            text_language: TextLanguage::default(),
         }
     }
 }

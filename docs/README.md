@@ -10,6 +10,7 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 - [Installing Codewhale](INSTALL.md), including PATH help and shell completions
 - [User guide](GUIDE.md): first run, sessions, commands, everyday workflows
 - [Keybindings](KEYBINDINGS.md)
+- [Pet mode](PET_MODE.md): a glanceable whale view per terminal, with replies and agents on demand
 - [Modes and permission postures](MODES.md)
 - [Configuration](CONFIGURATION.md)
 - [Providers and local models](PROVIDERS.md) and the [Model Lab roadmap](MODEL_LAB.md)
@@ -28,7 +29,6 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 - [Skills](SKILLS.md) and [evaluating skill changes](SKILL_EVALUATION.md)
 - [User memory](MEMORY.md)
 - [`read_media`](READ_MEDIA.md) and [`/preview-request`](PREVIEW_REQUEST.md)
-- [Cloud-agent dispatch](DAYTONA_CLOUD_DISPATCH.md)
 
 ## Extending Codewhale
 

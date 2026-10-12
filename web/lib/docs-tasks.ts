@@ -108,6 +108,17 @@ export const DOC_TASKS: DocTask[] = [
     keywords: { en: "receipt write-receipt check-receipt pre-push export", zh: "收据 推送 导出" },
   },
   {
+    id: "watch-sessions",
+    label: { en: "Watch each session at a glance", zh: "一眼查看每个会话" },
+    description: {
+      en: "Turn on pet mode in each terminal to see which session is working, waiting for you, done, or failed.",
+      zh: "在每个终端开启 Pet 模式，看清哪个会话在工作、在等你、已完成或失败。",
+    },
+    href: "/docs/pet",
+    topicId: "pet",
+    keywords: { en: "pet whale status glance terminals sessions inspect f5", zh: "鲸鱼 状态 终端 会话 查看" },
+  },
+  {
     id: "run-workflow",
     label: { en: "Run a workflow", zh: "运行 Workflow" },
     description: {
@@ -199,12 +210,12 @@ export const DOC_TASKS: DocTask[] = [
     id: "cloud-computer",
     label: { en: "Send a task to the cloud", zh: "把任务发送到云端" },
     description: {
-      en: "Preview: propose and confirm a cloud agent that opens a pull request.",
-      zh: "预览版：提议并确认一个会提交拉取请求的云端 Agent。",
+      en: "Preview: quote and run a cloud agent through your account.",
+      zh: "预览版：通过你的账户为云端 Agent 报价并运行。",
     },
     href: "/docs/computers",
     topicId: "computers",
-    keywords: { en: "dispatch cloud agent daytona remote github cnb gitee", zh: "云端 派发 远程" },
+    keywords: { en: "dispatch cloud agent quote account", zh: "云端 派发 远程" },
   },
   {
     id: "troubleshoot",

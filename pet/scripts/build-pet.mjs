@@ -8,7 +8,7 @@ import ts from 'typescript';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const result = spawnSync(process.execPath, [root + 'node_modules/typescript/bin/tsc', '-p', root + 'tsconfig.json'], { stdio: 'inherit' });
 if (result.status !== 0) process.exit(result.status || 1);
-for (const name of ['pet.html', 'shared.html', 'pet.css', 'whale-points.tsv']) await cp(root + 'public/' + name, root + 'dist/' + name);
+for (const name of ['pet.html', 'shared.html', 'pet.css', 'whale-points.tsv', 'pixel-whale.webp']) await cp(root + 'public/' + name, root + 'dist/' + name);
 const modules = new Map();
 async function moduleFor(name) {
   if (modules.has(name)) return;
@@ -32,12 +32,13 @@ const generated = [];
 if (check || process.argv.includes('--tui')) {
   const destination = root + '../crates/tui/src/tui/pet_watch/';
   generated.push([destination + 'pet-native.js', Buffer.from(bundle)],
-    [destination + 'shared.html', await readFile(root + 'public/shared.html')]);
+    [destination + 'shared.html', await readFile(root + 'public/shared.html')],
+    [destination + 'pixel-whale.webp', await readFile(root + 'public/pixel-whale.webp')]);
 }
 if (process.argv.includes('--study')) {
   const study = root + 'world/';
   await mkdir(study, { recursive: true });
-  for (const name of ['pet.html', 'pet.css', 'whale-points.tsv', 'core', 'ui/pet.js', 'ui/storage.js']) {
+  for (const name of ['pet.html', 'pet.css', 'whale-points.tsv', 'pixel-whale.webp', 'core', 'ui/pet.js', 'ui/storage.js']) {
     await mkdir(study + name.split('/').slice(0, -1).join('/'), { recursive: true });
     await cp(root + 'dist/' + name, study + name, { recursive: true });
   }

@@ -315,6 +315,9 @@ impl Engine {
                     }
                 }
                 progress.turn_error = Some(display_message);
+                if envelope.severity == crate::error_taxonomy::ErrorSeverity::Warning {
+                    envelope.severity = crate::error_taxonomy::ErrorSeverity::Error;
+                }
                 let _ = self.send_event(Event::error(envelope)).await;
                 return PhaseResult::Return((
                     TurnOutcomeStatus::Failed,

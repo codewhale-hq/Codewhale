@@ -958,6 +958,7 @@ impl ToolCell {
             || matches!(
                 self,
                 ToolCell::Exec(_)
+                    | ToolCell::Mcp(_)
                     | ToolCell::PatchSummary(_)
                     | ToolCell::Review(_)
                     | ToolCell::PlanUpdate(_)
@@ -1008,9 +1009,7 @@ impl ToolCell {
     ) -> Vec<Line<'static>> {
         match self {
             ToolCell::Exec(cell) => cell.render_with_locale(width, low_motion, mode, locale),
-            ToolCell::Exploring(cell) => {
-                cell.lines_with_motion_and_locale(width, low_motion, locale)
-            }
+            ToolCell::Exploring(cell) => cell.render_with_locale(width, low_motion, mode, locale),
             ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PatchSummary(cell) => cell.render(
                 width,
@@ -1279,10 +1278,21 @@ impl ExploringCell {
         self.lines_with_motion_and_locale(width, low_motion, Locale::En)
     }
 
+    #[cfg(test)]
     pub fn lines_with_motion_and_locale(
         &self,
         width: u16,
         low_motion: bool,
+        locale: Locale,
+    ) -> Vec<Line<'static>> {
+        self.render_with_locale(width, low_motion, RenderMode::Live, locale)
+    }
+
+    pub(super) fn render_with_locale(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
         locale: Locale,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
@@ -1309,14 +1319,19 @@ impl ExploringCell {
         // incoherent `read done · Searching …` (#4145). Read/list or mixed
         // cards keep the neutral `read` verb the Workspace card has always used.
         let family = exploring_card_family(&self.entries);
-        lines.push(render_tool_header_with_family_and_summary(
+        let header = render_tool_header_with_family_and_summary(
             family,
             header_summary.as_deref(),
             header_state.as_ref(),
             status,
             None,
             low_motion,
-        ));
+        );
+        let header_shows_label = !multi_entry
+            && header_summary
+                .as_deref()
+                .is_some_and(|label| header_shows_in_full(&header, label, usize::from(width)));
+        lines.push(header);
 
         // Dot-grid status strip — one glyph per entry, showing parallel
         // fanout at a glance: ●=done ◐=running ✕=failed.
@@ -1347,16 +1362,26 @@ impl ExploringCell {
                     Style::default().fg(tool_glyph_color(e.status, family)),
                 )
             }));
-            let counts = format!(
-                "  {done} done, {running} running{}",
-                if failed > 0 {
-                    format!(", {failed} failed")
-                } else {
-                    String::new()
-                },
-            );
+            let counts = [
+                (done, codewhale_localization::MessageId::WorkflowCountDone),
+                (
+                    running,
+                    codewhale_localization::MessageId::WorkflowCountRunning,
+                ),
+                (
+                    failed,
+                    codewhale_localization::MessageId::WorkflowCountFailed,
+                ),
+            ]
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, id)| {
+                codewhale_localization::tr(locale, id).replace("{count}", &count.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
             dot_spans.push(Span::styled(
-                counts,
+                format!("  {counts}"),
                 Style::default().fg(tool_glyph_color(status, family)),
             ));
             lines.push(Line::from(dot_spans));
@@ -1370,13 +1395,13 @@ impl ExploringCell {
                     tool_value_style(),
                     width,
                 ));
-            } else {
+            } else if !header_shows_label {
                 let prefix = match entry.status {
                     ToolStatus::Running => "live",
                     ToolStatus::Success => "done",
                     ToolStatus::Hydrated => "loaded",
                     ToolStatus::Warning => "issue",
-                    ToolStatus::Failed => "issue",
+                    ToolStatus::Failed => "failed",
                 };
                 lines.extend(render_compact_kv(
                     prefix,
@@ -1384,6 +1409,26 @@ impl ExploringCell {
                     tool_value_style(),
                     width,
                 ));
+            }
+            if let Some(error) = entry.error.as_deref() {
+                if multi_entry {
+                    if let Some(reason) = error.lines().map(str::trim).find(|line| !line.is_empty())
+                    {
+                        lines.extend(render_card_detail_line(
+                            None,
+                            reason,
+                            tool_value_style(),
+                            width,
+                        ));
+                    }
+                } else {
+                    lines.extend(render_tool_output_mode(
+                        error,
+                        width,
+                        TOOL_FAILURE_PREVIEW_LINES,
+                        mode,
+                    ));
+                }
             }
         }
         lines
@@ -1402,6 +1447,7 @@ impl ExploringCell {
 pub struct ExploringEntry {
     pub label: String,
     pub status: ToolStatus,
+    pub error: Option<String>,
 }
 
 /// Calm outcome and exact evidence for a structured File mutation.
@@ -1426,7 +1472,13 @@ impl PatchSummaryCell {
         let header_summary = self
             .receipt
             .as_ref()
-            .map(FileMutationReceipt::outcome_label)
+            .map(|receipt| {
+                if inline_diff_mode == crate::settings::InlineDiffMode::Off {
+                    receipt.outcome_label()
+                } else {
+                    receipt.semantic_summary()
+                }
+            })
             .unwrap_or_else(|| self.path.clone());
         lines.push(render_tool_header_with_summary(
             "File",
@@ -1667,15 +1719,19 @@ impl ViewImageCell {
     /// Render the image view cell into lines.
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let path = self.path.display().to_string();
-        let mut lines = vec![render_tool_header_with_summary(
+        let header = render_tool_header_with_summary(
             "Image",
             Some(&path),
             "done",
             ToolStatus::Success,
             None,
             low_motion,
-        )];
-        lines.extend(render_compact_kv("path", &path, tool_value_style(), width));
+        );
+        let header_shows_path = header_shows_in_full(&header, &path, usize::from(width));
+        let mut lines = vec![header];
+        if !header_shows_path {
+            lines.extend(render_compact_kv("path", &path, tool_value_style(), width));
+        }
         lines
     }
 }
@@ -1695,20 +1751,24 @@ impl WebSearchCell {
     /// Render the web search cell into lines.
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        lines.push(render_tool_header_with_summary(
+        let header = render_tool_header_with_summary(
             "Search",
             Some(&self.query),
             tool_status_label(self.status),
             self.status,
             None,
             low_motion,
-        ));
-        lines.extend(render_compact_kv(
-            "query",
-            &self.query,
-            tool_value_style(),
-            width,
-        ));
+        );
+        let header_shows_query = header_shows_in_full(&header, &self.query, usize::from(width));
+        lines.push(header);
+        if !header_shows_query {
+            lines.extend(render_compact_kv(
+                "query",
+                &self.query,
+                tool_value_style(),
+                width,
+            ));
+        }
         if let Some(source) = self.source.as_ref() {
             lines.extend(render_compact_kv(
                 "source",
@@ -1810,7 +1870,7 @@ impl GenericToolCell {
         // Issue #241: when the underlying tool is a checklist/todo update and
         // the output is parseable, render a purpose-built progress card
         // instead of dumping the JSON into the generic tool block.
-        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode) {
+        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode, locale) {
             return lines;
         }
 
@@ -1898,15 +1958,21 @@ impl GenericToolCell {
             &self.name,
             self.input_summary.as_deref(),
         );
-        lines.push(render_tool_header_with_family_and_summary(
+        let header = render_tool_header_with_family_and_summary(
             family,
             header_summary.as_deref(),
             &tool_receipt_label(family, self.status, self.output.as_deref(), locale),
             self.status,
             None,
             low_motion,
-        ));
-        if should_show_raw_tool_name(&self.name, family, mode) {
+        );
+        let header_has_args = self.input_summary.as_deref().is_some_and(|args| {
+            header_repeats_args(&header, header_summary.as_deref(), args, usize::from(width))
+        });
+        lines.push(header);
+        if should_show_raw_tool_name(&self.name, family, mode)
+            && !crate::tui::widgets::tool_card::should_show_tool_name_in_header(&self.name, family)
+        {
             lines.extend(render_compact_kv(
                 "name",
                 &self.name,
@@ -1934,8 +2000,9 @@ impl GenericToolCell {
                 ));
             }
         } else {
-            let show_args = matches!(self.status, ToolStatus::Running | ToolStatus::Failed)
-                || self.output.is_none();
+            let show_args = (matches!(self.status, ToolStatus::Running | ToolStatus::Failed)
+                || self.output.is_none())
+                && !header_has_args;
             if show_args && let Some(summary) = self.input_summary.as_ref() {
                 lines.extend(render_compact_kv(
                     "args",
@@ -2002,6 +2069,7 @@ impl GenericToolCell {
         width: u16,
         low_motion: bool,
         mode: RenderMode,
+        locale: Locale,
     ) -> Option<Vec<Line<'static>>> {
         if !is_checklist_tool_name(&self.name) {
             return None;
@@ -2026,6 +2094,7 @@ impl GenericToolCell {
                 &change,
                 width,
                 low_motion,
+                locale,
             ));
         }
 
@@ -2279,13 +2348,16 @@ fn render_spillover_annotation(width: u16) -> Line<'static> {
     // Matches the model-facing preview footer (truncate.rs) and the existing
     // "Alt+V opens …" hint style (#3256): one quiet line, no handles or paths.
     let affordance = format!(
-        "Output shortened — {}",
+        "Output shortened \u{00B7} {}",
         crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
     );
-    Line::from(Span::styled(
-        truncate_text(&affordance, usize::from(width).max(8)),
+    let room = usize::from(width)
+        .saturating_sub(UnicodeWidthStr::width(TRANSCRIPT_RAIL))
+        .max(8);
+    details_affordance_line(
+        &truncate_text(&affordance, room),
         Style::default().fg(palette::TEXT_MUTED).italic(),
-    ))
+    )
 }
 
 /// Detect a truncated-output preview: the current model-facing footer (which
@@ -2584,7 +2656,8 @@ fn status_symbol(
         ToolStatus::Running => {
             crate::tui::spinner::braille_spinner_frame(started_at, low_motion).to_string()
         }
-        ToolStatus::Success | ToolStatus::Hydrated => TOOL_DONE_SYMBOL.to_string(),
+        ToolStatus::Success => TOOL_DONE_SYMBOL.to_string(),
+        ToolStatus::Hydrated => crate::tui::glyphs::NEUTRAL.to_string(),
         ToolStatus::Warning => "!".to_string(),
         ToolStatus::Failed => TOOL_FAILED_SYMBOL.to_string(),
     }
@@ -2659,10 +2732,11 @@ fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
 }
 
 /// Render an engine error without markdown interpretation. The live transcript
-/// always advertises the dedicated full-error pager: terminal height, scroll
-/// position, and adjacent tool cards can otherwise make a multiline recovery
-/// instruction look like a clipped one-line failure. Transcript/pager mode
-/// omits the recursive affordance while preserving every character.
+/// advertises the dedicated full-error pager once the error wraps past four
+/// rows: terminal height, scroll position, and adjacent tool cards can
+/// otherwise make a multiline recovery instruction look like a clipped
+/// one-line failure. Transcript/pager mode omits the recursive affordance
+/// while preserving every character.
 fn render_error_message(
     message: &str,
     severity: crate::error_taxonomy::ErrorSeverity,
@@ -2691,7 +2765,7 @@ fn render_error_message(
     for line in lines.iter_mut().skip(1) {
         line.spans.insert(0, Span::styled(rail.clone(), rail_style));
     }
-    if show_full_error_affordance {
+    if show_full_error_affordance && lines.len() > 4 {
         lines.push(details_affordance_line(
             &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full error"),
             Style::default().fg(palette::TEXT_MUTED).italic(),
@@ -2769,9 +2843,11 @@ fn render_tool_header_with_family_and_summary(
         ),
         Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(verb.to_string(), tool_title_style(status)),
-        Span::styled(" ", Style::default()),
-        Span::styled(state_owned, tool_status_style(status, family)),
     ];
+    if !state_owned.is_empty() {
+        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(state_owned, tool_status_style(status, family)));
+    }
 
     // #4148: don't let the summary echo the verb it sits next to — an
     // identity/summary that resolves to the family word itself would render a
@@ -2789,6 +2865,29 @@ fn render_tool_header_with_family_and_summary(
     }
 
     Line::from(spans)
+}
+
+fn header_shows_in_full(header: &Line<'static>, summary: &str, available: usize) -> bool {
+    normalize_header_summary(summary).is_none_or(|summary| {
+        crate::tui::ui_text::text_display_width(&summary) <= TOOL_HEADER_SUMMARY_LIMIT
+    }) && header.width() <= available
+}
+
+fn header_repeats_args(
+    header: &Line<'static>,
+    header_summary: Option<&str>,
+    args: &str,
+    available: usize,
+) -> bool {
+    let args = args.trim();
+    let shown = match args.split_once(": ") {
+        Some((_, value)) if !args.contains(", ") => value.trim(),
+        _ => args,
+    };
+    header_summary.is_some_and(|summary| {
+        (summary == shown || summary.ends_with(&format!(" \u{00B7} {shown}")))
+            && header_shows_in_full(header, summary, available)
+    })
 }
 
 fn normalize_header_summary(summary: &str) -> Option<String> {
@@ -2819,7 +2918,7 @@ pub(crate) fn running_status_label_with_elapsed(elapsed_secs: u64) -> String {
 
 pub(crate) fn stale_shell_status_label(elapsed_since_output_ms: u64) -> String {
     format!(
-        "running · stale · no output {}",
+        "running · no output for {}",
         codewhale_command_contract::elapsed::format_elapsed_ms(elapsed_since_output_ms)
     )
 }
@@ -2979,7 +3078,7 @@ fn tool_detail_label_style() -> Style {
 /// its border colour follows it. In-flight takes the action accent, a settled
 /// success recedes into muted text so finished work stops competing for the
 /// eye, and only warning and failure keep a loud colour. `Hydrated` is a
-/// stalled "tool loaded — retry required", not live work, so it takes the hint
+/// stalled "loaded, not run", not live work, so it takes the hint
 /// colour instead of borrowing the running accent and reading as in-flight.
 ///
 /// The glyph and status word use the same lifecycle ink; the glyph shape
@@ -3002,13 +3101,13 @@ fn tool_glyph_color(
     tool_rail_color(status)
 }
 
-fn tool_status_label(status: ToolStatus) -> &'static str {
+pub(crate) fn tool_status_label(status: ToolStatus) -> &'static str {
     match status {
         ToolStatus::Running => "running",
         ToolStatus::Success => "done",
-        ToolStatus::Hydrated => "tool loaded - retry required",
+        ToolStatus::Hydrated => "loaded, not run",
         ToolStatus::Warning => "issue",
-        ToolStatus::Failed => "issue",
+        ToolStatus::Failed => "failed",
     }
 }
 

@@ -43,10 +43,11 @@
 //!   silently. [`UserConstitution::migrate_file`] writes a backup first so
 //!   [`UserConstitution::rollback_file`] can restore the pre-migration bytes.
 //! - **The prompt projection is byte-stable.**
-//!   [`UserConstitution::cache_projection`] returns exactly the bytes that enter
-//!   the cache-stable prompt prefix plus their digest and measures. Suggested
-//!   clauses, preserved unknown fields, and schema metadata are all outside it,
-//!   so recording advice never invalidates a prompt cache.
+//!   [`UserConstitution::cache_projection`] returns exactly the bytes the model
+//!   receives (as a session message at turn admission, outside the cache-stable
+//!   prompt prefix) plus their digest and measures. Suggested clauses,
+//!   preserved unknown fields, and schema metadata are all outside it, so
+//!   recording advice never changes what the model receives.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;

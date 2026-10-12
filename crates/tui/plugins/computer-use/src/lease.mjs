@@ -1,6 +1,6 @@
 // Human/agent control lease — the input gate for a shared computer.
 //
-// On a Codewhale Computer (a Sprite seat), a person and the agent share one
+// On a Codewhale Computer, a person and the agent share one
 // X display and one Chromium. The Engine owns the control lease and writes its
 // current holder to a small JSON file (CODEWHALE_CU_LEASE_FILE, normally
 // /run/cw/lease.json, owned by cw-engine). While a person holds it, every

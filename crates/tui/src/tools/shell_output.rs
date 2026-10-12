@@ -24,6 +24,77 @@ const MAX_PRESERVED_SUMMARY_LINES: usize = 80;
 const MAX_PRESERVED_SUMMARY_BYTES: usize = 4 * 1024;
 const MAX_PRESERVED_SUMMARY_LINE_CHARS: usize = 400;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputPhase {
+    Compiling,
+    BuildFinished,
+    Running,
+    Unknown,
+}
+
+fn cargo_status_word(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix(' ')?;
+    let indent = line.len() - line.trim_start().len();
+    if indent < 2 {
+        return None;
+    }
+    let trimmed = rest.trim_start();
+    let word_end = trimmed.find(' ')?;
+    let word = &trimmed[..word_end];
+    let tail = trimmed[word_end..].trim_start();
+    if tail.is_empty() {
+        return None;
+    }
+    Some(word)
+}
+
+fn output_phase(text: &str) -> OutputPhase {
+    for line in text.lines().rev().take(200) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("test result:")
+            || trimmed.starts_with("Doc-tests ")
+            || (trimmed.starts_with("running ")
+                && (trimmed.ends_with(" tests") || trimmed.ends_with(" test")))
+        {
+            return OutputPhase::Running;
+        }
+        match cargo_status_word(line) {
+            Some("Running") if trimmed.contains("target/") || trimmed.contains("(target") => {
+                return OutputPhase::Running;
+            }
+            Some("Finished") => return OutputPhase::BuildFinished,
+            Some("Compiling" | "Checking" | "Downloading" | "Downloaded" | "Updating") => {
+                return OutputPhase::Compiling;
+            }
+            _ => {}
+        }
+    }
+    OutputPhase::Unknown
+}
+
+pub(crate) fn output_phase_hint(text: &str) -> &'static str {
+    match output_phase(text) {
+        OutputPhase::Compiling => "output phase: still compiling, no test or program output yet",
+        OutputPhase::BuildFinished => "output phase: build finished, program or tests starting",
+        OutputPhase::Running => "output phase: past compile, tests or program running",
+        OutputPhase::Unknown => "output phase: not recognized from the output",
+    }
+}
+
+pub(crate) fn kill_outcome_note(text: &str) -> &'static str {
+    match output_phase(text) {
+        OutputPhase::Compiling => {
+            "Killed during the compile phase: artifacts already written to disk are not removed, only the unfinished compile step is lost."
+        }
+        OutputPhase::BuildFinished | OutputPhase::Running => {
+            "Killed after the compile phase: compiled artifacts are not removed, but the run time already spent on this command is discarded."
+        }
+        OutputPhase::Unknown => {
+            "Build phase not recognized from the output: artifacts already written to disk are not removed, but progress inside the command is lost."
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TruncationMeta {
     pub(crate) original_len: usize,

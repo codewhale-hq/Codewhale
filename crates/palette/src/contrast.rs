@@ -27,10 +27,6 @@ pub const AA_BODY_CONTRAST: f32 = 4.5;
 /// Matches the WCAG 2.x AA threshold for large text and UI components (3:1).
 /// Status roles qualify because they are redundant by design — every status
 /// also carries a glyph and a word label, so color is never the only channel.
-///
-/// Consumed by the theme audit below, which runs as a test gate rather than
-/// at runtime — hence the `dead_code` allowance on this audit surface.
-#[allow(dead_code)]
 pub const SECONDARY_CHROME_CONTRAST: f32 = 3.0;
 
 /// Relative luminance per WCAG 2.x, in `0.0..=1.0`.
@@ -217,7 +213,6 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 
 /// A single theme color pair that fails its contrast floor. See
 /// [`theme_contrast_violations`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeContrastViolation {
     /// Static name of the failing pair, e.g. `"text_muted on panel_bg"`.
@@ -240,7 +235,6 @@ pub struct ThemeContrastViolation {
 /// so the audit neither passes nor fails them — it stands down. Deepsea paints
 /// its authored RGB column later. This function is how callers tell the Flat
 /// exemption apart from a clean bill of health.
-#[allow(dead_code)]
 #[must_use]
 pub fn theme_uses_terminal_owned_surfaces(theme: &UiTheme) -> bool {
     theme.surface_bg == Color::Reset
@@ -270,7 +264,6 @@ pub fn theme_uses_terminal_owned_surfaces(theme: &UiTheme) -> bool {
 /// terminal-native themes are therefore partly exempt by design — see
 /// [`theme_uses_terminal_owned_surfaces`], which makes that exemption explicit
 /// rather than silent.
-#[allow(dead_code)]
 #[must_use]
 pub fn theme_contrast_violations(theme: &UiTheme) -> Vec<ThemeContrastViolation> {
     let mut violations = Vec::new();

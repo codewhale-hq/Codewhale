@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn login_slash_command_reports_status_and_key_opens_picker() {
         let mut app = create_test_app();
-        let status = execute("/login", &mut app);
+        let status = execute("/login status", &mut app);
         assert!(!status.is_error);
         let message = status.message.expect("login status");
         assert!(message.contains("Codewhale login"), "{message}");
@@ -711,6 +711,12 @@ mod tests {
         assert!(!message.contains("Daytona"), "{message}");
         assert!(!message.contains("set-slot"), "{message}");
 
+        assert!(
+            execute("/login", &mut app)
+                .message
+                .expect("login status")
+                .contains("Codewhale login")
+        );
         let key = execute("/login key", &mut app);
         assert!(!key.is_error);
         assert_eq!(key.action, Some(AppAction::OpenProviderPicker));
@@ -719,11 +725,24 @@ mod tests {
         assert!(daytona.is_error);
         let err = daytona.message.expect("usage");
         assert!(err.contains("Usage: /login [status|account|key]"), "{err}");
+        assert!(err.contains("/connect <provider>"), "{err}");
 
         let unknown = execute("/login oauth", &mut app);
         assert!(unknown.is_error);
         let err = unknown.message.expect("usage");
         assert!(err.contains("Usage: /login"), "{err}");
+
+        assert_eq!(
+            execute("/connect", &mut app).action,
+            Some(AppAction::OpenProviderPicker)
+        );
+        let connect = execute("/connect nothing-enabled", &mut app);
+        assert!(connect.is_error);
+        let err = connect.message.expect("usage");
+        assert!(err.contains("Usage: /connect [<provider>]"), "{err}");
+        assert!(err.contains("`/login`"), "{err}");
+        assert!(execute("/disconnect", &mut app).is_error);
+        assert!(execute("/disconnect nothing-enabled", &mut app).is_error);
     }
 
     #[test]
@@ -1062,9 +1081,9 @@ mod tests {
                 has_config = true;
                 assert_eq!(
                     commands.len(),
-                    17,
+                    19,
                     "config group (group-local metadata exception) expected \
-                     exactly 17 commands, got {}",
+                     exactly 19 commands, got {}",
                     commands.len()
                 );
             }
@@ -1092,8 +1111,8 @@ mod tests {
 
         // Consistency: group-iterated command count must match registry.
         // FEAT-015 registers one test-only contextual command (`/feat015ctx`)
-        // under `#[cfg(test)]` to prove the dual-path seam (D6); the nine
-        // production groups remain exactly 96 commands.
+        // under `#[cfg(test)]` to prove the dual-path seam (D6); it is not
+        // part of any production group.
         let test_only_count = command_infos()
             .iter()
             .filter(|info| info.name == "feat015ctx")
@@ -1224,7 +1243,6 @@ mod tests {
     fn flagship_orchestration_and_workspace_commands_are_visible_at_the_palette_root() {
         for name in [
             "auto",
-            "dispatch",
             "goal",
             "hooks",
             "tokens",
@@ -2093,7 +2111,6 @@ mod tests {
             // FEAT-018 utility group.
             "attach",
             "automation",
-            "dispatch",
             "jobs",
             "mcp",
             "network",

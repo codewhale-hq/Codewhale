@@ -42,7 +42,7 @@ Codewhale's security model has three distinct layers on Android:
    [Android application sandbox](https://source.android.com/docs/security/app-sandbox)
    and [Termux filesystem layout](https://github.com/termux/termux-packages/wiki/Termux-file-system-layout).
 2. **Codewhale's per-command sandbox backend** — Seatbelt (macOS) or the
-   opt-in bubblewrap wrapper (Linux) can further narrow what a child command
+   bubblewrap wrapper (Linux) can further narrow what a child command
    may access. Codewhale does not currently provide that additional layer on
    Android.
 3. **Codewhale's own gates** — workspace trust, approval prompts,

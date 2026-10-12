@@ -999,7 +999,7 @@ fn the_copy_prefix_skips_every_decoration_and_keeps_the_payload() {
     ));
     let copied = slice_visible_columns(&body, header.copy_prefix_width, text_visible_width(&body));
     assert!(
-        copied.contains("run Done"),
+        copied.contains("run done"),
         "receipt text was clipped away: {copied:?}"
     );
     for glyph in decorations {
@@ -1414,16 +1414,17 @@ fn a_card_verb_agrees_with_its_own_label_in_every_locale() {
     for (label, expected_en, expected_zh, forbidden_en) in [
         (
             "Searching for `TranscriptScroll`",
-            "find Done",
+            "find done",
             "find 完成",
-            "read Done",
+            "read done",
         ),
-        ("Reading src/foo.rs", "read Done", "read 完成", "find Done"),
+        ("Reading src/foo.rs", "read done", "read 完成", "find done"),
     ] {
         let cell = super::ExploringCell {
             entries: vec![super::ExploringEntry {
                 label: label.to_string(),
                 status: ToolStatus::Success,
+                error: None,
             }],
         };
 
@@ -1466,7 +1467,7 @@ fn receipts_count_only_what_they_actually_counted() {
     use crate::tui::widgets::tool_card::ToolFamily;
     use codewhale_localization::Locale;
 
-    for (locale, done, unit) in [(Locale::En, "Done", "line"), (Locale::ZhHans, "完成", "行")] {
+    for (locale, done, unit) in [(Locale::En, "done", "line"), (Locale::ZhHans, "完成", "行")] {
         let label = |family, status, output| {
             super::tool_receipt_label(family, status, Some(output), locale)
         };
@@ -1548,7 +1549,7 @@ fn shell_headers_stay_truthful_through_the_output_formatters() {
         cell.duration_ms = Some(42);
 
         for (locale, done, unit) in [
-            (Locale::En, "Done", "lines"),
+            (Locale::En, "done", "lines"),
             (Locale::ZhHans, "完成", "行"),
         ] {
             let header = line_text(&cell.render_with_locale(80, true, RenderMode::Live, locale)[0]);
@@ -2083,11 +2084,12 @@ fn a_checklist_update_shows_only_the_item_that_changed() {
         },
         80,
         true,
+        codewhale_localization::Locale::En,
     );
     assert!(lines.len() >= 3, "header, change, summary: {}", lines.len());
 
     let change = line_text(&lines[1]);
-    for needle in ["#2", "Write the test", "in_progress"] {
+    for needle in ["#2", "Write the test", "in progress"] {
         assert!(change.contains(needle), "missing {needle:?}: {change:?}");
     }
     for other in ["Land the PR", "Read the spec"] {
@@ -2123,6 +2125,7 @@ fn a_checklist_update_shows_only_the_item_that_changed() {
         },
         80,
         true,
+        codewhale_localization::Locale::En,
     );
     let change = line_text(&lines[1]);
     assert!(change.contains("#99") && change.contains("(missing title)"));
@@ -2194,7 +2197,7 @@ fn fan_out_prompts_replace_the_inline_argument_summary() {
     );
 
     let mut plain = generic_tool("file_search", ToolStatus::Running);
-    plain.input_summary = Some("query: foo".to_string());
+    plain.input_summary = Some("query: foo, path: src".to_string());
     let text = lines_text(&HistoryCell::Tool(ToolCell::Generic(plain)).lines(80));
     assert!(
         text.contains("query: foo"),
@@ -2563,7 +2566,7 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
                 ..Default::default()
             }
         )),
-        "Explored 4 files, 1 search: read_file, list_dir"
+        "Explored 4 files, 1 search: read file, list dir"
     );
 
     assert_eq!(
@@ -2575,7 +2578,7 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
                 ..Default::default()
             }
         )),
-        "Explored 2 files: read_file, ran 2 commands: run_tests, validate_data",
+        "Explored 2 files: read file, ran 2 commands: run tests, validate data",
         "each clause lists only its own families"
     );
 
@@ -2604,7 +2607,7 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
     assert_eq!(commands[0].activity.commands, 3);
     assert_eq!(
         super::tool_run_summary(&commands[0]),
-        "Ran 3 commands: run_tests, run_verifiers, validate_data"
+        "Ran 3 commands: run tests, run verifiers, validate data"
     );
 
     let git = super::detect_tool_runs(
@@ -2618,7 +2621,7 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
     assert_eq!(git[0].activity.files, 3);
     assert_eq!(
         super::tool_run_summary(&git[0]),
-        "Explored 3 files: git_log, git_show, git_blame"
+        "Explored 3 files: git log, git show, git blame"
     );
 }
 
@@ -2797,6 +2800,7 @@ fn exploring_cell_status_keeps_the_loudest_terminal_state() {
             .map(|status| ExploringEntry {
                 label: "Reading src/foo.rs".to_string(),
                 status: *status,
+                error: None,
             })
             .collect(),
     };

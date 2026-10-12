@@ -2669,9 +2669,10 @@ fn frontmatter_warnings_reach_registry_once() {
 }
 
 /// A repository must not make skill discovery read outside itself: a linked
-/// skill directory, a linked `SKILL.md` and a linked skills root under the
-/// workspace are each refused with a warning, while the same layout under an
-/// operator-owned root (no workspace) still follows links on purpose.
+/// skill directory or `SKILL.md` that leaves the workspace and a linked skills
+/// root under the workspace are each refused with a warning, a linked skill
+/// directory whose target stays inside the workspace is followed, and the same
+/// layout under an operator-owned root (no workspace) follows links on purpose.
 #[cfg(unix)]
 #[test]
 fn workspace_skill_discovery_does_not_follow_links_out_of_the_workspace() {
@@ -2696,6 +2697,21 @@ fn workspace_skill_discovery_does_not_follow_links_out_of_the_workspace() {
     let root = workspace.path().join(".agents").join("skills");
     write_skill(&root, "inside", "inside the workspace", "Inside body");
     symlink(outside.path().join("smuggled-dir"), root.join("linked-dir")).unwrap();
+    write_skill(
+        &workspace.path().join("docs").join("skills"),
+        "linked-inside",
+        "inside via link",
+        "Inside body",
+    );
+    symlink(
+        workspace
+            .path()
+            .join("docs")
+            .join("skills")
+            .join("linked-inside"),
+        root.join("linked-inside"),
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("linked-file")).unwrap();
     symlink(
         linked_file_skill.join("smuggled-file").join("SKILL.md"),
@@ -2713,12 +2729,19 @@ fn workspace_skill_discovery_does_not_follow_links_out_of_the_workspace() {
         .iter()
         .map(|skill| skill.name.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["inside"], "{:?}", registry.warnings());
+    assert_eq!(
+        names,
+        vec!["inside", "linked-inside"],
+        "{:?}",
+        registry.warnings()
+    );
     let warnings = registry.warnings().join("\n");
     assert!(
         warnings.contains("Refusing symlinked skill entry"),
         "{warnings}"
     );
+    assert!(warnings.contains("linked-dir"), "{warnings}");
+    assert!(!warnings.contains("linked-inside"), "{warnings}");
     assert!(warnings.contains("linked-file"), "{warnings}");
 
     // The same tree read as an operator-owned root still follows links.

@@ -81,23 +81,6 @@ fn run_pointer_submit_case(rows: u16, cols: u16) {
         .spawn()
         .expect("start distributed TUI binary");
 
-    // Walk the real onboarding: provider choice → Explore Offline (Ctrl+O)
-    // → ready screen → Enter into Tideline Startup → New session.
-    wait_or_panic(
-        &mut tui,
-        "Choose your model provider",
-        STARTUP_WAIT,
-        &format!("{size}: onboarding provider choice"),
-    );
-    tui.send(keys::key::ctrl('o'))
-        .expect("choose Explore Offline");
-    wait_or_panic(
-        &mut tui,
-        "You're ready.",
-        SETTLE_WAIT,
-        &format!("{size}: offline explore ready"),
-    );
-    tui.send(keys::key::enter()).expect("leave onboarding");
     // PTY reads can split a redraw: the launch header arrives before the
     // composer, with onboarding rows still on screen (Buildkite #1861/#1867).
     // Wait for the input surface as well as the header before asserting it.
@@ -111,21 +94,7 @@ fn run_pointer_submit_case(rows: u16, cols: u16) {
     .unwrap_or_else(|error| panic!("{size}: show the launch card and composer: {error}"));
     tui.pump();
     assert_startup_contract(tui.frame(), rows, cols, &size);
-    // Typing goes straight to the composer; Enter sends the first message
-    // and the session begins (the card dissolved on the first keystroke).
-    // type_line, not send+enter: a zero-gap PTY write is paste-classified
-    // and the immediate Enter would be absorbed as a pasted newline.
-    tui.type_line("start the session")
-        .expect("type and send the first prompt");
-    if tui
-        .wait_for(|frame| !frame.text().contains('\u{2442}'), STARTUP_WAIT)
-        .is_err()
-    {
-        panic!(
-            "{size}: Startup New session did not enter the live shell\n{}",
-            tui.diagnostics()
-        );
-    }
+    super::launch_card_pty::explore_offline_from_composer(&mut tui);
     tui.wait_for_idle(Duration::from_millis(300), SETTLE_WAIT)
         .expect("session shell settles");
     // Prove the steady shell before clearing the onboarding seed. The clear

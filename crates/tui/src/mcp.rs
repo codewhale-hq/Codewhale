@@ -618,6 +618,8 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(default)]
     pub required: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lazy: bool,
     #[serde(default)]
     pub enabled_tools: Vec<String>,
     #[serde(default)]
@@ -4391,16 +4393,19 @@ impl McpPool {
         self.connecting.iter().cloned().collect()
     }
 
-    /// Enabled, allowed configured servers the boot pass must still start
-    /// eagerly under lazy boot (#6033): servers marked `required`, plus any
-    /// server the session's explicit tool selections cover.
+    /// Enabled, allowed configured servers the boot pass starts at session
+    /// start: every user-configured one except those marked `lazy = true`.
+    /// Plugin-contributed servers and lazy ones connect on demand unless
+    /// `required` or covered by the session's explicit tool selections.
     pub(crate) fn eager_boot_server_names(&self, requested: &[String]) -> HashSet<String> {
         self.config
             .servers
             .iter()
             .filter(|(name, server)| server.is_enabled() && self.server_allowed(name))
             .filter(|(name, server)| {
-                server.required || tool_selection_covers_server(requested, name)
+                server.required
+                    || (!server.lazy && server.reviewed_plugin.is_none())
+                    || tool_selection_covers_server(requested, name)
             })
             .map(|(name, _)| name.clone())
             .collect()
@@ -7312,6 +7317,7 @@ fn mcp_template_json() -> Result<String> {
             disabled: true,
             enabled: true,
             required: false,
+            lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
@@ -7378,6 +7384,7 @@ pub fn add_server_config(
                 disabled: false,
                 enabled: true,
                 required: false,
+                lazy: false,
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
                 headers: HashMap::new(),

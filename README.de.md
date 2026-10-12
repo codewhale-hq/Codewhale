@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 Dieselbe Aufgabe läuft ohne Oberfläche aus einem Skript oder CI-Job:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Mit `/help` siehst du Befehle und Tastenkürzel.
@@ -90,7 +90,7 @@ und Berechtigungen überall gleich.
 | Befehl | Was er tut |
 | --- | --- |
 | `codewhale` | Die interaktive Terminaloberfläche |
-| `codewhale exec "…"` | Ein Durchlauf ohne Oberfläche aus einem Skript oder der CI, mit JSON-Streaming |
+| `codewhale exec "…"` | Ein Durchlauf ohne Oberfläche aus einem Skript oder der CI; `--auto` erlaubt Datei- und Shell-Werkzeuge, `--output-format stream-json` streamt JSON |
 | `codewhale web` | Der mitgelieferte [lokale Browser-Client](docs/WEB.md) auf `127.0.0.1` |
 | `codewhale review --pr N` | Ein beratendes [Pull-Request-Review](docs/GITHUB_ACTION.md); das Veröffentlichen ist optional |
 | Runtime API | Eine [lokale HTTP-API](docs/RUNTIME_API.md) für Threads, Ereignisse und Freigaben |
@@ -138,7 +138,7 @@ Full Access respektiert weiterhin die harten Richtliniengrenzen. Die
 
 Codewhale läuft auf deinem Rechner mit den Zugriffsrechten, die du ihm gibst. Freigabe-Haltungen
 und Repository-Regeln begrenzen, was der Agent tun darf, und Befehle laufen, wo unterstützt, in
-einer Betriebssystem-Sandbox (Seatbelt unter macOS; bubblewrap unter Linux ist optional).
+einer Betriebssystem-Sandbox (Seatbelt unter macOS; bubblewrap unter Linux, wenn installiert und funktionsfähig).
 `/preview-request` zeigt die exakte, geschwärzte Anfrage, bevor etwas gesendet wird.
 Unbekannte Modellpreise bleiben unbekannt, statt als kostenlos ausgewiesen zu werden.
 

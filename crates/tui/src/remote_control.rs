@@ -784,7 +784,7 @@ pub struct PendingRemoteApproval {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Status {
+pub(crate) enum Status {
     #[default]
     Off,
     Connecting,
@@ -1629,6 +1629,11 @@ impl RemoteControlController {
             Status::Stopping => Some("stopping"),
             Status::Failed => Some("failed"),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn status(&self) -> Status {
+        self.status
     }
 
     /// Test-only: advertise a validated live session link without a control

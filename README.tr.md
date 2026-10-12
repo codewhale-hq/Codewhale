@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 Aynı görev bir betikten veya CI işinden arayüzsüz de çalışır:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Komutlar ve klavye kısayolları için `/help` çalıştırın.
@@ -90,7 +90,7 @@ izinler her yerde aynı şekilde davranır.
 | Komut | Ne yapar |
 | --- | --- |
 | `codewhale` | Etkileşimli terminal arayüzü |
-| `codewhale exec "…"` | Bir betikten veya CI'dan tek bir arayüzsüz tur, JSON akışıyla |
+| `codewhale exec "…"` | Bir betikten veya CI'dan tek bir arayüzsüz tur; `--auto` dosya ve kabuk araçlarına izin verir, `--output-format stream-json` JSON akışı sağlar |
 | `codewhale web` | `127.0.0.1` üzerinde paketle gelen [yerel tarayıcı istemcisi](docs/WEB.md) |
 | `codewhale review --pr N` | Tavsiye niteliğinde bir [pull request incelemesi](docs/GITHUB_ACTION.md); yayınlamak isteğe bağlıdır |
 | Runtime API | İş parçacıkları, olaylar ve onaylar için [yerel bir HTTP API](docs/RUNTIME_API.md) |
@@ -137,7 +137,7 @@ Full Access de katı politika sınırlarına uyar.
 
 Codewhale makinenizde, ona verdiğiniz erişimle çalışır. Onay duruşları ve depo kuralları
 ajanın yapabileceklerini sınırlar; komutlar, desteklenen yerlerde bir işletim sistemi
-korumalı alanı içinde çalışır (macOS'ta Seatbelt; Linux'ta bubblewrap isteğe bağlıdır).
+korumalı alanı içinde çalışır (macOS'ta Seatbelt; Linux'ta bubblewrap, kurulu ve çalışıyorsa).
 `/preview-request`, herhangi bir şey gönderilmeden önce tam ve gizlenmiş (redacted)
 isteği gösterir. Fiyatı bilinmeyen modeller ücretsiz olarak gösterilmez, bilinmeyen olarak kalır.
 

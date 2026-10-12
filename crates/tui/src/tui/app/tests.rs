@@ -396,7 +396,7 @@ fn reasoning_effort_display_label_keeps_codex_top_tiers_distinct() {
     app.reasoning_effort = ReasoningEffort::Auto;
     app.last_effective_reasoning_effort =
         Some(EffectiveReasoningEffort::Tier(ReasoningEffort::Max));
-    assert_eq!(app.reasoning_effort_display_label(), "auto: max");
+    assert_eq!(app.reasoning_effort_display_label(), "auto→max");
 }
 
 #[test]
@@ -2685,29 +2685,26 @@ fn fully_configured_returning_user_skips_onboarding() {
 }
 
 #[test]
-fn returning_user_missing_api_key_goes_to_canonical_provider_setup() {
+fn returning_user_missing_api_key_starts_at_composer() {
     assert_eq!(
         initial_onboarding_state(false, true, false, true, false),
-        OnboardingState::Provider
+        OnboardingState::None
     );
-    // workspace trust doesn't affect the api-key gate
     assert_eq!(
         initial_onboarding_state(false, true, false, true, true),
-        OnboardingState::Provider
+        OnboardingState::None
     );
 }
 
 #[test]
-fn first_run_user_without_a_key_starts_on_connect_a_model() {
-    // #6566: a new user with no key used to land on a composer that could
-    // not answer. The one launch screen is the provider picker.
+fn first_run_user_without_a_key_starts_at_composer() {
     assert_eq!(
         initial_onboarding_state(false, false, true, true, true),
-        OnboardingState::Provider
+        OnboardingState::None
     );
     assert_eq!(
         initial_onboarding_state(false, false, false, true, true),
-        OnboardingState::Provider
+        OnboardingState::None
     );
 }
 
@@ -2816,8 +2813,9 @@ fn first_run_app_without_a_key_opens_provider_setup() {
     .collect();
 
     let app = App::new(test_options(false), &Config::default());
-    // #6566: the first screen connects a model; Esc returns to the composer.
-    assert_eq!(app.onboarding, OnboardingState::Provider);
+    // CW-7167: a keyless launch opens the composer; the provider is asked for
+    // on the first send.
+    assert_eq!(app.onboarding, OnboardingState::None);
     assert!(app.onboarding_needs_api_key);
     assert!(app.onboarding_missing_key_recovery);
     // A new user has no saved route, so the picker opens on the provider
@@ -4023,7 +4021,7 @@ fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
     assert!(
         app.status_toasts
             .iter()
-            .any(|toast| toast.text.contains("applies in Act and Operate")),
+            .any(|toast| toast.text.contains("applies in Work and Operate")),
         "the receipt must say when the new posture starts applying"
     );
 
@@ -7683,11 +7681,11 @@ fn launch_onboarding_scenario() {
     }
     // from launch_onboarding_opens_picker_for_generic_missing_key
     {
-        // A generic missing key (not the xAI-OAuth re-auth case) still reopens the
-        // provider picker for recovery.
+        // A generic missing key (not the xAI-OAuth re-auth case) starts at the
+        // composer with missing-key recovery armed for the first send.
         let (onboarding, recovery) =
             launch_onboarding_decision(false, true, false, true, false, false);
-        assert_eq!(onboarding, OnboardingState::Provider);
+        assert_eq!(onboarding, OnboardingState::None);
         assert!(recovery);
     }
     // from launch_onboarding_clean_when_onboarded_with_key
@@ -7705,10 +7703,8 @@ fn launch_onboarding_scenario() {
         assert_eq!(onboarding, OnboardingState::None);
         assert!(!recovery);
 
-        // #6566: a first run with no key opens the picker directly, with the
-        // same Esc-to-composer exit as missing-key recovery.
         let (keyless, recovery) = launch_onboarding_decision(false, false, true, true, true, false);
-        assert_eq!(keyless, OnboardingState::Provider);
+        assert_eq!(keyless, OnboardingState::None);
         assert!(recovery);
 
         // A first run with a key starts at the composer.

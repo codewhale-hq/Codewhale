@@ -1723,7 +1723,7 @@ impl OauthLoginFlow {
                 .await
                 .with_context(|| {
                     let retry_hint = match announce {
-                        OAuthLoginAnnounce::Terminal => "Retry from a terminal, or use task_shell_start/background shell if an agent is running the login flow.".to_string(),
+                        OAuthLoginAnnounce::Terminal => "Retry from a terminal, or use a background shell (background=true) if an agent is running the login flow.".to_string(),
                         OAuthLoginAnnounce::Tool { .. } => format!(
                             "The user can complete the sign-in directly via `/mcp login {}` or `codewhale mcp login {}`, then this tool can be called again.",
                             self.server_name, self.server_name

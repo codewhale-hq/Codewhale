@@ -28,6 +28,8 @@ Press `Tab` to complete composer menus or cycle through the visible modes
 when the composer is empty: **Plan → Work → Operate → Plan**. `Tab` never sends
 or queues composer text; use `Enter` to send or queue it.
 Press `Shift+Tab` to cycle permission posture (Ask → Auto-Review → Full Access).
+Every change of effective permission writes a `Permissions changed to …` line
+in the transcript.
 Press `Ctrl+T` to cycle reasoning effort.
 Run `/mode` to open the mode picker, or switch directly with `/mode work`,
 `/mode plan`, or `/mode operate`.

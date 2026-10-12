@@ -18,7 +18,9 @@ use crate::config_persistence::{
 };
 use crate::reasoning_preference::ReasoningEffort;
 use crate::settings::Settings;
-use crate::tui::app::{App, AppAction, OnboardingState, ScreenMode, SettingSelection, VimMode};
+use crate::tui::app::{
+    App, AppAction, AppModeUi, OnboardingState, ScreenMode, SettingSelection, VimMode,
+};
 use anyhow::Result;
 use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
@@ -729,7 +731,7 @@ fn select_pet_mode(app: &mut App, enabled: bool, persist: bool) -> CommandResult
 /// Escape returns to the same backdrop and draft. Companion verbs keep the
 /// existing shared simulation, appearance, replay and single audio lease.
 pub fn pet(app: &mut App, arg: Option<&str>) -> CommandResult {
-    const USAGE: &str = "Usage: /pet [on|off|inspect|status|appearance|window|source|export|sound on|off|avatar [key]|action [name|live]|view [name|live]]";
+    const USAGE: &str = "Usage: /pet [on|off|inspect|status|appearance|style smooth|pixel|language auto|en|zh-Hans|zh-Hant|ja|window|source|export|sound on|off|avatar [key]|action [name|live]|view [name|live]]";
     use crate::tui::pet_watch::{self, Control};
     let words = arg
         .map(str::trim)
@@ -790,6 +792,30 @@ pub fn pet(app: &mut App, arg: Option<&str>) -> CommandResult {
             CommandResult::message(format!("/pet {kind} {name}"))
         }
         ["appearance"] => queued(app, Control::Browser),
+        ["style", value] => {
+            let Some(body) = pet_watch::BodyStyle::parse(value) else {
+                return CommandResult::error(USAGE);
+            };
+            queued(
+                app,
+                Control::Appearance {
+                    body: Some(body),
+                    language: None,
+                },
+            )
+        }
+        ["language", value] => {
+            let Some(language) = pet_watch::TextLanguage::parse(value) else {
+                return CommandResult::error(USAGE);
+            };
+            queued(
+                app,
+                Control::Appearance {
+                    body: None,
+                    language: Some(language),
+                },
+            )
+        }
         ["window"] => queued(app, Control::Window),
         ["source"] => queued(app, Control::Select),
         ["export"] => {
@@ -2405,7 +2431,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             };
             app.set_agent_shell_access(enabled);
             let mode_hint = if enabled {
-                " Act mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves."
+                " Work mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves."
             } else {
                 " Shell tools will be hidden on the next turn. Re-enable with `/config allow_shell true`."
             };
@@ -3057,7 +3083,7 @@ fn mode_selection(app: &mut App, arg: &str) -> CommandResult {
                 CommandResult::message(message)
             }
         }
-        None => CommandResult::error("Usage: /mode [act|agent|plan|operate|1|2|3]"),
+        None => CommandResult::error(format!("Usage: {}", super::MODE_INFO.usage)),
     }
 }
 
@@ -3075,7 +3101,13 @@ pub fn switch_mode(app: &mut App, mode: AppMode) -> String {
 /// written nothing.
 fn switch_mode_with_status(app: &mut App, mode: AppMode) -> (String, bool) {
     match app.select_mode(mode) {
-        SettingSelection::Changed => (format!("Switched to {} mode.", mode.display_name()), true),
+        SettingSelection::Changed => (
+            format!(
+                "Switched to {} mode.",
+                mode.display_name_localized(app.ui_locale)
+            ),
+            true,
+        ),
         SettingSelection::PersistedSame => (app.mode_startup_default_receipt(mode), false),
         SettingSelection::Refused => (
             app.setting_locked_message(MessageId::SettingSubjectMode),
@@ -3084,12 +3116,15 @@ fn switch_mode_with_status(app: &mut App, mode: AppMode) -> (String, bool) {
     }
 }
 
-/// Status for the legacy YOLO alias: user-facing copy says Act, because the
-/// alias is invisible Act + Full Access.
+/// Status for the legacy YOLO alias: user-facing copy names Full Access (Work),
+/// because the alias is invisible Work + Full Access.
 fn switch_yolo_compat_with_status(app: &mut App) -> (String, bool) {
     match app.select_yolo_compat() {
         SettingSelection::Changed => (
-            format!("Switched to {} mode.", AppMode::Agent.display_name()),
+            format!(
+                "Switched to {}.",
+                tr(app.ui_locale, MessageId::HotbarActionModeYoloName)
+            ),
             true,
         ),
         SettingSelection::PersistedSame => {
@@ -3315,10 +3350,6 @@ pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-/// Unified login status. Account device flow stays on the CLI so this
-/// command never freezes the TUI and never invents a second OAuth broker.
-/// The internal cloud-agent credential is not user surface: membership
-/// (`codewhale login`) is the only door, never a provider key.
 pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     let token = raw.split_whitespace().next().unwrap_or("");
@@ -3335,8 +3366,52 @@ pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
                 .to_string(),
         ),
         other => CommandResult::error(format!(
-            "Usage: /login [status|account|key]\nUnknown argument: {other}"
+            "Usage: /login [status|account|key]\nUnknown argument: {other}\n\
+             To sign in to a plugin provider, use `/connect <provider>`."
         )),
+    }
+}
+
+fn is_enabled_plugin_provider(app: &App, provider: &str) -> bool {
+    app.plugin_registry
+        .active_plugins()
+        .into_iter()
+        .any(|plugin| plugin.manifest.providers.contains_key(provider))
+}
+
+pub fn connect(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let raw = arg.map(str::trim).unwrap_or("");
+    if raw.split_whitespace().count() > 1 {
+        return CommandResult::error("Usage: /connect [<provider>]");
+    }
+    match raw {
+        "" => CommandResult::action(AppAction::OpenProviderPicker),
+        provider if is_enabled_plugin_provider(app, provider) => {
+            CommandResult::action(AppAction::StartPluginLogin {
+                provider: provider.to_owned(),
+            })
+        }
+        other => CommandResult::error(format!(
+            "Usage: /connect [<provider>]\nUnknown or inactive plugin provider: {other}\n\
+             Codewhale account sign-in is `/login`."
+        )),
+    }
+}
+
+pub fn disconnect(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let raw = arg.map(str::trim).unwrap_or("");
+    if raw.is_empty() || raw.split_whitespace().count() > 1 {
+        return CommandResult::error("Usage: /disconnect <provider>");
+    }
+    if is_enabled_plugin_provider(app, raw) {
+        CommandResult::action(AppAction::StartPluginLogout {
+            provider: raw.to_owned(),
+        })
+    } else {
+        CommandResult::error(format!(
+            "Usage: /disconnect <provider>\nUnknown or inactive plugin provider: {raw}\n\
+             Signing out of Codewhale is `/logout`."
+        ))
     }
 }
 
@@ -3399,25 +3474,26 @@ fn clear_local_account_session() -> Result<bool, String> {
     Ok(had)
 }
 
-fn clear_daytona_slot() -> Result<bool, String> {
+fn clear_legacy_sandbox_slot() -> Result<bool, String> {
     let secrets = codewhale_secrets::Secrets::auto_detect();
     let had = secrets
-        .get(codewhale_secrets::DAYTONA_TOKEN_SLOT)
+        .get(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
         .map_err(|error| error.to_string())?
         .is_some_and(|value| !value.trim().is_empty());
     if had {
         secrets
-            .delete(codewhale_secrets::DAYTONA_TOKEN_SLOT)
+            .delete(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
             .map_err(|error| error.to_string())?;
     }
     Ok(had)
 }
 
 /// Logout — clear the active provider key, the Codewhale account session,
-/// and the Daytona slot. Named custom providers still clear only their own
+/// and any legacy sandbox token. Named custom providers still clear only their own
 /// table. For a full every-provider wipe, use `codewhale logout`.
 pub fn logout(app: &mut App) -> CommandResult {
     let provider_name = app.provider_identity_for_persistence().to_string();
+    let legacy_sandbox = clear_legacy_sandbox_slot();
     match clear_active_provider_api_key(&provider_name) {
         Ok(()) => {
             app.onboarding = OnboardingState::Provider;
@@ -3431,12 +3507,10 @@ pub fn logout(app: &mut App) -> CommandResult {
                 Ok(false) => {}
                 Err(error) => cleared.push(format!("account session not cleared ({error})")),
             }
-            match clear_daytona_slot() {
-                Ok(true) => cleared.push("internal cloud-agent token".to_string()),
+            match legacy_sandbox {
+                Ok(true) => cleared.push("legacy sandbox token".to_string()),
                 Ok(false) => {}
-                Err(error) => {
-                    cleared.push(format!("internal cloud-agent token not cleared ({error})"))
-                }
+                Err(error) => cleared.push(format!("legacy sandbox token not cleared ({error})")),
             }
             CommandResult::with_message_and_action(
                 format!(
@@ -4065,8 +4139,13 @@ mod tests {
         // user settings on the host machine.
         let _ = mode(&mut app, Some("agent"));
         let result = mode(&mut app, Some("yolo"));
-        // YOLO is invisible Act+Bypass shorthand — user-facing copy says Act.
-        assert!(result.message.unwrap().contains("Switched to Act mode"));
+        // YOLO is invisible Work+Bypass shorthand — user-facing copy names Full Access (Work).
+        assert!(
+            result
+                .message
+                .unwrap()
+                .contains("Switched to Full Access (Work)")
+        );
         assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
         assert!(app.allow_shell);
         assert!(app.trust_mode);
@@ -4794,7 +4873,7 @@ mod tests {
 
         assert!(msg.contains("allow_shell = true"));
         assert!(msg.contains("session only"));
-        assert!(msg.contains("Act mode"));
+        assert!(msg.contains("Work mode"));
         assert!(msg.contains("approval gating"));
         assert!(msg.contains("next turn"));
         assert!(msg.contains("Full Access (Shift+Tab) also enables shell and auto-approves"));
@@ -4817,7 +4896,7 @@ mod tests {
         assert_eq!(
             msg,
             format!(
-                "allow_shell = true (saved to {}). Act mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves.",
+                "allow_shell = true (saved to {}). Work mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves.",
                 config_path.display()
             )
         );

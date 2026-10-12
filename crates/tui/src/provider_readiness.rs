@@ -457,7 +457,7 @@ impl ResolvedProviderReadiness {
             Self::LocalUnchecked => Cow::Borrowed("local · not checked"),
             Self::Ready => Cow::Borrowed("ready"),
             Self::ConnectionCheckedModelUnchecked => {
-                Cow::Borrowed("models endpoint 2xx · model not checked")
+                Cow::Borrowed("endpoint reachable · model not checked")
             }
             Self::SavedLastCheckFailed { category, .. } => {
                 Cow::Owned(format!("last check failed ({category})"))
@@ -1075,7 +1075,7 @@ mod tests {
         );
         assert_eq!(
             ResolvedProviderReadiness::ConnectionCheckedModelUnchecked.label(),
-            "models endpoint 2xx · model not checked"
+            "endpoint reachable · model not checked"
         );
         assert!(!ResolvedProviderReadiness::ConnectionCheckedModelUnchecked.can_attempt());
     }

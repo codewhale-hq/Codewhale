@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -80,7 +80,7 @@ Fix the failing tests and explain what changed.
 Tugas yang sama dapat dijalankan secara headless dari skrip atau job CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Jalankan `/help` untuk melihat perintah dan pintasan keyboard.
@@ -93,7 +93,7 @@ alat, dan izin berperilaku sama di mana pun.
 | Perintah | Fungsinya |
 | --- | --- |
 | `codewhale` | Antarmuka terminal interaktif |
-| `codewhale exec "…"` | Satu giliran headless dari skrip atau CI, dengan keluaran JSON streaming |
+| `codewhale exec "…"` | Satu giliran headless dari skrip atau CI; `--auto` mengizinkan alat berkas dan shell, `--output-format stream-json` men-streaming JSON |
 | `codewhale web` | [Klien peramban lokal](docs/WEB.md) bawaan di `127.0.0.1` |
 | `codewhale review --pr N` | [Tinjauan pull request](docs/GITHUB_ACTION.md) yang bersifat saran; pengiriman hasilnya opsional |
 | Runtime API | [API HTTP lokal](docs/RUNTIME_API.md) untuk thread, event, dan persetujuan |
@@ -145,7 +145,7 @@ Full Access tetap menghormati batasan kebijakan yang bersifat mutlak.
 Codewhale berjalan di mesin Anda dengan akses yang Anda berikan. Posture
 persetujuan dan aturan repositori membatasi apa yang boleh dilakukan agen, dan
 perintah dijalankan di dalam sandbox OS jika didukung (Seatbelt di macOS;
-bubblewrap di Linux bersifat opsional). `/preview-request` menampilkan permintaan
+bubblewrap di Linux jika terpasang dan berfungsi). `/preview-request` menampilkan permintaan
 persis yang sudah disamarkan sebelum apa pun dikirim. Harga model yang tidak
 diketahui tetap dicatat sebagai tidak diketahui, bukan dilaporkan gratis.
 

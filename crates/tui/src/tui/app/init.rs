@@ -935,6 +935,7 @@ impl App {
             show_tool_details,
             inline_diff_mode,
             ui_locale,
+            constitution_reviewed_digest: None,
             cost_currency,
             billing_presentation: provider_identity.as_ref().map_or(
                 crate::route_billing::BillingPresentation::Unknown,
@@ -1006,6 +1007,7 @@ impl App {
                 && onboarding == OnboardingState::Language,
             onboarding_had_provider_step: !was_onboarded && needs_api_key,
             onboarding_had_trust_step: !was_onboarded && needs_workspace_trust,
+            local_runtime_detected: false,
             api_key_env_only,
             hooks,
             lifecycle_outbox,
@@ -1133,6 +1135,7 @@ impl App {
             constitution_draft_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             mcp_login: None,
             mcp_retries: Vec::new(),
+            mcp_login_reconnect: None,
             prompt_suggestion_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             balance_initiated: false,
             last_balance_fetch: None,

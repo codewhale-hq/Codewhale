@@ -1,13 +1,11 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveWhale } from "./whale-tokens";
 import { siteCss } from "./site-css";
 
 // The role layer (app/styles/tokens-roles.css): every role in every scheme,
-// inks from the versioned GPUI artifact, the navy ocean grounds measured
+// inks from the Moda brand kit, the navy ocean grounds measured
 // against every ink at WCAG AA.
 const CSS = siteCss();
-const DESIGN = JSON.parse(readFileSync(new URL("../../vendor/codewhale-design/tokens.json", import.meta.url), "utf8"));
 const ROLES = [
   "bg", "surface", "panel", "text", "muted", "line", "line-strong", "accent", "on-accent",
   "hover", "selected", "selection", "ring", "live", "attention", "danger",
@@ -64,21 +62,20 @@ describe("role tokens", () => {
     expect(CSS).not.toMatch(/@media \(prefers-color-scheme: dark\)/);
   });
 
-  it("inks with the versioned GPUI artifact in both appearances", () => {
-    const inks: Record<string, string> = {
-      text: "foreground", muted: "muted_foreground", accent: "primary", "on-accent": "primary_foreground",
-      ring: "primary", live: "live", attention: "attention", danger: "danger",
+  it("inks with the Moda brand kit in both appearances", () => {
+    const kit = (name: string) => hex(`var(--kit-${name})`);
+    const inks: Record<string, Record<string, string>> = {
+      light: { text: "ink", muted: "slate", accent: "signal-blue", ring: "signal-blue", live: "kelp-deep", attention: "amber", danger: "rust", "on-accent": "white" },
+      dark: { text: "foam", muted: "mist", accent: "bioluminescence", ring: "bioluminescence", live: "kelp", attention: "lantern", danger: "coral", "on-accent": "abyss" },
     };
     for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()], ["dark", stage()]] as const) {
-      for (const [role, key] of Object.entries(inks)) {
-        expect(scheme[role], `${mode}.${role}`).toMatch(/^var\(--gpui-(light|dark)-[\w-]+\)$/);
-        expect(hex(scheme[role]), `${mode}.${role}`).toBe(`#${DESIGN.colors[mode][key]}`);
+      for (const [role, name] of Object.entries(inks[mode])) {
+        expect(scheme[role], `${mode}.${role}`).toBe(`var(--kit-${name})`);
+        expect(hex(scheme[role]), `${mode}.${role}`).toBe(kit(name));
       }
-      expect(scheme.selection).toBe(`rgb(var(--gpui-${mode}-primary-rgb) / var(--gpui-selection-opacity))`);
     }
-    // Light keeps the artifact's paper grounds; dark reaches for the ocean.
-    expect(hex(light().bg)).toBe(`#${DESIGN.colors.light.background}`);
-    expect(hex(light().panel)).toBe(`#${DESIGN.colors.light.surface}`);
+    expect(hex(light().bg)).toBe(kit("warm-paper"));
+    expect(hex(light().panel)).toBe(kit("white"));
     for (const role of GROUNDS) expect(pinnedDark()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
   });
 

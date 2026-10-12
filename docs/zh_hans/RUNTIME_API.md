@@ -52,7 +52,7 @@ local supervisor / SDK / automation harness
 | `codewhale app-server --mobile` | 回环上的 HTTP/SSE + `/mobile` | 运行时 API + 本地移动端控制页 |
 | `codewhale app-server --stdio` | 基于 stdio 的 JSON-RPC 2.0 | 本地 SDK / 控制探针（不监听端口） |
 | `codewhale app-server --socket [--socket-path P]` | 基于权限为 `0600` 的 unix 域套接字的 JSON-RPC 2.0 | 桌面守护进程：多客户端、对端 uid 校验、`daemon/attach` 认领握手（macOS/Linux；Windows 命名管道已预留但未实现） |
-| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 旧式进程内 app-server（`/healthz`、`/thread`、`/app`、`/prompt`、`/jobs`）；`/prompt` 与 `/thread` 消息会通过运行时桥执行真实回合。它没有直接的 `/tool` 路由：工具只在 Engine 回合内部、在 Engine 的工具目录与审批姿态下运行。这个旧式服务器不呈现审批：它的桥只转发文本增量和回合的完成，并且没有决策路由，所以一个受审批门控的调用会一直等不到答复。受审批门控的工作请通过运行时 API 驱动（`/v1/threads/*` 事件与 `POST /v1/approvals/{approval_id}`） |
+| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 旧式进程内 app-server（`/healthz`、`/thread`、`/app`、`/prompt`）；后台作业请用运行时 API 的 `GET /v1/jobs`；`/prompt` 与 `/thread` 消息会通过运行时桥执行真实回合。它没有直接的 `/tool` 路由：工具只在 Engine 回合内部、在 Engine 的工具目录与审批姿态下运行。这个旧式服务器不呈现审批：它的桥只转发文本增量和回合的完成，并且没有决策路由，所以一个受审批门控的调用会一直等不到答复。受审批门控的工作请通过运行时 API 驱动（`/v1/threads/*` 事件与 `POST /v1/approvals/{approval_id}`） |
 | `codewhale serve --http` / `--mobile` | 与 `app-server --http`/`--mobile` 相同的服务器 | 兼容别名 |
 
 `app-server --http` 与 `--mobile` 启动的是历史上经由 `serve --http` 访问的同一个
@@ -1037,6 +1037,9 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 新提供商的默认模型；`auto` 线程保持 `auto`。已加载的
 引擎与会话历史被保留，下一个回合会装上新的
 路由。
+
+有效权限发生变化时，会在线程最新回合追加一个已完成的 `status` 条目，并发布
+`thread.permissions_changed` 事件（`from`、`to`、`source`）。
 
 **回合**（线程内的）
 - `POST /v1/threads/{id}/turns`

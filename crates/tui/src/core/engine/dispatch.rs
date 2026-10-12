@@ -27,7 +27,6 @@ const MAX_SCHEMA_CONTAINER_REPAIR_BYTES: usize = 64 * 1024;
 
 // === Types ============================================================
 
-#[allow(dead_code)] // `index` mirrors batch order for diagnostic ergonomics.
 pub(super) struct ToolExecOutcome {
     pub(super) index: usize,
     pub(super) id: String,

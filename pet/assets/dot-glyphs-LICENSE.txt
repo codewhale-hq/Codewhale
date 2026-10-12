@@ -20,15 +20,17 @@ The generator verifies the source font SHA-256 before rasterization.
 
 Each mask is 48 rows of 48 ASCII characters. '#' means ink; '.' means empty.
 Coordinates are row-major, with x increasing right and y increasing down.
-Glyphs use one shared font size, are individually centered without stretching,
+Phrases use the largest fitting font size, are centered without stretching,
 have at least two empty pixels of padding, and use a coverage threshold of 128.
 
-reading=读, editing=写, searching=搜, testing=试, executing=行,
-browsing=览, computer=控, memory=记, tool=用, thinking=思,
-responding=答, delegating=协, waiting=待, done=成.
-
-These are visual activity mnemonics; surrounding status text retains the
-full action meaning. 成 is for observed successful completion.
+The generator reads the English, Simplified Chinese, Traditional Chinese and
+Japanese status and tool labels from crates/localization/locales/. The same
+typed activity mapping is used by the terminal caption. Chinese labels of up
+to three characters occupy one line; longer phrases occupy two centered
+lines. English wraps at spaces and Japanese at phrase boundaries. No phrase
+is abbreviated to a single character. Captions retain the full meaning in
+the interface language independently of particle density, motion and color.
+完成 is only for observed successful completion.
 
 This Font Software is licensed under the SIL Open Font License,
 Version 1.1.

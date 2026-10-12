@@ -3,7 +3,8 @@ import { compilePetTelemetry, decodePetJSONL, PetLiveTape } from './pet-telemetr
 import { ARCH_OF, digest, layout, PetSim } from './pet-sim.js';
 import { renderPetPCM, type PetVoice } from './pet-audio.js';
 import { PetEngineTelemetry, type EngineOwnerProjection } from './pet-engine.js';
-import { blendDotFields, dotFieldKey, projectDotField, type DotField } from './dot-field.js';
+import { blendDotFields, dotFieldKey, projectDotField, textLanguage, type DotField, type DotOptions } from './dot-field.js';
+import { DOT_LABELS, type GlyphLanguage } from './dot-glyphs.js';
 
 /** Synchronous native boundary: JSON state and directly transferable PCM.
  * Native hosts share the actual world / score implementation, not a rewrite. */
@@ -12,6 +13,7 @@ export class PetNative {
   private engine = new PetEngineTelemetry();
   private expressionActivity = this.engine.activity(0);
   private expressionTransition?: { at: number; from: DotField };
+  private expressionOptions: Required<DotOptions> = { bodyStyle: 'smooth', textLanguage: 'en' };
   private engineTick = 0;
   private segment?: PetSegment;
   private liveTape = new PetLiveTape();
@@ -26,7 +28,7 @@ export class PetNative {
   snapshot(): string { return JSON.stringify({ ...this.world.frame, voices: this.world.voices, digest: digest(this.world.sim) }); }
   private expression(): DotField {
     const { frame } = this.world;
-    const target = projectDotField(this.expressionActivity, frame.timeMs, false, this.expressionTransition?.at ?? 0);
+    const target = projectDotField(this.expressionActivity, frame.timeMs, false, this.expressionTransition?.at ?? 0, this.expressionOptions);
     return this.expressionTransition
       ? blendDotFields(this.expressionTransition.from, target, (frame.timeMs - this.expressionTransition.at) / 560)
       : target;
@@ -38,7 +40,15 @@ export class PetNative {
   }
   /** View-only projection. Display cadence and accessibility preferences never
    * advance the owner, consume randomness, or change its score/checkpoint. */
-  presentation(): string {
+  presentation(options: DotOptions = {}, interfaceLanguage = 'en'): string {
+    if (!['smooth', 'pixel'].includes(options.bodyStyle ?? 'smooth')
+      || !['auto', 'en', 'zh-Hans', 'zh-Hant', 'ja'].includes(options.textLanguage ?? 'auto'))
+      throw new Error('Invalid pet presentation preferences.');
+    const next = { bodyStyle: options.bodyStyle ?? 'smooth', textLanguage: textLanguage(options.textLanguage, interfaceLanguage) };
+    if (next.bodyStyle !== this.expressionOptions.bodyStyle || next.textLanguage !== this.expressionOptions.textLanguage) {
+      const from = this.expression(); this.expressionOptions = next;
+      this.expressionTransition = { at: this.world.frame.timeMs, from };
+    }
     const { sim, frame } = this.world;
     const activity = this.engine.activity(frame.timeMs);
     const observed = activity.observed && activity.freshness === 'fresh';
@@ -52,9 +62,13 @@ export class PetNative {
         podSlots: peers.length >= 3 ? peers.map(p => [[0, 2, 4, 1, 3, 5][p.slot], p.phase] as const) : undefined });
       this.stillProjection = { key, style: still.frame };
     }
-    const still = projectDotField(activity, frame.timeMs, true);
+    const still = projectDotField(activity, frame.timeMs, true, 0, this.expressionOptions);
+    const language = this.expressionOptions.textLanguage as GlyphLanguage;
+    const label = activity.authoritativePresence === 'needs_you' ? 'waiting'
+      : activity.authoritativePresence === 'done' ? 'done' : activity.activityKind;
     return JSON.stringify({ ...frame, digest: digest(sim), state, style: { ...sim.frame, hollow: !observed }, activity,
-      ...this.expression(),
+      ...this.expression(), displayLanguage: language,
+      displayPhrase: observed && label ? DOT_LABELS[language][label] : '',
       still: { ...still, style: { ...this.stillProjection.style, hollow: !observed }, state } });
   }
   /** Losing a producer invalidates outstanding coverage, never the creature. */

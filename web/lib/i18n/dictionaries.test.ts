@@ -11,6 +11,7 @@ import {
   EN_DOCS_SUBAGENTS,
   EN_DOCS_WEB,
   EN_DOCS_WORK,
+  EN_DOCS_PET,
   EN_DOCS_COMPUTERS,
   EN_DOCS_AUTH,
   EN_DOCS_TRUST,
@@ -41,6 +42,7 @@ import {
   getDocsSubagents,
   getDocsWeb,
   getDocsWork,
+  getDocsPet,
   getDocsComputers,
   getDocsAuth,
   getDocsTrust,
@@ -275,6 +277,7 @@ describe("website dictionaries", () => {
       ["docs-mcp", getDocsMcp, EN_DOCS_MCP],
       ["docs-web", getDocsWeb, EN_DOCS_WEB],
       ["docs-work", getDocsWork, EN_DOCS_WORK],
+      ["docs-pet", getDocsPet, EN_DOCS_PET],
       ["docs-computers", getDocsComputers, EN_DOCS_COMPUTERS],
       ["docs-auth", getDocsAuth, EN_DOCS_AUTH],
       ["docs-trust", getDocsTrust, EN_DOCS_TRUST],
@@ -345,6 +348,7 @@ describe("website dictionaries", () => {
       ["docs-trust", getDocsTrust],
       ["docs-web", getDocsWeb],
       ["docs-work", getDocsWork],
+      ["docs-pet", getDocsPet],
     ] as const) {
       const en = get("en");
       const zh = get("zh");

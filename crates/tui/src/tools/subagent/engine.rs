@@ -1673,6 +1673,7 @@ pub(crate) async fn drive_child_actor(
     let mut input_open = true;
     let mut pending_input: Option<InputSettlement> = None;
     let mut cancellation_deadline = None;
+    let mut tool_names: HashMap<String, String> = HashMap::new();
     // The launch permit alone is not a started turn. Project only Core's
     // admitted lifecycle event, once across work, report and route retries.
     let mut started = false;
@@ -1795,14 +1796,19 @@ pub(crate) async fn drive_child_actor(
                             job.hard_deadline.map(Into::into),
                         ).await;
                     }
+                    Event::ToolCallStarted { id, name, .. } => {
+                        tool_names.insert(id.clone(), name.clone());
+                    }
                     Event::ToolExecutionStarted { id } => {
                         if let Some(mailbox) = runtime.mailbox.as_ref() {
-                            let _ = mailbox.send(MailboxMessage::ToolCallStarted { agent_id: agent_id.clone(), tool_name: format!("Core tool {id}"), step: job.steps() });
+                            let tool_name = tool_names.get(id).cloned().unwrap_or_else(|| "tool".to_string());
+                            let _ = mailbox.send(MailboxMessage::ToolCallStarted { agent_id: agent_id.clone(), tool_name, step: job.steps() });
                         }
                     }
                     Event::ToolCallComplete { id, name, result, .. } => {
+                        let label = tool_names.remove(id).unwrap_or_else(|| name.clone());
                         record_agent_progress(&runtime, &agent_id, AgentProgressEventMeta::new(AgentWorkerStatus::RunningTool).with_tool(name.clone()),
-                            format!("Core tool {id} {}", if result.is_ok() { "settled" } else { "refused or failed" }));
+                            format!("{label} {}", if result.is_ok() { "done" } else { "failed" }));
                     }
                     Event::Status { message, .. } => record_agent_progress(&runtime, &agent_id,
                         AgentProgressEventMeta::new(AgentWorkerStatus::Running), message.clone()),

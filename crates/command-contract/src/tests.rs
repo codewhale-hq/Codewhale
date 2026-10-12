@@ -2235,6 +2235,9 @@ impl CommandSessionLifecycleContext for FakeLifecycle {
     fn transition_blocked(&self) -> bool {
         self.blocked
     }
+    fn transition_blockers(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn branch_current_leaf_hint(&self) -> Option<String> {
         self.leaf_hint.clone()
     }
@@ -2557,6 +2560,9 @@ struct FakeControl {
 impl CommandSessionControlContext for FakeControl {
     fn transition_blocked(&self) -> bool {
         self.blocked
+    }
+    fn transition_blockers(&self) -> Vec<String> {
+        Vec::new()
     }
     fn relay_projection(&self) -> RelayProjection {
         self.relay

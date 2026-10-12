@@ -246,6 +246,8 @@ pub struct PagerView {
     /// (or key then Enter); Esc disarms before it closes the pager.
     destructive_action: Option<PagerDestructiveAction>,
     action_area: Cell<Option<Rect>>,
+    live_shell_job: Option<String>,
+    follow: bool,
 }
 
 impl PagerView {
@@ -270,7 +272,44 @@ impl PagerView {
             last_visible_height: Cell::new(0),
             destructive_action: None,
             action_area: Cell::new(None),
+            live_shell_job: None,
+            follow: false,
         }
+    }
+
+    pub(crate) fn with_live_shell_job(mut self, job_id: impl Into<String>) -> Self {
+        self.live_shell_job = Some(job_id.into());
+        self
+    }
+
+    pub(crate) fn live_shell_job(&self) -> Option<&str> {
+        self.live_shell_job.as_deref()
+    }
+
+    pub(crate) fn replace_live_text(&mut self, text: &str) -> bool {
+        let page = self.current_page();
+        if page.copy_text.as_deref() == Some(text) {
+            return false;
+        }
+        if self.scroll.get() >= self.max_scroll() {
+            self.follow = true;
+        }
+        let mut sanitized = String::with_capacity(text.len());
+        crate::tui::osc8::strip_ansi_into(text, &mut sanitized);
+        let page = self.current_page_mut();
+        page.source = PagerSource::Text(sanitized);
+        page.copy_text = Some(text.to_string());
+        *page.rows.get_mut() = PagerRows::default();
+        if !self.search_input.trim().is_empty() {
+            self.update_search_matches();
+        }
+        true
+    }
+
+    pub(crate) fn end_live_shell_job(&mut self) {
+        self.live_shell_job = None;
+        self.destructive_action = None;
+        self.action_area.set(None);
     }
 
     /// Attach a compact Markdown export (e.g. the #4108 turn handoff) that the
@@ -379,23 +418,28 @@ impl PagerView {
         self.search_index.set(0);
         self.search_mode = false;
         self.pending_g = false;
+        self.follow = false;
     }
 
     fn scroll_up(&mut self, amount: usize) {
         self.scroll.set(self.scroll.get().saturating_sub(amount));
+        self.follow = false;
     }
 
     fn scroll_down(&mut self, amount: usize, max_scroll: usize) {
         self.scroll
             .set(self.scroll.get().saturating_add(amount).min(max_scroll));
+        self.follow = self.live_shell_job.is_some() && self.scroll.get() >= max_scroll;
     }
 
     fn scroll_to_top(&mut self) {
         self.scroll.set(0);
+        self.follow = false;
     }
 
     fn scroll_to_bottom(&mut self, max_scroll: usize) {
         self.scroll.set(max_scroll);
+        self.follow = self.live_shell_job.is_some();
     }
 
     /// Plain-text rendered body of the pager joined with `\n`. This reflects
@@ -492,6 +536,7 @@ impl PagerView {
     fn jump_to_match(&mut self) {
         if let Some(&row) = self.search_matches.get_mut().get(self.search_index.get()) {
             self.scroll.set(row);
+            self.follow = false;
         }
     }
 
@@ -867,7 +912,12 @@ impl ModalView for PagerView {
         let rows = page.rows.borrow();
         let row_count = rows.plain.len();
         let max_scroll = row_count.saturating_sub(visible_height);
-        let scroll = self.scroll.get().min(max_scroll);
+        let scroll = if self.follow {
+            self.scroll.set(max_scroll);
+            max_scroll
+        } else {
+            self.scroll.get().min(max_scroll)
+        };
         let end = (scroll + visible_height).min(row_count);
         let mut visible_lines: Vec<Line<'static>> = if row_count == 0 {
             vec![Line::from("")]
@@ -1287,6 +1337,59 @@ mod tests {
         p.scroll.set(30);
         let _ = p.handle_key(key(KeyCode::Home));
         assert_eq!(p.scroll.get(), 0);
+    }
+
+    #[test]
+    fn live_shell_job_pager_follows_new_output_until_scrolled_back() {
+        let body = |rows: usize| {
+            (0..rows)
+                .map(|row| format!("out-{row:03}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut p = PagerView::from_text("Bash Job shell_1", &body(5), 40)
+            .with_copy_text(body(5))
+            .with_live_shell_job("shell_1");
+        prime_layout(&mut p, 12);
+
+        assert!(p.replace_live_text(&body(60)));
+        prime_layout(&mut p, 12);
+        assert!(p.max_scroll() > 0);
+        assert_eq!(p.scroll.get(), p.max_scroll());
+
+        let _ = p.handle_key(key(KeyCode::Char('k')));
+        let held = p.scroll.get();
+        assert!(p.replace_live_text(&body(80)));
+        prime_layout(&mut p, 12);
+        assert_eq!(p.scroll.get(), held);
+
+        let _ = p.handle_key(key(KeyCode::Char('G')));
+        assert!(p.replace_live_text(&body(90)));
+        prime_layout(&mut p, 12);
+        assert_eq!(p.scroll.get(), p.max_scroll());
+        assert!(!p.replace_live_text(&body(90)));
+    }
+
+    #[test]
+    fn ending_a_live_shell_job_drops_stop() {
+        let mut p = make_pager(2)
+            .with_live_shell_job("shell_1")
+            .with_destructive_action(
+                's',
+                "stop",
+                "confirm stop · Esc cancels",
+                ViewEvent::SidebarAgentCancel {
+                    agent_id: "agent_1".to_string(),
+                },
+            );
+        p.end_live_shell_job();
+        assert!(p.live_shell_job().is_none());
+        for _ in 0..2 {
+            assert!(matches!(
+                p.handle_key(key(KeyCode::Char('s'))),
+                ViewAction::None
+            ));
+        }
     }
 
     #[test]

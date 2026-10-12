@@ -39,14 +39,19 @@ chrono.workspace = true
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-core = { path = "../core", version = "0.10.2" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
+codewhale-lane = { path = "../lane", version = "0.10.2" }
 codewhale-memory = { path = "../memory", version = "0.10.2" }
 codewhale-models = { path = "../models", version = "0.10.2" }
+codewhale-palette = { path = "../palette", version = "0.10.2", default-features = false }
+colored = "3.0.0"
 fd-lock = "4.0.4"
 lru = "0.18"
 regex = "1.11"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true

@@ -572,9 +572,9 @@ pub(crate) fn estimate_tokens_for_message(message: &Message, include_thinking: b
             // assistant messages and across later user turns.
             ContentBlock::Thinking { thinking, .. } if include_thinking => thinking.len() / 4,
             ContentBlock::Thinking { .. } => 0,
-            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| s.len() / 4)
-                .unwrap_or(100),
+            ContentBlock::ToolUse { input, .. } => {
+                compact_json_len(input).map_or(100, |len| len / 4)
+            }
             ContentBlock::ToolResult {
                 content,
                 content_blocks,
@@ -596,13 +596,21 @@ pub(crate) fn estimate_tokens_for_message(message: &Message, include_thinking: b
             // tiles are typically ~1k tokens); erring high compacts slightly
             // early rather than overflowing.
             ContentBlock::ImageUrl { .. } => IMAGE_TOKEN_ESTIMATE,
-            ContentBlock::ServerToolUse { input, .. } => input.to_string().len() / 4,
+            ContentBlock::ServerToolUse { input, .. } => {
+                compact_json_len(input).unwrap_or_default() / 4
+            }
             ContentBlock::ToolSearchToolResult { content, .. }
             | ContentBlock::CodeExecutionToolResult { content, .. } => {
-                content.to_string().len() / 4
+                compact_json_len(content).unwrap_or_default() / 4
             }
         })
         .sum::<usize>()
+}
+
+fn compact_json_len(value: &serde_json::Value) -> Option<usize> {
+    let mut counter = crate::utils::CountingWriter::new();
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.count())
 }
 
 /// Conservative flat token estimate for an inline image (`ContentBlock::ImageUrl`).
@@ -753,8 +761,7 @@ pub fn compaction_pressure_reached_with_billed(
     // Billing alone proving pressure short-circuits the walk (#perf-r5):
     // `estimated.max(billed) >= threshold` is unconditionally true when
     // `billed >= threshold`, so estimating cannot change the answer and the
-    // O(transcript) pass is skipped. Over-pressure sessions pay this check
-    // multiple times per step (pressure gate + decision re-check).
+    // O(transcript) pass is skipped.
     if billed >= config.token_threshold {
         return true;
     }

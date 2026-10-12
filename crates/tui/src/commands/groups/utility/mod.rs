@@ -3,7 +3,6 @@
 
 mod attachment;
 mod automation;
-mod dispatch;
 mod jobs;
 mod mcp;
 mod network;
@@ -30,10 +29,6 @@ impl CommandGroup for UtilityCommands {
             ),
             Box::new(
                 ContextualCommand::from_contract::<jobs::JobsCmd>().expect("jobs registration"),
-            ),
-            Box::new(
-                ContextualCommand::from_contract::<dispatch::DispatchCmd>()
-                    .expect("dispatch registration"),
             ),
             Box::new(ContextualCommand::from_contract::<mcp::McpCmd>().expect("mcp registration"),),
             Box::new(

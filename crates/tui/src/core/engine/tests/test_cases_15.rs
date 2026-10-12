@@ -435,7 +435,7 @@ fn turn_metadata_surfaces_goal_budget_only_while_goal_active() {
         let mut goal = engine.config.goal_state.lock().expect("goal lock");
         goal.create("Finish telemetry visibility".to_string(), Some(2_000))
             .expect("create goal");
-        goal.record_usage(1_000, 100);
+        goal.record_usage(1_000, 100, std::time::Instant::now());
     }
 
     let user_msg = engine

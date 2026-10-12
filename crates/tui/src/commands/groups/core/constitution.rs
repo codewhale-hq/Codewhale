@@ -91,7 +91,15 @@ impl RegisterCommand for ConstitutionCmd {
                     .split_whitespace()
                     .map(str::to_string)
                     .collect();
-                CommandResult::message(ratify_text(app.ui_locale, &ids))
+                let (message, ratified) = ratify_text(
+                    app.ui_locale,
+                    app.constitution_reviewed_digest.as_deref(),
+                    &ids,
+                );
+                if ratified.is_some() {
+                    app.constitution_reviewed_digest = ratified;
+                }
+                CommandResult::message(message)
             }
             Some("help") => CommandResult::message(help_text(app.ui_locale)),
             Some(other) => CommandResult::error(format!(
@@ -151,16 +159,18 @@ fn open_explanation(app: &mut App) {
 /// because unratified model advice is not law.
 fn open_suggestions(app: &mut App) {
     let locale = app.ui_locale;
-    let text = suggestions_text(locale);
+    let (text, reviewed) = suggestions_text(locale);
+    app.constitution_reviewed_digest = reviewed;
     open_pager(app, suggestions_title(locale), &text);
 }
 
-fn suggestions_text(locale: Locale) -> String {
+fn suggestions_text(locale: Locale) -> (String, Option<String>) {
     let UserConstitutionStatus::Loaded { constitution, .. } = load_user_constitution() else {
-        return match locale {
-            Locale::ZhHans => "没有可供审阅的结构化用户全局协作准则。".to_string(),
+        let text = match locale {
+            Locale::ZhHans => "没有可供审阅的结构化用户全局宪章。".to_string(),
             _ => "No structured user-global constitution is available to review.".to_string(),
         };
+        return (text, None);
     };
     let digest = constitution.cache_projection().digest;
     let suggested: Vec<_> = constitution.suggested_clauses().collect();
@@ -203,62 +213,82 @@ fn suggestions_text(locale: Locale) -> String {
             }
         }
     }
-    out
+    (out, Some(digest))
 }
 
-/// Explicit ratification (#3930). Fails closed: it re-reads the live file,
-/// hands the live digest back to [`UserConstitution::ratify`], and persists only
-/// when the clause set is exactly what the user named.
-fn ratify_text(locale: Locale, ids: &[String]) -> String {
+/// Explicit ratification (#3930). Fails closed: it hands the digest the user
+/// reviewed in `/constitution suggestions` to [`UserConstitution::ratify`],
+/// which refuses when the live file has moved since, and persists only when the
+/// clause set is exactly what the user named.
+fn ratify_text(locale: Locale, reviewed: Option<&str>, ids: &[String]) -> (String, Option<String>) {
     if ids.is_empty() {
-        return match locale {
+        let text = match locale {
             Locale::ZhHans => {
                 "用法：/constitution ratify <id> [<id>...]。先用 /constitution suggestions 查看待批准条款。"
                     .to_string()
             }
             _ => "Usage: /constitution ratify <id> [<id>...]. Run /constitution suggestions first to see what is pending.".to_string(),
         };
+        return (text, None);
     }
 
     let (path, constitution) = match load_user_constitution() {
         UserConstitutionStatus::Loaded { path, constitution } => (path, constitution),
         _ => {
-            return match locale {
-                Locale::ZhHans => "没有可批准的结构化用户全局协作准则。".to_string(),
+            let text = match locale {
+                Locale::ZhHans => "没有可批准的结构化用户全局宪章。".to_string(),
                 _ => "There is no structured user-global constitution to ratify.".to_string(),
             };
+            return (text, None);
         }
     };
 
-    let digest = constitution.cache_projection().digest;
-    match constitution.ratify(&digest, ids, None) {
-        Err(err) => match locale {
-            Locale::ZhHans => format!("未批准任何条款：{err}"),
-            _ => format!("Nothing was ratified: {err}"),
-        },
+    let Some(reviewed) = reviewed else {
+        let text = match locale {
+            Locale::ZhHans => {
+                "未批准任何条款：请先用 /constitution suggestions 审阅待批准条款。".to_string()
+            }
+            _ => "Nothing was ratified: review the pending clauses with /constitution suggestions first.".to_string(),
+        };
+        return (text, None);
+    };
+    match constitution.ratify(reviewed, ids, None) {
+        Err(err) => (
+            match locale {
+                Locale::ZhHans => format!("未批准任何条款：{err}"),
+                _ => format!("Nothing was ratified: {err}"),
+            },
+            None,
+        ),
         Ok(ratification) => match ratification.constitution.save_to(&path) {
-            Err(err) => match locale {
-                Locale::ZhHans => format!("批准已计算但保存失败，文件未更改：{err:#}"),
-                _ => format!(
-                    "Ratification was computed but could not be saved; the file is unchanged: {err:#}"
-                ),
-            },
-            Ok(()) => match locale {
-                Locale::ZhHans => format!(
-                    "已批准 {} 条：{}\n摘要 {} → {}\n这些条款现在会注入模型；提示词缓存前缀已随之变化。",
-                    ratification.accepted_clause_ids.len(),
-                    ratification.accepted_clause_ids.join(", "),
-                    ratification.before_digest,
-                    ratification.after_digest,
-                ),
-                _ => format!(
-                    "Ratified {} clause(s): {}\nDigest {} → {}\nThey are injected from the next turn; the prompt-cache prefix moved with them.",
-                    ratification.accepted_clause_ids.len(),
-                    ratification.accepted_clause_ids.join(", "),
-                    ratification.before_digest,
-                    ratification.after_digest,
-                ),
-            },
+            Err(err) => (
+                match locale {
+                    Locale::ZhHans => format!("批准已计算但保存失败，文件未更改：{err:#}"),
+                    _ => format!(
+                        "Ratification was computed but could not be saved; the file is unchanged: {err:#}"
+                    ),
+                },
+                None,
+            ),
+            Ok(()) => (
+                match locale {
+                    Locale::ZhHans => format!(
+                        "已批准 {} 条：{}\n摘要 {} → {}\n这些条款从下一轮起作为会话记录中的消息发送给模型；提示词缓存前缀不变。",
+                        ratification.accepted_clause_ids.len(),
+                        ratification.accepted_clause_ids.join(", "),
+                        ratification.before_digest,
+                        ratification.after_digest,
+                    ),
+                    _ => format!(
+                        "Ratified {} clause(s): {}\nDigest {} → {}\nThey reach the model from the next turn as a message recorded in the session; the prompt-cache prefix is unchanged.",
+                        ratification.accepted_clause_ids.len(),
+                        ratification.accepted_clause_ids.join(", "),
+                        ratification.before_digest,
+                        ratification.after_digest,
+                    ),
+                },
+                Some(ratification.after_digest.clone()),
+            ),
         },
     }
 }
@@ -303,9 +333,9 @@ fn migrate_text(locale: Locale) -> String {
                     receipt.before_digest,
                     receipt.after_digest,
                     if receipt.is_cache_stable() {
-                        "未改变，提示词缓存保持有效"
+                        "未改变，模型下一轮收到相同内容"
                     } else {
-                        "已改变，提示词缓存前缀随之变化"
+                        "已改变，下一轮作为新的会话消息发送"
                     },
                 ),
                 _ => format!(
@@ -315,9 +345,9 @@ fn migrate_text(locale: Locale) -> String {
                     receipt.before_digest,
                     receipt.after_digest,
                     if receipt.is_cache_stable() {
-                        "unchanged, so the prompt cache survives"
+                        "unchanged, so the model receives the same text"
                     } else {
-                        "changed, so the prompt-cache prefix moved"
+                        "changed; the new text is sent as a session message at the next turn"
                     },
                 ),
             }
@@ -545,7 +575,7 @@ fn preview_text(locale: Locale) -> String {
     let state = load_setup_state();
     let load = load_user_constitution();
     match load {
-        UserConstitutionStatus::Loaded { path, constitution } => {
+        UserConstitutionStatus::Loaded { constitution, .. } => {
             let active = user_constitution_is_active(state.as_ref());
             let mut text = String::new();
             if !active {
@@ -554,7 +584,7 @@ fn preview_text(locale: Locale) -> String {
             }
             text.push_str(
                 &constitution
-                    .render_block(Some(&path))
+                    .render_block(None)
                     .unwrap_or_else(|| structured_empty_text(locale).to_string()),
             );
             text
@@ -825,24 +855,24 @@ fn ignored_whale_warnings(warnings: &[String]) -> Vec<&str> {
 fn help_text(locale: Locale) -> String {
     match locale {
         Locale::ZhHans => "\
-用法：/constitution [status|preview|bundled|edit|review|repair|repo|explain|posture|help]
+用法：/constitution [status|preview|base|suggestions|ratify <id>|migrate|rollback|bundled|edit|review|repair|repo|explain|posture|help]
 
 常用命令：
-- /constitution：打开协作准则管理器和当前层级。
-- /constitution preview：显示会注入模型的确切用户全局协作准则块；缺失、空、无效或不可读时显示修复说明。
-- /constitution edit：打开 /setup 的引导式协作准则步骤；用 1-6 调整，按 G 预览，再按 G 保存。
+- /constitution：打开宪章管理器和当前层级。
+- /constitution preview：显示会注入模型的确切用户全局宪章块；缺失、空、无效或不可读时显示修复说明。
+- /constitution edit：打开 /setup 的引导式宪章步骤；用 1-6 调整，按 G 预览，再按 G 保存。
 - /constitution repair：说明当前文件状态，然后打开同一个引导式修复步骤。
 - /constitution bundled：记录使用内置/默认准则，不创建自定义文件。
 - /constitution repo：查看 .codewhale/constitution.json 仓库本地准则。
-- /constitution explain：解释内置基础准则、用户全局协作准则、仓库协作准则、AGENTS.md、记忆和交接的区别。
+- /constitution explain：解释内置基础准则、用户全局宪章、仓库宪章、AGENTS.md、记忆和交接的区别。
 - /constitution base：显示下一轮实际组装的确切基础提示词，附来源、摘要和字节/词元度量；只读，不发送请求，也不展开工具目录。
 - /constitution suggestions：查看待批准的建议条款；它们不会注入模型，也不影响提示词缓存。
 - /constitution ratify <id>：明确批准某条建议条款；若基线在审阅后发生变化则拒绝批准。
-- /constitution migrate：把协作准则文件迁移到当前架构版本并给出回执；被拒绝时文件保持原样。
+- /constitution migrate：把宪章文件迁移到当前架构版本并给出回执；被拒绝时文件保持原样。
 - /constitution rollback：恢复迁移前的备份。
-- /constitution posture：打开运行时姿态；协作准则只提供模型指导，不会更改批准、沙盒、Shell、网络、信任或 MCP 权限。",
+- /constitution posture：打开运行时姿态；宪章只提供模型指导，不会更改批准、沙盒、Shell、网络、信任或 MCP 权限。",
         _ => "\
-Usage: /constitution [status|preview|bundled|edit|review|repair|repo|explain|posture|help]
+Usage: /constitution [status|preview|base|suggestions|ratify <id>|migrate|rollback|bundled|edit|review|repair|repo|explain|posture|help]
 
 Common commands:
 - /constitution: open the constitution manager and active stack.
@@ -879,14 +909,14 @@ fn repair_text(locale: Locale) -> String {
     match locale {
         Locale::ZhHans => format!(
             "\
-用户全局协作准则修复
+用户全局宪章修复
 
 当前文件：{file}
 当前状态：{status}
 记录选择：{choice}
 有效性：{validity}
 
-接下来将打开 /setup 的协作准则步骤。安全修复路径：
+接下来将打开 /setup 的宪章步骤。安全修复路径：
 - 用 1-6 调整引导式草稿，按 G 预览，再按 G 保存新的结构化 constitution.json。
 - 按 U 或运行 /constitution bundled 记录使用内置/默认准则；现有无效/空/不可读文件不会被注入。
 - 用 /constitution preview 查看当前错误或渲染结果。
@@ -914,42 +944,42 @@ This only repairs the user-global constitution.json. Runtime approval, sandbox, 
 
 fn manager_title(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "协作准则",
+        Locale::ZhHans => "宪章",
         _ => "Constitution",
     }
 }
 
 fn review_title(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "协作准则检查",
+        Locale::ZhHans => "宪章检查",
         _ => "Constitution Review",
     }
 }
 
 fn rendered_title(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "渲染后的用户协作准则",
+        Locale::ZhHans => "渲染后的用户宪章",
         _ => "Rendered User Constitution",
     }
 }
 
 fn repo_title(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "仓库本地协作准则",
+        Locale::ZhHans => "仓库本地宪章",
         _ => "Repo-Local Constitution",
     }
 }
 
 fn explanation_title(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "AGENTS.md 与协作准则",
+        Locale::ZhHans => "AGENTS.md 与宪章",
         _ => "AGENTS.md vs Constitution",
     }
 }
 
 fn no_repo_law_text(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "此工作区未找到仓库本地协作准则 .codewhale/constitution.json。",
+        Locale::ZhHans => "此工作区未找到仓库本地宪章 .codewhale/constitution.json。",
         _ => "No repo-local constitution found at .codewhale/constitution.json for this workspace.",
     }
 }
@@ -963,7 +993,7 @@ fn inactive_preview_text(locale: Locale) -> &'static str {
 
 fn structured_empty_text(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "结构化协作准则为空。",
+        Locale::ZhHans => "结构化宪章为空。",
         _ => "The structured constitution is empty.",
     }
 }
@@ -971,7 +1001,7 @@ fn structured_empty_text(locale: Locale) -> &'static str {
 fn missing_preview_text(locale: Locale, path: &std::path::Path) -> String {
     match locale {
         Locale::ZhHans => format!(
-            "未在 {} 找到结构化用户全局协作准则。\n\n当前使用内置准则。使用 /constitution edit 创建引导式长期偏好，或使用 /constitution bundled 明确记录内置/默认。",
+            "未在 {} 找到结构化用户全局宪章。\n\n当前使用内置准则。使用 /constitution edit 创建引导式长期偏好，或使用 /constitution bundled 明确记录内置/默认。",
             path.display()
         ),
         _ => format!(
@@ -984,7 +1014,7 @@ fn missing_preview_text(locale: Locale, path: &std::path::Path) -> String {
 fn empty_preview_text(locale: Locale, path: &std::path::Path) -> String {
     match locale {
         Locale::ZhHans => format!(
-            "{} 的结构化用户全局协作准则为空。使用 /constitution repair 返回引导式协作准则步骤。",
+            "{} 的结构化用户全局宪章为空。使用 /constitution repair 返回引导式宪章步骤。",
             path.display()
         ),
         _ => format!(
@@ -997,7 +1027,7 @@ fn empty_preview_text(locale: Locale, path: &std::path::Path) -> String {
 fn invalid_preview_text(locale: Locale, path: &std::path::Path, error: &str) -> String {
     match locale {
         Locale::ZhHans => format!(
-            "{} 的结构化用户全局协作准则无效，且不会注入。\n\n{error}\n\n使用 /constitution repair 返回引导式协作准则步骤。",
+            "{} 的结构化用户全局宪章无效，且不会注入。\n\n{error}\n\n使用 /constitution repair 返回引导式宪章步骤。",
             path.display()
         ),
         _ => format!(
@@ -1010,7 +1040,7 @@ fn invalid_preview_text(locale: Locale, path: &std::path::Path, error: &str) -> 
 fn unreadable_preview_text(locale: Locale, path: &std::path::Path, error: &str) -> String {
     match locale {
         Locale::ZhHans => format!(
-            "无法读取 {} 的结构化用户全局协作准则，且不会注入。\n\n{error}\n\n使用 /constitution repair 返回引导式协作准则步骤。",
+            "无法读取 {} 的结构化用户全局宪章，且不会注入。\n\n{error}\n\n使用 /constitution repair 返回引导式宪章步骤。",
             path.display()
         ),
         _ => format!(
@@ -1022,7 +1052,7 @@ fn unreadable_preview_text(locale: Locale, path: &std::path::Path, error: &str) 
 
 fn path_error_preview_text(locale: Locale, error: &str) -> String {
     match locale {
-        Locale::ZhHans => format!("无法为用户全局协作准则解析 CODEWHALE_HOME：\n\n{error}"),
+        Locale::ZhHans => format!("无法为用户全局宪章解析 CODEWHALE_HOME：\n\n{error}"),
         _ => {
             format!("Could not resolve CODEWHALE_HOME for the user-global constitution:\n\n{error}")
         }
@@ -1033,19 +1063,19 @@ fn agents_explanation(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => {
             "\
-AGENTS.md 与协作准则
+AGENTS.md 与宪章
 
 内置基础准则是精简的全局判断约定：身份、事实、验证、克制和优先级顺序。
 
-用户全局协作准则是个人长期偏好。它是结构化数据，确定性渲染，并低于当前用户请求和内置基础准则。
+用户全局宪章是个人长期偏好。它是结构化数据，确定性渲染，并低于当前用户请求和内置基础准则。
 
-.codewhale/constitution.json 是仓库本地协作准则。它属于某个工作区，并作为独立的仓库协作准则块渲染。
+.codewhale/constitution.json 是仓库本地宪章。它属于某个工作区，并作为独立的仓库宪章块渲染。
 
 AGENTS.md 和项目说明是项目规则/实现指导。它们可以描述构建命令、仓库规范和本地流程；按优先级顺序，它们低于当前用户请求和内置基础准则，高于用户全局长期偏好、记忆和交接。
 
 WHALE.md 已忽略。将普通项目说明迁移到 AGENTS.md，将 Codewhale 专属权限策略迁移到 .codewhale/constitution.json。
 
-运行时姿态是独立设置。协作准则可以建议主动性，但不会改变批准策略、沙盒、Shell、网络、信任、MCP 权限或默认模式。使用 /constitution posture 查看这些控制。"
+运行时姿态是独立设置。宪章可以建议主动性，但不会改变批准策略、沙盒、Shell、网络、信任、MCP 权限或默认模式。使用 /constitution posture 查看这些控制。"
         }
         _ => {
             "\
@@ -1106,17 +1136,17 @@ impl ConstitutionManagerCopy {
     fn for_locale(locale: Locale) -> Self {
         match locale {
             Locale::ZhHans => Self {
-                manager_header: "协作准则管理器",
+                manager_header: "宪章管理器",
                 active_stack_header: "生效层级",
                 bundled_active: "内置基础准则：始终生效",
-                user_global_label: "用户全局协作准则",
-                repo_local_label: "仓库本地协作准则",
+                user_global_label: "用户全局宪章",
+                repo_local_label: "仓库本地宪章",
                 agents_label: "AGENTS/项目说明",
                 legacy_whale_label: "旧版 WHALE.md",
                 memory_handoff_label: "记忆/交接",
                 memory_label: "记忆",
                 handoff_label: "交接",
-                user_global_header: "用户全局协作准则",
+                user_global_header: "用户全局宪章",
                 choice_label: "选择",
                 source_label: "来源",
                 file_label: "文件",
@@ -1130,8 +1160,8 @@ impl ConstitutionManagerCopy {
                 repo_action: "/constitution repo 会在存在时显示 .codewhale/constitution.json 本地准则。",
                 maintenance_header: "维护",
                 maintenance_actions: &[
-                    "编辑引导式协作准则：/constitution edit",
-                    "预览渲染后的协作准则：/constitution preview",
+                    "编辑引导式宪章：/constitution edit",
+                    "预览渲染后的宪章：/constitution preview",
                     "查看下一轮的确切基础提示词：/constitution base",
                     "审阅待批准的建议条款：/constitution suggestions",
                     "批准某条建议条款：/constitution ratify <id>",
@@ -1140,7 +1170,7 @@ impl ConstitutionManagerCopy {
                     "查看现有内容：/constitution review",
                     "修复无效/空/不可读文件：/constitution repair",
                     "显示仓库本地准则：/constitution repo",
-                    "解释 AGENTS.md 与协作准则：/constitution explain",
+                    "解释 AGENTS.md 与宪章：/constitution explain",
                     "打开运行时姿态：/constitution posture",
                 ],
                 present: "存在",
@@ -1205,7 +1235,7 @@ impl ConstitutionManagerCopy {
     }
 
     fn location_count_unit(&self, count: usize) -> &'static str {
-        if self.manager_header == "协作准则管理器" {
+        if self.manager_header == "宪章管理器" {
             "处"
         } else if count == 1 {
             "location"
@@ -1215,7 +1245,7 @@ impl ConstitutionManagerCopy {
     }
 
     fn completed_for(&self, version: &str) -> String {
-        if self.manager_header == "协作准则管理器" {
+        if self.manager_header == "宪章管理器" {
             format!("当前（自 {version} 引入）")
         } else {
             format!("current (introduced in {version})")
@@ -1446,6 +1476,14 @@ mod tests {
             .expect("usage message");
         assert!(bare.contains("Usage: /constitution ratify <id>"));
 
+        let unreviewed = ConstitutionCmd::execute(&mut app, Some("ratify c1"))
+            .message
+            .expect("refusal message");
+        assert!(unreviewed.contains("Nothing was ratified"), "{unreviewed}");
+
+        ConstitutionCmd::execute(&mut app, Some("suggestions"));
+        pop_pager_body(&mut app);
+
         let unknown = ConstitutionCmd::execute(&mut app, Some("ratify nope"))
             .message
             .expect("refusal message");
@@ -1484,7 +1522,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.contains("the prompt cache survives"),
+            message.contains("the model receives the same text"),
             "a v1 file carries no clauses, so no model-facing byte moved: {message}"
         );
 
@@ -1550,9 +1588,9 @@ mod tests {
 
         assert!(result.message.is_none());
         let body = pop_pager_body(&mut app);
-        assert!(body.contains("协作准则管理器"));
+        assert!(body.contains("宪章管理器"));
         assert!(body.contains("生效层级"));
-        assert!(body.contains("用户全局协作准则"));
+        assert!(body.contains("用户全局宪章"));
         assert!(body.contains("/constitution preview 会"));
         assert!(!body.contains("宪法"));
         assert!(!body.contains("Constitution Manager"));
@@ -1588,7 +1626,7 @@ mod tests {
 
         assert!(result.message.is_none());
         let body = pop_pager_body(&mut app);
-        assert!(body.contains("AGENTS.md 与协作准则"));
+        assert!(body.contains("AGENTS.md 与宪章"));
         assert!(body.contains(".codewhale/constitution.json"));
         assert!(body.contains("运行时姿态是独立设置"));
         assert!(!body.contains("宪法"));

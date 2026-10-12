@@ -470,7 +470,6 @@ fn start_with_options(
             no_color,
             keep_composer: false,
         },
-        |_| {},
     )
 }
 
@@ -487,13 +486,8 @@ struct Launch<'a> {
     keep_composer: bool,
 }
 
-/// Launch into `workspace` and walk first-run onboarding to home.
-/// `on_provider_picker` sees the real first-run provider picker.
-fn start_in(
-    workspace: SealedWorkspace,
-    launch: Launch<'_>,
-    on_provider_picker: impl FnOnce(&mut Harness),
-) -> (SealedWorkspace, Harness) {
+/// Launch into `workspace`; the composer-first launch card is home.
+fn start_in(workspace: SealedWorkspace, launch: Launch<'_>) -> (SealedWorkspace, Harness) {
     let Launch {
         rows,
         cols,
@@ -579,11 +573,6 @@ fn start_in(
         .size(rows, cols)
         .spawn()
         .unwrap();
-    wait(&mut tui, "Choose your model provider");
-    on_provider_picker(&mut tui);
-    tui.send(keys::key::ctrl('o')).unwrap();
-    wait(&mut tui, "You're ready.");
-    tui.send(keys::key::enter()).unwrap();
     wait(&mut tui, "New session");
     if animated || keep_composer {
         return (workspace, tui);
@@ -592,6 +581,18 @@ fn start_in(
     tui.send(keys::key::ctrl('u')).unwrap();
     tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
     (workspace, tui)
+}
+
+pub(crate) fn explore_offline_from_composer(tui: &mut Harness) {
+    wait(tui, "Type a message");
+    tui.type_line("seed").expect("send a first message");
+    wait(tui, "Choose your model provider");
+    tui.send(keys::key::ctrl('o')).unwrap();
+    wait(tui, "You're ready.");
+    tui.send(keys::key::enter()).unwrap();
+    tui.wait_for_idle(Duration::from_millis(300), WAIT).unwrap();
+    tui.send(keys::key::ctrl('u')).unwrap();
+    tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
 }
 
 fn wait(tui: &mut Harness, text: &str) {

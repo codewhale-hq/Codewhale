@@ -11,9 +11,9 @@ use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RuntimePolicyProjection {
-    pub(crate) mode: AppMode,
-    pub(crate) permission: ApprovalMode,
+pub struct RuntimePolicyProjection {
+    pub mode: AppMode,
+    pub permission: ApprovalMode,
 }
 
 /// The wire spelling of one approval posture: what a thread or task request
@@ -23,7 +23,7 @@ pub(crate) struct RuntimePolicyProjection {
 /// reads as Ask — exactly as [`RuntimePolicyProjection::permission_wire`] has
 /// always spelled it.
 #[must_use]
-pub(crate) fn approval_wire(mode: ApprovalMode) -> &'static str {
+pub fn approval_wire(mode: ApprovalMode) -> &'static str {
     match mode {
         ApprovalMode::Auto => "auto_review",
         ApprovalMode::Bypass => "full_access",
@@ -35,7 +35,7 @@ impl RuntimePolicyProjection {
     /// Read a persisted compatibility shape. Unknown historical values fail
     /// closed to Act + Ask unless the old bypass bit is explicitly present.
     #[must_use]
-    pub(crate) fn from_persisted(
+    pub fn from_persisted(
         mode: &str,
         permission_posture: Option<&str>,
         auto_approve: bool,
@@ -59,7 +59,7 @@ impl RuntimePolicyProjection {
 
     /// Validate and normalize a new Runtime request. Legacy aliases are
     /// accepted as one-way inputs, but only current values are persisted.
-    pub(crate) fn from_request(
+    pub fn from_request(
         mode: &str,
         permission_posture: Option<&str>,
         auto_approve: Option<bool>,
@@ -86,23 +86,23 @@ impl RuntimePolicyProjection {
     }
 
     #[must_use]
-    pub(crate) fn mode_setting(self) -> &'static str {
+    pub fn mode_setting(self) -> &'static str {
         self.mode.as_setting()
     }
 
     #[must_use]
-    pub(crate) fn permission_wire(self) -> &'static str {
+    pub fn permission_wire(self) -> &'static str {
         approval_wire(self.permission)
     }
 
     #[must_use]
-    pub(crate) fn auto_approve(self) -> bool {
+    pub fn auto_approve(self) -> bool {
         self.permission == ApprovalMode::Bypass
     }
 }
 
 #[must_use]
-pub(crate) fn parse_runtime_mode(value: &str) -> Option<AppMode> {
+pub fn parse_runtime_mode(value: &str) -> Option<AppMode> {
     match value.trim().to_ascii_lowercase().as_str() {
         "normal" => Some(AppMode::Agent),
         other => AppMode::parse(other),

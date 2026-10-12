@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -80,7 +80,7 @@ Fix the failing tests and explain what changed.
 To samo zadanie można uruchomić bez interfejsu, ze skryptu lub zadania CI:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 Polecenia i skróty klawiszowe pokaże `/help`.
@@ -93,7 +93,7 @@ narzędzia i uprawnienia zachowują się wszędzie tak samo.
 | Polecenie | Co robi |
 | --- | --- |
 | `codewhale` | Interaktywny interfejs terminalowy |
-| `codewhale exec "…"` | Jedna tura bez interfejsu ze skryptu lub CI, ze strumieniowanym JSON |
+| `codewhale exec "…"` | Jedna tura bez interfejsu ze skryptu lub CI; `--auto` zezwala na narzędzia plików i powłoki, `--output-format stream-json` strumieniuje JSON |
 | `codewhale web` | Wbudowany [lokalny klient przeglądarkowy](docs/WEB.md) pod `127.0.0.1` |
 | `codewhale review --pr N` | Doradczy [przegląd pull requesta](docs/GITHUB_ACTION.md); publikowanie trzeba włączyć |
 | Runtime API | [Lokalne HTTP API](docs/RUNTIME_API.md) dla wątków, zdarzeń i zatwierdzeń |
@@ -144,7 +144,7 @@ Full Access nadal przestrzega twardych granic polityki. Każdą opcję wyjaśnia
 Codewhale działa na Twoim komputerze z dostępem, który mu przyznasz. Postawy
 zatwierdzania i reguły repozytorium ograniczają to, co agent może zrobić, a
 polecenia działają wewnątrz piaskownicy systemowej tam, gdzie jest obsługiwana
-(Seatbelt w macOS; bubblewrap w Linuksie włącza się opcjonalnie).
+(Seatbelt w macOS; bubblewrap w Linuksie, gdy jest zainstalowany i działa).
 `/preview-request` pokazuje dokładne zapytanie z zredagowanymi sekretami, zanim
 cokolwiek zostanie wysłane. Nieznane ceny modeli pozostają nieznane, zamiast być
 podawane jako darmowe.

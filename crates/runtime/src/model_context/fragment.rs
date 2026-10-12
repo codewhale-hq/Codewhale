@@ -31,7 +31,6 @@ pub enum FragmentId {
 
 impl FragmentId {
     #[must_use]
-    #[allow(dead_code)] // public identity API for WorldState host adapters (TUI-DOG-011)
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
@@ -61,7 +60,6 @@ impl FragmentId {
     }
 
     #[must_use]
-    #[allow(dead_code)] // public identity API for WorldState host adapters (TUI-DOG-011)
     pub fn role(self) -> FragmentRole {
         match self {
             Self::Workspace => FragmentRole::Workspace,
@@ -76,7 +74,6 @@ impl FragmentId {
     }
 
     #[must_use]
-    #[allow(dead_code)] // ordered enumeration for host rebuilds / inspectors (TUI-DOG-011)
     pub fn all() -> &'static [FragmentId] {
         &[
             Self::Workspace,
@@ -114,7 +111,6 @@ pub enum FragmentRole {
 
 impl FragmentRole {
     #[must_use]
-    #[allow(dead_code)] // public role labels for inspectors / diffs (TUI-DOG-011)
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
@@ -137,7 +133,6 @@ pub enum FragmentRender {
     /// New or changed content — inject the capped body.
     Updated { fragment: ModelContextFragment },
     /// Fragment was present before and is now absent.
-    #[allow(dead_code)] // produced by WorldState::clear; hosts wire clear next (TUI-DOG-011)
     Cleared { marker: String },
 }
 

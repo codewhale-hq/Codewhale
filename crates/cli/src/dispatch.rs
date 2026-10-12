@@ -1,233 +1,94 @@
-//! First-class Daytona cloud-agent offload: `codewhale dispatch`.
-
-use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use clap::{Args, ValueEnum};
-use codewhale_tui::cloud_dispatch::{
-    CloudJobStore, DispatchOutcome, Forge, LiveDaytonaLauncher, cancel_job, confirm_job,
-    discover_credentials, discover_machine_token, discover_remotes, execute_dispatch, format_job,
-    format_job_list, format_status, plan_dispatch,
-};
-use codewhale_tui::dispatch_runner::spawn_confirmed_runner;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ForgeArg {
-    Github,
-    Cnb,
-    Gitee,
-}
-
-impl From<ForgeArg> for Forge {
-    fn from(value: ForgeArg) -> Self {
-        match value {
-            ForgeArg::Github => Forge::Github,
-            ForgeArg::Cnb => Forge::Cnb,
-            ForgeArg::Gitee => Forge::Gitee,
-        }
-    }
-}
+use clap::Args;
+use codewhale_config::ConfigStore;
 
 #[derive(Debug, Args)]
 pub(crate) struct DispatchArgs {
-    /// Task for the remote agent. Required unless listing or inspecting a job.
+    /// Task for the remote agent. Required unless inspecting or cancelling a job.
     #[arg(value_name = "PROMPT")]
     prompt: Vec<String>,
-    /// Forge that should receive the branch and PR: github, cnb, or gitee.
-    #[arg(long, value_enum)]
-    remote: Option<ForgeArg>,
-    /// Branch the remote agent will raise (default: codewhale/cloud-<unix>).
-    #[arg(long)]
-    branch: Option<String>,
-    /// Required to create Codewhale cloud-agent spend or push. Without this, only a proposal is written.
-    #[arg(long)]
-    confirm: bool,
-    /// Show remotes and whether Codewhale cloud-agent credentials are present (never prints secrets).
-    #[arg(long)]
-    status: bool,
-    /// List first-class cloud jobs (same kind shown by `/jobs`).
-    #[arg(long)]
-    list: bool,
-    /// Inspect one cloud job.
+    /// Inspect one account job.
     #[arg(long, value_name = "ID")]
     show: Option<String>,
-    /// Cancel one cloud job.
+    /// Cancel one account job.
     #[arg(long, value_name = "ID")]
     cancel: Option<String>,
-    /// Workspace whose git remotes are classified (default: current directory).
+    /// Account dispatch: Agent name or ID (default: the repository-free default Agent).
     #[arg(long)]
-    cwd: Option<PathBuf>,
+    agent: Option<String>,
+    /// Account dispatch: task time in seconds (default: what your offer allows).
+    #[arg(long)]
+    seconds: Option<u64>,
+    /// Account dispatch: UTF-8 source context file.
+    #[arg(long, value_name = "PATH")]
+    context_file: Option<PathBuf>,
+    /// Account dispatch: saved account file FILE_ID@VERSION; repeatable.
+    #[arg(long = "file", value_name = "FILE_ID@VERSION")]
+    file_refs: Vec<String>,
+    /// Account dispatch: skip the question (needs --confirm-eu-compute).
+    #[arg(long)]
+    yes: bool,
+    /// Account dispatch: agree that repository code and Work files run on EU compute.
+    #[arg(long)]
+    confirm_eu_compute: bool,
+    /// Account dispatch: replay key for a retry after an uncertain response.
+    #[arg(long)]
+    operation_key: Option<String>,
+    /// Account dispatch: message ID for a retry after an uncertain response.
+    #[arg(long)]
+    message_id: Option<String>,
 }
 
-pub(crate) fn run(args: DispatchArgs) -> Result<()> {
-    let mut out = io::stdout().lock();
-    run_with(args, &mut out)
+fn unknown_job(id: &str) -> anyhow::Error {
+    anyhow::anyhow!("Unknown job {id}: it is not a Codewhale account job ID.")
 }
 
-fn run_with<W: Write>(args: DispatchArgs, out: &mut W) -> Result<()> {
-    if [
-        args.status,
-        args.list,
+pub(crate) fn run(
+    args: DispatchArgs,
+    profile: Option<&str>,
+    config: &mut ConfigStore,
+) -> Result<()> {
+    use crate::cloud::{AccountDispatch, run_dispatch};
+    let modes = [
         args.show.is_some(),
         args.cancel.is_some(),
         !args.prompt.is_empty(),
-    ]
-    .iter()
-    .filter(|flag| **flag)
-    .count()
-        > 1
-    {
-        bail!("Use one of: a prompt, --status, --list, --show <id>, or --cancel <id>.");
-    }
-
-    let workspace = args
-        .cwd
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let remotes = discover_remotes(&workspace);
-    let credentials = discover_credentials();
-    let store = CloudJobStore::from_env()?;
-
-    if args.status
-        || (args.prompt.is_empty() && args.show.is_none() && args.cancel.is_none() && !args.list)
-    {
-        writeln!(
-            out,
-            "{}",
-            format_status(&remotes, &credentials, &recent_jobs(&store))
-        )?;
-        return Ok(());
-    }
-    if args.list {
-        writeln!(out, "{}", format_job_list(&store.list()?))?;
-        return Ok(());
+    ];
+    if modes.iter().filter(|mode| **mode).count() > 1 {
+        bail!("Use one of: a prompt, --show <id>, or --cancel <id>.");
     }
     if let Some(id) = args.show.as_deref() {
-        writeln!(out, "{}", format_job(&store.load(id)?))?;
-        return Ok(());
+        if id.starts_with("cloud_") {
+            return Err(unknown_job(id));
+        }
+        return run_dispatch(AccountDispatch::Status(id.to_string()), profile, config);
     }
     if let Some(id) = args.cancel.as_deref() {
-        writeln!(
-            out,
-            "{}",
-            format_job(&cancel_job(&store, id, &LiveDaytonaLauncher)?)
-        )?;
-        return Ok(());
-    }
-
-    let prompt = args.prompt.join(" ");
-    if prompt.starts_with("cloud_") && args.confirm && prompt.split_whitespace().count() == 1 {
-        let outcome = confirm_job(
-            &store,
-            prompt.trim(),
-            &credentials,
-            &discover_machine_token(),
-        )?;
-        let runner = spawn_accepted(&store, &outcome);
-        return write_then_join(out, &store, prompt.trim(), outcome, runner);
-    }
-
-    let plan = plan_dispatch(
-        &remotes,
-        &prompt,
-        args.remote.map(Forge::from),
-        args.branch.as_deref(),
-    )?;
-    let outcome = execute_dispatch(
-        &store,
-        plan,
-        args.confirm,
-        &credentials,
-        &discover_machine_token(),
-    )?;
-    let runner = spawn_accepted(&store, &outcome);
-    let job_id = outcome_job_id(&outcome).unwrap_or_default();
-    write_then_join(out, &store, &job_id, outcome, runner)
-}
-
-/// Print the outcome card, then stay attached to the runner — joining it even
-/// when the print failed. A closed stdout (`| head`, a dead terminal) used to
-/// return before the join, ending the process and the runner thread with it,
-/// which orphaned the paid sandbox this wait exists to supervise. The print
-/// error still wins the exit status.
-fn write_then_join<W: Write>(
-    out: &mut W,
-    store: &CloudJobStore,
-    id: &str,
-    outcome: DispatchOutcome,
-    runner: Option<std::thread::JoinHandle<()>>,
-) -> Result<()> {
-    let written = write_outcome(out, outcome);
-    let joined = join_runner(out, store, id, runner);
-    written.and(joined)
-}
-
-/// The CLI stays attached to a confirmed run: the card prints immediately,
-/// then the process waits for the runner so a paid sandbox is never
-/// orphaned by an early exit. Ctrl-C exits the wait; the job stays recorded
-/// and `--cancel` tears the sandbox down.
-fn join_runner<W: Write>(
-    out: &mut W,
-    store: &CloudJobStore,
-    id: &str,
-    runner: Option<std::thread::JoinHandle<()>>,
-) -> Result<()> {
-    if let Some(runner) = runner {
-        runner
-            .join()
-            .map_err(|_| anyhow::anyhow!("the cloud agent runner panicked"))?;
-        if !id.is_empty()
-            && let Ok(job) = store.load(id)
-        {
-            writeln!(out, "{}", format_job(&job))?;
+        if id.starts_with("cloud_") {
+            return Err(unknown_job(id));
         }
+        return run_dispatch(AccountDispatch::Cancel(id.to_string()), profile, config);
     }
-    Ok(())
-}
-
-fn outcome_job_id(outcome: &DispatchOutcome) -> Option<String> {
-    match outcome {
-        DispatchOutcome::Proposal(job)
-        | DispatchOutcome::Refused(job)
-        | DispatchOutcome::Accepted(job) => Some(job.id.clone()),
+    if args.prompt.is_empty() {
+        bail!("Give a task to dispatch, or use --show <id> or --cancel <id>.");
     }
-}
-
-/// Newest jobs for the status card's receipts section (best effort — an
-/// unreadable store must not hide the card).
-fn recent_jobs(store: &CloudJobStore) -> Vec<codewhale_tui::cloud_dispatch::CloudJob> {
-    store
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .take(5)
-        .collect()
-}
-
-/// Start the background runner for a just-accepted confirm. The sandbox,
-/// harness turn, branch push, PR open, and teardown all happen there.
-fn spawn_accepted(
-    store: &CloudJobStore,
-    outcome: &DispatchOutcome,
-) -> Option<std::thread::JoinHandle<()>> {
-    match outcome {
-        DispatchOutcome::Accepted(job) => spawn_confirmed_runner(store.clone(), job.id.clone()),
-        _ => None,
-    }
-}
-
-fn write_outcome<W: Write>(out: &mut W, outcome: DispatchOutcome) -> Result<()> {
-    match outcome {
-        DispatchOutcome::Proposal(job) | DispatchOutcome::Accepted(job) => {
-            writeln!(out, "{}", format_job(&job))?;
-            Ok(())
-        }
-        DispatchOutcome::Refused(job) => {
-            writeln!(out, "{}", format_job(&job))?;
-            bail!("{}", job.note);
-        }
-    }
+    run_dispatch(
+        AccountDispatch::Run {
+            objective: args.prompt.join(" "),
+            agent: args.agent,
+            seconds: args.seconds,
+            context_file: args.context_file,
+            file_refs: args.file_refs,
+            operation_key: args.operation_key,
+            message_id: args.message_id,
+            yes: args.yes,
+            confirm_eu_compute: args.confirm_eu_compute,
+        },
+        profile,
+        config,
+    )
 }
 
 #[cfg(test)]
@@ -252,122 +113,12 @@ mod tests {
             "fix",
             "the",
             "flake",
-            "--remote",
-            "github",
+            "--seconds",
+            "600",
         ]);
         assert_eq!(parsed.prompt, ["fix", "the", "flake"]);
-        assert_eq!(parsed.remote, Some(ForgeArg::Github));
-        assert!(!parsed.confirm);
-        assert!(args(&["codewhale", "cloud-agent", "--status"]).status);
-        assert!(Cli::try_parse_from(["codewhale", "dispatch", "--remote", "gitlab"]).is_err());
-    }
-
-    #[test]
-    fn refused_confirmation_is_a_nonzero_error() {
-        use codewhale_tui::cloud_dispatch::{CloudJob, CloudJobStatus};
-        let job = CloudJob {
-            id: "cloud_00000000000000dd".to_string(),
-            kind: "cloud".to_string(),
-            status: CloudJobStatus::Refused,
-            prompt: "fix".to_string(),
-            forge: Forge::Github,
-            remote_name: "github".to_string(),
-            remote_url: "https://github.com/org/repo.git".to_string(),
-            branch: "codewhale/cloud-x".to_string(),
-            confirmed: true,
-            sandbox_id: None,
-            pr_url: None,
-            refusal: Some("no credentials".to_string()),
-            note: "Refused: cloud agents are not available.".to_string(),
-            created_unix: 1,
-            base_branch: None,
-            head_sha: None,
-            agent_summary: None,
-            finished_unix: Some(1),
-            sandbox_pending: false,
-        };
-        let error = write_outcome(&mut Vec::new(), DispatchOutcome::Refused(job)).unwrap_err();
-        assert!(
-            error.to_string().contains("Refused"),
-            "refused confirmations must not exit 0: {error}"
-        );
-    }
-
-    #[test]
-    fn status_is_fail_closed_and_never_prints_secrets() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut output = Vec::new();
-        run_with(
-            DispatchArgs {
-                prompt: Vec::new(),
-                remote: None,
-                branch: None,
-                confirm: false,
-                status: true,
-                list: false,
-                show: None,
-                cancel: None,
-                cwd: Some(temp.path().to_path_buf()),
-            },
-            &mut output,
-        )
-        .unwrap();
-        let text = String::from_utf8(output).unwrap();
-        assert!(text.contains("Codewhale cloud dispatch"));
-        assert!(!text.contains("Daytona"));
-        assert!(!text.contains("sk-"));
-        assert!(!text.contains("Bearer"));
-    }
-
-    /// Audit R02-09: a stdout failure must not skip the runner join.
-    #[test]
-    fn a_failed_card_write_still_joins_the_runner() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        struct ClosedPipe;
-        impl Write for ClosedPipe {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::BrokenPipe))
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Err(io::Error::from(io::ErrorKind::BrokenPipe))
-            }
-        }
-
-        let finished = Arc::new(AtomicBool::new(false));
-        let runner = {
-            let finished = Arc::clone(&finished);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                finished.store(true, Ordering::SeqCst);
-            })
-        };
-        let job: codewhale_tui::cloud_dispatch::CloudJob =
-            serde_json::from_value(serde_json::json!({
-                "id": "cloud_test", "kind": "cloud", "status": "running",
-                "prompt": "p", "forge": "github", "remote_name": "origin",
-                "remote_url": "https://example.invalid/r.git", "branch": "b",
-                "confirmed": true, "sandbox_id": null, "pr_url": null,
-                "refusal": null, "note": "", "created_unix": 0
-            }))
-            .expect("job fixture");
-        let dir = tempfile::tempdir().unwrap();
-        let store = CloudJobStore::from_path(dir.path().to_path_buf());
-
-        let result = write_then_join(
-            &mut ClosedPipe,
-            &store,
-            "cloud_test",
-            DispatchOutcome::Accepted(job),
-            Some(runner),
-        );
-
-        assert!(result.is_err(), "the print failure is still reported");
-        assert!(
-            finished.load(Ordering::SeqCst),
-            "returned before the runner finished"
-        );
+        assert_eq!(parsed.seconds, Some(600));
+        assert!(Cli::try_parse_from(["codewhale", "dispatch", "--remote", "github"]).is_err());
     }
 
     #[test]
@@ -378,10 +129,8 @@ mod tests {
             .expect("dispatch subcommand exists")
             .render_help()
             .to_string();
-        // The reworded cloud-agent copy must actually land in --help…
-        assert!(help.contains("cloud-agent"), "{help}");
-        assert!(help.contains("--confirm"), "{help}");
-        // …and no provider brand may leak into it.
+        assert!(help.contains("--show"), "{help}");
+        assert!(!help.contains("--own-sandbox"), "{help}");
         for banned in ["Daytona", "daytona"] {
             assert!(
                 !help.contains(banned),

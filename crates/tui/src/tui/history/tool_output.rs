@@ -414,22 +414,28 @@ fn render_preserved_output_mode(
     );
     // Blank rows are dropped without a marker, so the count is of rows that
     // carry text. Rows hidden after the last one shown are announced too: the
-    // tail can stop short of the end when it keeps a result row instead.
-    let omitted_line = |hidden: &[OutputRow]| {
-        let omitted = hidden.iter().filter(|row| !is_blank_row(row)).count();
-        (omitted > 0).then(|| {
-            details_affordance_line(
-                &format!(
-                    "{omitted} lines omitted; {}",
-                    crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
-                ),
-                Style::default().fg(palette::TEXT_MUTED),
-            )
-        })
+    // tail can stop short of the end when it keeps a result row instead. A gap
+    // of exactly one row shows that row: a marker would take the same space.
+    let emit_gap = |lines: &mut Vec<Line<'static>>, hidden: &[OutputRow]| {
+        let mut text_rows = hidden.iter().filter(|row| !is_blank_row(row));
+        let (Some(only), None) = (text_rows.next(), text_rows.next()) else {
+            let omitted = hidden.iter().filter(|row| !is_blank_row(row)).count();
+            if omitted > 0 {
+                lines.push(details_affordance_line(
+                    &format!(
+                        "{omitted} lines omitted \u{00B7} {}",
+                        crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
+                    ),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ));
+            }
+            return;
+        };
+        render_output_row(lines, None, only, width);
     };
     let mut next = 0usize;
     for (rendered_idx, idx) in selected.iter().copied().enumerate() {
-        lines.extend(omitted_line(&all_lines[next..idx]));
+        emit_gap(&mut lines, &all_lines[next..idx]);
 
         let row = &all_lines[idx];
         render_output_row(
@@ -444,7 +450,7 @@ fn render_preserved_output_mode(
         );
         next = idx + 1;
     }
-    lines.extend(omitted_line(&all_lines[next..]));
+    emit_gap(&mut lines, &all_lines[next..]);
 
     lines
 }

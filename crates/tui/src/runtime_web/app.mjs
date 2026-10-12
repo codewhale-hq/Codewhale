@@ -2,6 +2,7 @@ export const STREAM_EVENT_NAMES = [
   "thread.started",
   "thread.updated",
   "thread.forked",
+  "thread.permissions_changed",
   "turn.started",
   "turn.lifecycle",
   "turn.usage",

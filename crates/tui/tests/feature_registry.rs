@@ -6,14 +6,10 @@
 //! every `docs`/`owner` path exists. Not checked yet: slash-command ownership
 //! and generated docs (later slices of the registry design).
 
-#[allow(dead_code)]
-#[path = "../src/features.rs"]
-mod features;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use features::{FEATURES, FeatureSpec, Stage};
+use codewhale_runtime::features::{FEATURES, FeatureSpec, Stage};
 use serde::Deserialize;
 
 const STATUSES: &[&str] = &["stable", "experimental", "flagged", "planned"];

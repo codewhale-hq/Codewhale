@@ -3,13 +3,16 @@
     "std_fs": 1,
     "thread_sleep": 2
   },
+  "crates/cli/src/cloud/work.rs": {
+    "std_fs": 1
+  },
   "crates/cli/src/config_bundles.rs": {
     "path_canonicalize": 2,
     "std_fs": 6
   },
   "crates/cli/src/lib.rs": {
     "path_canonicalize": 3,
-    "std_fs": 3,
+    "std_fs": 4,
     "thread_sleep": 1
   },
   "crates/cli/src/metrics.rs": {
@@ -28,6 +31,10 @@
   "crates/config/src/lib.rs": {
     "path_canonicalize": 3,
     "std_fs": 9
+  },
+  "crates/config/src/private_directory.rs": {
+    "path_canonicalize": 1,
+    "std_fs": 1
   },
   "crates/config/src/redaction.rs": {
     "path_canonicalize": 2,
@@ -84,9 +91,6 @@
   },
   "crates/tui/src/client.rs": {
     "std_fs": 1
-  },
-  "crates/tui/src/cloud_dispatch.rs": {
-    "thread_sleep": 1
   },
   "crates/tui/src/codex_model_cache.rs": {
     "std_fs": 2
@@ -153,9 +157,6 @@
   "crates/tui/src/dependencies.rs": {
     "std_fs": 2
   },
-  "crates/tui/src/dispatch_runner.rs": {
-    "std_fs": 2
-  },
   "crates/tui/src/doctor_fix.rs": {
     "std_fs": 6
   },
@@ -175,7 +176,7 @@
     "std_fs": 1
   },
   "crates/tui/src/fleet/files.rs": {
-    "path_canonicalize": 1,
+    "path_canonicalize": 2,
     "std_fs": 5,
     "thread_sleep": 1
   },

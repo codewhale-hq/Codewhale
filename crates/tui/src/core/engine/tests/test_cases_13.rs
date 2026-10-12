@@ -471,8 +471,8 @@ fn messages_with_turn_metadata_returns_stored_session_messages() {
 // === To-do state reaches the model through its own tool results ===
 //
 // Codewhale has one To-do list. The model learns what is on it the way it
-// learns anything else: from the result its own `work_update` call returned,
-// which is ordinary persisted history. No request re-states the list, on any
+// learns anything else: from its own `work_update` call and the short receipt
+// it returned, which are ordinary persisted history. No request re-states the list, on any
 // step. The complete list stays visible in the UI, which is a different
 // surface from the request.
 

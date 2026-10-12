@@ -16,6 +16,8 @@ fn config_policy_keeps_host_registry_order_metadata_and_exact_capabilities() {
             "import-claude",
             "permissions",
             "login",
+            "connect",
+            "disconnect",
             "auth",
             "workbar",
             "pet",

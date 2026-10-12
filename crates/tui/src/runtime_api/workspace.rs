@@ -566,6 +566,20 @@ pub(super) fn open_confined_file(
         .map_err(|error| map_fs_error(error, "file"))
 }
 
+/// [`open_confined_file`] for the application's own state root, which a user
+/// may have relocated behind a link (on Windows, a junction to another
+/// volume). The root is resolved once and every component below it is still
+/// refused when linked, so a reader follows its writer and a caller-supplied
+/// workspace root keeps the stricter [`open_confined_file`].
+pub(super) fn open_confined_file_resolved(
+    root: &FsPath,
+    relative: &FsPath,
+    create: bool,
+) -> Result<crate::fleet::files::WorkspaceFile, ApiError> {
+    crate::fleet::files::WorkspaceFile::open_resolved_root(root, relative, create)
+        .map_err(|error| map_fs_error(error, "file"))
+}
+
 /// Read one confined file completely (bounded by `FILE_SERVE_MAX_BYTES`) so
 /// the revision always describes the whole file.
 pub(super) fn read_confined_bytes(

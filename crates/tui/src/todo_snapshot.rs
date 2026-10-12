@@ -1,11 +1,12 @@
 //! Bounded renderings of a To-do snapshot.
 //!
 //! Codewhale has exactly one To-do list. The model learns what is on it the
-//! same way it learns anything else: from the tool result its own `todo_write`
-//! / `work_update` call returned, which is ordinary persisted transcript
-//! state. **Nothing in this module is appended to a provider request**, and no
-//! step of a tool loop re-states the list. If the model wants the current
-//! list, it reads its own last tool result or calls the tool again.
+//! same way it learns anything else: from its own `todo_write` /
+//! `work_update` call, whose input is the whole list, confirmed by a short
+//! receipt (counts and the item in progress). Both are ordinary persisted
+//! transcript state. **Nothing in this module is appended to a provider
+//! request**, and no step of a tool loop re-states the list. If the model
+//! wants the current list, it reads its own last call or calls the tool again.
 //!
 //! What this module owns is the small set of places that render a snapshot
 //! *once*, at an explicit seam a person asked for:

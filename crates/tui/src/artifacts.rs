@@ -122,6 +122,11 @@ pub(crate) fn set_test_artifact_sessions_root(root: Option<PathBuf>) -> Option<P
     std::mem::replace(&mut *guard, root)
 }
 
+/// The recorded spelling of a session artifact path: for receipts, metadata
+/// and display, not for opening. It is built from the state root as spelled
+/// (a user may have relocated that root behind a link), so an opener must go
+/// through `open_session_relative` instead of this value; readers that do
+/// consume it compare canonicalized forms.
 #[must_use]
 pub fn session_artifact_absolute_path(session_id: &str, relative_path: &Path) -> Option<PathBuf> {
     if !is_valid_session_id(session_id) {
@@ -207,7 +212,10 @@ pub(crate) fn open_session_relative(
     if create {
         std::fs::create_dir_all(&root)?;
     }
-    crate::fleet::files::WorkspaceFile::open(
+    // The sessions root is the application's own state, which a user may have
+    // relocated behind a link (on Windows, a junction to another volume).
+    // Resolve the root once; everything below it stays link-refusing.
+    crate::fleet::files::WorkspaceFile::open_resolved_root(
         &root,
         &PathBuf::from(session_id).join(relative_path),
         create,

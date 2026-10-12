@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -76,7 +76,7 @@ Fix the failing tests and explain what changed.
 यही काम किसी स्क्रिप्ट या CI जॉब से बिना इंटरफ़ेस के भी चलता है:
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 कमांड और कीबोर्ड शॉर्टकट देखने के लिए `/help` चलाएँ।
@@ -89,7 +89,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | कमांड | क्या करता है |
 | --- | --- |
 | `codewhale` | इंटरैक्टिव टर्मिनल इंटरफ़ेस |
-| `codewhale exec "…"` | किसी स्क्रिप्ट या CI से एक बिना इंटरफ़ेस वाला टर्न, JSON स्ट्रीम के साथ |
+| `codewhale exec "…"` | किसी स्क्रिप्ट या CI से एक बिना इंटरफ़ेस वाला टर्न; `--auto` फ़ाइल और शेल टूल की अनुमति देता है, `--output-format stream-json` JSON स्ट्रीम करता है |
 | `codewhale web` | `127.0.0.1` पर पैकेज में शामिल [लोकल ब्राउज़र क्लाइंट](docs/WEB.md) |
 | `codewhale review --pr N` | सलाह के रूप में [pull request समीक्षा](docs/GITHUB_ACTION.md); पोस्ट करना वैकल्पिक है |
 | Runtime API | थ्रेड, इवेंट और अनुमोदन के लिए [लोकल HTTP API](docs/RUNTIME_API.md) |
@@ -136,7 +136,7 @@ Full Access भी नीति की बाध्यकारी सीमा�
 
 Codewhale आपकी मशीन पर उतने ही एक्सेस के साथ चलता है जितना आप उसे देते हैं। अनुमोदन की
 स्थितियाँ और रिपॉज़िटरी के नियम एजेंट की गतिविधियों को सीमित करते हैं, और जहाँ समर्थन है
-वहाँ कमांड OS सैंडबॉक्स के भीतर चलते हैं (macOS पर Seatbelt; Linux पर bubblewrap वैकल्पिक है)।
+वहाँ कमांड OS सैंडबॉक्स के भीतर चलते हैं (macOS पर Seatbelt; Linux पर bubblewrap, जब वह इंस्टॉल हो और ठीक से काम कर रहा हो)।
 कुछ भी भेजे जाने से पहले `/preview-request` सटीक, संपादित (redacted) अनुरोध दिखाता है।
 जिन मॉडलों की कीमत ज्ञात नहीं है, उन्हें मुफ़्त बताने के बजाय अज्ञात ही दिखाया जाता है।
 

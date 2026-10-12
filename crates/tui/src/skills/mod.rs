@@ -32,6 +32,7 @@ pub use roots::{
 pub use system::is_exact_bundled_skill;
 pub use system::{
     BundledSkillTier, bundled_skill_tier, install_system_skills, is_bundled_skill_name,
+    unrecognized_system_skills,
 };
 
 use std::fs;
@@ -566,11 +567,14 @@ impl SkillRegistry {
 
     /// [`Self::discover_watched`] for a root that belongs to a workspace.
     ///
-    /// With a `confine_to` workspace, the walk never follows a link: a linked
-    /// root, a linked skill directory, and a linked `SKILL.md` are each named
-    /// in a warning and skipped, so a repository cannot make discovery read
-    /// files outside itself. Operator-owned roots (`confine_to == None`) keep
-    /// following links, because users link skill libraries there on purpose.
+    /// With a `confine_to` workspace, a linked root is refused and a linked
+    /// skill entry is followed only when its canonical target is a path inside
+    /// the canonical workspace (reads then run on that link-free canonical
+    /// path, still no-follow and pinned to the workspace root); an entry that
+    /// escapes or cannot be resolved is named in a warning and skipped, so a
+    /// repository cannot make discovery read files outside itself.
+    /// Operator-owned roots (`confine_to == None`) follow links freely,
+    /// because users link skill libraries there on purpose.
     pub(crate) fn discover_watched_confined(
         dir: &Path,
         confine_to: Option<&Path>,
@@ -660,25 +664,31 @@ impl SkillRegistry {
                 continue;
             }
 
-            let metadata = if confine_to.is_some() {
-                // Under a workspace a link is never followed, whatever it
-                // points at; say so instead of dropping the entry silently.
+            let (path, metadata) = if let Some(workspace) = confine_to {
                 match fs::symlink_metadata(&path) {
                     Ok(metadata) if metadata.file_type().is_symlink() => {
-                        registry.push_warning(format!(
-                            "Refusing symlinked skill entry {}: workspace skills must stay inside the workspace.",
-                            path.display()
-                        ));
-                        continue;
+                        match Self::workspace_link_target(workspace, &path) {
+                            Ok(target) => match fs::symlink_metadata(&target) {
+                                Ok(metadata) => (target, metadata),
+                                Err(_) => continue,
+                            },
+                            Err(reason) => {
+                                registry.push_warning(format!(
+                                    "Refusing symlinked skill entry {}: {reason}.",
+                                    path.display()
+                                ));
+                                continue;
+                            }
+                        }
                     }
-                    Ok(metadata) => metadata,
+                    Ok(metadata) => (path, metadata),
                     Err(_) => continue,
                 }
             } else {
                 let Ok(metadata) = fs::metadata(&path) else {
                     continue;
                 };
-                metadata
+                (path, metadata)
             };
             if !metadata.is_dir() {
                 continue;
@@ -688,7 +698,14 @@ impl SkillRegistry {
             #[cfg(test)]
             record_skill_md_read_attempt();
             let read_result = match confine_to {
-                Some(workspace) => crate::fs_confined::read_to_string(workspace, &skill_path),
+                Some(workspace) => {
+                    let root = if skill_path.starts_with(workspace) {
+                        workspace.to_path_buf()
+                    } else {
+                        fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf())
+                    };
+                    crate::fs_confined::read_to_string(&root, &skill_path)
+                }
                 None => fs::read_to_string(&skill_path),
             };
             match read_result {
@@ -761,6 +778,16 @@ impl SkillRegistry {
             }
 
             Self::discover_recursive(&path, depth + 1, confine_to, registry, visited);
+        }
+    }
+
+    fn workspace_link_target(workspace: &Path, link: &Path) -> Result<PathBuf, &'static str> {
+        let root = fs::canonicalize(workspace).map_err(|_| "the workspace cannot be resolved")?;
+        let target = fs::canonicalize(link).map_err(|_| "its target cannot be resolved")?;
+        if target != root && target.starts_with(&root) {
+            Ok(target)
+        } else {
+            Err("it points outside the workspace, and workspace skills must stay inside it")
         }
     }
 
@@ -1342,12 +1369,17 @@ fn merge_watched_directories(
 ) -> (SkillRegistry, WatchedPaths) {
     let mut merged = SkillRegistry::default();
     let mut watched = WatchedPaths::default();
+    let mut seen_files = HashSet::new();
     for dir in dirs {
         watched.push((dir.clone(), watched_path_stamp(&dir)));
         let confine_to = workspace.filter(|workspace| dir.starts_with(workspace));
         let (registry, dir_watched) = SkillRegistry::discover_watched_confined(&dir, confine_to);
         watched.extend(dir_watched);
         for skill in registry.skills {
+            let canonical = fs::canonicalize(&skill.path).unwrap_or_else(|_| skill.path.clone());
+            if !seen_files.insert(canonical) {
+                continue;
+            }
             if let Some(existing) = merged.skills.iter().find(|s| s.name == skill.name) {
                 merged.push_warning(format!(
                     "Skill `{}` at {} is shadowed by {}.",
@@ -1927,7 +1959,8 @@ fn render_skills_block_with_configured_root(
     configured_skills_root: Option<&Path>,
     budget_chars: usize,
 ) -> Option<String> {
-    if registry.is_empty() && registry.warnings().is_empty() {
+    let warnings = ambient_warnings(registry.warnings());
+    if registry.is_empty() && warnings.is_empty() {
         return None;
     }
     let budget_chars = budget_chars.max(MIN_AVAILABLE_SKILLS_CHARS);
@@ -1983,18 +2016,15 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
     // Reserve using the model-selectable total: an actual omitted count can
     // never exceed it. This remains safe for catalogues above 9,999 entries.
     let skill_omission_reserve = omitted_skills_line(rows.len()).chars().count();
-    let warning_omission_reserve = if registry.warnings().is_empty() {
+    let warning_omission_reserve = if warnings.is_empty() {
         0
     } else {
-        WARNING_HEADING.chars().count()
-            + omitted_warnings_line(registry.warnings().len())
-                .chars()
-                .count()
+        WARNING_HEADING.chars().count() + omitted_warnings_line(warnings.len()).chars().count()
     };
     let fixed = HEADER.chars().count() + USAGE.chars().count() + warning_omission_reserve;
     // Warnings are rendered after the index and share the budget; give them a
     // bounded slice so a noisy install cannot erase the index, and vice versa.
-    let warning_slice = if registry.warnings().is_empty() {
+    let warning_slice = if warnings.is_empty() {
         0
     } else {
         (budget_chars / 5).min(8 * (MAX_SKILL_DESCRIPTION_CHARS + 4))
@@ -2079,18 +2109,16 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
         out.push_str(&omitted_skills_line(omitted));
     }
 
-    if !registry.warnings().is_empty() {
+    if !warnings.is_empty() {
         out.push_str(WARNING_HEADING);
         let warnings_budget = budget_chars.saturating_sub(
             out.chars().count()
                 + USAGE.chars().count()
-                + omitted_warnings_line(registry.warnings().len())
-                    .chars()
-                    .count(),
+                + omitted_warnings_line(warnings.len()).chars().count(),
         );
         let mut used = 0usize;
         let mut warnings_omitted = 0usize;
-        for warning in registry.warnings().iter().take(8) {
+        for warning in warnings.iter().take(8) {
             let line = format!(
                 "- {}\n",
                 truncate_for_prompt(
@@ -2106,7 +2134,7 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 out.push_str(&line);
             }
         }
-        warnings_omitted += registry.warnings().len().saturating_sub(8);
+        warnings_omitted += warnings.len().saturating_sub(8);
         if warnings_omitted > 0 {
             out.push_str(&omitted_warnings_line(warnings_omitted));
         }
@@ -2120,6 +2148,20 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
     );
 
     Some(out)
+}
+
+fn ambient_warnings(warnings: &[String]) -> Vec<String> {
+    let (ignored, kept): (Vec<&String>, Vec<&String>) = warnings
+        .iter()
+        .partition(|warning| warning.contains("` ignored") || warning.contains("` unsupported:"));
+    let mut out: Vec<String> = kept.into_iter().cloned().collect();
+    if !ignored.is_empty() {
+        out.push(format!(
+            "{} frontmatter keys were ignored (Claude-style allowed-tools, model, context and similar; skills grant no authority); run `/skills` for per-skill detail.",
+            ignored.len()
+        ));
+    }
+    out
 }
 
 fn omitted_skills_line(count: usize) -> String {

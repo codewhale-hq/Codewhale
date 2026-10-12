@@ -625,8 +625,11 @@ pub(super) fn shell_exec_live_update(
     let next_status = shell_job_tool_status(&job.status);
     let next_live = shell_job_live_output(job).or_else(|| exec.live_output.clone());
     let finalized = !matches!(job.status, ShellStatus::Running);
-    let stale_elapsed_since_output_ms = if matches!(job.status, ShellStatus::Running) && job.stale {
-        Some(job.elapsed_since_output_ms.unwrap_or(0))
+    let quiet_after_ms =
+        u64::try_from(crate::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis()).unwrap_or(u64::MAX);
+    let stale_elapsed_since_output_ms = if matches!(job.status, ShellStatus::Running) {
+        job.elapsed_since_output_ms
+            .filter(|elapsed| *elapsed >= quiet_after_ms)
     } else {
         None
     };

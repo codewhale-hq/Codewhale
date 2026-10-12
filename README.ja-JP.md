@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -75,7 +75,7 @@ Fix the failing tests and explain what changed.
 同じタスクを、スクリプトや CI ジョブからヘッドレスで実行することもできます。
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 コマンドとキーボードショートカットは `/help` で確認できます。
@@ -87,7 +87,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | コマンド | 内容 |
 | --- | --- |
 | `codewhale` | 対話型のターミナルインターフェース |
-| `codewhale exec "…"` | スクリプトや CI からヘッドレスで 1 ターン実行し、JSON をストリーミング出力 |
+| `codewhale exec "…"` | スクリプトや CI からヘッドレスで 1 ターン実行します。`--auto` でファイルおよびシェルツールを許可し、`--output-format stream-json` で JSON をストリーミング出力します |
 | `codewhale web` | `127.0.0.1` で動作する、同梱の[ローカルブラウザークライアント](docs/WEB.md) |
 | `codewhale review --pr N` | 参考情報としての[プルリクエストレビュー](docs/GITHUB_ACTION.md)。投稿は任意で有効化 |
 | Runtime API | スレッド、イベント、承認のための[ローカル HTTP API](docs/RUNTIME_API.md) |
@@ -131,7 +131,7 @@ Full Access でも、ハードなポリシー境界は守られます。
 ## 安全性
 
 Codewhale はあなたのマシン上で、あなたが与えたアクセス権の範囲で動作します。承認ポスチャーとリポジトリのルールがエージェントにできることを制限し、
-対応環境ではコマンドは OS のサンドボックス内で実行されます（macOS は Seatbelt、Linux の bubblewrap は任意で有効化）。
+対応環境ではコマンドは OS のサンドボックス内で実行されます（macOS は Seatbelt、Linux では bubblewrap がインストールされ正常に動作する場合）。
 `/preview-request` は、何かを送信する前に、機密情報を伏せたリクエストそのものを表示します。
 価格が不明なモデルは「不明」のまま扱われ、無料として報告されることはありません。
 

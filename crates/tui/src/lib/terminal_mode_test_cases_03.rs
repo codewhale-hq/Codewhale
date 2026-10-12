@@ -1363,3 +1363,72 @@
             }
         }
     }
+
+    #[test]
+    fn default_max_turns_does_not_add_a_hidden_worker_cap() {
+        use crate::fleet::executor::build_worker_exec_command_with_launch_spec;
+        use crate::fleet::worker_runtime::fleet_task_to_worker_spec_with_profiles;
+        use codewhale_config::FleetExecConfig;
+        use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerSpec};
+
+        let exec = FleetExecConfig::default();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let worker = FleetWorkerSpec {
+            id: "worker-1".to_string(),
+            name: "Worker 1".to_string(),
+            host: FleetHostSpec::Local,
+            trust_level: None,
+            labels: std::collections::BTreeMap::new(),
+            capabilities: Vec::new(),
+            max_concurrent_tasks: Some(1),
+        };
+        for requested_steps in [None, Some(0), Some(13)] {
+            let mut task = serde_json::json!({
+                "id": "t1",
+                "name": "Smoke",
+                "objective": "prove it runs",
+                "instructions": "x",
+                "worker": { "role": "reviewer", "tool_profile": "read-only" }
+            });
+            if let Some(max_steps) = requested_steps {
+                task["budget"] = serde_json::json!({ "max_steps": max_steps });
+            }
+            let task: FleetTaskSpec = serde_json::from_value(task).unwrap();
+            let spec = fleet_task_to_worker_spec_with_profiles(
+                "worker-1",
+                "run-1",
+                &task,
+                &worker,
+                "auto",
+                workspace.path(),
+                workspace.path(),
+                &[],
+                None,
+            )
+            .unwrap();
+            let cmd = build_worker_exec_command_with_launch_spec(
+                "codewhale",
+                &task,
+                &spec,
+                &exec,
+                None,
+                &[],
+            )
+            .expect("production worker command");
+            let cli = Cli::try_parse_from(
+                std::iter::once("codewhale").chain(cmd.args.iter().map(String::as_str)),
+            )
+            .expect("production worker args must parse");
+            let Some(Commands::Exec(args)) = cli.command else {
+                panic!("expected worker exec command");
+            };
+            let expected = requested_steps.filter(|steps| *steps > 0);
+            assert_eq!(args.max_turns, expected);
+            assert_eq!(args.max_tool_calls, None);
+            // Follow omission beyond argv through the real CLI resolver. This
+            // previously installed 200 despite correct unbounded launch args.
+            let turn = crate::core::turn::TurnContext::new(exec_max_steps(args.max_turns));
+            assert_eq!(turn.step_limit(), expected);
+            assert_eq!(turn.stop_diagnostics.effective_max_steps, expected);
+        }
+    }

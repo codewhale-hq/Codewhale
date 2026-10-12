@@ -27,7 +27,7 @@
 | `Ctrl-L` | 压缩对话上下文（状态行显示进度；压缩已在运行时不执行任何操作） |
 | `Ctrl-O` | 打开所选或当前回合的思考详情，与输入框内容无关 |
 | `Ctrl-Alt-O` | 打开整个回合的 Turn Inspector，与输入框内容无关 |
-| `Alt-V` / `Option-V`（macOS） | 为所选、可见或最近的工具/智能体卡片打开详情分页器；发出传统 Option-V 字符的终端也会被处理 |
+| `Alt-V` / `Option-V`（macOS） | 为所选的工具/智能体卡片打开详情分页器；未选择时，打开最新正在运行的 shell 的实时检查器，否则打开可见或最近的卡片；发出传统 Option-V 字符的终端也会被处理 |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | 在任务面板（workbar）中切换文件树 |
 | `Ctrl-]` 或 `Ctrl-Tab` | 循环切换 work dock：TODO → Agents → Jobs → Background。`Ctrl-]` 是可移植的组合键——`Ctrl-Tab` 只有在 kitty 键盘协议下才能送达 |
 | `Ctrl-Shift-Tab` | 反向循环切换 work dock |
@@ -265,3 +265,12 @@ Hotbar 的触发键刻意只限 `Alt-1` 到 `Alt-8`。在 macOS 键盘上，这�
 - **输入框为空时，裸 Up/Down 方向键滚动对话记录（v0.8.13）。** 以前 `should_scroll_with_arrows` 开关被硬编码为 false，意味着即使输入框为空，裸方向键也总是在输入框历史中导航。虚拟终端（Ghostty、Codex、Kitty 协议）中的用户尤其受影响，因为他们无法使用 Cmd+Up / Alt+Up 快捷键。
 - **可配置键位（#436）和 `tui.toml`（#437）仍然延期。** `TuiPrefs` 结构体和加载器存在于 `settings.rs` 中，但未在启动时接线。允许 `~/.codewhale/tui.toml` 覆盖单个条目的命名绑定注册表仍然待办。
 - **未发现其他损坏的绑定。** 上面列出的每个其他组合都解析为 `crates/tui/src/tui/ui.rs`（按键事件分发）或 `crates/tui/src/tui/app.rs`（模式 + 状态转换）中的实时处理器。
+
+## 实时终端 dock
+
+在 `/workbar terminal` 中，点击 dock 或按 `Alt+W` 使其获得焦点。输入、
+Enter、Tab 和 Ctrl+C 会送达所选 shell。Esc 返回输入框。
+`Alt+Down` / `Alt+Up` 切换会话；`Ctrl+N` 启动新的 shell。
+鼠标滚轮和 PageUp/PageDown 滚动输出。
+
+权限边界、粘贴行为和支持的平台请参阅[终端 dock 指南](../GUIDE.md#live-terminal-dock)。

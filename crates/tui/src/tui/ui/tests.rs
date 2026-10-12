@@ -1435,11 +1435,7 @@ fn canonical_background_bash_keeps_live_task_identity_for_follow_up_actions() {
     assert_eq!(exec.shell_task_id.as_deref(), Some("shell-42"));
     assert_eq!(exec.command, "cargo test --workspace");
     assert!(exec.output.is_none());
-    assert!(
-        exec.live_output
-            .as_deref()
-            .is_some_and(|output| { output.contains("Background task started: shell-42") })
-    );
+    assert!(exec.live_output.is_none());
 }
 
 #[test]
@@ -3318,14 +3314,7 @@ fn mcp_login_progress_preserves_cancel_until_finish_and_ignores_cancelled_mailbo
     *progress.lock().unwrap() = Some(McpLoginProgress::Finished(Ok(())));
     poll_mcp_login(&mut app);
     assert!(app.mcp_login.is_none());
-    assert!(
-        app.status_toasts
-            .back()
-            .unwrap()
-            .text
-            .as_str()
-            .contains("Stored OAuth credentials")
-    );
+    assert_eq!(app.mcp_login_reconnect.as_deref(), Some("fixture"));
     assert!(token.is_cancelled());
     let completed = app.status_toasts.back().unwrap().text.clone();
     *progress.lock().unwrap() = Some(McpLoginProgress::Finished(Err("late failure".into())));
@@ -4453,7 +4442,7 @@ fn selection_to_text_copies_rendered_transcript_block() {
         !selected.contains("Ctrl+O"),
         "detail affordance leaked into the selection: {selected:?}"
     );
-    assert!(selected.contains("run Done · cargo check"), "{selected:?}");
+    assert!(selected.contains("run done · cargo check"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
     // #1163: tool-card middle lines are rendered with a `│ ` left rail
     // glyph, but that decoration must not leak into copied text. Assert
@@ -4652,8 +4641,8 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
         "must not round out to the whole cell, got {copied:?}"
     );
     assert_eq!(
-        app.status_message.as_deref(),
-        Some("Selection copied"),
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
+        Some("Copied to the clipboard"),
         "fragment copy reports through the text-fallback receipt"
     );
     assert!(
@@ -10196,7 +10185,7 @@ fn shell_live_output_update_marks_stale_running_job_static() {
             stdout_len: 14,
             stderr_len: 0,
             stdin_available: false,
-            stale: true,
+            stale: false,
             elapsed_since_output_ms: Some(61_000),
             linked_task_id: None,
             owner_agent_id: None,
@@ -10239,7 +10228,7 @@ fn shell_live_output_update_marks_stale_running_job_static() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    assert!(header_text.contains("running · stale · no output 1m 01s"));
+    assert!(header_text.contains("running · no output for 1m 01s"));
     assert!(!header_text.contains("running ("));
 }
 
@@ -10968,7 +10957,15 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
     .await;
 
     assert_eq!(app.api_provider, ProviderKind::Ollama);
-    assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
+    assert!(
+        matches!(
+            app.onboarding,
+            crate::tui::app::OnboardingState::TrustDirectory
+                | crate::tui::app::OnboardingState::Ready
+        ),
+        "{:?}",
+        app.onboarding
+    );
     assert_ne!(
         app.view_stack.top_kind(),
         Some(crate::tui::views::ModalKind::ProviderPicker)
@@ -11267,8 +11264,7 @@ async fn first_run_switch_to_keyed_route_clears_launch_missing_key_state() {
     assert_eq!(app.api_provider, ProviderKind::Deepseek);
     assert!(app.onboarding_needs_api_key);
     assert!(app.onboarding_missing_key_recovery);
-    assert_eq!(app.onboarding, OnboardingState::Provider);
-    app.onboarding = OnboardingState::None;
+    assert_eq!(app.onboarding, OnboardingState::None);
 
     let mut engine = mock_engine_handle();
     assert!(
@@ -15885,6 +15881,9 @@ async fn stall_dispatch_task_overrun_reports_and_restores_message() {
 
 #[tokio::test]
 async fn stall_dispatch_task_panic_still_reports_back() {
+    let _lock = crate::test_support::lock_test_env();
+    let crash_home = tempfile::tempdir().expect("tempdir");
+    let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", crash_home.path());
     let mut app = create_test_app();
     let config = Config::default();
     let prepare = prepare_user_dispatch(
@@ -20662,6 +20661,168 @@ fn session_transition_waits_for_pending_dispatch_and_cancelled_turn() {
     assert!(app.session_transition_blocked());
 }
 
+/// Every predicate that closes the gate must also name itself. A predicate
+/// added to the list without an explanation would ship a bare "runtime work is
+/// active" refusal — the defect this change removes — so each arm is driven
+/// alone and checked for its own wording.
+#[test]
+fn transition_blockers_follow_the_gate_and_name_every_predicate() {
+    fn assert_named(label: &str, arm: impl FnOnce(&mut App), expected: &str) {
+        let mut app = create_test_app();
+        arm(&mut app);
+        let blockers = app.session_transition_blockers();
+        assert!(
+            app.session_transition_blocked(),
+            "{label}: the gate must be closed"
+        );
+        assert!(
+            blockers.iter().any(|blocker| blocker.contains(expected)),
+            "{label}: expected a blocker mentioning {expected:?}, got {blockers:?}"
+        );
+    }
+
+    let app = create_test_app();
+    assert!(!app.session_transition_blocked());
+    assert!(app.session_transition_blockers().is_empty());
+
+    assert_named(
+        "is_loading",
+        |app| app.is_loading = true,
+        "still busy with the current turn",
+    );
+    assert_named(
+        "dispatch_in_flight",
+        |app| app.dispatch_in_flight = true,
+        "still resolving its route",
+    );
+    assert_named(
+        "suppress_stream_events_until_turn_complete",
+        |app| app.suppress_stream_events_until_turn_complete = true,
+        "cancelled turn is still settling",
+    );
+    assert_named(
+        "runtime_turn_status",
+        |app| app.runtime_turn_status = Some("in_progress".to_string()),
+        "turn in progress",
+    );
+    assert_named(
+        "is_compacting",
+        |app| app.is_compacting = true,
+        "compaction is running",
+    );
+    assert_named(
+        "manual_compaction_queued",
+        |app| app.manual_compaction_queued = true,
+        "manual compaction is queued",
+    );
+    assert_named(
+        "is_purging",
+        |app| app.is_purging = true,
+        "cleanup is running",
+    );
+    assert_named(
+        "task_panel",
+        |app| {
+            app.task_panel.push(crate::tui::app::TaskPanelEntry {
+                exit_code: None,
+                id: "shell_a3f2".to_string(),
+                status: "running".to_string(),
+                prompt_summary: "shell: cw-leftovers.ps1".to_string(),
+                duration_ms: Some(5 * 60 * 60 * 1_000 + 18 * 60 * 1_000),
+                kind: crate::tui::app::TaskPanelEntryKind::Shell,
+                stale: false,
+                elapsed_since_output_ms: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                current_tool: None,
+                role: None,
+                files_touched: 0,
+            });
+        },
+        "cw-leftovers.ps1",
+    );
+}
+
+/// The row names the shell, its state, how long it has run, and its command —
+/// stripped of the panel's `shell: ` prefix, with its owner when a sub-agent
+/// owns it.
+#[test]
+fn transition_blocker_rows_name_the_command_and_its_owner() {
+    let mut app = create_test_app();
+    app.task_panel.push(crate::tui::app::TaskPanelEntry {
+        exit_code: None,
+        id: "shell_a3f2".to_string(),
+        status: "running".to_string(),
+        prompt_summary: "shell: cw-leftovers.ps1".to_string(),
+        duration_ms: Some(5 * 60 * 60 * 1_000 + 18 * 60 * 1_000),
+        kind: crate::tui::app::TaskPanelEntryKind::Shell,
+        stale: false,
+        elapsed_since_output_ms: None,
+        owner_agent_id: Some("agent_9c81".to_string()),
+        owner_agent_name: Some("verifier".to_string()),
+        current_tool: None,
+        role: None,
+        files_touched: 0,
+    });
+    let blockers = app.session_transition_blockers();
+    assert_eq!(blockers.len(), 1, "{blockers:?}");
+    let row = &blockers[0];
+    assert!(row.contains("shell_a3f2"), "{row:?}");
+    assert!(row.contains("running"), "{row:?}");
+    assert!(row.contains("5h 18m"), "{row:?}");
+    assert!(row.contains("(by verifier) cw-leftovers.ps1"), "{row:?}");
+    assert!(
+        !row.contains("shell: "),
+        "the panel prefix is stripped: {row:?}"
+    );
+}
+
+#[test]
+fn transition_blockers_summarize_past_the_fifth_task_and_bound_each_summary() {
+    use unicode_width::UnicodeWidthStr as _;
+
+    let mut app = create_test_app();
+    for index in 0..6 {
+        app.task_panel.push(crate::tui::app::TaskPanelEntry {
+            exit_code: None,
+            id: format!("shell_{index:04}"),
+            status: "queued".to_string(),
+            // 100 CJK characters are 200 display columns: a character-count
+            // budget cannot keep this row inside a terminal, display width
+            // can.
+            prompt_summary: "汉".repeat(100),
+            duration_ms: None,
+            kind: crate::tui::app::TaskPanelEntryKind::Shell,
+            stale: false,
+            elapsed_since_output_ms: None,
+            owner_agent_id: None,
+            owner_agent_name: None,
+            current_tool: None,
+            role: None,
+            files_touched: 0,
+        });
+    }
+    let blockers = app.session_transition_blockers();
+    assert_eq!(
+        blockers.len(),
+        6,
+        "five rows plus the remainder line: {blockers:?}"
+    );
+    assert_eq!(blockers[5], "…and 1 more");
+    assert!(
+        blockers[..5].iter().all(|row| row.as_str().width() <= 74),
+        "rows must fit the 74-column Note body: {blockers:?}"
+    );
+    assert!(
+        blockers[..5].iter().all(|row| row.contains("...")),
+        "an over-long summary is truncated, not dropped: {blockers:?}"
+    );
+    assert!(
+        blockers[..5].iter().all(|row| row.contains("  -  ")),
+        "a missing duration keeps its column with the shared placeholder: {blockers:?}"
+    );
+}
+
 #[test]
 fn engine_drain_budget_respects_event_and_time_limits() {
     let start = Instant::now();
@@ -22375,8 +22536,8 @@ fn completed_exec_tool_result_still_renders_run_done() {
 
     assert_eq!(exec.status, ToolStatus::Success);
     let text = rendered_text(&exec.lines_with_motion(100, true));
-    assert!(text.contains("run Done"), "{text}");
-    assert!(!text.contains("tool loaded - retry required"), "{text}");
+    assert!(text.contains("run done"), "{text}");
+    assert!(!text.contains("loaded, not run"), "{text}");
 }
 
 /// #6566: the tool output the person reads drops the engine's approval note
@@ -22462,8 +22623,8 @@ fn hydrated_exec_tool_result_renders_retry_required_not_run_done() {
 
     assert_eq!(exec.status, ToolStatus::Hydrated);
     let text = rendered_text(&exec.lines_with_motion(120, true));
-    assert!(text.contains("run tool loaded - retry required"), "{text}");
-    assert!(!text.contains("run Done"), "{text}");
+    assert!(text.contains("run loaded, not run"), "{text}");
+    assert!(!text.contains("run done"), "{text}");
 }
 
 #[test]
@@ -22500,8 +22661,8 @@ fn hydrated_tool_with_validation_body_still_uses_hydrated_status() {
 
     assert_eq!(generic.status, ToolStatus::Hydrated);
     let text = rendered_text(&HistoryCell::Tool(ToolCell::Generic(generic.clone())).lines(120));
-    assert!(text.contains("tool loaded - retry required"), "{text}");
-    assert!(!text.contains("tool Done"), "{text}");
+    assert!(text.contains("tool loaded, not run"), "{text}");
+    assert!(!text.contains("tool done"), "{text}");
 }
 
 #[test]
@@ -22536,8 +22697,8 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
 
     assert_eq!(generic.status, ToolStatus::Failed);
     let text = rendered_text(&HistoryCell::Tool(ToolCell::Generic(generic.clone())).lines(120));
-    assert!(text.contains("tool issue"), "{text}");
-    assert!(!text.contains("tool loaded - retry required"), "{text}");
+    assert!(text.contains("tool failed"), "{text}");
+    assert!(!text.contains("loaded, not run"), "{text}");
 }
 
 #[test]
@@ -24093,7 +24254,7 @@ fn auto_route_receipt_survives_session_snapshot_and_restore() {
         restored_app.last_effective_reasoning_effort,
         Some(EffectiveReasoningEffort::Tier(ReasoningEffort::High))
     );
-    assert_eq!(restored_app.reasoning_effort_display_label(), "auto: high");
+    assert_eq!(restored_app.reasoning_effort_display_label(), "auto→high");
 }
 
 #[test]

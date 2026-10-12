@@ -2482,8 +2482,15 @@ mod tests {
             std::fs::read_to_string(rig.workspace.join("ordinary.txt"))?,
             "allowed"
         );
+        let sentinel = rig.workspace.join("floor-sentinel.txt");
+        for _ in 0..180 {
+            if crate::test_support::read_shell_sentinel(&sentinel) == "rm -rf /" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
         assert_eq!(
-            crate::test_support::read_shell_sentinel(&rig.workspace.join("floor-sentinel.txt")),
+            crate::test_support::read_shell_sentinel(&sentinel),
             "rm -rf /"
         );
         assert!(!rig.workspace.join("CHANGELOG.md").exists());

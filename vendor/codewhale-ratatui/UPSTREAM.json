@@ -185,5 +185,21 @@
     "tests/fixtures/whale-motion/scenario-conformance.json": "b00bbfbe2c65ce7fb86f803599a0e04de875d6dffd8ac39f87932f5af8447198",
     "tests/fixtures/whale-motion/scenarios.json": "2386a509089f1a1096398252cb526048200cf116647b03f4dc366bc7d202e381",
     "vendor/codewhale-design/tokens.rs": "975b7a4e2cda30f9dfa642283f092b9770529c5ec8c401d05b9bde5b6e55bdd1"
+  },
+  "pet_update": {
+    "commit": "8f51c6bccadeb11278cda1e2481a116573e5d233",
+    "scope": "Selected prepared pet renderer files; non-pet components retain the base snapshot and existing Engine patches.",
+    "files": {
+      "src/avatar_sprite.rs": "2d76da6667d24fbcd36a22d5a70c8ef9136eb1b853bb32884cf236ee0cce92b6",
+      "src/color.rs": "96c44be1540c4756f251ed5ffb74aa88a5ebf131b104bf25866ad7ab8e3c6ba8",
+      "src/components/dot_whale.rs": "191bacf808037ba4dd7d4dfffbd06fe9c951a258a31495380591ad6ab4a715fa",
+      "src/components/pet_mode.rs": "35142d709073a09720f1ce1cfb57b18d6ea4880530a5c8d96755c5b9fc203214",
+      "src/components/whale_pet.rs": "bb29442f8db20e8387482e2e1dcb4fa5259ef99c3a37a77bfe9e4b56eaa05aed",
+      "src/whale.rs": "126a6efc8cac550ccd7f9c8edc61745b8c959186de118c2f4d479f5a5c5ffcf7",
+      "src/whale_motion/pixels.rs": "f83113863c7928cc93dbbc7b187d6f9346d1848ffb9636fd3d8551faa9de69d9"
+    },
+    "merged_exports": {
+      "src/components/mod.rs": "0ea81b474b2137b177c5535e7523ed6b312ea972630ac94f5131883246496e8e"
+    }
   }
 }

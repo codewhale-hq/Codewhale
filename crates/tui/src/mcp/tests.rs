@@ -324,6 +324,7 @@ fn mcp_server_config_omits_headers_when_empty() {
         disabled: false,
         enabled: true,
         required: false,
+        lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
         headers: HashMap::new(),
@@ -2892,6 +2893,7 @@ fn test_server_effective_timeouts() {
         disabled: false,
         enabled: true,
         required: false,
+        lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
         headers: HashMap::new(),
@@ -3053,6 +3055,7 @@ fn test_server_config() -> McpServerConfig {
         disabled: false,
         enabled: true,
         required: false,
+        lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
         headers: HashMap::new(),
@@ -3863,6 +3866,7 @@ fn hash_mcp_config_is_stable_and_change_sensitive() {
             disabled: false,
             enabled: true,
             required: false,
+            lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
@@ -4900,12 +4904,17 @@ async fn a_failed_server_waits_out_a_cooldown_instead_of_redialing_every_turn() 
 fn lazy_boot_scopes_pending_connects_and_tracks_in_flight() {
     let mut required_cfg = test_server_config();
     required_cfg.required = true;
+    required_cfg.lazy = true;
+    let mut selected_cfg = test_server_config();
+    selected_cfg.lazy = true;
+    let mut lazy_cfg = test_server_config();
+    lazy_cfg.lazy = true;
     let mut pool = McpPool::new(McpConfig {
         timeouts: McpTimeouts::default(),
         servers: HashMap::from([
             ("needed".to_string(), required_cfg),
-            ("selected".to_string(), test_server_config()),
-            ("lazy".to_string(), test_server_config()),
+            ("selected".to_string(), selected_cfg),
+            ("lazy".to_string(), lazy_cfg),
         ]),
     });
     let requested = vec!["mcp_selected_read".to_string()];
@@ -5183,6 +5192,7 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
         disabled: false,
         enabled: true,
         required: false,
+        lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
         headers: HashMap::new(),
@@ -6155,6 +6165,7 @@ async fn streamable_http_stale_session_reconnects_and_retries_tool_call() {
             disabled: false,
             enabled: true,
             required: false,
+            lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
@@ -6444,6 +6455,7 @@ async fn legacy_sse_closed_stream_reports_unknown_outcome_and_reconnects_without
             disabled: false,
             enabled: true,
             required: false,
+            lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),

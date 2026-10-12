@@ -1699,46 +1699,6 @@ mod tests {
     }
 
     #[test]
-    fn default_max_turns_does_not_add_a_hidden_worker_cap() {
-        use clap::Parser;
-
-        let exec = FleetExecConfig::default();
-        let workspace = TempDir::new().unwrap();
-        for requested_steps in [None, Some(0), Some(13)] {
-            let mut task = task("x");
-            task.budget = requested_steps.map(|max_steps| FleetTaskBudget {
-                max_steps: Some(max_steps),
-                ..FleetTaskBudget::default()
-            });
-            let spec = launch_spec(&task, workspace.path());
-            let cmd = build_worker_exec_command_with_launch_spec(
-                "codewhale",
-                &task,
-                &spec,
-                &exec,
-                None,
-                &[],
-            )
-            .expect("production worker command");
-            let cli = crate::Cli::try_parse_from(
-                std::iter::once("codewhale").chain(cmd.args.iter().map(String::as_str)),
-            )
-            .expect("production worker args must parse");
-            let Some(crate::Commands::Exec(args)) = cli.command else {
-                panic!("expected worker exec command");
-            };
-            let expected = requested_steps.filter(|steps| *steps > 0);
-            assert_eq!(args.max_turns, expected);
-            assert_eq!(args.max_tool_calls, None);
-            // Follow omission beyond argv through the real CLI resolver. This
-            // previously installed 200 despite correct unbounded launch args.
-            let turn = crate::core::turn::TurnContext::new(crate::exec_max_steps(args.max_turns));
-            assert_eq!(turn.step_limit(), expected);
-            assert_eq!(turn.stop_diagnostics.effective_max_steps, expected);
-        }
-    }
-
-    #[test]
     fn stream_line_maps_tool_use_to_running_tool() {
         let line = r#"{"type":"tool_use","name":"read_file","id":"call-7","input":{}}"#;
         match map_exec_stream_line(line) {

@@ -2600,7 +2600,7 @@ impl SessionManager {
 
     /// Save a session to disk, consuming it.
     pub(crate) fn save_session_owned(&self, session: SavedSession) -> std::io::Result<PathBuf> {
-        self.save_session_inner(session, false)
+        self.save_session_inner(session, None)
     }
 
     /// The autosave path (#6842): like [`Self::save_session_owned`], but when
@@ -2610,10 +2610,28 @@ impl SessionManager {
     /// archive cannot be written nothing is pruned. Runs on the persistence
     /// actor (`tui/persistence_actor.rs` `flush_inner`), never the UI loop.
     pub(crate) fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
-        self.save_session_inner(session, true)
+        self.save_session_inner(
+            session,
+            Some((JOURNAL_PRUNE_DEAD_THRESHOLD, JOURNAL_RETAINED_DEAD_ENTRIES)),
+        )
     }
 
-    fn save_session_inner(&self, session: SavedSession, bound: bool) -> std::io::Result<PathBuf> {
+    /// Bring a saved document that exceeds the full-history transport bound
+    /// back under it by archiving every off-branch journal entry (kept in the
+    /// journal archive sidecar, the same durable step the autosave prune
+    /// uses). The active branch is never touched, so the conversation is
+    /// unchanged. Known limit: a document whose active branch alone exceeds
+    /// the bound stays refused.
+    fn compact_oversized_session(&self, id: &str) -> io::Result<()> {
+        let session = self.load_session_snapshot_with_limit(id, None)?;
+        self.save_session_inner(session, Some((0, 0))).map(|_| ())
+    }
+
+    fn save_session_inner(
+        &self,
+        session: SavedSession,
+        prune: Option<(usize, usize)>,
+    ) -> std::io::Result<PathBuf> {
         let session_id = session.metadata.id.clone();
         let path = self.validated_session_path(&session_id)?;
         // Not a `move` closure: `session` is consumed inside, so inference
@@ -2629,10 +2647,11 @@ impl SessionManager {
             self.archive_before_first_graph_write(&session, &path)?;
 
             let mut durable_session = session;
-            let archived = if bound {
-                self.archive_dead_journal_entries(&mut durable_session)
-            } else {
-                Vec::new()
+            let archived = match prune {
+                Some((threshold, budget)) => {
+                    self.archive_dead_journal_entries(&mut durable_session, threshold, budget)
+                }
+                None => Vec::new(),
             };
             self.hydrate_recovered_runtime_binding(&mut durable_session)?;
             self.hydrate_approval_receipts(&mut durable_session)?;
@@ -2802,12 +2821,17 @@ impl SessionManager {
     /// fsync the planned entries, and only then remove them from the document
     /// about to be written. Any failure leaves the journal whole. Returns the
     /// removed ids.
-    fn archive_dead_journal_entries(&self, session: &mut SavedSession) -> Vec<String> {
+    fn archive_dead_journal_entries(
+        &self,
+        session: &mut SavedSession,
+        dead_threshold: usize,
+        dead_budget: usize,
+    ) -> Vec<String> {
         let session_id = session.metadata.id.clone();
         let Some(journal) = session.journal.as_mut() else {
             return Vec::new();
         };
-        let plan = journal.prune_plan(JOURNAL_PRUNE_DEAD_THRESHOLD, JOURNAL_RETAINED_DEAD_ENTRIES);
+        let plan = journal.prune_plan(dead_threshold, dead_budget);
         if plan.is_empty() {
             return Vec::new();
         }
@@ -3399,12 +3423,23 @@ impl SessionManager {
             None => fs::read_to_string(&path)?,
             Some(limit) => {
                 use std::io::Read;
-                let file = fs::File::open(&path)?;
+                let mut file = fs::File::open(&path)?;
                 if file.metadata()?.len() > limit as u64 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "session exceeds full-history transport bound; source retained",
-                    ));
+                    let before = file.metadata()?.len();
+                    let compacted = self.compact_oversized_session(id).is_ok();
+                    file = fs::File::open(&path)?;
+                    let after = file.metadata()?.len();
+                    if !compacted || after > limit as u64 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "session is {:.1} MiB and the full-history transport limit is {:.1} MiB; archiving its off-branch journal entries left it at {:.1} MiB, so its active conversation alone is over the limit; source retained",
+                                before as f64 / 1_048_576.0,
+                                limit as f64 / 1_048_576.0,
+                                after as f64 / 1_048_576.0,
+                            ),
+                        ));
+                    }
                 }
                 let mut bytes = Vec::new();
                 file.take((limit as u64).saturating_add(1))
@@ -3643,11 +3678,15 @@ impl SessionManager {
         Ok(self
             .list_session_records()?
             .into_iter()
-            .map(|(_, metadata)| metadata)
+            .map(|(_, mut metadata)| {
+                self.apply_late_usage_to_metadata(&mut metadata);
+                metadata
+            })
             .collect())
     }
 
-    /// [`Self::list_sessions`], keeping the file each record was read from.
+    /// [`Self::list_sessions`] without the late-usage cost overlay, keeping
+    /// the file each record was read from.
     /// A record's file is not always `<id>.json`: early builds wrote
     /// `session_<timestamp>.json`, and retention must address those by path.
     fn list_session_records(&self) -> std::io::Result<Vec<(PathBuf, SessionMetadata)>> {
@@ -3658,9 +3697,8 @@ impl SessionManager {
             let path = entry.path();
 
             if path.extension().is_some_and(|ext| ext == "json")
-                && let Ok(mut session) = Self::load_session_metadata(&path)
+                && let Ok(session) = Self::load_session_metadata(&path)
             {
-                self.apply_late_usage_to_metadata(&mut session);
                 sessions.push((path, session));
             }
         }

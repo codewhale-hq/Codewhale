@@ -17,6 +17,7 @@ pub struct TranscriptSelection {
     pub anchor: Option<TranscriptSelectionPoint>,
     pub head: Option<TranscriptSelectionPoint>,
     pub dragging: bool,
+    pub(crate) owner: Option<crate::tui::history::TranscriptActionOwner>,
 }
 
 /// Drag-past-edge auto-scroll state. While the user holds the left button
@@ -39,6 +40,7 @@ impl TranscriptSelection {
         self.anchor = None;
         self.head = None;
         self.dragging = false;
+        self.owner = None;
     }
 
     /// Whether a full selection is active.

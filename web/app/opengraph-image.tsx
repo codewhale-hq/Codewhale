@@ -39,14 +39,14 @@ export default async function OpengraphImage() {
           alignItems: "center",
           justifyContent: "center",
           gap: 34,
-          backgroundImage: "linear-gradient(180deg, #0a1d48 0%, #061431 55%, #0b48bb 100%)",
+          backgroundImage: "linear-gradient(180deg, #142352 0%, #142638 55%, #0b48bb 100%)",
           fontFamily: "sans-serif",
         }}
       >
         <img src={markDataUrl} width={240} height={240} alt="" />
         {/* The family wordmark is 1024x160 (6.4:1). */}
         <img src={wordmarkDataUrl} width={532} height={83} alt="Codewhale" />
-        <div style={{ display: "flex", fontSize: 30, color: "#efeeeb", marginTop: 14 }}>
+        <div style={{ display: "flex", fontSize: 30, color: "#e6eef7", marginTop: 14 }}>
           {IDENTITY_PHRASE}
         </div>
       </div>

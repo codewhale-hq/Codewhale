@@ -224,7 +224,8 @@ pub(crate) async fn cycle_permission_posture(
 
 /// Open the one canonical provider setup surface for onboarding. Fresh
 /// onboarding opens on the full provider catalog, hosted providers included
-/// (#5563), with `L` as the explicit opt-in local-only view. Missing-key
+/// (#5563). Local runtimes are listed, and `L` filters to them, only once one
+/// answered the startup probe or is already configured. Missing-key
 /// recovery instead focuses the already-configured route so an exact Kimi
 /// Code K3 configuration can expose its plan route before a secret is entered.
 /// Either way the picker opens on the navigable list (#4763): onboarding never
@@ -250,6 +251,7 @@ pub(crate) async fn open_onboarding_provider_picker(
             runtime_status,
         )
         .with_locale(app.ui_locale)
+        .with_local_runtime_detected(app.local_runtime_detected)
         .with_provider_health(&app.provider_health),
     );
     app.needs_redraw = true;

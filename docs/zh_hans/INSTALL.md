@@ -891,7 +891,7 @@ codewhale exec --auto "run pwd"
 
 已知限制：
 
-- 命令会继承 Android 的每应用 UID、SELinux 和 seccomp 保护，以及授予 Termux 的任何权限。Codewhale 可选的 bubblewrap 子进程沙箱仅限 Linux，没有在 Android 上构建，因此已批准的命令不会获得 Codewhale 特有的文件系统限制。
+- 命令会继承 Android 的每应用 UID、SELinux 和 seccomp 保护，以及授予 Termux 的任何权限。Codewhale 的 bubblewrap 子进程沙箱仅限 Linux，没有在 Android 上构建，因此已批准的命令不会获得 Codewhale 特有的文件系统限制。
 - Termux 构建没有受支持的 Android Keystore 或桌面 Secret Service 集成。用 `codewhale auth status` 确认当前生效的来源；当文件型明文存储不可接受时，优先使用提供商的环境变量。
 - 终端渲染因 Android 终端应用而异。TUI 始终独占备用屏幕（alternate screen）。如果某个终端应用无法渲染全屏 TUI，请改用 `codewhale exec` 进行无头运行。
 

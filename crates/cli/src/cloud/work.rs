@@ -1,5 +1,5 @@
 //! The account Work journey: assign Work, cancel it, read its outcome, quote
-//! and launch bounded Boat trial compute, and connect a GitHub repository.
+//! and launch offered cloud compute, and connect a GitHub repository.
 //!
 //! Everything here is a thin, honest client of the account control plane.
 //! Remote text is untrusted: it only reaches the terminal through `printable`,
@@ -11,15 +11,61 @@ use serde_json::{Value, json};
 
 use super::*;
 
-/// The bounded Boat trial this CLI can start. These are the contract values
+/// The cloud Work profile this CLI can start. These are the contract values
 /// the control plane admits; anything else is refused by the server, so the
 /// CLI states them instead of exposing knobs that could only fail.
-const BOAT_TRIAL_SKU: &str = "boat-small";
-const BOAT_TRIAL_SECONDS: u64 = 300;
-const BOAT_TRIAL_MODEL_PROVIDER: &str = "deepseek";
-const BOAT_TRIAL_MODEL: &str = "deepseek-flash";
+const WORK_SKU: &str = "task-small";
+const WORK_MODEL_PROVIDER: &str = "deepseek";
+const WORK_MODEL: &str = "deepseek-flash";
 const MAX_CONFIRMATION_BYTES: usize = 4096;
 const MAX_CANCEL_REASON_CHARS: usize = 500;
+
+pub(super) fn task_context(
+    path: Option<&Path>,
+    refs: &[String],
+) -> Result<Option<WorkTaskContext>> {
+    if refs.len() > 10 {
+        bail!("Reference at most ten saved files per task");
+    }
+    let text = match path {
+        Some(path) => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .context("Could not open the task source context file")?
+                .take(256_001)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 256_000 {
+                bail!("Task source context exceeds 64000 UTF-16 units");
+            }
+            let text = String::from_utf8(bytes).context("Task source context must be UTF-8")?;
+            if text.encode_utf16().count() > 64_000 {
+                bail!("Task source context exceeds 64000 UTF-16 units");
+            }
+            text
+        }
+        None => String::new(),
+    };
+    let mut file_refs: Vec<WorkFileRef> = Vec::new();
+    for value in refs {
+        let (id, version) = value
+            .rsplit_once('@')
+            .ok_or_else(|| anyhow!("Saved file references must be FILE_ID@VERSION"))?;
+        let file_id = validate_account_file_id(id)?.to_string();
+        let version: u64 = version
+            .parse()
+            .context("Saved file version must be a positive integer")?;
+        if version == 0
+            || version > 9_007_199_254_740_991
+            || file_refs.iter().any(|ref_| ref_.file_id == file_id)
+        {
+            bail!(
+                "Saved file references need distinct file IDs and positive safe-integer versions"
+            );
+        }
+        file_refs.push(WorkFileRef { file_id, version });
+    }
+    Ok((!text.is_empty() || !file_refs.is_empty()).then_some(WorkTaskContext { text, file_refs }))
+}
 
 fn valid_confirmation(token: &str) -> bool {
     !token.is_empty()
@@ -166,10 +212,11 @@ pub(super) fn assign<T: CloudTransport, W: Write>(
     agent: &AccountAgent,
     objective: &str,
     message_id: &str,
-) -> Result<()> {
+    task_context: Option<&WorkTaskContext>,
+) -> Result<Vec<String>> {
     let message_id = validate_operation_key(message_id)?;
     let receipt = client
-        .assign_agent_work(&agent.id, objective, message_id)
+        .assign_agent_work(&agent.id, objective, message_id, task_context)
         .map_err(|err| {
             if outcome_unknown(&err) {
                 err.context(format!(
@@ -184,6 +231,12 @@ pub(super) fn assign<T: CloudTransport, W: Write>(
         validate_resource_id(&item.id, "Work")?;
         if item.agent_id != agent.id {
             bail!("The Codewhale service returned Work for a different Agent");
+        }
+        if let Some(context) = task_context {
+            let digest = crate::update::sha256_hex(&serde_json::to_vec(context)?);
+            if item.task_context_digest != digest {
+                return Err(CloudTransportError::new("The Work reply does not confirm the requested source context; replay the same message and context", std::io::Error::other("task context mismatch")).into());
+            }
         }
         items.push(item);
     }
@@ -251,7 +304,7 @@ pub(super) fn assign<T: CloudTransport, W: Write>(
         ("actionable" | "queued", Some(first)) => {
             writeln!(
                 out,
-                "Work is recorded, not started. To run it on bounded Boat trial compute, review a quote first:"
+                "Work is recorded, not started. To run it on a cloud computer, review a quote first:"
             )?;
             writeln!(
                 out,
@@ -266,7 +319,7 @@ pub(super) fn assign<T: CloudTransport, W: Write>(
         _ => {}
     }
     writeln!(out, "Message ID: {message_id}")?;
-    Ok(())
+    Ok(items.iter().map(|item| item.id.clone()).collect())
 }
 
 /// `codewhale account agents work-cancel`.
@@ -417,11 +470,13 @@ fn usd(value: f64) -> String {
     }
 }
 
-fn write_boat_usage<W: Write>(out: &mut W, envelope: &Value, result: &Value) -> Result<()> {
+fn write_compute_usage<W: Write>(out: &mut W, envelope: &Value, result: &Value) -> Result<()> {
     let block = [
+        at(result, &["computeUsage"]),
         at(result, &["boatUsage"]),
         at(result, &["providerUsage"]),
         at(result, &["usage"]),
+        at(envelope, &["computeUsage"]),
         at(envelope, &["boatUsage"]),
         at(envelope, &["providerUsage"]),
         at(envelope, &["usage"]),
@@ -432,7 +487,7 @@ fn write_boat_usage<W: Write>(out: &mut W, envelope: &Value, result: &Value) -> 
     let Some(block) = block else {
         return Ok(());
     };
-    writeln!(out, "Boat usage:")?;
+    writeln!(out, "Computer usage:")?;
     let number = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| block.get(*key).and_then(Value::as_f64))
@@ -620,7 +675,7 @@ fn write_work_result<W: Write>(
         Some((provider, model)) => writeln!(out, "Model route: {provider}/{model}")?,
         None => writeln!(out, "Model route: not reported by the account API")?,
     }
-    write_boat_usage(out, envelope, result)?;
+    write_compute_usage(out, envelope, result)?;
     match attempts {
         Some(attempts) => {
             let rows = at(attempts, &["attempts"])
@@ -640,7 +695,7 @@ fn write_work_result<W: Write>(
                     text_at(attempt, &["status"]).unwrap_or_else(|| "unknown".to_string())
                 );
                 if let Some(code) = text_at(attempt, &["errorCode"]) {
-                    line.push_str(&format!(" (error {code})"));
+                    line.push_str(&format!(" (error: {})", display_error_code(&code)));
                 }
                 writeln!(out, "{line}")?;
             }
@@ -687,6 +742,65 @@ struct LaunchTarget {
     repo: String,
     prompt: String,
     state: String,
+    workspace_id: String,
+}
+
+struct WorkOffer {
+    funding: String,
+    min_seconds: u64,
+    max_seconds: u64,
+    remaining_seconds: Option<u64>,
+    empty_workspace: bool,
+}
+
+fn default_seconds(offer: &WorkOffer) -> u64 {
+    offer
+        .remaining_seconds
+        .map_or(offer.max_seconds, |remaining| {
+            remaining.min(offer.max_seconds)
+        })
+}
+
+fn load_work_offer<T: CloudTransport>(client: &CloudClient<'_, T>) -> Result<WorkOffer> {
+    let value: Value = expect_json(
+        client.execute_authenticated(HttpMethod::Get, "/api/sandbox/work-offer", None)?,
+        &[200],
+    )?;
+    let offer = value.get("offer").unwrap_or(&value);
+    let min_seconds = count_at(offer, &["minSeconds"]).unwrap_or(0);
+    let max_seconds = count_at(offer, &["maxSeconds"]).unwrap_or(0);
+    let funding = str_at(offer, &["funding"]).unwrap_or_default();
+    let mode_matches = matches!(
+        (str_at(offer, &["mode"]), funding),
+        (Some("trial"), "trial_credit") | (Some("open"), "compute_cu")
+    );
+    if !mode_matches
+        || min_seconds == 0
+        || max_seconds < min_seconds
+        || max_seconds > 9_007_199_254_740_991
+        || str_at(offer, &["sku"]) != Some(WORK_SKU)
+        || str_at(offer, &["region"]) != Some("eu")
+        || str_at(offer, &["model", "provider"]) != Some(WORK_MODEL_PROVIDER)
+        || str_at(offer, &["model", "model"]) != Some(WORK_MODEL)
+    {
+        bail!("The account did not serve a supported cloud Work offer; nothing started");
+    }
+    let remaining_seconds = match offer.get("computeRemainingSeconds") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|seconds| *seconds <= 9_007_199_254_740_991)
+                .ok_or_else(|| anyhow!("The computer balance in the Work offer is invalid"))?,
+        ),
+    };
+    Ok(WorkOffer {
+        funding: funding.to_string(),
+        min_seconds,
+        max_seconds,
+        remaining_seconds,
+        empty_workspace: offer.get("emptyWorkspace").and_then(Value::as_bool) == Some(true),
+    })
 }
 
 /// The Work as the account serves it: the launch acts on this record, not on
@@ -710,7 +824,7 @@ fn load_launch_target<T: CloudTransport>(
     let provider = field("repoProvider").to_ascii_lowercase();
     if !provider.is_empty() && provider != "github" {
         bail!(
-            "Boat trial Work supports GitHub repositories only; this Work uses {}",
+            "Cloud Work supports GitHub repositories only; this Work uses {}",
             printable(&provider)
         );
     }
@@ -734,6 +848,7 @@ fn load_launch_target<T: CloudTransport>(
         repo: field("repo"),
         prompt,
         state: field("state"),
+        workspace_id: field("workspaceId"),
     })
 }
 
@@ -755,14 +870,32 @@ fn verify_launch_authority<T: CloudTransport>(
         .context("The Codewhale service returned an invalid Project list")?;
     let project = projects
         .projects
-        .iter()
-        .find(|project| project.id == target.project_id)
-        .ok_or_else(|| {
-            anyhow!(
-                "Project {} is not available on this account. Run `codewhale account projects list`",
-                target.project_id
-            )
-        })?;
+        .into_iter()
+        .find(|project| project.id == target.project_id);
+    let project = match project {
+        Some(project) => project,
+        None => {
+            let id = validate_resource_id(&target.project_id, "Project")?;
+            let reply: ProjectResponse = expect_json(
+                client.execute_authenticated(
+                    HttpMethod::Get,
+                    &format!("/api/projects/{id}"),
+                    None,
+                )?,
+                &[200],
+            )?;
+            if reply.project.id != target.project_id {
+                bail!("The Codewhale service returned a different Work Project");
+            }
+            reply.project
+        }
+    };
+    if target.repo.is_empty()
+        && project.default_repo.is_empty()
+        && project.default_repo_provider.is_empty()
+    {
+        return Ok(());
+    }
     if project.default_repo_provider != "github" || project.default_repo.trim().is_empty() {
         bail!(
             "Project {} has no GitHub repository, so its Work cannot be launched",
@@ -781,34 +914,53 @@ fn verify_launch_authority<T: CloudTransport>(
 }
 
 /// Contract C5: the launch-quote and cloud-sessions request for one bounded
-/// Boat trial. The quote and the launch send the same fields so the signed
+/// cloud task. The quote and the launch send the same fields so the signed
 /// confirmation binds to exactly what starts.
-fn launch_body(target: &LaunchTarget, operation_key: &str) -> Result<Value> {
-    Ok(json!({
+fn launch_body(
+    target: &LaunchTarget,
+    operation_key: &str,
+    seconds: u64,
+    recovery_from: Option<&str>,
+) -> Result<Value> {
+    if seconds == 0 || seconds > 9_007_199_254_740_991 {
+        bail!("Task time must be a positive safe-integer number of seconds");
+    }
+    let mut body = json!({
         "workRunId": target.run_id,
         "agentId": target.agent_id,
         "projectId": target.project_id,
-        "repo": validate_github_repo(&target.repo)?,
-        "provider": "github",
         "prompt": target.prompt,
         "runnerKind": "hosted",
-        "sandboxSku": BOAT_TRIAL_SKU,
-        "estimatedSeconds": BOAT_TRIAL_SECONDS,
-        "modelProvider": BOAT_TRIAL_MODEL_PROVIDER,
-        "model": BOAT_TRIAL_MODEL,
+        "sandboxSku": WORK_SKU,
+        "estimatedSeconds": seconds,
+        "modelProvider": WORK_MODEL_PROVIDER,
+        "model": WORK_MODEL,
         "billingMode": "byok_external",
         "computeRegion": "eu",
         "sandboxTargetRegion": "eu",
         "crossRegionSandboxOptIn": true,
         "operationKey": operation_key,
-    }))
+    });
+    if target.repo.is_empty() {
+        body["workspaceSource"] = json!("empty");
+    } else {
+        body["repo"] = json!(validate_github_repo(&target.repo)?);
+        body["provider"] = json!("github");
+    }
+    if let Some(previous) = recovery_from {
+        body["recovery"] = json!(true);
+        body["expectedPreviousWorkspaceId"] = json!(validate_resource_id(previous, "Workspace")?);
+    }
+    Ok(body)
 }
 
 /// What to do next for a control-plane code the launch flow knows about.
 fn launch_hint(code: &str) -> Option<&'static str> {
     Some(match code {
-        "boat_work_trial_unavailable" => "Boat trial Work is not available for this account",
-        "boat_work_provider_unavailable" => "Boat compute is not configured on this Codewhale API",
+        "work_vm_trial_unavailable" => "Cloud Work is not available for this account",
+        "work_vm_provider_unavailable" => {
+            "Cloud computers are not configured on this Codewhale API"
+        }
         "hosted_launch_quote_required"
         | "hosted_launch_quote_invalid"
         | "hosted_launch_quote_expired"
@@ -837,18 +989,51 @@ pub(super) fn quote<T: CloudTransport, W: Write>(
     out: &mut W,
     id: &str,
     operation_key: &str,
-) -> Result<()> {
+    seconds: Option<u64>,
+    recovery_from: Option<&str>,
+    reveal: bool,
+) -> Result<QuotedLaunch> {
     let id = validate_work_uuid(id)?;
     let operation_key = validate_operation_key(operation_key)?;
     let mut target = load_launch_target(client, id)?;
-    if target.state != "queued" {
+    let recovery_from = recovery_from
+        .map(|id| validate_resource_id(id, "Workspace"))
+        .transpose()?;
+    if recovery_from.is_some() {
+        if target.state != "failed" || recovery_from != Some(target.workspace_id.as_str()) {
+            bail!(
+                "Recovery needs the exact failed Work workspace; refresh work-status before reviewing a replacement"
+            );
+        }
+    } else if target.state != "queued" {
         bail!(
             "Work is {}, and only queued Work can be quoted for launch. Run `codewhale account agents work-status {id}`",
             printable(&target.state)
         );
     }
-    verify_launch_authority(client, &mut target)?;
-    let body = launch_body(&target, operation_key)?;
+    if recovery_from.is_none() {
+        verify_launch_authority(client, &mut target)?;
+    }
+    let offer = load_work_offer(client)?;
+    let seconds = seconds.unwrap_or_else(|| default_seconds(&offer));
+    if seconds < offer.min_seconds || seconds > offer.max_seconds {
+        bail!(
+            "Task time must be within the served offer: {}-{} seconds",
+            offer.min_seconds,
+            offer.max_seconds
+        );
+    }
+    if target.repo.is_empty() && !offer.empty_workspace {
+        bail!("The account's Work offer does not support an empty workspace");
+    }
+    if offer.funding == "compute_cu"
+        && offer
+            .remaining_seconds
+            .is_some_and(|remaining| remaining < seconds)
+    {
+        bail!("The computer balance does not cover the reviewed task time");
+    }
+    let body = launch_body(&target, operation_key, seconds, recovery_from)?;
     let response = client.execute_authenticated(
         HttpMethod::Post,
         "/api/sandbox/launch-quote",
@@ -863,48 +1048,87 @@ pub(super) fn quote<T: CloudTransport, W: Write>(
     }
     let quote: Value = parse_json_body(&response.body)?;
 
-    // This command starts only the $0 EU Boat trial. If the service quotes
-    // anything else, refuse to hand out a confirmation for it.
-    let seconds = count_at(&quote, &["disclosure", "computerTime", "estimatedSeconds"]);
+    let quoted_seconds = count_at(&quote, &["disclosure", "computerTime", "estimatedSeconds"]);
     let expected = at(&quote, &["disclosure", "funding"]).and_then(Value::as_str)
-        == Some("provider_trial")
+        == Some(offer.funding.as_str())
         && at(&quote, &["disclosure", "customerCreditsChargedUsd"]).and_then(Value::as_f64)
             == Some(0.0)
-        && str_at(&quote, &["quote", "sku"]) == Some(BOAT_TRIAL_SKU)
-        && str_at(&quote, &["quote", "adapter"]) == Some("boat")
+        && str_at(&quote, &["quote", "sku"]) == Some(WORK_SKU)
         && str_at(&quote, &["disclosure", "sandboxTargetRegion"]) == Some("eu")
         && str_at(&quote, &["disclosure", "modelInference", "billing"]) == Some("byok_external")
-        && seconds == Some(BOAT_TRIAL_SECONDS);
+        && quoted_seconds == Some(seconds)
+        && (offer.funding != "compute_cu"
+            || (at(
+                &quote,
+                &["disclosure", "computerTime", "coveredByComputeBalance"],
+            )
+            .and_then(Value::as_bool)
+                == Some(true)
+                && count_at(
+                    &quote,
+                    &["disclosure", "computerTime", "remainingAfterSeconds"],
+                )
+                .is_some()))
+        && (if target.repo.is_empty() {
+            str_at(&quote, &["workspace", "source"]) == Some("empty")
+                && at(&quote, &["workspace", "clone"]).and_then(Value::as_bool) == Some(false)
+                && at(&quote, &["workspace", "repository"]).is_none_or(Value::is_null)
+        } else {
+            str_at(&quote, &["workspace", "source"]) != Some("empty")
+        });
     if !expected {
         bail!(
-            "The Codewhale service quoted something other than the $0 five-minute EU Boat trial. Refusing to print a confirmation for it; nothing started"
+            "The Codewhale service quoted different terms from the reviewed Work offer. Refusing to print a confirmation for it; nothing started"
         );
     }
     let token = str_at(&quote, &["confirmation", "token"]).unwrap_or_default();
     if !valid_confirmation(token)
         || str_at(&quote, &["confirmation", "workRunId"]).is_some_and(|quoted| quoted != id)
+        || recovery_from.is_some_and(|previous| {
+            str_at(&quote, &["confirmation", "workRunId"]) != Some(id)
+                || at(&quote, &["confirmation", "recovery"]).and_then(Value::as_bool) != Some(true)
+                || str_at(&quote, &["confirmation", "expectedPreviousWorkspaceId"])
+                    != Some(previous)
+        })
     {
         bail!("The Codewhale service returned an unusable launch confirmation");
     }
-    let seconds = BOAT_TRIAL_SECONDS;
     writeln!(
         out,
-        "Boat trial Work quote. Nothing has started and nothing is charged."
+        "Cloud Work quote. Nothing has started and nothing is charged."
     )?;
     writeln!(out, "Work ID: {id}")?;
-    writeln!(out, "Repository: {}", printable(&target.repo))?;
+    if target.repo.is_empty() {
+        writeln!(out, "Workspace: empty; no repository will be cloned")?;
+    } else {
+        writeln!(out, "Repository: {}", printable(&target.repo))?;
+    }
+    if let Some(previous) = recovery_from {
+        writeln!(
+            out,
+            "Recovery: fresh computer; Work ID retained; previous workspace {}",
+            printable(previous)
+        )?;
+    }
     writeln!(
         out,
-        "Model: {BOAT_TRIAL_MODEL_PROVIDER}/{BOAT_TRIAL_MODEL} with your own DeepSeek key; DeepSeek bills your BYOK usage directly"
+        "Model: {WORK_MODEL_PROVIDER}/{WORK_MODEL} with your own DeepSeek key; DeepSeek bills your BYOK usage directly"
     )?;
     writeln!(
         out,
-        "Computer: {BOAT_TRIAL_SKU} on Boat in the EU, up to {seconds} seconds"
+        "Computer: small cloud computer in the EU, up to {seconds} seconds"
     )?;
-    writeln!(
-        out,
-        "Funding: provider trial; Codewhale credits charged: $0"
-    )?;
+    if offer.funding == "compute_cu" {
+        writeln!(
+            out,
+            "Funding: account computer balance; up to {seconds} seconds; Codewhale credits charged: $0"
+        )?;
+        if let Some(remaining) = offer.remaining_seconds {
+            writeln!(out, "Computer balance at review: {remaining} seconds")?;
+        }
+    } else {
+        writeln!(out, "Funding: trial credit; Codewhale credits charged: $0")?;
+    }
     if let Some(estimate) =
         at(&quote, &["disclosure", "providerCostEstimateUsd"]).and_then(Value::as_f64)
     {
@@ -912,13 +1136,13 @@ pub(super) fn quote<T: CloudTransport, W: Write>(
     }
     writeln!(
         out,
-        "EU placement: Codewhale admission attestation; Boat reports no region field. Repository code and Work files are admitted to EU compute."
+        "EU placement: Codewhale admission attestation. Repository code and Work files are admitted to EU compute."
     )?;
     if let Some(title) = text_at(&quote, &["confirmCopy", "title"]) {
         writeln!(out, "{title}")?;
     }
     if let Some(copy) = str_at(&quote, &["confirmCopy", "body"])
-        .map(|body| printable_max(body, 800))
+        .map(|body| vendor_safe_prose(printable_max(body, 800)))
         .filter(|body| !body.is_empty())
     {
         writeln!(out, "{copy}")?;
@@ -926,11 +1150,115 @@ pub(super) fn quote<T: CloudTransport, W: Write>(
     if let Some(expires) = text_at(&quote, &["confirmation", "expiresAt"]) {
         writeln!(out, "Confirmation expires: {expires}")?;
     }
-    writeln!(out, "Confirmation: {token}")?;
     writeln!(out, "Operation key: {operation_key}")?;
+    if reveal {
+        writeln!(out, "Confirmation: {token}")?;
+        let recovery_args = recovery_from
+            .map(|previous| format!(" --recovery-from {previous}"))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "To start: codewhale account agents work-launch {id} --operation-key {operation_key} --confirmation {token} --confirm-eu-compute --seconds {seconds}{recovery_args}"
+        )?;
+    }
+    Ok(QuotedLaunch {
+        token: token.to_string(),
+        seconds,
+    })
+}
+
+pub(super) struct QuotedLaunch {
+    token: String,
+    seconds: u64,
+}
+
+pub(super) struct DispatchOptions<'a> {
+    pub seconds: Option<u64>,
+    pub operation_key: &'a str,
+    pub message_id: &'a str,
+    pub yes: bool,
+    pub confirm_eu_compute: bool,
+    pub interactive: bool,
+}
+
+/// `codewhale dispatch`: record Work, review its quote, then launch it once
+/// the member has consented to EU compute for this launch.
+pub(super) fn dispatch<T: CloudTransport, W: Write>(
+    client: &CloudClient<'_, T>,
+    out: &mut W,
+    agent: &AccountAgent,
+    objective: &str,
+    context: Option<&WorkTaskContext>,
+    options: DispatchOptions<'_>,
+    read_answer: &mut dyn FnMut() -> Result<String>,
+) -> Result<()> {
+    let mut recorded = Vec::new();
+    let ids = assign(
+        client,
+        &mut recorded,
+        agent,
+        objective,
+        options.message_id,
+        context,
+    )?;
+    let [id] = ids.as_slice() else {
+        out.write_all(&recorded)?;
+        bail!("This message did not create exactly one new Work, so nothing was quoted or started");
+    };
+    let recorded_text = String::from_utf8_lossy(&recorded);
+    if !recorded_text
+        .lines()
+        .any(|line| matches!(line.trim(), "Intent: actionable" | "Intent: queued"))
+    {
+        out.write_all(&recorded)?;
+        bail!("This message was not read as new Work, so nothing was quoted or started");
+    }
+    writeln!(out, "Message ID: {}", options.message_id)?;
+    writeln!(out, "Work ID: {id}")?;
+    let quoted = quote(
+        client,
+        out,
+        id,
+        options.operation_key,
+        options.seconds,
+        None,
+        false,
+    )?;
+    let consented = if options.yes && options.confirm_eu_compute {
+        true
+    } else if options.interactive {
+        write!(
+            out,
+            "Start this on a new cloud computer in the EU? Your repository code and Work files run there. [y/N] "
+        )?;
+        out.flush()?;
+        matches!(
+            read_answer()?.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes"
+        )
+    } else {
+        false
+    };
+    if !consented {
+        bail!(
+            "Nothing started. Work {id} is recorded; to start it re-run with --yes --confirm-eu-compute --message-id {} --operation-key {}",
+            options.message_id,
+            options.operation_key
+        );
+    }
+    launch(
+        client,
+        out,
+        id,
+        options.operation_key,
+        &quoted.token,
+        true,
+        Some(quoted.seconds),
+        None,
+    )?;
     writeln!(
         out,
-        "To start: codewhale account agents work-launch {id} --operation-key {operation_key} --confirmation {token} --confirm-eu-compute"
+        "Status: codewhale dispatch --show {id}    Stop: codewhale dispatch --cancel {id}"
     )?;
     Ok(())
 }
@@ -943,10 +1271,12 @@ pub(super) fn launch<T: CloudTransport, W: Write>(
     operation_key: &str,
     confirmation: &str,
     confirm_eu_compute: bool,
+    seconds: Option<u64>,
+    recovery_from: Option<&str>,
 ) -> Result<()> {
     if !confirm_eu_compute {
         bail!(
-            "Boat trial Work runs your repository code and Work files on Boat's EU compute. Nothing was sent; re-run with --confirm-eu-compute to agree"
+            "Cloud Work runs your source context and Work files on a cloud computer in the EU. Nothing was sent; re-run with --confirm-eu-compute to agree"
         );
     }
     let id = validate_work_uuid(id)?;
@@ -960,10 +1290,14 @@ pub(super) fn launch<T: CloudTransport, W: Write>(
     // Any other state is a replay of a launch that already ran (or a Work that
     // cannot launch); the control plane's operation ledger decides which, so
     // the same command stays safe to repeat after a lost reply.
-    if target.state == "queued" {
+    if target.state == "queued" && recovery_from.is_none() {
         verify_launch_authority(client, &mut target)?;
     }
-    let mut body = launch_body(&target, operation_key)?;
+    let seconds = match seconds {
+        Some(seconds) => seconds,
+        None => default_seconds(&load_work_offer(client)?),
+    };
+    let mut body = launch_body(&target, operation_key, seconds, recovery_from)?;
     body["launchQuoteConfirmation"] = json!(confirmation);
     body["customerEuPlacementConsent"] = json!(true);
 
@@ -1029,7 +1363,35 @@ pub(super) fn launch<T: CloudTransport, W: Write>(
             "The Codewhale service launched a different Work than requested. Run `codewhale account agents work-status {id}` before doing anything else"
         );
     }
-    writeln!(out, "Work launched on bounded Boat trial compute.")?;
+    if let Some(previous) = recovery_from {
+        let workspace = str_at(session, &["workspace", "id"]);
+        let matches = workspace.is_some_and(|workspace| {
+            workspace != previous
+                && validate_resource_id(workspace, "Workspace").is_ok()
+                && str_at(session, &["attempt", "kind"]) == Some("recovery")
+                && str_at(session, &["attempt", "workRunId"]) == Some(id)
+                && str_at(session, &["attempt", "workspaceId"]) == Some(workspace)
+                && str_at(session, &["attempt", "previousWorkspaceId"]) == Some(previous)
+                && str_at(session, &["recovery", "workId"]) == Some(id)
+                && str_at(session, &["recovery", "workspaceId"]) == Some(workspace)
+                && str_at(session, &["recovery", "previousWorkspaceId"]) == Some(previous)
+        });
+        if !matches {
+            return Err(refused(
+                CloudTransportError::new(
+                    "The reply does not confirm the reviewed replacement attempt",
+                    std::io::Error::other("recovery identity mismatch"),
+                )
+                .into(),
+            ));
+        }
+        writeln!(
+            out,
+            "Work recovered on a fresh cloud computer; the original Work ID is retained."
+        )?;
+    } else {
+        writeln!(out, "Work launched on a cloud computer.")?;
+    }
     writeln!(out, "Work ID: {id}")?;
     writeln!(
         out,
@@ -1039,13 +1401,8 @@ pub(super) fn launch<T: CloudTransport, W: Write>(
     if let Some(session_id) = text_at(session, &["id"]) {
         writeln!(out, "Session: {session_id}")?;
     }
-    if let Some(provider) = text_at(session, &["sandbox", "provider"]) {
-        writeln!(
-            out,
-            "Computer: {provider} ({})",
-            text_at(session, &["sandbox", "status"])
-                .unwrap_or_else(|| "status unknown".to_string())
-        )?;
+    if let Some(status) = text_at(session, &["sandbox", "status"]) {
+        writeln!(out, "Computer: {status}")?;
     }
     if let Some(region) = text_at(session, &["sandboxTargetRegion"]) {
         writeln!(out, "Compute region: {region}")?;

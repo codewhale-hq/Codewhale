@@ -40,7 +40,7 @@ def compact(d: str) -> str:
     return re.sub(r"\s+", " ", d).strip()
 
 
-LIGHT = "#F4F8FF"
+LIGHT = "#FFFFFF"
 UNDERLAY = re.compile(r"(^|-)(pouch|eye)$")
 
 

@@ -85,16 +85,16 @@ codewhale
 For the default GitHub installer destination, you can use
 `"$HOME/.local/bin/codewhale"` until that directory is on PATH.
 
-On first launch, Codewhale asks only for decisions this installation still
-needs: language when it cannot infer one, a provider when no usable route is
-configured, and workspace trust when the folder requires a decision. The
-provider step includes an explicit offline route. The ready screen then opens
-the real composer, preserving a task supplied on the command line or suggesting
-a first task for the current folder.
+On first launch, Codewhale opens the composer, even with no key or route.
+With no key or route, workspace trust is asked once a provider is connected;
+otherwise only when the folder requires a decision. A provider is asked for
+when you send your first message: the message stays in the box while you sign
+in or use your own key, and a local model is offered only when a local Ollama
+server answers. The provider step also has an explicit offline route.
 
 Everything optional stays available after that. Use `/setup` for the
 progressive setup and repair guide, `/settings` for the full typed editor, and
-`/constitution` when you want to customize the bundled working agreement.
+`/constitution` when you want your own constitution on top of the bundled one.
 The localized telemetry choice appears only after the workspace is ready and
 does not block the composer.
 
@@ -351,9 +351,8 @@ direct. Multi-step delegation uses a compact Workflow plan with dependencies,
 bounded scopes, and completion evidence passed between steps. Fleet configures
 and manages those same sub-agents and their roles. One bounded, independent
 task can use a direct agent; continued work reuses it through `followup`.
-Heavy work can also be proposed to a Daytona cloud agent with `codewhale
-dispatch` or `/dispatch` (explicit confirmation; remotes are `github` / `cnb` /
-`gitee`). See [DAYTONA_CLOUD_DISPATCH.md](DAYTONA_CLOUD_DISPATCH.md).
+Heavy work can also run on a cloud computer with `codewhale dispatch "<task>"`,
+which goes through the signed-in account with a quote and EU-compute consent.
 
 For trusted workspaces where you intentionally want actions to proceed without
 approval prompts, select the Full Access permission posture with `Shift+Tab`.

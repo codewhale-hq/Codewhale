@@ -12,7 +12,6 @@ use ratatui::style::{Color, Style};
 use super::themes::UiTheme;
 
 /// The five visual families. Surface is the canvas, not a foreground ink.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticFamily {
     Surface,
@@ -79,7 +78,6 @@ impl ChromeInk {
     ];
 
     #[must_use]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn family(self) -> SemanticFamily {
         match self {
             Self::Outcome | Self::Active => SemanticFamily::Live,

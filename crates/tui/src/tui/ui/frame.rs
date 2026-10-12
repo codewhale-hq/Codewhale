@@ -1922,44 +1922,13 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // frame-derived explicit styled-surface mask, including aliased colors.
     if let Some(column) = shell_ocean {
         // The working canvas may keep a small responsive gutter, but the water
-        // does not stop at that content edge. Paint the cleared terminal floor
-        // first so wide layouts read as one ocean rather than a blue card
-        // floating between black banks. `paint_matching` leaves every semantic
-        // widget background untouched.
+        // does not stop at that content edge. One full-frame `surface_bg` pass
+        // paints the cleared terminal floor and every ordinary surface band
+        // so wide layouts read as one ocean rather than a blue card floating
+        // between black banks. `paint_matching` leaves every semantic widget
+        // background untouched.
         column.paint_matching_native(
             size,
-            f.buffer_mut(),
-            app.ui_theme.surface_bg,
-            &app.ui_theme,
-            &app.viewport.ocean_semantic_surfaces,
-        );
-        if top_work_strip_height > 0 {
-            column.paint_matching_native(
-                body_chunks[strip_slot],
-                f.buffer_mut(),
-                app.ui_theme.surface_bg,
-                &app.ui_theme,
-                &app.viewport.ocean_semantic_surfaces,
-            );
-        }
-        if let Some(side_area) = side_work_area {
-            column.paint_matching_native(
-                side_area,
-                f.buffer_mut(),
-                app.ui_theme.surface_bg,
-                &app.ui_theme,
-                &app.viewport.ocean_semantic_surfaces,
-            );
-        }
-        column.paint_matching_native(
-            work_chat_area,
-            f.buffer_mut(),
-            app.ui_theme.surface_bg,
-            &app.ui_theme,
-            &app.viewport.ocean_semantic_surfaces,
-        );
-        column.paint_matching_native(
-            body_chunks[preview_slot],
             f.buffer_mut(),
             app.ui_theme.surface_bg,
             &app.ui_theme,

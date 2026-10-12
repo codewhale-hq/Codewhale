@@ -5,6 +5,7 @@
 //! drift independently.
 
 pub mod auto_review;
+pub mod grants;
 pub mod risk;
 
 pub use risk::{RiskLevel, classify_risk};
@@ -842,6 +843,23 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
 #[must_use]
 pub fn get_tool_category_for_call(name: &str, params: &Value) -> ToolCategory {
     get_tool_category(canonical_action_alias(name, params))
+}
+
+pub fn permission_label_for(
+    locale: codewhale_localization::Locale,
+    mode: AppMode,
+    approval: ApprovalMode,
+) -> std::borrow::Cow<'static, str> {
+    use codewhale_localization::{MessageId, tr};
+    if mode == AppMode::Plan {
+        return tr(locale, MessageId::ChipPermissionReadOnly);
+    }
+    match approval {
+        ApprovalMode::Suggest => tr(locale, MessageId::ChipPermissionAsk),
+        ApprovalMode::Auto => tr(locale, MessageId::ChipPermissionAuto),
+        ApprovalMode::Bypass => tr(locale, MessageId::ChipPermissionFullAccess),
+        ApprovalMode::Never => tr(locale, MessageId::ChipPermissionNever),
+    }
 }
 
 #[cfg(test)]

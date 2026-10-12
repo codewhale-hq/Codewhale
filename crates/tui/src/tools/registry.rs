@@ -1193,9 +1193,9 @@ impl ToolRegistryBuilder {
     /// Each family is one tool with an `action` parameter (`tasks`, `github`,
     /// `automation`). Per-action execution aliases were removed in v0.9.3.
     ///
-    /// Shell-related task tools (`task_shell_start`, `task_shell_wait`) are
-    /// *not* included here — use `with_runtime_task_shell_tools` to register
-    /// them when `allow_shell` is true.
+    /// The shell-related task tool (`task_shell_wait`) is *not* included here —
+    /// use `with_runtime_task_shell_tools` to register it when `allow_shell`
+    /// is true.
     #[must_use]
     pub fn with_runtime_task_tools(self) -> Self {
         use super::automation::AutomationTool;
@@ -1209,16 +1209,15 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(SendLaterTool::new("send_later")))
     }
 
-    /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
+    /// Include the shell-related task tool (`task_shell_wait`).
     ///
-    /// These are gated behind `allow_shell` because `task_shell_start`
-    /// delegates directly to `BashTool`, providing the same shell
-    /// execution capability as `Bash`.
+    /// Gated behind `allow_shell` because it polls and cancels the background
+    /// jobs that `Bash` starts; background work has one entry point, the shell
+    /// tool's `background=true`.
     #[must_use]
     pub fn with_runtime_task_shell_tools(self) -> Self {
-        use super::tasks::{TaskShellStartTool, TaskShellWaitTool};
-        self.with_tool(Arc::new(TaskShellStartTool))
-            .with_tool(Arc::new(TaskShellWaitTool))
+        use super::tasks::TaskShellWaitTool;
+        self.with_tool(Arc::new(TaskShellWaitTool))
     }
 
     /// Include only read-only durable task, PR-attempt, GitHub, and automation

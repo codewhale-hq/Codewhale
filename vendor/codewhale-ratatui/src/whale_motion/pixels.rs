@@ -3,7 +3,7 @@
 
 use super::{CoveScene, Layer, Path, Role, ink::Fill, rig::holes_for, scene::segments};
 
-pub(crate) const MAX_SIDE: usize = 96;
+pub(crate) const MAX_SIDE: usize = 160;
 
 struct Canvas {
     side: usize,
@@ -68,24 +68,31 @@ impl Canvas {
         }
     }
 
-    fn layers(&mut self, layers: &[Layer]) {
+    fn layers(&mut self, layers: &[Layer], opacity: f64, current_ink: Option<u32>) {
         for layer in layers {
-            self.fill(&layer.paths, Fill::Solid(layer.color), layer.alpha);
+            let color = if layer.color == 0xf7fcfb {
+                current_ink.unwrap_or(layer.color)
+            } else {
+                layer.color
+            };
+            self.fill(&layer.paths, Fill::Solid(color), layer.alpha * opacity);
         }
     }
 }
 
-/// Square design space, with two samples per axis for clean curved edges.
+/// Square design space at one sample per pixel, so shape edges stay hard on a
+/// half-block grid instead of blending into the terminal background.
 /// Public terminal rectangles never control an unbounded allocation.
 pub(crate) fn render(scene: &CoveScene, side: usize, dark: bool) -> Vec<u8> {
     if !(1..=MAX_SIDE).contains(&side) {
         return Vec::new();
     }
+    let samples = 1;
     let mut canvas = Canvas {
-        side: side * 2,
-        pixels: vec![[0.; 4]; side * side * 4],
+        side: side * samples,
+        pixels: vec![[0.; 4]; side * side * samples * samples],
     };
-    canvas.layers(&scene.behind);
+    canvas.layers(&scene.behind, if dark { 0.68 } else { 0.9 }, None);
     for shape in &scene.parts.shapes {
         if shape.role == Role::Cutout {
             continue;
@@ -96,16 +103,16 @@ pub(crate) fn render(scene: &CoveScene, side: usize, dark: bool) -> Vec<u8> {
             canvas.fill(&paths, fill, shape.opacity);
         }
     }
-    canvas.layers(&scene.front);
+    canvas.layers(&scene.front, 0.82, (!dark).then_some(0x3e7789));
     let mut out = Vec::with_capacity(side * side * 4);
     for y in 0..side {
         for x in 0..side {
             let mut rgba = [0.; 4];
-            for dy in 0..2 {
-                for dx in 0..2 {
-                    let p = canvas.pixels[(y * 2 + dy) * canvas.side + x * 2 + dx];
+            for dy in 0..samples {
+                for dx in 0..samples {
+                    let p = canvas.pixels[(y * samples + dy) * canvas.side + x * samples + dx];
                     for (dst, src) in rgba.iter_mut().zip(p) {
-                        *dst += src / 4.;
+                        *dst += src / (samples * samples) as f64;
                     }
                 }
             }

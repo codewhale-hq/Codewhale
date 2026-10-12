@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 /// One-shot reviewer deadline. Slow reviewers are denials, surfaced
 /// separately from explicit denials (a timeout proves nothing about safety).
 const REVIEWER_TIMEOUT: Duration = Duration::from_secs(90);
+const REVIEWER_MAX_OUTPUT_TOKENS: u32 = 4096;
 /// Keep one exact held call comfortably inside every supported model context.
 /// Truncating tool input could hide the unsafe part, so oversized reviews deny.
 const MAX_REVIEW_CONTEXT_BYTES: usize = 64 * 1024;
@@ -127,7 +128,7 @@ pub(crate) async fn consult_reviewer(
                 cache_control: None,
             }],
         }],
-        max_tokens: 384,
+        max_tokens: REVIEWER_MAX_OUTPUT_TOKENS,
         system: Some(SystemPrompt::Text(DEFAULT_GUARDIAN_POLICY.to_string())),
         tools: None,
         tool_choice: None,

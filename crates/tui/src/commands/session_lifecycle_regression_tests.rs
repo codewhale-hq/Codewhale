@@ -471,11 +471,14 @@ fn new_session_force_cannot_detach_an_in_flight_turn() {
     assert!(result.action.is_none());
     assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
     assert_eq!(app.api_messages.len(), 1);
+    let message = result.message.as_deref().unwrap_or_default();
     assert!(
-        result
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("only discards draft or queued input"))
+        message.contains("Cannot start a new session while runtime work is active"),
+        "{message}"
+    );
+    assert!(
+        message.contains("the session is still busy with the current turn"),
+        "the refusal names the live turn: {message}"
     );
 }
 

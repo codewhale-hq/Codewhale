@@ -4400,9 +4400,11 @@ impl Config {
                 }
                 parsed
             } else {
+                apply_profile(ConfigFile::default(), profile)?;
                 Config::default()
             }
         } else {
+            apply_profile(ConfigFile::default(), profile)?;
             Config::default()
         };
 

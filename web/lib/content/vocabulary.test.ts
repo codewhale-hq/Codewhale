@@ -120,7 +120,7 @@ describe("shared getting-started path", () => {
   it("keeps offline setup documented without requiring it before a first task", () => {
     // The keyless-launch claim must stay backed by documented runtime
     // behavior. Assert the meaning docs/GUIDE.md owes this step -- a first
-    // launch that asks only for the decisions still needed, and a provider
+    // launch that opens the composer before any decision, and a provider
     // step that keeps an explicit offline route -- rather than one frozen
     // sentence, which is what broke when the first-run flow was rewritten.
     // Heading-level hashes only: shell comments inside the fenced install
@@ -128,7 +128,7 @@ describe("shared getting-started path", () => {
     const guide = repoText("docs/GUIDE.md");
     const firstLaunch = guide.split(/^#{2,} .*First Launch.*$/m)[1]?.split(/^#{2,} /m)[0] ?? "";
     expect(firstLaunch, "docs/GUIDE.md must keep a First Launch section").not.toBe("");
-    expect(firstLaunch).toMatch(/asks only for decisions/i);
+    expect(firstLaunch).toMatch(/opens the composer/i);
     expect(firstLaunch).toMatch(/offline route/i);
   });
 

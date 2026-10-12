@@ -1091,7 +1091,7 @@ async fn exhausted_active_goal_remains_previewable() {
         .goal_state
         .lock()
         .expect("goal state")
-        .record_usage(100, 0);
+        .record_usage(100, 0, std::time::Instant::now());
 
     let prompt = "continue the release";
     let planned = plan(&config, &identity, false, prompt).await;
@@ -1117,7 +1117,7 @@ async fn resumed_goal_with_raised_budget_becomes_previewable_again() {
     );
     {
         let mut state = engine.config.goal_state.lock().expect("goal state");
-        state.record_usage(100, 0);
+        state.record_usage(100, 0, std::time::Instant::now());
         state
             .mark_paused(GoalPauseReason::BudgetLimit)
             .expect("pause goal");
@@ -1154,7 +1154,7 @@ async fn lowering_active_goal_budget_below_used_tokens_keeps_preview_open() {
         .goal_state
         .lock()
         .expect("goal state")
-        .record_usage(100, 0);
+        .record_usage(100, 0, std::time::Instant::now());
     sync_goal_state_from_host(
         &engine.config.goal_state,
         Some("finish the release"),

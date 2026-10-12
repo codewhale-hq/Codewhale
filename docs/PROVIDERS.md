@@ -1398,6 +1398,28 @@ The check fails when:
 - A provider default model or base URL constant in `crates/tui/src/config.rs`
   is no longer mentioned here.
 
+## Provider Gotchas
+
+Three failures that look like something else (measured by a provider operator
+on live traffic):
+
+- **A cold model looks broken.** The first call to a model the provider has not
+  loaded can take 90 to 150 seconds, then drop to a second or less once warm.
+  Raise `[stream].open_timeout_secs` (default 45 seconds, at most 300) before reading a timeout as "model unavailable".
+- **Listed is not callable.** A catalog entry can be visible and still fail
+  every call. The same error text on every attempt (for example a "resources
+  busy" 502) is not transient: a genuinely busy upstream returns successes in
+  between. Probe a model before trusting it, and stop retrying one that fails
+  identically.
+- **A truncated answer can report `stop`.** A reasoning model can spend the
+  whole `max_tokens` allowance on reasoning. When the provider reports
+  `completion_tokens` exactly equal to the `max_tokens` the request asked for
+  and the finish reason is `stop`, Codewhale treats the turn as cut at the
+  ceiling rather than finished (`stop_contradicts_output_ceiling` in
+  `codewhale-models`); retrying the same prompt stops at the same count, so
+  raise the ceiling or shorten the task instead. No inference is made when the
+  provider reports no usage.
+
 ## Planned, Not Shipped Yet
 
 These items belong to the v0.8.48+ provider-abstraction milestone or related

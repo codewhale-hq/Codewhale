@@ -50,6 +50,10 @@ pub(crate) enum ApprovalReceipt {
         created_at: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decided_by: Option<ApprovalDecider>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matched_label: Option<String>,
     },
 }
 
@@ -116,7 +120,22 @@ impl ApprovalReceipt {
             outcome,
             created_at: Utc::now(),
             decided_by,
+            grant_id: None,
+            matched_label: None,
         }
+    }
+
+    pub(crate) fn with_grant(mut self, grant: &crate::core::authority::grants::GrantRef) -> Self {
+        if let Self::Decided {
+            grant_id,
+            matched_label,
+            ..
+        } = &mut self
+        {
+            *grant_id = Some(grant.grant_id.clone());
+            *matched_label = Some(grant.label.clone());
+        }
+        self
     }
 
     pub(crate) fn approval_id(&self) -> &str {
@@ -359,6 +378,7 @@ impl ApprovalReplay {
                     outcome,
                     created_at,
                     decided_by,
+                    ..
                 } => {
                     if approval_id != tool_call_id {
                         return Err(format!(
@@ -414,7 +434,6 @@ impl ApprovalReceiptStore {
         Self { sessions_dir }
     }
 
-    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn default_location() -> io::Result<Self> {
         crate::session_manager::default_sessions_dir().map(Self::new)
     }

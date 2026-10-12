@@ -1645,6 +1645,9 @@ mod provider_chain_tests {
 pub struct HookSinksToml {
     /// Unix domain socket path used by the app-server event sink.
     ///
+    /// Known limitation: only `codewhale app-server` reads this table; the
+    /// TUI and the Runtime API do not dispatch hook events to it.
+    ///
     /// When unset, no Unix socket sink is registered. There is deliberately no
     /// shared `/tmp` default because socket ownership should be explicit.
     #[serde(default)]
@@ -6326,6 +6329,16 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
         return normalize_config_file_path(path);
     }
     default_config_path()
+}
+
+pub fn require_explicit_config_exists(explicit: Option<PathBuf>) -> Result<()> {
+    if let Some(path) = explicit {
+        let path = normalize_config_file_path(path)?;
+        if !checked_path_exists(&path)? {
+            bail!("config file does not exist: {}", quote_os_path(&path));
+        }
+    }
+    Ok(())
 }
 
 /// Whether `path` names a workspace-scoped config document —

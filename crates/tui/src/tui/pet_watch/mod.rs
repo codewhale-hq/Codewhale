@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod appearance;
+pub use appearance::{BodyStyle, TextLanguage};
 mod audio;
 mod audio_cursor;
 mod avatars;
@@ -36,6 +37,10 @@ mod worker;
 use live::{Command, Notice, Presentation, Worker};
 #[derive(Clone, Copy)]
 pub enum Control {
+    Appearance {
+        body: Option<BodyStyle>,
+        language: Option<TextLanguage>,
+    },
     Sound,
     Browser,
     Window,
@@ -360,6 +365,9 @@ pub fn command(app: &mut App, control: Control) {
 }
 fn apply(state: &mut PetWatch, control: Control, agents: &[codewhale_ratatui::Subagent<'_>]) {
     match control {
+        Control::Appearance { body, language } => {
+            state.send(Command::Appearance { body, language });
+        }
         Control::Browser => state.send(Command::Browser),
         Control::Window => state.send(Command::Window),
         Control::Select => state.send(Command::Select),
@@ -449,10 +457,6 @@ pub fn tick(app: &mut App, now: Instant) {
     if visible && app.pet_watch.avatars.refresh(&app.workspace, now) {
         app.needs_redraw = true;
     }
-    let waiting = matches!(
-        ShellPhase::from_app(app),
-        ShellPhase::Waiting | ShellPhase::Approval
-    );
     let sound_allowed = visible
         && app.onboarding == crate::tui::app::OnboardingState::None
         && !app.notification_settings.quiet
@@ -489,7 +493,7 @@ pub fn tick(app: &mut App, now: Instant) {
         }
         state.raster = Some(update);
         state.unavailable = false;
-        if visible && !full::canonical(state) {
+        if visible {
             app.needs_redraw = true;
         }
     }
@@ -505,40 +509,47 @@ pub fn tick(app: &mut App, now: Instant) {
         .last_tick
         .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(30))
     {
-        let a = state.area.unwrap_or(Rect::new(0, 0, 40, 8));
-        let cell = crossterm::terminal::window_size()
-            .ok()
-            .filter(|s| s.columns > 0 && s.rows > 0 && s.width > 0 && s.height > 0)
-            .map(|s| {
-                (
-                    f64::from(s.width) / f64::from(s.columns),
-                    f64::from(s.height) / f64::from(s.rows),
-                )
-            })
-            .unwrap_or((8.0, 16.0));
-        let next = live::View {
-            width: a.width.clamp(1, 512),
-            height: a.height.saturating_sub(1).clamp(1, 256),
-            cell_width: cell.0,
-            cell_height: cell.1,
-            motion: motion && !full::canonical(state),
-            pixels: !full::canonical(state)
-                && matches!(state.avatars.key.as_str(), "" | "whale")
-                && crate::tui::mark::kitty_graphics_supported()
-                && app.synchronized_output_enabled
-                && std::env::var("CODEWHALE_PET_GRAPHICS").as_deref() != Ok("braille"),
-            visible,
-            waiting,
-            sound: state.sound_requested && sound_allowed,
-        };
-        if let Some(worker) = &state.worker
-            && let Ok(mut view) = worker.view.lock()
-        {
-            *view = next;
-        }
         state.last_tick = Some(now);
+        let state = &app.pet_watch;
+        if let Some(worker) = &state.worker {
+            let waiting = matches!(
+                ShellPhase::from_app(app),
+                ShellPhase::Waiting | ShellPhase::Approval
+            );
+            let a = state.area.unwrap_or(Rect::new(0, 0, 40, 8));
+            let cell = crossterm::terminal::window_size()
+                .ok()
+                .filter(|s| s.columns > 0 && s.rows > 0 && s.width > 0 && s.height > 0)
+                .map(|s| {
+                    (
+                        f64::from(s.width) / f64::from(s.columns),
+                        f64::from(s.height) / f64::from(s.rows),
+                    )
+                })
+                .unwrap_or((8.0, 16.0));
+            let next = live::View {
+                locale: app.ui_locale.tag().into(),
+                width: a.width.clamp(1, 512),
+                height: a.height.saturating_sub(1).clamp(1, 256),
+                cell_width: cell.0,
+                cell_height: cell.1,
+                motion,
+                pixels: !full::canonical(state)
+                    && matches!(state.avatars.key.as_str(), "" | "whale")
+                    && crate::tui::mark::kitty_graphics_supported()
+                    && app.synchronized_output_enabled
+                    && std::env::var("CODEWHALE_PET_GRAPHICS").as_deref() != Ok("braille"),
+                visible,
+                waiting,
+                sound: state.sound_requested && sound_allowed,
+            };
+            if let Ok(mut view) = worker.view.lock() {
+                *view = next;
+            }
+        }
     }
-    let notices: Vec<_> = state
+    let notices: Vec<_> = app
+        .pet_watch
         .worker
         .as_ref()
         .map(|w| w.notices.try_iter().take(16).collect())
@@ -546,6 +557,10 @@ pub fn tick(app: &mut App, now: Instant) {
     for notice in notices {
         app.pet_watch.exporting = false;
         let (text, level) = match notice {
+            Notice::AppearanceLegacy => (
+                tr(app.ui_locale, MessageId::PetAppearanceLegacy).into_owned(),
+                StatusToastLevel::Warning,
+            ),
             Notice::Exported(path) => (
                 tr(app.ui_locale, MessageId::PetWatchExported)
                     .replace("{path}", &path.display().to_string()),

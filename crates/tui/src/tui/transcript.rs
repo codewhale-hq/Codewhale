@@ -1335,6 +1335,9 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
         for ch in span.content.chars() {
             let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if used + width > content_budget {
+                if !content.is_empty() {
+                    truncated.push(Span::styled(content, span.style));
+                }
                 break 'outer;
             }
             content.push(ch);

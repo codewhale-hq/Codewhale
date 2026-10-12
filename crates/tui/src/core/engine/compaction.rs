@@ -358,7 +358,7 @@ impl Engine {
             ) => Some(result),
         };
         self.session.total_usage.add(&compaction_usage);
-        self.record_goal_usage_for_turn(&compaction_usage, started.elapsed());
+        self.record_goal_usage_for_turn(&compaction_usage, started);
         self.emit_compaction_usage(&compaction_usage, started.elapsed())
             .await;
 
@@ -524,12 +524,12 @@ impl Engine {
             self.session.latest_parent_input_tokens,
         );
         let prepared = if !*auto_compaction_suppressed
-            && crate::compaction::compaction_pressure_reached_with_billed(
-                &self.session.messages,
-                self.session.system_prompt.as_ref(),
-                &auto_compaction_config,
-                billed_input_tokens,
-            ) {
+            && auto_compaction_config.enabled
+            && billed_input_tokens
+                .and_then(|tokens| usize::try_from(tokens).ok())
+                .unwrap_or(0)
+                >= auto_compaction_config.token_threshold
+        {
             let mut prepared = self.prepare_compaction_envelope(auto_compaction_config);
             prepared.tools = active_tools.map(<[Tool]>::to_vec);
             Some(prepared)

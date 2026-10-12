@@ -391,8 +391,11 @@ impl GoalState {
         }
     }
 
-    pub fn record_usage(&mut self, token_delta: u64, time_delta_seconds: u64) {
-        if self.is_active() {
+    pub fn record_usage(&mut self, token_delta: u64, time_delta_seconds: u64, since: Instant) {
+        if self.is_active()
+            || (self.objective.is_some()
+                && self.finished_at.is_some_and(|finished| finished >= since))
+        {
             self.tokens_used = self.tokens_used.saturating_add(token_delta);
             self.time_used_seconds = self.time_used_seconds.saturating_add(time_delta_seconds);
         }
@@ -1157,7 +1160,7 @@ impl ToolSpec for UpdateGoalTool {
                 },
                 "progress": {
                     "type": "object",
-                    "description": "Optional with not_achieved or advisory: your current best estimate of overall completion, shown to the user as reported progress. Keep percent honest — it is an estimate, never a verified fraction.",
+                    "description": "Optional with not_achieved, advisory or yield: your current best estimate of overall completion, shown to the user as reported progress. Keep percent honest — it is an estimate, never a verified fraction.",
                     "properties": {
                         "percent": {
                             "type": "integer",
@@ -1208,9 +1211,9 @@ impl ToolSpec for UpdateGoalTool {
         }
         let status = required_str(&input, "status")?.trim().to_ascii_lowercase();
         let progress = parse_progress_report(&input)?;
-        if progress.is_some() && !matches!(status.as_str(), "not_achieved" | "advisory") {
+        if progress.is_some() && !matches!(status.as_str(), "not_achieved" | "advisory" | "yield") {
             return Err(ToolError::invalid_input(
-                "progress is only accepted with status not_achieved or advisory",
+                "progress is only accepted with status not_achieved, advisory or yield",
             ));
         }
         let snapshot = {
@@ -1269,6 +1272,9 @@ impl ToolSpec for UpdateGoalTool {
                 }
                 "yield" => {
                     state.mark_yielded().map_err(ToolError::invalid_input)?;
+                    if progress.is_some() {
+                        state.progress = progress;
+                    }
                 }
                 "advisory" => {
                     let advisory = input
@@ -1543,7 +1549,7 @@ mod tests {
                 Some(1_200),
                 status,
             );
-            state.record_usage(300, 12);
+            state.record_usage(300, 12, std::time::Instant::now());
             state.record_continuation();
             let before = state.snapshot();
 
@@ -1569,7 +1575,7 @@ mod tests {
         blocked
             .create("resume the release goal".to_string(), Some(4_000))
             .expect("create blocked fixture");
-        blocked.record_usage(750, 44);
+        blocked.record_usage(750, 44, std::time::Instant::now());
         blocked.record_continuation();
         blocked
             .mark_blocked("provider failed".to_string())
@@ -1662,7 +1668,7 @@ mod tests {
         state
             .create("finish the first objective".to_string(), Some(1_200))
             .expect("create first goal");
-        state.record_usage(300, 12);
+        state.record_usage(300, 12, std::time::Instant::now());
         state.record_continuation();
         state
             .mark_complete(
@@ -2110,7 +2116,7 @@ mod tests {
         );
         {
             let mut goal = state.lock().expect("goal lock");
-            goal.record_usage(300, 12);
+            goal.record_usage(300, 12, std::time::Instant::now());
             goal.record_continuation();
         }
 
@@ -2339,7 +2345,7 @@ mod tests {
             .await
             .expect_err("progress is not terminal evidence");
         assert!(
-            err.to_string().contains("not_achieved or advisory"),
+            err.to_string().contains("not_achieved, advisory or yield"),
             "{err}"
         );
 

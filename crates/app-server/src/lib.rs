@@ -529,7 +529,7 @@ async fn shutdown_signal() {
 /// `RuntimeBridge::stream_turn_events` forwards only `item.delta` and the
 /// turn's completion, and there is no decision route, so approval-gated work
 /// belongs on the Runtime API (`/v1/threads/*`, `POST /v1/approvals/{id}`).
-const ADVERTISED_ROUTES: &[&str] = &["/thread", "/app", "/prompt", "/jobs"];
+const ADVERTISED_ROUTES: &[&str] = &["/thread", "/app", "/prompt"];
 
 /// Existing compatibility routes adopted by the canonical host listener.
 /// Both callers share the exact existing dispatcher/auth/body-limit routes.
@@ -561,7 +561,6 @@ fn app_router(state: AppState, cors_origins: &[String]) -> Router {
                 MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
-        .route("/jobs", get(jobs_handler))
         .route(
             "/v1/chat/completions",
             post(chat_completions::chat_completions_handler),
@@ -1184,11 +1183,6 @@ async fn prompt_handler(State(state): State<AppState>, Json(req): Json<PromptReq
         Ok(res) => (StatusCode::OK, Json(res)).into_response(),
         Err(err) => http_error_from_jsonrpc(err).into_response(),
     }
-}
-
-async fn jobs_handler(State(state): State<AppState>) -> Json<AppResponse> {
-    let runtime = state.runtime.read().await;
-    Json(runtime.app_status())
 }
 
 async fn app_handler(

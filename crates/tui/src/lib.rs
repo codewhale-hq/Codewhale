@@ -27,13 +27,11 @@ mod auto_reasoning;
 mod automation_manager;
 mod child_env;
 mod client;
-pub mod cloud_dispatch;
 mod codex_model_cache;
 mod commands;
 mod compaction;
 mod composer_history;
 mod composer_stash;
-pub mod computer_meter;
 mod config;
 pub mod config_keys;
 mod config_persistence;
@@ -46,7 +44,6 @@ mod credentials;
 /// Guarded installation I/O reusing Engine's confined file primitives.
 pub mod delivery_files;
 mod dependencies;
-pub mod dispatch_runner;
 mod doctor;
 mod doctor_fix;
 mod dsh_credentials;
@@ -54,7 +51,6 @@ mod error_taxonomy;
 mod eval;
 mod extension_host;
 mod external_credentials;
-mod features;
 mod fleet;
 mod fs_confined;
 mod git_status;
@@ -64,10 +60,8 @@ mod hooks;
 mod image_attach;
 mod import_claude;
 mod integrations;
-mod lane_control;
 mod llm_client;
 mod local_ollama;
-mod logging;
 mod lsp;
 mod mcp;
 mod mcp_server;
@@ -101,7 +95,6 @@ pub mod repl;
 mod repo_law;
 mod request_manifest;
 mod request_tuning;
-mod resource_telemetry;
 pub mod rlm;
 mod route_billing;
 mod route_budget;
@@ -112,7 +105,6 @@ mod runtime_api;
 mod runtime_chat_relay;
 mod runtime_handoff;
 mod runtime_log;
-mod runtime_policy;
 mod runtime_threads;
 mod sandbox;
 mod scorecard;
@@ -136,7 +128,6 @@ mod settings;
 mod shell_dispatcher;
 mod skills;
 mod snapshot;
-mod startup_trace;
 mod superfast;
 mod task_manager;
 mod telemetry_notice;
@@ -150,9 +141,10 @@ use codewhale_release::tls;
 // re-exports; the split deletes it by rewriting these paths to
 // `codewhale_runtime::` (docs/design/TUI_DECONSTRUCTION.md).
 use codewhale_runtime::{
-    context_budget, continual_harness, fast_hash, goal_loop, hashing, host_terminal,
-    llm_response_cache, media_originals, model_context, native_memory, prompt_zones, regex_cache,
-    retry_status, safe_label, session_tree, skill_state, sleep_guard, tool_history_repair,
+    context_budget, continual_harness, fast_hash, features, goal_loop, hashing, host_terminal,
+    lane_control, llm_response_cache, logging, media_originals, model_context, native_memory,
+    prompt_zones, regex_cache, resource_telemetry, retry_status, runtime_policy, safe_label,
+    session_tree, skill_state, sleep_guard, startup_trace, tool_history_repair,
     workspace_discovery,
 };
 mod todo_snapshot;
@@ -250,6 +242,8 @@ enum Commands {
     Doctor(DoctorArgs),
     /// Summarize failure signals from a local JSONL session log without raw content
     SessionDiagnostics(SessionDiagnosticsArgs),
+    #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
+    Install { source: String },
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge)
@@ -2543,6 +2537,15 @@ async fn run_async_main_dispatch(
                 }
             }
             Commands::SessionDiagnostics(args) => run_session_diagnostics(args),
+            Commands::Install { source } => {
+                let config = load_config_from_cli(&cli)?;
+                crate::plugins::mutation::install_from_cli(
+                    source,
+                    config,
+                    (*plugin_registry).clone(),
+                )
+                .await
+            }
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -5656,6 +5659,16 @@ async fn run_doctor(
         "·".dimmed(),
         crate::utils::display_path(&selected_skills_dir)
     );
+    let unrecognized_system_skills = crate::skills::unrecognized_system_skills(&global_skills_dir);
+    if !unrecognized_system_skills.is_empty() {
+        println!(
+            "  {} {} bundled skill(s) in {} are customized or from an unknown generation and are never refreshed: {}",
+            "!".truecolor(sky_r, sky_g, sky_b),
+            unrecognized_system_skills.len(),
+            crate::utils::display_path(&global_skills_dir),
+            unrecognized_system_skills.join(", ")
+        );
+    }
     if !agents_skills_dir.exists()
         && !local_skills_dir.exists()
         && !agents_global_skills_dir
@@ -8204,6 +8217,7 @@ fn run_doctor_json(
         "mcp": mcp_summary,
         "skills": {
             "selected": selected_skills_dir.display().to_string(),
+            "unrecognized_system_skills": crate::skills::unrecognized_system_skills(&global_skills_dir),
             "global": {
                 "path": global_skills_dir.display().to_string(),
                 "present": global_skills_dir.exists(),
@@ -11449,7 +11463,7 @@ fn review_advisory_footer(number: u32, view: &GhPullRequest) -> String {
 
 /// Post one COMMENT review: summary body plus inline comments anchored to the
 /// PR head SHA. Never approves or requests changes — the review is advisory
-/// and posts alongside CODEOWNERS, like `claude-review.yml`.
+/// and posts alongside CODEOWNERS.
 fn run_gh_post_pr_review(
     repo: &str,
     number: u32,
@@ -12030,6 +12044,7 @@ async fn run_mcp_command(
                 disabled: false,
                 enabled: true,
                 required: false,
+                lazy: false,
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
                 headers: std::collections::HashMap::new(),
@@ -12181,6 +12196,7 @@ async fn run_mcp_command(
                         disabled: false,
                         enabled: true,
                         required: false,
+                        lazy: false,
                         enabled_tools: Vec::new(),
                         disabled_tools: Vec::new(),
                         headers: std::collections::HashMap::new(),
@@ -13519,23 +13535,6 @@ async fn run_interactive_prepared(
             && let Ok(manager) = session_manager::SessionManager::default_location()
         {
             let _ = manager.cleanup_old_sessions_keeping(janitor_resume_id.as_deref());
-        }
-
-        // Cloud-dispatch orphan reconciliation: a previous TUI could quit
-        // (or crash) with a detached cloud-agent runner in flight, leaving
-        // an active job record — and possibly a billing sandbox — behind.
-        // Stale active jobs are failed and torn down, then any
-        // dispatch-labeled sandbox whose job no longer needs it is deleted
-        // by label. Best effort: one bounded listing call when credentials
-        // exist, fail-closed quiet otherwise, never fatal.
-        if let Ok(store) = crate::cloud_dispatch::CloudJobStore::from_env() {
-            let receipt = crate::dispatch_runner::startup_reconcile(
-                &store,
-                &crate::cloud_dispatch::LiveDaytonaLauncher,
-            );
-            if !receipt.is_empty() {
-                logging::info(receipt);
-            }
         }
     });
 
@@ -18912,6 +18911,7 @@ mod doctor_mcp_tests {
             disabled: false,
             enabled: true,
             required: false,
+            lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: std::collections::HashMap::new(),
@@ -19889,7 +19889,7 @@ mod setup_helper_tests {
 
         let sources = [
             include_str!("config.rs"),
-            include_str!("logging.rs"),
+            include_str!("../../runtime/src/logging.rs"),
             include_str!("../../config/src/lib.rs"),
             include_str!("../../config/src/provider.rs"),
             include_str!("../../config/assets/provider_descriptors.json"),

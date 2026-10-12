@@ -6635,6 +6635,7 @@ fn mcp_server_config_from_write_request(
         disabled: !enabled,
         enabled,
         required: req.required.unwrap_or(false),
+        lazy: false,
         enabled_tools: req.enabled_tools.unwrap_or_default(),
         disabled_tools: req.disabled_tools.unwrap_or_default(),
         headers: std::collections::HashMap::new(),

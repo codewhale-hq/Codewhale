@@ -851,6 +851,7 @@ fn standard_server_to_config(
         disabled: extension.disabled.unwrap_or(false),
         enabled: extension.enabled.unwrap_or(true),
         required: extension.required.unwrap_or(false),
+        lazy: false,
         enabled_tools: extension.enabled_tools,
         disabled_tools: extension.disabled_tools,
         headers: server.headers.into_iter().collect(),

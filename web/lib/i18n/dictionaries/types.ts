@@ -686,6 +686,8 @@ export type DocsWebDict = DocsPageDict;
 
 export type DocsWorkDict = DocsPageDict;
 
+export type DocsPetDict = DocsPageDict;
+
 /** Copy for `app/[locale]/computer-use/page.tsx` and the install page's Computer Use section. */
 export interface ComputerUseDict {
   metaTitle: string;

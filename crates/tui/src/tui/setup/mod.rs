@@ -23,7 +23,7 @@ use crate::config::{Config, has_api_key};
 use crate::prompts::{
     BASE_PROMPT_OVERRIDE_OPT_IN_ENV, CONSTITUTION_OVERRIDE_FILE, base_prompt_override_opt_in,
 };
-use crate::tui::app::App;
+use crate::tui::app::{App, AppModeUi};
 use crate::tui::onboarding;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
@@ -507,7 +507,7 @@ impl SetupRuntimeFacts {
             provider_ready,
             provider_status,
             provider_result,
-            work_intent: app.mode.display_name().to_string(),
+            work_intent: app.mode.display_name_localized(app.ui_locale).into_owned(),
             approval: app
                 .approval_mode
                 .permission_chip_label()
@@ -547,17 +547,12 @@ impl SetupRuntimeFacts {
             remote_command_provider: remote.command_provider,
             remote_result: remote.result,
             remote_control_result: {
-                let status = app.remote_control.status_line();
-                let message = if status.starts_with("Remote control: connected") {
-                    MessageId::SetupRemoteStatusReady
-                } else if status.starts_with("Remote control: connecting")
-                    || status.starts_with("Remote control: stopping")
-                {
-                    MessageId::SetupStatusInProgress
-                } else if status.starts_with("Remote control: disconnected") {
-                    MessageId::SetupRemoteStatusNeedsAction
-                } else {
-                    MessageId::SetupRemoteStatusDisabled
+                use crate::remote_control::Status;
+                let message = match app.remote_control.status() {
+                    Status::Connected => MessageId::SetupRemoteStatusReady,
+                    Status::Connecting | Status::Stopping => MessageId::SetupStatusInProgress,
+                    Status::Failed => MessageId::SetupRemoteStatusNeedsAction,
+                    Status::Off => MessageId::SetupRemoteStatusDisabled,
                 };
                 tr(app.ui_locale, message).into_owned()
             },
@@ -835,63 +830,63 @@ impl GuidedConstitutionDraft {
             let own_words = match locale {
                 Locale::Ja => format!(
                     "\nユーザー自由原則：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::ZhHans => format!(
                     "\n用户自定义准则：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::ZhHant => format!(
                     "\n使用者自由原則：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::PtBr => format!(
                     "\nPrincípio livre do usuário: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Es419 => format!(
                     "\nPrincipio libre del usuario: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Vi => format!(
                     "\nNguyên tắc tự do của người dùng: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Ko => format!(
                     "\n사용자 자유 원칙: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Ca => format!(
                     "\nPrincipi lliure de l'usuari: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::De => format!(
                     "\nFreitext-Prinzip des Nutzers: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Fr => format!(
                     "\nPrincipe en texte libre de l'utilisateur : {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Id => format!(
                     "\nPrinsip bebas pengguna: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Hi => format!(
                     "\nउपयोगकर्ता मुक्त-पाठ सिद्धांत: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Ru => format!(
                     "\nСвободный принцип пользователя: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 Locale::Uk => format!(
                     "\nВільний принцип користувача: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
                 _ => format!(
                     "\nUser freeform principle: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                    bounded_freeform_note(note, FREEFORM_NOTE_MAX)
                 ),
             };
             notes.push_str(&own_words);
@@ -2126,6 +2121,8 @@ fn authority_priority(locale: Locale) -> &'static str {
     }
 }
 
+const FREEFORM_NOTE_MAX: usize = MAX_NOTES_LEN - 1_000;
+
 fn bounded_freeform_note(input: &str, max_chars: usize) -> String {
     input
         .chars()
@@ -2896,7 +2893,7 @@ impl SetupWizardView {
     fn append_freeform_note_text(&mut self, text: &str) {
         let mut next = self.freeform_note.clone();
         next.push_str(text);
-        self.freeform_note = bounded_freeform_note(&next, MAX_NOTES_LEN);
+        self.freeform_note = bounded_freeform_note(&next, FREEFORM_NOTE_MAX);
         self.guided_preview_seen = false;
         self.model_draft = None;
         self.model_draft_label = None;
@@ -3220,8 +3217,12 @@ impl ModalView for SetupWizardView {
             KeyCode::Char('k') if self.selected_step() == SetupStep::Constitution => {
                 self.commit_keep_existing_constitution()
             }
-            KeyCode::Char('u') => self.commit_constitution(SetupCommitKind::BundledConstitution),
-            KeyCode::Char('d') => self.commit_constitution(SetupCommitKind::DeferredConstitution),
+            KeyCode::Char('u') if self.selected_step() == SetupStep::Constitution => {
+                self.commit_constitution(SetupCommitKind::BundledConstitution)
+            }
+            KeyCode::Char('d') if self.selected_step() == SetupStep::Constitution => {
+                self.commit_constitution(SetupCommitKind::DeferredConstitution)
+            }
             KeyCode::Enter if self.selected_step() == SetupStep::Constitution => {
                 self.commit_constitution(SetupCommitKind::BundledConstitution)
             }
@@ -3322,7 +3323,11 @@ impl ModalView for SetupWizardView {
         let spec = self.selected_spec();
         let (title_text, question_text) = if self.progressive_guide {
             match self.selected_step() {
-                SetupStep::ProviderModel => (
+                SetupStep::Verification if self.facts.provider_ready => (
+                    tr(self.locale, MessageId::OnboardReadyTitle).into_owned(),
+                    tr(self.locale, MessageId::OnboardReadyLead).into_owned(),
+                ),
+                SetupStep::ProviderModel | SetupStep::Verification => (
                     tr(self.locale, MessageId::OnboardProviderTitle).into_owned(),
                     tr(self.locale, MessageId::OnboardProviderBlurb).into_owned(),
                 ),
@@ -3333,10 +3338,6 @@ impl ModalView for SetupWizardView {
                 SetupStep::RemoteRuntime => (
                     "/rc".to_string(),
                     tr(self.locale, MessageId::CmdRemoteControlDescription).into_owned(),
-                ),
-                SetupStep::Verification => (
-                    tr(self.locale, MessageId::OnboardReadyTitle).into_owned(),
-                    tr(self.locale, MessageId::OnboardReadyLead).into_owned(),
                 ),
                 _ => (
                     tr(self.locale, spec.title_id()).into_owned(),
@@ -3443,14 +3444,30 @@ impl SetupWizardView {
                 details(),
                 exit(),
             ],
-            SetupStep::Verification => vec![
-                ActionHint::new(
-                    "Enter",
-                    tr(self.locale, MessageId::OnboardReadyStart).to_string(),
-                ),
-                details(),
-                exit(),
-            ],
+            SetupStep::Verification => {
+                let mut hints = vec![
+                    ActionHint::new(
+                        "Enter",
+                        tr(self.locale, MessageId::OnboardReadyStart).to_string(),
+                    ),
+                    ActionHint::new(
+                        "C",
+                        tr(self.locale, MessageId::SetupActionCustomize).to_string(),
+                    ),
+                    details(),
+                    exit(),
+                ];
+                if !self.facts.provider_ready {
+                    hints.insert(
+                        0,
+                        ActionHint::new(
+                            "P",
+                            tr(self.locale, MessageId::SetupActionProvider).to_string(),
+                        ),
+                    );
+                }
+                hints
+            }
             _ => vec![exit()],
         };
         let position = self
@@ -4421,7 +4438,6 @@ fn constitution_ratification_text(
             Locale::Uk => "Структурована конституція порожня.".to_string(),
             _ => "The structured constitution is empty.".to_string(),
         });
-    let layer_order = tr(locale, MessageId::SetupCheckpointLayerOrder);
 
     match locale {
         Locale::Ja => {
@@ -4454,7 +4470,7 @@ fn constitution_ratification_text(
                  すべての個別判断を裁くのではなく権限と境界を定め、セッションを越えて協働を継続させます。\
                  ただしこれは記憶ではありません。履歴ではなく原則を保持します。\n\n\
                  {rendered}\n\n\
-                 権限の階層\n{layer_order}\nあなたの直接の指示は常にこの文書より優先されます。\n\n\
+                 権限の階層\nあなたの直接の指示は常にこの文書より優先されます。\n\n\
                  これができないこと\n\
                  これは行動を導くものです。承認ポリシー、サンドボックス、Shell、ネットワーク、信頼、MCP 権限、\
                  既定モード、公開、支出の権限を付与または変更することはできません。これらは実行時にあなたが管理します。\n\n\
@@ -4489,7 +4505,7 @@ fn constitution_ratification_text(
                  这是 Codewhale 与你协作时长期遵循的偏好和规则。内容应保持简短、便于执行，以持久原则为主，并可随时调整。\
                  它界定协作方式与行为边界，而不是替你决定每一种情况；它让协作跨会话延续——但它不是记忆，只保留原则，不保留历史。\n\n\
                  {rendered}\n\n\
-                 权限层级\n{layer_order}\n你的直接指令始终高于本文件。\n\n\
+                 权限层级\n你的直接指令始终高于本文件。\n\n\
                  它不能做什么\n\
                  它只提供行为指导，不能授予或更改审批策略、沙箱、Shell、网络、信任、MCP 权限、默认模式、发布或支出权限——这些始终由你在运行时掌控。\n\n\
                  精简核心与可选策略\n\
@@ -4522,7 +4538,7 @@ fn constitution_ratification_text(
                  這是 Codewhale 與你協作的長期準則。像優秀的憲法一樣：足夠簡短因而可用，由持久原則而非詳盡規則構成，並且可以隨你修訂。\
                  它界定權力與邊界，而非裁決每個具體決定；它讓協作跨會話延續，但它不是記憶，它承載的是原則，而非歷史。\n\n\
                  {rendered}\n\n\
-                 權限層級\n{layer_order}\n你的直接指令始終高於本文件。\n\n\
+                 權限層級\n你的直接指令始終高於本文件。\n\n\
                  它不能做什麼\n\
                  它只提供行為指導，不能授予或更改審批策略、沙箱、Shell、網路、信任、MCP 權限、預設模式、發布或支出權限；這些始終由你在執行時掌控。\n\n\
                  精簡核心與可選模組\n\
@@ -4560,7 +4576,7 @@ fn constitution_ratification_text(
                  e pode ser emendada conforme você muda. Ela define poderes e limites em vez de decidir cada caso, \
                  e dá continuidade à colaboração entre sessões. Mas ela não é memória: carrega princípios, não histórico.\n\n\
                  {rendered}\n\n\
-                 HIERARQUIA DE AUTORIDADE\n{layer_order}\nSeus pedidos diretos sempre superam este documento.\n\n\
+                 HIERARQUIA DE AUTORIDADE\nSeus pedidos diretos sempre superam este documento.\n\n\
                  O QUE ISTO NÃO PODE FAZER\n\
                  Isto orienta comportamento. Não pode conceder nem alterar política de aprovação, sandbox, shell, rede, \
                  confiança, permissões MCP, modo padrão, publicação ou autoridade para gastos; isso continua sob seu controle em tempo de execução.\n\n\
@@ -4600,7 +4616,7 @@ fn constitution_ratification_text(
                  y enmendable a medida que cambias. Define poderes y límites en vez de decidir cada caso, \
                  y da continuidad a la colaboración entre sesiones. Pero no es memoria: lleva principios, no historial.\n\n\
                  {rendered}\n\n\
-                 JERARQUÍA DE AUTORIDAD\n{layer_order}\nTus pedidos directos siempre superan este documento.\n\n\
+                 JERARQUÍA DE AUTORIDAD\nTus pedidos directos siempre superan este documento.\n\n\
                  LO QUE ESTO NO PUEDE HACER\n\
                  Orienta comportamiento. No puede conceder ni cambiar política de aprobación, sandbox, shell, red, \
                  confianza, permisos MCP, modo predeterminado, publicación o autoridad de gasto; eso sigue bajo tu control en tiempo de ejecución.\n\n\
@@ -4640,7 +4656,7 @@ fn constitution_ratification_text(
                  và có thể sửa khi bạn thay đổi. Nó định khung quyền hạn và giới hạn thay vì quyết định từng trường hợp, \
                  đồng thời giữ sự liên tục giữa các phiên. Nhưng nó không phải bộ nhớ: nó mang nguyên tắc, không mang lịch sử.\n\n\
                  {rendered}\n\n\
-                 THỨ BẬC THẨM QUYỀN\n{layer_order}\nYêu cầu trực tiếp của bạn luôn cao hơn tài liệu này.\n\n\
+                 THỨ BẬC THẨM QUYỀN\nYêu cầu trực tiếp của bạn luôn cao hơn tài liệu này.\n\n\
                  ĐIỀU NÀY KHÔNG THỂ LÀM\n\
                  Nó hướng dẫn hành vi. Nó không thể cấp hoặc đổi chính sách phê duyệt, sandbox, shell, mạng, \
                  độ tin cậy, quyền MCP, chế độ mặc định, xuất bản hoặc quyền chi tiêu; những thứ đó vẫn do bạn kiểm soát lúc chạy.\n\n\
@@ -4680,7 +4696,7 @@ fn constitution_ratification_text(
                  이는 모든 개별 사례를 판단하는 대신 권한과 한계를 규정하며, 세션을 넘어 협업의 연속성을 부여합니다. \
                  다만 이것은 기억이 아닙니다: 이력이 아니라 원칙을 담습니다.\n\n\
                  {rendered}\n\n\
-                 권한 계층\n{layer_order}\n당신의 직접적인 요청은 언제나 이 문서보다 우선합니다.\n\n\
+                 권한 계층\n당신의 직접적인 요청은 언제나 이 문서보다 우선합니다.\n\n\
                  이것이 할 수 없는 일\n\
                  이것은 행동을 안내할 뿐입니다. 승인 정책, 샌드박스, 셸, 네트워크, 신뢰, MCP 권한, 기본 모드, 게시, 지출 권한을 \
                  부여하거나 바꿀 수 없습니다; 이는 여전히 런타임에서 당신이 직접 관리합니다.\n\n\
@@ -4720,7 +4736,7 @@ fn constitution_ratification_text(
                  i esmenable a mesura que canvies. Defineix poders i límits en lloc de decidir cada cas, \
                  i dona continuïtat a la col·laboració entre sessions — però no és memòria: porta principis, no història.\n\n\
                  {rendered}\n\n\
-                 JERARQUIA D'AUTORITAT\n{layer_order}\nLes teves peticions directes sempre prevalen sobre aquest document.\n\n\
+                 JERARQUIA D'AUTORITAT\nLes teves peticions directes sempre prevalen sobre aquest document.\n\n\
                  EL QUE AIXÒ NO POT FER\n\
                  Orienta el comportament. No pot concedir ni canviar la política d'aprovació, sandbox, shell, xarxa, \
                  confiança, permisos MCP, mode per defecte, publicació o autoritat de despesa; això queda sota el teu control en temps d'execució.\n\n\
@@ -4760,7 +4776,7 @@ fn constitution_ratification_text(
                  und lässt sich ändern, wenn du dich änderst. Sie rahmt Befugnisse und Grenzen, statt jeden Einzelfall zu entscheiden, \
                  und gibt deiner Zusammenarbeit Kontinuität über Sitzungen hinweg — aber sie ist kein Gedächtnis: Sie trägt Prinzipien, nicht Geschichte.\n\n\
                  {rendered}\n\n\
-                 HIERARCHIE DER AUTORITÄT\n{layer_order}\nDeine direkten Anweisungen stehen immer über diesem Dokument.\n\n\
+                 HIERARCHIE DER AUTORITÄT\nDeine direkten Anweisungen stehen immer über diesem Dokument.\n\n\
                  WAS DIES NICHT KANN\n\
                  Sie leitet Verhalten. Sie kann keine Freigaberichtlinie, Sandbox, Shell, Netzwerk, \
                  Vertrauen, MCP-Berechtigungen, Standardmodus, Veröffentlichung oder Ausgabenbefugnis gewähren oder ändern — die bleiben zur Laufzeit in deiner Hand.\n\n\
@@ -4800,7 +4816,7 @@ fn constitution_ratification_text(
                  et amendable à mesure que vous changez. Elle encadre les pouvoirs et les limites plutôt que de trancher chaque cas, \
                  et donne à votre collaboration une continuité entre les sessions — mais elle n'est pas une mémoire : elle porte des principes, pas un historique.\n\n\
                  {rendered}\n\n\
-                 HIÉRARCHIE D'AUTORITÉ\n{layer_order}\nVos demandes directes priment toujours sur ce document.\n\n\
+                 HIÉRARCHIE D'AUTORITÉ\nVos demandes directes priment toujours sur ce document.\n\n\
                  CE QU'ELLE NE PEUT PAS FAIRE\n\
                  Elle guide le comportement. Elle ne peut ni accorder ni modifier la politique d'approbation, le sandbox, le shell, le réseau, \
                  la confiance, les permissions MCP, le mode par défaut, la publication ou le pouvoir de dépense — ceux-ci restent entre vos mains à l'exécution.\n\n\
@@ -4840,7 +4856,7 @@ fn constitution_ratification_text(
                  dan dapat diamendemen seiring Anda berubah. Ia membingkai wewenang dan batasan alih-alih memutuskan setiap kasus, \
                  dan memberi kolaborasi Anda kesinambungan lintas sesi — tetapi ia bukan memori: ia membawa prinsip, bukan riwayat.\n\n\
                  {rendered}\n\n\
-                 HIERARKI OTORITAS\n{layer_order}\nPermintaan langsung Anda selalu mengungguli dokumen ini.\n\n\
+                 HIERARKI OTORITAS\nPermintaan langsung Anda selalu mengungguli dokumen ini.\n\n\
                  APA YANG TIDAK BISA DILAKUKANNYA\n\
                  Ia memandu perilaku. Ia tidak dapat memberi atau mengubah kebijakan persetujuan, sandbox, shell, jaringan, \
                  kepercayaan, izin MCP, mode default, publikasi, atau wewenang belanja — semua itu tetap di tangan Anda saat runtime.\n\n\
@@ -4878,7 +4894,7 @@ fn constitution_ratification_text(
                  और आपके बदलने के साथ संशोधनीय है। यह हर मामले का फ़ैसला करने के बजाय शक्तियों और सीमाओं का ढाँचा देता है, \
                  और आपके सहयोग को सत्रों के पार निरंतरता देता है — लेकिन यह मेमोरी नहीं है: यह इतिहास नहीं, सिद्धांत रखता है।\n\n\
                  {rendered}\n\n\
-                 अधिकार पदानुक्रम\n{layer_order}\nआपके प्रत्यक्ष अनुरोध हमेशा इस दस्तावेज़ से ऊपर हैं।\n\n\
+                 अधिकार पदानुक्रम\nआपके प्रत्यक्ष अनुरोध हमेशा इस दस्तावेज़ से ऊपर हैं।\n\n\
                  यह क्या नहीं कर सकता\n\
                  यह व्यवहार का मार्गदर्शन करता है। यह अनुमति नीति, सैंडबॉक्स, शेल, नेटवर्क, \
                  ट्रस्ट, MCP अनुमतियाँ, डिफ़ॉल्ट मोड, प्रकाशन या खर्च का अधिकार प्रदान या परिवर्तित नहीं कर सकता — वे रनटाइम पर आपके हाथ में रहते हैं।\n\n\
@@ -4918,7 +4934,7 @@ fn constitution_ratification_text(
                  и может изменяться вместе с вами. Она очерчивает полномочия и границы, а не решает каждый случай, \
                  и придаёт вашему сотрудничеству непрерывность между сессиями — но она не память: она хранит принципы, а не историю.\n\n\
                  {rendered}\n\n\
-                 ИЕРАРХИЯ ПОЛНОМОЧИЙ\n{layer_order}\nВаши прямые указания всегда важнее этого документа.\n\n\
+                 ИЕРАРХИЯ ПОЛНОМОЧИЙ\nВаши прямые указания всегда важнее этого документа.\n\n\
                  ЧЕГО ОНА НЕ МОЖЕТ\n\
                  Она направляет поведение. Она не может предоставить или изменить политику одобрения, sandbox, shell, сеть, \
                  доверие, разрешения MCP, режим по умолчанию, публикацию или право тратить — они остаются в ваших руках во время выполнения.\n\n\
@@ -4958,7 +4974,7 @@ fn constitution_ratification_text(
                  і може змінюватися разом із вами. Вона окреслює повноваження та межі, а не вирішує кожен випадок, \
                  і надає вашій співпраці неперервність між сесіями — але вона не пам'ять: вона зберігає принципи, а не історію.\n\n\
                  {rendered}\n\n\
-                 ІЄРАРХІЯ ПОВНОВАЖЕНЬ\n{layer_order}\nВаші прямі вказівки завжди важливіші за цей документ.\n\n\
+                 ІЄРАРХІЯ ПОВНОВАЖЕНЬ\nВаші прямі вказівки завжди важливіші за цей документ.\n\n\
                  ЧОГО ВОНА НЕ МОЖЕ\n\
                  Вона спрямовує поведінку. Вона не може надати або змінити політику схвалення, sandbox, shell, мережу, \
                  довіру, дозволи MCP, режим за замовчуванням, публікацію чи право витрачати — вони залишаються у ваших руках під час виконання.\n\n\
@@ -5001,7 +5017,7 @@ fn constitution_ratification_text(
                  continuity across sessions — but it is not memory: it carries principles, \
                  not history.\n\n\
                  {rendered}\n\n\
-                 HIERARCHY OF AUTHORITY\n{layer_order}\nYour direct requests always outrank this document.\n\n\
+                 HIERARCHY OF AUTHORITY\nYour direct requests always outrank this document.\n\n\
                  WHAT THIS CANNOT DO\n\
                  It guides behavior. It cannot grant or change approval policy, sandbox, shell, \
                  network, trust, MCP permissions, default mode, publishing, or spending \

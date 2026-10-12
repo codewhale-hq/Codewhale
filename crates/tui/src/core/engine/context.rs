@@ -543,8 +543,39 @@ fn compact_structured_tool_result_for_context(
         // content actually parses as a gate result, so non-gate `tasks`
         // results fall through to the generic path unchanged.
         "task_gate_run" | "tasks" => compact_task_gate_run_result_for_context(raw),
-        _ => None,
+        _ => compact_todo_write_result_for_context(raw, metadata),
     }
+}
+
+fn compact_todo_write_result_for_context(
+    raw: &str,
+    metadata: Option<&Value>,
+) -> Option<ContextSummary> {
+    let metadata = metadata?;
+    if metadata.get("canonical_tool").and_then(Value::as_str) != Some("todo_write") {
+        return None;
+    }
+    let header = raw
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("Todo list updated ("))?;
+    let active = metadata
+        .pointer("/task_updates/checklist/items")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("status").and_then(Value::as_str) == Some("in_progress"));
+    let text = match active {
+        Some(item) => format!(
+            "{header}\nIn progress: #{} {}",
+            item.get("id").and_then(Value::as_u64).unwrap_or_default(),
+            item.get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim(),
+        ),
+        None => format!("{header}\nNo item in progress"),
+    };
+    Some(ContextSummary { text, lossy: false })
 }
 
 #[cfg(test)]

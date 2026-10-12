@@ -10,6 +10,14 @@ Current boundary note (read the workspace version from `Cargo.toml`; this
 boundary has held since v0.9.1):
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool execution loop.
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
+
+<img src="assets/architecture.webp" alt="Codewhale architecture: clients reach the one turn loop, Engine::run_turn, through the CLI or the Runtime API; the engine uses crates/core to build requests, runs tools under approval and sandbox policy, routes to any provider through crates/config, and logs everything model-visible to the session store." width="1000">
+
+The diagram draws the Runtime API and the task manager as their own boxes; today
+both are hosted inside `crates/tui`, as the note above says. The GPUI desktop
+app and the VS Code extension live outside this repository. The arrow from the
+engine to the session log follows the "model-visible means logged" contract
+rather than a traced write path.
 - `crates/tui` is being split into crates sized as agent work partitions:
   contracts, utilities, services, providers, runtime, leaf feature crates,
   TUI views and hosts, in the order `docs/design/TUI_DECONSTRUCTION.md`
@@ -270,7 +278,7 @@ drives turns through Chat Completions.
   - `policy.rs` - Sandbox policy configuration
   - `opensandbox.rs` - Alibaba OpenSandbox HTTP backend adapter
   - `seatbelt.rs` - macOS Seatbelt profile generation
-  - `bwrap.rs` - opt-in Linux bubblewrap command wrapper
+  - `bwrap.rs` - Linux bubblewrap command wrapper
   - `seccomp.rs` - dormant Linux seccomp implementation; not wired into commands
   - `process_hardening.rs` - Linux kernel-level hardening for the TUI process
     itself (defense-in-depth; not a child-command sandbox)
@@ -317,7 +325,7 @@ drives turns through Chat Completions.
 2. Tool registry looks up handler
 3. Pre-execution hooks run
 4. Approval requested when the effective permission posture and policy require it
-5. Tool executed (possibly wrapped by Seatbelt on macOS or opt-in bubblewrap on Linux)
+5. Tool executed (possibly wrapped by Seatbelt on macOS or bubblewrap on Linux)
 6. Post-execution hooks run
 7. Result metadata is retained on runtime item records
 8. **LSP post-edit hook**: after a `File` write, edit, or patch action (including a replay-only legacy alias), the engine runs `run_post_edit_lsp_hook()` when LSP is enabled to collect diagnostics
@@ -401,7 +409,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
 3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
 4. **Cross-platform**: Core works on Linux/macOS/Windows. Sandbox guarantees
    are platform-specific: macOS uses Seatbelt when available; Linux uses an
-   installed bubblewrap executable only when explicitly enabled; Windows has
+   installed bubblewrap executable by default when a probe shows it works; Windows has
    no advertised OS command sandbox. Seccomp and the Windows helper contract
    are not wired into command execution.
 5. **Minimal dependencies**: Careful dependency selection for build speed

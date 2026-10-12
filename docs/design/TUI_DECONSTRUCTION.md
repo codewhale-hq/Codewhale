@@ -32,8 +32,8 @@ Crates named for a subsystem whose implementation still lives in the TUI:
 `tools` (1.6k; the implementations are `tui/src/tools`, 204k), `mcp` (109
 lines; `tui/src/mcp*` is 26k), `core` (5.8k; the engine is `tui/src/core`),
 `agent` (1.6k model registry with one TUI consumer, beside the TUI's own
-catalog). `cli` depends on `tui` for `run`, `route_preferences`, `config_keys`
-and `cloud_dispatch`; `tui` depends on `app-server` while the Runtime API
+catalog). `cli` depends on `tui` for `run`, `route_preferences`, `config_keys`;
+`tui` depends on `app-server` while the Runtime API
 (`runtime_api`, 61k) lives inside `tui`.
 
 `scripts/split/module_graph.py --report` puts the runtime closure (everything
@@ -242,7 +242,6 @@ to that loop; it does not own another one.
 | `rlm` | `rlm`, `repl` | 5k |
 | `snapshot` | `snapshot` | 6k |
 | `voice`, `vision` | `voice`; `vision`, `image_attach` | 1k, 3k |
-| `cloud-dispatch` | `cloud_dispatch`, `dispatch_runner` | 5k |
 | `remote-control` | `remote_control`, `runtime_chat_relay`, `remote_setup` | 13k |
 | `integrations` | `integrations` | 5k |
 
@@ -376,7 +375,7 @@ part of the slice.
 | **X7 tool rules into execpolicy** | `crates/execpolicy/src/tool_rules.rs`, `core/engine/tool_catalog.rs` | S | Part of the fleet plan; `tool_denied`, `tool_matches_any_rule`, `requires_raw_shell`, `policy_tool_aliases` | none | cuts `tools -> core` and `config -> core` rule references |
 | **X8 agent-contract** | `crates/agent-contract/` (new), `fleet/role.rs`, `fleet/worker_profile.rs`, `tools/subagent/mod.rs` | M | **Corrected:** the inherent `impl FleetRole` at `tools/subagent/mod.rs:639` becomes illegal after the move; convert to free functions first; resolve the two different `ChildAuthority` types | X7 | removes `tools -> fleet` (62 refs) |
 | **X9 sandbox pilot** | `crates/sandbox/` (new), `tui/src/sandbox/` | S then M | **Corrected:** do the two edge cuts first (`sandbox -> config` 1, `sandbox -> oauth` 1); `shell_dispatcher` cannot move yet (`tests/integration/main.rs` includes it by `#[path]`, `test_env_lock` is `cfg(test)`) | the cuts only | second feature leaf after `tools-web` |
-| **W0-S1 runtime residents** | `crates/runtime/` ← `features`, `logging`, `startup_trace`, `resource_telemetry`, `runtime_policy`, `lane_control`, `computer_meter` | S, 2.6k lines | **Held.** `python3 scripts/split/move-modules.py` dry run is read-only and safe | none | seven fewer tui modules; no `test_support` needed |
+| **W0-S1 runtime residents** | `crates/runtime/` ← `features`, `logging`, `startup_trace`, `resource_telemetry`, `runtime_policy`, `lane_control` | S, landed 2026-10-10 (8aea0265c) | **Landed.** `python3 scripts/split/move-modules.py` dry run is read-only and safe | none | six fewer tui modules; no `test_support` needed |
 | **W0-S2.. test-support and the rest of wave 0** | `crates/test/test-support/` (new) then `child_env`, `process_tree`, `external_credentials`, `runtime_log` | M each | **Corrected:** `wait-timeout` is a normal dependency, not dev; `remote_setup` needs `uuid`; resolve the `external_credentials` name clash with `crates/config` | W0-S1 | replaces RS-10 and RS-11 |
 | **B billing** | `crates/billing/` | L | **Not confirmed.** Five production callers remain, it must not depend on the runtime tier, and the engine files it touches are in flight | a host port for the usage store | deferred |
 | **S0 closure report** | `scripts/split/closure_report.py` | S (report), M (sandbox generator) | Held as a tool; deletes no edges | decide where sandbox third-party sources come from | the numbers the sandbox contract needs |
@@ -396,7 +395,7 @@ Running them in parallel:
   tests, `python3 scripts/split/module_graph.py --check` with the counts it
   should lower, and `python3 scripts/split/partition_report.py` before and after.
 
-Mapping of the open issues: RS-8 (#6935), RS-9 (#6936), RS-12 (#6939, partial) and
+Mapping of the open issues: RS-8 (#6935), RS-9 (#6936), RS-12 (#6939) and
 RS-13 (#6940, first sub-slice) landed; X2 completes RS-13; W0-S1 and W0-S2 replace
 RS-10 (#6937) and the test-support half of RS-11 (#6938); RS-14 (#6941) is
 replaced by this table pending the founder's decision.

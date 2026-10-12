@@ -77,7 +77,7 @@ required first-run screen. Customize it later through `/constitution` or the
 progressive `/setup` guide. Provider/model readiness, workspace trust, and
 runtime posture stay separate from this guidance.
 
-On the **Constitution** step:
+On the **Working agreement** (constitution) step:
 
 - **`1`–`6`** tune the guided draft. **`G`** previews it, and **`G`** again
   ratifies and saves a fresh structured `constitution.json`.
@@ -91,8 +91,9 @@ On the **Constitution** step:
 
 `/constitution` (alias `/law`) is the primary management surface once you are
 set up. Subcommands: `status` (the default), `preview`, `review`, `repo` (the
-repo-local law block), `explain`, `edit`/`guided`, `repair`, `posture`, and
-`bundled`. Managing the constitution never changes runtime approval, sandbox,
+repo-local law block), `explain`, `base`, `suggestions`, `ratify <id>`,
+`migrate`, `rollback`, `edit`/`guided`, `repair`, `posture`, and `bundled`.
+Managing the constitution never changes runtime approval, sandbox,
 shell, network, trust, default mode, or MCP authority — those stay in runtime
 posture/config.
 

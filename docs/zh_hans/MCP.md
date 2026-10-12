@@ -367,7 +367,7 @@ codewhale mcp tools codewhale
 
 ## 连接生命周期
 
-会话启动是惰性的（#6033）：已配置的服务器在有东西请求它之前不会被启动——这些请求包括：某个回合的 `allowed_tools`/`tools.always_load` 选择覆盖了它的 `mcp_<server>_*` 名称、某次模型调用解析到它的某个工具，或是显式的 `/mcp` 连接/重试。标记为 `required` 的服务器仍会在启动时立即连接，以便其失败在第一个回合之前暴露出来。已配置但尚未启动的服务器显示为 `configured`，绝不会显示 `connecting`；`connecting` 标签只描述实际正在进行中的握手。
+会话启动时会在后台连接：每个已启用且被允许的用户配置服务器都会并发启动，不会阻塞第一个回合。把较重的服务器标记为 `lazy = true`，则在某个回合的 `allowed_tools`/`tools.always_load` 选择覆盖了它的 `mcp_<server>_*` 名称、某次模型调用解析到它的某个工具，或显式 `/mcp retry <name>` 请求它之前不会启动。标记为 `required` 的服务器即使是 `lazy` 也会在启动时连接，以便其失败在第一个回合之前暴露出来。尚未连接的服务器显示为 `not connected`，绝不会显示 `connecting`；`connecting` 标签只描述实际正在进行中的握手。OAuth 登录完成后，只有该服务器会自动重新连接。插件提供的服务器按需连接，除非标记为 `required` 或被会话的工具选择点名。
 
 面向 MCP 的 `tool_search` 也是明确的发现请求：可搜索已配置的服务器名称
 （例如 `engram`）、完整的 `mcp_<server>_...` 名称，或使用
@@ -396,6 +396,7 @@ codewhale mcp tools codewhale
 - `disabled`（布尔值，可选）
 - `enabled`（布尔值，可选，默认 `true`）
 - `required`（布尔值，可选）：如果该服务器无法初始化，启动/连接验证会失败。
+- `lazy`（布尔值，可选，默认 `false`）：在某个回合、工具调用或 `/mcp retry` 请求它之前不启动该服务器。不设置时，用户配置的服务器在会话启动时连接；插件提供的服务器按需连接，除非标记为 `required` 或被会话的工具选择点名。
 - `enabled_tools`（数组，可选）：该服务器的工具名称允许列表。
 - `disabled_tools`（数组，可选）：在 `enabled_tools` 之后应用的拒绝列表。
 - `url`（字符串，可选）：远程 MCP 服务器的 Streamable HTTP 端点。

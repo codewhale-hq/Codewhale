@@ -203,7 +203,6 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_hotbar_description" => MessageId::CmdHotbarDescription,
         "cmd_init_description" => MessageId::CmdInitDescription,
         "cmd_jobs_description" => MessageId::CmdJobsDescription,
-        "cmd_dispatch_description" => MessageId::CmdDispatchDescription,
         "cmd_lane_description" => MessageId::CmdLaneDescription,
         "cmd_links_description" => MessageId::CmdLinksDescription,
         "cmd_load_description" => MessageId::CmdLoadDescription,
@@ -316,6 +315,10 @@ pub(crate) struct SessionLifecycleAdapter<'a> {
 impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
     fn transition_blocked(&self) -> bool {
         self.host.app.borrow().session_transition_blocked()
+    }
+
+    fn transition_blockers(&self) -> Vec<String> {
+        self.host.app.borrow().session_transition_blockers()
     }
 
     fn branch_current_leaf_hint(&self) -> Option<String> {
@@ -1050,6 +1053,10 @@ pub(crate) struct SessionControlAdapter<'a> {
 impl CommandSessionControlContext for SessionControlAdapter<'_> {
     fn transition_blocked(&self) -> bool {
         self.host.app.borrow().session_transition_blocked()
+    }
+
+    fn transition_blockers(&self) -> Vec<String> {
+        self.host.app.borrow().session_transition_blockers()
     }
 
     fn relay_projection(&self) -> RelayProjection {

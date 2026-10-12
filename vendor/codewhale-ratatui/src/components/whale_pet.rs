@@ -57,7 +57,8 @@ impl<'a> WhalePet<'a> {
         }
     }
 
-    /// Localized words from the host. The default names the current action.
+    /// Localized words from the host. The default names the current action;
+    /// empty words hide the caption when the host already presents the state.
     #[must_use]
     pub fn words(mut self, words: impl Into<Cow<'a, str>>) -> Self {
         self.words = Some(words.into());
@@ -154,7 +155,9 @@ impl<'a> WhalePet<'a> {
         };
         if self.theme.ascii() || art.width < 16 || art.height < 8 {
             // A deliberately invalid frame asks the shared painter for words.
-            whale.paint_frame(area, buf, self.theme, &words_only);
+            if self.words.as_deref() != Some("") {
+                whale.paint_frame(area, buf, self.theme, &words_only);
+            }
             return;
         }
         let dark = self.theme.caps().appearance != crate::detect::Appearance::Light;
@@ -187,12 +190,14 @@ impl<'a> WhalePet<'a> {
         if let Ok(sprite) = Sprite::image(&pixels, usize::from(art.width), usize::from(art.width)) {
             sprite.paint(art, buf, self.theme);
         }
-        whale.paint_frame(
-            Rect::new(area.x, art.bottom(), area.width, 1),
-            buf,
-            self.theme,
-            &words_only,
-        );
+        if self.words.as_deref() != Some("") {
+            whale.paint_frame(
+                Rect::new(area.x, art.bottom(), area.width, 1),
+                buf,
+                self.theme,
+                &words_only,
+            );
+        }
     }
 }
 

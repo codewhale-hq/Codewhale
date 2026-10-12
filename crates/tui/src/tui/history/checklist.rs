@@ -5,10 +5,11 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
 use super::{
-    RenderMode, TRANSCRIPT_RAIL, ToolStatus, render_card_detail_line_single, render_compact_kv,
+    RenderMode, TRANSCRIPT_RAIL, ToolStatus, render_card_detail_line_single,
     render_tool_header_with_family_and_summary, tool_status_label, tool_value_style, truncate_text,
     wrap_text,
 };
@@ -136,6 +137,7 @@ pub(super) fn render_checklist_change_card(
     change: &ChecklistChange,
     width: u16,
     low_motion: bool,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let header_summary = format!(
@@ -168,7 +170,7 @@ pub(super) fn render_checklist_change_card(
         UnicodeWidthStr::width(TRANSCRIPT_RAIL) + UnicodeWidthStr::width(prefix.as_str());
     let id_label = format!("Todo #{}", change.id);
     let arrow = " \u{2192} ";
-    let status_label = change.status.clone();
+    let status_label = checklist_status_label(&change.status, locale);
     let title_budget = usize::from(width)
         .saturating_sub(prefix_width)
         .saturating_sub(UnicodeWidthStr::width(id_label.as_str()))
@@ -197,7 +199,7 @@ pub(super) fn render_checklist_change_card(
     lines.push(render_card_detail_line_single(
         None,
         &format!(
-            "{} item{}; {}",
+            "{} item{} \u{00B7} {}",
             snapshot.total,
             if snapshot.total == 1 { "" } else { "s" },
             crate::tui::key_shortcuts::tool_details_shortcut_action_hint("list")
@@ -205,6 +207,18 @@ pub(super) fn render_checklist_change_card(
         Style::default().fg(palette::TEXT_MUTED),
     ));
     lines
+}
+
+fn checklist_status_label(status: &str, locale: Locale) -> String {
+    use crate::tools::todo::TodoStatus;
+    let id = match TodoStatus::from_str(status) {
+        Some(TodoStatus::Pending) => MessageId::TodoStatusPending,
+        Some(TodoStatus::InProgress) => MessageId::TodoStatusInProgress,
+        Some(TodoStatus::Completed) => MessageId::TodoStatusCompleted,
+        Some(TodoStatus::Cancelled) => MessageId::TodoStatusCancelled,
+        None => return status.to_string(),
+    };
+    tr(locale, id).into_owned()
 }
 
 fn checklist_status_marker(status: &str) -> (&'static str, Color) {
@@ -240,12 +254,6 @@ pub(super) fn render_checklist_card(
         status,
         None,
         low_motion,
-    ));
-    lines.extend(render_compact_kv(
-        "checklist",
-        name,
-        tool_value_style(),
-        width,
     ));
 
     let cap = match mode {
@@ -286,7 +294,7 @@ pub(super) fn render_checklist_card(
         lines.push(render_card_detail_line_single(
             None,
             &format!(
-                "+{omitted} more; {}",
+                "+{omitted} more \u{00B7} {}",
                 crate::tui::key_shortcuts::tool_details_shortcut_action_hint("list")
             ),
             Style::default().fg(palette::TEXT_DIM),

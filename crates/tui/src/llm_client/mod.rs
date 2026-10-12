@@ -1077,11 +1077,9 @@ pub struct RetryConfig {
     pub respect_retry_after: bool,
 
     /// HTTP status codes that should trigger a retry
-    #[allow(dead_code)] // Used in tests via is_retryable_status()
     pub retryable_status_codes: Vec<u16>,
 
     /// Timeout for individual requests (seconds, 0 = no timeout)
-    #[allow(dead_code)] // Configuration field for retry consumers
     pub request_timeout: f64,
 
     /// Total timeout for all retry attempts (seconds, 0 = no total timeout)
@@ -1106,7 +1104,6 @@ impl Default for RetryConfig {
     }
 }
 
-#[allow(dead_code)] // Public builder API, used in tests
 impl RetryConfig {
     /// Creates a new `RetryConfig` with default values
     pub fn new() -> Self {

@@ -561,7 +561,7 @@ async fn exhausted_goal_reaches_route_failure_without_budget_pause() {
     };
     let (mut engine, handle) = Engine::new(engine_config, &config);
     let goal_state = engine.config.goal_state.clone();
-    goal_state.lock().expect("goal lock").record_usage(11, 0);
+    goal_state.lock().expect("goal lock").record_usage(11, 0, std::time::Instant::now());
 
     let invalid_route_config = without_named_custom_route(config);
     engine.authoritative_route_config =
@@ -776,7 +776,7 @@ async fn cross_turn_goal_continuation_stops_at_an_enforced_token_budget() {
             .goal_state
             .lock()
             .expect("goal lock")
-            .record_usage(100, 0);
+            .record_usage(100, 0, std::time::Instant::now());
         let action = engine.goal_continuation_if_active();
         if enforce {
             assert!(

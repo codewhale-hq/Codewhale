@@ -8,8 +8,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createBrowser, connectPipeSocket, attachSocket } from "../src/browser-cdp.mjs";
-// These transports are Unix sockets inside the Linux Sprite; Windows cannot bind the path.
-const UNIX_SOCKETS = { skip: process.platform === "win32" && "Unix-socket transport (Sprite/Linux only)" };
+// These transports are Unix sockets inside the Linux computer; Windows cannot bind the path.
+const UNIX_SOCKETS = { skip: process.platform === "win32" && "Unix-socket transport (Linux only)" };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cu-attach-"));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));

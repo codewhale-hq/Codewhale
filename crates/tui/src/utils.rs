@@ -417,8 +417,9 @@ fn write_atomic_with_permissions(
 /// once for the whole set — see [`write_atomic_batch`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AtomicWriteScope {
-    /// Sweep this directory for stale temp files and fsync it: what a single
-    /// write should do, and what every caller of `write_atomic` gets.
+    /// Sweep this directory for stale temp files (at most once per
+    /// `STALE_AFTER`) and fsync it: what a single write should do, and what
+    /// every caller of `write_atomic` gets.
     Single,
     /// Leave both to the caller. Used only by [`write_atomic_batch`].
     Batch,
@@ -426,18 +427,18 @@ enum AtomicWriteScope {
 
 /// Write many files, and pay each directory's costs once.
 ///
-/// Every [`write_atomic`] call sweeps its directory for stale temp files and
-/// fsyncs that directory, which is exactly right for one record at a time. A
-/// caller publishing a thousand records into one directory pays that thousand
-/// times, though, and the sweep is the same answer every time: scanning a
-/// store directory of tens of thousands of entries per file is minutes of work
-/// that buys nothing (measured: 22 ms per item write, 34 s for one fork's
-/// clone).
+/// Every [`write_atomic`] call fsyncs its directory, which is exactly right
+/// for one record at a time. A caller publishing a thousand records into one
+/// directory pays that thousand times, though. The stale-temp sweep is
+/// already throttled to once per directory per `STALE_AFTER`, because
+/// scanning a store directory of tens of thousands of entries per file is
+/// minutes of work that buys nothing (measured before the throttle: 22 ms per
+/// item write, 34 s for one fork's clone).
 ///
-/// The batch sweeps each directory once, writes every file with the same
-/// atomic replace and per-file data sync, and fsyncs each directory once at
-/// the end. Per-file durability is unchanged; only the per-file directory work
-/// is hoisted out of the loop.
+/// The batch goes through the same throttled sweep once per directory, writes
+/// every file with the same atomic replace and per-file data sync, and fsyncs
+/// each directory once at the end. Per-file durability is unchanged; only the
+/// per-file directory work is hoisted out of the loop.
 ///
 /// Ordering is still the caller's job: a batch that publishes a graph of
 /// records must write its commit record last, as the single-write callers do.
@@ -451,9 +452,7 @@ pub fn write_atomic_batch(files: &[(PathBuf, Vec<u8>)]) -> std::io::Result<()> {
         }
     }
     for parent in &parents {
-        if is_codewhale_owned_state_dir(parent) {
-            sweep_stale_atomic_write_temps(parent);
-        }
+        sweep_owned_dir_if_due(parent);
     }
     for (path, contents) in files {
         write_atomic_scoped(
@@ -571,14 +570,12 @@ fn write_atomic_scoped(
         builder.permissions(fs::Permissions::from_mode(0o666));
     }
 
-    // Reclaim our own strays before adding another (see the function docs).
+    // Reclaim our own strays before adding another, at most once per
+    // directory per `STALE_AFTER` (see `sweep_stale_atomic_write_temps`).
     // Private permission policy is also used for user-chosen destinations
     // such as `/save <path>`; only sweep Codewhale-owned state/config dirs.
-    if permission_policy == AtomicWritePermissions::Private
-        && scope == AtomicWriteScope::Single
-        && is_codewhale_owned_state_dir(parent)
-    {
-        sweep_stale_atomic_write_temps(parent);
+    if permission_policy == AtomicWritePermissions::Private && scope == AtomicWriteScope::Single {
+        sweep_owned_dir_if_due(parent);
     }
 
     // Validated before any temp exists, so a refused name leaves nothing.
@@ -688,6 +685,34 @@ fn is_codewhale_owned_state_dir(dir: &Path) -> bool {
     })
 }
 
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+fn sweep_owned_dir_if_due(dir: &Path) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    use std::time::Instant;
+
+    static LAST_SWEPT: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+    let now = Instant::now();
+    {
+        let mut last_swept = LAST_SWEPT
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if last_swept
+            .get(dir)
+            .is_some_and(|swept| now.saturating_duration_since(*swept) < STALE_AFTER)
+        {
+            return;
+        }
+        last_swept.retain(|_, swept| now.saturating_duration_since(*swept) < STALE_AFTER);
+        last_swept.insert(dir.to_path_buf(), now);
+    }
+    if is_codewhale_owned_state_dir(dir) {
+        sweep_stale_atomic_write_temps(dir);
+    }
+}
+
 /// Remove `.tmpXXXXXX` files this writer stranded in `dir` on an earlier run.
 ///
 /// `NamedTempFile` deletes itself on drop, so an ordinary failure — or an
@@ -712,7 +737,6 @@ fn is_codewhale_owned_state_dir(dir: &Path) -> bool {
 /// - **Best effort** — every failure is ignored; this must never turn a
 ///   successful write into an error.
 fn sweep_stale_atomic_write_temps(dir: &Path) {
-    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -1198,9 +1222,10 @@ mod atomic_write_tests {
 
     /// A batch writes every file, and pays the directory's hygiene once.
     ///
-    /// The per-file path sweeps the directory for stale temp files and fsyncs
-    /// it on every call; a fork publishing hundreds of cloned items paid that
-    /// hundreds of times (22 ms of directory scan each, 34 s for one fork).
+    /// The per-file path fsyncs the directory on every call, and used to sweep
+    /// it for stale temp files on every call too; a fork publishing hundreds
+    /// of cloned items paid that hundreds of times (22 ms of directory scan
+    /// each, 34 s for one fork).
     /// What must not change: every file lands with its content, a stray temp
     /// file is still reclaimed, and none of ours is left behind.
     #[test]
@@ -1836,6 +1861,9 @@ mod spawn_supervised_tests {
     /// the dump on Windows).
     #[tokio::test]
     async fn panicking_task_does_not_propagate_to_parent() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
         let parent_alive = Arc::new(AtomicBool::new(false));
         let parent_alive_clone = parent_alive.clone();
 
@@ -1861,6 +1889,9 @@ mod spawn_supervised_tests {
 
     #[tokio::test]
     async fn panicking_blocking_task_does_not_propagate_to_parent() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
         let parent_alive = Arc::new(AtomicBool::new(false));
         let parent_alive_clone = parent_alive.clone();
 
@@ -1890,8 +1921,7 @@ mod spawn_supervised_tests {
         let crash_dir = tmp.path().join("crashes");
         let location = std::panic::Location::caller();
 
-        // Crash directories hold multiple tasks' logs. The other supervised
-        // panic tests can write here while this process-wide profile is set.
+        // Crash directories hold multiple tasks' logs.
         write_panic_dump("another-task", location, "other boom").expect("write other dump");
         let other_entries: Vec<_> = std::fs::read_dir(&crash_dir)
             .expect("crashes dir exists")

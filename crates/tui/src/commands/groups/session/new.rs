@@ -1,6 +1,6 @@
 //! `/new` command — start a fresh saved session from the current TUI state.
 
-use super::CommandResult;
+use super::{CommandResult, transition_blocked_message};
 
 use codewhale_command_contract::facets::CommandSessionLifecycleContext;
 use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
@@ -61,10 +61,13 @@ pub(in crate::commands) fn new_portable(
         }
     };
     if lifecycle.transition_blocked() {
-        return CommandResult::error(
-            "Cannot start a new session while runtime work is active. Wait for the current turn, maintenance, and background tasks to finish, or cancel that specific work. `/new --force` only discards draft or queued input."
-                .to_string(),
-        );
+        // The shared tail names the exits that clear a blocker; `--force` is
+        // not one of them, and a user who has just read it will try exactly
+        // that. Say what it does here, where the flag exists.
+        let mut message =
+            transition_blocked_message("start a new session", &lifecycle.transition_blockers());
+        message.push_str("\n\n`/new --force` only discards draft or queued input.");
+        return CommandResult::error(message);
     }
     match lifecycle.fresh_session(force) {
         Ok(receipt) => CommandResult::with_message_and_action(

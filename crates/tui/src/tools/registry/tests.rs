@@ -20,7 +20,7 @@ use super::{
 #[tokio::test]
 async fn shell_denial_reaches_registry_and_direct_delegation_sinks() {
     use crate::tools::run_tool::RunTool;
-    use crate::tools::tasks::{TaskShellStartTool, TasksTool};
+    use crate::tools::tasks::TasksTool;
     use crate::tools::terminal_session::{TerminalResetTool, TerminalRunTool, TerminalSendTool};
     use crate::tools::test_runner::RunTestsTool;
     use crate::tools::verifier::RunVerifiersTool;
@@ -35,7 +35,6 @@ async fn shell_denial_reaches_registry_and_direct_delegation_sinks() {
             Arc::new(BashTool::alias("exec_interact", "interact")),
             json!({"task_id":"missing", "stdin":command, "action":"wait"}),
         ),
-        (Arc::new(TaskShellStartTool), json!({"command":command})),
         (
             Arc::new(TasksTool::new("tasks")),
             json!({"action":"gate_run", "gate":"custom", "command":command}),
@@ -1986,8 +1985,8 @@ fn agent_tools_with_shell_policy_full_includes_shell_tools() {
     assert!(registry.contains("Bash"));
     assert!(!registry.contains("exec_shell"));
     assert!(
-        registry.contains("task_shell_start"),
-        "task_shell_start should be included when the shell policy is Full"
+        !registry.contains("task_shell_start"),
+        "task_shell_start is removed; background shell work goes through bash background=true"
     );
     assert!(
         registry.contains("task_shell_wait"),

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -74,7 +74,7 @@ Fix the failing tests and explain what changed.
 同一任务也可以在脚本或 CI 作业中以无界面方式运行：
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 运行 `/help` 查看命令和键盘快捷键。
@@ -86,7 +86,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | 命令 | 作用 |
 | --- | --- |
 | `codewhale` | 交互式终端界面 |
-| `codewhale exec "…"` | 在脚本或 CI 中执行一次无界面对话轮次，以流式 JSON 输出 |
+| `codewhale exec "…"` | 在脚本或 CI 中执行一次无界面对话轮次；`--auto` 允许使用文件和 shell 工具，`--output-format stream-json` 以流式输出 JSON |
 | `codewhale web` | 内置的[本地浏览器客户端](docs/WEB.md)，监听 `127.0.0.1` |
 | `codewhale review --pr N` | 仅供参考的[拉取请求审查](docs/GITHUB_ACTION.md)；是否发布评论需主动开启 |
 | Runtime API | 用于线程、事件和审批的[本地 HTTP API](docs/RUNTIME_API.md) |
@@ -127,7 +127,7 @@ Full Access 仍然遵守硬性策略边界。
 ## 安全
 
 Codewhale 在你的机器上运行，只拥有你授予它的访问权限。审批姿态和仓库规则会限制智能体可以做的事，
-在支持的平台上，命令会在操作系统沙箱中运行（macOS 上为 Seatbelt；Linux 上的 bubblewrap 需主动启用）。
+在支持的平台上，命令会在操作系统沙箱中运行（macOS 上为 Seatbelt；Linux 上的 bubblewrap 在已安装且可用时）。
 `/preview-request` 会在发送任何内容之前显示经过脱敏的完整请求。
 未知的模型价格会保持"未知"，而不会被报告为免费。
 

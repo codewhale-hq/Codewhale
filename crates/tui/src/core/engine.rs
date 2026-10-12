@@ -879,6 +879,41 @@ enum EngineHostSetup {
     Rlm(rlm_host::RlmHostSetup),
 }
 
+pub(crate) fn compaction_checkpoint_for_restore(
+    messages: &[codewhale_models::Message],
+    system_prompt: Option<codewhale_models::SystemPrompt>,
+) -> Option<codewhale_models::SystemPrompt> {
+    extract_compaction_summary_prompt(system_prompt).or_else(|| {
+        // Current Engine projections carry the checkpoint in history,
+        // with a stripped system prompt. Only the existing structural
+        // validator can authorize a history block as that checkpoint.
+        messages.iter().rev().find_map(|message| {
+            if !crate::compaction::is_wire_compaction_checkpoint_message(message) {
+                return None;
+            }
+            match &message.content[0] {
+                codewhale_models::ContentBlock::Text { text, .. } => {
+                    Some(codewhale_models::SystemPrompt::Text(text.clone()))
+                }
+                _ => None,
+            }
+        })
+    })
+}
+
+/// The history a restore installs: sub-agent handoffs become restored
+/// checkpoints and the compaction checkpoint replaces its summary in place.
+/// Resume acknowledgement compares against this same projection.
+pub(crate) fn project_history_for_restore(
+    messages: Vec<codewhale_models::Message>,
+    compaction_checkpoint: Option<&codewhale_models::SystemPrompt>,
+) -> Vec<codewhale_models::Message> {
+    crate::compaction::restore_compaction_checkpoint(
+        crate::runtime_handoff::project_owned_messages_for_restore(messages),
+        compaction_checkpoint,
+    )
+}
+
 pub struct Engine {
     rlm_host: Option<rlm_host::RlmHostState>,
     host_profile: EngineHostProfile,
@@ -2935,34 +2970,10 @@ impl Engine {
         system_prompt_override: bool,
     ) {
         self.session.tool_activation_cache.clear();
-        let compaction_checkpoint = extract_compaction_summary_prompt(system_prompt.clone())
-            .or_else(|| {
-                // Current Engine projections carry the checkpoint in history,
-                // with a stripped system prompt. Only the existing structural
-                // validator can authorize a history block as that checkpoint.
-                messages.iter().rev().find_map(|message| {
-                    if !crate::compaction::is_wire_compaction_checkpoint_message(message) {
-                        return None;
-                    }
-                    match &message.content[0] {
-                        codewhale_models::ContentBlock::Text { text, .. } => {
-                            Some(codewhale_models::SystemPrompt::Text(text.clone()))
-                        }
-                        _ => None,
-                    }
-                })
-            });
-        // The op owns the synced history: move each message
-        // through the projection instead of cloning the whole
-        // conversation and dropping the original (M3).
+        let compaction_checkpoint =
+            compaction_checkpoint_for_restore(&messages, system_prompt.clone());
         let restored_messages =
-            crate::runtime_handoff::project_owned_messages_for_restore(messages);
-        // Replace the checkpoint in place so turns after the
-        // compaction boundary keep their chronology.
-        let restored_messages = crate::compaction::restore_compaction_checkpoint(
-            restored_messages,
-            compaction_checkpoint.as_ref(),
-        );
+            project_history_for_restore(messages, compaction_checkpoint.as_ref());
         self.session.messages = restored_messages.into();
         // Direct field assignment bypasses `add_message` /
         // `replace_messages`, which own the messages-revision
@@ -3030,8 +3041,8 @@ impl Engine {
         // authoritative schedule makes that token fail closed when drained.
         self.scheduled_goal_continuation = None;
         // Runtime-added MCP servers are conversation capabilities even when
-        // both conversations use the same workspace. Configured servers can
-        // reconnect lazily after the new session is installed.
+        // both conversations use the same workspace. The sync handler restarts
+        // the session boot once the new session is installed.
         self.drop_mcp_pool();
         // C02-17: cumulative usage belongs to the conversation that spent
         // it. The sync carries no prior total for the installed session, so
@@ -3939,6 +3950,16 @@ impl Engine {
                         };
                         self.session.rebuild_working_set();
                         self.reconcile_restored_work_bindings().await;
+                        if self.mcp_pool.is_none()
+                            && let Err(error) = self
+                                .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                                .await
+                        {
+                            tracing::debug!(
+                                "MCP session boot failed: {}",
+                                crate::mcp::format_mcp_error_for_display(&error)
+                            );
+                        }
                         // SessionUpdated acknowledges the sync. A generic status
                         // would immediately cover the host's confirmed resume receipt.
                         self.emit_session_updated().await;
@@ -4319,15 +4340,15 @@ impl Engine {
         }
     }
 
-    fn record_goal_usage_for_turn(&self, usage: &Usage, elapsed: std::time::Duration) {
+    fn record_goal_usage_for_turn(&self, usage: &Usage, started: Instant) {
         let token_delta =
             u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens));
-        let time_delta_seconds = elapsed.as_secs();
+        let time_delta_seconds = started.elapsed().as_secs();
         if token_delta == 0 && time_delta_seconds == 0 {
             return;
         }
         match self.config.goal_state.lock() {
-            Ok(mut state) => state.record_usage(token_delta, time_delta_seconds),
+            Ok(mut state) => state.record_usage(token_delta, time_delta_seconds, started),
             Err(err) => tracing::warn!("goal state lock poisoned while recording usage: {err}"),
         }
     }
@@ -5710,7 +5731,7 @@ impl Engine {
         // The registry is rebuilt every turn: name each refused override to
         // the user once per process, not once per turn.
         for name in refused_overrides {
-            if first_override_refusal(&name) {
+            if first_notice(&name) {
                 let _ = self
                     .send_event(Event::status(
                         crate::tools::registry::override_refusal_notice(&name),
@@ -5746,6 +5767,25 @@ impl Engine {
         // caller can attribute MCP contributions without a second connect.
         let mcp_tools = mcp_state.tools().to_vec();
         let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|tool| tool.name.clone()).collect();
+        if self.child_host.is_none() && matches!(mcp_state, McpToolState::Live { .. }) {
+            let native_names = tool_registry.names();
+            for entry in &self.config.tools_always_load {
+                let selects = |name: &str| match entry.strip_suffix('*') {
+                    Some(prefix) => name.starts_with(prefix),
+                    None => name == entry,
+                };
+                if !native_names.iter().any(|name| selects(name))
+                    && !mcp_tool_names.iter().any(|name| selects(name))
+                    && first_notice(&format!("always_load:{entry}"))
+                {
+                    let _ = self
+                        .send_event(Event::status(format!(
+                            "always_load entry `{entry}` matches no tool; MCP tool names carry a plugin-N prefix that renumbers when plugins change."
+                        )))
+                        .await;
+                }
+            }
+        }
         // The surface budget belongs to the route the request would go to,
         // which is not necessarily the installed one under auto routing.
         let capability = route.capability_profile();
@@ -6675,7 +6715,7 @@ impl Engine {
         // Update session usage
         self.session.total_usage.add(&turn.usage);
         if !self.is_acp_turn() {
-            self.record_goal_usage_for_turn(&turn.usage, turn.elapsed());
+            self.record_goal_usage_for_turn(&turn.usage, turn.started_at);
         }
 
         // Cancellation wins until the terminal settlement decision. `run_turn`
@@ -7233,7 +7273,7 @@ impl Engine {
                     route.model.clone(),
                     self.session.workspace.clone(),
                     self.session.system_prompt.clone(),
-                    self.session.messages.clone().into(),
+                    self.session.messages.snapshot(),
                 ))
                 .with_cancel_token(self.cancel_token.clone())
                 .with_origin_turn_id(self.turn_counter.to_string());
@@ -7289,7 +7329,7 @@ impl Engine {
             route.model.clone(),
             self.session.workspace.clone(),
             self.session.system_prompt.clone(),
-            self.session.messages.clone().into(),
+            self.session.messages.snapshot(),
         ))
         .with_cancel_token(self.cancel_token.clone())
         .with_shell_policy(authority.shell_policy())
@@ -8111,11 +8151,9 @@ impl Engine {
             }
         };
 
-        // Boot is lazy (#6033): a configured server nobody asked for is not
-        // spawned at session start. The eager set is `required` servers plus
-        // whatever the session's explicit tool selections cover; everything
-        // else connects on demand — a selected turn, a `/mcp` connect, or a
-        // lazy tool-name resolution.
+        // Boot connects every configured server in the background except
+        // those marked `lazy = true`, which connect on demand — a selected
+        // turn, a `/mcp` connect, or a lazy tool-name resolution.
         let requested = self.explicit_mcp_tool_names(self.config.allowed_tools.as_deref());
         let (pending, auth_errors, timeouts, network_policy, catalog_generation, backend) = {
             let mut pool = pool.lock().await;
@@ -8801,16 +8839,15 @@ fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBu
     default_plugin_tools_dir()
 }
 
-/// Whether this process has not yet told the user about the refused
-/// `[tools.overrides.<name>]`.
-fn first_override_refusal(name: &str) -> bool {
+/// Whether this process has not yet shown the user the notice keyed `key`.
+fn first_notice(key: &str) -> bool {
     static NOTIFIED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
     NOTIFIED
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(name.to_string())
+        .insert(key.to_string())
 }
 
 /// Load drop-in scripts and apply `[tools.overrides]`. Returns the tool names
@@ -9326,8 +9363,10 @@ impl MockEngineHandle {
         Option<crate::approval_log::ApprovalDecider>,
     )> {
         Some(match self.rx_approval.recv().await? {
-            ApprovalDecision::Approved { id, by } => (MockApprovalEvent::Approved { id }, Some(by)),
-            ApprovalDecision::Denied { id, by } => (MockApprovalEvent::Denied { id }, Some(by)),
+            ApprovalDecision::Approved { id, by, .. } => {
+                (MockApprovalEvent::Approved { id }, Some(by))
+            }
+            ApprovalDecision::Denied { id, by, .. } => (MockApprovalEvent::Denied { id }, Some(by)),
             ApprovalDecision::TimedOut { id } => (MockApprovalEvent::TimedOut { id }, None),
             ApprovalDecision::Unavailable { id } => (MockApprovalEvent::Unavailable { id }, None),
             ApprovalDecision::RetryWithPolicy { id, policy, by } => {

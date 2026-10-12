@@ -90,7 +90,7 @@ try:
     request(d,'/v1/audio',{'client':audio_a,'enabled':False})
     request(d,'/v1/audio',{'client':audio_b,'enabled':False})
     before_style=request(d,'/v1/export')
-    appearance={'background':[238,239,235],'backgroundTop':[255,255,250],'particle':[32,79,83],'eventColors':False,'brightness':1.4,'dotScale':1.2,'glow':.25,'environment':False}
+    appearance={'background':[238,239,235],'backgroundTop':[255,255,250],'particle':[32,79,83],'eventColors':False,'brightness':1.4,'dotScale':1.2,'glow':.25,'environment':False,'bodyStyle':'pixel','textLanguage':'ja'}
     style_action={'identity':d['identity'],'client':str(uuid.uuid4()),'seq':1,'source_revision':b['sourceRevision'],'action':{'kind':'appearance','appearance':appearance}}
     reject(d,'/v1/action',dict(style_action,action={'kind':'appearance','appearance':dict(appearance,brightness=999)}))
     request(d,'/v1/action',style_action)

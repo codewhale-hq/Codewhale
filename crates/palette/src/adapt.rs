@@ -693,7 +693,6 @@ impl ColorDepth {
 /// palette; ANSI-16 uses a generic nearest named color. Rendered semantic
 /// foregrounds must go through [`adapt_fg_for_depth`] so role identity is not
 /// inferred from RGB proximity.
-#[allow(dead_code)]
 #[must_use]
 pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
     match (color, depth) {
@@ -708,7 +707,6 @@ pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
 /// Adapt a background color. On Ansi16 terminals background tints are noisy,
 /// so we drop them to `Color::Reset` rather than attempt a coarse named-color
 /// match — a quiet background reads cleaner than a wrong one.
-#[allow(dead_code)]
 #[must_use]
 pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
     match (color, depth) {
@@ -722,7 +720,6 @@ pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
 /// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). Anything that's not
 /// RGB falls back to `fg` — there's no meaningful alpha blend on a named
 /// palette entry.
-#[allow(dead_code)]
 #[must_use]
 pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
     let alpha = alpha.clamp(0.0, 1.0);
@@ -773,7 +770,6 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
 /// `adapt_color` on Ansi16 terminals; we lean on hue dominance + lightness so
 /// brand colors land on the obviously-related named entry (sky → cyan, blue →
 /// blue, red → red, etc.) rather than dithering around grey.
-#[allow(dead_code)]
 pub(crate) fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     let lum = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
     if lum < 24 {
@@ -840,7 +836,6 @@ pub(crate) fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
 /// Map an RGB color to the nearest xterm 256-color palette index. We use only
 /// the stable 6x6x6 cube and grayscale ramp (16..255), not the terminal's
 /// user-configurable 0..15 colors.
-#[allow(dead_code)]
 pub(crate) fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 

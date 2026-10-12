@@ -86,6 +86,22 @@ fn validate_private_basename(name: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
+fn resolve_ancestors(directory: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let mut resolved = std::path::PathBuf::new();
+    for component in directory.components() {
+        resolved.push(component);
+        let root_owned_link = std::fs::symlink_metadata(&resolved)
+            .is_ok_and(|meta| meta.file_type().is_symlink() && meta.uid() == 0);
+        if root_owned_link && let Ok(real) = resolved.canonicalize() {
+            resolved = real;
+        }
+    }
+    resolved
+}
+
+#[cfg(unix)]
 fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result<PrivateDirectory> {
     use std::os::fd::FromRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -94,6 +110,8 @@ fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result
         directory.is_absolute(),
         "xAI OAuth credentials directory must be absolute"
     );
+    let resolved = resolve_ancestors(directory);
+    let directory = resolved.as_path();
     // SAFETY: the literal root path contains no interior NUL and the returned
     // descriptor is immediately owned by `File`.
     let root_fd = unsafe {

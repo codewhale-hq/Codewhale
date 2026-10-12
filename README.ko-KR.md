@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c28f2ad5a8ed -->
+<!-- source: README.md sha256:75bb6a506af5 -->
 <div align="center">
 
 <picture>
@@ -80,7 +80,7 @@ Fix the failing tests and explain what changed.
 같은 작업을 스크립트나 CI 작업에서 헤드리스로 실행할 수도 있습니다.
 
 ```bash
-codewhale exec "fix the failing tests and explain what changed"
+codewhale exec --auto "fix the failing tests and explain what changed"
 ```
 
 명령과 단축키는 `/help`에서 확인하세요.
@@ -93,7 +93,7 @@ codewhale exec "fix the failing tests and explain what changed"
 | 명령 | 하는 일 |
 | --- | --- |
 | `codewhale` | 대화형 터미널 인터페이스 |
-| `codewhale exec "…"` | 스크립트나 CI에서 JSON을 스트리밍하며 헤드리스로 한 턴 실행 |
+| `codewhale exec "…"` | 스크립트나 CI에서 헤드리스로 한 턴 실행. `--auto`는 파일 및 셸 도구를 허용하고, `--output-format stream-json`은 JSON을 스트리밍 |
 | `codewhale web` | `127.0.0.1`에서 제공되는 내장 [로컬 브라우저 클라이언트](docs/WEB.md) |
 | `codewhale review --pr N` | 참고용 [풀 리퀘스트 리뷰](docs/GITHUB_ACTION.md). 게시는 직접 선택해야 합니다 |
 | Runtime API | 스레드, 이벤트, 승인을 다루는 [로컬 HTTP API](docs/RUNTIME_API.md) |
@@ -143,7 +143,7 @@ Full Access에서도 강제 정책의 경계는 지켜집니다.
 Codewhale은 사용자의 컴퓨터에서 사용자가 부여한 권한으로 실행됩니다. 승인
 방식과 저장소 규칙이 에이전트가 할 수 있는 일을 제한하며, 지원되는 환경에서는
 명령이 OS 샌드박스 안에서 실행됩니다(macOS는 Seatbelt, Linux의 bubblewrap은
-선택 사항). `/preview-request`는 무언가 전송되기 전에 민감 정보를 가린 실제
+설치되어 정상 작동하는 경우). `/preview-request`는 무언가 전송되기 전에 민감 정보를 가린 실제
 요청 내용을 그대로 보여 줍니다. 가격을 알 수 없는 모델은 무료로 표시하지 않고
 알 수 없음으로 둡니다.
 

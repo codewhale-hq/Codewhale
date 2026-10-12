@@ -12,11 +12,11 @@
 .pair label { margin-block-end: .7rem; }
 .aside { min-width: 0; }
 .print { display: flex; flex-direction: column; align-items: center; gap: .8rem; padding: 2rem 1.5rem; background: var(--ocean-floor); color: white; border: 1px solid var(--ocean-line); border-radius: var(--radius-sheet); text-align: center; }
-.caption { font-size: var(--text-ui); color: #b3c5e8; }
+.caption { font-size: var(--text-ui); color: var(--kit-mist); }
 .print img { filter: brightness(0) invert(1); }
 .printPhrase { margin: .5rem 0; font-size: clamp(1.35rem, 2.8vw, 2rem); font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
 .brand { font-weight: 600; }
-.site { font-size: var(--text-caption); color: #b3c5e8; }
+.site { font-size: var(--text-caption); color: var(--kit-mist); }
 .cost { margin-block-start: 2rem; }
 .cost h2, .draft h2 { font-size: var(--text-title); margin-block-end: .5rem; }
 .cost p, .draft p { color: var(--muted); line-height: 1.6; }

@@ -1206,7 +1206,32 @@ struct CapabilitySid {
 
 impl CapabilitySid {
     fn registry_read() -> io::Result<Self> {
-        use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        use windows_sys::core::BOOL;
+        type DeriveCapabilitySidsFromName = unsafe extern "system" fn(
+            *const u16,
+            *mut *mut PSID,
+            *mut u32,
+            *mut *mut PSID,
+            *mut u32,
+        ) -> BOOL;
+        let module = wide(OsStr::new("kernelbase.dll"))?;
+        // SAFETY: nul-terminated module name; the module stays loaded for the process.
+        let handle = unsafe { GetModuleHandleW(module.as_ptr()) };
+        let address = if handle.is_null() {
+            None
+        } else {
+            // SAFETY: nul-terminated export name and a live module handle.
+            unsafe { GetProcAddress(handle, c"DeriveCapabilitySidsFromName".as_ptr().cast()) }
+        };
+        let Some(address) = address else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this Windows build cannot derive LPAC capability SIDs (DeriveCapabilitySidsFromName is unavailable), so Native extension hosts are not supported here",
+            ));
+        };
+        // SAFETY: the export has exactly this documented signature.
+        let derive: DeriveCapabilitySidsFromName = unsafe { std::mem::transmute(address) };
         let name = wide(OsStr::new("registryRead"))?;
         let mut value = Self {
             sid: null_mut(),
@@ -1218,7 +1243,7 @@ impl CapabilitySid {
         // SAFETY: nul-terminated name and initialized out pointers; the
         // returned arrays and SIDs are freed by Drop with LocalFree.
         if unsafe {
-            DeriveCapabilitySidsFromName(
+            derive(
                 name.as_ptr(),
                 &mut value.groups,
                 &mut value.group_count,

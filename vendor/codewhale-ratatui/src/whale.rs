@@ -529,7 +529,11 @@ impl Whale {
         }
         let mark = StatusMark::new(self.state.state())
             .word(self.words.clone().unwrap_or_else(|| self.state.words()));
-        let label = Line::from(mark.spans(theme)).centered();
+        let label = if self.words.as_deref() == Some("") {
+            Line::default()
+        } else {
+            Line::from(mark.spans(theme)).centered()
+        };
         // Braille has no honest ASCII form: dot-count shading turns the whale
         // into noise. ASCII-safe terminals get the words alone.
         let grid = grid.filter(|grid| {

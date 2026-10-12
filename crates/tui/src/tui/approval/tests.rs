@@ -2577,10 +2577,13 @@ fn test_elevation_render_en_has_expected_strings() {
     let lines = render_elevation_lines(&view, 70, 22);
     let joined = compact_elevation_text(&lines);
     assert!(
-        joined.contains("SandboxDenied"),
+        joined.contains("SandboxElevationRequired"),
         "missing en title:\n{joined}"
     );
-    assert!(joined.contains("Tool:"), "missing en tool label:\n{joined}");
+    assert!(
+        !joined.contains("Tool:"),
+        "the command row already names the shell:\n{joined}"
+    );
     assert!(joined.contains("Cmd:"), "missing en cmd label:\n{joined}");
     assert!(
         joined.contains("Reason:"),
@@ -2618,7 +2621,7 @@ fn elevation_always_paints_every_option_including_the_safe_exit() {
                 );
             }
             assert!(
-                joined.contains("SandboxDenied") || joined.contains("SandboxElevationRequired"),
+                joined.contains("SandboxElevationRequired"),
                 "{w}x{h}: the card lost its title:\n{joined}"
             );
             for key in ["↑/↓", "Enter", "Esc"] {
@@ -2643,11 +2646,7 @@ fn test_elevation_render_zh_hans_localizes_copy() {
     let view = ElevationView::new(elevation_shell_request(), Locale::ZhHans);
     let lines = render_elevation_lines(&view, 70, 22);
     let joined = compact_elevation_text(&lines);
-    assert!(joined.contains("沙箱拒绝"), "missing zh title:\n{joined}");
-    assert!(
-        joined.contains("工具："),
-        "missing zh tool label:\n{joined}"
-    );
+    assert!(joined.contains("沙箱提权"), "missing zh title:\n{joined}");
     assert!(joined.contains("命令："), "missing zh cmd label:\n{joined}");
     assert!(
         joined.contains("原因："),
@@ -2658,7 +2657,7 @@ fn test_elevation_render_zh_hans_localizes_copy() {
         "missing zh impact header:\n{joined}"
     );
     let en_artifacts = [
-        "SandboxDenied",
+        "SandboxElevationRequired",
         "Tool:",
         "Cmd:",
         "Reason:",
@@ -2683,12 +2682,8 @@ fn test_elevation_render_ja_has_translated_copy() {
     let lines = render_elevation_lines(&view, 70, 22);
     let joined = compact_elevation_text(&lines);
     assert!(
-        joined.contains("サンドボックス拒否"),
+        joined.contains("サンドボックス昇格"),
         "missing ja title:\n{joined}"
-    );
-    assert!(
-        joined.contains("ツール："),
-        "missing ja tool label:\n{joined}"
     );
     assert!(
         joined.contains("コマンド："),
@@ -2698,7 +2693,7 @@ fn test_elevation_render_ja_has_translated_copy() {
         joined.contains("理由："),
         "missing ja reason label:\n{joined}"
     );
-    for eng in &["SandboxDenied", "Tool:", "Cmd:", "Reason:"] as &[&str] {
+    for eng in &["SandboxElevationRequired", "Tool:", "Cmd:", "Reason:"] as &[&str] {
         assert!(
             !joined.contains(eng),
             "English leak '{eng}' in ja:\n{joined}"
@@ -2712,12 +2707,8 @@ fn test_elevation_render_zh_hant_has_translated_copy() {
     let lines = render_elevation_lines(&view, 70, 22);
     let joined = compact_elevation_text(&lines);
     assert!(
-        joined.contains("沙箱拒絕"),
+        joined.contains("沙箱提權"),
         "missing zh-Hant title:\n{joined}"
-    );
-    assert!(
-        joined.contains("工具："),
-        "missing zh-Hant tool label:\n{joined}"
     );
     assert!(
         joined.contains("指令："),
@@ -2763,7 +2754,7 @@ fn test_elevation_option_descriptions() {
             .description()
             .contains("filesystem and network access")
     );
-    assert!(ElevationOption::Abort.description().contains("Cancel"));
+    assert!(ElevationOption::Abort.description().contains("Skip"));
 }
 
 #[test]

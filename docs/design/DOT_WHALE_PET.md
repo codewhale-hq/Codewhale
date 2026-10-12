@@ -2,7 +2,7 @@
 
 The original 980-point whale remains the canonical body of one persistent
 world. Its owner now prepares a living-glyph presentation from admitted Engine
-activity: the dots form readable Chinese characters and moving tools, then
+activity: the dots form the selected language’s existing activity phrases, then
 return to the whale. This presentation uses the existing world clock; it does
 not replace the simulation, recording format or score. Original recordings
 retain their expression-version behavior.
@@ -33,32 +33,64 @@ on that clock. It does not step the world, consume randomness or modify the
 canonical checkpoint. The fixed `[-1, 1]` envelope keeps scale stable across
 forms; consumers fit that envelope rather than fitting each changing shape.
 
-The presentation samples 980 interior points from the existing filled pet mark,
-preserving its eye, mouth and curled negative space at home. During activity,
-all 980 points become the prepared activity character at the whale's full
-footprint; tool use is the two-character `工具`.
+The smooth presentation samples 980 interior points from the existing filled
+pet mark, preserving its eye, mouth and curled negative space at home. The
+optional pixel presentation derives 980 colored drone positions from the
+approved 192-cell pixel whale. The browser paints its lossless pixel mark at
+rest, fading it into those drones as they travel into words; terminal views
+paint the same prepared drone geometry. Both styles share the world and clock. During activity,
+all 980 points become the prepared activity phrase in the whale's fixed
+footprint. Chinese phrases of up to three characters use one line; longer
+phrases use two lines. English wraps at spaces; Japanese wraps at phrase
+boundaries. Every language keeps the same envelope. Ordinary captions retain
+the full meaning in the interface language.
 Every occupied glyph-mask pixel receives a particle, preserving stroke detail
 in compact views. No separate tool icon overlays the character.
 
 An 8.4-second cycle returns all 980 points to the filled whale between
 expressions, using the presentation's admission timestamp rather than its
 heartbeats. Completion holds its character for 800 ms and settles into the
-whale within 1.7 seconds. The
-materials stay within an ocean palette, with warm glyph accents for waiting or
-observed failure. Still presents the full-size character during activity and
+whale within 1.7 seconds. The materials stay within an ocean palette, with warm glyph accents for waiting or
+observed failure. Still presents the full-size phrase during activity and
 the filled whale at rest, without the cycle or swim.
 `build-dot-glyphs.py --whale-body` reproducibly derives the
 interior sampling from the pinned alpha mask in `pet/public/whale.png`.
 
-The glyphs are `读 写 搜 试 行 览 控 记 工具 思 答 协 待 成`: reading, editing,
-searching, testing, executing, browsing, computer use, memory, tool,
-thinking, responding, delegating, waiting and completion. Flowing ink and light
-express the action within the character: reading scans rows, searching moves a
+The generator reads the existing tool and phase labels from the English,
+Simplified Chinese, Traditional Chinese and Japanese locale packs, using the
+same typed activity mapping as the terminal caption. The Simplified Chinese
+phrases are: `读取 编辑 搜索 验证 运行 使用浏览器 操作电脑 检索上下文
+调用工具 思考 回复 智能体工作中 等你处理 完成`. Updating that locale and regenerating
+the masks keeps the pet's wording consistent with the interface. Labels never
+fall back to a single-character abbreviation. Flowing ink and light
+express the action within the phrase: reading scans rows, searching moves a
 spotlight, writing traces across strokes, memory draws light inward and
 delegating runs concurrent bands. Glyph masks in `dot-glyphs.ts` are generated
 by `pet/scripts/build-dot-glyphs.py`; font provenance and license are in
 `pet/assets/dot-glyphs-LICENSE.txt`. Captions carry the meaning independently of
 color, motion and the viewer's ability to read a small glyph.
+
+Whale style and large-text language are independent saved appearance settings.
+`/pet style smooth|pixel` selects the body; `/pet language auto|en|zh-Hans|zh-Hant|ja`
+selects the phrases. The appearance studio exposes the same choices. `auto`
+follows the active producer’s interface locale; other interface languages use
+English large text until masks are available. An English reader can select
+Chinese or Japanese large text while keeping an English caption for its meaning.
+These preferences do not change the Engine language, session, score, checkpoint,
+recording or audio. Old appearance files default to smooth and auto. An older
+running owner keeps its existing producer contract; style and language changes
+report that the companion needs to be updated and restarted.
+
+`pet/assets/pixel-whale.svg` is the approved exploration 34 (192-cell grid),
+with the same aurora palette and silhouette as the smooth brand mark. Its
+SHA-256 is `9d3742fbf325aedc18435d7b15e89178b8684ccbb40cd55a32e60bed156de700`.
+`build-dot-glyphs.py --pixel-body` verifies that source and derives the drone
+positions. The lossless transparent 1024px WebP is generated from that SVG
+with ImageMagick: `magick -background none -density 384 pet/assets/pixel-whale.svg
+-filter point -resize 1024x1024 -define webp:lossless=true pet/public/pixel-whale.webp`.
+`build-pet.mjs` checks that the embedded terminal image and native cores match
+their canonical sources. Custom particle colors also tint the browser’s pixel
+mark; selecting a color preset preserves style and language.
 
 The Engine admits `activity_kind` and optional `action_id` on operation start
 and completion. The projection exposes `activityKind` and `actionId`, including
@@ -77,7 +109,11 @@ apply the appearance settings again. A carrier may still dim a stale/offline
 view and adapt ink to terminal capabilities. Reduced motion selects the owner's
 `still` pose rather than running a second simulation or pausing mid-morph.
 
-GPUI and the Ratatui `DotWhale` component consume prepared geometry. The product
+GPUI and the Ratatui `DotWhale` component consume prepared geometry. The 0.10.2
+terminal's `PetMode` now passes its fresh, session-bound prepared pose into
+`DotWhale`; reduced motion selects the prepared Still pose. A missing or stale
+pose falls back to the native whale, with the current localized shell status.
+The normal caption and streamed-reply inspector remain available. The product
 web app has a guarded prepared-frame adapter and an opt-in particle painter,
 but its Runtime/control-plane transport is not wired to those frames yet. The
 owner's authenticated loopback browser companion is a separate connected
