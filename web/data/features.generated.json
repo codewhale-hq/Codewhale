@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "2f91995d1103bbbade5761a51bc29fbcc3a0bc355d62fb1cf3ccafa3cb8d7a16"
+    "sha256": "1564fb960d106545bccad45b3effd3d2919be333546a20d6653a740688db3f19"
   },
   "features": [
     {
@@ -981,6 +981,48 @@
       "flag": null,
       "docs": "docs/PLUGINS.md",
       "registryLine": 724
+    },
+    {
+      "id": "fork-prefix-inheritance",
+      "name": "Fork prefix inheritance",
+      "summary": "Allows matching first-level Chat Completions forks to reuse a parent request header.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "api": "preview"
+      },
+      "since": "0.10.2",
+      "flag": null,
+      "docs": "docs/CACHE.md#fork-prefix-inheritance",
+      "registryLine": 734
+    },
+    {
+      "id": "fork-trial-diagnostics",
+      "name": "Fork trial diagnostics",
+      "summary": "Opt-in JSON stderr observations of classified fork decisions and actual first-response cache usage.",
+      "status": "flagged",
+      "surfaces": {
+        "tui": "preview",
+        "api": "preview"
+      },
+      "since": "0.10.2",
+      "flag": null,
+      "docs": "docs/CACHE.md#fork-trial-diagnostics",
+      "registryLine": 744
+    },
+    {
+      "id": "source-navigation-echoes",
+      "name": "Source navigation echoes",
+      "summary": "File and search results include bounded source symbols, neighboring files and change attribution.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "api": "preview"
+      },
+      "since": "0.10.2",
+      "flag": null,
+      "docs": "docs/ECHOLOCATION.md",
+      "registryLine": 754
     }
   ]
 }

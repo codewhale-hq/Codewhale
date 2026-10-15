@@ -220,11 +220,115 @@ impl Engine {
                     .await;
         }
 
-        let active_tools = active_tools_for_request(
+        let mut active_tools = active_tools_for_request(
             &progress.tool_catalog,
             &progress.active_tool_names,
             strict_tool_mode,
         );
+        let fork_route = client.effective_route_envelope(&self.session.model, chrono::Utc::now());
+        let fork_receipt = client.cache_route_receipt();
+        let fork_job = self.child_job();
+        let child_reporting = self.child_report();
+        let mut fork_header_changed = false;
+        if let Some(child) = self.child_host.as_mut() {
+            if child.fork_cache_inherited.as_ref().is_some_and(|snapshot| {
+                client.wire_format()
+                    != Some(codewhale_config::provider::WireFormat::ChatCompletions)
+                    || client.model() != self.session.model
+                    || fork_receipt.is_none()
+                    || snapshot.route_receipt.as_ref() != fork_receipt.as_ref()
+                    || snapshot.model != fork_route.model
+                    || snapshot.provider != fork_route.provider
+                    || snapshot.provider_identity != fork_route.provider_identity
+                    || snapshot.endpoint_fingerprint != fork_route.endpoint_fingerprint
+            }) {
+                child.fork_cache_inherited = None;
+                child.fork_cache_prefix.clear();
+                self.session.system_prompt = Some(child.system_prompt.clone());
+                fork_header_changed = true;
+            }
+            if !child.fork_cache_checked && turn.step == 0 && !child_reporting {
+                child.fork_cache_checked = true;
+                let snapshot = fork_job
+                    .as_ref()
+                    .filter(|job| job.fork_context)
+                    .and_then(|_| child.authority.runtime.fork_context.as_ref())
+                    .and_then(|context| {
+                        context
+                            .live_header
+                            .lock()
+                            .ok()
+                            .and_then(|cell| cell.clone())
+                    });
+                if client.model() == self.session.model
+                    && let Some(wire) = client.wire_format()
+                {
+                    let decision = crate::prompt_zones::resolve_fork_inherit(
+                        crate::prompt_zones::fork_inherit_enabled(),
+                        snapshot.as_ref(),
+                        &fork_route.model,
+                        fork_route.provider,
+                        &fork_route.provider_identity,
+                        wire,
+                        fork_route.endpoint_fingerprint.as_deref(),
+                        fork_receipt.as_ref(),
+                        active_tools.as_deref().unwrap_or_default(),
+                        self.session.messages.len(),
+                    );
+                    #[allow(clippy::print_stderr)]
+                    if crate::prompt_zones::fork_trial_diag_enabled() {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "codewhale_fork_trial": "decision",
+                                "agent_id": child.authority.owner_agent_id,
+                                "inherited": decision.inherit,
+                                "reason": decision.reason,
+                                "prefix": decision.prefix_tools.len(),
+                                "parent_n": snapshot.as_ref().map_or(0, |value| value.active_names.len()),
+                            })
+                        );
+                    }
+                    if decision.inherit
+                        && let Some(snapshot) = snapshot
+                    {
+                        self.session.system_prompt = snapshot.system.clone();
+                        child.fork_cache_prefix = decision
+                            .prefix_tools
+                            .iter()
+                            .map(|tool| tool.name.clone())
+                            .collect();
+                        let prefix = &child.fork_cache_prefix;
+                        progress.tool_catalog.sort_by_key(|tool| {
+                            prefix
+                                .iter()
+                                .position(|name| name == &tool.name)
+                                .unwrap_or(prefix.len())
+                        });
+                        child.fork_cache_inherited = Some(snapshot);
+                        fork_header_changed = true;
+                    }
+                }
+            }
+            if let Some(tools) = active_tools.as_mut() {
+                let prefix = &child.fork_cache_prefix;
+                tools.sort_by_key(|tool| {
+                    prefix
+                        .iter()
+                        .position(|name| name == &tool.name)
+                        .unwrap_or(prefix.len())
+                });
+            }
+        }
+        if fork_header_changed {
+            self.session.last_system_prompt_hash =
+                Some(system_prompt_hash(self.session.system_prompt.as_ref()));
+            self.session.pending_prefix_change_reason = Some("fork-cache".to_string());
+            self.emit_session_updated().await;
+            if self.cancel_token.is_cancelled() {
+                return PhaseResult::Return((TurnOutcomeStatus::Interrupted, None));
+            }
+        }
         // The report already has a bounded text-only captured request. It
         // cannot authorize an extra paid summarizer or mutate its evidence.
         if !self.child_report() {
@@ -647,6 +751,61 @@ impl Engine {
         // first call) so we can resend it on a transparent retry below
         // when the wire dies before any content was streamed (#103).
         let stream_request = request;
+        let cache_receipt = client.cache_route_receipt();
+        if self.child_host.is_none()
+            && (client.wire_format()
+                != Some(codewhale_config::provider::WireFormat::ChatCompletions)
+                || client.model() != stream_request.model
+                || cache_receipt.is_none())
+            && let Ok(mut cell) = self.live_header.lock()
+        {
+            *cell = None;
+        }
+
+        if self.child_host.is_none()
+            && crate::prompt_zones::fork_inherit_enabled()
+            && client.wire_format() == Some(codewhale_config::provider::WireFormat::ChatCompletions)
+            && client.model() == stream_request.model
+            && cache_receipt.is_some()
+            && let Some(tools_json) = crate::prompt_zones::wire_tool_catalog_json(
+                stream_request.tools.as_deref().unwrap_or_default(),
+            )
+            && let Ok(mut cell) = self.live_header.lock()
+        {
+            let route = client.effective_route_envelope(&stream_request.model, chrono::Utc::now());
+            let prior = cell.as_ref().filter(|old| {
+                old.model == route.model
+                    && old.provider == route.provider
+                    && old.provider_identity == route.provider_identity
+                    && old.endpoint_fingerprint == route.endpoint_fingerprint
+            });
+            let carried = crate::prompt_zones::carry_hot_forward(
+                prior,
+                &stream_request.system,
+                &tools_json,
+                &stream_request.messages,
+                cache_receipt.as_ref(),
+            );
+            *cell = Some(crate::prompt_zones::LiveHeaderSnapshot {
+                system: stream_request.system.clone(),
+                tools_json,
+                active_names: stream_request
+                    .tools
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
+                model: route.model,
+                provider: route.provider,
+                provider_identity: route.provider_identity,
+                endpoint_fingerprint: route.endpoint_fingerprint,
+                route_receipt: cache_receipt,
+                history: stream_request.messages.clone(),
+                last_hit_tokens: carried,
+            });
+        }
+
         // Superfast Decision Gate (shadow mode, off by default). When
         // SUPERFAST_ENABLED is set, this spawns a detached task that asks
         // a small System One decision model about the user's turn and only

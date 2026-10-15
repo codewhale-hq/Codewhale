@@ -108,3 +108,15 @@ managed. Codewhale now pins the header and delivers drift as `<context_update>`
 appends; the remaining step is to make the session log the single source of
 truth with a pure projection (and to persist the context-update baseline with
 it). That is a follow-up lane, not part of this change.
+
+
+### Fork prefix inheritance
+
+A first-level fork may reuse a parent header only when the actual captured client declares Chat Completions, its model/provider/route key and endpoint fingerprint match, the actual opaque route receipt (including credential generation and upstream vendor) matches, and a positive cache-hit receipt reports parent cache use. Unknown actual route receipts or other wire protocols, resume forks and grandchildren start cold. Only already-active policy-filtered child tools participate; deferred parent tools are not automatically activated. The child preserves every policy-filtered active tool; inherited tool order never grants a tool or replaces the current eager toolbox. Role/task framing remains in the child history, and the actual selected header is recorded in its protected transcript. The parent header is frozen when the child runtime is captured at spawn. A route replacement retires the inherited header before the next request. Directory soundings and skill bodies stay in tool-result history. This is source behavior; provider cache savings require a live receipt.
+
+
+### Fork trial diagnostics
+
+`CODEWHALE_FORK_INHERIT=off` disables fork inheritance for the process; inheritance otherwise remains enabled behind the route, protocol and hot-parent guards above. Set `CODEWHALE_FORK_TRIAL=1` before starting Codewhale to emit default-off JSON diagnostics to stderr: a classified first-fork decision and the child's first settled model response. The response reports provider input/cache-hit/cache-miss fields with missing values kept null, whether usage was reported and whether the stream failed. Component sizes measure the provider-neutral request serialization, not final HTTP wire bytes or tokens. The diagnostic contains no prompt, message, tool schema or credential text. Unknown or alternate-model wire clients remain cold and do not produce a classified decision record. These observations do not prove cache savings; compare actual provider receipts under the same binary and route. Both environment settings are process-pinned.
+
+A matched fork may retain parent-specific header instructions while the resolved child role, task and skill instructions follow in a recorded system-role context message. Concrete routing and permissions remain independently enforced by the client and ChildAuthority. Instruction interaction quality and cache savings need live qualification; the matching gate does not prove them.

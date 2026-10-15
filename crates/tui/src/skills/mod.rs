@@ -1643,7 +1643,7 @@ pub fn render_available_skills_context_for_workspace_with_mode_and_plugins(
 }
 
 /// Progressive-disclosure contract: the model sees a bounded page of skill
-/// names, descriptions, and paths, then uses `load_skill` for the complete
+/// names and descriptions, then uses `load_skill` for the complete
 /// catalogue or a specific `SKILL.md` body.
 ///
 /// Test-only single-directory variant. Production callers scan the complete
@@ -1776,65 +1776,10 @@ fn replace_prompt_path_root(text: &str, root: &str, replacement: &str) -> String
     out
 }
 
-/// Render a skill path without leaking private absolute paths into the
-/// system-prompt prefix (#4632): workspace skills become workspace-relative,
-/// home-dir skills become `~/…`, and anything else is reduced to its trailing
-/// components so the prefix stays free of user-identifying absolute paths.
-/// Skill paths in the prompt are consumed by the model as text, not by the
-/// platform's shell, so normalize Windows separators to forward slashes:
-/// the catalog renders identically on every platform (#5473).
-fn prompt_display(path: &Path) -> String {
-    path.display()
-        .to_string()
-        .replace(std::path::MAIN_SEPARATOR, "/")
-}
-
-fn privacy_safe_skill_path(path: &Path, workspace: &Path) -> String {
-    if let Ok(rel) = path.strip_prefix(workspace) {
-        return prompt_display(rel);
-    }
-    if let Some(home) = crate::config::effective_home_dir()
-        && let Ok(rel) = path.strip_prefix(&home)
-    {
-        return format!("~/{}", prompt_display(rel));
-    }
-    match (path.parent().and_then(Path::file_name), path.file_name()) {
-        (Some(dir), Some(file)) => {
-            format!("…/{}/{}", dir.to_string_lossy(), file.to_string_lossy())
-        }
-        _ => path
-            .file_name()
-            .map(|file| file.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "SKILL.md".to_string()),
-    }
-}
-
-fn path_is_within_root(path: &Path, root: &Path) -> bool {
-    if path.starts_with(root) {
-        return true;
-    }
-    let Some(canonical_path) = fs::canonicalize(path).ok() else {
-        return false;
-    };
-    let Some(canonical_root) = fs::canonicalize(root).ok() else {
-        return false;
-    };
-    canonical_path.starts_with(canonical_root)
-}
-
-fn prompt_skill_path(
-    path: &Path,
-    workspace: &Path,
-    configured_skills_root: Option<&Path>,
-) -> Option<String> {
-    if let Some(root) = configured_skills_root
-        && path_is_within_root(path, root)
-    {
-        return None;
-    }
-    Some(privacy_safe_skill_path(path, workspace))
-}
-
+// Token diet: the ambient index carries names + descriptions only, never
+// on-disk paths — `load_skill` resolves names through the registry. (The
+// former privacy-safe path renderers lived here; deleting them also deletes
+// the #4632/#5473 surface they existed to defend.)
 #[cfg(test)]
 fn render_skills_block(registry: &SkillRegistry, locale: &str, workspace: &Path) -> Option<String> {
     render_skills_block_with_configured_root(
@@ -1984,17 +1929,16 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
         // instructions or consuming prompt budget.
         .filter(|skill| skill.invocation.model_invocable())
         .map(|skill| {
-            // Native skills expose the real on-disk path captured at discovery.
-            // Plugin skills expose only their reviewed snapshot identity so the
-            // model cannot bypass the content-bound trust receipt via a mutable
-            // source path. Paths render privacy-safe (workspace-relative or
-            // ~/…) so the prompt prefix never embeds absolute user paths
-            // (#4632). A caller-provided skills root omits its physical path
-            // because that root may change per session; load_skill still
-            // resolves the stable skill name through the internal registry.
-            let display_path = prompt_skill_path(&skill.path, workspace, configured_skills_root);
+            // Token diet: native skills expose no on-disk path. `load_skill`
+            // resolves the stable skill name through the internal registry,
+            // so the path only invited the slower read-the-file bypass the
+            // tool description already steers away from — at ~50 bytes a row,
+            // every turn, in the cache-pinned prefix. Plugin skills keep
+            // their reviewed snapshot identity: the trust receipt must stay
+            // visible so the model cannot mistake a snapshot for a mutable
+            // source path.
             let source = match &skill.source {
-                SkillSource::Native => display_path.map(|path| format!("file: {path}")),
+                SkillSource::Native => None,
                 SkillSource::Plugin {
                     plugin_id,
                     plugin_name,

@@ -136,11 +136,25 @@ impl ToolSpec for LoadSkillTool {
             } else {
                 format!("Skills matching {:?} ({}):\n", query, skills.len())
             };
-            for skill in skills {
-                if skill.description.trim().is_empty() {
+            for (index, skill) in skills.iter().enumerate() {
+                let description = if index < 100 {
+                    skill.description.trim()
+                } else {
+                    ""
+                };
+                if description.is_empty() {
                     listing.push_str(&format!("  - {}\n", skill.name));
                 } else {
-                    listing.push_str(&format!("  - {} — {}\n", skill.name, skill.description));
+                    let capped: String = description
+                        .chars()
+                        .take(crate::skills::MAX_SKILL_DESCRIPTION_CHARS)
+                        .collect();
+                    let marker = if capped.len() < description.len() {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    listing.push_str(&format!("  - {} — {capped}{marker}\n", skill.name));
                 }
             }
             return Ok(ToolResult::success(listing));
@@ -882,5 +896,54 @@ mod tests {
                 .content
                 .contains("secret steps for model")
         );
+    }
+    #[tokio::test]
+    async fn execute_listing_caps_rows_and_descriptions_honestly() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path().join("home"));
+        let _cw_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("cw-home"));
+        let workspace = tmp.path().to_path_buf();
+        crate::test_support::trust_workspace(&workspace);
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        let long = "d".repeat(500);
+        for index in 0..105 {
+            let description = if index == 0 { long.as_str() } else { "Short." };
+            write_skill(
+                &skills_dir,
+                &format!("skill-{index:03}"),
+                description,
+                "Body.",
+            );
+        }
+
+        let context = ToolContext::new(workspace);
+        let result = LoadSkillTool
+            .execute(json!({"name": "list"}), &context)
+            .await
+            .expect("listing should succeed");
+        assert!(
+            result.content.contains("Available skills (105)"),
+            "{}",
+            result.content
+        );
+        for index in 0..105 {
+            assert!(
+                result
+                    .content
+                    .lines()
+                    .any(|line| { line.starts_with(&format!("  - skill-{index:03}")) }),
+                "missing skill-{index:03}: {}",
+                result.content
+            );
+        }
+        let capped: String = "d".repeat(400);
+        assert!(
+            result.content.contains(&format!("skill-000 — {capped}…")),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains(&long), "description must shorten");
     }
 }

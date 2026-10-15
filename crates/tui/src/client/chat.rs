@@ -1827,7 +1827,6 @@ impl<'a> PromptBuilder<'a> {
             ),
             false,
         );
-        dump_system_prompt_if_requested(&messages);
         if provider == ProviderKind::Arcee {
             apply_arcee_waf_safe_message_encoding(&mut messages);
         }
@@ -1907,38 +1906,82 @@ const SYSTEM_PROMPT_DUMP_BEGIN: &str = "<<<CODEWHALE_SYSTEM_PROMPT_BEGIN>>>";
 const SYSTEM_PROMPT_DUMP_END: &str = "<<<CODEWHALE_SYSTEM_PROMPT_END>>>";
 const ARCEE_WAF_TEXT_SPLIT_TRIGGERS: &[(&str, &str, &str)] = &[("python -c", "python ", "-c")];
 
-fn dump_system_prompt_if_requested(messages: &[Value]) {
+/// Dump the wire prefix (system region + tools array) when the
+/// system-prompt dump flag is set, so prefix-token audits can measure the
+/// catalog beside the prompt. Called once from
+/// [`PreparedOutboundRequest::new`](super::prepared::PreparedOutboundRequest::new),
+/// the single funnel for all three wire dialects, so the bytes are the
+/// exact-final-body bytes. Debug-only, zero production impact.
+pub(crate) fn dump_wire_prefix_if_requested(body: &Value) {
     let Ok(flag) = std::env::var(SYSTEM_PROMPT_DUMP_ENV) else {
         return;
     };
     if !matches!(flag.trim(), "1" | "true" | "TRUE" | "yes" | "YES") {
         return;
     }
-    let Some(prompt) = messages.iter().find_map(system_message_text) else {
-        return;
-    };
     let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_BEGIN}");
-    let _ = writeln!(stderr, "{prompt}");
-    let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_END}");
+    if let Some(prompt) = wire_system_text(body) {
+        let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_BEGIN}");
+        let _ = writeln!(stderr, "{prompt}");
+        let _ = writeln!(stderr, "{SYSTEM_PROMPT_DUMP_END}");
+    }
+    if let Some(tools) = body.get("tools") {
+        let _ = writeln!(stderr, "<<<CODEWHALE_WIRE_TOOLS_BEGIN>>>");
+        let _ = writeln!(stderr, "{tools}");
+        let _ = writeln!(stderr, "<<<CODEWHALE_WIRE_TOOLS_END>>>");
+    }
 }
 
-fn system_message_text(message: &Value) -> Option<String> {
-    if message.get("role").and_then(Value::as_str) != Some("system") {
-        return None;
+/// Best-effort system-region text across the three wire dialects:
+/// Anthropic `system` (string or blocks), Responses `instructions`, and
+/// chat `messages[]` with a system/developer role.
+fn wire_system_text(body: &Value) -> Option<String> {
+    if let Some(system) = body.get("system") {
+        return Some(match system {
+            Value::String(text) => text.clone(),
+            Value::Array(parts) => {
+                let text = parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    system.to_string()
+                } else {
+                    text
+                }
+            }
+            _ => system.to_string(),
+        });
     }
-    match message.get("content")? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(parts) => {
-            let text = parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
+    if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
+        return Some(instructions.to_string());
     }
+    body.get("messages")?
+        .as_array()?
+        .iter()
+        .find_map(|message| {
+            if !matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("system" | "developer")
+            ) {
+                return None;
+            }
+            match message.get("content")? {
+                Value::String(text) => Some(text.clone()),
+                Value::Array(parts) => {
+                    // Same "\n" block join as the Anthropic arm above, so
+                    // the audit text is dialect-consistent.
+                    let text = parts
+                        .iter()
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!text.is_empty()).then_some(text)
+                }
+                _ => None,
+            }
+        })
 }
 
 fn apply_arcee_waf_safe_message_encoding(messages: &mut [Value]) {

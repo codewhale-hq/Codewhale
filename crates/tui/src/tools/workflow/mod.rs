@@ -2465,9 +2465,10 @@ impl RunPayloadBounds {
     }
 }
 
-/// Build the model-facing view of a run record (#2974). The JSON shape is
-/// identical to the full record (panel hydration and history cards keep
-/// working unchanged), but the unbounded parts are clipped:
+/// Build the model-facing view of a run record (#2974). Panel hydration
+/// and history cards keep working unchanged (they read keys this view
+/// preserves), but the unbounded parts are clipped and each event is
+/// projected to its model-essential keys:
 ///
 /// - `events`: newest `WORKFLOW_RESULT_EVENTS_TAIL` entries.
 /// - `progress`: newest `WORKFLOW_RESULT_PROGRESS_TAIL` lines.
@@ -2477,9 +2478,14 @@ impl RunPayloadBounds {
 ///   when the serialized value exceeds `WORKFLOW_RESULT_VALUE_MAX_CHARS`.
 /// - `execution.leaf_results[*].output`: per-leaf preview capped at
 ///   `WORKFLOW_RESULT_LEAF_OUTPUT_MAX_CHARS`.
+/// - event objects: exact top-level duplicates (`owner_session_id`,
+///   `workflow_goal`, `workflow_id`, `source_path`, `token_budget`) are
+///   removed; per-event `workspace`, routing, isolation, and payload keys stay.
 ///
 /// Full detail remains available in `.codewhale/workflow-runs.jsonl`; every
-/// clip adds an explicit note/pointer so the model can fetch more on demand.
+/// lossy clip adds an explicit note/pointer so the model can fetch more on
+/// demand. The key projection is lossless by construction (duplicates live
+/// on at top level), so it carries no pointer.
 fn bounded_run_record_value(
     record: &WorkflowRunRecord,
     journal_path: &Path,
@@ -2505,6 +2511,31 @@ fn bounded_run_record_value(
             let omitted = events.len() - WORKFLOW_RESULT_EVENTS_TAIL;
             events.drain(..omitted);
             bounds.events_omitted = omitted;
+        }
+        // Token diet: project each event to model-essential keys. Dropped
+        // keys are exact top-level duplicates (`RunStarted` clones the
+        // record's goal/id/source/budget verbatim; `owner_session_id`
+        // repeats on every event). `workspace` stays per event so each
+        // task retains the directory the model must inspect.
+        // `git_branch` stays per event — short run context that can vary
+        // per child. Routing keys (profile, resolved_*, route_source),
+        // worktree (isolation signal), and message/title/status/error/
+        // usage stay: asserted contract (`run_record_events_project_to_
+        // model_essential_keys`), and the model reads them. Full rows
+        // stay in the journal either way.
+        for event in events.iter_mut() {
+            let Some(fields) = event.as_object_mut() else {
+                continue;
+            };
+            for key in [
+                "owner_session_id",
+                "workflow_goal",
+                "workflow_id",
+                "source_path",
+                "token_budget",
+            ] {
+                fields.remove(key);
+            }
         }
         bounds.events_returned = events.len();
     }
@@ -12027,6 +12058,104 @@ FINAL RECEIPT
                 .is_some_and(|path| path.contains("workflow-runs.jsonl")),
             "{metadata}"
         );
+    }
+
+    #[test]
+    fn run_record_events_project_to_model_essential_keys() {
+        fn task_started(task_id: &str, workspace: &str) -> WorkflowUiEvent {
+            WorkflowUiEvent::at(
+                2,
+                "session-test",
+                WorkflowUiEventKind::TaskStarted(Box::new(WorkflowTaskStartedEvent {
+                    task_id: task_id.to_string(),
+                    label: Some("dig".to_string()),
+                    role: None,
+                    profile: Some("deep".to_string()),
+                    model: None,
+                    strength: None,
+                    thinking: None,
+                    requested_reasoning: None,
+                    effective_reasoning: None,
+                    resolved_role: None,
+                    resolved_profile: None,
+                    resolved_provider: "zai".to_string(),
+                    resolved_model: "glm-5".to_string(),
+                    route_source: "fleet".to_string(),
+                    child_route: None,
+                    worktree: true,
+                    workspace: Some(PathBuf::from(workspace)),
+                    git_branch: Some("feature/x".to_string()),
+                    parent_task_id: None,
+                    depth: 0,
+                    workflow_run_id: None,
+                    workflow_phase_id: None,
+                    workflow_task_label: None,
+                    workflow_child_index: None,
+                    queue_ticket: None,
+                    fleet_receipt: None,
+                })),
+            )
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut record = WorkflowRunRecord::new(
+            "workflow_projection_run".to_string(),
+            Some("session-test".to_string()),
+            Some(PathBuf::from("/ws/flow.json")),
+            Some(1_000),
+            None,
+        );
+        record.workflow_id = Some("flow-1".to_string());
+        record.workflow_goal = Some("ship it".to_string());
+        record.push_event(WorkflowUiEvent::at(
+            1,
+            "session-test",
+            WorkflowUiEventKind::RunStarted {
+                workflow_id: Some("flow-1".to_string()),
+                workflow_goal: Some("ship it".to_string()),
+                source_path: Some(PathBuf::from("/ws/flow.json")),
+                token_budget: Some(1_000),
+                max_concurrent: None,
+            },
+        ));
+        // Two dispatches keep their distinct workspace associations.
+        record.push_event(task_started("t1", "/tmp/wt-1"));
+        record.push_event(task_started("t2", "/tmp/wt-2"));
+
+        let journal = tmp.path().join("workflow-runs.jsonl");
+        let (payload, bounds) = bounded_run_record_value(&record, &journal);
+        assert!(!bounds.truncated());
+        let events = payload["events"].as_array().expect("events");
+
+        // Duplicates are gone from every event …
+        for event in events {
+            for key in [
+                "owner_session_id",
+                "workflow_goal",
+                "workflow_id",
+                "source_path",
+                "token_budget",
+            ] {
+                assert!(event.get(key).is_none(), "dropped {key}: {event}");
+            }
+        }
+        // … but live on at top level while workspaces stay with their tasks.
+        assert_eq!(payload["workflow_goal"], "ship it");
+        assert_eq!(payload["token_budget"], 1_000);
+        assert!(payload.get("event_workspaces").is_none());
+        assert_eq!(events[1]["task_id"], "t1");
+        assert_eq!(events[1]["workspace"], "/tmp/wt-1");
+        assert_eq!(events[2]["task_id"], "t2");
+        assert_eq!(events[2]["workspace"], "/tmp/wt-2");
+
+        // Routing, isolation, and payload keys stay on the dispatch event.
+        let dispatch = &events[1];
+        assert_eq!(dispatch["task_id"], "t1");
+        assert_eq!(dispatch["route_source"], "fleet");
+        assert_eq!(dispatch["resolved_provider"], "zai");
+        assert_eq!(dispatch["resolved_model"], "glm-5");
+        assert_eq!(dispatch["worktree"], true);
+        assert_eq!(dispatch["git_branch"], "feature/x");
     }
 
     #[test]

@@ -138,28 +138,49 @@ async fn search_files_async(
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
     follow_symlinks: bool,
-) -> Result<Vec<FileSearchMatch>, ToolError> {
+) -> Result<Value, ToolError> {
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
-        search_files(
+        let matches = search_files(
             &query,
             &base_path,
-            extensions,
-            exclude_patterns,
+            extensions.clone(),
+            exclude_patterns.clone(),
             limit,
             Some(&worker_cancel_token),
             follow_symlinks,
-        )
+        )?;
+        check_cancelled(Some(&worker_cancel_token))?;
+        let paths: Vec<String> = matches.iter().map(|item| item.path.clone()).collect();
+        let vis = super::echolocation::PodVisibility {
+            include: &[],
+            exclude: &exclude_patterns,
+            extensions: &extensions,
+            glob_root: &base_path,
+            gitignore: true,
+        };
+        let (pods, pods_omitted) = super::echolocation::sound_match_pods(&base_path, &paths, &vis);
+        let pods_json: Vec<Value> = pods
+            .iter()
+            .map(|pod| {
+                json!({
+                    "dir": pod.dir, "mates": pod.mates, "mate_total": pod.mate_total,
+                })
+            })
+            .collect();
+        check_cancelled(Some(&worker_cancel_token))?;
+        Ok(json!({ "matches": matches, "pods": pods_json, "pods_omitted": pods_omitted }))
     })
     .await
 }
 
-async fn run_blocking_file_search<F>(
+async fn run_blocking_file_search<F, T>(
     timeout: Duration,
     cancel_token: Option<CancellationToken>,
     search: F,
-) -> Result<Vec<FileSearchMatch>, ToolError>
+) -> Result<T, ToolError>
 where
-    F: FnOnce(CancellationToken) -> Result<Vec<FileSearchMatch>, ToolError> + Send + 'static,
+    F: FnOnce(CancellationToken) -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
 {
     if cancel_token
         .as_ref()
@@ -423,7 +444,7 @@ fn check_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolE
     Ok(())
 }
 
-fn extension_matches(path: &Path, extensions: &[String]) -> bool {
+pub(crate) fn extension_matches(path: &Path, extensions: &[String]) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
@@ -633,7 +654,8 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let matches = &body["matches"];
         assert!(
             matches
                 .as_array()
@@ -666,7 +688,8 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let matches = &body["matches"];
         assert!(
             matches
                 .as_array()
@@ -694,7 +717,8 @@ mod tests {
             .await
             .expect("execute");
 
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let matches = &body["matches"];
         let paths: Vec<&str> = matches
             .as_array()
             .expect("matches")
@@ -731,13 +755,17 @@ mod tests {
     #[tokio::test]
     async fn test_file_search_blocking_wrapper_reports_timeout() {
         let (finished, worker_finished) = tokio::sync::oneshot::channel();
-        let err = run_blocking_file_search(Duration::from_millis(1), None, move |cancel_token| {
-            while !cancel_token.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let _ = finished.send(cancel_token.is_cancelled());
-            Err(file_search_cancelled())
-        })
+        let err = run_blocking_file_search::<_, Vec<FileSearchMatch>>(
+            Duration::from_millis(1),
+            None,
+            move |cancel_token| {
+                while !cancel_token.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let _ = finished.send(cancel_token.is_cancelled());
+                Err(file_search_cancelled())
+            },
+        )
         .await
         .expect_err("slow file_search worker should time out");
 
@@ -845,5 +873,34 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("needle.txt"));
         assert!(!result.content.contains("needle-secret.txt"));
+    }
+    #[tokio::test]
+    async fn test_file_search_charts_match_pods() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src/net")).expect("mkdir");
+        std::fs::write(root.join("src/net/server.rs"), "fn serve() {}\n").expect("write");
+        std::fs::write(root.join("src/net/client.rs"), "fn connect() {}\n").expect("write");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let result = FileSearchTool
+            .execute(json!({"query": "server", "limit": 5}), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let body: Value = serde_json::from_str(&result.content).expect("json result");
+        assert!(!body["matches"].as_array().expect("matches").is_empty());
+        let pods = body["pods"].as_array().expect("pods array");
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0]["dir"], "src/net");
+        let mates: Vec<&str> = pods[0]["mates"]
+            .as_array()
+            .expect("mates")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(mates.contains(&"server.rs (match)"), "{mates:?}");
+        assert!(mates.contains(&"client.rs"), "{mates:?}");
     }
 }

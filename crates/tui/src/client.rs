@@ -4314,6 +4314,13 @@ impl CodewhaleClient {
 }
 
 impl LlmClient for CodewhaleClient {
+    fn wire_format(&self) -> Option<WireFormat> {
+        Some(CodewhaleClient::wire_format(self))
+    }
+    fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
+        Some(self.turn_route_receipt())
+    }
+
     fn provider_name(&self) -> &'static str {
         self.api_provider.as_str()
     }

@@ -1041,6 +1041,23 @@ impl ToolContext {
         tracker.reads.insert(path.to_path_buf(), snapshot);
     }
 
+    /// Distinct files read under `dir` so far this session. Echolocation's
+    /// hunt-phase sensor: 2+ tracked reads means the model is working this
+    /// pod and the next read there enters the terminal buzz. Lock
+    /// contention degrades to zero (sparse sounding), never an error.
+    pub(crate) fn pod_visit_count(&self, dir: &Path) -> usize {
+        self.file_read_tracker
+            .lock()
+            .map(|tracker| {
+                tracker
+                    .reads
+                    .keys()
+                    .filter(|path| path.parent() == Some(dir))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Require a successful, still-fresh `read_file` snapshot before a narrow
     /// in-place edit. This catches model edits made against guessed or stale
     /// content while leaving transactional patch preflight separate.

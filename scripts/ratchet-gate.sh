@@ -24,8 +24,8 @@
 # The base re-check needs a second checkout of an older commit. It uses a
 # throwaway `git worktree` under $RUNNER_TEMP (or mktemp), removed on exit.
 # That is a CI mechanism: locally, run the checker or scripts/preflight.sh.
-# Cargo-backed checkers share this checkout's target directory so the base
-# measurement is an incremental rebuild, not a cold one.
+# Cargo-backed base checks use an isolated target directory so an older
+# dependency image cannot replace artifacts needed by later PR checks.
 set -euo pipefail
 
 name=""
@@ -94,7 +94,7 @@ git worktree add --quiet --detach "${base_tree}" "${base}"
 base_status=0
 (
   cd "${base_tree}"
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${root}/target}"
+  export CARGO_TARGET_DIR="${scratch}/target"
   "$@"
 ) || base_status=$?
 

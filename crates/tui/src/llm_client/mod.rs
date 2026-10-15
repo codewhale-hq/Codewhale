@@ -58,6 +58,13 @@ pub trait LlmClient: Send + Sync {
     /// Returns the model identifier being used
     fn model(&self) -> &str;
 
+    fn wire_format(&self) -> Option<codewhale_config::provider::WireFormat> {
+        None
+    }
+    fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
+        None
+    }
+
     /// Creates a non-streaming message completion
     fn create_message(
         &self,

@@ -15,6 +15,11 @@ pub(super) struct ChildHostState {
     handle: Option<EngineHandle>,
     pub(super) report: Option<crate::tools::subagent::budget_handback::ReportAdmission>,
     route_runtime: crate::tools::subagent::SubAgentRuntime,
+    pub(super) fork_cache_checked: bool,
+    pub(super) fork_trial_first_response_logged: bool,
+    pub(super) fork_cache_inherited:
+        Option<crate::prompt_zones::LiveHeaderSnapshot<crate::route_receipt::TurnRouteReceipt>>,
+    pub(super) fork_cache_prefix: Vec<String>,
     replacements_tried: usize,
     pin_fallback_used: bool,
     pending_route: Option<(
@@ -28,6 +33,10 @@ impl From<ChildHostSetup> for ChildHostState {
         let route_runtime = setup.authority.runtime.clone();
         Self {
             route_runtime,
+            fork_cache_checked: false,
+            fork_trial_first_response_logged: false,
+            fork_cache_inherited: None,
+            fork_cache_prefix: Vec::new(),
             replacements_tried: 0,
             pin_fallback_used: false,
             pending_route: None,
@@ -237,7 +246,12 @@ impl Engine {
         let report_deadline_expired =
             reporting && deadline.is_some_and(|deadline| Instant::now() >= deadline);
         drop(timer);
-        job.project(&self.session.messages, job.steps()).await?;
+        job.project(
+            &self.session.messages,
+            job.steps(),
+            self.session.system_prompt.as_ref(),
+        )
+        .await?;
         if job.authority.runtime.cancel_token.is_cancelled() {
             return job
                 .finish(

@@ -1034,6 +1034,7 @@ pub struct Engine {
     /// status on the same model (#6889). Cleared when a request opens its
     /// stream or fails some other way.
     repeated_upstream_failure: Option<streaming::RepeatedUpstreamFailure>,
+    live_header: crate::prompt_zones::SharedLiveHeader<crate::route_receipt::TurnRouteReceipt>,
     api_provider: ProviderKind,
     /// One captured admitted route. Presentation snapshots derive strings from
     /// it; a changed table cannot be blessed by reinterpreting those strings.
@@ -2346,6 +2347,7 @@ impl Engine {
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
             repeated_upstream_failure: None,
+            live_header: crate::prompt_zones::new_live_header_cell(),
             api_provider,
             api_provider_identity,
             active_route_limits,
@@ -4382,7 +4384,13 @@ impl Engine {
 
     async fn emit_session_updated(&self) {
         if let Some(job) = self.child_job()
-            && let Err(error) = job.project(&self.session.messages, job.steps()).await
+            && let Err(error) = job
+                .project(
+                    &self.session.messages,
+                    job.steps(),
+                    self.session.system_prompt.as_ref(),
+                )
+                .await
         {
             self.cancel_token.cancel();
             tracing::error!(%error, "child Session projection failed; turn stopped");
@@ -5583,6 +5591,7 @@ impl Engine {
                 tool_context.clone(),
                 self.tx_subagent_completion.clone(),
                 SubAgentForkContext {
+                    live_header: crate::prompt_zones::new_live_header_cell(),
                     messages: self.messages_with_turn_metadata(),
                     structured_state_block: None,
                     work_source: Some(self.todo_source()),
@@ -5629,6 +5638,7 @@ impl Engine {
             )
             .await;
             Some(SubAgentForkContext {
+                live_header: Arc::clone(&self.live_header),
                 messages: self.messages_with_turn_metadata(),
                 structured_state_block: state.to_system_block(),
                 // Resolve at spawn time so a todo_write earlier in this turn
@@ -5917,6 +5927,18 @@ impl Engine {
         );
         if let Some(child) = self.child_host.as_ref() {
             Self::narrow_child_surface(&child.authority, &mut surface);
+            let prefix = &child.fork_cache_prefix;
+            surface.catalog.sort_by_key(|tool| {
+                prefix
+                    .iter()
+                    .position(|name| name == &tool.name)
+                    .unwrap_or(prefix.len())
+            });
+            surface.active = tool_catalog::active_tools_for_request(
+                &surface.catalog,
+                &surface.active_names,
+                surface.strict_tool_mode,
+            );
         }
         TurnToolBuild {
             surface,

@@ -8,6 +8,55 @@ use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 
 use super::{GrepFilesTool, matches_glob};
 
+#[tokio::test]
+async fn grep_max_results_is_clamped_not_trusted() {
+    let tmp = tempdir().expect("tempdir");
+    let body = "needle here\n".repeat(1_200);
+    fs::write(tmp.path().join("hay.txt"), &body).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "needle", "max_results": 1_000_000}), &ctx)
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1000);
+    assert_eq!(payload["truncated"], true);
+    assert_eq!(payload["total_matches"], 1000);
+}
+
+#[tokio::test]
+async fn grep_truncated_fires_only_on_a_proven_cut() {
+    let tmp = tempdir().expect("tempdir");
+    // Exactly max: the walk completes, nothing cut, flag stays false.
+    fs::write(tmp.path().join("exact.txt"), "needle\n".repeat(3)).expect("write");
+    // Over max across files: the second file proves the cut.
+    fs::write(tmp.path().join("a.txt"), "needle\n".repeat(2)).expect("write");
+    fs::write(tmp.path().join("b.txt"), "needle\n".repeat(5)).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "exact.txt", "max_results": 3}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 3);
+    assert_eq!(payload["truncated"], false);
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "a.txt", "max_results": 1}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1);
+    assert_eq!(payload["truncated"], true);
+}
+
 #[test]
 fn grep_description_matches_default_exclusion_behavior() {
     let description = GrepFilesTool.description();
@@ -112,6 +161,35 @@ fn test_matches_glob_unicode_filename() {
     assert!(matches_glob(filename, "*冰糖*"));
     // Non-matching pattern must not panic either.
     assert!(!matches_glob(filename, "nonexistent*"));
+}
+
+#[tokio::test]
+async fn grep_pods_chart_matched_dirs_with_marks() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::create_dir(tmp.path().join("net")).expect("subdir");
+    fs::write(tmp.path().join("net/server.rs"), "fn serve() {}\n").expect("write");
+    fs::write(tmp.path().join("net/client.rs"), "fn connect() {}\n").expect("write");
+
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "serve"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(result.success);
+    let body: Value = serde_json::from_str(&result.content).expect("json result");
+    assert_eq!(body["total_matches"], 1);
+    let pods = body["pods"].as_array().expect("pods array");
+    assert_eq!(pods.len(), 1);
+    assert_eq!(pods[0]["dir"], "net");
+    let mates: Vec<&str> = pods[0]["mates"]
+        .as_array()
+        .expect("mates")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(mates.contains(&"client.rs"), "{mates:?}");
+    assert!(mates.contains(&"server.rs (match)"), "{mates:?}");
+    assert_eq!(body["pods_omitted"], 0);
 }
 
 #[tokio::test]
@@ -415,12 +493,13 @@ async fn test_grep_files_ring_buffer_context_matches_full_read() {
     let parsed: Value = serde_json::from_str(&result.content).unwrap();
     let matches = parsed["matches"].as_array().unwrap();
     assert_eq!(matches.len(), 3);
-    assert_eq!(matches[0]["context_before"], json!([]));
+    // Token diet: empty context arrays are omitted on the wire.
+    assert!(matches[0].get("context_before").is_none());
     assert_eq!(matches[0]["context_after"], json!(["b1", "b2"]));
     assert_eq!(matches[1]["context_before"], json!(["b2", "b3"]));
     assert_eq!(matches[1]["context_after"], json!(["a1", "a2"]));
     assert_eq!(matches[2]["context_before"], json!(["a2", "a3"]));
-    assert_eq!(matches[2]["context_after"], json!([]));
+    assert!(matches[2].get("context_after").is_none());
     assert_eq!(matches[2]["line_number"].as_u64().unwrap(), 9);
 }
 

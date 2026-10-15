@@ -482,3 +482,52 @@ async fn dropped_code_execution_kills_the_interpreter_tree() {
         "a process the script started outlived the dropped code_execution call"
     );
 }
+
+#[test]
+fn compact_surface_keeps_agent_and_workflow_deferred() {
+    let catalog = build_model_tool_catalog_with_surface(
+        [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "agent",
+            "workflow",
+            "todo_write",
+        ]
+        .into_iter()
+        .map(tool)
+        .collect(),
+        Vec::new(),
+        AppMode::Agent,
+        &HashSet::new(),
+        crate::model_profile::ToolSurfaceBudget::Compact,
+    );
+
+    for name in ["agent", "workflow"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|definition| definition.name == name)
+                .and_then(|definition| definition.defer_loading),
+            Some(false),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn deferred_core_tools_restore_through_always_load() {
+    let mut catalog = ["agent", "workflow", "get_goal", "update_goal", "read"]
+        .into_iter()
+        .map(tool)
+        .collect::<Vec<_>>();
+    let always_load = ["agent", "workflow", "get_goal", "update_goal"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    apply_native_tool_deferral(&mut catalog, &always_load);
+    for definition in &catalog {
+        assert_eq!(definition.defer_loading, Some(false), "{}", definition.name);
+    }
+}
