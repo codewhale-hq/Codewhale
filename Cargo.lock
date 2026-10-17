@@ -1118,6 +1118,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-portable-core-navigation"
+version = "0.10.2"
+dependencies = [
+ "codewhale-command-contract",
+]
+
+[[package]]
 name = "codewhale-portable-session"
 version = "0.10.2"
 dependencies = [

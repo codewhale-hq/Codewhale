@@ -162,3 +162,17 @@ pub type ConfigCommandResult = CommandResult<ConfigAction>;
 pub type ConfigPolicyAction = ConfigAction;
 pub type ConfigPolicyCommandResult = ConfigCommandResult;
 pub type ConfigStatusCommandResult = CommandResult<std::convert::Infallible>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreNavigationAction {
+    OpenHotbarSetup,
+    DisableHotbar,
+    RestoreHotbarDefaults,
+    OpenLiveTranscript,
+    OpenTurnInspector,
+    OpenWorktreeManager,
+    SwitchWorkspace { workspace: std::path::PathBuf },
+    VoiceCapture,
+}
+
+pub type CoreNavigationCommandResult = CommandResult<CoreNavigationAction>;

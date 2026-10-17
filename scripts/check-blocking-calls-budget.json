@@ -96,7 +96,7 @@
     "std_fs": 2
   },
   "crates/tui/src/commands/contract.rs": {
-    "path_canonicalize": 4,
+    "path_canonicalize": 5,
     "std_fs": 3
   },
   "crates/tui/src/commands/groups/config/import_claude.rs": {
@@ -104,9 +104,6 @@
   },
   "crates/tui/src/commands/groups/core/acceptance.rs": {
     "std_fs": 1
-  },
-  "crates/tui/src/commands/groups/core/core.rs": {
-    "path_canonicalize": 1
   },
   "crates/tui/src/commands/groups/plugins/render.rs": {
     "path_canonicalize": 1

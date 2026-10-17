@@ -222,6 +222,8 @@ pub const EFFECT_REPLY_TEMPLATES: &[(&str, &[&str])] = &[
 pub trait CommandConfigContext {
     /// Path of the active user configuration file, when one is resolved.
     fn config_path(&self) -> Option<PathBuf>;
+    fn translation_enabled(&self) -> bool;
+    fn set_translation_enabled(&mut self, enabled: bool);
 
     /// `/config status|audit|editability|editable` — typed audit rows.
     fn audit(&mut self) -> Result<CommandConfigAuditReport, String>;

@@ -13,6 +13,9 @@ mod config_main_import_host;
 #[cfg(test)]
 mod config_policy_host;
 mod contract;
+mod core_navigation_host;
+#[cfg(test)]
+mod core_navigation_host_tests;
 pub mod discovery;
 pub(crate) mod groups;
 
@@ -85,7 +88,8 @@ pub(crate) use groups::memory::{notes_path, read_notes};
 pub use groups::project::share;
 
 // Voice capture plumbing shared with the hotbar and the UI event loop.
-pub use groups::core::voice;
+#[path = "core_navigation_voice_host.rs"]
+pub mod voice;
 
 #[cfg(test)]
 mod debug_diagnostics_baseline_tests;
@@ -651,6 +655,18 @@ mod tests {
             Some(AppAction::SendMessage(message)) => assert_eq!(message, "user help now"),
             other => panic!("expected user command SendMessage action, got {other:?}"),
         }
+        std::fs::write(commands_dir.join("voice.md"), "user voice").unwrap();
+        super::user_registry::reload(Some(temp.path()));
+        assert!(
+            matches!(execute("/voice", &mut app).action, Some(AppAction::SendMessage(message)) if message == "user voice")
+        );
+        app.voice_enabled = true;
+        let shortcut = crate::commands::voice::voice(&mut app);
+        assert!(!shortcut.is_error && shortcut.action.is_none());
+        assert!(
+            !app.voice_enabled,
+            "builtin voice shortcut must not dispatch a shadowing user command"
+        );
     }
 
     #[test]
@@ -1348,6 +1364,177 @@ mod tests {
 
     #[test]
     fn command_info_resolves_canonical_names_and_aliases() {
+        use codewhale_command_contract::handler::{
+            CommandCapabilities as Caps, CommandContexts, CommandHandler, ContextParts,
+        };
+        struct MissingTemplate;
+        impl codewhale_command_contract::facets::CommandPresentationContext for MissingTemplate {
+            fn translate(&self, _: &str, _: &[(&str, &str)]) -> Result<String, String> {
+                Err("template unavailable".into())
+            }
+        }
+        for (name, service, needs_presentation) in [
+            ("help", Caps::NAVIGATION, true),
+            ("home", Caps::NAVIGATION, true),
+            ("overview", Caps::NAVIGATION, true),
+            ("links", Caps::NAVIGATION, true),
+            ("anchor", Caps::WORKSPACE, false),
+            ("workspace", Caps::WORKSPACE, true),
+            ("translate", Caps::CONFIG, true),
+            ("voice", Caps::VOICE_INPUT, true),
+            ("voicesend", Caps::VOICE_INPUT, true),
+            ("voicecontrol", Caps::VOICE_INPUT, true),
+        ] {
+            let expected = if needs_presentation {
+                service | Caps::PRESENTATION
+            } else {
+                service
+            };
+            let CommandHandler::Contextual {
+                capabilities,
+                handler,
+            } = registry().get(name).unwrap().contextual_handler().unwrap()
+            else {
+                panic!("/{name} must declare scoped authority");
+            };
+            assert_eq!(capabilities, expected);
+            let missing = handler(CommandContexts::empty(), Some("missing-facet-input"));
+            assert!(missing.is_error && missing.action.is_none());
+            let mut app = create_test_app();
+            app.launch.dismiss();
+            let before_view = format!("{:?}", app.view_stack.top_kind());
+            let before_translation = app.translation_enabled;
+            app.voice_enabled = name == "voice";
+            let before_voice = (
+                app.voice_enabled,
+                app.voice_send_enabled,
+                app.voice_control_enabled,
+            );
+            if needs_presentation {
+                let missing_presentation = {
+                    let mut bundle = app.command_contexts();
+                    handler(bundle.contexts(service), None)
+                };
+                assert!(missing_presentation.is_error && missing_presentation.action.is_none());
+                assert!(
+                    missing_presentation
+                        .message
+                        .as_deref()
+                        .is_some_and(|text| text.contains("presentation"))
+                );
+            }
+            if name == "translate" || service == Caps::VOICE_INPUT {
+                let mut failing = MissingTemplate;
+                let failure = {
+                    let mut bundle = app.command_contexts();
+                    handler(
+                        bundle.contexts(service).with_presentation(&mut failing),
+                        None,
+                    )
+                };
+                assert!(failure.is_error && failure.action.is_none());
+            }
+            assert!(!app.launch.visible);
+            assert_eq!(format!("{:?}", app.view_stack.top_kind()), before_view);
+            assert_eq!(app.translation_enabled, before_translation);
+            assert_eq!(
+                (
+                    app.voice_enabled,
+                    app.voice_send_enabled,
+                    app.voice_control_enabled
+                ),
+                before_voice
+            );
+            let mut bundle = app.command_contexts();
+            let ContextParts {
+                session,
+                model,
+                cost,
+                mode_policy,
+                system_prompt,
+                skills,
+                workspace,
+                presentation,
+                media,
+                memory,
+                project,
+                skill_group,
+                plugin,
+                lifecycle,
+                control,
+                export,
+                structcopy,
+                debug_receipts,
+                debug_change,
+                debug_history,
+                debug_diff,
+                debug_undo,
+                debug_diagnostics,
+                permissions,
+                config_status,
+                config,
+                pet,
+                trust,
+                login,
+                work_surface,
+                navigation,
+                voice_input,
+            } = bundle.contexts(capabilities).into_parts();
+            for (capability, exposed) in [
+                (Caps::SESSION, session.is_some()),
+                (Caps::MODEL, model.is_some()),
+                (Caps::COST, cost.is_some()),
+                (Caps::MODE_POLICY, mode_policy.is_some()),
+                (Caps::SYSTEM_PROMPT, system_prompt.is_some()),
+                (Caps::SKILLS, skills.is_some()),
+                (Caps::WORKSPACE, workspace.is_some()),
+                (Caps::PRESENTATION, presentation.is_some()),
+                (Caps::MEDIA, media.is_some()),
+                (Caps::MEMORY, memory.is_some()),
+                (Caps::PROJECT, project.is_some()),
+                (Caps::SKILL_GROUP, skill_group.is_some()),
+                (Caps::PLUGIN, plugin.is_some()),
+                (Caps::SESSION_LIFECYCLE, lifecycle.is_some()),
+                (Caps::SESSION_CONTROL, control.is_some()),
+                (Caps::SESSION_EXPORT, export.is_some()),
+                (Caps::SESSION_STRUCTCOPY, structcopy.is_some()),
+                (Caps::DEBUG_RECEIPTS, debug_receipts.is_some()),
+                (Caps::DEBUG_CHANGE, debug_change.is_some()),
+                (Caps::DEBUG_HISTORY, debug_history.is_some()),
+                (Caps::DEBUG_DIFF, debug_diff.is_some()),
+                (Caps::DEBUG_UNDO, debug_undo.is_some()),
+                (Caps::DEBUG_DIAGNOSTICS, debug_diagnostics.is_some()),
+                (Caps::PERMISSIONS, permissions.is_some()),
+                (Caps::CONFIG_STATUS, config_status.is_some()),
+                (Caps::CONFIG, config.is_some()),
+                (Caps::PET, pet.is_some()),
+                (Caps::TRUST, trust.is_some()),
+                (Caps::LOGIN, login.is_some()),
+                (Caps::WORK_SURFACE, work_surface.is_some()),
+                (Caps::NAVIGATION, navigation.is_some()),
+                (Caps::VOICE_INPUT, voice_input.is_some()),
+            ] {
+                assert_eq!(
+                    exposed,
+                    expected.contains(capability),
+                    "/{name} facet {capability:?}"
+                );
+            }
+        }
+        for (name, expected) in [
+            ("hotbar", AppAction::OpenHotbarSetup),
+            ("transcript", AppAction::OpenLiveTranscript),
+            ("turn", AppAction::OpenTurnInspector),
+        ] {
+            let handler = registry().get(name).unwrap().contextual_handler().unwrap();
+            let codewhale_command_contract::handler::CommandHandler::Pure(run) = handler else {
+                panic!("/{name} must be pure and require no host envelope");
+            };
+            let result = run(None);
+            assert_eq!(result.action, Some(expected));
+            assert!(result.message.is_none());
+            assert!(!result.is_error);
+        }
         for command in command_infos() {
             for lookup in [command.name.to_string(), format!("/{}", command.name)] {
                 let resolved = get_command_info(&lookup)
@@ -1485,6 +1672,101 @@ mod tests {
     /// On hosts without a recorder it must fail gracefully instead.
     #[test]
     fn voice_command_toggles_on_and_off_or_fails_gracefully() {
+        use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
+        struct VoiceState {
+            enabled: bool,
+            available: bool,
+            probes: std::cell::Cell<usize>,
+        }
+        impl codewhale_command_contract::navigation::CommandVoiceInputContext for VoiceState {
+            fn recorder_available(&self) -> bool {
+                self.probes.set(self.probes.get() + 1);
+                self.available
+            }
+            fn voice_enabled(&self) -> bool {
+                self.enabled
+            }
+            fn set_voice_enabled(&mut self, enabled: bool) {
+                self.enabled = enabled;
+            }
+            fn send_enabled(&self) -> bool {
+                unreachable!("voice must not read send state")
+            }
+            fn set_send_enabled(&mut self, _: bool) {
+                unreachable!("voice must not set send state")
+            }
+            fn control_enabled(&self) -> bool {
+                unreachable!("voice must not read control state")
+            }
+            fn set_control_enabled(&mut self, _: bool) {
+                unreachable!("voice must not set control state")
+            }
+        }
+        struct Labels {
+            fail: bool,
+        }
+        impl codewhale_command_contract::facets::CommandPresentationContext for Labels {
+            fn translate(&self, key: &str, _: &[(&str, &str)]) -> Result<String, String> {
+                if self.fail {
+                    return Err("missing fixture template".into());
+                }
+                match key {
+                    "voice_enabled" => Ok("Voice enabled".into()),
+                    "voice_disabled" => Ok("Voice disabled".into()),
+                    "voice_err_no_recorder" => Ok("Recorder unavailable".into()),
+                    _ => Err("unexpected voice label".into()),
+                }
+            }
+        }
+        let CommandHandler::Contextual { handler, .. } = registry()
+            .get("voice")
+            .unwrap()
+            .contextual_handler()
+            .unwrap()
+        else {
+            panic!("voice must be contextual");
+        };
+        for available in [false, true] {
+            let mut voice = VoiceState {
+                enabled: false,
+                available,
+                probes: std::cell::Cell::new(0),
+            };
+            let mut labels = Labels { fail: false };
+            let on = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert_eq!(on.is_error, !available);
+            assert_eq!(voice.enabled, available);
+            assert_eq!(on.action, available.then_some(AppAction::VoiceCapture));
+            assert_eq!(voice.probes.get(), 1);
+            voice.enabled = true;
+            voice.available = false;
+            let off = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert!(!off.is_error && off.action.is_none() && !voice.enabled);
+            assert_eq!(
+                voice.probes.get(),
+                1,
+                "voice-off must not probe recorder availability"
+            );
+            voice.available = true;
+            labels.fail = true;
+            let failed = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert!(failed.is_error && failed.action.is_none() && !voice.enabled);
+        }
         let mut app = create_test_app();
         let result = execute("/voice", &mut app);
         if app.voice_enabled {
@@ -2171,6 +2453,19 @@ mod tests {
         // register bounded portable groups/slices; every entry outside the
         // explicit list must still use the original legacy dispatcher.
         const MIGRATED_GROUPS: &[&str] = &[
+            "voice",
+            "voicesend",
+            "voicecontrol",
+            "translate",
+            "anchor",
+            "workspace",
+            "help",
+            "home",
+            "overview",
+            "links",
+            "hotbar",
+            "transcript",
+            "turn",
             // FEAT-018 utility group.
             "attach",
             "automation",

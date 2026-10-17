@@ -99,7 +99,7 @@ class ConfigProofTests(unittest.TestCase):
 
     def test_direct_and_transitive_runtime_or_storage_edges_are_rejected(self):
         allowed = ("codewhale-portable-config v0.10.2\ncodewhale-command-contract v0.10.2\n"
-                   "codewhale-protocol v0.10.2\nserde v1.0.0\n")
+                   "codewhale-protocol v0.10.2\ncodewhale-sanitize v0.10.2\nserde v1.0.0\n")
         self.assertEqual(proof.graph_violations(allowed), [])
         for package in ["codewhale-tui", "codewhale-config", "codewhale-core", "codewhale-runtime",
                         "codewhale-execpolicy", "codewhale-secrets", "codewhale-state",

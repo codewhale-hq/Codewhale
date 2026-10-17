@@ -107,9 +107,17 @@ pub trait CommandSkillsContext {
     fn refresh_skill_cache(&mut self);
 }
 
-/// Workspace path and a bounded serialized work-state snapshot.
+/// Workspace path, bounded work-state observations and confined anchor storage.
 pub trait CommandWorkspaceContext {
     fn workspace(&self) -> PathBuf;
+    fn effective_home_dir(&self) -> Option<PathBuf>;
+    fn inspect_workspace_target(&self, candidate: &Path) -> crate::navigation::WorkspaceTarget;
+    fn read_anchor_document(&self) -> Result<Option<String>, String>;
+    fn append_anchor_bytes(
+        &mut self,
+        parts: &[&[u8]],
+    ) -> Result<PathBuf, crate::navigation::AnchorWriteError>;
+    fn replace_anchor_document(&mut self, bytes: &[u8]) -> Result<(), String>;
     fn work_state_snapshot(&self) -> Result<Option<String>, String>;
     /// Session-aware canonical operation digest. Returns the final user-facing
     /// digest text or a safe explicit error; never a serialized snapshot.

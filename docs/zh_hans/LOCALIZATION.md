@@ -177,11 +177,14 @@ partial 区域设置在网站上还差的范围（下一波）：首页之外的
    `normalize_configured_locale` 校验（它复用第 2 步的 `parse_locale`）；`/config`
    的取值列表（`crates/tui/src/tui/views/mod.rs` 里的 `config_choice_values`）和提示文字
    （`configured_locale_values`）都从 `Locale::shipped()` 派生，所以这两处不用改。
-   编译器会指出来的穷尽 `match` 分支有三处：设置向导
-   （`crates/tui/src/tui/setup/mod.rs`）、
-   `crates/tui/src/commands/groups/config/config.rs` 里的 `locale_display`，
-   以及 `crates/tui/src/commands/groups/core/core.rs` 里的 `public_site_locale_segment`
-   （`/links` 的站点路径）。还要给引导流程的语言选择器
+   检查设置向导（`crates/tui/src/tui/setup/mod.rs`）以及
+   `crates/tui/src/commands/groups/config/config.rs` 里的 `locale_display`
+   是否需要更新显式区域设置映射。还要检查
+   `crates/tui/src/commands/groups/core/links.rs` 里的 `public_site_locale_segment`：
+   可移植的 `/links` 命令匹配的是区域设置 tag，而不是宿主的 `Locale` 枚举。
+   未列出的 tag 会回退到英文网站页面，因此编译器不会在这里提醒新增的区域设置。
+   当网站提供该语言版本时，添加显式 tag 映射，并验证 `/links` 选择了正确的文档和社区 URL。
+   还要给引导流程的语言选择器
    （`crates/tui/src/tui/onboarding/language.rs`）加一条 `LANGUAGE_OPTIONS` 条目；
    不加的话，它的 `picker_offers_every_shipped_locale` 测试会失败。有几个
    “不泄漏英文”的测试（例如 `status_picker.rs` 和 `tool_card.rs` 里的）显式列出了

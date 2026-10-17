@@ -53,6 +53,7 @@ lane              cargo test -p codewhale-lane --lib --locked
 mcp               cargo test -p codewhale-mcp --lib --locked
 paths             cargo test -p codewhale-paths --lib --locked
 portable-config cargo test -p codewhale-portable-config --lib --locked
+portable-core-navigation cargo test -p codewhale-portable-core-navigation --lib --locked
 protocol          cargo test -p codewhale-protocol --lib --locked
 release           cargo test -p codewhale-release --lib --locked
 runtime           cargo test -p codewhale-runtime --lib --locked
@@ -113,6 +114,12 @@ if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
   case $rel in
     tests/portable-config/*|tests/portable-config)
       area=portable-config
+      ;;
+    tests/portable-core-navigation/*|tests/portable-core-navigation)
+      area=portable-core-navigation
+      ;;
+    crates/command-contract/src/navigation.rs)
+      area=command-contract
       ;;
     crates/tui/tests/integration/*)
       area=tui-integration
@@ -188,6 +195,7 @@ case $area in
   mcp) pkg=codewhale-mcp ;;
   paths) pkg=codewhale-paths ;;
   portable-config) pkg=codewhale-portable-config ;;
+  portable-core-navigation) pkg=codewhale-portable-core-navigation ;;
   protocol) pkg=codewhale-protocol ;;
   release) pkg=codewhale-release ;;
   runtime) pkg=codewhale-runtime ;;

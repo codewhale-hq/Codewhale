@@ -31,6 +31,7 @@ members = [
     "crates/workflow-js",
     "tests/portable-session",
     "tests/portable-config",
+    "tests/portable-core-navigation",
 ]
 exclude = ["vendor/codewhale-ratatui"]
 default-members = ["crates/cli"]

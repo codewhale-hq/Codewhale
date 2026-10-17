@@ -564,6 +564,15 @@ jobs:
         continue-on-error: true
         shell: bash
         run: sccache --show-stats
+      - name: Check core navigation source and normal dependency boundary
+        if: needs.changes.outputs.heavy == 'true'
+        shell: bash
+        run: |
+          python3 -B scripts/test_check_command_core_navigation_proof.py
+          graph=$(mktemp)
+          trap 'rm -f "$graph"' EXIT
+          cargo tree --locked -p codewhale-portable-core-navigation --edges normal --all-features --target all --prefix none > "$graph"
+          python3 -B scripts/check-command-core-navigation-proof.py --graph "$graph"
       - name: Check provider registry drift
         if: needs.changes.outputs.heavy == 'true'
         run: |
@@ -912,6 +921,12 @@ jobs:
         run: |
           python3 -B scripts/test_check_command_config_proof.py
           sh scripts/check-portable-config.sh
+      - name: Check portable core navigation boundary
+        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'ubuntu-latest' && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
+        shell: bash
+        run: |
+          python3 -B scripts/test_check_command_core_navigation_proof.py
+          sh scripts/check-portable-core-navigation.sh
       - uses: actions/setup-node@v7.1.0
         # The extension-host integration tests spawn the real bundle under
         # Node >= 22.19; CODEWHALE_EXT_HOST_TESTS below makes a missing Node a

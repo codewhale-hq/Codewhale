@@ -345,6 +345,28 @@ mod tests {
     }
 
     impl CommandWorkspaceContext for FakeWorkspace {
+        fn effective_home_dir(&self) -> Option<std::path::PathBuf> {
+            unreachable!("navigation is not used by note")
+        }
+        fn inspect_workspace_target(
+            &self,
+            _: &std::path::Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("navigation is not used by note")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            unreachable!("anchors are not used by note")
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _: &[&[u8]],
+        ) -> Result<std::path::PathBuf, codewhale_command_contract::navigation::AnchorWriteError>
+        {
+            unreachable!("anchors are not used by note")
+        }
+        fn replace_anchor_document(&mut self, _: &[u8]) -> Result<(), String> {
+            unreachable!("anchors are not used by note")
+        }
         fn workspace(&self) -> PathBuf {
             self.path.clone()
         }

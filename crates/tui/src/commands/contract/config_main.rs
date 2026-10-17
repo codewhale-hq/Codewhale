@@ -23,6 +23,14 @@ pub(crate) struct ConfigAdapter<'a> {
 }
 
 impl CommandConfigContext for ConfigAdapter<'_> {
+    fn translation_enabled(&self) -> bool {
+        self.host.app.borrow().translation_enabled
+    }
+
+    fn set_translation_enabled(&mut self, enabled: bool) {
+        self.host.app.borrow_mut().translation_enabled = enabled;
+    }
+
     fn config_path(&self) -> Option<PathBuf> {
         self.host.app.borrow().config_path.clone()
     }

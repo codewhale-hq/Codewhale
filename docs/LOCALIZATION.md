@@ -196,11 +196,15 @@ carry an explicit `planned`/`partial`/`deferred` row in this matrix.
    from step 2), and the `/config` value list (`config_choice_values` in
    `crates/tui/src/tui/views/mod.rs`) and hint text
    (`configured_locale_values`) derive from `Locale::shipped()`, so those need
-   no edit. The exhaustive `match` arms the compiler will point at are the
-   setup wizard (`crates/tui/src/tui/setup/mod.rs`), `locale_display` in
-   `crates/tui/src/commands/groups/config/config.rs`, and
-   `public_site_locale_segment` (the `/links` site path) in
-   `crates/tui/src/commands/groups/core/core.rs`. Add a `LANGUAGE_OPTIONS`
+   no edit. Review the setup wizard (`crates/tui/src/tui/setup/mod.rs`) and
+   `locale_display` in `crates/tui/src/commands/groups/config/config.rs` for
+   explicit locale mappings. Also review `public_site_locale_segment` in
+   `crates/tui/src/commands/groups/core/links.rs`: the portable `/links` command
+   matches locale tags, not the host `Locale` enum. Unlisted tags fall back to
+   English website pages, so the compiler will not flag a newly added locale
+   here. Add an explicit tag mapping when that locale is available on the website,
+   and verify `/links` selects the intended documentation/community URLs.
+   Add a `LANGUAGE_OPTIONS`
    entry to the onboarding language picker
    (`crates/tui/src/tui/onboarding/language.rs`); its
    `picker_offers_every_shipped_locale` test fails until you do. Several no-English-leak tests
