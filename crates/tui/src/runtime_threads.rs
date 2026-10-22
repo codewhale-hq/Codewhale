@@ -16410,6 +16410,7 @@ impl RuntimeThreadManager {
                     persist_services_enabled: false,
                     hook_executor: Some(Arc::clone(&thread_hooks)),
                     handle_store: crate::tools::handle::new_shared_handle_store(),
+                    code_observations: crate::tools::handle::new_shared_handle_store(),
                     rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
                     media_originals_dir: crate::media_originals::default_store_dir(),
                 },

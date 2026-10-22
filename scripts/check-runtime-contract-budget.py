@@ -694,6 +694,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[runtime-contract-budget] ERROR: {error}", file=sys.stderr)
         if str(error).startswith("identity changed"):
             print(
+                "[runtime-contract-budget] receipt=" + json.dumps(receipt, sort_keys=True),
+                file=sys.stderr,
+            )
+            print(
                 "If the identity change is intended, land the new budget in this PR:\n"
                 f"  {grow_command}",
                 file=sys.stderr,

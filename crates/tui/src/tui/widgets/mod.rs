@@ -431,83 +431,117 @@ impl ChatWidget {
         }
         let summary_cells = &app.tool_run_cache.summaries;
 
-        // Fast path: no collapsed cells — use original slices directly.
-        if !has_collapsed {
-            let mut cell_revisions: Vec<u64> =
-                Vec::with_capacity(app.history.len() + active_entries.len());
-            cell_revisions.extend(
-                app.history_revisions
-                    .iter()
-                    .copied()
-                    .map(history_entry_revision),
-            );
-            if !active_entries.is_empty() {
+        // Keyed steady state: a matching key lets the cache skip the O(n)
+        // unchanged-prefix scan entirely (#6652). The projection generation
+        // folds in view-level changes (collapse toggles) that never touch
+        // history revisions. Staging precedes the availability check because
+        // `ensure_iter` consumes the staged key.
+        app.viewport
+            .transcript_cache
+            .note_revision_key(transcript_revision_key(
+                app.history_version,
+                app.history.len(),
+                app.active_cell_revision,
+                active_entries.len(),
+                app.tool_run_cache.generation,
+            ));
+        // When every cache input is pinned equal (key, width, options,
+        // folds, row count, owner), the ensure call itself is dead work:
+        // skip building the per-frame revision/ref vectors too.
+        let keyed_skip = app.viewport.transcript_cache.keyed_skip_available(
+            transcript_width,
+            render_options,
+            &app.cell_folds,
+            if has_collapsed {
+                app.tool_run_cache.filtered.original.len()
+            } else {
+                app.history.len() + active_entries.len()
+            },
+            provisional_action_owner,
+        );
+
+        // Keyed skip: the frame is provably identical to the accepted one;
+        // neither the per-frame vectors nor the ensure call are needed.
+        if !keyed_skip {
+            // Fast path: no collapsed cells — use original slices directly.
+            if !has_collapsed {
+                let mut cell_revisions: Vec<u64> =
+                    Vec::with_capacity(app.history.len() + active_entries.len());
+                cell_revisions.extend(
+                    app.history_revisions
+                        .iter()
+                        .copied()
+                        .map(history_entry_revision),
+                );
+                if !active_entries.is_empty() {
+                    let active_rev = app.active_cell_revision;
+                    for i in 0..active_entries.len() {
+                        let salt = (i as u64).wrapping_add(1);
+                        cell_revisions.push(active_entry_revision(active_rev, salt));
+                    }
+                }
+                // Build identity mapping: filtered index == original index.
+                // Reused across frames; identity maps are rebuilt only when the
+                // row count changes.
+                let row_count = app.history.len() + active_entries.len();
+                if app.collapsed_cell_map.len() != row_count {
+                    app.collapsed_cell_map = (0..row_count).collect();
+                }
+
+                let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
+                app.viewport.transcript_cache.ensure_split(
+                    &shards,
+                    &cell_revisions,
+                    transcript_width,
+                    render_options,
+                    &app.cell_folds,
+                    None,
+                    provisional_action_owner,
+                );
+            } else {
+                // Slow path: borrow non-collapsed cells into a filtered ref list
+                // so collapsed cells are excluded from rendering, and build the
+                // filtered→original index mapping. Collapsed run starts render a
+                // synthetic summary cell borrowed from the generation cache.
+                // No history cells or summary bodies are cloned on scroll frames.
+                // Which rows survive is cached per projection generation; only
+                // the revisions are gathered fresh (#6652).
+                let filtered = &app.tool_run_cache.filtered;
                 let active_rev = app.active_cell_revision;
-                for i in 0..active_entries.len() {
-                    let salt = (i as u64).wrapping_add(1);
-                    cell_revisions.push(active_entry_revision(active_rev, salt));
+                let mut filtered_cells: Vec<&HistoryCell> =
+                    Vec::with_capacity(filtered.original.len());
+                let mut filtered_revs: Vec<u64> = Vec::with_capacity(filtered.original.len());
+                for &original in &filtered.original {
+                    if original < history_len {
+                        filtered_cells.push(&app.history[original]);
+                        filtered_revs.push(history_entry_revision(app.history_revisions[original]));
+                    } else {
+                        let active_index = original - history_len;
+                        filtered_cells.push(&active_entries[active_index]);
+                        filtered_revs.push(active_entry_revision(
+                            active_rev,
+                            (active_index as u64).wrapping_add(1),
+                        ));
+                    }
                 }
-            }
-            // Build identity mapping: filtered index == original index.
-            // Reused across frames; identity maps are rebuilt only when the
-            // row count changes.
-            let row_count = app.history.len() + active_entries.len();
-            if app.collapsed_cell_map.len() != row_count {
-                app.collapsed_cell_map = (0..row_count).collect();
-            }
+                for &slot in &filtered.summary_slots {
+                    if let Some((summary, revision)) = summary_cells.get(&filtered.original[slot]) {
+                        filtered_cells[slot] = summary;
+                        filtered_revs[slot] = *revision;
+                    }
+                }
+                app.collapsed_cell_map.clone_from(&filtered.original);
 
-            let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
-            app.viewport.transcript_cache.ensure_split(
-                &shards,
-                &cell_revisions,
-                transcript_width,
-                render_options,
-                &app.cell_folds,
-                None,
-                provisional_action_owner,
-            );
-        } else {
-            // Slow path: borrow non-collapsed cells into a filtered ref list
-            // so collapsed cells are excluded from rendering, and build the
-            // filtered→original index mapping. Collapsed run starts render a
-            // synthetic summary cell borrowed from the generation cache.
-            // No history cells or summary bodies are cloned on scroll frames.
-            // Which rows survive is cached per projection generation; only
-            // the revisions are gathered fresh (#6652).
-            let filtered = &app.tool_run_cache.filtered;
-            let active_rev = app.active_cell_revision;
-            let mut filtered_cells: Vec<&HistoryCell> = Vec::with_capacity(filtered.original.len());
-            let mut filtered_revs: Vec<u64> = Vec::with_capacity(filtered.original.len());
-            for &original in &filtered.original {
-                if original < history_len {
-                    filtered_cells.push(&app.history[original]);
-                    filtered_revs.push(history_entry_revision(app.history_revisions[original]));
-                } else {
-                    let active_index = original - history_len;
-                    filtered_cells.push(&active_entries[active_index]);
-                    filtered_revs.push(active_entry_revision(
-                        active_rev,
-                        (active_index as u64).wrapping_add(1),
-                    ));
-                }
+                app.viewport.transcript_cache.ensure_filtered(
+                    &filtered_cells,
+                    &filtered_revs,
+                    transcript_width,
+                    render_options,
+                    &app.cell_folds,
+                    Some(&app.collapsed_cell_map),
+                    provisional_action_owner,
+                );
             }
-            for &slot in &filtered.summary_slots {
-                if let Some((summary, revision)) = summary_cells.get(&filtered.original[slot]) {
-                    filtered_cells[slot] = summary;
-                    filtered_revs[slot] = *revision;
-                }
-            }
-            app.collapsed_cell_map.clone_from(&filtered.original);
-
-            app.viewport.transcript_cache.ensure_filtered(
-                &filtered_cells,
-                &filtered_revs,
-                transcript_width,
-                render_options,
-                &app.cell_folds,
-                Some(&app.collapsed_cell_map),
-                provisional_action_owner,
-            );
         }
 
         let (mut total_lines, mut top, mut was_explicit_tail) =
@@ -697,6 +731,11 @@ impl ChatWidget {
         app.viewport
             .ocean_semantic_surfaces
             .clone_from(&ocean_protected);
+        let ambient_life = underwater_atmosphere
+            && !app.attention_hold_active()
+            && (browsing_history
+                || matches!(phase, ShellPhase::Working | ShellPhase::Verifying)
+                || completion_life_active);
         Self {
             ocean_paint_theme: app.ui_theme,
             ocean_protected,
@@ -717,12 +756,9 @@ impl ChatWidget {
             // Fish also accompany intentional transcript browsing in the
             // selected underwater scene. They only occupy blank cells and are
             // collision-checked, so history stays legible while the ocean
-            // remains playful when scrolling upward.
-            ambient_life: underwater_atmosphere
-                && !app.attention_hold_active()
-                && (browsing_history
-                    || matches!(phase, ShellPhase::Working | ShellPhase::Verifying)
-                    || completion_life_active),
+            // remains playful when scrolling upward. Hoisted above the
+            // row-cell borrow so `Self` never re-reads the app.
+            ambient_life,
             scroll_track,
             scroll_thumb,
             jump_border,
@@ -840,6 +876,31 @@ fn revision_in_domain(revision: u64, active: bool) -> u64 {
 
 fn history_entry_revision(revision: u64) -> u64 {
     revision_in_domain(revision, false)
+}
+
+/// Whole-vector freshness key for the transcript cache's O(1) steady-state
+/// short-circuit (`TranscriptViewCache::note_revision_key`). Composition is
+/// contractual: every mutation path that can change a cell revision supplied
+/// to `ensure_*` moves at least one component — `history_version` (bumped by
+/// push/insert/extend/clear/truncate/bump_history_cell/mark_history_updated),
+/// history length, the active cell revision, or the active entry count — and
+/// every path that can change the collapsed-row projection moves the
+/// `ToolRunCache` generation (threshold/mode/calm/expanded-run changes bump
+/// it in the widget; raw `collapsed_cells` toggles bump it in
+/// `refresh_filtered`), so a keyed frame can never skip past a projection
+/// change.
+fn transcript_revision_key(
+    history_version: u64,
+    history_len: usize,
+    active_cell_revision: u64,
+    active_len: usize,
+    projection_generation: u64,
+) -> u64 {
+    let mut key = history_version;
+    key ^= (history_len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    key = key.rotate_left(17) ^ active_cell_revision;
+    key ^ (active_len as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ projection_generation.wrapping_mul(0x1656_67B1_9E37_79F9)
 }
 
 pub(crate) fn active_entry_revision(active_rev: u64, salt: u64) -> u64 {
@@ -4145,9 +4206,11 @@ mod tests {
             height: 8,
         };
         let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
+        let rendered = {
+            let widget = ChatWidget::new(&mut app, area);
+            widget.render(area, &mut buf);
+            buffer_text(&buf, area)
+        };
 
         assert_eq!(app.collapsed_cell_map, vec![0]);
         assert!(
@@ -4271,9 +4334,11 @@ mod tests {
             height: 8,
         };
         let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
+        let rendered = {
+            let widget = ChatWidget::new(&mut app, area);
+            widget.render(area, &mut buf);
+            buffer_text(&buf, area)
+        };
 
         assert_eq!(app.collapsed_cell_map, vec![0]);
         assert!(
@@ -4342,9 +4407,11 @@ mod tests {
             height: 12,
         };
         let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
+        let rendered = {
+            let widget = ChatWidget::new(&mut app, area);
+            widget.render(area, &mut buf);
+            buffer_text(&buf, area)
+        };
 
         assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
         assert!(rendered.contains("read_file.txt"), "{rendered}");
@@ -6517,10 +6584,13 @@ mod tests {
         app.view_stack
             .push(crate::tui::views::HelpView::new_for_locale(app.ui_locale));
 
-        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 20));
+        let (ocean_animated, ambient_life) = {
+            let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 20));
+            (widget.ocean_animated, widget.ambient_life)
+        };
 
-        assert!(!widget.ocean_animated);
-        assert!(!widget.ambient_life);
+        assert!(!ocean_animated);
+        assert!(!ambient_life);
         assert!(!should_render_empty_state(&app));
     }
 
@@ -6562,15 +6632,17 @@ mod tests {
         app.fancy_animations = true;
         app.ocean_completion_started_at =
             Some(Instant::now() - std::time::Duration::from_millis(900));
-        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 24));
-        let age = widget
-            .ocean_column
-            .and_then(|column| column.completion_elapsed_ms());
-        assert!(
-            age.is_some_and(|age| (800..1_400).contains(&age)),
-            "{age:?}"
-        );
-        assert!(widget.life_presence_fixed > 0 && widget.life_presence_fixed < 1_000);
+        {
+            let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 24));
+            let age = widget
+                .ocean_column
+                .and_then(|column| column.completion_elapsed_ms());
+            assert!(
+                age.is_some_and(|age| (800..1_400).contains(&age)),
+                "{age:?}"
+            );
+            assert!(widget.life_presence_fixed > 0 && widget.life_presence_fixed < 1_000);
+        }
 
         app.low_motion = true;
         let still = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 24));
@@ -7165,27 +7237,32 @@ mod tests {
         }
 
         let area = Rect::new(2, 5, 48, 5);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
+        // The widget borrows the app's row-cell cache; capture its facts and
+        // drop it before the interleaved viewport asserts below re-read app.
+        let (widget_transcript_area, last_rendered): (Rect, String) = {
+            let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
+            let rendered: String = widget
+                .lines
+                .last()
+                .expect("tail line rendered")
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            (widget.transcript_area, rendered)
+        };
         let transcript_area = app
             .viewport
             .last_transcript_area
             .expect("transcript geometry recorded");
         assert_eq!(transcript_area, Rect::new(2, 6, 48, 4));
-        assert_eq!(widget.transcript_area, transcript_area);
+        assert_eq!(widget_transcript_area, transcript_area);
         assert_eq!(app.viewport.last_transcript_visible, 4);
         assert_eq!(
             app.viewport.last_transcript_top + app.viewport.last_transcript_visible,
             app.viewport.last_transcript_total,
             "reserving the header must still resolve the real transcript to its newest tail"
         );
-        let last_rendered: String = widget
-            .lines
-            .last()
-            .expect("tail line rendered")
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
         let last_cached: String = app
             .viewport
             .transcript_cache
@@ -7247,13 +7324,14 @@ mod tests {
         }
 
         let area = Rect::new(2, 5, 48, 5);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-
-        assert_eq!(
-            widget.transcript_area,
-            Rect::new(2, 6, 48, 4),
-            "the header takes the first content row"
-        );
+        {
+            let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
+            assert_eq!(
+                widget.transcript_area,
+                Rect::new(2, 6, 48, 4),
+                "the header takes the first content row"
+            );
+        }
         assert_eq!(
             app.viewport.pinned_prompt_area,
             Some(Rect {

@@ -155,6 +155,18 @@ impl HandleStore {
         self.records.get(&handle.key())
     }
 
+    /// Host-owned named JSON, without minting a model-facing var_handle.
+    pub(crate) fn get_json_named(&self, namespace: &str, name: &str) -> Option<&Value> {
+        let record = self.records.get(&HandleKey {
+            session_id: namespace.to_string(),
+            name: name.to_string(),
+        })?;
+        match &record.value {
+            HandleValue::Json(value) => Some(value),
+            HandleValue::Text(_) => None,
+        }
+    }
+
     /// Remove all handles for `session_id`. Called when an agent's records
     /// are retired so resident transcript payloads are freed without waiting
     /// for a full session reset (#3885).

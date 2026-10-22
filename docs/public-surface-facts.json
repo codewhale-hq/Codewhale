@@ -105,14 +105,11 @@
       "edit",
       "file_search",
       "bash",
-      "agent",
-      "workflow",
       "todo_write",
       "create_goal",
-      "get_goal",
-      "update_goal",
       "task_shell_wait",
       "load_skill"
+
     ],
     "schemas": {
       "read": [

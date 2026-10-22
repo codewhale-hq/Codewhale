@@ -32,13 +32,17 @@ const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 /// tree. Mirrors the file_search tool so both blocking searches behave the same.
 const GREP_FILES_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Result of a grep match
+/// Result of a grep match. Empty context arrays are omitted on the
+/// wire (models request context in ~0% of calls); `default` keeps old
+/// payloads parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
     pub file: String,
     pub line_number: usize,
     pub line: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_before: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_after: Vec<String>,
 }
 
@@ -91,7 +95,7 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 100)"
+                    "description": "Maximum number of results to return (default: 100, max: 1000)"
                 }
             },
             "required": ["pattern"]
@@ -118,8 +122,12 @@ impl ToolSpec for GrepFilesTool {
             .unwrap_or(usize::MAX)
             .min(1000);
         let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
+        // Bounded like file_search's limit: an explicit value is the
+        // model's choice, but a runaway (or typo) must not mint an
+        // unbounded JSON array.
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
-            .unwrap_or(MAX_RESULTS);
+            .unwrap_or(MAX_RESULTS)
+            .clamp(1, 1000);
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -229,18 +237,37 @@ impl ToolSpec for GrepFilesTool {
                         return Ok(WalkControl::Continue);
                     }
 
-                    // Get relative path from workspace
+                    // Relative path from workspace. The walk root comes
+                    // back canonical while the workspace may not be
+                    // (macOS /var, Windows \\?\ verbatim paths), so
+                    // canonicalize both sides before falling back to
+                    // the absolute path.
                     let relative_path = file_path
                         .strip_prefix(&workspace)
                         .ok()
+                        .map(|rel| rel.to_string_lossy().to_string())
                         .or_else(|| {
                             workspace_canonical
                                 .as_deref()
                                 .and_then(|canonical| file_path.strip_prefix(canonical).ok())
+                                .map(|rel| rel.to_string_lossy().to_string())
                         })
-                        .unwrap_or(file_path)
-                        .to_string_lossy()
-                        .to_string();
+                        .or_else(|| {
+                            // Windows verbatim roots (\\?\C:\ws) canonicalize
+                            // the workspace but not the walked file path, so
+                            // the strip above can still miss. Canonicalize the
+                            // file too before giving up.
+                            let ws = workspace_canonical
+                                .clone()
+                                .or_else(|| workspace.canonicalize().ok());
+                            let fp = file_path.canonicalize().ok();
+                            ws.zip(fp).and_then(|(ws, fp)| {
+                                fp.strip_prefix(&ws)
+                                    .ok()
+                                    .map(|rel| rel.to_string_lossy().to_string())
+                            })
+                        })
+                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
                     let budget = max_results.saturating_sub(results.len());
                     let (file_matches, overflowed) = match search_file_streaming(
@@ -278,15 +305,45 @@ impl ToolSpec for GrepFilesTool {
                 .map(|item| grep_match_to_json(item, context_lines))
                 .collect();
 
+            // Echolocation sounding: chart the matched dirs (sorted, capped)
+            // so the model sees each match's podmates without a follow-up
+            // list. Computed here, inside the blocking worker, with the
+            // workspace already at hand.
+            let matched_files: Vec<String> = results.iter().map(|item| item.file.clone()).collect();
+            let vis = crate::tools::echolocation::PodVisibility {
+                include: &include_patterns,
+                exclude: &exclude_patterns,
+                extensions: &[],
+                glob_root: &search_path,
+                gitignore: false,
+            };
+            let (pods, pods_omitted) =
+                crate::tools::echolocation::sound_match_pods(&workspace, &matched_files, &vis);
+            let pods_json: Vec<Value> = pods
+                .iter()
+                .map(|pod| {
+                    json!({
+                        "dir": pod.dir,
+                        "mates": pod.mates,
+                        "mate_total": pod.mate_total,
+                    })
+                })
+                .collect();
+
             // Build result. When context_lines == 1, return the single context
             // line as a string instead of a one-item array. That keeps the common
             // "show just the adjacent line" case easy for model callers to read.
-            let mut output = json!({
-                "matches": matches_json,
-                "total_matches": total_matches,
-                "files_searched": files_searched,
-                "truncated": truncated,
-            });
+            // json! would to_value() these already-built arrays and deep-copy
+            // every match and pod. Insert them by move; key order matches the
+            // previous object because serde_json preserves insertion order.
+            let mut built = serde_json::Map::new();
+            built.insert("matches".to_owned(), Value::Array(matches_json));
+            built.insert("total_matches".to_owned(), Value::from(total_matches));
+            built.insert("files_searched".to_owned(), Value::from(files_searched));
+            built.insert("truncated".to_owned(), Value::from(truncated));
+            built.insert("pods".to_owned(), Value::Array(pods_json));
+            built.insert("pods_omitted".to_owned(), Value::from(pods_omitted));
+            let mut output = Value::Object(built);
             if truncated {
                 output["max_results"] = json!(max_results);
             }
@@ -392,6 +449,8 @@ fn search_file_streaming(
     // lines still needed). Entries complete in FIFO order.
     let mut pending: VecDeque<(usize, usize)> = VecDeque::new();
     let mut line_idx = 0usize;
+    // True when a match exists past the collected budget, so the caller
+    // can report truncation honestly instead of inferring it.
     let mut overflowed = false;
 
     loop {
@@ -429,9 +488,11 @@ fn search_file_streaming(
             pending.pop_front();
         }
 
-        if matches.len() >= budget {
-            overflowed = overflowed || regex.is_match(line);
-        } else if regex.is_match(line) {
+        // Past the budget we keep testing but stop collecting; the
+        // first surplus match proves the cut. With nothing pending (no
+        // after-context owed) we can stop scanning immediately.
+        let is_match = regex.is_match(line);
+        if matches.len() < budget && is_match {
             matches.push(GrepMatch {
                 file: relative_path.to_string(),
                 line_number: line_idx + 1,
@@ -441,6 +502,11 @@ fn search_file_streaming(
             });
             if context_lines > 0 {
                 pending.push_back((matches.len() - 1, context_lines));
+            }
+        } else if is_match {
+            overflowed = true;
+            if pending.is_empty() {
+                break;
             }
         }
 

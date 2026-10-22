@@ -174,9 +174,7 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     runtime.spawn_depth = spec.spawn_depth;
     runtime.allow_shell = false;
     runtime.accept_edits = false;
-    runtime.step_api_timeout = if mode == "timeout" {
-        Duration::from_millis(100)
-    } else if mode == "work-timeout" {
+    runtime.step_api_timeout = if mode == "work-timeout" {
         // Past the 6s work deadline, and bounding the held hand-back call
         // no tighter than the 9s hard deadline already does.
         Duration::from_secs(10)
@@ -418,8 +416,15 @@ async fn budget_handback_turn_failure_and_timeout_do_not_add_worker_retries() {
         ("timeout", "report deadline expired"),
     ] {
         let mut fixture = fixture(mode, 15, 1).await;
+        tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
+            .await
+            .expect("report request must reach the fixture");
         let result = fixture.finish().await;
-        assert_eq!(fixture.requests.lock().unwrap().len(), 2);
+        assert_eq!(
+            fixture.requests.lock().unwrap().len(),
+            2,
+            "{mode}: {result:?}"
+        );
         assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
         assert!(
             result.result.as_deref().unwrap().contains(reason),

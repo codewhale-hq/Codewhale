@@ -759,3 +759,33 @@ surfaces = { tui = "preview" }
 since = "0.10.2"
 docs = "docs/PLUGINS.md"
 owner = "crates/tui/src/plugins/mutation.rs"
+
+[[feature]]
+id = "fork-prefix-inheritance"
+name = "Fork prefix inheritance"
+summary = "Allows matching first-level Chat Completions forks to reuse a parent request header."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "0.10.2"
+docs = "docs/CACHE.md#fork-prefix-inheritance"
+owner = "crates/tui/src/core/engine/turn_loop/preparation.rs"
+
+[[feature]]
+id = "fork-trial-diagnostics"
+name = "Fork trial diagnostics"
+summary = "Opt-in JSON stderr observations of classified fork decisions and actual first-response cache usage."
+status = "flagged"
+surfaces = { tui = "preview", api = "preview" }
+since = "0.10.2"
+docs = "docs/CACHE.md#fork-trial-diagnostics"
+owner = "crates/runtime/src/prompt_zones.rs"
+
+[[feature]]
+id = "source-navigation-echoes"
+name = "Source navigation echoes"
+summary = "File and search results include bounded source symbols, neighboring files and change attribution."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "0.10.2"
+docs = "docs/ECHOLOCATION.md"
+owner = "crates/tui/src/tools/echolocation.rs"

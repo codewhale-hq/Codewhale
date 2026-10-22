@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::skills::{
-    Skill, SkillDiscoveryMode, SkillSource, discover_for_workspace_and_dir_with_mode_and_plugins,
+    MAX_SKILL_DESCRIPTION_CHARS, Skill, SkillDiscoveryMode, SkillSource,
+    discover_for_workspace_and_dir_with_mode_and_plugins,
     discover_in_workspace_with_mode_and_plugins, skill_directories_for_workspace_and_dir,
     skills_directories_for_mode,
 };
@@ -104,9 +105,9 @@ impl ToolSpec for LoadSkillTool {
         .into_enabled();
 
         // Listing mode: empty name, "*", or "list" returns the full registry (#4651).
-        // A `query` filters that listing over the same routing metadata the
-        // ambient index carries, so a truncated index does not force the model
-        // to pull every skill to find one.
+        // Cap descriptions on the first 100 rows; retain all names so the model
+        // can discover every installed skill without guessing. A `query` filters
+        // over the same routing metadata the ambient index carries.
         let query = input
             .get("query")
             .and_then(Value::as_str)
@@ -136,11 +137,25 @@ impl ToolSpec for LoadSkillTool {
             } else {
                 format!("Skills matching {:?} ({}):\n", query, skills.len())
             };
-            for skill in skills {
-                if skill.description.trim().is_empty() {
+            for (index, skill) in skills.iter().enumerate() {
+                let description = if index < 100 {
+                    skill.description.trim()
+                } else {
+                    ""
+                };
+                if description.is_empty() {
                     listing.push_str(&format!("  - {}\n", skill.name));
                 } else {
-                    listing.push_str(&format!("  - {} — {}\n", skill.name, skill.description));
+                    let capped: String = description
+                        .chars()
+                        .take(MAX_SKILL_DESCRIPTION_CHARS)
+                        .collect();
+                    let marker = if capped.len() < description.len() {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    listing.push_str(&format!("  - {} — {capped}{marker}\n", skill.name));
                 }
             }
             return Ok(ToolResult::success(listing));
@@ -832,7 +847,11 @@ mod tests {
     }
     #[tokio::test]
     async fn model_load_and_listing_obey_independent_invocation_gates() {
+        let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path().join("home"));
+        let _cw_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("cw-home"));
         let workspace = tmp.path().join("workspace");
         crate::test_support::trust_workspace(&workspace);
         let root = workspace.join(".codewhale/skills");
@@ -882,5 +901,54 @@ mod tests {
                 .content
                 .contains("secret steps for model")
         );
+    }
+    #[tokio::test]
+    async fn execute_listing_caps_rows_and_descriptions_honestly() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path().join("home"));
+        let _cw_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("cw-home"));
+        let workspace = tmp.path().to_path_buf();
+        crate::test_support::trust_workspace(&workspace);
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        let long = "d".repeat(500);
+        for index in 0..105 {
+            let description = if index == 0 { long.as_str() } else { "Short." };
+            write_skill(
+                &skills_dir,
+                &format!("skill-{index:03}"),
+                description,
+                "Body.",
+            );
+        }
+
+        let context = ToolContext::new(workspace);
+        let result = LoadSkillTool
+            .execute(json!({"name": "list"}), &context)
+            .await
+            .expect("listing should succeed");
+        assert!(
+            result.content.contains("Available skills (105)"),
+            "{}",
+            result.content
+        );
+        for index in 0..105 {
+            assert!(
+                result
+                    .content
+                    .lines()
+                    .any(|line| { line.starts_with(&format!("  - skill-{index:03}")) }),
+                "missing skill-{index:03}: {}",
+                result.content
+            );
+        }
+        let capped: String = "d".repeat(400);
+        assert!(
+            result.content.contains(&format!("skill-000 — {capped}…")),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains(&long), "description must shorten");
     }
 }

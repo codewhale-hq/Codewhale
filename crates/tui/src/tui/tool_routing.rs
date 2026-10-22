@@ -390,6 +390,7 @@ fn register_tool_cell(
         // cell index.
         app.active_tool_details.insert(tool_id.to_string(), record);
     }
+    app.bump_details_epoch();
 }
 
 /// Per-record ceiling on a retained tool output (#5472 finding 3).
@@ -451,6 +452,7 @@ fn store_tool_detail_output(
         detail.output = Some(payload);
     }
     release_oldest_tool_detail_outputs(app);
+    app.bump_details_epoch();
 }
 
 /// Hold the retained-output total under [`TOOL_DETAIL_TOTAL_BUDGET_BYTES`] by
@@ -811,6 +813,7 @@ pub(super) fn handle_tool_call_complete(
     // live in the active cell or in finalized history; the path is the same.
     if let Some((cell_index, entry_index)) = app.exploring_entries.remove(id) {
         app.tool_cells.remove(id);
+        app.bump_details_epoch();
         store_tool_detail_output(app, id, cell_index, result);
         if let Some(HistoryCell::Tool(ToolCell::Exploring(cell))) =
             app.cell_at_virtual_index_mut(cell_index)
@@ -849,6 +852,7 @@ pub(super) fn handle_tool_call_complete(
         push_orphan_tool_completion(app, id, name, result);
         return;
     };
+    app.bump_details_epoch();
 
     store_tool_detail_output(app, id, cell_index, result);
     let in_active = cell_index >= app.history.len();
@@ -1601,6 +1605,7 @@ fn push_orphan_tool_completion(
             },
         },
     );
+    app.bump_details_epoch();
 
     // The virtual-index rebase this path used to do inline now lives in
     // `App::add_message`, so every mid-turn history insert gets it — not just

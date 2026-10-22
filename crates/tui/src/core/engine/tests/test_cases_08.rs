@@ -313,6 +313,103 @@ async fn injected_model_duplicate_reads_both_execute_and_close_both_tool_ids() {
 }
 
 #[tokio::test]
+async fn native_navigation_tracks_only_returned_references_in_the_real_model_request() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    for expose in [false, true] {
+        let workspace = tempdir().expect("tempdir");
+        fs::write(
+            workspace.path().join("nav.rs"),
+            "fn wanted() {\n    let _ = \"PRIVATE_BODY\";\n}\n",
+        )
+        .unwrap();
+        let selection = if expose {
+            "return {selected: r.metadata.navigation ? r.metadata.navigation.symbols[0].read : null};"
+        } else {
+            "return {done: true};"
+        };
+        let code = format!(
+            "const r = await tools.call('read', {{path: 'nav.rs', limit: 1}}); {selection}"
+        );
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(
+                "navigation-program",
+                "execute_tools",
+                &serde_json::json!({"code": code}).to_string(),
+            ),
+            canned::simple_text_turn("Navigation received."),
+        ]));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let (mut engine, _handle) = Engine::new_with_model_client(
+            deterministic_engine_config(workspace.path()),
+            &Config::default(),
+            client,
+        );
+        let context = crate::tools::ToolContext::new(workspace.path());
+        let mut registry = crate::tools::ToolRegistry::new(context);
+        registry.register(std::sync::Arc::new(crate::tools::file_tool::ReadTool));
+        let mut tools = registry.to_api_tools_with_cache(true);
+        let mut compose = crate::tools::codemode::execute_tools_tool_definition();
+        compose.defer_loading = Some(false);
+        tools.push(compose);
+        let surface = test_tool_surface(&engine, registry, Some(tools), AppMode::Agent);
+        let mut turn = crate::core::turn::TurnContext::new(8);
+        let (status, error) = engine.run_turn(&mut turn, surface, None, None).await;
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+        let requests = mock.captured_requests();
+        assert_eq!(requests.len(), 2);
+        let delivered = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "navigation-program" => Some(content),
+                _ => None,
+            })
+            .expect("actual outer result in the second model request");
+        let payload: serde_json::Value = serde_json::from_str(delivered).unwrap();
+        assert!(payload["success"].as_bool().unwrap(), "{payload}");
+        assert!(
+            !delivered.contains("PRIVATE_BODY"),
+            "an intermediate read is not model delivery"
+        );
+        let state = serde_json::to_value(&engine.session.working_set).unwrap();
+        let refs = state["delivered_code_refs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if expose {
+            let selected = &payload["body"]["return"]["selected"];
+            assert_eq!(
+                selected["path"], "nav.rs",
+                "composition must return an actionable reference"
+            );
+            assert_eq!(
+                refs,
+                vec![selected.clone()],
+                "record exactly what survived outbound projection"
+            );
+            let mut restored = crate::working_set::WorkingSet::default();
+            restored.rebuild_from_messages(&engine.session.messages, workspace.path());
+            assert_eq!(
+                serde_json::to_value(restored).unwrap()["delivered_code_refs"],
+                serde_json::json!(refs),
+                "resume reconstructs delivered references from the logged conversation, not the physical cache"
+            );
+        } else {
+            assert!(
+                refs.is_empty(),
+                "hidden program reads must not seed delivery state"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn duplicate_raw_read_errors_each_touch_the_working_set() {
     use crate::llm_client::mock::{MockLlmClient, canned};
 

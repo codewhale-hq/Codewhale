@@ -1,6 +1,6 @@
 //! Project mapping tool for understanding codebase structure.
 
-use crate::utils::{is_key_file, project_tree, summarize_project};
+use crate::utils::{is_key_file, project_tree, summarize_key_files, summarize_project};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -17,6 +17,8 @@ struct ProjectMap {
     tree: String,
     summary: String,
     key_files: Vec<String>,
+    key_file_soundings: std::collections::BTreeMap<String, String>,
+    key_files_omitted: usize,
 }
 
 #[async_trait]
@@ -51,7 +53,15 @@ impl ToolSpec for ProjectMapTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let max_depth = optional_u64(&input, "max_depth", 3)? as usize;
-        let map = generate_project_map(&context.workspace, max_depth, context.follow_symlinks)?;
+        let workspace = context.workspace.clone();
+        let follow_symlinks = context.follow_symlinks;
+        let map = tokio::task::spawn_blocking(move || {
+            generate_project_map(&workspace, max_depth, follow_symlinks)
+        })
+        .await
+        .map_err(|error| {
+            ToolError::execution_failed(format!("project_map worker failed: {error}"))
+        })??;
         ToolResult::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
@@ -62,9 +72,9 @@ fn generate_project_map(
     follow_symlinks: bool,
 ) -> Result<ProjectMap, ToolError> {
     let tree = project_tree(root, max_depth, follow_symlinks);
-    let summary = summarize_project(root);
 
-    // For key_files, we can just do a quick scan since summarize_project doesn't return them directly anymore
+    // Reuse this observation for the summary only when both walks have the
+    // same symlink policy.
     let mut key_files = Vec::new();
     let mut builder = ignore::WalkBuilder::new(root);
     builder
@@ -84,9 +94,49 @@ fn generate_project_map(
         }
     }
 
+    // `follow_symlinks == true` keeps the original non-follow summary walk so
+    // symlinked key files never leak into the summary.
+    let summary = if follow_symlinks {
+        summarize_project(root)
+    } else {
+        summarize_key_files(key_files.clone())
+    };
+
+    // Echolocation sounding: one line of symbols per key file (sorted,
+    // capped), so the map says what lives where, not just what exists.
+    let (key_file_soundings, key_files_omitted) =
+        super::echolocation::sound_key_files(root, &key_files);
+
     Ok(ProjectMap {
         tree,
         summary,
         key_files,
+        key_file_soundings,
+        key_files_omitted,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn project_map_sounds_key_file_symbols() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\nfn serve() {}\n")
+            .expect("fixture");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").expect("fixture");
+        let context = ToolContext::new(dir.path().to_path_buf());
+        let result = ProjectMapTool
+            .execute(json!({}), &context)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        let body: Value = serde_json::from_str(&result.content).expect("json result");
+        assert_eq!(
+            body["key_file_soundings"]["main.rs"],
+            "2 symbols: fn main:1, fn serve:2"
+        );
+        assert!(body["key_file_soundings"].get("Cargo.toml").is_none());
+    }
 }

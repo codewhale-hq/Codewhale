@@ -1525,6 +1525,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_navigation_resolves_real_source_and_refuses_stale_or_escaped_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "const LURE: &str = r#\"\nfn forged() {}\n\"#;\npub fn wanted() -> &'static str {\n    \"NAV_BODY\"\n}\nfn sibling() {}\n";
+        std::fs::write(dir.path().join("nav.rs"), source).unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new()
+            .with_tool(Arc::new(ReadTool))
+            .build(context.clone());
+        let code = "const r = await tools.call('read', {path: 'nav.rs', limit: 1}); return r.metadata.navigation || null;";
+        let result = execute_tools_tool(&json!({"code": code}), &registry, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        let body: Value = serde_json::from_str(&result.content).unwrap();
+        let navigation = &body["body"]["return"];
+        assert_eq!(
+            navigation["producer"], "rust_syntax_v1",
+            "read must publish revision-qualified syntax evidence"
+        );
+        let symbols = navigation["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.iter().any(|symbol| symbol["name"] == "forged"),
+            "a function-looking raw string is not a declaration"
+        );
+        let reference = symbols
+            .iter()
+            .find(|symbol| symbol["name"] == "wanted")
+            .unwrap()["read"]
+            .clone();
+        assert_eq!(reference["path"], "nav.rs");
+        assert_eq!(reference["offset"], 4);
+        assert_eq!(reference["limit"], 3);
+        let wanted = ReadTool.execute(reference.clone(), &context).await.unwrap();
+        assert!(
+            wanted
+                .content
+                .starts_with("pub fn wanted() -> &'static str {\n    \"NAV_BODY\"\n}"),
+            "{}",
+            wanted.content
+        );
+        assert!(
+            !wanted
+                .content
+                .split("\n\n[")
+                .next()
+                .unwrap()
+                .contains("fn sibling")
+        );
+
+        let child = context.clone().with_state_namespace("navigation-child");
+        let child_read = ReadTool.execute(reference.clone(), &child).await.unwrap();
+        assert_eq!(
+            child_read.metadata.as_ref().unwrap()["navigation"],
+            *navigation,
+            "shared physical knowledge is revision-stable, not parent delivery state"
+        );
+        let child_workspace = dir.path().join("child");
+        std::fs::create_dir(&child_workspace).unwrap();
+        let restricted =
+            ToolContext::new(&child_workspace).with_runtime_services(context.runtime.clone());
+        let mut escaped = reference.clone();
+        escaped["path"] = json!("../nav.rs");
+        assert!(
+            matches!(
+                ReadTool.execute(escaped, &restricted).await,
+                Err(ToolError::PathEscape { .. })
+            ),
+            "a warmed shared cache must not grant workspace access"
+        );
+
+        std::fs::write(
+            dir.path().join("nav.rs"),
+            source.replace("NAV_BODY", "NAV_EDIT"),
+        )
+        .unwrap();
+        let stale = ReadTool
+            .execute(reference, &child)
+            .await
+            .expect_err("same-size external edit must invalidate the reference");
+        assert!(stale.to_string().contains("stale"), "{stale}");
+        let refreshed = ReadTool
+            .execute(json!({"path": "nav.rs", "limit": 1}), &child)
+            .await
+            .unwrap();
+        assert_ne!(
+            refreshed.metadata.as_ref().unwrap()["navigation"]["source_revision"],
+            navigation["source_revision"]
+        );
+    }
+
+    #[tokio::test]
     async fn program_composes_nested_read_and_returns_receipt() {
         let (_dir, note) = workspace_with_note();
         let workspace = note.parent().unwrap().to_path_buf();

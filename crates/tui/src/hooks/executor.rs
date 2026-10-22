@@ -6786,6 +6786,10 @@ command = "echo project"
         // here would never fire. This table is checked in both directions, so
         // a rename fails on the missing entry and a classifier change fails on
         // the mismatched category.
+        // Token diet: agent+workflow and get/update_goal are deferred by
+        // default (discoverable via tool_search), so they left the eager
+        // table; their classifications are pinned with the other
+        // deferred tools below instead.
         const EXPECTED: &[(&str, &str)] = &[
             ("read", "safe"),
             ("write", "file_write"),
@@ -6794,15 +6798,8 @@ command = "echo project"
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
             ("bash", "shell"),
-            // The router itself touches nothing a hook needs to gate.
-            ("agent", "other"),
-            ("workflow", "other"),
             ("todo_write", "safe"),
-            // Goal controls retain their existing hook classification when
-            // promoted from deferred discovery to the eager catalog.
             ("create_goal", "other"),
-            ("get_goal", "other"),
-            ("update_goal", "other"),
             ("task_shell_wait", "other"),
             // Reads the skill registry, not caller-named paths, so it keeps
             // the classification it already had as a deferred tool. Making it
@@ -6827,6 +6824,14 @@ command = "echo project"
                  it so this table keeps describing what actually ships."
             );
         }
+
+        // Deferred by default, still classified: the router touches
+        // nothing a hook needs to gate, and the goal controls keep
+        // their classification when promoted to eager.
+        assert_eq!(tool_category_for("agent", None), "other");
+        assert_eq!(tool_category_for("workflow", None), "other");
+        assert_eq!(tool_category_for("get_goal", None), "other");
+        assert_eq!(tool_category_for("update_goal", None), "other");
 
         // The shell surface.
         assert_eq!(tool_category_for("Bash", None), "shell");

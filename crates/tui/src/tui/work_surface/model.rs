@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
-use std::path::{Component, Path};
+use std::path::Path;
 use std::time::Instant;
 
 use codewhale_localization::{Locale, MessageId, tr};
@@ -350,6 +350,9 @@ pub struct WorkSurfaceState {
     /// TASKS view. The FILES view and its tab badge read it, so the history
     /// is scanned once per frame, not once per view (#6565).
     pub(super) file_activity: SettledFileActivity,
+    /// Cache key that produced `file_activity`. `None` until the first
+    /// [`settled_file_activity`] call; kept in lockstep by its epoch checks.
+    pub(super) file_activity_stamp: Option<FileActivityStamp>,
     pub top_height: u16,
     pub side_width: u16,
     pub(super) resizing: bool,
@@ -446,6 +449,7 @@ impl WorkSurfaceState {
             terminal: super::terminal::TerminalDock::default(),
             explicit_view: false,
             file_activity: SettledFileActivity::default(),
+            file_activity_stamp: None,
             top_height: top_height.clamp(TOP_HEIGHT_MIN, TOP_HEIGHT_MAX),
             side_width: side_width.clamp(SIDE_WIDTH_MIN, SIDE_WIDTH_MAX),
             resizing: false,
@@ -621,8 +625,7 @@ pub(super) fn project(app: &mut App) -> Vec<WorkRow> {
     freeze_terminal_agent_elapsed(app);
     let agents = agent_rows(app);
     let coordination = coordination_row(app);
-    let activity = settled_file_activity(app);
-    app.work_surface.file_activity = activity.clone();
+    let activity = settled_file_activity(app).clone();
     let capture = app.runtime_services.work.as_ref().map(|work| {
         work.try_capture(app.current_session_id.as_deref())
             .map(|snapshot| snapshot.map(|snapshot| snapshot.graph))
@@ -1257,7 +1260,7 @@ struct RankedWorkRow {
 }
 
 /// Complete unique targets; only the aggregate summary presentation is capped.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub(super) struct SettledFileActivity {
     pub(super) summary: FileActivitySummary,
     pub(super) read: Vec<String>,
@@ -2311,22 +2314,63 @@ const fn agent_mark(bucket: WorkBucket) -> &'static str {
     }
 }
 
-pub(super) fn settled_file_activity(app: &App) -> SettledFileActivity {
+/// Cache key for the settled file-activity aggregates: every input
+/// [`compute_settled_file_activity`] reads. History cell and active-entry
+/// mutations bump `history_version`; detail-map mutations bump
+/// `details_epoch` ([`App::bump_details_epoch`]). A stale FILES view means
+/// one of these changed without its bump.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub(super) struct FileActivityStamp {
+    history_version: u64,
+    details_epoch: u64,
+    inline_diff_mode: InlineDiffMode,
+    workspace: std::path::PathBuf,
+}
+
+/// Settled file-activity aggregates for the FILES view and tab badges,
+/// computed once per input change instead of once per frame (#6565).
+pub(super) fn settled_file_activity(app: &mut App) -> &SettledFileActivity {
+    let stamp = FileActivityStamp {
+        history_version: app.history_version,
+        details_epoch: app.details_epoch,
+        inline_diff_mode: app.inline_diff_mode,
+        workspace: app.workspace.clone(),
+    };
+    if app.work_surface.file_activity_stamp.as_ref() != Some(&stamp) {
+        app.work_surface.file_activity = compute_settled_file_activity(app);
+        app.work_surface.file_activity_stamp = Some(stamp);
+    }
+    &app.work_surface.file_activity
+}
+
+/// Uncached full scan of tool detail records; the correctness reference the
+/// cache above must always reproduce.
+pub(super) fn compute_settled_file_activity(app: &App) -> SettledFileActivity {
     let mut activity = SettledFileActivity {
         inline_diff_mode: app.inline_diff_mode,
         ..SettledFileActivity::default()
     };
-    let mut seen = HashSet::new();
-    for index in 0..app.virtual_cell_count() {
+    // Visit only cells with details, in transcript order. Committed details win;
+    // stable sorting preserves the resolver's first active match at each index.
+    let mut records: Vec<_> = app
+        .tool_details_by_cell
+        .iter()
+        .map(|(&index, detail)| (index, detail))
+        .chain(app.active_tool_details.values().filter_map(|detail| {
+            let &index = app.tool_cells.get(&detail.tool_id)?;
+            (!app.tool_details_by_cell.contains_key(&index)).then_some((index, detail))
+        }))
+        .collect();
+    records.sort_by_key(|(index, _)| *index);
+    records.dedup_by_key(|(index, _)| *index);
+    let mut seen = HashSet::with_capacity(records.len());
+    for (index, detail) in records {
         let Some(HistoryCell::Tool(cell)) = app.cell_at_virtual_index(index) else {
             continue;
         };
         if !cell.is_success() {
             continue;
         }
-        let Some(detail) = app.tool_detail_record_for_cell(index) else {
-            continue;
-        };
         let activity_tool_name = canonical_action_alias(&detail.tool_name, &detail.input);
         let kind = if matches!(cell, ToolCell::PatchSummary(_)) {
             Some(FileActivityKind::Write)
@@ -2360,9 +2404,9 @@ pub(super) fn settled_file_activity(app: &App) -> SettledFileActivity {
             FileActivityKind::Write => &mut activity.write,
         };
         if let Some(target) = target
-            && !details.contains(&target)
+            && !details.iter().any(|existing| existing.as_str() == &*target)
         {
-            details.push(target);
+            details.push(target.into_owned());
         }
     }
     activity
@@ -2479,12 +2523,12 @@ pub(super) fn settled_mutation_body(
     }
 }
 
-fn activity_target(
-    workspace: &Path,
+fn activity_target<'a>(
+    workspace: &'a Path,
     tool_name: &str,
-    input: &serde_json::Value,
+    input: &'a serde_json::Value,
     kind: FileActivityKind,
-) -> Option<String> {
+) -> Option<std::borrow::Cow<'a, str>> {
     if tool_name == "apply_patch"
         && let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(input)
     {
@@ -2495,7 +2539,7 @@ fn activity_target(
             .take(4)
             .collect::<Vec<_>>();
         if !targets.is_empty() {
-            return Some(targets.join(", "));
+            return Some(std::borrow::Cow::Owned(targets.join(", ")));
         }
     }
     let keys: &[&str] = match kind {
@@ -2508,37 +2552,70 @@ fn activity_target(
             return None;
         }
         if kind == FileActivityKind::Search && *key != "path" {
-            return Some(safe_pattern(value));
+            return Some(std::borrow::Cow::Owned(safe_pattern(value)));
         }
         privacy_safe_path(workspace, value)
     })
 }
 
-fn privacy_safe_path(workspace: &Path, raw: &str) -> Option<String> {
-    let path = Path::new(raw);
-    let normalized_raw = raw.replace('\\', "/");
-    let normalized_workspace = workspace.to_string_lossy().replace('\\', "/");
-    let relative = if path.is_absolute() || normalized_raw.starts_with('/') {
+fn privacy_safe_path<'a>(workspace: &'a Path, raw: &'a str) -> Option<std::borrow::Cow<'a, str>> {
+    // Resolve against the raw spelling (drive/verbatim prefixes) exactly as
+    // before; normalization only rewrites separators.
+    let absolute = Path::new(raw).is_absolute() || raw.starts_with('/');
+    if raw.contains('\\') {
+        // Rare: separator normalization allocates, so the target owns bytes.
+        let normalized = raw.replace('\\', "/");
+        let relative = relative_workspace_path(workspace, &normalized, absolute)?;
+        (!relative.is_empty()).then(|| std::borrow::Cow::Owned(relative.to_string()))
+    } else {
+        let relative = relative_workspace_path(workspace, raw, absolute)?;
+        (!relative.is_empty()).then(|| std::borrow::Cow::Borrowed(relative))
+    }
+}
+
+/// Workspace-relative `/`-separated slice of `normalized`, or `None` when the
+/// path is absolute outside the workspace or carries root/drive/`..` shapes.
+/// `relative` is backslash-free UTF-8, so the component shapes
+/// `Path::components` would surface are exactly: a leading root, a Windows
+/// drive prefix, and `..` traversal segments. Scanning bytes rejects the same
+/// inputs without iterating components or allocating.
+fn relative_workspace_path<'a>(
+    workspace: &'a Path,
+    normalized: &'a str,
+    absolute: bool,
+) -> Option<&'a str> {
+    let relative = if absolute {
+        let lossy = workspace.to_string_lossy();
+        let normalized_workspace = if lossy.contains('\\') {
+            std::borrow::Cow::Owned(lossy.replace('\\', "/"))
+        } else {
+            lossy
+        };
         let workspace_prefix = normalized_workspace.trim_end_matches('/');
-        if normalized_raw == workspace_prefix {
+        if normalized == workspace_prefix {
             ""
         } else {
-            normalized_raw.strip_prefix(&format!("{workspace_prefix}/"))?
+            normalized
+                .strip_prefix(workspace_prefix)
+                .and_then(|after| after.strip_prefix('/'))?
         }
     } else {
-        normalized_raw.as_str()
+        normalized
     };
-    let relative = Path::new(relative);
-    if relative.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
+    if relative.starts_with('/') {
         return None;
     }
-    let display = relative.to_string_lossy().replace('\\', "/");
-    (!display.is_empty()).then_some(display)
+    if cfg!(windows)
+        && relative.len() >= 2
+        && relative.as_bytes()[1] == b':'
+        && relative.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return None;
+    }
+    if relative.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    Some(relative)
 }
 
 fn safe_pattern(raw: &str) -> String {
@@ -3154,6 +3231,7 @@ mod tests {
         assert!(!names_whole("anything", ""));
     }
     use crate::tui::app::TuiOptions;
+    use crate::tui::history::ToolStatus;
     use crate::tui::tool_routing::{handle_tool_call_complete, handle_tool_call_started};
     use crate::work_graph::{CompatTodoBinding, OperationBinding, WorkNodeId};
 
@@ -3963,7 +4041,7 @@ mod tests {
             app.flush_active_cell();
         }
 
-        let activity = settled_file_activity(&app);
+        let activity = settled_file_activity(&mut app).clone();
         assert_eq!(
             activity.summary,
             FileActivitySummary {
@@ -3980,6 +4058,201 @@ mod tests {
             activity.write,
             ["src/new.rs", "src/edit.rs", "src/patch.rs"]
         );
+    }
+
+    fn force_tool_status(cell: &mut ToolCell, status: ToolStatus) {
+        match cell {
+            ToolCell::Generic(generic) => generic.status = status,
+            ToolCell::Exec(exec) => exec.status = status,
+            ToolCell::PatchSummary(patch) => patch.status = status,
+            // Reads/lists explore: one aggregate cell per turn whose status
+            // derives from its entries, so flip them all.
+            ToolCell::Exploring(explore) => {
+                for entry in explore.entries.iter_mut() {
+                    entry.status = status;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every input class the settled file-activity cache keys on must
+    /// invalidate it. Each step mutates through the real funnel (routing,
+    /// completion, flush, in-place cell mutation, truncation, session
+    /// clear, mode toggle) and then asserts the cached aggregates equal a
+    /// fresh uncached recompute — a missed epoch bump anywhere in that
+    /// chain surfaces here as a stale mismatch, never as a stale view.
+    #[test]
+    fn settled_file_activity_cache_invalidates_on_every_input_class() {
+        let mut app = test_app();
+
+        // Registration + completion + flush: a committed read appears.
+        handle_tool_call_started(
+            &mut app,
+            "cache-read-1",
+            "File",
+            &serde_json::json!({"action": "read", "path": "src/one.rs"}),
+        );
+        handle_tool_call_complete(
+            &mut app,
+            "cache-read-1",
+            "File",
+            &Ok(ToolResult::success("ok")),
+        );
+        app.flush_active_cell();
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 1);
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+
+        // Second tool through the same funnel: aggregates move 1 -> 2.
+        handle_tool_call_started(
+            &mut app,
+            "cache-read-2",
+            "File",
+            &serde_json::json!({"action": "read", "path": "src/two.rs"}),
+        );
+        handle_tool_call_complete(
+            &mut app,
+            "cache-read-2",
+            "File",
+            &Ok(ToolResult::success("ok")),
+        );
+        app.flush_active_cell();
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 2);
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+
+        // In-place committed cell mutation (`history_version` class): the
+        // flipped status drops that record from the aggregates. Locate the
+        // cell through the record map itself — index 0 assumptions don't
+        // survive seeded cells in agent mode.
+        let flip_index = app
+            .tool_details_by_cell
+            .iter()
+            .find(|(_, detail)| {
+                detail.input.get("path").and_then(serde_json::Value::as_str) == Some("src/one.rs")
+            })
+            .map(|(index, _)| *index)
+            .expect("read-1 record to be committed");
+        if let Some(HistoryCell::Tool(cell)) = app.cell_at_virtual_index_mut(flip_index) {
+            force_tool_status(cell, ToolStatus::Failed);
+        }
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 1);
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+
+        // Truncation drops everything.
+        app.truncate_history_to(0);
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 0);
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+
+        // Session-switch clear (mirrors `ui/apply.rs`: maps drained + bump).
+        handle_tool_call_started(
+            &mut app,
+            "cache-read-3",
+            "File",
+            &serde_json::json!({"action": "read", "path": "src/three.rs"}),
+        );
+        handle_tool_call_complete(
+            &mut app,
+            "cache-read-3",
+            "File",
+            &Ok(ToolResult::success("ok")),
+        );
+        app.flush_active_cell();
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 1);
+        app.tool_cells.clear();
+        app.tool_details_by_cell.clear();
+        app.active_tool_details.clear();
+        app.bump_details_epoch();
+        assert_eq!(settled_file_activity(&mut app).summary.files_read, 0);
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+
+        // Inline-diff mode ships inside the cached payload itself.
+        app.inline_diff_mode = InlineDiffMode::Off;
+        assert_eq!(
+            settled_file_activity(&mut app).inline_diff_mode,
+            InlineDiffMode::Off
+        );
+        let expect = compute_settled_file_activity(&app);
+        assert_eq!(*settled_file_activity(&mut app), expect);
+    }
+
+    /// Deterministic random walk over the same mutation funnels: after
+    /// every step the cache must equal a fresh recompute. Catches missed
+    /// epoch bumps in orderings the per-class test never reaches.
+    #[test]
+    fn settled_file_activity_cache_tracks_random_mutation_sequences() {
+        let mut app = test_app();
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 33
+        };
+        let mut serial = 0usize;
+        for step in 0..240 {
+            let op = next() % 7;
+            match op {
+                0 | 1 => {
+                    let id = format!("rand-{serial}");
+                    serial += 1;
+                    handle_tool_call_started(
+                        &mut app,
+                        &id,
+                        "File",
+                        &serde_json::json!({"action": "read", "path": format!("src/{id}.rs")}),
+                    );
+                    if next() % 2 == 0 {
+                        handle_tool_call_complete(
+                            &mut app,
+                            &id,
+                            "File",
+                            &Ok(ToolResult::success("ok")),
+                        );
+                    }
+                }
+                2 => app.flush_active_cell(),
+                3 => {
+                    let len = app.history.len();
+                    if len > 0 {
+                        app.truncate_history_to((next() as usize) % (len + 1));
+                    }
+                }
+                4 => {
+                    let len = app.history.len();
+                    if len > 0 {
+                        let index = (next() as usize) % len;
+                        let target = if next() % 2 == 0 {
+                            ToolStatus::Failed
+                        } else {
+                            ToolStatus::Success
+                        };
+                        if let Some(HistoryCell::Tool(cell)) = app.cell_at_virtual_index_mut(index)
+                        {
+                            force_tool_status(cell, target);
+                        }
+                    }
+                }
+                5 => {
+                    app.inline_diff_mode = match next() % 3 {
+                        0 => InlineDiffMode::Full,
+                        1 => InlineDiffMode::Summary,
+                        _ => InlineDiffMode::Off,
+                    };
+                }
+                _ => {}
+            }
+            let expect = compute_settled_file_activity(&app);
+            assert_eq!(
+                *settled_file_activity(&mut app),
+                expect,
+                "cache diverged from fresh recompute at step {step} (op {op})"
+            );
+        }
     }
 
     #[test]
@@ -4004,7 +4277,7 @@ mod tests {
         handle_tool_call_complete(&mut app, "file-multi", "File", &Ok(result));
         app.flush_active_cell();
 
-        let activity = settled_file_activity(&app);
+        let activity = settled_file_activity(&mut app).clone();
         assert_eq!(activity.summary.files_written, 4);
         let write_row = activity_rows(activity)
             .into_iter()
@@ -4213,7 +4486,7 @@ mod tests {
                 app.flush_active_cell();
             }
         }
-        app.work_surface.file_activity = settled_file_activity(&app);
+        settled_file_activity(&mut app);
         assert!(app.work_surface.file_activity.mutations.is_empty());
         assert_eq!(files_touched_count(&mut app), 26);
         let rows = files_rows(&mut app);

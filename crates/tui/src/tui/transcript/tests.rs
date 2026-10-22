@@ -250,6 +250,115 @@ fn spacer_rows_after_cell(cache: &TranscriptViewCache, target_cell: usize) -> us
 }
 
 #[test]
+fn revision_key_short_circuits_the_unchanged_prefix_scan() {
+    let cells = vec![
+        user_cell("first prompt"),
+        assistant_cell("first answer", false),
+        user_cell("second prompt"),
+    ];
+    let revisions = vec![1u64, 2, 3];
+    let options = TranscriptRenderOptions::default();
+
+    let mut cache = TranscriptViewCache::new();
+    cache.note_revision_key(24);
+    cache.ensure(&cells, &revisions, 40, options);
+    let after_first = cache.cells_rendered;
+    assert!(after_first >= 3);
+    // The very first frame is layout-cold (width changes), so it renders
+    // everything through the layout path without running the scan.
+    assert_eq!(cache.revision_scan_runs, 0);
+
+    // Same key, same revisions, warm layout: a scan here would find nothing,
+    // but the key match must skip it entirely — the counter stays put.
+    cache.note_revision_key(24);
+    cache.ensure(&cells, &revisions, 40, options);
+    assert_eq!(cache.cells_rendered, after_first);
+    assert_eq!(cache.revision_scan_runs, 0);
+
+    // A changed key re-runs the authoritative scan. The revisions really are
+    // identical, so it re-renders nothing — the key accelerates but never
+    // invalidates.
+    cache.note_revision_key(25);
+    cache.ensure(&cells, &revisions, 40, options);
+    assert_eq!(cache.cells_rendered, after_first);
+    assert_eq!(cache.revision_scan_runs, 1);
+
+    // An unkeyed frame clears key acceptance, so the next keyed frame scans
+    // again even though the key value repeats.
+    cache.ensure(&cells, &revisions, 40, options);
+    assert_eq!(cache.revision_scan_runs, 2);
+    cache.note_revision_key(25);
+    cache.ensure(&cells, &revisions, 40, options);
+    assert_eq!(cache.revision_scan_runs, 3);
+    assert_eq!(cache.cells_rendered, after_first);
+}
+
+/// The caller-side whole-frame skip is allowed only when every `ensure_iter`
+/// input is pinned equal to the accepted frame; each invalidator below must
+/// independently force the full path (#6652).
+#[test]
+fn keyed_skip_available_requires_every_cache_input_to_match() {
+    use crate::tui::history::TranscriptFold;
+    use std::collections::HashMap;
+
+    let cells = vec![user_cell("prompt"), assistant_cell("answer", false)];
+    let revisions = vec![1u64, 2];
+    let options = TranscriptRenderOptions::default();
+    let mut cache = TranscriptViewCache::new();
+    cache.note_revision_key(7);
+    cache.ensure(&cells, &revisions, 40, options);
+
+    // Cold until a key is staged against the accepted frame.
+    assert!(!cache.keyed_skip_available(40, options, &HashMap::new(), 2, None));
+    cache.note_revision_key(7);
+    assert!(cache.keyed_skip_available(40, options, &HashMap::new(), 2, None));
+
+    cache.note_revision_key(7);
+    assert!(
+        !cache.keyed_skip_available(41, options, &HashMap::new(), 2, None),
+        "width"
+    );
+    cache.note_revision_key(7);
+    let mut other_options = options;
+    other_options.show_thinking = !other_options.show_thinking;
+    assert!(
+        !cache.keyed_skip_available(40, other_options, &HashMap::new(), 2, None),
+        "render options"
+    );
+    cache.note_revision_key(7);
+    let mut folds = HashMap::new();
+    folds.insert(0, TranscriptFold::Collapsed);
+    assert!(
+        !cache.keyed_skip_available(40, options, &folds, 2, None),
+        "cell folds"
+    );
+    cache.note_revision_key(7);
+    assert!(
+        !cache.keyed_skip_available(40, options, &HashMap::new(), 3, None),
+        "row count"
+    );
+    cache.note_revision_key(7);
+    assert!(
+        !cache.keyed_skip_available(
+            40,
+            options,
+            &HashMap::new(),
+            2,
+            Some(TranscriptActionOwner {
+                cell_index: 1,
+                identity_epoch: 0
+            })
+        ),
+        "action owner"
+    );
+    cache.note_revision_key(8);
+    assert!(
+        !cache.keyed_skip_available(40, options, &HashMap::new(), 2, None),
+        "staged key must equal the accepted key"
+    );
+}
+
+#[test]
 fn cache_highlights_only_the_newest_user_turn() {
     let cells = vec![
         user_cell("first prompt"),

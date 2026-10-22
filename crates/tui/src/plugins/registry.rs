@@ -1196,7 +1196,7 @@ pub(crate) fn open_existing_regular_file(
 }
 
 #[cfg(unix)]
-fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
+pub(crate) fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt as _;
 
     let metadata = file
@@ -1212,7 +1212,7 @@ fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), Stri
 }
 
 #[cfg(windows)]
-fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
+pub(crate) fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     let metadata = file
         .metadata()
@@ -1232,7 +1232,7 @@ fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), Stri
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
+pub(crate) fn validate_opened_regular_file(path: &Path, file: &fs::File) -> Result<(), String> {
     let metadata = file
         .metadata()
         .map_err(|e| format!("failed to inspect opened {}: {e}", path.display()))?;

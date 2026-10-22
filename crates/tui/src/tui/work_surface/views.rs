@@ -20,8 +20,7 @@ pub(super) const fn view_always_has_content(panel: RailPanel) -> bool {
 
 /// Files this session edited or read, even before TASKS has been projected.
 pub(super) fn files_touched_count(app: &mut App) -> usize {
-    app.work_surface.file_activity = super::model::settled_file_activity(app);
-    let activity = &app.work_surface.file_activity;
+    let activity = super::model::settled_file_activity(app);
     edited_files(activity).len() + activity.read.len()
 }
 
@@ -52,8 +51,7 @@ fn edited_files(
 /// The FILES view: what this session changed (with each change's size and
 /// its evidence one Enter away), then what it read (#6565).
 pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
-    app.work_surface.file_activity = super::model::settled_file_activity(app);
-    let activity = app.work_surface.file_activity.clone();
+    let activity = super::model::settled_file_activity(app).clone();
     let mut out = Vec::new();
     let edited = edited_files(&activity);
     if !edited.is_empty() {
@@ -228,7 +226,7 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         format!("tool output · {}", format_tokens(tool_output)),
         "",
     ));
-    let read = super::model::settled_file_activity(app).read;
+    let read = super::model::settled_file_activity(app).read.clone();
     if !read.is_empty() {
         out.push(fact(
             "files",
@@ -764,8 +762,10 @@ mod tests {
                 );
             }
             // Keep the old projection, as a session switch can, but replace
-            // the transcript that owns the next session's activity.
-            app.history.clear();
+            // the transcript that owns the next session's activity. Go
+            // through `clear_history` — a raw `history.clear()` would skip
+            // the revision epochs the caches key on.
+            app.clear_history();
             app.current_session_id = Some("session-b".into());
             if badge_first {
                 assert_eq!(files_touched_count(&mut app), 0);

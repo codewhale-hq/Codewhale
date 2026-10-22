@@ -1442,6 +1442,7 @@ async fn apply_conversation_undo(
     app.tool_details_by_cell.clear();
     app.exploring_entries.clear();
     app.ignored_tool_calls.clear();
+    app.bump_details_epoch();
     app.mark_history_updated();
     let manager = tokio::task::spawn_blocking(SessionManager::default_location).await??;
     let session = build_session_snapshot(app, &manager).map_err(anyhow::Error::msg)?;
@@ -4435,6 +4436,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.active_cell = None;
     app.active_tool_details.clear();
     app.active_tool_entry_completed_at.clear();
+    app.bump_details_epoch();
     app.active_cell_revision = app.active_cell_revision.wrapping_add(1);
     app.exploring_entries.clear();
     app.ignored_tool_calls.clear();

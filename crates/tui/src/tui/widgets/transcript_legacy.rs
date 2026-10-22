@@ -369,83 +369,116 @@ impl ChatWidget {
         }
         let summary_cells = &app.tool_run_cache.summaries;
 
-        // Fast path: no collapsed cells — use original slices directly.
-        if !has_collapsed {
-            let mut cell_revisions: Vec<u64> =
-                Vec::with_capacity(app.history.len() + active_entries.len());
-            cell_revisions.extend(
-                app.history_revisions
-                    .iter()
-                    .copied()
-                    .map(history_entry_revision),
-            );
-            if !active_entries.is_empty() {
+        // Keyed steady state: a matching key lets the cache skip the O(n)
+        // unchanged-prefix scan entirely (#6652). The projection generation
+        // folds in view-level changes (collapse toggles) that never touch
+        // history revisions. Staging precedes the availability check because
+        // `ensure_iter` consumes the staged key.
+        app.viewport
+            .transcript_cache
+            .note_revision_key(transcript_revision_key(
+                app.history_version,
+                app.history.len(),
+                app.active_cell_revision,
+                active_entries.len(),
+                app.tool_run_cache.generation,
+            ));
+        // When every cache input is pinned equal (key, width, options,
+        // folds, row count, owner), the ensure call itself is dead work:
+        // skip building the per-frame revision/ref vectors too.
+        let keyed_skip = app.viewport.transcript_cache.keyed_skip_available(
+            transcript_width,
+            render_options,
+            &app.cell_folds,
+            if has_collapsed {
+                app.tool_run_cache.filtered.original.len()
+            } else {
+                app.history.len() + active_entries.len()
+            },
+            provisional_action_owner,
+        );
+        // Keyed skip: the frame is provably identical to the accepted one;
+        // neither the per-frame vectors nor the ensure call are needed.
+        if !keyed_skip {
+            // Fast path: no collapsed cells — use original slices directly.
+            if !has_collapsed {
+                let mut cell_revisions: Vec<u64> =
+                    Vec::with_capacity(app.history.len() + active_entries.len());
+                cell_revisions.extend(
+                    app.history_revisions
+                        .iter()
+                        .copied()
+                        .map(history_entry_revision),
+                );
+                if !active_entries.is_empty() {
+                    let active_rev = app.active_cell_revision;
+                    for i in 0..active_entries.len() {
+                        let salt = (i as u64).wrapping_add(1);
+                        cell_revisions.push(active_entry_revision(active_rev, salt));
+                    }
+                }
+                // Build identity mapping: filtered index == original index.
+                // Reused across frames; identity maps are rebuilt only when the
+                // row count changes.
+                let row_count = app.history.len() + active_entries.len();
+                if app.collapsed_cell_map.len() != row_count {
+                    app.collapsed_cell_map = (0..row_count).collect();
+                }
+
+                let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
+                app.viewport.transcript_cache.ensure_split(
+                    &shards,
+                    &cell_revisions,
+                    transcript_width,
+                    render_options,
+                    &app.cell_folds,
+                    None,
+                    provisional_action_owner,
+                );
+            } else {
+                // Slow path: borrow non-collapsed cells into a filtered ref list
+                // so collapsed cells are excluded from rendering, and build the
+                // filtered→original index mapping. Collapsed run starts render a
+                // synthetic summary cell borrowed from the generation cache.
+                // No history cells or summary bodies are cloned on scroll frames.
+                // Which rows survive is cached per projection generation; only
+                // the revisions are gathered fresh (#6652).
+                let filtered = &app.tool_run_cache.filtered;
                 let active_rev = app.active_cell_revision;
-                for i in 0..active_entries.len() {
-                    let salt = (i as u64).wrapping_add(1);
-                    cell_revisions.push(active_entry_revision(active_rev, salt));
+                let mut filtered_cells: Vec<&HistoryCell> =
+                    Vec::with_capacity(filtered.original.len());
+                let mut filtered_revs: Vec<u64> = Vec::with_capacity(filtered.original.len());
+                for &original in &filtered.original {
+                    if original < history_len {
+                        filtered_cells.push(&app.history[original]);
+                        filtered_revs.push(history_entry_revision(app.history_revisions[original]));
+                    } else {
+                        let active_index = original - history_len;
+                        filtered_cells.push(&active_entries[active_index]);
+                        filtered_revs.push(active_entry_revision(
+                            active_rev,
+                            (active_index as u64).wrapping_add(1),
+                        ));
+                    }
                 }
-            }
-            // Build identity mapping: filtered index == original index.
-            // Reused across frames; identity maps are rebuilt only when the
-            // row count changes.
-            let row_count = app.history.len() + active_entries.len();
-            if app.collapsed_cell_map.len() != row_count {
-                app.collapsed_cell_map = (0..row_count).collect();
-            }
+                for &slot in &filtered.summary_slots {
+                    if let Some((summary, revision)) = summary_cells.get(&filtered.original[slot]) {
+                        filtered_cells[slot] = summary;
+                        filtered_revs[slot] = *revision;
+                    }
+                }
+                app.collapsed_cell_map.clone_from(&filtered.original);
 
-            let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
-            app.viewport.transcript_cache.ensure_split(
-                &shards,
-                &cell_revisions,
-                transcript_width,
-                render_options,
-                &app.cell_folds,
-                None,
-                provisional_action_owner,
-            );
-        } else {
-            // Slow path: borrow non-collapsed cells into a filtered ref list
-            // so collapsed cells are excluded from rendering, and build the
-            // filtered→original index mapping. Collapsed run starts render a
-            // synthetic summary cell borrowed from the generation cache.
-            // No history cells or summary bodies are cloned on scroll frames.
-            // Which rows survive is cached per projection generation; only
-            // the revisions are gathered fresh (#6652).
-            let filtered = &app.tool_run_cache.filtered;
-            let active_rev = app.active_cell_revision;
-            let mut filtered_cells: Vec<&HistoryCell> = Vec::with_capacity(filtered.original.len());
-            let mut filtered_revs: Vec<u64> = Vec::with_capacity(filtered.original.len());
-            for &original in &filtered.original {
-                if original < history_len {
-                    filtered_cells.push(&app.history[original]);
-                    filtered_revs.push(history_entry_revision(app.history_revisions[original]));
-                } else {
-                    let active_index = original - history_len;
-                    filtered_cells.push(&active_entries[active_index]);
-                    filtered_revs.push(active_entry_revision(
-                        active_rev,
-                        (active_index as u64).wrapping_add(1),
-                    ));
-                }
+                app.viewport.transcript_cache.ensure_filtered(
+                    &filtered_cells,
+                    &filtered_revs,
+                    transcript_width,
+                    render_options,
+                    &app.cell_folds,
+                    Some(&app.collapsed_cell_map),
+                    provisional_action_owner,
+                );
             }
-            for &slot in &filtered.summary_slots {
-                if let Some((summary, revision)) = summary_cells.get(&filtered.original[slot]) {
-                    filtered_cells[slot] = summary;
-                    filtered_revs[slot] = *revision;
-                }
-            }
-            app.collapsed_cell_map.clone_from(&filtered.original);
-
-            app.viewport.transcript_cache.ensure_filtered(
-                &filtered_cells,
-                &filtered_revs,
-                transcript_width,
-                render_options,
-                &app.cell_folds,
-                Some(&app.collapsed_cell_map),
-                provisional_action_owner,
-            );
         }
 
         let (mut total_lines, mut top, mut was_explicit_tail) =
@@ -731,6 +764,28 @@ fn revision_in_domain(revision: u64, active: bool) -> u64 {
 
 fn history_entry_revision(revision: u64) -> u64 {
     revision_in_domain(revision, false)
+}
+
+/// Whole-vector freshness key for the transcript cache's O(1) steady-state
+/// short-circuit (`TranscriptViewCache::note_revision_key`). Composition is
+/// contractual: every mutation path that can change a cell revision supplied
+/// to `ensure_*` moves at least one component — `history_version` (bumped by
+/// push/insert/extend/clear/truncate/bump_history_cell/mark_history_updated),
+/// history length, the active cell revision, the active entry count — and
+/// every path that can change the collapsed-row projection moves the
+/// `ToolRunCache` generation. Mirrors the copy in `widgets::mod`.
+fn transcript_revision_key(
+    history_version: u64,
+    history_len: usize,
+    active_cell_revision: u64,
+    active_len: usize,
+    projection_generation: u64,
+) -> u64 {
+    let mut key = history_version;
+    key ^= (history_len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    key = key.rotate_left(17) ^ active_cell_revision;
+    key ^ (active_len as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ projection_generation.wrapping_mul(0x1656_67B1_9E37_79F9)
 }
 
 pub(crate) fn active_entry_revision(active_rev: u64, salt: u64) -> u64 {

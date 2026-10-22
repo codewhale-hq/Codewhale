@@ -1,19 +1,17 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 13] = [
+    // Token diet: agent+workflow (21KB of schema) and get/update_goal
+    // (meaningless without an active goal) stay searchable by default.
+    const EXPECTED_NATIVE: [&str; 9] = [
         "read",
         "write",
         "edit",
         "file_search",
         "bash",
-        "agent",
-        "workflow",
         "todo_write",
-        "create_goal",
-        "get_goal",
-        "update_goal",
         "task_shell_wait",
         "load_skill",
+        "create_goal",
     ];
     assert_eq!(
         default_active_native_tool_names(),
@@ -53,15 +51,8 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
 #[test]
 fn non_yolo_mode_retains_default_defer_policy() {
     let always_load = HashSet::new();
-    for core in [
-        "read",
-        "write",
-        "edit",
-        "bash",
-        "agent",
-        "todo_write",
-        "load_skill",
-    ] {
+    // Token diet: agent stays searchable even on wide surfaces.
+    for core in ["read", "write", "edit", "bash", "todo_write", "load_skill"] {
         assert!(!should_default_defer_tool(core, &always_load));
     }
     for searchable in [
@@ -518,6 +509,7 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
                 McpAccess::PassiveSnapshot,
                 route,
                 "",
+                None,
             )
             .await;
         let active = build.surface.active.clone().unwrap_or_default();

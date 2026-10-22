@@ -1200,6 +1200,7 @@ pub async fn run_tui(
         // the configured `shell_env` hooks. Clone the shared Arc.
         hook_executor: app.runtime_services.hook_executor.clone(),
         handle_store: app.runtime_services.handle_store.clone(),
+        code_observations: app.runtime_services.code_observations.clone(),
         rlm_sessions: app.runtime_services.rlm_sessions.clone(),
         media_originals_dir: crate::media_originals::default_store_dir(),
     };

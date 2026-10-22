@@ -712,7 +712,11 @@ impl PrefixStabilityManager {
 /// Serialize a tool to the same JSON shape the chat API receives,
 /// excluding internal-only fields like `allowed_callers`, `defer_loading`,
 /// `input_examples`, and `cache_control` that are never sent to DeepSeek.
-fn tool_to_api_json(tool: &Tool) -> Option<String> {
+///
+/// Shared by the fingerprint manager and fork-prefix inheritance: both
+/// need byte-equality against provider-cached prefixes, and raw `Tool`
+/// serialization would false-negative on internal-only flag skew.
+pub fn tool_to_api_json(tool: &Tool) -> Option<String> {
     let mut value = serde_json::json!({
         "type": "function",
         "function": {

@@ -448,14 +448,14 @@
         let expected_names = crate::core::engine::default_active_native_tool_names()
             .iter()
             .copied()
-            // Children can inspect the shared goal, but only its owning
-            // session can create it or change its completion state.
+            // Children discover goal inspection via search; only the
+            // owning session can create a goal or change its
+            // completion state, so those never ride the child surface.
             .filter(|name| !matches!(*name, "create_goal" | "update_goal"))
             .chain([crate::core::engine::tool_catalog::TOOL_SEARCH_NAME])
             .map(str::to_string)
             .collect();
         assert_eq!(source_names, expected_names);
-        assert!(source_names.contains("get_goal"));
         assert!(!source_names.contains("create_goal"));
         assert!(!source_names.contains("update_goal"));
 

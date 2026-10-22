@@ -141,6 +141,14 @@ pub struct TranscriptViewCache {
     /// first-changed-cell search compare this against the caller's revisions
     /// without touching a single cached render (#6652).
     seen_revisions: Vec<u64>,
+    /// Caller-supplied whole-vector freshness key (history_version, history
+    /// length, active revision, active length hashed together). A match proves
+    /// the revision vector is identical to the previously accepted frame, so
+    /// the O(n) unchanged-prefix scan can be skipped (#6652 steady state).
+    /// `None` until a frame both supplies and accepts a key.
+    accepted_revision_key: Option<u64>,
+    /// Key staged by `note_revision_key` for the next `ensure_*` call.
+    pending_revision_key: Option<u64>,
     lines: Vec<Line<'static>>,
     line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
     line_meta: Vec<TranscriptLineMeta>,
@@ -157,6 +165,11 @@ pub struct TranscriptViewCache {
     /// renders nothing.
     #[cfg(test)]
     cells_rendered: u64,
+    /// Times the unchanged-prefix revision scan ran. Proves the keyed
+    /// steady state skips it (#6652): a key match must not scan, while a
+    /// missing or mismatched key must.
+    #[cfg(test)]
+    revision_scan_runs: u64,
 }
 
 impl TranscriptViewCache {
@@ -174,6 +187,8 @@ impl TranscriptViewCache {
             fold_action_rendered_cell: None,
             per_cell: Vec::new(),
             seen_revisions: Vec::new(),
+            accepted_revision_key: None,
+            pending_revision_key: None,
             lines: Vec::new(),
             line_links: Vec::new(),
             line_meta: Vec::new(),
@@ -184,6 +199,8 @@ impl TranscriptViewCache {
             streaming_meta_rows_scanned: 0,
             #[cfg(test)]
             cells_rendered: 0,
+            #[cfg(test)]
+            revision_scan_runs: 0,
         }
     }
 
@@ -249,6 +266,46 @@ impl TranscriptViewCache {
             None,
             None,
         );
+    }
+
+    /// Stage a whole-vector revision freshness key for the next `ensure_*`
+    /// call. When the key equals the previously accepted frame's key, the
+    /// unchanged-prefix scan is skipped entirely (O(1) steady state). The
+    /// contract: every mutation that can change any cell revision supplied to
+    /// the cache must move at least one key component — `history_version`
+    /// (bumped by every history mutation helper), history length, the active
+    /// cell revision, the active entry count, or the projection generation
+    /// (view-level collapse state). A key that is merely stale degrades to
+    /// the ordinary full scan; only a key that misses a real mutation would
+    /// serve stale frames, which is why the composition is audited against
+    /// every `history_revisions` write site.
+    pub fn note_revision_key(&mut self, key: u64) {
+        self.pending_revision_key = Some(key);
+    }
+
+    /// Whether an `ensure_*` call with these inputs would be a no-op: the
+    /// staged revision key matches the accepted frame and every non-cell
+    /// cache input (width, options, folds, row count, action owner) is
+    /// unchanged. Pins every `ensure_iter` input — cell contents by the key
+    /// contract, layout by direct comparison, hint target by owner equality —
+    /// so the caller may skip building per-frame revision/ref vectors and
+    /// skip the call itself.
+    #[must_use]
+    pub fn keyed_skip_available(
+        &self,
+        width: u16,
+        options: TranscriptRenderOptions,
+        cell_folds: &HashMap<usize, TranscriptFold>,
+        total_cells: usize,
+        action_owner: Option<TranscriptActionOwner>,
+    ) -> bool {
+        self.pending_revision_key
+            .is_some_and(|key| self.accepted_revision_key == Some(key))
+            && self.width == width
+            && self.options == options
+            && self.cell_folds == *cell_folds
+            && self.seen_revisions.len() == total_cells
+            && self.transcript_action_owner == action_owner
     }
 
     /// Ensure logically concatenated shards without cloning history plus the
@@ -339,6 +396,15 @@ impl TranscriptViewCache {
         let layout_changed = self.width != width || self.options != options || identity_changed;
         let folded_changed = self.cell_folds != *cell_folds;
         let revisions_match = cell_revisions.len() == total_cells;
+        // Consume the staged whole-vector key: a match proves the revision
+        // vector is identical to the previously accepted frame, so the O(n)
+        // prefix scan below is redundant. A missing or mismatched key falls
+        // through to the ordinary scan.
+        let revision_key = self.pending_revision_key.take();
+        let revision_key_matches = revision_key.is_some_and(|key| {
+            self.accepted_revision_key
+                .is_some_and(|accepted| accepted == key)
+        });
         // Cells `0..unchanged` were rendered at exactly these revisions, so
         // their cached output (and what they are: kind, supersession) is
         // current. Layout, fold, or a mismatched revision vector (never
@@ -347,13 +413,23 @@ impl TranscriptViewCache {
         // looking at a cell (#6652).
         let mut unchanged = if layout_changed || folded_changed || !revisions_match {
             0
+        } else if revision_key_matches {
+            self.seen_revisions.len().min(total_cells)
         } else {
+            #[cfg(test)]
+            {
+                self.revision_scan_runs = self.revision_scan_runs.saturating_add(1);
+            }
             self.seen_revisions
                 .iter()
                 .zip(cell_revisions)
                 .position(|(seen, current)| seen != current)
                 .unwrap_or_else(|| self.seen_revisions.len().min(total_cells))
         };
+        // Accept the staged key for the next frame's comparison. A frame that
+        // stages none clears the accepted key so a later staged key can never
+        // match across an unkeyed frame.
+        self.accepted_revision_key = revision_key;
         // `todo_write` replaces the whole list on every call, so only the
         // newest snapshot is worth a full card (#5871). When a new one lands
         // the previous newest must re-render collapsed; its own revision has

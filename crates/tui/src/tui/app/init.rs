@@ -802,6 +802,7 @@ impl App {
             paused_goal_objective: None,
             history: Vec::new(),
             history_version: 0,
+            details_epoch: 0,
             transcript_identity_epoch: 0,
             history_revisions: Vec::new(),
             tool_run_cache: ToolRunCache::default(),

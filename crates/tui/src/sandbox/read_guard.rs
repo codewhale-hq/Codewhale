@@ -295,7 +295,7 @@ impl ReadDenylist {
         let resolved = canonicalize_best_effort(requested);
         let via_symlink = resolved != literal;
 
-        for candidate in [&literal, &resolved] {
+        for candidate in std::iter::once(&literal).chain(via_symlink.then_some(&resolved)) {
             if self.deny_env_files && is_env_file(candidate) {
                 return Err(ReadDenial {
                     requested: requested.to_path_buf(),
@@ -780,6 +780,10 @@ fn fold_component(component: &std::ffi::OsStr) -> OsString {
 /// (`Path::starts_with` is already component-wise; the case folding is what
 /// forces the manual walk.)
 fn path_is_within(candidate: &Path, root: &Path) -> bool {
+    if !cfg!(any(target_os = "macos", target_os = "windows")) {
+        return candidate.starts_with(root);
+    }
+
     let mut root_components = root.components().map(|c| fold_component(c.as_os_str()));
     let mut candidate_components = candidate
         .components()

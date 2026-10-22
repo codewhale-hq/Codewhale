@@ -1582,6 +1582,12 @@ pub struct App {
     pub paused_goal_objective: Option<String>,
     pub history: Vec<HistoryCell>,
     pub history_version: u64,
+    /// Monotonic epoch bumped by every mutation of `tool_cells`,
+    /// `tool_details_by_cell`, or `active_tool_details` (via
+    /// [`App::bump_details_epoch`]). The work-surface file-activity cache
+    /// keys on it together with `history_version`; a mutation that skips the
+    /// bump serves a stale FILES view.
+    pub(crate) details_epoch: u64,
     /// Bumped when destructive reindexing could make a cached Space owner name
     /// a different cell before redraw; ordinary streaming revisions preserve it.
     pub(crate) transcript_identity_epoch: u64,
@@ -2730,10 +2736,15 @@ impl ToolRunCache {
     /// Refresh [`FilteredProjection`] unless it already matches the current
     /// projection and `collapsed_cells`. `rows` is committed plus active.
     pub(crate) fn refresh_filtered(&mut self, rows: usize, collapsed_cells: &HashSet<usize>) {
-        if self.filtered.built_for == Some(self.generation)
-            && self.filtered.collapsed_cells == *collapsed_cells
-        {
-            return;
+        if self.filtered.built_for == Some(self.generation) {
+            if self.filtered.collapsed_cells == *collapsed_cells {
+                return;
+            }
+            // A raw collapsed-set change (random-replay harness, future
+            // writers) rebuilds the projection without the widget's
+            // generation bump; fold it in so keyed consumers cannot skip
+            // past the changed rows.
+            self.generation = self.generation.wrapping_add(1);
         }
         self.filtered.original.clear();
         self.filtered.summary_slots.clear();
@@ -4829,6 +4840,7 @@ impl App {
     /// `>= n` becomes `index - n + 1`; an index inside the folded range is
     /// dropped.
     fn shift_history_maps_down(&mut self, n: usize) {
+        self.bump_details_epoch();
         let remap = |idx: usize| idx.checked_sub(n).map(|kept| kept + 1);
         self.completed_assistant_outputs
             .retain_mut(|receipt| match remap(receipt.history_index) {
@@ -5096,6 +5108,12 @@ impl App {
         rev
     }
 
+    /// Invalidate the work-surface file-activity cache after mutating the
+    /// tool detail maps. Bump at the mutation site, not the call site.
+    pub(crate) fn bump_details_epoch(&mut self) {
+        self.details_epoch = self.details_epoch.wrapping_add(1);
+    }
+
     /// Bring `history_revisions` back into shape (`history_revisions.len() ==
     /// history.len()`). Pushes fresh revs for newly appended cells, truncates
     /// for cells that were removed. **Does not** invalidate existing entries.
@@ -5336,6 +5354,7 @@ impl App {
             return;
         }
         self.history.truncate(new_len);
+        self.bump_details_epoch();
         if self.history_revisions.len() > new_len {
             self.history_revisions.truncate(new_len);
         }
@@ -5875,6 +5894,7 @@ impl App {
             self.exploring_entries.clear();
             self.active_tool_details.clear();
             self.active_tool_entry_completed_at.clear();
+            self.bump_details_epoch();
             self.streaming_thinking_active_entry = None;
             self.bump_active_cell_revision();
             return;
@@ -5915,6 +5935,7 @@ impl App {
                 .entry(cell_index)
                 .or_insert(detail);
         }
+        self.bump_details_epoch();
 
         crate::tui::tool_routing::release_oldest_tool_detail_outputs(self);
         self.exploring_entries.clear();

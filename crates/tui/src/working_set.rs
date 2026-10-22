@@ -6,6 +6,9 @@
 //! - a compact working-set summary block for the system prompt
 //! - pinned message indices that compaction should preserve
 
+use crate::tools::echolocation::{
+    CodeReadReference, MAX_DELIVERED_REFS, delivered_navigation_refs,
+};
 use crate::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
@@ -1006,9 +1009,54 @@ pub struct WorkingSet {
     pub turn: u64,
     /// Path entries keyed by workspace-relative path.
     pub entries: HashMap<String, WorkingSetEntry>,
+    /// Latest bounded navigation references delivered in this conversation.
+    /// Not body readership, current source freshness or read authority. This
+    /// field is never rendered into the session-pinned prompt prefix.
+    #[serde(default)]
+    pub delivered_code_refs: Vec<CodeReadReference>,
+    #[serde(skip)]
+    navigation_delivery_initialized: bool,
 }
 
 impl WorkingSet {
+    /// Only provider acceptance of the projected request establishes delivery;
+    /// intermediate program reads are absent from these messages.
+    pub(crate) fn observe_navigation_delivery(&mut self, messages: &[Message]) {
+        // Inspect inherited context on the first accepted request, then only
+        // the current result tail. Do not reparse every historical payload on
+        // every model step just to rediscover the same references.
+        let start = if self.navigation_delivery_initialized {
+            messages
+                .iter()
+                .rposition(|message| message.role == "assistant")
+                .map_or(0, |index| index + 1)
+        } else {
+            0
+        };
+        self.navigation_delivery_initialized = true;
+        for message in &messages[start..] {
+            for block in &message.content {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    self.record_delivered_navigation(delivered_navigation_refs(content));
+                }
+            }
+        }
+    }
+
+    fn record_delivered_navigation(&mut self, refs: Vec<CodeReadReference>) {
+        for reference in refs {
+            self.delivered_code_refs.retain(|old| {
+                old.path != reference.path || old.expected_revision == reference.expected_revision
+            });
+            if !self.delivered_code_refs.contains(&reference) {
+                self.delivered_code_refs.push(reference);
+                if self.delivered_code_refs.len() > MAX_DELIVERED_REFS {
+                    self.delivered_code_refs.remove(0);
+                }
+            }
+        }
+    }
+
     /// Advance to the next turn.
     pub fn next_turn(&mut self) {
         self.turn = self.turn.saturating_add(1);
@@ -1044,8 +1092,25 @@ impl WorkingSet {
     pub fn rebuild_from_messages(&mut self, messages: &[Message], workspace: &Path) {
         self.entries.clear();
         self.turn = 0;
+        self.delivered_code_refs.clear();
+        self.navigation_delivery_initialized = true;
+        let mut offered = Vec::new();
 
         for message in messages {
+            // A subsequent assistant response confirms the historical request,
+            // unlike a trailing tool result left at a crash boundary. Fresh
+            // child seeds do not invoke this resume/compaction rebuild.
+            if message.role == "assistant" {
+                self.record_delivered_navigation(std::mem::take(&mut offered));
+            }
+            for block in &message.content {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    offered.extend(delivered_navigation_refs(content));
+                    if offered.len() > MAX_DELIVERED_REFS {
+                        offered.drain(..offered.len() - MAX_DELIVERED_REFS);
+                    }
+                }
+            }
             if message.role == "user" {
                 self.next_turn();
             }
@@ -1494,7 +1559,10 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
     }
 
     let re = path_regex();
-    re.find_iter(text)
+    // Matches cannot cross line endings, and every arm needs a dot or separator.
+    text.lines()
+        .filter(|line| line.contains('/') || line.contains('\\') || line.contains('.'))
+        .flat_map(|line| re.find_iter(line))
         .map(|m| m.as_str().to_string())
         .filter(|s| looks_like_path(s))
         .collect()

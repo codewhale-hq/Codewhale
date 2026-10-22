@@ -305,6 +305,7 @@ impl PreparedOutboundRequest {
         replay_input_tokens: Option<u32>,
         entrypoint: CallerStreamMode,
     ) -> Self {
+        super::chat::dump_wire_prefix_if_requested(&body);
         let reasoning = ReasoningReceipt::from_body(dialect, &body, requested_effort);
         Self {
             dialect,

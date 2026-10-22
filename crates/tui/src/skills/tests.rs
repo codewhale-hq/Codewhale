@@ -326,7 +326,7 @@ fn prompt_warning_sanitizer_handles_non_utf8_configured_roots() {
 }
 
 #[test]
-fn render_available_skills_context_lists_paths_and_usage() {
+fn render_available_skills_context_lists_names_and_usage() {
     let tmpdir = TempDir::new().unwrap();
     create_skill_dir(
         &tmpdir,
@@ -337,17 +337,16 @@ fn render_available_skills_context_lists_paths_and_usage() {
     let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
-    // #4632: paths render relative to the skills base dir (privacy-safe),
-    // so the assertion checks the workspace-relative form.
-    let expected_path = super::prompt_display(&std::path::Path::new("test-skill").join("SKILL.md"));
-
+    // Token diet: names + descriptions only. `load_skill` resolves the
+    // name through the registry, so no on-disk path is rendered at all
+    // (#4632's surface is gone with the paths).
     assert!(rendered.contains("## Skills"));
     assert!(rendered.contains("- test-skill: A test skill"));
     assert!(rendered.contains("call `load_skill` with that exact name before starting the work"));
     assert!(rendered.contains("do not expand tool, approval, or trust authority"));
     assert!(
-        rendered.contains(&expected_path),
-        "expected path {expected_path:?} not in rendered output"
+        !rendered.contains("test-skill/SKILL.md"),
+        "no on-disk paths in the index"
     );
     assert!(!rendered.contains(tmpdir.path().to_str().unwrap_or("/nonexistent")));
     assert!(rendered.contains("### Usage"));
@@ -397,12 +396,12 @@ fn workspace_prompt_omits_disabled_skills_without_configured_directory() {
 }
 
 #[test]
-fn render_available_skills_context_uses_real_dir_name_not_frontmatter_name() {
-    // Regression: when a community-installed or manually-placed skill
+fn render_available_skills_context_resolves_by_name_without_invented_paths() {
+    // Regression (pathless form): when a community-installed skill
     // lives in a directory whose name differs from its frontmatter
-    // `name`, the rendered prompt must point to the real on-disk file
-    // path, not <skills_dir>/<frontmatter-name>/SKILL.md (which does
-    // not exist).
+    // `name`, the row carries the registry name and no path at all —
+    // `load_skill` resolves the name to the real on-disk file, so no
+    // caller can reconstruct a stale <frontmatter>/SKILL.md path.
     let tmpdir = TempDir::new().unwrap();
     create_skill_dir(
         &tmpdir,
@@ -413,18 +412,29 @@ fn render_available_skills_context_uses_real_dir_name_not_frontmatter_name() {
     let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
-    // #4632: rendered relative to the skills base dir; the regression
-    // intent (real dir name, not frontmatter name) is unchanged.
-    let real_path = super::prompt_display(&std::path::Path::new("weird-dir-name").join("SKILL.md"));
-    let stale_path = super::prompt_display(&std::path::Path::new("friendly-name").join("SKILL.md"));
-
     assert!(
-        rendered.contains(&real_path),
-        "expected real on-disk path {real_path:?} in rendered output, got:\n{rendered}"
+        rendered.contains("- friendly-name: drift case"),
+        "registry-name row present, got:\n{rendered}"
+    );
+    let (index, warnings) = rendered
+        .split_once("\n### Skill load warnings\n")
+        .expect("the real name/directory mismatch must remain visible");
+    assert!(
+        !index.contains("weird-dir-name/SKILL.md"),
+        "no dir-derived path in the index:\n{index}"
     );
     assert!(
-        !rendered.contains(&stale_path),
-        "rendered output must not invent a path under the frontmatter name:\n{rendered}"
+        warnings.contains("weird-dir-name/SKILL.md: frontmatter name `friendly-name` differs from directory `weird-dir-name`"),
+        "the warning must identify the real source:\n{warnings}"
+    );
+    let registry = super::SkillRegistry::discover(&tmpdir.path().join("skills"));
+    assert_eq!(
+        registry.get("friendly-name").expect("name lookup").path,
+        tmpdir.path().join("skills/weird-dir-name/SKILL.md")
+    );
+    assert!(
+        !rendered.contains("friendly-name/SKILL.md"),
+        "no frontmatter-derived path:\n{rendered}"
     );
 }
 
@@ -2162,9 +2172,7 @@ fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
         .expect("configured skill context");
 
     assert!(rendered.contains("- visual-design: Design assets\n"));
-    assert!(rendered.contains(
-        "- workspace-skill: Workspace skill (file: .claude/skills/workspace-skill/SKILL.md)"
-    ));
+    assert!(rendered.contains("- workspace-skill: Workspace skill\n"));
     assert!(
         rendered
             .contains("in <configured-skills>/visual-design/SKILL.md is not a safe command name")
@@ -2174,7 +2182,7 @@ fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
 }
 
 #[test]
-fn default_workspace_skill_prompt_preserves_its_discoverable_path() {
+fn default_workspace_skill_prompt_omits_paths_in_favour_of_load_skill() {
     let _env_lock = crate::test_support::lock_test_env();
     super::clear_skill_discovery_cache();
     let tmpdir = TempDir::new().unwrap();
@@ -2205,9 +2213,7 @@ fn default_workspace_skill_prompt_preserves_its_discoverable_path() {
         )
         .expect("workspace skill context");
 
-    assert!(rendered.contains(
-        "- workspace-skill: Workspace skill (file: .agents/skills/workspace-skill/SKILL.md)"
-    ));
+    assert!(rendered.contains("- workspace-skill: Workspace skill\n"));
 }
 
 #[test]

@@ -1,5 +1,3 @@
-
-
 #[test]
 fn agent_mode_elevates_writes_without_granting_network() {
     // #273 elevated Agent mode's sandbox so `curl`, package managers, and
@@ -721,6 +719,7 @@ async fn fork_state_block_reuses_the_snapshot_body() {
     };
     let fork_context = crate::tools::subagent::SubAgentForkContext {
         messages: engine.messages_with_turn_metadata(),
+        live_header: crate::prompt_zones::new_live_header_cell(),
         structured_state_block: state.to_system_block(),
         work_source: Some(engine.todo_source()),
     };
@@ -937,6 +936,7 @@ async fn same_turn_fork_carries_the_updated_todo() {
     .to_system_block();
     let fork_context = crate::tools::subagent::SubAgentForkContext {
         messages: engine.messages_with_turn_metadata(),
+        live_header: crate::prompt_zones::new_live_header_cell(),
         structured_state_block: stable_block.clone(),
         work_source: Some(engine.todo_source()),
     };

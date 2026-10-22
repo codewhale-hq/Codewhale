@@ -19,31 +19,30 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with thirteen eager native names plus synthetic `tool_search`:
+New turns start with nine eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
 3. `edit`
 4. `file_search`
 5. `bash`
-6. `agent`
-7. `workflow`
-8. `todo_write`
+6. `todo_write`
+7. `task_shell_wait`
+8. `load_skill`
 9. `create_goal`
-10. `get_goal`
-11. `update_goal`
-12. `task_shell_wait`
-13. `load_skill`
-14. `tool_search` (synthetic, always active)
+10. `tool_search` (synthetic, always active)
 
-The thirteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The nine native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/tui/src/core/engine/tool_catalog.rs`, pinned by
-`default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
-boundary may remove `agent` at the maximum child depth, and Plan registers only
-the foreground shell surface (so no `task_shell_wait`), but route size alone
-must not change this core vocabulary.
+`default_active_contract_keeps_discovery_and_core_tools_eager`. `agent`,
+`workflow`, `get_goal`, and `update_goal` are deferred by default and load
+via `tool_search` (`get_goal`/`update_goal` ride eager only while a goal is
+active). An authority boundary may remove `agent` at the maximum child depth,
+and Plan registers only the foreground shell surface (so no `task_shell_wait`),
+but route size alone must not change this core vocabulary.
 
-The direct schemas deliberately stay small:
+The core schemas deliberately stay small (deferred rows load via
+`tool_search` rather than riding every turn):
 
 | Tool | Input | Purpose |
 |---|---|---|
@@ -52,12 +51,12 @@ The direct schemas deliberately stay small:
 | `edit` | `path`, `edits` | Apply one or more unambiguous text replacements against one original snapshot. |
 | `file_search` | `query`, optional `path`, `limit`, `extensions`, `exclude` | Find files by name, path fragment or glob and return bounded, ranked matches. Respects ignore files; `exclude` replaces default exclusions. |
 | `bash` | `command`, optional `timeout`, optional `description` | Run one cancellable foreground shell command and return a bounded tail. The optional description is display-only. |
-| `agent` | delegated task and optional scope/context controls | Start or inspect focused child work. |
-| `workflow` | plan/script/source_path plus run controls | Coordinate multi-agent phases with dependencies and completion checks. |
+| `agent` (deferred) | delegated task and optional scope/context controls | Start or inspect focused child work. |
+| `workflow` (deferred) | plan/script/source_path plus run controls | Coordinate multi-agent phases with dependencies and completion checks. |
 | `todo_write` | complete replacement list of `{content, status}` items | Keep optional, agent-owned progress notes for genuinely multi-step work. |
 | `create_goal` | objective plus optional budget | Start the session goal the turn works toward. |
-| `get_goal` | none | Read the active goal and its progress. |
-| `update_goal` | terminal status | Mark the goal complete or blocked. |
+| `get_goal` (deferred unless a goal is active) | none | Read the active goal and its progress. |
+| `update_goal` (deferred unless a goal is active) | terminal status | Mark the goal complete or blocked. |
 | `task_shell_wait` | `task_id`, optional `wait`, `timeout_ms`, `cancel`, `gate` | Poll or stop a background shell task. Completion still arrives as a runtime event, so use it for early output, true barriers, or gate evidence. |
 | `load_skill` | optional `name`, `query` | Load a named skill's `SKILL.md` body and companion-file list; omit `name` or use `name="list"` to list eligible skills, or use `query` to search names and descriptions. |
 | `tool_search` | `query`, optional matching controls | Discover policy-allowed deferred tools and add selected schemas to this conversation's toolbox. |
@@ -399,7 +398,13 @@ above must report `1 passed` (the ignored metrics test reports `1 passed`
 only because `--ignored` selects it); `0 passed` means the filter matched
 nothing and the check did not run.
 
-The provider-free receipt must report the thirteen default-active names listed
+The provider-free receipt must report the ten default-active names listed
+above.
 above. A separate repository-wide tool count may include deferred, dynamic,
 feature-gated, and compatibility-only registrations; it is not the number of
 tools placed in the first-turn model catalog.
+
+
+### Source navigation receipts
+
+Source reads may include a bounded pod/symbol/link footer. Edits retain their unified diff in metadata and can name affected declarations and confirmed same-directory callers. File-name search and grep report matched directory pods; project maps can report bounded key-file symbols. Sounding content uses the same denied-read and credential exclusions plus protected regular-file handles. Caller content scans at most32 deterministic candidates at256KiB each; candidates outside that budget are reported as unscanned, never as additional known callers. Key-file content is capped at8MiB. Enumeration itself and platform I/O latency are not wall-clock bounded.
