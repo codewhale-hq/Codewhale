@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Interrupted session hint stays visible (#7095):** when a plain `codewhale` launch finds an in-flight session snapshot, the "Run `codewhale --continue` to resume it" hint now appears in the TUI's status line instead of being printed to the terminal just before the TUI covered it.
 - **Crate split S24a (internal):** the workshop byte-budget slot moves to `codewhale-runtime`, `AutoRouteDecisionEvidence` to `codewhale-models`, and cost-status session persistence to a tui `usage_persistence` module, so billing no longer reaches the session manager or model routing. No behavior change. (CW-6129)
 - **Nested and deletable threads (Runtime API):** a fork (including a backtrack fork) records `parent_thread_id`, `POST /v1/threads` accepts one, and `GET /v1/threads/summary` returns it so clients can nest child conversations. `DELETE /v1/threads/{id}` removes an idle thread with its turns, items, events and goal, and its saved session unless another thread shares it or a terminal holds it open; a running thread answers 409.
 - **Hunk actions in Review (Runtime API):** `POST /v1/git/stage`, `/v1/git/unstage` and `/v1/git/discard` take `hunks` (the `@@ … @@` headers from `GET /v1/diff`) with one path and apply only those hunks through `git apply`, honouring the same `expect` preconditions as whole-path writes. A hunk that no longer exists answers `409 git_state_changed` with `stale_hunks`, and nothing is written unless git accepts the whole patch.
