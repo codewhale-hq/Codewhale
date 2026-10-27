@@ -5,10 +5,10 @@
 //! an asynchronous I/O execution model.
 
 use super::SharedCommandHost;
-use crate::dependencies::{ExternalTool, Git};
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 use codewhale_command_contract::facets::*;
+use codewhale_dependencies::{ExternalTool, Git};
 use std::path::PathBuf;
 
 pub(super) struct DebugOperationsAdapter<'a> {
@@ -125,7 +125,7 @@ fn session_diff(app: &App) -> std::io::Result<Option<DebugDiffObservation>> {
     let Some(session_id) = app.current_session_id.as_deref() else {
         return Ok(None);
     };
-    let Some(repo) = crate::snapshot::SnapshotRepo::open_existing(&app.workspace)? else {
+    let Some(repo) = codewhale_snapshot::SnapshotRepo::open_existing(&app.workspace)? else {
         return Ok(None);
     };
     // Newest first, so the session's first restore point is the last match.
@@ -164,7 +164,7 @@ fn workspace_git_diff(workspace: &std::path::Path) -> DebugDiffObservation {
     let patch = git(&["diff", "--no-color", "--no-ext-diff", "--no-textconv"]);
     match (names, stat, patch) {
         (Ok(names), Ok(stat), Ok(patch)) => {
-            let (patch, patch_truncated) = crate::snapshot::repo::truncate_at_char_boundary(
+            let (patch, patch_truncated) = codewhale_snapshot::repo::truncate_at_char_boundary(
                 &String::from_utf8_lossy(&patch.stdout),
                 MAX_DIFF_PATCH_BYTES,
             );
@@ -331,7 +331,7 @@ pub(in crate::commands) struct SnapshotOwner {
 }
 
 impl SnapshotOwner {
-    fn owns(&self, snapshot: &crate::snapshot::Snapshot) -> bool {
+    fn owns(&self, snapshot: &codewhale_snapshot::Snapshot) -> bool {
         snapshot.session_id.as_deref() == Some(self.session_id.as_str())
             && self.until.is_none_or(|until| snapshot.timestamp <= until)
     }
@@ -403,11 +403,11 @@ fn is_restore_point_label(label: &str) -> bool {
 /// One `/undo` step, planned but not applied.
 pub(in crate::commands) struct UndoStep {
     /// Restore point the step started at.
-    pub(in crate::commands) target: crate::snapshot::Snapshot,
+    pub(in crate::commands) target: codewhale_snapshot::Snapshot,
     /// Tree the step ended at: the next restore point this conversation
     /// owns, or, for the newest step, a snapshot of the workspace as it is
     /// now. Trees, not commit ids, because a prune rewrites commit ids.
-    pub(in crate::commands) end: crate::snapshot::SnapshotId,
+    pub(in crate::commands) end: codewhale_snapshot::SnapshotId,
     /// The paths the step changed that are still as it left them.
     pub(in crate::commands) restore: Vec<PathBuf>,
     /// Changed paths `/undo` leaves in place because they are not regular
@@ -416,7 +416,7 @@ pub(in crate::commands) struct UndoStep {
     pub(in crate::commands) skipped: Vec<PathBuf>,
     /// The `pre-restore:` snapshot planning took of the workspace, when the
     /// step ends now; the restore reuses it as its safety backup.
-    pub(in crate::commands) backup: Option<crate::snapshot::SnapshotId>,
+    pub(in crate::commands) backup: Option<codewhale_snapshot::SnapshotId>,
     /// The step has no recorded end and runs only because the user typed
     /// `force`: it also puts back edits made since the request started.
     pub(in crate::commands) forced: bool,
@@ -467,13 +467,13 @@ pub(in crate::commands) struct UndoStep {
 // The planner is host-internal. Box only its uncommon early outcome to keep
 // Result small; the public facet still returns an owned data-only value.
 fn plan_undo_step(
-    repo: &crate::snapshot::SnapshotRepo,
-    snapshots: Vec<crate::snapshot::Snapshot>,
+    repo: &codewhale_snapshot::SnapshotRepo,
+    snapshots: Vec<codewhale_snapshot::Snapshot>,
     owners: &[SnapshotOwner],
     force: bool,
     request_position: &dyn Fn(&str) -> RequestPositionResult,
 ) -> Result<UndoStep, Box<DebugUndoOutcome>> {
-    let owned: Vec<crate::snapshot::Snapshot> = snapshots
+    let owned: Vec<codewhale_snapshot::Snapshot> = snapshots
         .into_iter()
         .filter(|snapshot| is_restore_point_label(&snapshot.label))
         .filter(|snapshot| owners.iter().any(|owner| owner.owns(snapshot)))
@@ -650,7 +650,7 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
     }
     let workspace = app.workspace.clone();
 
-    let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+    let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
         Ok(r) => r,
         Err(e) => {
             return DebugUndoOutcome::RepoUnavailable {
@@ -663,7 +663,7 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
     // A post-turn snapshot this process is still taking is the newest step's
     // end: without it, every edit since the step's restore point would count
     // as the step's.
-    if !crate::snapshot::wait_for_pending_post_turn_snapshots(POST_TURN_SNAPSHOT_WAIT) {
+    if !codewhale_snapshot::wait_for_pending_post_turn_snapshots(POST_TURN_SNAPSHOT_WAIT) {
         return DebugUndoOutcome::SnapshotPending;
     }
 
@@ -704,7 +704,7 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
     let target = &step.target;
     let is_last_request = step.request_is_last;
 
-    let plan: Vec<(PathBuf, crate::snapshot::SnapshotId)> = step
+    let plan: Vec<(PathBuf, codewhale_snapshot::SnapshotId)> = step
         .restore
         .iter()
         .map(|path| (path.clone(), target.tree.clone()))
@@ -770,9 +770,11 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
             .map(|outcome| DebugRestoredFile {
                 path: outcome.path,
                 action: match outcome.action {
-                    crate::snapshot::PathRestoreAction::Modified => DebugRestoreAction::Modified,
-                    crate::snapshot::PathRestoreAction::Recreated => DebugRestoreAction::Recreated,
-                    crate::snapshot::PathRestoreAction::Removed => DebugRestoreAction::Removed,
+                    codewhale_snapshot::PathRestoreAction::Modified => DebugRestoreAction::Modified,
+                    codewhale_snapshot::PathRestoreAction::Recreated => {
+                        DebugRestoreAction::Recreated
+                    }
+                    codewhale_snapshot::PathRestoreAction::Removed => DebugRestoreAction::Removed,
                 },
             })
             .collect(),

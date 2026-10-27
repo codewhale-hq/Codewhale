@@ -91,10 +91,10 @@ use codewhale_execpolicy::ApprovalMode;
 
 use crate::commands::groups::plugins::plugin_network_policy;
 
-use crate::dependencies::ExternalTool as _;
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 use codewhale_config::pricing::CostCurrency;
+use codewhale_dependencies::ExternalTool as _;
 use codewhale_localization::{MessageId, tr};
 use codewhale_net::network_policy::NetworkPolicy;
 
@@ -920,7 +920,7 @@ fn hosted_work_url(repo: &str, branch: &str) -> String {
 }
 
 fn read_git_value(workspace: &Path, args: &[&str]) -> Option<String> {
-    let mut command = crate::dependencies::Git::command()?;
+    let mut command = codewhale_dependencies::Git::command()?;
     let output = command.arg("-C").arg(workspace).args(args).output().ok()?;
     if !output.status.success()
         || output.stdout.is_empty()
@@ -941,7 +941,7 @@ fn valid_branch_name(branch: &str) -> bool {
     if branch.is_empty() || branch.len() > MAX_GIT_VALUE_BYTES {
         return false;
     }
-    let Some(mut command) = crate::dependencies::Git::command() else {
+    let Some(mut command) = codewhale_dependencies::Git::command() else {
         return false;
     };
     command
@@ -1869,7 +1869,7 @@ fn flatten_history_lines(lines: Vec<ratatui::text::Line<'static>>) -> String {
 /// Read the workspace snapshot repository read-only and project its state
 /// (D8): only an existing repo is opened, never created.
 fn project_restore_points(workspace: &Path) -> RestorePointProjection {
-    match crate::snapshot::SnapshotRepo::open_existing(workspace) {
+    match codewhale_snapshot::SnapshotRepo::open_existing(workspace) {
         Ok(None) => RestorePointProjection::None,
         Err(err) => RestorePointProjection::Unreadable {
             reason: err.to_string(),
@@ -1885,7 +1885,7 @@ fn project_restore_points(workspace: &Path) -> RestorePointProjection {
     }
 }
 
-fn project_restore_snapshot(snapshot: &crate::snapshot::Snapshot) -> RestoreSnapshot {
+fn project_restore_snapshot(snapshot: &codewhale_snapshot::Snapshot) -> RestoreSnapshot {
     let parsed = crate::core::turn::parse_snapshot_label(&snapshot.label);
     RestoreSnapshot {
         id: snapshot.id.as_str().to_string(),
@@ -2813,21 +2813,27 @@ fn installer_settings() -> (NetworkPolicy, u64, String) {
     let skills_cfg = cfg.skills.as_ref();
     let max_size = skills_cfg
         .and_then(|s| s.max_install_size_bytes)
-        .unwrap_or(crate::skills::install::DEFAULT_MAX_SIZE_BYTES);
+        .unwrap_or(codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES);
     let registry_url = skills_cfg
         .and_then(|s| s.registry_url.clone())
-        .unwrap_or_else(|| crate::skills::install::DEFAULT_REGISTRY_URL.to_string());
+        .unwrap_or_else(|| codewhale_skill_install::install::DEFAULT_REGISTRY_URL.to_string());
     (network, max_size, registry_url)
 }
 
 /// Resolve the cache destination before loading settings or entering the network bridge.
 fn sync_registry_to_cache(cache_dir: Option<PathBuf>) -> Result<SkillSyncOutcome, String> {
-    use crate::skills::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
+    use codewhale_skill_install::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
     let cache_dir =
         cache_dir.ok_or_else(|| "global skill mutations require a home directory".to_string())?;
     let (network, max_size, registry_url) = installer_settings();
     let result = run_async(async move {
-        crate::skills::install::sync_registry(&network, &registry_url, &cache_dir, max_size).await
+        codewhale_skill_install::install::sync_registry(
+            &network,
+            &registry_url,
+            &cache_dir,
+            max_size,
+        )
+        .await
     });
     match result {
         Ok(SyncResult::RegistryDenied(host)) => Ok(SkillSyncOutcome::RegistryDenied(host)),
@@ -3012,7 +3018,7 @@ fn portable_scope(
 
 /// Map a curated registry document to portable entries.
 fn portable_registry_entries(
-    doc: &crate::skills::install::RegistryDocument,
+    doc: &codewhale_skill_install::install::RegistryDocument,
 ) -> Vec<RemoteSkillEntry> {
     doc.skills
         .iter()
@@ -3129,7 +3135,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         spec: &str,
     ) -> Result<SkillMutationReceipt, String> {
         use crate::skills::mutation::{MutationContext, SkillMutationRequest};
-        let source = match crate::skills::install::InstallSource::parse(spec) {
+        let source = match codewhale_skill_install::install::InstallSource::parse(spec) {
             Ok(source) => source,
             Err(err) => return Err(format!("Invalid install source: {err}")),
         };
@@ -3258,18 +3264,18 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn fetch_remote_registry(&mut self) -> Result<RemoteRegistryOutcome, String> {
         let (network, _max_size, registry_url) = installer_settings();
         let registry = run_async(async move {
-            crate::skills::install::fetch_registry(&network, &registry_url).await
+            codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
         match registry {
-            Ok(crate::skills::install::RegistryFetchResult::Loaded(doc)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Loaded(doc)) => {
                 Ok(RemoteRegistryOutcome::Loaded {
                     entries: portable_registry_entries(&doc),
                 })
             }
-            Ok(crate::skills::install::RegistryFetchResult::NeedsApproval(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::NeedsApproval(host)) => {
                 Ok(RemoteRegistryOutcome::NeedsApproval(host))
             }
-            Ok(crate::skills::install::RegistryFetchResult::Denied(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Denied(host)) => {
                 Ok(RemoteRegistryOutcome::Denied(host))
             }
             Err(err) => Err(format_registry_error("Failed to fetch registry", &err)),
@@ -3279,10 +3285,10 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn recommend_skills(&mut self, task: &str) -> Result<Vec<SkillRecommendation>, String> {
         let (network, _max_size, registry_url) = installer_settings();
         let registry = run_async(async move {
-            crate::skills::install::fetch_registry(&network, &registry_url).await
+            codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
         match registry {
-            Ok(crate::skills::install::RegistryFetchResult::Loaded(doc)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Loaded(doc)) => {
                 let recommendations =
                     crate::skills::recommend::recommend_remote_skills(task, &doc, 3);
                 Ok(recommendations
@@ -3294,10 +3300,10 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                     })
                     .collect())
             }
-            Ok(crate::skills::install::RegistryFetchResult::NeedsApproval(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::NeedsApproval(host)) => {
                 Err(needs_approval_message(&host))
             }
-            Ok(crate::skills::install::RegistryFetchResult::Denied(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Denied(host)) => {
                 Err(network_denied_message(&host))
             }
             Err(err) => Err(format_registry_error("Failed to fetch registry", &err)),
@@ -3305,7 +3311,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn sync_registry(&mut self) -> Result<SkillSyncOutcome, String> {
-        sync_registry_to_cache(crate::skills::install::default_cache_skills_dir())
+        sync_registry_to_cache(codewhale_skill_install::install::default_cache_skills_dir())
     }
 
     fn run_review(&mut self) -> Result<ReviewOutcome, String> {
@@ -3359,7 +3365,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
 
     fn snapshot_list(&mut self, limit: usize) -> Result<Vec<SnapshotEntry>, String> {
         let workspace = self.host.app.borrow().workspace.clone();
-        let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+        let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
             Ok(repo) => repo,
             Err(err) => {
                 return Err(format!(
@@ -3391,7 +3397,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         let workspace = self.host.app.borrow().workspace.clone();
         let id = id.to_owned();
         let restore = move || {
-            let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+            let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
                 Ok(repo) => repo,
                 Err(err) => {
                     return Err(format!(
@@ -3400,7 +3406,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                     ));
                 }
             };
-            let id = crate::snapshot::SnapshotId::parse(&id)
+            let id = codewhale_snapshot::SnapshotId::parse(&id)
                 .map_err(|err| format!("Restore failed: {err}"))?;
             repo.restore(&id)
                 .map_err(|err| format!("Restore failed: {err}"))
@@ -6540,7 +6546,7 @@ mod tests {
             let _home = scoped_home(&tmp);
             let skills_dir = tmp.path().join("skills");
             let file = tmp.path().join("a.txt");
-            let repo = crate::snapshot::SnapshotRepo::open_or_init(tmp.path()).unwrap();
+            let repo = codewhale_snapshot::SnapshotRepo::open_or_init(tmp.path()).unwrap();
             std::fs::write(&file, b"v1").unwrap();
             repo.snapshot("pre-turn:1").unwrap();
             std::fs::write(&file, b"v2").unwrap();

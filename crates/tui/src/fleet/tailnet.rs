@@ -71,7 +71,7 @@ pub fn inventory() -> Result<Vec<TailnetNode>> {
         &mut command,
         std::iter::empty::<(&str, &str)>(),
     );
-    let output = crate::dependencies::probe_output_bounded(
+    let output = codewhale_dependencies::probe_output_bounded(
         &mut command,
         true,
         Duration::from_secs(5),

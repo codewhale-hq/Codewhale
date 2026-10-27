@@ -815,6 +815,8 @@ pub struct ThreadRecord {
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
     /// User-set title for the thread. When `None`, consumers fall back to a
     /// derived title (typically the latest turn's input summary). Added in
     /// v0.8.10 (#562); old runtime records simply have no `title` and behave
@@ -1731,7 +1733,7 @@ pub struct TurnRecord {
     /// imported from a saved session, and turns that ran with snapshots off
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workspace_snapshots: Vec<crate::snapshot::WorkspaceSnapshotRef>,
+    pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
 }
 
 impl TurnRecord {
@@ -6972,7 +6974,7 @@ pub(crate) struct DroppedTurnSnapshots {
     /// not keep tool calls.
     pub may_change_files: bool,
     /// The restore points the engine reported for the turn, in order.
-    pub snapshots: Vec<crate::snapshot::WorkspaceSnapshotRef>,
+    pub snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
     /// Paths the turn's file-tool calls (`write_file`, `edit_file`,
     /// `apply_patch`) declared they write, as the calls named them, for every
     /// call that ran (completed, or stopped mid-run). A turn-scoped undo can
@@ -8255,6 +8257,267 @@ enum PendingUserInputClaim {
 enum UserInputTerminalOutcome {
     Answered(crate::tools::user_input::UserInputResponse),
     Canceled { terminal: bool },
+    Closed(crate::core::events::UserInputClosedOutcome),
+}
+
+#[derive(Clone)]
+struct RuntimeUserInputSettlement {
+    thread_id: String,
+    pending_user_inputs: Arc<parking_lot::Mutex<HashMap<(String, String), PendingUserInputEntry>>>,
+    store: RuntimeThreadStore,
+    projection: Arc<Mutex<()>>,
+    event_emit: Arc<Mutex<()>>,
+    event_tx: broadcast::Sender<RuntimeEventRecord>,
+    owner: std::sync::Weak<RuntimeProcessOwnerLock>,
+}
+
+impl RuntimeUserInputSettlement {
+    fn claim_pending_user_input(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        turn_id: Option<&str>,
+        response: Option<&crate::tools::user_input::UserInputResponse>,
+    ) -> Result<PendingUserInputClaim> {
+        let mut pending = self.pending_user_inputs.lock();
+        let Some(entry) = pending.get_mut(&(thread_id.to_string(), input_id.to_string())) else {
+            return Ok(PendingUserInputClaim::Missing);
+        };
+        if turn_id.is_some_and(|turn_id| entry.request.turn_id != turn_id) {
+            return Ok(PendingUserInputClaim::Missing);
+        }
+        if entry.indeterminate {
+            return Ok(PendingUserInputClaim::Indeterminate);
+        }
+        if entry.settling {
+            return Ok(PendingUserInputClaim::Settling);
+        }
+        if let Some(response) = response {
+            entry.request.request.validate_response(response)?;
+        }
+        entry.settling = true;
+        Ok(PendingUserInputClaim::Claimed(entry.request.clone()))
+    }
+
+    fn restore_pending_user_input_claim(&self, thread_id: &str, request: &PendingUserInputRequest) {
+        let settlement_tx = if let Some(entry) = self
+            .pending_user_inputs
+            .lock()
+            .get_mut(&(thread_id.to_string(), request.id.clone()))
+            && entry.request.turn_id == request.turn_id
+        {
+            entry.settling = false;
+            entry.indeterminate = false;
+            Some(entry.settlement_tx.clone())
+        } else {
+            None
+        };
+        if let Some(settlement_tx) = settlement_tx {
+            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
+        }
+    }
+
+    fn mark_pending_user_input_indeterminate(
+        &self,
+        thread_id: &str,
+        request: &PendingUserInputRequest,
+    ) {
+        let settlement_tx = if let Some(entry) = self
+            .pending_user_inputs
+            .lock()
+            .get_mut(&(thread_id.to_string(), request.id.clone()))
+            && entry.request.turn_id == request.turn_id
+        {
+            entry.settling = true;
+            entry.indeterminate = true;
+            Some(entry.settlement_tx.clone())
+        } else {
+            None
+        };
+        if let Some(settlement_tx) = settlement_tx {
+            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
+        }
+    }
+
+    fn finish_pending_user_input_settlement(
+        &self,
+        thread_id: &str,
+        request: &PendingUserInputRequest,
+    ) -> Option<watch::Sender<u64>> {
+        let mut pending = self.pending_user_inputs.lock();
+        let key = (thread_id.to_string(), request.id.clone());
+        let settlement_tx = if pending.get(&key).is_some_and(|entry| {
+            entry.request.turn_id == request.turn_id && entry.settling && !entry.indeterminate
+        }) {
+            pending.remove(&key).map(|entry| entry.settlement_tx)
+        } else {
+            None
+        };
+        drop(pending);
+        settlement_tx
+    }
+
+    async fn settle_claimed_user_input(
+        &self,
+        thread_id: &str,
+        engine: Option<EngineHandle>,
+        request: PendingUserInputRequest,
+        outcome: UserInputTerminalOutcome,
+    ) -> Result<bool> {
+        let _owner = self
+            .owner
+            .upgrade()
+            .context("Runtime user-input owner was released")?;
+        anyhow::ensure!(
+            thread_id == self.thread_id,
+            "Runtime user-input thread changed"
+        );
+        let projection_lock = self.projection.clone();
+        let _projection = projection_lock.lock().await;
+        let (event, payload) = match &outcome {
+            UserInputTerminalOutcome::Answered(_) => (
+                "user_input.answered",
+                json!({ "id": &request.id, "input_id": &request.id }),
+            ),
+            UserInputTerminalOutcome::Closed(outcome) => (
+                if *outcome == crate::core::events::UserInputClosedOutcome::Answered {
+                    "user_input.answered"
+                } else {
+                    "user_input.canceled"
+                },
+                json!({"id": &request.id, "input_id": &request.id, "outcome": outcome}),
+            ),
+            UserInputTerminalOutcome::Canceled { terminal } => (
+                "user_input.canceled",
+                json!({
+                    "id": &request.id,
+                    "input_id": &request.id,
+                    "terminal": terminal,
+                }),
+            ),
+        };
+        if let Err(error) = self
+            .emit_event(thread_id, Some(&request.turn_id), None, event, payload)
+            .await
+        {
+            if event_append_is_indeterminate(&error) {
+                self.mark_pending_user_input_indeterminate(thread_id, &request);
+            } else {
+                self.restore_pending_user_input_claim(thread_id, &request);
+            }
+            return Err(error);
+        }
+        drop(_projection);
+
+        let terminal = matches!(
+            &outcome,
+            UserInputTerminalOutcome::Canceled { terminal: true }
+                | UserInputTerminalOutcome::Closed(_)
+        );
+        let delivery_result = match (engine, outcome) {
+            (Some(engine), UserInputTerminalOutcome::Answered(response)) => {
+                engine.submit_user_input(&request.id, response).await
+            }
+            (Some(engine), UserInputTerminalOutcome::Canceled { .. }) => {
+                engine.cancel_user_input(&request.id).await
+            }
+            (_, UserInputTerminalOutcome::Closed(_)) | (None, _) => Ok(()),
+        };
+        if let Err(error) = delivery_result {
+            if !terminal {
+                // Keep the same claim until Engine's verdict. A simultaneous
+                // ToolCallComplete waits for this owner, then closes it; a
+                // failed delivery alone must not erase an indefinite waiter.
+                let _projection = projection_lock.lock().await;
+                if let Err(receipt_error) = self.emit_event(
+                    thread_id,
+                    Some(&request.turn_id),
+                    None,
+                    "user_input.required",
+                    json!({
+                        "id": &request.id,
+                        "request": &request.request,
+                        "delivery_error": "Engine did not accept the decision. Retry if the question is still pending.",
+                    }),
+                ).await {
+                    if event_append_is_indeterminate(&receipt_error) {
+                        self.mark_pending_user_input_indeterminate(thread_id, &request);
+                    } else {
+                        self.restore_pending_user_input_claim(thread_id, &request);
+                    }
+                    return Err(receipt_error);
+                }
+                self.restore_pending_user_input_claim(thread_id, &request);
+                return Err(error);
+            }
+            // A terminal turn already ended the waiter. Its durable cleanup
+            // remains authoritative even when Engine rejects a late cancel.
+            tracing::debug!(thread_id, input_id = %request.id,
+                "Terminal user-input cancellation was durable after waiter ended: {error}");
+        }
+        let settlement_tx = self.finish_pending_user_input_settlement(thread_id, &request);
+        if let Some(settlement_tx) = settlement_tx {
+            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
+        }
+        Ok(true)
+    }
+
+    async fn close(
+        &self,
+        input_id: &str,
+        turn_id: Option<&str>,
+        outcome: crate::core::events::UserInputClosedOutcome,
+    ) -> Result<()> {
+        let request = loop {
+            match self.claim_pending_user_input(&self.thread_id, input_id, turn_id, None)? {
+                PendingUserInputClaim::Claimed(request) => break request,
+                PendingUserInputClaim::Missing => return Ok(()),
+                PendingUserInputClaim::Settling => {
+                    let progress = self
+                        .pending_user_inputs
+                        .lock()
+                        .get(&(self.thread_id.clone(), input_id.to_string()))
+                        .filter(|entry| {
+                            entry.settling
+                                && !entry.indeterminate
+                                && turn_id.is_none_or(|turn_id| entry.request.turn_id == turn_id)
+                        })
+                        .map(|entry| entry.settlement_tx.subscribe());
+                    if let Some(mut progress) = progress {
+                        let _ = progress.changed().await;
+                    }
+                }
+                PendingUserInputClaim::Indeterminate => bail!(
+                    "User-input request '{input_id}' has an indeterminate terminal receipt; inspect Runtime storage before closing"
+                ),
+            }
+        };
+        self.settle_claimed_user_input(
+            &self.thread_id,
+            None,
+            request,
+            UserInputTerminalOutcome::Closed(outcome),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn emit_event(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        event: impl Into<String>,
+        payload: Value,
+    ) -> Result<RuntimeEventRecord> {
+        let _emit = self.event_emit.lock().await;
+        let record = self
+            .store
+            .append_event(thread_id, turn_id, item_id, event, payload)
+            .await?;
+        let _ = self.event_tx.send(record.clone());
+        Ok(record)
+    }
 }
 
 struct PendingDynamicToolEntry {
@@ -8485,7 +8748,7 @@ impl RuntimeThreadManager {
         // byte limits are active. Rejected reloads leave the prior limits in
         // place.
         new_config.retain_compatible_session_keys();
-        let workshop_activation = crate::tools::large_output_router::install_active_workshop(
+        let workshop_activation = codewhale_runtime::active_workshop::install_active_workshop(
             new_config.workshop.as_ref(),
         );
         codewhale_runtime::config::initialize_cloud_facts(&new_config);
@@ -9090,6 +9353,18 @@ impl RuntimeThreadManager {
         self.pending_approvals.lock().remove(approval_id);
     }
 
+    fn user_input_settlement(&self, thread_id: &str) -> RuntimeUserInputSettlement {
+        RuntimeUserInputSettlement {
+            thread_id: thread_id.to_string(),
+            pending_user_inputs: self.pending_user_inputs.clone(),
+            store: self.store.clone(),
+            projection: self.projection_lock(thread_id),
+            event_emit: self.event_emit.clone(),
+            event_tx: self.event_tx.clone(),
+            owner: Arc::downgrade(&self._process_owner_lock),
+        }
+    }
+
     fn register_pending_user_input(&self, thread_id: &str, request: PendingUserInputRequest) {
         let (settlement_tx, _settlement_rx) = watch::channel(0);
         self.pending_user_inputs.lock().insert(
@@ -9101,29 +9376,6 @@ impl RuntimeThreadManager {
                 indeterminate: false,
             },
         );
-    }
-
-    fn claim_pending_user_input(
-        &self,
-        thread_id: &str,
-        input_id: &str,
-        turn_id: Option<&str>,
-    ) -> PendingUserInputClaim {
-        let mut pending = self.pending_user_inputs.lock();
-        let Some(entry) = pending.get_mut(&(thread_id.to_string(), input_id.to_string())) else {
-            return PendingUserInputClaim::Missing;
-        };
-        if turn_id.is_some_and(|turn_id| entry.request.turn_id != turn_id) {
-            return PendingUserInputClaim::Missing;
-        }
-        if entry.indeterminate {
-            return PendingUserInputClaim::Indeterminate;
-        }
-        if entry.settling {
-            return PendingUserInputClaim::Settling;
-        }
-        entry.settling = true;
-        PendingUserInputClaim::Claimed(entry.request.clone())
     }
 
     fn discard_pending_user_input_registration(&self, thread_id: &str, input_id: &str) {
@@ -9164,64 +9416,6 @@ impl RuntimeThreadManager {
             claims.push(entry.request.clone());
         }
         Ok((claims, settling))
-    }
-
-    fn restore_pending_user_input_claim(&self, thread_id: &str, request: &PendingUserInputRequest) {
-        let settlement_tx = if let Some(entry) = self
-            .pending_user_inputs
-            .lock()
-            .get_mut(&(thread_id.to_string(), request.id.clone()))
-            && entry.request.turn_id == request.turn_id
-        {
-            entry.settling = false;
-            entry.indeterminate = false;
-            Some(entry.settlement_tx.clone())
-        } else {
-            None
-        };
-        if let Some(settlement_tx) = settlement_tx {
-            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
-        }
-    }
-
-    fn mark_pending_user_input_indeterminate(
-        &self,
-        thread_id: &str,
-        request: &PendingUserInputRequest,
-    ) {
-        let settlement_tx = if let Some(entry) = self
-            .pending_user_inputs
-            .lock()
-            .get_mut(&(thread_id.to_string(), request.id.clone()))
-            && entry.request.turn_id == request.turn_id
-        {
-            entry.settling = true;
-            entry.indeterminate = true;
-            Some(entry.settlement_tx.clone())
-        } else {
-            None
-        };
-        if let Some(settlement_tx) = settlement_tx {
-            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
-        }
-    }
-
-    fn finish_pending_user_input_settlement(
-        &self,
-        thread_id: &str,
-        request: &PendingUserInputRequest,
-    ) -> Option<watch::Sender<u64>> {
-        let mut pending = self.pending_user_inputs.lock();
-        let key = (thread_id.to_string(), request.id.clone());
-        let settlement_tx = if pending.get(&key).is_some_and(|entry| {
-            entry.request.turn_id == request.turn_id && entry.settling && !entry.indeterminate
-        }) {
-            pending.remove(&key).map(|entry| entry.settlement_tx)
-        } else {
-            None
-        };
-        drop(pending);
-        settlement_tx
     }
 
     fn pending_requests_for_thread(
@@ -9474,7 +9668,10 @@ impl RuntimeThreadManager {
             };
             state.engine.clone()
         };
-        let request = match self.claim_pending_user_input(thread_id, input_id, None) {
+        let request = match self
+            .user_input_settlement(thread_id)
+            .claim_pending_user_input(thread_id, input_id, None, Some(&response))?
+        {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
                 return Ok(false);
@@ -9494,6 +9691,7 @@ impl RuntimeThreadManager {
         let (ack_tx, ack_rx) = oneshot::channel();
         let worker = tokio::spawn(async move {
             let result = manager
+                .user_input_settlement(&thread_id)
                 .settle_claimed_user_input(
                     &thread_id,
                     Some(engine),
@@ -9508,7 +9706,6 @@ impl RuntimeThreadManager {
         ack_rx.await.context("User-input settlement task failed")?
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     pub async fn cancel_user_input(&self, thread_id: &str, input_id: &str) -> Result<bool> {
         let admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
@@ -9519,7 +9716,10 @@ impl RuntimeThreadManager {
             };
             state.engine.clone()
         };
-        let request = match self.claim_pending_user_input(thread_id, input_id, None) {
+        let request = match self
+            .user_input_settlement(thread_id)
+            .claim_pending_user_input(thread_id, input_id, None, None)?
+        {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
                 return Ok(false);
@@ -9535,6 +9735,7 @@ impl RuntimeThreadManager {
         let (ack_tx, ack_rx) = oneshot::channel();
         let worker = tokio::spawn(async move {
             let result = manager
+                .user_input_settlement(&thread_id)
                 .settle_claimed_user_input(
                     &thread_id,
                     Some(engine),
@@ -9551,92 +9752,44 @@ impl RuntimeThreadManager {
             .context("User-input cancellation task failed")?
     }
 
-    async fn settle_claimed_user_input(
+    async fn publish_user_input_request(
         &self,
         thread_id: &str,
-        engine: Option<EngineHandle>,
-        request: PendingUserInputRequest,
-        outcome: UserInputTerminalOutcome,
-    ) -> Result<bool> {
+        turn_id: &str,
+        engine: &EngineHandle,
+        id: String,
+        request: crate::tools::user_input::UserInputRequest,
+    ) -> Result<()> {
         let projection_lock = self.projection_lock(thread_id);
-        let _projection = projection_lock.lock().await;
-        let (event, payload) = match &outcome {
-            UserInputTerminalOutcome::Answered(_) => (
-                "user_input.answered",
-                json!({ "id": &request.id, "input_id": &request.id }),
-            ),
-            UserInputTerminalOutcome::Canceled { terminal } => (
-                "user_input.canceled",
+        let projection = projection_lock.lock().await;
+        self.register_pending_user_input(
+            thread_id,
+            PendingUserInputRequest {
+                id: id.clone(),
+                turn_id: turn_id.to_string(),
+                request: request.clone(),
+            },
+        );
+        if let Err(err) = self
+            .emit_event(
+                thread_id,
+                Some(turn_id),
+                None,
+                "user_input.required",
                 json!({
-                    "id": &request.id,
-                    "input_id": &request.id,
-                    "terminal": terminal,
+                    "id": id,
+                    "request": request,
                 }),
-            ),
-        };
-        if let Err(error) = self
-            .emit_event(thread_id, Some(&request.turn_id), None, event, payload)
+            )
             .await
         {
-            if event_append_is_indeterminate(&error) {
-                self.mark_pending_user_input_indeterminate(thread_id, &request);
-            } else {
-                self.restore_pending_user_input_claim(thread_id, &request);
-            }
-            return Err(error);
+            self.discard_pending_user_input_registration(thread_id, &id);
+            drop(projection);
+            let _ = engine.cancel_user_input(&id).await;
+            return Err(err);
         }
-        drop(_projection);
-
-        let terminal = matches!(
-            &outcome,
-            UserInputTerminalOutcome::Canceled { terminal: true }
-        );
-        let delivery_result = match (engine, outcome) {
-            (Some(engine), UserInputTerminalOutcome::Answered(response)) => {
-                engine.submit_user_input(&request.id, response).await
-            }
-            (Some(engine), UserInputTerminalOutcome::Canceled { .. }) => {
-                engine.cancel_user_input(&request.id).await
-            }
-            (None, _) => Ok(()),
-        };
-        if let Err(error) = delivery_result {
-            if !terminal {
-                // Keep the same claim until Engine's verdict. A simultaneous
-                // ToolCallComplete waits for this owner, then closes it; a
-                // failed delivery alone must not erase an indefinite waiter.
-                let _projection = projection_lock.lock().await;
-                if let Err(receipt_error) = self.emit_event(
-                    thread_id,
-                    Some(&request.turn_id),
-                    None,
-                    "user_input.required",
-                    json!({
-                        "id": &request.id,
-                        "request": &request.request,
-                        "delivery_error": "Engine did not accept the decision. Retry if the question is still pending.",
-                    }),
-                ).await {
-                    if event_append_is_indeterminate(&receipt_error) {
-                        self.mark_pending_user_input_indeterminate(thread_id, &request);
-                    } else {
-                        self.restore_pending_user_input_claim(thread_id, &request);
-                    }
-                    return Err(receipt_error);
-                }
-                self.restore_pending_user_input_claim(thread_id, &request);
-                return Err(error);
-            }
-            // A terminal turn already ended the waiter. Its durable cleanup
-            // remains authoritative even when Engine rejects a late cancel.
-            tracing::debug!(thread_id, input_id = %request.id,
-                "Terminal user-input cancellation was durable after waiter ended: {error}");
-        }
-        let settlement_tx = self.finish_pending_user_input_settlement(thread_id, &request);
-        if let Some(settlement_tx) = settlement_tx {
-            settlement_tx.send_modify(|epoch| *epoch = epoch.saturating_add(1));
-        }
-        Ok(true)
+        drop(projection);
+        Ok(())
     }
 
     async fn settle_user_input_for_completed_tool(
@@ -9646,7 +9799,10 @@ impl RuntimeThreadManager {
         input_id: &str,
     ) -> Result<()> {
         let request = loop {
-            match self.claim_pending_user_input(thread_id, input_id, Some(turn_id)) {
+            match self
+                .user_input_settlement(thread_id)
+                .claim_pending_user_input(thread_id, input_id, Some(turn_id), None)?
+            {
                 PendingUserInputClaim::Claimed(request) => break request,
                 PendingUserInputClaim::Missing => return Ok(()),
                 PendingUserInputClaim::Settling => {
@@ -9677,13 +9833,14 @@ impl RuntimeThreadManager {
         // Engine already ended this waiter (timeout, cancellation or failure).
         // Reuse durable request settlement without sending a stale decision
         // back to it. The tool result carries the actual reason it ended.
-        self.settle_claimed_user_input(
-            thread_id,
-            None,
-            request,
-            UserInputTerminalOutcome::Canceled { terminal: false },
-        )
-        .await?;
+        self.user_input_settlement(thread_id)
+            .settle_claimed_user_input(
+                thread_id,
+                None,
+                request,
+                UserInputTerminalOutcome::Canceled { terminal: false },
+            )
+            .await?;
         Ok(())
     }
 
@@ -9697,13 +9854,14 @@ impl RuntimeThreadManager {
             let (requests, settling) =
                 self.claim_pending_user_inputs_for_turn(thread_id, turn_id)?;
             for request in requests {
-                self.settle_claimed_user_input(
-                    thread_id,
-                    engine.clone(),
-                    request,
-                    UserInputTerminalOutcome::Canceled { terminal: true },
-                )
-                .await?;
+                self.user_input_settlement(thread_id)
+                    .settle_claimed_user_input(
+                        thread_id,
+                        engine.clone(),
+                        request,
+                        UserInputTerminalOutcome::Canceled { terminal: true },
+                    )
+                    .await?;
             }
             if settling.is_empty() {
                 return Ok(());
@@ -9771,6 +9929,7 @@ impl RuntimeThreadManager {
                 id: input_id.to_string(),
                 turn_id: "test-turn".to_string(),
                 request: crate::tools::user_input::UserInputRequest {
+                    require_typed_answers: false,
                     questions: Vec::new(),
                 },
             },
@@ -11518,6 +11677,7 @@ impl RuntimeThreadManager {
             archived: req.archived,
             system_prompt: req.system_prompt,
             task_id: req.task_id,
+            parent_thread_id: None,
             title: None,
             session_id: None,
             saved_session_checkpoint: None,
@@ -12207,14 +12367,14 @@ impl RuntimeThreadManager {
             if turn.thread_id != thread_id {
                 return Ok(None);
             }
-            let recorded = |kind: crate::snapshot::WorkspaceSnapshotKind| {
+            let recorded = |kind: codewhale_snapshot::WorkspaceSnapshotKind| {
                 turn.workspace_snapshots.iter().rfind(|receipt| {
                     receipt.kind == kind
                         && receipt.tool_call_id.as_deref() == Some(tool_call_id.as_str())
                 })
             };
-            let pre = recorded(crate::snapshot::WorkspaceSnapshotKind::Tool);
-            let post = recorded(crate::snapshot::WorkspaceSnapshotKind::PostTool);
+            let pre = recorded(codewhale_snapshot::WorkspaceSnapshotKind::Tool);
+            let post = recorded(codewhale_snapshot::WorkspaceSnapshotKind::PostTool);
             let item = manager.item_for_call(&turn, &tool_call_id)?;
             // A call the turn recorded no item for is a call this turn never
             // ran: the caller asked about the wrong turn. A call with an item
@@ -13191,7 +13351,7 @@ impl RuntimeThreadManager {
     pub(crate) fn thread_workspace_snapshots(
         &self,
         thread_id: &str,
-    ) -> Result<Vec<crate::snapshot::WorkspaceSnapshotRef>> {
+    ) -> Result<Vec<codewhale_snapshot::WorkspaceSnapshotRef>> {
         Ok(self
             .store
             .list_turns_for_thread(thread_id)?
@@ -13655,6 +13815,7 @@ impl RuntimeThreadManager {
         forked.latest_turn_id = None;
         forked.archived = false;
         forked.last_read = None;
+        forked.parent_thread_id = Some(source.id.clone());
 
         let source_turns = self.store.list_turns_for_thread(&source.id)?;
         // One read for every turn's items — see `prepared_items_for_turns`: a
@@ -14165,6 +14326,7 @@ impl RuntimeThreadManager {
         forked.latest_turn_id = None;
         forked.archived = false;
         forked.last_read = None;
+        forked.parent_thread_id = Some(source.id.clone());
 
         // The fork keeps only the prefix it was cut at, in a document of its
         // own — see `bind_fork_to_own_session`.
@@ -17668,7 +17830,7 @@ impl RuntimeThreadManager {
             let lsp_config = (!isolated_chat)
                 .then(|| cfg.lsp.clone())
                 .flatten()
-                .map(crate::lsp::LspConfig::from);
+                .map(codewhale_lsp::LspConfig::from);
             let max_subagents = cfg
                 .max_subagents_for_provider(&route_identity)
                 .clamp(1, MAX_SUBAGENTS);
@@ -17748,6 +17910,7 @@ impl RuntimeThreadManager {
                 features.disable(codewhale_runtime::features::Feature::Mcp);
             }
             let engine_cfg = EngineConfig {
+                user_input_responder: true,
                 session_checkpoint_backend: Some(
                     crate::core::events::SessionCheckpointProjection::RuntimeReceiptRedacted,
                 ),
@@ -18067,6 +18230,7 @@ impl RuntimeThreadManager {
             notices: self.notices.clone(),
             owner: Arc::downgrade(&self._process_owner_lock),
         };
+        let input_settlement = self.user_input_settlement(&thread.id);
         let handle = engine.clone();
         let thread_id = thread.id.clone();
         let pump = tokio::spawn(async move {
@@ -18136,14 +18300,18 @@ impl RuntimeThreadManager {
                         }
                         break 'pump;
                     };
-                    let owns_turn = {
+                    let (owns_receiver, owns_turn) = {
                         let active = active.lock().await;
-                        active.engines.get(&thread_id).is_some_and(|state| {
-                            state.active_turn.is_some()
-                                && identity.upgrade().is_some_and(|receiver| {
+                        active
+                            .engines
+                            .get(&thread_id)
+                            .map(|state| {
+                                let owns_receiver = identity.upgrade().is_some_and(|receiver| {
                                     Arc::ptr_eq(&receiver, &state.engine.rx_event)
-                                })
-                        })
+                                });
+                                (owns_receiver, owns_receiver && state.active_turn.is_some())
+                            })
+                            .unwrap_or((false, false))
                     };
                     if !owns_turn {
                         match &event {
@@ -18164,6 +18332,13 @@ impl RuntimeThreadManager {
                             }
                             EngineEvent::UserInputRequired { id, .. } => {
                                 let _ = handle.cancel_user_input(id).await;
+                            }
+                            EngineEvent::UserInputClosed { id, outcome } if owns_receiver => {
+                                if let Err(error) = input_settlement.close(id, None, *outcome).await
+                                {
+                                    tracing::error!(thread_id = %thread_id, input_id = %id, "Runtime user-input closure failed: {error:#}");
+                                    break 'pump;
+                                }
                             }
                             _ => {}
                         }
@@ -19284,6 +19459,13 @@ impl RuntimeThreadManager {
                 }
                 bail!("engine event channel closed before turn {turn_id} completed");
             };
+
+            if let EngineEvent::UserInputClosed { id, outcome } = &event {
+                self.user_input_settlement(&thread_id)
+                    .close(id, Some(&turn_id), *outcome)
+                    .await?;
+                continue;
+            }
 
             if let EngineEvent::SessionUpdated {
                 checkpoint: Some(checkpoint),
@@ -20460,6 +20642,12 @@ impl RuntimeThreadManager {
                                 if !event_channel_closed =>
                             {
                                 match event {
+                                    Some(EngineEvent::UserInputRequired { id, request }) => {
+                                        self.publish_user_input_request(&thread_id, &turn_id, &engine, id, request).await?;
+                                    }
+                                    Some(EngineEvent::UserInputClosed { id, outcome }) => {
+                                        self.user_input_settlement(&thread_id).close(&id, Some(&turn_id), outcome).await?;
+                                    }
                                     Some(EngineEvent::SessionUpdated { checkpoint: Some(checkpoint), .. }) => {
                                         checkpoint.fail("Runtime checkpoint cannot wait behind an approval");
                                     }
@@ -20709,35 +20897,8 @@ impl RuntimeThreadManager {
                     }
                 }
                 EngineEvent::UserInputRequired { id, request } => {
-                    let projection_lock = self.projection_lock(&thread_id);
-                    let projection = projection_lock.lock().await;
-                    self.register_pending_user_input(
-                        &thread_id,
-                        PendingUserInputRequest {
-                            id: id.clone(),
-                            turn_id: turn_id.clone(),
-                            request: request.clone(),
-                        },
-                    );
-                    if let Err(err) = self
-                        .emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "user_input.required",
-                            json!({
-                                "id": id,
-                                "request": request,
-                            }),
-                        )
-                        .await
-                    {
-                        self.discard_pending_user_input_registration(&thread_id, &id);
-                        drop(projection);
-                        let _ = engine.cancel_user_input(&id).await;
-                        return Err(err);
-                    }
-                    drop(projection);
+                    self.publish_user_input_request(&thread_id, &turn_id, &engine, id, request)
+                        .await?;
                 }
                 EngineEvent::Status { message } => {
                     // A heartbeat queued behind another event while its
@@ -20973,7 +21134,7 @@ impl RuntimeThreadManager {
                             "workspace snapshot receipt was not recorded; this turn has no such restore point: {err:#}"
                         );
                     } else {
-                        if snapshot.kind == crate::snapshot::WorkspaceSnapshotKind::Tool
+                        if snapshot.kind == codewhale_snapshot::WorkspaceSnapshotKind::Tool
                             && let Some(call_id) = snapshot.tool_call_id.as_ref()
                         {
                             tool_restore_points.insert(call_id.clone(), snapshot.tree_id.clone());
@@ -21363,14 +21524,14 @@ impl RuntimeThreadManager {
     fn initial_turn_workspace(
         &self,
         thread_id: &str,
-        snapshots: &[crate::snapshot::WorkspaceSnapshotRef],
+        snapshots: &[codewhale_snapshot::WorkspaceSnapshotRef],
     ) -> TurnWorkspaceArtifacts {
         if let Some(pair) = turn_snapshot_pair(snapshots) {
             return TurnWorkspaceArtifacts::pending(pair.pre.tree_id);
         }
         let pre = snapshots
             .iter()
-            .find(|snapshot| snapshot.kind == crate::snapshot::WorkspaceSnapshotKind::PreTurn);
+            .find(|snapshot| snapshot.kind == codewhale_snapshot::WorkspaceSnapshotKind::PreTurn);
         let gated = || -> Option<TurnWorkspaceReason> {
             if !self.config.read().snapshots_config().enabled {
                 return Some(TurnWorkspaceReason::SnapshotsDisabled);
@@ -22618,16 +22779,16 @@ pub struct TurnArtifactsView {
 /// The pre-turn and post-turn restore points recorded on one turn: the
 /// pair its workspace delta is diffed from.
 struct TurnSnapshotPair {
-    pre: crate::snapshot::WorkspaceSnapshotRef,
-    post: crate::snapshot::WorkspaceSnapshotRef,
+    pre: codewhale_snapshot::WorkspaceSnapshotRef,
+    post: codewhale_snapshot::WorkspaceSnapshotRef,
 }
 
 /// The turn's first `pre_turn` and last `post_turn` receipts, when both were
 /// recorded.
 fn turn_snapshot_pair(
-    snapshots: &[crate::snapshot::WorkspaceSnapshotRef],
+    snapshots: &[codewhale_snapshot::WorkspaceSnapshotRef],
 ) -> Option<TurnSnapshotPair> {
-    use crate::snapshot::WorkspaceSnapshotKind;
+    use codewhale_snapshot::WorkspaceSnapshotKind;
     let pre = snapshots
         .iter()
         .find(|snapshot| snapshot.kind == WorkspaceSnapshotKind::PreTurn)?;
@@ -22648,11 +22809,11 @@ fn workspace_delta(
     pre: &str,
     post: &str,
     item_paths: &[String],
-) -> Result<(crate::snapshot::SnapshotDelta, HashSet<String>)> {
-    let repo = crate::snapshot::SnapshotRepo::open_existing(workspace)?
+) -> Result<(codewhale_snapshot::SnapshotDelta, HashSet<String>)> {
+    let repo = codewhale_snapshot::SnapshotRepo::open_existing(workspace)?
         .context("workspace snapshot repo is missing")?;
-    let pre = crate::snapshot::SnapshotId::parse(pre)?;
-    let post = crate::snapshot::SnapshotId::parse(post)?;
+    let pre = codewhale_snapshot::SnapshotId::parse(pre)?;
+    let post = codewhale_snapshot::SnapshotId::parse(post)?;
     let delta = repo.diff_snapshots(&pre, &post, turn_artifacts::MAX_TURN_ARTIFACTS)?;
     let mut tracked = repo.tracked_paths(&pre, item_paths)?;
     tracked.extend(repo.tracked_paths(&post, item_paths)?);

@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::approval_log::{ApprovalDecider, ApprovalOutcome, ApprovalReceipt};
-use crate::core::events::Event;
+use crate::core::events::{Event, UserInputClosedOutcome};
 use crate::tools::spec::ToolError;
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 
@@ -442,128 +442,193 @@ impl Engine {
         tool_id: &str,
         request: UserInputRequest,
     ) -> Result<UserInputResponse, ToolError> {
-        // C02-19: a question that never reached a host has nobody to answer
-        // it. Fail now instead of waiting out the timeout — which by default
-        // is no timeout at all.
-        if self
-            .send_event(Event::UserInputRequired {
-                id: tool_id.to_string(),
-                request,
-            })
+        self.await_user_input_withdrawal(tool_id, request, CancellationToken::new(), None)
             .await
-            .is_err()
-        {
-            return Err(ToolError::execution_failed(
-                "User input request could not reach its host, so nobody was asked. \
-                 Continue without the answer or ask in your reply instead."
-                    .to_string(),
-            ));
-        }
-        // R1, as for tool approval: the per-turn wall-clock budget bounds the
-        // agent's own time, not how long a person takes to answer.
-        self.turn_wall_clock.begin_human_wait();
-        let response = self.await_user_input_decision(tool_id).await;
-        // The waiter has ended. Every queued reply is now stale, including a
-        // second answer racing the accepted one or the configured deadline.
-        while let Ok(decision) = self.rx_user_input.try_recv() {
-            decision.reject();
-        }
-        self.turn_wall_clock.end_human_wait();
-        response
     }
 
-    async fn await_user_input_decision(
+    pub(super) async fn await_user_input_withdrawal(
         &mut self,
         tool_id: &str,
+        request: UserInputRequest,
+        withdrawal: CancellationToken,
+        invocation_clock: Option<&std::sync::Mutex<crate::tools::codemode::PauseClock>>,
     ) -> Result<UserInputResponse, ToolError> {
-        // #6003: `[tools] user_input_timeout_seconds`. Absent, or an explicit
-        // 0, waits until the person answers or cancels. A positive value is
-        // one absolute deadline for the whole wait: `select!` drops the
-        // losing branches whenever the heartbeat wins, so a relative
-        // `timeout(wait, ..)` rebuilt per iteration never fired.
+        if !self.config.user_input_responder
+            || self.host_profile != super::EngineHostProfile::Normal
+            || self.is_acp_turn()
+        {
+            return Err(ToolError::execution_failed(
+                "User input is unavailable for this host",
+            ));
+        }
+        request.validate_transport()?;
         let wait = self
             .config
             .user_input_timeout
             .filter(|wait| !wait.is_zero());
-        let started = std::time::Instant::now();
         let deadline = wait.map(|wait| tokio::time::Instant::now() + wait);
+        let tx_event = self.tx_event.clone();
+        if tx_event.max_capacity() < 2 {
+            return Err(ToolError::execution_failed(
+                "User input host cannot reserve its request and closure",
+            ));
+        }
+        let mut permits = tokio::select! {
+            biased;
+            _ = self.cancel_token.cancelled() => return Err(ToolError::cancelled("Request cancelled while awaiting user input")),
+            _ = withdrawal.cancelled() => return Err(ToolError::cancelled("User input request withdrawn")),
+            _ = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(ToolError::Timeout { seconds: wait.map(|wait| wait.as_secs()).unwrap_or(0) }),
+            permits = tx_event.reserve_many(2) => permits.map_err(|_| ToolError::execution_failed("User input request could not reach its host, so nobody was asked"))?,
+        };
+        if self.cancel_token.is_cancelled() || withdrawal.is_cancelled() {
+            return Err(ToolError::cancelled(
+                "User input request withdrawn before display",
+            ));
+        }
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            return Err(ToolError::Timeout {
+                seconds: wait.map(|wait| wait.as_secs()).unwrap_or(0),
+            });
+        }
+        let required = permits.next().expect("reserved request capacity");
+        let closed = permits.next().expect("reserved closure capacity");
+        let cancel = self.cancel_token.clone();
+        let cancel_suffix = self.cancel_reason_suffix();
+        self.turn_wall_clock.begin_human_wait();
+        let mut guard = UserInputWait {
+            _invocation_pause: invocation_clock.map(crate::tools::codemode::PauseGuard::new),
+            id: tool_id.to_string(),
+            outcome: UserInputClosedOutcome::Cancelled,
+            closed: Some(closed),
+            clock: &mut self.turn_wall_clock,
+            decisions: &mut self.rx_user_input,
+        };
+        required.send(Event::UserInputRequired {
+            id: tool_id.to_string(),
+            request: request.clone(),
+        });
+        let response = guard
+            .await_decision(
+                &request,
+                &tx_event,
+                &cancel,
+                &withdrawal,
+                &cancel_suffix,
+                wait,
+                deadline,
+            )
+            .await;
+        guard.outcome = match &response {
+            Ok(_) => UserInputClosedOutcome::Answered,
+            Err(ToolError::Cancelled { .. }) => UserInputClosedOutcome::Cancelled,
+            Err(error)
+                if error
+                    .metadata()
+                    .and_then(|value| value.get("user_question_error"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("ASK_CANCELLED") =>
+            {
+                UserInputClosedOutcome::Cancelled
+            }
+            Err(ToolError::Timeout { .. }) => UserInputClosedOutcome::TimedOut,
+            Err(_) => UserInputClosedOutcome::Unavailable,
+        };
+        response
+    }
+}
+
+struct UserInputWait<'a> {
+    _invocation_pause: Option<crate::tools::codemode::PauseGuard<'a>>,
+    id: String,
+    outcome: UserInputClosedOutcome,
+    closed: Option<tokio::sync::mpsc::Permit<'a, Event>>,
+    clock: &'a mut codewhale_runtime::turn_budget::TurnWallClock,
+    decisions: &'a mut tokio::sync::mpsc::Receiver<UserInputDecision>,
+}
+
+impl Drop for UserInputWait<'_> {
+    fn drop(&mut self) {
+        while let Ok(decision) = self.decisions.try_recv() {
+            decision.reject();
+        }
+        self.clock.end_human_wait();
+        if let Some(closed) = self.closed.take() {
+            closed.send(Event::UserInputClosed {
+                id: self.id.clone(),
+                outcome: self.outcome,
+            });
+        }
+    }
+}
+
+impl UserInputWait<'_> {
+    async fn await_decision(
+        &mut self,
+        request: &UserInputRequest,
+        tx_event: &tokio::sync::mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+        withdrawal: &CancellationToken,
+        cancel_suffix: &str,
+        wait: Option<Duration>,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<UserInputResponse, ToolError> {
+        let started = std::time::Instant::now();
         let mut heartbeat = tokio::time::interval(WAIT_HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         heartbeat.tick().await;
         let mut announced = false;
         loop {
             tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ToolError::cancelled(format!("Request cancelled while awaiting user input{cancel_suffix}"))),
+                _ = withdrawal.cancelled() => return Err(ToolError::cancelled("User input request withdrawn")),
+                _ = tx_event.closed() => return Err(ToolError::execution_failed("User input host disconnected")),
+                _ = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => {
+                    let seconds = wait.map(|wait| wait.as_secs()).unwrap_or(0);
+                    let _ = tx_event.try_send(Event::Status { message: format!("User input timed out after {seconds}s") });
+                    return Err(ToolError::Timeout { seconds });
+                }
+                decision = self.decisions.recv() => {
+                    let Some(decision) = decision else {
+                        return Err(ToolError::execution_failed("User input channel closed"));
+                    };
+                    if cancel.is_cancelled() || withdrawal.is_cancelled() {
+                        decision.reject();
+                        return Err(ToolError::cancelled("User input request withdrawn"));
+                    }
+                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                        decision.reject();
+                        return Err(ToolError::Timeout { seconds: wait.map(|wait| wait.as_secs()).unwrap_or(0) });
+                    }
+                    match decision {
+                        UserInputDecision::Submitted { id, response, accepted } if id == self.id => {
+                            if request.validate_response(&response).is_err() {
+                                let _ = accepted.send(false);
+                            } else if accepted.send(true).is_ok() {
+                                return Ok(response);
+                            }
+                        }
+                        UserInputDecision::Cancelled { id, accepted } if id == self.id => {
+                            if accepted.send(true).is_ok() {
+                                return Err(if request.require_typed_answers {
+                                    ToolError::execution_failed_with_metadata(
+                                        "the user cancelled ask_user_question",
+                                        serde_json::json!({"user_question_error": "ASK_CANCELLED"}),
+                                    )
+                                } else {
+                                    ToolError::cancelled("User input cancelled")
+                                });
+                            }
+                        }
+                        other => other.reject(),
+                    }
+                }
                 _ = heartbeat.tick() => {
-                    // An indefinite wait (`user_input_timeout_seconds = 0`) is
-                    // the case that needs this most: nothing else bounds it.
                     let waited = started.elapsed();
-                    let message = wait_announcement("user input", tool_id, waited);
-                    tracing::warn!(tool_id, waited_secs = waited.as_secs(), "{message}");
+                    let message = wait_announcement("user input", &self.id, waited);
+                    tracing::warn!(tool_id = self.id, waited_secs = waited.as_secs(), "{message}");
                     if !announced {
-                        announced = true;
-                        let _ = self.send_event(Event::Status { message }).await;
-                    }
-                }
-                _ = self.cancel_token.cancelled() => {
-                    let suffix = self.cancel_reason_suffix();
-                    return Err(ToolError::cancelled(
-                        format!("Request cancelled while awaiting user input{suffix}"),
-                    ));
-                }
-                result = async {
-                    match deadline {
-                        None => Ok(self.rx_user_input.recv().await),
-                        Some(deadline) => {
-                            tokio::time::timeout_at(deadline, self.rx_user_input.recv()).await
-                        }
-                    }
-                } => {
-                    match result {
-                        Ok(Some(decision)) => {
-                            // A ready mailbox can win `select!` when the
-                            // cancellation/deadline is also ready. Verify the
-                            // wait still belongs to this request before ack.
-                            if self.cancel_token.is_cancelled() {
-                                decision.reject();
-                                return Err(ToolError::cancelled(
-                                    format!("Request cancelled while awaiting user input{}", self.cancel_reason_suffix()),
-                                ));
-                            }
-                            if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-                                decision.reject();
-                                return Err(ToolError::Timeout { seconds: wait.map(|wait| wait.as_secs()).unwrap_or(0) });
-                            }
-                            match decision {
-                                UserInputDecision::Submitted { id, response, accepted } if id == tool_id => {
-                                    // An abandoned/timed-out sender must not
-                                    // commit an answer after it saw failure.
-                                    if accepted.send(true).is_ok() {
-                                        return Ok(response);
-                                    }
-                                }
-                                UserInputDecision::Cancelled { id, accepted } if id == tool_id => {
-                                    if accepted.send(true).is_ok() {
-                                        return Err(ToolError::cancelled(
-                                            "User input cancelled".to_string(),
-                                        ));
-                                    }
-                                }
-                                other => other.reject(),
-                            }
-                        }
-                        Ok(None) => {
-                            return Err(ToolError::execution_failed(
-                                "User input channel closed".to_string(),
-                            ));
-                        }
-                        Err(_) => {
-                            let seconds = wait.map(|wait| wait.as_secs()).unwrap_or(0);
-                            let _ = self.send_event(Event::Status {
-                                    message: format!("User input timed out after {seconds}s"),
-                                })
-                                .await;
-                            return Err(ToolError::Timeout { seconds });
-                        }
+                        announced = tx_event.try_send(Event::Status { message }).is_ok();
                     }
                 }
             }
@@ -815,14 +880,16 @@ mod tests {
         let (mut engine, _handle) = Engine::new(
             EngineConfig {
                 user_input_timeout: Some(Duration::from_millis(200)),
+                user_input_responder: true,
                 terminal_chrome_enabled: false,
                 ..EngineConfig::default()
             },
             &Config::default(),
         );
-        let request = UserInputRequest {
-            questions: Vec::new(),
-        };
+        let request: UserInputRequest = serde_json::from_value(serde_json::json!({
+            "questions": [{"id":"answer", "question":"Answer?", "allow_free_text":true}]
+        }))
+        .unwrap();
         let outcome = tokio::time::timeout(
             Duration::from_secs(3),
             engine.await_user_input("user-input-deadline", request),

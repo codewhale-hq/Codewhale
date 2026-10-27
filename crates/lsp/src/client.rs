@@ -692,7 +692,7 @@ fn parse_publish_diagnostics(value: &Value) -> Option<DiagnosticMessage> {
 }
 
 /// Encode an absolute filesystem path without following its links.
-pub(crate) fn uri_from_path(path: &Path) -> String {
+pub fn uri_from_path(path: &Path) -> String {
     reqwest::Url::from_file_path(path)
         .map(|url| url.to_string())
         .unwrap_or_default()
@@ -715,7 +715,8 @@ pub(super) fn path_from_uri(uri: &str) -> Option<PathBuf> {
     url.to_file_path().ok()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(super) mod tests {
     use super::*;
 
@@ -968,7 +969,7 @@ pub(super) mod tests {
         assert!(parse_publish_diagnostics(&payload).is_none());
     }
     #[cfg(unix)]
-    pub(crate) const STDIO_FIXTURE: &str = r#"
+    pub const STDIO_FIXTURE: &str = r#"
 import json, os, select, sys, time
 mode, pid_path = sys.argv[1:]
 input_stream = os.fdopen(0, 'rb', buffering=0)
@@ -1128,7 +1129,7 @@ while True:
     #[cfg(unix)]
     #[tokio::test]
     async fn language_server_does_not_inherit_parent_secret_env() {
-        use crate::test_support::{EnvVarGuard, lock_test_env};
+        use codewhale_runtime::test_support::{EnvVarGuard, lock_test_env};
         let _env_lock = lock_test_env();
         let _secret = EnvVarGuard::set("CODEWHALE_TEST_LSP_SECRET", "lsp-secret-value");
         let root = tempfile::tempdir().unwrap();

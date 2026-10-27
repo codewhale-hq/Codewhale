@@ -1212,7 +1212,9 @@ title is unset, the latest turn's input summary — the displayed title). It
 does not scan turn or item bodies: `preview` is filled only after a match, so
 a dashboard keystroke is not a whole-store read per thread. Each item includes
 `id`, `title`, `preview`, `model`, `mode`, `archived`, `updated_at`,
-`latest_turn_id`, `latest_turn_status`, plus workspace metadata:
+`latest_turn_id`, `latest_turn_status`, `parent_thread_id` when the thread
+was forked from another (absent on threads forked before the field existed),
+plus workspace metadata:
 
 ```json
 {
@@ -2241,7 +2243,14 @@ also how a client sees model-spawned work.
   `POST /v1/git/unstage` same; `POST /v1/git/discard` `{ "paths": [...] }`
   (tracked paths only — no `all`, an untracked path fails closed);
   `POST /v1/git/commit` `{ "message", "all"? }`; stage, unstage, discard
-  and commit also take an optional `expect` (below); `POST /v1/git/push`
+  and commit also take an optional `expect` (below). Stage, unstage and
+  discard also take `patch`: hunks of the one path in `paths`, with file
+  headers `diff --git a/<path> b/<path>`, `--- a/<path>`, `+++ b/<path>`
+  naming that workspace-relative path. Stage applies them to the index,
+  unstage reverses them in the index, discard reverses them in the working
+  tree (`git apply [--cached] [--reverse]`). Renames, copies, mode changes,
+  creations, deletions and binary patches are refused, and a patch that no
+  longer applies fails with git's message and writes nothing. `POST /v1/git/push`
   `{ "remote"?, "set_upstream"? }` (`remote`, or `origin` when only
   `set_upstream` is given, must name a configured remote);
   `POST /v1/git/branch`

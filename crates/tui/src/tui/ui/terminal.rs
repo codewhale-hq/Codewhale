@@ -821,10 +821,10 @@ pub(crate) const UI_QUIESCENT_POLL_MS: u64 = 250;
 pub(crate) struct IdleFacts {
     /// Live sub-agents (`running_agent_count(app) > 0`).
     pub(crate) has_running_agents: bool,
-    /// A spinner, the underwater scene, or a launch animation wants frames.
+    /// A spinner, the underwater scene, or a launch animation wants frames
+    /// faster than [`UI_QUIESCENT_POLL_MS`]; slower motion is woken by its
+    /// own frame deadline.
     pub(crate) animation_active: bool,
-    /// Durable tasks queued, running or waiting.
-    pub(crate) durable_tasks_active: bool,
     /// A terminal event is already buffered for this iteration.
     pub(crate) input_pending: bool,
     /// A sub-agent list refresh is waiting for room in the engine mailbox.
@@ -837,18 +837,18 @@ pub(crate) struct IdleFacts {
 /// the list errs towards "busy".
 pub(crate) fn ui_state_is_quiescent(app: &App, facts: &IdleFacts, now: Instant) -> bool {
     let toast_live = |toast: &StatusToast| toast.ttl_ms.is_some() && !toast.is_expired(now);
-    !(app.is_loading
+    let deciding = decision_prompt_waiting(app);
+    !((app.is_loading && !deciding)
         || app.is_compacting
         || app.is_purging
-        || app.turn_started_at.is_some()
-        || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
+        || (app.turn_started_at.is_some() && !deciding)
+        || (matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) && !deciding)
         || facts.has_running_agents
         || facts.animation_active
-        || facts.durable_tasks_active
         || facts.input_pending
         || facts.pending_engine_op
         || app.needs_redraw
-        || !app.view_stack.is_empty()
+        || (!app.view_stack.is_empty() && !deciding)
         || app.onboarding != OnboardingState::None
         || app.redaction_gate
         || !app.queued_messages.is_empty()
@@ -860,6 +860,13 @@ pub(crate) fn ui_state_is_quiescent(app: &App, facts: &IdleFacts, now: Instant) 
         || app.viewport.selection_autoscroll.is_some()
         || app.status_toasts.iter().any(toast_live)
         || app.sticky_status.as_ref().is_some_and(toast_live))
+}
+
+pub(crate) fn decision_prompt_waiting(app: &App) -> bool {
+    matches!(
+        app.view_stack.top_kind(),
+        Some(ModalKind::Approval | ModalKind::Elevation | ModalKind::UserInput)
+    )
 }
 
 /// The idle poll for this iteration: [`idle_poll_ms`] normally, relaxed to
@@ -990,13 +997,6 @@ mod idle_poll_tests {
                     ..IdleFacts::default()
                 },
                 "something is animating",
-            ),
-            (
-                IdleFacts {
-                    durable_tasks_active: true,
-                    ..IdleFacts::default()
-                },
-                "a durable task is live",
             ),
             (
                 IdleFacts {

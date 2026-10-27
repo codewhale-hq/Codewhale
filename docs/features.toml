@@ -387,6 +387,15 @@ docs = "docs/RUNTIME_API.md"
 owner = "crates/tui/src/automation_manager.rs"
 
 [[feature]]
+id = "task-suggestions"
+name = "Suggested tasks"
+summary = "The tasks tool's suggest action offers the person a task as a Start/Hide card; it starts nothing and needs no approval."
+status = "experimental"
+surfaces = { desktop = "preview" }
+since = "unreleased"
+owner = "crates/tui/src/tools/tasks.rs"
+
+[[feature]]
 id = "todos"
 name = "Todo list"
 summary = "The agent keeps a visible todo list for multi-step work."
@@ -512,7 +521,7 @@ summary = "Feeds language-server diagnostics to the agent; custom servers can be
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/LSP_PHP_CUSTOM.md"
-owner = "crates/tui/src/lsp"
+owner = "crates/lsp/src"
 
 [[feature]]
 id = "runtime-api"

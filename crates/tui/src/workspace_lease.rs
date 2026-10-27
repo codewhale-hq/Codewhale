@@ -230,10 +230,10 @@ impl WorkspaceDriveLease {
         let canonical = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
-        let project = crate::snapshot::paths::strip_worktree_suffix(&canonical);
+        let project = codewhale_snapshot::paths::strip_worktree_suffix(&canonical);
         Ok(base
-            .join(crate::snapshot::paths::stable_hex(&project))
-            .join(crate::snapshot::paths::stable_hex(&canonical))
+            .join(codewhale_snapshot::paths::stable_hex(&project))
+            .join(codewhale_snapshot::paths::stable_hex(&canonical))
             .with_extension("lease"))
     }
 

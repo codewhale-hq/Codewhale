@@ -17,17 +17,15 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::repl::PythonRuntime;
 use crate::rlm::RlmBridge;
 use crate::rlm::bridge::wait_for_deadline;
-use crate::rlm::session::{
-    ContextMeta, OutputFeedback, RlmSession, derive_session_name, write_context_file,
-};
+use crate::rlm::session::{ContextMeta, OutputFeedback, RlmSession, derive_session_name};
 use crate::tools::fetch_url::FetchUrlTool;
 use crate::tools::handle::VarHandle;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codewhale_repl::PythonRuntime;
 
 /// Registered name of the persistent RLM session tool.
 pub(crate) const RLM_TOOL_NAME: &str = "rlm";
@@ -420,7 +418,7 @@ impl RlmTool {
                 }
             }
 
-            let context_path = write_context_file(&body).map_err(|e| {
+            let context_path = codewhale_repl::write_context_file(&body).map_err(|e| {
                 ToolError::execution_failed(format!("rlm_open: failed to stage context: {e}"))
             })?;
             let context_path = tempfile::TempPath::try_from_path(context_path).map_err(|e| {

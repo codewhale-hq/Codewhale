@@ -8,7 +8,7 @@
 //! and only probes when that snapshot is stale.
 
 #[cfg(test)]
-use crate::dependencies::{ExternalTool, Git};
+use codewhale_dependencies::{ExternalTool, Git};
 use std::path::Path;
 use std::time::{Duration, Instant};
 

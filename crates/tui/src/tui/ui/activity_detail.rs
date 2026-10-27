@@ -7,7 +7,6 @@
 //! tool-details pager (including #500 spillover folding), copy-cell actions, and
 //! footer detail labels live here too.
 
-use crate::snapshot::SnapshotRepo;
 use crate::tui::app::App;
 use crate::tui::footer_ui::one_line_summary;
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, tool_status_label};
@@ -16,6 +15,7 @@ use crate::tui::ui_text::{
     history_cell_to_clipboard_text, history_cell_to_text, truncate_line_to_width,
 };
 use codewhale_localization::{MessageId, tr};
+use codewhale_snapshot::SnapshotRepo;
 
 fn selected_transcript_cell_index(app: &App) -> Option<usize> {
     if let Some(owner) = app.selection_owner_cell() {
@@ -1814,7 +1814,7 @@ mod tests {
         app.auto_model = true;
         app.last_effective_provider = Some(codewhale_config::ProviderKind::Deepseek);
         app.last_effective_model = Some("deepseek-v4-pro".to_string());
-        let decision = crate::model_routing::AutoRouteDecisionEvidence {
+        let decision = codewhale_models::auto_route_evidence::AutoRouteDecisionEvidence {
             choice: "strong".to_string(),
             probabilities_bp: [("fast".to_string(), 1800), ("strong".to_string(), 8200)]
                 .into_iter()

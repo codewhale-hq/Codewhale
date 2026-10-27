@@ -12031,7 +12031,8 @@ var init_compatibility = __esm({
         "events",
         "reflect",
         "registry",
-        "sessions"
+        "sessions",
+        "userQuestions"
       ],
       refused_services: [
         "shellHooks",
@@ -12054,7 +12055,8 @@ var init_compatibility = __esm({
         "skills",
         "avatars",
         "mcp",
-        "logger"
+        "logger",
+        "userQuestions"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -12077,7 +12079,8 @@ var init_compatibility = __esm({
         "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
         "@deepseek-ai/dsh-llm": "dsh-llm-values",
         "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values"
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
       },
       definition_api: {
         package: "@deepseek-ai/dsh-tools",
@@ -12102,16 +12105,20 @@ var init_compatibility = __esm({
       command_followup: "one-text-message-submit-on-success",
       pure_api: {
         file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "efbafde829c7ecde345ccbc84d94b676466330b7073da05163f93c03b1defc32",
+        source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
         exports: {
           "@deepseek-ai/dsh-llm": [
-            "createUserMessage"
+            "createUserMessage",
+            "HarnessError"
           ],
           "@deepseek-ai/dsh-session": [
             "SessionId"
           ],
           "@deepseek-ai/dsh-system-prompt": [
             "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
           ]
         },
         packages: [
@@ -12186,6 +12193,22 @@ var init_compatibility = __esm({
                   64
                 ],
                 sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
               }
             ],
             license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
@@ -12260,6 +12283,29 @@ var init_compatibility = __esm({
             license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
             license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
             excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.1-rc.2.tgz",
+            integrity: "sha512-XVsvMCjxHuDX4YxhwWqRi1IExp7evWVyQ1Gis+90ZBmRNRH/MujjboE+QVc79sdg+p79tzJmqPUDxPj1JOyjzQ==",
+            tarball_sha256: "f5194abbe1b3412ad56487b5e6f1aae455cce8bbf29899f824218b2ddd02ab69",
+            source_file: "lib/index.js",
+            source_sha256: "e1c51afac2e31be8593c6426976e5f31dbe2a709b85ae1ea43ed406146f54265",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  429,
+                  434
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
           }
         ],
         reuse: {
@@ -12272,11 +12318,18 @@ var init_compatibility = __esm({
             230
           ],
           sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        }
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
       },
       tool_caller_projection: "readonly-id-session-header-cwd",
       session_methods: {
         flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
       }
     };
   }
@@ -12433,6 +12486,31 @@ var init_lib3 = __esm({
   }
 });
 
+// src/dsh/dsh-message-compat.js
+var HarnessError, UserQuestionError;
+var init_dsh_message_compat = __esm({
+  "src/dsh/dsh-message-compat.js"() {
+    "use strict";
+    init_lib3();
+    HarnessError = class extends Error {
+      code;
+      constructor(message, code, options) {
+        super(message, options);
+        this.code = code;
+        this.name = new.target.name;
+      }
+    };
+    UserQuestionError = class extends HarnessError {
+      constructor(message, code, options) {
+        super(message, code, options);
+        this.name = "UserQuestionError";
+      }
+    };
+    Object.defineProperty(HarnessError, "name", { value: "HarnessError" });
+    Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
+  }
+});
+
 // src/dsh/dsh-tools-compat.js
 var init_dsh_tools_compat = __esm({
   "src/dsh/dsh-tools-compat.js"() {
@@ -12511,6 +12589,7 @@ var init_root = __esm({
     init_composition();
     init_protocol();
     init_rpc();
+    init_dsh_message_compat();
     init_resolve_hooks();
     init_compatibility();
     init_dsh_tools_compat();

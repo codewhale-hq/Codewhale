@@ -51,7 +51,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_OVERRIDE;
 
-use crate::dependencies::{HostRuntime, HostRuntimeKind};
+use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
 use codewhale_runtime::process_tree::ProcessTree;
 use codewhale_util::files::WindowsDirectory;
 

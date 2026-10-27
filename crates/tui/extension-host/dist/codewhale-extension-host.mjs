@@ -3269,6 +3269,58 @@ var init_dsh_tools_compat = __esm({
   }
 });
 
+// src/dsh/dsh-message-compat.js
+function brandString(value) {
+  return value;
+}
+function randomUUID() {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const hex = Array.from(bytes, (byte, index) => {
+    return (index === 6 ? byte & 15 | 64 : index === 8 ? byte & 63 | 128 : byte).toString(16).padStart(2, "0");
+  }).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function createMessage(input) {
+  return deepFreeze(structuredClone({
+    ...input,
+    id: brandString(randomUUID())
+  }));
+}
+function createUserMessage(input) {
+  return createMessage({
+    ...input,
+    role: "user"
+  });
+}
+function SessionId(id) {
+  return brandString(id);
+}
+var PERSONA_PREFIX_SECTION, HarnessError2, UserQuestionError;
+var init_dsh_message_compat = __esm({
+  "src/dsh/dsh-message-compat.js"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib3();
+    PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
+    HarnessError2 = class extends Error {
+      code;
+      constructor(message, code, options) {
+        super(message, options);
+        this.code = code;
+        this.name = new.target.name;
+      }
+    };
+    UserQuestionError = class extends HarnessError2 {
+      constructor(message, code, options) {
+        super(message, code, options);
+        this.name = "UserQuestionError";
+      }
+    };
+    Object.defineProperty(HarnessError2, "name", { value: "HarnessError" });
+    Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
+  }
+});
+
 // src/dsh/fiber-state.ts
 var FiberState;
 var init_fiber_state = __esm({
@@ -13802,7 +13854,8 @@ var init_compatibility = __esm({
         "events",
         "reflect",
         "registry",
-        "sessions"
+        "sessions",
+        "userQuestions"
       ],
       refused_services: [
         "shellHooks",
@@ -13825,7 +13878,8 @@ var init_compatibility = __esm({
         "skills",
         "avatars",
         "mcp",
-        "logger"
+        "logger",
+        "userQuestions"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -13848,7 +13902,8 @@ var init_compatibility = __esm({
         "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
         "@deepseek-ai/dsh-llm": "dsh-llm-values",
         "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values"
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
       },
       definition_api: {
         package: "@deepseek-ai/dsh-tools",
@@ -13873,16 +13928,20 @@ var init_compatibility = __esm({
       command_followup: "one-text-message-submit-on-success",
       pure_api: {
         file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "efbafde829c7ecde345ccbc84d94b676466330b7073da05163f93c03b1defc32",
+        source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
         exports: {
           "@deepseek-ai/dsh-llm": [
-            "createUserMessage"
+            "createUserMessage",
+            "HarnessError"
           ],
           "@deepseek-ai/dsh-session": [
             "SessionId"
           ],
           "@deepseek-ai/dsh-system-prompt": [
             "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
           ]
         },
         packages: [
@@ -13957,6 +14016,22 @@ var init_compatibility = __esm({
                   64
                 ],
                 sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
               }
             ],
             license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
@@ -14031,6 +14106,29 @@ var init_compatibility = __esm({
             license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
             license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
             excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.1-rc.2.tgz",
+            integrity: "sha512-XVsvMCjxHuDX4YxhwWqRi1IExp7evWVyQ1Gis+90ZBmRNRH/MujjboE+QVc79sdg+p79tzJmqPUDxPj1JOyjzQ==",
+            tarball_sha256: "f5194abbe1b3412ad56487b5e6f1aae455cce8bbf29899f824218b2ddd02ab69",
+            source_file: "lib/index.js",
+            source_sha256: "e1c51afac2e31be8593c6426976e5f31dbe2a709b85ae1ea43ed406146f54265",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  429,
+                  434
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
           }
         ],
         reuse: {
@@ -14043,11 +14141,18 @@ var init_compatibility = __esm({
             230
           ],
           sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        }
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
       },
       tool_caller_projection: "readonly-id-session-header-cwd",
       session_methods: {
         flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
       }
     };
   }
@@ -14446,6 +14551,7 @@ var init_protocol_generated = __esm({
       { name: "registry/unregister", direction: "host_to_core", request: true, params: "UnregisterParams", tiers: ["plugin", "builtin"] },
       { name: "core/call", direction: "host_to_core", request: true, params: "CoreCallParams", tiers: ["plugin", "builtin"] },
       { name: "session/checkpoint", direction: "host_to_core", request: true, params: "SessionCheckpointParams", tiers: ["plugin", "builtin"] },
+      { name: "user-questions/ask", direction: "host_to_core", request: true, params: "UserQuestionParams", tiers: ["plugin", "builtin"] },
       { name: "proc/launch", direction: "host_to_core", request: true, params: "ProcLaunchParams", tiers: ["builtin"] },
       { name: "proc/read", direction: "host_to_core", request: true, params: "ProcSessionParams", tiers: ["builtin"] },
       { name: "proc/write", direction: "host_to_core", request: true, params: "ProcWriteParams", tiers: ["builtin"] },
@@ -14639,11 +14745,31 @@ var init_protocol_generated = __esm({
       ToolCallParams: {
         strict: false,
         required: { handle: "uint", call_id: "string", input: "json", deadline_ms: "uint" },
-        optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
+        optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
       },
       UnregisterParams: {
         strict: true,
         required: { owner: { ref: "OwnerRef" }, handle: "uint" },
+        optional: {}
+      },
+      UserInputIntent: {
+        strict: false,
+        required: { approve: "string", kind: { enum: ["plan-review"] } },
+        optional: { call_id: "string" }
+      },
+      UserInputOption: {
+        strict: false,
+        required: { label: "string" },
+        optional: { description: "string" }
+      },
+      UserInputQuestion: {
+        strict: false,
+        required: { id: "string", question: "string" },
+        optional: { header: "string", detail: "string", intent: { ref: "UserInputIntent" }, options: { items: { ref: "UserInputOption" } }, allow_free_text: "boolean", multi_select: "boolean" }
+      },
+      UserQuestionParams: {
+        strict: true,
+        required: { owner: { ref: "OwnerRef" }, ticket: "string", questions: { items: { ref: "UserInputQuestion" } } },
         optional: {}
       }
     };
@@ -15683,6 +15809,7 @@ var init_root = __esm({
     init_lib2();
     init_protocol();
     init_rpc();
+    init_dsh_message_compat();
     init_resolve_hooks();
     init_compatibility();
     init_dsh_tools_compat();
@@ -15859,6 +15986,125 @@ var init_root = __esm({
             return result;
           }
         }
+        class UserQuestionsShim extends Service {
+          constructor(ctx) {
+            super(ctx, "userQuestions");
+          }
+          async ask(request) {
+            const invocation = host2.toolInvocations.getStore();
+            const owner = this.ctx[OWNER];
+            const data2 = (value, allowed) => {
+              if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, "expected a plain question object");
+              const result2 = /* @__PURE__ */ Object.create(null);
+              for (const key of Reflect.ownKeys(value)) {
+                const descriptor = Object.getOwnPropertyDescriptor(value, key);
+                if (typeof key !== "string" || !allowed.includes(key) || !descriptor.enumerable || !("value" in descriptor)) throw new RpcError(ErrorCode.InvalidParams, "unsupported question property");
+                if (descriptor.value !== void 0) result2[key] = descriptor.value;
+              }
+              return result2;
+            };
+            const list2 = (value, maximum) => {
+              if (!Array.isArray(value) || value.length > maximum || Reflect.ownKeys(value).length !== value.length + 1) throw new RpcError(ErrorCode.InvalidParams, "invalid question array");
+              return Array.from({ length: value.length }, (_, index) => {
+                const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+                if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) throw new RpcError(ErrorCode.InvalidParams, "invalid question array item");
+                return descriptor.value;
+              });
+            };
+            const input = data2(request, ["agent", "questions", "signal", "wait"]);
+            if (input.wait !== void 0) throw new RpcError(ErrorCode.NotAvailable, "timed or continued questions are not yet supported");
+            request = input;
+            if (request.signal !== void 0 && !(request.signal instanceof AbortSignal)) {
+              throw new RpcError(ErrorCode.InvalidParams, "question signal must be an AbortSignal");
+            }
+            if (request.signal?.aborted) throw new UserQuestionError("ask_user_question was aborted before the user answered", "ASK_ABORTED");
+            const items = list2(request.questions, 10);
+            if (items.length === 0) throw new UserQuestionError("ask_user_question requires at least one question", "EMPTY_QUESTIONS");
+            if (request.agent === void 0) throw new RpcError(ErrorCode.NotAvailable, "userQuestions.ask requires this live tool invocation’s agent");
+            if (!invocation || !invocation.active || invocation.signal.aborted || invocation.agent === void 0 || request.agent !== invocation.agent) {
+              throw new UserQuestionError("human interaction requires the exact live calling agent when an agent is supplied", "CALLER_NOT_LIVE");
+            }
+            if (invocation.owner !== owner || owner?.state !== "active" || owner.disposing) throw new RpcError(ErrorCode.NotAvailable, "userQuestions.ask service owner is no longer current");
+            if (invocation.delegated) throw new UserQuestionError("human interaction is unavailable while the calling agent is owned by another live agent; include the unresolved question or decision in the child agent's final result", "DELEGATED_CALLER");
+            const live = () => invocation.active && !invocation.signal.aborted && invocation.owner === owner && owner?.state === "active" && !owner.disposing && invocation.questionTicket !== void 0 && request.agent === invocation.agent;
+            if (!live()) throw new RpcError(ErrorCode.NotAvailable, "userQuestions.ask requires this live tool invocation’s question ticket");
+            const signal = request.signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, request.signal]);
+            const questions = items.map((value) => {
+              const question = data2(value, ["id", "question", "header", "detail", "options", "multiSelect", "intent"]);
+              const options = list2(question.options === void 0 ? [] : question.options, 1e3);
+              const intent = question.intent === void 0 ? void 0 : data2(question.intent, ["kind", "approve", "callId"]);
+              if (intent !== void 0 && intent.kind !== "plan-review") throw new RpcError(ErrorCode.InvalidParams, "unsupported question intent");
+              return {
+                id: question.id,
+                question: question.question,
+                header: question.header === void 0 ? "" : question.header,
+                ...question.detail === void 0 ? {} : { detail: question.detail },
+                ...intent === void 0 ? {} : { intent: {
+                  kind: "plan-review",
+                  approve: intent.approve,
+                  ...intent.callId === void 0 ? {} : { call_id: intent.callId }
+                } },
+                options: options.map((option) => {
+                  const item = data2(option, ["label", "description"]);
+                  return { label: item.label, description: item.description === void 0 ? "" : item.description };
+                }),
+                allow_free_text: true,
+                multi_select: question.multiSelect === void 0 ? false : question.multiSelect
+              };
+            });
+            if (!isJson(questions)) throw new RpcError(ErrorCode.InvalidParams, "question data must be lossless JSON");
+            for (const question of questions) {
+              if (question.intent === void 0) continue;
+              if (!question.options.some((option) => option.label === question.intent.approve)) throw new UserQuestionError("question " + question.id + " declares an intent whose approve label names none of its options", "BAD_INTENT");
+              if (question.detail === void 0) throw new UserQuestionError("question " + question.id + " declares an intent without the detail it reviews", "BAD_INTENT");
+            }
+            if (Buffer.byteLength(JSON.stringify(questions)) > 1024 * 1024) throw new RpcError(ErrorCode.InvalidParams, "question payload exceeds 1 MiB");
+            const call = invocation;
+            const run = async () => {
+              if (!live() || signal.aborted) throw new RpcError(ErrorCode.Cancelled, "question invocation ended");
+              const result2 = await host2.rpc.request("user-questions/ask", { owner: call.owner.ref, ticket: call.questionTicket, questions }, signal).catch((error) => {
+                if (error instanceof RpcError && isJson(error.data) && error.data !== null && typeof error.data === "object" && !Array.isArray(error.data)) {
+                  const code = error.data.user_question_error;
+                  if (error.code === ErrorCode.NotAvailable && code === "NO_PROVIDER" || error.code === ErrorCode.Cancelled && code === "ASK_CANCELLED") {
+                    throw new UserQuestionError(error.message, code, { cause: error });
+                  }
+                }
+                if (signal.aborted) throw new UserQuestionError("ask_user_question was aborted before the user answered", "ASK_ABORTED", { cause: error });
+                throw error;
+              });
+              if (!live() || signal.aborted) throw new RpcError(ErrorCode.Cancelled, "question invocation ended");
+              if (!isJson(result2) || result2 === null || typeof result2 !== "object" || Array.isArray(result2) || !Array.isArray(result2.answers)) {
+                throw new RpcError(ErrorCode.Internal, "invalid question answer receipt");
+              }
+              const answers = questions.map((question) => ({ id: question.id, selected: [], custom: void 0, skipped: false, rows: 0 }));
+              for (const row of result2.answers) {
+                if (row === null || typeof row !== "object" || Array.isArray(row) || typeof row.label !== "string" || typeof row.value !== "string") throw new RpcError(ErrorCode.Internal, "invalid question answer row");
+                const answer = answers.find((answer2) => answer2.id === row.id);
+                const question = questions.find((question2) => question2.id === row.id);
+                if (!answer || !question || answer.skipped) throw new RpcError(ErrorCode.Internal, "question answer identity mismatch");
+                if (row.kind === "choice" && row.label === row.value && question.options.some((option) => option.label === row.value) && !answer.selected.includes(row.value)) answer.selected.push(row.value);
+                else if (row.kind === "custom" && row.label === "" && row.value.trim() !== "" && answer.custom === void 0) answer.custom = row.value;
+                else if (row.kind === "skipped" && row.label === "" && row.value === "" && answer.rows === 0) answer.skipped = true;
+                else throw new RpcError(ErrorCode.Internal, "ambiguous question answer receipt");
+                answer.rows += 1;
+                if (!question.multi_select && answer.selected.length + (answer.custom === void 0 ? 0 : 1) > 1) throw new RpcError(ErrorCode.Internal, "invalid single-select answer");
+              }
+              if (answers.some((answer) => answer.rows === 0)) throw new RpcError(ErrorCode.Internal, "missing question answer");
+              return { answers: answers.map(({ id, selected, custom }) => ({ id, selected, ...custom === void 0 ? {} : { custom } })) };
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            let cancel = () => {
+            };
+            const cancelled = new Promise((_, reject) => {
+              cancel = () => reject(new UserQuestionError("ask_user_question was aborted before the user answered", "ASK_ABORTED"));
+              signal.addEventListener("abort", cancel, { once: true });
+              if (signal.aborted) cancel();
+            });
+            return Promise.race([result, cancelled]).finally(() => signal.removeEventListener("abort", cancel));
+          }
+        }
+        Object.freeze(UserQuestionsShim.prototype);
         Object.freeze(SessionsShim.prototype);
         Object.freeze(StorageShim.prototype);
         shimClasses.set("tools", ToolsShim);
@@ -15866,6 +16112,7 @@ var init_root = __esm({
         shimClasses.set("prompt", PromptShim);
         shimClasses.set("storage", StorageShim);
         shimClasses.set("sessions", SessionsShim);
+        shimClasses.set("userQuestions", UserQuestionsShim);
         shimClasses.set("skills", SkillsShim);
         shimClasses.set("avatars", AvatarsShim);
         shimClasses.set("mcp", McpShim);
@@ -15875,6 +16122,7 @@ var init_root = __esm({
         root.plugin(PromptShim);
         root.plugin(StorageShim);
         root.plugin(SessionsShim);
+        root.plugin(UserQuestionsShim);
         root.plugin(SkillsShim);
         root.plugin(AvatarsShim);
         root.plugin(McpShim);
@@ -16145,6 +16393,9 @@ var init_root = __esm({
         const invocation = {
           owner: local.owner,
           session: agent?.session,
+          agent,
+          questionTicket: identity?.question_ticket,
+          delegated: identity?.agent_id !== void 0,
           ticket: identity?.checkpoint_ticket,
           signal: AbortSignal.any([signal, closed.signal]),
           active: true,
@@ -17406,38 +17657,7 @@ defineMethod("transform", [
 init_lib();
 init_lib3();
 init_dsh_tools_compat();
-
-// src/dsh/dsh-message-compat.js
-init_define_BUILTIN_MODULE_DIGESTS();
-init_lib3();
-function brandString(value) {
-  return value;
-}
-function randomUUID() {
-  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
-  const hex = Array.from(bytes, (byte, index) => {
-    return (index === 6 ? byte & 15 | 64 : index === 8 ? byte & 63 | 128 : byte).toString(16).padStart(2, "0");
-  }).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-function createMessage(input) {
-  return deepFreeze(structuredClone({
-    ...input,
-    id: brandString(randomUUID())
-  }));
-}
-function createUserMessage(input) {
-  return createMessage({
-    ...input,
-    role: "user"
-  });
-}
-function SessionId(id) {
-  return brandString(id);
-}
-var PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
-
-// src/main.ts
+init_dsh_message_compat();
 init_composition();
 init_src();
 init_src2();
@@ -17620,7 +17840,8 @@ installResolveHooks({
   cosmokit: lib_exports,
   "dsh-util-values": lib_exports4,
   "dsh-tools": dsh_tools_compat_exports,
-  "dsh-llm-values": { createUserMessage },
+  "dsh-llm-values": { createUserMessage, HarnessError: HarnessError2 },
+  "dsh-user-questions-values": { UserQuestionError },
   "dsh-session-values": { SessionId },
   "dsh-system-prompt-values": { PERSONA_PREFIX_SECTION },
   "dsh-composition": composition_exports,

@@ -272,7 +272,7 @@
                 let workspace = tempfile::tempdir().unwrap();
                 let path = workspace.path();
                 let git = |args: &[&str]| {
-                    let output = crate::dependencies::Git::command()
+                    let output = codewhale_dependencies::Git::command()
                         .expect("git")
                         .current_dir(path)
                         .args([
@@ -346,7 +346,7 @@
                 // Positive control: the same repository really can invoke its helper.
                 let mut baseline = vec!["diff", "--ext-diff"];
                 baseline.extend_from_slice(diff_flags);
-                let baseline = crate::dependencies::Git::command()
+                let baseline = codewhale_dependencies::Git::command()
                     .unwrap()
                     .current_dir(path)
                     .args(&baseline)

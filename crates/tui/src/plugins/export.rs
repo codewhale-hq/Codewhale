@@ -43,7 +43,7 @@ const EXPORT_EXCLUDED_ROOT_FILES: [&str; 4] = [
     agent_plugin::PLUGIN_JSON_NAME,
     agent_plugin::PLUGIN_TOML_NAME,
     agent_plugin::MCP_JSON_NAME,
-    crate::skills::install::INSTALLED_FROM_MARKER,
+    codewhale_skill_install::install::INSTALLED_FROM_MARKER,
 ];
 
 /// What an export wrote, for the caller to render.

@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn close_refuses_when_git_cannot_determine_worktree_status() {
-        use crate::dependencies::{ExternalTool, Git};
+        use codewhale_dependencies::{ExternalTool, Git};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         assert!(

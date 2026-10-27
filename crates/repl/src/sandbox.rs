@@ -1,7 +1,7 @@
 //! REPL fence-extraction utilities.
 //!
 //! The agent's main loop scans assistant text for ` ```repl ` fenced blocks
-//! and feeds them to a [`crate::repl::runtime::PythonRuntime`]. Capturing
+//! and feeds them to a [`crate::runtime::PythonRuntime`]. Capturing
 //! `FINAL(...)` and routing sub-LLM RPCs are handled inside the runtime via
 //! a stdin/stdout protocol — no scraping required here.
 

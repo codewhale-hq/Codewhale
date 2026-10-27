@@ -3497,7 +3497,7 @@ fn reference_tokens(line: &str) -> impl Iterator<Item = &str> {
 /// The regular file `raw` names inside `workspace`, as
 /// `workspace.join(relative)`, or `None`.
 ///
-/// [`crate::snapshot::workspace_relative_path`] checks only the text, and
+/// [`codewhale_snapshot::workspace_relative_path`] checks only the text, and
 /// `is_file()` follows links, so a link inside the workspace (`vendor -> /`,
 /// `notes.md -> ~/.ssh/config`) used to pass. Each part below the workspace
 /// is read with `symlink_metadata` and a link is refused, as
@@ -3505,7 +3505,7 @@ fn reference_tokens(line: &str) -> impl Iterator<Item = &str> {
 /// must still sit under the resolved workspace. Callers that act later check
 /// again at that point: this is a check at one moment, not a lock.
 pub(crate) fn workspace_file(workspace: &Path, raw: &str) -> Option<PathBuf> {
-    let relative = crate::snapshot::workspace_relative_path(workspace, raw)?;
+    let relative = codewhale_snapshot::workspace_relative_path(workspace, raw)?;
     let mut path = workspace.to_path_buf();
     let mut is_file = false;
     for component in relative.components() {

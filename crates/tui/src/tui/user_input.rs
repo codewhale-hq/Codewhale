@@ -5,12 +5,13 @@ use std::cell::Cell;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use crate::tools::user_input::{
-    UserInputAnswer, UserInputQuestion, UserInputRequest, UserInputResponse,
+    UserInputAnswer, UserInputAnswerKind, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 use crate::tui::menu_style;
+use crate::tui::pager::PagerRows;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -65,10 +66,12 @@ fn push_option_lines(
         format!("{prefix}{mark}{number}) {label}"),
         row_style,
     )));
-    lines.push(Line::from(Span::styled(
-        format!("      {description}"),
-        detail_style,
-    )));
+    if !description.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("      {description}"),
+            detail_style,
+        )));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,19 +98,28 @@ pub struct UserInputView {
     /// Wheel browsing uses wrapped rows from the last paint. Option navigation
     /// or typing returns to following focus so the next edit stays visible.
     manual_scroll: bool,
-    scroll_offset: Cell<u16>,
-    max_scroll: Cell<u16>,
+    scroll_offset: Cell<usize>,
+    max_scroll: Cell<usize>,
 }
 
 impl UserInputView {
     pub fn new(tool_id: impl Into<String>, request: UserInputRequest, locale: Locale) -> Self {
+        let mode = if request
+            .questions
+            .first()
+            .is_some_and(|question| question.options.is_empty())
+        {
+            InputMode::OtherInput
+        } else {
+            InputMode::Selecting
+        };
         Self {
             tool_id: tool_id.into(),
             request,
             locale,
             question_index: 0,
             selected: 0,
-            mode: InputMode::Selecting,
+            mode,
             other_input: String::new(),
             answered: Vec::new(),
             multi_pending: Vec::new(),
@@ -122,12 +134,8 @@ impl UserInputView {
     }
 
     /// Whether the "Other" free-text row is offered for the current question.
-    /// Free text is ALWAYS available so the user can answer with their own
-    /// words even when the model did not offer it. `allow_free_text` remains
-    /// part of the wire request (backward-compatible) but no longer gates the
-    /// row: a custom response must always be reachable alongside the options.
     fn offers_other(&self) -> bool {
-        true
+        !self.request.require_typed_answers || self.current_question().allow_free_text
     }
 
     fn option_count(&self) -> usize {
@@ -170,7 +178,15 @@ impl UserInputView {
         let question = self.current_question();
         // "Action required" banner, header line, blank, question, blank.
         let mut count = 5;
-        count += question.options.len() * 2;
+        count += question
+            .detail
+            .as_ref()
+            .map_or(0, |detail| detail.lines().count() + 1);
+        count += question
+            .options
+            .iter()
+            .map(|option| 1 + usize::from(!option.description.is_empty()))
+            .sum::<usize>();
         if self.offers_other() {
             count += 2;
         }
@@ -202,6 +218,7 @@ impl UserInputView {
             id: question.id.clone(),
             label: option.label.clone(),
             value: option.label.clone(),
+            kind: Some(UserInputAnswerKind::Choice),
         }]
     }
 
@@ -209,12 +226,27 @@ impl UserInputView {
         self.answered.iter().flatten().cloned().collect()
     }
 
-    fn advance_question(&mut self, new_answers: Vec<UserInputAnswer>) -> ViewAction {
+    fn advance_question(&mut self, mut new_answers: Vec<UserInputAnswer>) -> ViewAction {
+        if new_answers.is_empty() {
+            new_answers.push(UserInputAnswer {
+                id: self.current_question().id.clone(),
+                label: String::new(),
+                value: String::new(),
+                kind: Some(UserInputAnswerKind::Skipped),
+            });
+        }
         self.answered.push(new_answers);
         if self.question_index + 1 >= self.request.questions.len() {
             let response = UserInputResponse {
                 answers: self.committed_answers(),
             };
+            if let Err(error) = self.request.validate_response(&response) {
+                self.answered.pop();
+                return ViewAction::Emit(ViewEvent::StatusMessage {
+                    message: tr(self.locale, MessageId::NotificationInputSubmitFailed)
+                        .replace("{error}", &error.to_string()),
+                });
+            }
             return ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted {
                 tool_id: self.tool_id.clone(),
                 response,
@@ -222,7 +254,11 @@ impl UserInputView {
         }
         self.question_index += 1;
         self.selected = 0;
-        self.mode = InputMode::Selecting;
+        self.mode = if self.current_question().options.is_empty() {
+            InputMode::OtherInput
+        } else {
+            InputMode::Selecting
+        };
         self.other_input.clear();
         self.multi_pending.clear();
         ViewAction::None
@@ -235,7 +271,11 @@ impl UserInputView {
         self.answered.pop();
         self.question_index = self.question_index.saturating_sub(1);
         self.selected = 0;
-        self.mode = InputMode::Selecting;
+        self.mode = if self.current_question().options.is_empty() {
+            InputMode::OtherInput
+        } else {
+            InputMode::Selecting
+        };
         self.other_input.clear();
         self.multi_pending.clear();
         ViewAction::None
@@ -248,8 +288,24 @@ impl UserInputView {
             let start = self.content_line_count().saturating_sub(4);
             return (start, start.saturating_add(1));
         }
-        let start = 5 + self.selected.saturating_mul(2);
-        (start, start.saturating_add(1))
+        let question = self.current_question();
+        let detail_lines = question
+            .detail
+            .as_ref()
+            .map_or(0, |detail| detail.lines().count() + 1);
+        let option_lines = question
+            .options
+            .iter()
+            .take(self.selected)
+            .map(|option| 1 + usize::from(!option.description.is_empty()))
+            .sum::<usize>();
+        let extra_rows = self.selected.saturating_sub(question.options.len());
+        let start = 5 + detail_lines + option_lines + extra_rows * 2;
+        let height = question
+            .options
+            .get(self.selected)
+            .map_or(2, |option| 1 + usize::from(!option.description.is_empty()));
+        (start, start.saturating_add(height - 1))
     }
 
     fn handle_selecting_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -325,6 +381,7 @@ impl UserInputView {
                         id: question.id.clone(),
                         label: opt.label.clone(),
                         value: opt.label.clone(),
+                        kind: Some(UserInputAnswerKind::Choice),
                     })
                     .collect();
                 return self.advance_question(answers);
@@ -354,11 +411,12 @@ impl UserInputView {
             }
             KeyCode::Enter => {
                 let question = self.current_question();
-                let answer = UserInputAnswer {
+                let answer = (!self.other_input.trim().is_empty()).then(|| UserInputAnswer {
                     id: question.id.clone(),
-                    label: "Other".to_string(),
-                    value: self.other_input.trim().to_string(),
-                };
+                    label: String::new(),
+                    value: self.other_input.clone(),
+                    kind: Some(UserInputAnswerKind::Custom),
+                });
                 // In multi-select mode a free-text "Other" is still a single
                 // answer appended to whatever options were toggled.
                 let mut answers: Vec<UserInputAnswer> = self
@@ -369,9 +427,10 @@ impl UserInputView {
                         id: question.id.clone(),
                         label: opt.label.clone(),
                         value: opt.label.clone(),
+                        kind: Some(UserInputAnswerKind::Choice),
                     })
                     .collect();
-                answers.push(answer);
+                answers.extend(answer);
                 self.advance_question(answers)
             }
             KeyCode::Backspace => {
@@ -492,6 +551,15 @@ impl ModalView for UserInputView {
         )]));
         lines.push(Line::from(""));
 
+        if let Some(detail) = &question.detail {
+            lines.extend(detail.lines().map(|line| {
+                Line::from(Span::styled(
+                    line.to_owned(),
+                    Style::default().fg(palette::TEXT_PRIMARY),
+                ))
+            }));
+            lines.push(Line::from(""));
+        }
         for (idx, option) in question.options.iter().enumerate() {
             let number = idx + 1;
             let ticked = self.is_multi_select() && self.multi_pending.contains(&idx);
@@ -505,7 +573,6 @@ impl ModalView for UserInputView {
             );
         }
 
-        // A custom response stays available alongside the suggested options.
         if self.offers_other() {
             let other_index = question.options.len();
             let other_number = other_index + 1;
@@ -558,7 +625,14 @@ impl ModalView for UserInputView {
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
                 Span::styled("Enter", Style::default().fg(palette::WHALE_ACTION).bold()),
-                hint_label(locale, MessageId::UserInputHintSubmit),
+                hint_label(
+                    locale,
+                    if self.other_input.trim().is_empty() && self.multi_pending.is_empty() {
+                        MessageId::SetupActionSkip
+                    } else {
+                        MessageId::UserInputHintSubmit
+                    },
+                ),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::WHALE_ACTION).bold()),
                 hint_label(locale, MessageId::UserInputHintBack),
@@ -615,28 +689,20 @@ impl ModalView for UserInputView {
 
         let popup_area = sheet_rect(area, self.content_line_count());
         let inner_h = popup_area.height.saturating_sub(4) as usize;
-        // Paragraph scroll offsets count wrapped rows, not the source Lines.
-        // Use the same wrapper for focus measurement and painting so long
-        // questions/descriptions cannot hide the highlighted choice (#6045).
         let width = modal_block(&header).inner(popup_area).width.max(1);
-        let heights: Vec<usize> = lines
-            .iter()
-            .map(|line| {
-                Paragraph::new(line.clone())
-                    .wrap(Wrap { trim: true })
-                    .line_count(width)
-            })
-            .collect();
+        let rows = PagerRows::wrap_lines(&lines, usize::from(width));
         let (start, end) = self.focused_line_range();
-        let focus_end = heights[..=end].iter().sum::<usize>().saturating_sub(1);
+        let focus_end = rows
+            .origin
+            .partition_point(|&line| line <= end)
+            .saturating_sub(1);
         let focus_start = if self.mode == InputMode::OtherInput {
-            // Keep the typing end visible when a custom answer wraps.
             focus_end
         } else {
-            heights[..start].iter().sum()
+            rows.origin.partition_point(|&line| line < start)
         };
-        let total_rows = heights.iter().sum::<usize>();
-        let max_scroll = u16::try_from(total_rows.saturating_sub(inner_h)).unwrap_or(u16::MAX);
+        let total_rows = rows.styled.len();
+        let max_scroll = total_rows.saturating_sub(inner_h);
         let scroll = if self.manual_scroll {
             self.scroll_offset.get().min(max_scroll)
         } else {
@@ -644,10 +710,9 @@ impl ModalView for UserInputView {
         };
         self.scroll_offset.set(scroll);
         self.max_scroll.set(max_scroll);
-        let paragraph = Paragraph::new(lines)
+        let visible: Vec<_> = rows.styled.into_iter().skip(scroll).take(inner_h).collect();
+        let paragraph = Paragraph::new(visible)
             .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true })
-            .scroll((scroll, 0))
             .block(modal_block(&header));
 
         render_modal_chrome(area, popup_area, buf);
@@ -704,7 +769,7 @@ fn scroll_to_keep_range_visible(
     (focus_start, focus_end): (usize, usize),
     total_lines: usize,
     inner_h: usize,
-) -> u16 {
+) -> usize {
     if inner_h == 0 || total_lines <= inner_h {
         return 0;
     }
@@ -716,7 +781,7 @@ fn scroll_to_keep_range_visible(
     if focus_start < scroll {
         scroll = focus_start;
     }
-    u16::try_from(scroll.min(max_scroll)).unwrap_or(u16::MAX)
+    scroll.min(max_scroll)
 }
 
 #[cfg(test)]
@@ -739,7 +804,10 @@ mod tests {
         UserInputView::new(
             "tool-1",
             UserInputRequest {
+                require_typed_answers: false,
                 questions: vec![UserInputQuestion {
+                    detail: None,
+                    intent: None,
                     header: "Confirm".to_string(),
                     id: "confirm".to_string(),
                     question: "What should happen next?".to_string(),
@@ -809,6 +877,60 @@ mod tests {
         let action = view.handle_selecting_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(action, ViewAction::None));
         assert_eq!(view.mode, InputMode::OtherInput);
+
+        for allow_free_text in [false, true] {
+            let mut view = sample_view();
+            view.request.require_typed_answers = true;
+            view.request.questions[0].allow_free_text = allow_free_text;
+            assert_eq!(view.offers_other(), allow_free_text);
+            assert_eq!(view.option_count(), 2 + usize::from(allow_free_text));
+            let rendered = render_view(&view, 110, 36);
+            assert_eq!(rendered.contains("Type a custom response"), allow_free_text);
+            view.selected = view.option_count() - 1;
+            let action = view.handle_selecting_key(KeyEvent::from(KeyCode::Enter));
+            let action = if allow_free_text {
+                assert!(matches!(action, ViewAction::None));
+                assert_eq!(view.mode, InputMode::OtherInput);
+                view.other_input = "  custom answer  ".into();
+                view.handle_other_input_key(KeyEvent::from(KeyCode::Enter))
+            } else {
+                action
+            };
+            let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) = action
+            else {
+                panic!("expected valid typed answer")
+            };
+            assert_eq!(
+                response.answers[0].kind,
+                Some(if allow_free_text {
+                    UserInputAnswerKind::Custom
+                } else {
+                    UserInputAnswerKind::Choice
+                })
+            );
+            view.request.validate_response(&response).unwrap();
+        }
+        let mut view = sample_view();
+        view.request.require_typed_answers = true;
+        view.request.questions[0].allow_free_text = false;
+        view.request.questions[0].multi_select = true;
+        assert_eq!(view.option_count(), 3);
+        view.selected = view.confirm_index().unwrap();
+        assert!(!view.is_other_selected());
+        view.multi_pending = vec![0, 1];
+        let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) =
+            view.handle_selecting_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("expected typed choices")
+        };
+        assert_eq!(response.answers.len(), 2);
+        assert!(
+            response
+                .answers
+                .iter()
+                .all(|answer| answer.kind == Some(UserInputAnswerKind::Choice))
+        );
+        view.request.validate_response(&response).unwrap();
     }
 
     #[test]
@@ -874,6 +996,35 @@ mod tests {
                 if tool_id == "tool-1" && response.answers.first().is_some_and(|a| a.value == "Ship it")),
             "Enter on confirm submits the toggled options"
         );
+        let mut view = sample_view();
+        view.request.require_typed_answers = true;
+        view.request.questions[0].multi_select = true;
+        view.request.questions[0].options[0].label = "Other".into();
+        view.request.questions[0].options[1].label = "one, two".into();
+        view.multi_pending = vec![0, 1];
+        view.other_input = "  custom reply  ".into();
+        let action = view.handle_other_input_key(KeyEvent::from(KeyCode::Enter));
+        let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) = action
+        else {
+            panic!("expected typed answer")
+        };
+        assert_eq!(response.answers.len(), 3);
+        assert_eq!(response.answers[0].label, "Other");
+        assert_eq!(response.answers[1].value, "one, two");
+        assert_eq!(response.answers[2].kind, Some(UserInputAnswerKind::Custom));
+        assert_eq!(response.answers[2].label, "");
+        assert_eq!(response.answers[2].value, "  custom reply  ");
+        view.request.validate_response(&response).unwrap();
+        let mut view = sample_view();
+        view.request.require_typed_answers = true;
+        view.other_input.clear();
+        let action = view.handle_other_input_key(KeyEvent::from(KeyCode::Enter));
+        let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) = action
+        else {
+            panic!("expected explicit skip")
+        };
+        assert_eq!(response.answers[0].kind, Some(UserInputAnswerKind::Skipped));
+        view.request.validate_response(&response).unwrap();
     }
 
     #[test]
@@ -938,8 +1089,11 @@ mod tests {
         UserInputView::new(
             "tool-1",
             UserInputRequest {
+                require_typed_answers: false,
                 questions: vec![
                     UserInputQuestion {
+                        detail: None,
+                        intent: None,
                         header: "Choose".to_string(),
                         id: "q1".to_string(),
                         question: "Which path?".to_string(),
@@ -955,6 +1109,8 @@ mod tests {
                         multi_select: false,
                     },
                     UserInputQuestion {
+                        detail: None,
+                        intent: None,
                         header: "Confirm".to_string(),
                         id: "q2".to_string(),
                         question: "Second question after the first.".to_string(),
@@ -1051,6 +1207,43 @@ mod tests {
             }
             assert_eq!(view.scroll_offset.get(), 0);
         }
+        for count in [0, 1, 100] {
+            let mut request = sample_view().request;
+            request.require_typed_answers = true;
+            request.questions[0].header.clear();
+            request.questions[0].detail = Some("Supporting detail\nSecond line".into());
+            request.questions[0].options = (0..count)
+                .map(|index| UserInputOption {
+                    label: format!("Choice {index}"),
+                    description: String::new(),
+                })
+                .collect();
+            request.validate_transport().unwrap();
+            let mut view = UserInputView::new("menu", request, Locale::En);
+            assert_eq!(
+                view.mode,
+                if count == 0 {
+                    InputMode::OtherInput
+                } else {
+                    InputMode::Selecting
+                }
+            );
+            if count > 0 {
+                view.selected = count - 1;
+                let rendered = render_view(&view, 80, 24);
+                assert!(
+                    rendered.contains(&format!("Choice {}", count - 1)),
+                    "{rendered}"
+                );
+                let (start, end) = view.focused_line_range();
+                assert_eq!(start, end);
+            } else {
+                let rendered = render_view(&view, 80, 24);
+                assert!(rendered.contains("Supporting detail"));
+                assert!(rendered.contains("Custom response"));
+                assert!(rendered.contains("skip"));
+            }
+        }
     }
 
     #[test]
@@ -1144,6 +1337,29 @@ mod tests {
                 "custom-response typing end must remain visible at {width}x{height}:\n{rendered}"
             );
         }
+
+        for detail in ["d\n".repeat(70_000), "x".repeat(900_000)] {
+            let mut view = sample_view();
+            view.request.questions[0].detail = Some(detail);
+            view.request.questions[0].options[0].label = "Z".into();
+            view.request.questions[0].options[0].description.clear();
+            view.request.validate_transport().unwrap();
+            let rendered = render_view(&view, 16, 24);
+            assert!(view.scroll_offset.get() > usize::from(u16::MAX));
+            assert!(rendered.contains("1) Z"), "{rendered}");
+            view.handle_key(KeyEvent::from(KeyCode::Enter));
+            assert_eq!(view.answered[0][0].label, "Z");
+        }
+
+        let mut view = sample_view();
+        view.mode = InputMode::OtherInput;
+        view.other_input = format!("{} END", "x".repeat(800_000));
+        let rendered = render_view(&view, 16, 24);
+        assert!(view.scroll_offset.get() > usize::from(u16::MAX));
+        assert!(rendered.contains("END"), "{rendered}");
+        view.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(view.answered[0][0].value.len(), 800_004);
+        assert!(view.answered[0][0].value.ends_with(" END"));
     }
 
     #[test]
@@ -1180,6 +1396,38 @@ mod tests {
             view.question_index, 0,
             "back on the first question is a no-op"
         );
+
+        let mut view = many_option_view();
+        view.request.require_typed_answers = true;
+        view.request.questions[1].multi_select = true;
+        assert!(matches!(
+            view.handle_key(KeyEvent::from(KeyCode::Enter)),
+            ViewAction::None
+        ));
+        let prior = view.answered.clone();
+        view.mode = InputMode::OtherInput;
+        view.multi_pending = vec![0];
+        view.other_input = "🦀".repeat(262_144);
+        let draft = view.other_input.clone();
+        let action = view.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(
+            matches!(action, ViewAction::Emit(ViewEvent::StatusMessage { message }) if message.contains("transport limits"))
+        );
+        assert_eq!(view.answered, prior);
+        assert_eq!(view.question_index, 1);
+        assert_eq!(view.mode, InputMode::OtherInput);
+        assert_eq!(view.multi_pending, vec![0]);
+        assert_eq!(view.other_input, draft);
+        view.other_input = "  corrected answer  ".into();
+        let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) =
+            view.handle_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("expected corrected response")
+        };
+        assert_eq!(response.answers.len(), 3);
+        assert_eq!(response.answers[0], prior[0][0]);
+        assert_eq!(response.answers[2].value, "  corrected answer  ");
+        view.request.validate_response(&response).unwrap();
     }
 
     #[test]

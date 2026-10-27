@@ -553,6 +553,7 @@ mv "$receipt" "$receipt.done"
                 (
                     "hook-fixture-question".to_string(),
                     crate::tools::user_input::UserInputRequest {
+                        require_typed_answers: false,
                         questions: Vec::new(),
                     },
                 )
@@ -651,6 +652,7 @@ mv "$receipt" "$receipt.done"
         app.pending_user_input_prompt = Some((
             "q1".to_string(),
             crate::tools::user_input::UserInputRequest {
+                require_typed_answers: false,
                 questions: Vec::new(),
             },
         ));

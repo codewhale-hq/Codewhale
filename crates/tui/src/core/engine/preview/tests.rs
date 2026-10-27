@@ -2440,10 +2440,12 @@ async fn pending_runtime_injections_make_the_body_unavailable_without_consuming_
     let identity = deepseek_identity();
     let (mut engine, _handle, _tmp) = preview_engine(&config);
     engine.config.features.disable(Feature::Mcp);
-    engine.pending_lsp_blocks.push(crate::lsp::DiagnosticBlock {
-        file: std::path::PathBuf::from("src/lib.rs"),
-        items: Vec::new(),
-    });
+    engine
+        .pending_lsp_blocks
+        .push(codewhale_lsp::DiagnosticBlock {
+            file: std::path::PathBuf::from("src/lib.rs"),
+            items: Vec::new(),
+        });
 
     let manifest = engine
         .build_request_manifest(inputs(

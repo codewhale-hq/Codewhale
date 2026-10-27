@@ -15,16 +15,8 @@ mod binary;
 
 #[path = "../../src/eval.rs"]
 mod eval;
-#[path = "../../src/skills/frontmatter.rs"]
-mod frontmatter;
-#[path = "../../src/skills/install.rs"]
-#[allow(dead_code)]
-mod install;
 #[path = "../support/llm_client.rs"]
 mod llm_client;
-#[path = "../../src/skills/package_digest.rs"]
-#[allow(dead_code)]
-mod package_digest;
 // The legacy text tool-call parser lives in codewhale-core now; keep the
 // `crate::tool_parser` path the suites use.
 use codewhale_core::tool_parser;

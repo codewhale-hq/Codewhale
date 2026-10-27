@@ -538,7 +538,7 @@ fn portable_export_source_has_no_host_dependency() {
         "crate::tui",
         "crate::client",
         "codewhale_runtime::config",
-        "crate::snapshot",
+        "codewhale_snapshot",
         "crate::session_manager",
         "std::fs",
         "std::net",

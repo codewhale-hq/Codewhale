@@ -10,7 +10,7 @@
 //!   records plus the `approval.*` events in its append-only event log.
 //!
 //! A terminal session also reads the workspace snapshots the engine already
-//! takes before and after each turn (`crate::snapshot`, when snapshots are
+//! takes before and after each turn (`codewhale_snapshot`, when snapshots are
 //! on): their difference is every file the turn changed, including files a
 //! shell command changed, which no tool record names.
 //!
@@ -30,7 +30,7 @@
 //! the thread, so a thread receipt cannot read them and says that shell file
 //! changes are not itemized. A snapshot difference covers everything that
 //! wrote to the workspace during the turn, not only this agent. Snapshots are
-//! pruned to the newest [`crate::snapshot::DEFAULT_MAX_SNAPSHOTS`], so older
+//! pruned to the newest [`codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS`], so older
 //! turns have none.
 
 use std::collections::{BTreeSet, HashMap};
@@ -215,7 +215,7 @@ pub(crate) fn session_receipt(
                 notes.insert(format!(
                     "Shell file changes: {} without a before/after snapshot (snapshots off, or pruned: the newest {} are kept; or a repeated prompt whose snapshots could not be told apart), so files a command changed there are not itemized.",
                     plural(unmatched, "turn", "turns"),
-                    crate::snapshot::DEFAULT_MAX_SNAPSHOTS
+                    codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS
                 ));
             }
             changes
@@ -583,7 +583,7 @@ fn snapshot_turn_changes(
     wanted: Option<&str>,
 ) -> Result<Option<TurnChanges>, String> {
     use crate::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
-    let Some(repo) = crate::snapshot::SnapshotRepo::open_existing(workspace)
+    let Some(repo) = codewhale_snapshot::SnapshotRepo::open_existing(workspace)
         .map_err(|error| error.to_string())?
     else {
         return Ok(None);
@@ -593,7 +593,7 @@ fn snapshot_turn_changes(
     // Pair each post-turn:N with the open pre-turn:N of this session, oldest
     // first. The sequence restarts when the session is resumed, so a pair
     // closes on the first matching post-turn.
-    let mut open: HashMap<u64, (crate::snapshot::SnapshotId, Option<String>)> = HashMap::new();
+    let mut open: HashMap<u64, (codewhale_snapshot::SnapshotId, Option<String>)> = HashMap::new();
     let mut pairs = Vec::new();
     for snapshot in snapshots
         .into_iter()

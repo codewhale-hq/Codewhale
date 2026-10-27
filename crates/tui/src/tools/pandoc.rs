@@ -9,7 +9,7 @@
 //! changelog as ..." workflows that previously required the user
 //! to drop into a terminal between turns.
 //!
-//! Registration is gated by [`crate::dependencies::resolve_pandoc`]
+//! Registration is gated by [`codewhale_dependencies::resolve_pandoc`]
 //! (see [`crate::tools::registry::ToolRegistryBuilder::with_pandoc_tools`]).
 //! When pandoc isn't installed the tool simply doesn't appear in the
 //! catalog, so the model never sees a binary it can't actually use.
@@ -166,7 +166,7 @@ impl ToolSpec for PandocConvertTool {
         // catalog build and the model's call should produce a clear
         // error rather than the cryptic "program not found" from raw
         // Command::spawn.
-        let pandoc = crate::dependencies::resolve_pandoc().ok_or_else(|| {
+        let pandoc = codewhale_dependencies::resolve_pandoc().ok_or_else(|| {
             ToolError::execution_failed(
                 "pandoc_convert: pandoc binary not found on PATH. \
                  Install pandoc 2.15 or newer (macOS: `brew install pandoc`; \
@@ -301,7 +301,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn pandoc_present() -> bool {
-        crate::dependencies::resolve_pandoc().is_some()
+        codewhale_dependencies::resolve_pandoc().is_some()
     }
 
     fn pandoc_environment_unavailable(err: &ToolError) -> bool {

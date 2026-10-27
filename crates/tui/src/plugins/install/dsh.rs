@@ -445,7 +445,7 @@ fn utf8(content: Vec<u8>) -> Result<String> {
         .map_err(|_| anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8."))
 }
 
-use crate::skills::install::sha256_hex;
+use codewhale_skill_install::install::sha256_hex;
 
 /// Relative path spellings a package may use for its own files.
 fn plain_relative(text: &str) -> bool {

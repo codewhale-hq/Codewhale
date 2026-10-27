@@ -25,7 +25,7 @@
 //! This module owns capability and state outside the renderer so
 //! `widgets/mod.rs` / `ui.rs` stay projection-only.
 
-use crate::dependencies::{ExternalTool, Git};
+use codewhale_dependencies::{ExternalTool, Git};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};

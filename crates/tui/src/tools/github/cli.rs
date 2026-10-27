@@ -7,8 +7,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use crate::dependencies::ExternalTool;
 use crate::tools::spec::{ToolContext, ToolError};
+use codewhale_dependencies::ExternalTool;
 
 const DEFAULT_GH: &str = "/opt/homebrew/bin/gh";
 const FALLBACK_GH_PATHS: &[&str] = &[
@@ -59,7 +59,7 @@ pub(super) fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value,
 }
 
 pub(super) fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
-    let out = crate::dependencies::Git::output(
+    let out = codewhale_dependencies::Git::output(
         &["rev-parse", "--is-inside-work-tree"],
         &context.workspace,
     )
@@ -74,7 +74,7 @@ pub(super) fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError>
 }
 
 pub(super) fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
-    let out = crate::dependencies::Git::output(&["status", "--porcelain"], &context.workspace)
+    let out = codewhale_dependencies::Git::output(&["status", "--porcelain"], &context.workspace)
         .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(
@@ -196,7 +196,7 @@ pub(super) async fn host_gh(
     {
         tokio::process::Command::new(binary)
     } else {
-        crate::dependencies::Gh::tokio_command()
+        codewhale_dependencies::Gh::tokio_command()
             .ok_or_else(|| ToolError::not_available("gh CLI is unavailable"))?
     };
     codewhale_util::utils::suppress_tokio_console_window(&mut command);
@@ -216,7 +216,7 @@ pub(super) async fn host_git(
     args: &[&str],
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<String, ToolError> {
-    let mut command = crate::dependencies::Git::tokio_command()
+    let mut command = codewhale_dependencies::Git::tokio_command()
         .ok_or_else(|| ToolError::not_available("git is unavailable"))?;
     command.args(args).current_dir(&context.workspace);
     host_output(&mut command, &[], cancel, "Git repository inspection").await

@@ -376,6 +376,9 @@ impl ToolSpec for HostToolSpec {
             checkpoint_ticket: invocation
                 .as_ref()
                 .and_then(|i| i.checkpoint_ticket().map(str::to_string)),
+            question_ticket: invocation
+                .as_ref()
+                .and_then(|i| i.question_ticket().map(str::to_string)),
             session_id: context
                 .execution
                 .session_objects

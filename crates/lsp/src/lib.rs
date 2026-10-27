@@ -112,7 +112,7 @@ impl Default for LspConfig {
 impl LspConfig {
     /// Resolve `(command, args)` for `lang`. User-supplied overrides take
     /// precedence over the built-in registry.
-    pub(crate) fn resolve_command(&self, lang: Language) -> Option<(String, Vec<String>)> {
+    pub fn resolve_command(&self, lang: Language) -> Option<(String, Vec<String>)> {
         if let Some(parts) = self.servers.get(lang.as_key())
             && let Some((first, rest)) = parts.split_first()
         {
@@ -153,32 +153,32 @@ pub struct LspManager {
 /// best-effort post-edit hook, this preserves the distinction between an
 /// honest empty result, a server/read error, and a timeout.
 #[derive(Debug)]
-pub(crate) struct LintReadResult {
-    pub(crate) file: PathBuf,
-    pub(crate) status: LintReadStatus,
-    pub(crate) items: Vec<Diagnostic>,
-    pub(crate) freshness: DiagnosticFreshness,
+pub struct LintReadResult {
+    pub file: PathBuf,
+    pub status: LintReadStatus,
+    pub items: Vec<Diagnostic>,
+    pub freshness: DiagnosticFreshness,
     /// Number of diagnostics after severity selection but before the
     /// configured per-file cap was applied. Unknown when the request did not
     /// complete successfully.
-    pub(crate) total_diagnostic_count: Option<usize>,
-    pub(crate) truncated: bool,
+    pub total_diagnostic_count: Option<usize>,
+    pub truncated: bool,
 }
 
 #[derive(Debug)]
-pub(crate) enum LintReadStatus {
+pub enum LintReadStatus {
     Success,
     Error(String),
     Timeout { wait_ms: u64 },
 }
 
 #[derive(Debug, Default, serde::Serialize)]
-pub(crate) struct DiagnosticFreshness {
-    pub(crate) source_revision: Option<String>,
-    pub(crate) document_version: Option<i64>,
-    pub(crate) diagnostic_version: Option<i64>,
+pub struct DiagnosticFreshness {
+    pub source_revision: Option<String>,
+    pub document_version: Option<i64>,
+    pub diagnostic_version: Option<i64>,
     /// Only an exact publication version match proves the text was checked.
-    pub(crate) freshness: Option<&'static str>,
+    pub freshness: Option<&'static str>,
 }
 
 struct DiagnosticPollSuccess {
@@ -259,7 +259,7 @@ impl LspManager {
 
     /// Inject a fake transport for a language. Used by tests so we never
     /// fork a real LSP server in CI.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn install_test_transport(&self, lang: Language, transport: Arc<dyn LspTransport>) {
         self.test_transports.lock().await.insert(lang, transport);
     }
@@ -800,7 +800,7 @@ impl LspManager {
     /// transport pool. Every attempted file gets an explicit outcome, and the
     /// same configured severity policy as post-edit diagnostics is applied:
     /// errors are always retained and warnings depend on `include_warnings`.
-    pub(crate) async fn diagnostics_for_paths(
+    pub async fn diagnostics_for_paths(
         &self,
         files: &[PathBuf],
     ) -> Result<Vec<LintReadResult>, String> {
@@ -1024,28 +1024,29 @@ impl LspManager {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Fake transport: returns a fixed list of diagnostics. Used by
     /// integration tests so we never spawn a real LSP server in CI.
-    pub(crate) struct FakeTransport {
+    pub struct FakeTransport {
         items: Vec<Diagnostic>,
         calls: AtomicUsize,
     }
 
     impl FakeTransport {
-        pub(crate) fn new(items: Vec<Diagnostic>) -> Self {
+        pub fn new(items: Vec<Diagnostic>) -> Self {
             Self {
                 items,
                 calls: AtomicUsize::new(0),
             }
         }
 
-        pub(crate) fn call_count(&self) -> usize {
+        pub fn call_count(&self) -> usize {
             self.calls.load(Ordering::Relaxed)
         }
     }
@@ -1057,7 +1058,7 @@ pub(crate) mod tests {
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<crate::client::DiagnosticPublication> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.items.clone().into())
         }

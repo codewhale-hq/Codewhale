@@ -25,9 +25,12 @@
 //! — probing a binary involves a `Command::output` per candidate and
 //! we'd rather not pay that on every model turn.
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::OnceLock;
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 /// Candidate executable names for the Python interpreter, in the
 /// order we try them. On Windows the launcher convention is `py -3`,
@@ -128,7 +131,7 @@ fn probe_output(
     probe_output_bounded(command, capture, timeout, VERSION_PROBE_MAX_OUTPUT)
 }
 
-pub(crate) fn probe_output_bounded(
+pub fn probe_output_bounded(
     command: &mut Command,
     capture: bool,
     timeout: std::time::Duration,
@@ -136,7 +139,6 @@ pub(crate) fn probe_output_bounded(
 ) -> std::io::Result<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
-    use wait_timeout::ChildExt;
     command
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -370,8 +372,8 @@ pub fn resolve_pandoc() -> Option<String> {
 /// a converter, an OCR engine) is available: `probe` decides, except that a
 /// test fixture answers with the recorded host's set so results do not
 /// depend on what the machine running them has installed (test builds only).
-pub(crate) fn host_tool_available(tool: &str, probe: impl FnOnce() -> bool) -> bool {
-    #[cfg(test)]
+pub fn host_tool_available(tool: &str, probe: impl FnOnce() -> bool) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(available) = RECORDED_HOST_TOOLS.with(|cell| {
         cell.borrow()
             .as_ref()
@@ -380,12 +382,12 @@ pub(crate) fn host_tool_available(tool: &str, probe: impl FnOnce() -> bool) -> b
         return available;
     }
     // Only test fixtures read the name.
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = tool;
     probe()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static RECORDED_HOST_TOOLS: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
@@ -393,16 +395,16 @@ thread_local! {
 
 /// Pin [`host_tool_available`] on this thread to a recorded host's tools until
 /// the guard drops.
-#[cfg(test)]
-pub(crate) fn pin_recorded_host_tools(tools: Vec<String>) -> RecordedHostToolsGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub fn pin_recorded_host_tools(tools: Vec<String>) -> RecordedHostToolsGuard {
     RECORDED_HOST_TOOLS.with(|cell| *cell.borrow_mut() = Some(tools));
     RecordedHostToolsGuard
 }
 
-#[cfg(test)]
-pub(crate) struct RecordedHostToolsGuard;
+#[cfg(any(test, feature = "test-support"))]
+pub struct RecordedHostToolsGuard;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for RecordedHostToolsGuard {
     fn drop(&mut self) {
         RECORDED_HOST_TOOLS.with(|cell| *cell.borrow_mut() = None);
@@ -695,7 +697,11 @@ fn probe_command(path: &Path) -> Command {
     cmd
 }
 
-fn probe_runtime_version(kind: HostRuntimeKind, path: &Path) -> Result<(u32, u32, u32), String> {
+fn probe_runtime_version(
+    kind: HostRuntimeKind,
+    path: &Path,
+    bundle_sha256: &str,
+) -> Result<(u32, u32, u32), String> {
     // Only absolute candidates are run: a relative `PATH` entry resolves
     // against the current (workspace) directory, where a repository could
     // plant a `node`.
@@ -715,7 +721,7 @@ fn probe_runtime_version(kind: HostRuntimeKind, path: &Path) -> Result<(u32, u32
         return Err(format!("does not run (exit {})", output.status));
     }
     if compiled {
-        return parse_compiled_host_info(&output.stdout, crate::extension_host::bundle_sha256());
+        return parse_compiled_host_info(&output.stdout, bundle_sha256);
     }
     let banner = String::from_utf8_lossy(&output.stdout);
     kind.parse(&banner)
@@ -858,9 +864,13 @@ fn untrusted_location(
 /// runtime with its reason, rather than falling through to a search.
 /// Otherwise the search candidates, minus those in an [`untrusted_location`],
 /// which are recorded as rejected without being run. Blocking.
-fn resolve_runtime(kind: HostRuntimeKind, override_path: Option<&Path>) -> NodeResolution {
+fn resolve_runtime(
+    kind: HostRuntimeKind,
+    override_path: Option<&Path>,
+    bundle_sha256: &str,
+) -> NodeResolution {
     if let Some(path) = override_path {
-        return select_runtime(kind, vec![path.to_path_buf()]);
+        return select_runtime(kind, vec![path.to_path_buf()], bundle_sha256);
     }
     let cwd = std::env::current_dir().ok();
     let home = codewhale_paths::user_home();
@@ -887,7 +897,7 @@ fn resolve_runtime(kind: HostRuntimeKind, override_path: Option<&Path>) -> NodeR
             }
         })
         .collect();
-    let mut resolution = select_runtime(kind, candidates);
+    let mut resolution = select_runtime(kind, candidates, bundle_sha256);
     skipped.append(&mut resolution.rejected);
     resolution.rejected = skipped;
     resolution
@@ -902,11 +912,12 @@ pub fn resolve_extension_host_runtime(
     choice: codewhale_config::extension_host::ExtensionHostRuntime,
     node_override: Option<&Path>,
     bun_override: Option<&Path>,
+    bundle_sha256: &str,
 ) -> HostRuntimeResolution {
     select_host_runtime(
         choice,
-        || resolve_runtime(HostRuntimeKind::Bun, bun_override),
-        || resolve_runtime(HostRuntimeKind::Node, node_override),
+        || resolve_runtime(HostRuntimeKind::Bun, bun_override, bundle_sha256),
+        || resolve_runtime(HostRuntimeKind::Node, node_override, bundle_sha256),
     )
 }
 
@@ -962,7 +973,11 @@ fn accepted_flags(path: &Path, flags: &[&'static str]) -> Vec<&'static str> {
         .collect()
 }
 
-fn select_runtime(kind: HostRuntimeKind, candidates: Vec<PathBuf>) -> NodeResolution {
+fn select_runtime(
+    kind: HostRuntimeKind,
+    candidates: Vec<PathBuf>,
+    bundle_sha256: &str,
+) -> NodeResolution {
     let mut seen = std::collections::HashSet::new();
     let mut resolution = NodeResolution::default();
     for candidate in candidates {
@@ -971,7 +986,7 @@ fn select_runtime(kind: HostRuntimeKind, candidates: Vec<PathBuf>) -> NodeResolu
         if !seen.insert(candidate.clone()) {
             continue;
         }
-        match probe_runtime_version(kind, &candidate) {
+        match probe_runtime_version(kind, &candidate, bundle_sha256) {
             Ok(version) if kind.supported(version) => {
                 resolution.selected = Some((candidate, version));
                 break;
@@ -1053,7 +1068,6 @@ pub trait ExternalTool {
 
     /// Convenience: run the tool with arguments and return only the
     /// exit status (discards stdout/stderr).
-    #[cfg_attr(not(test), expect(dead_code))]
     fn status(args: &[&str], cwd: &std::path::Path) -> std::io::Result<std::process::ExitStatus> {
         let mut cmd = Self::command().ok_or_else(Self::not_found_error)?;
         cmd.args(args).current_dir(cwd).status()
@@ -1118,7 +1132,7 @@ pub struct Git;
 /// This is the single definition site; [`Git::command`] and
 /// [`Git::tokio_command`] apply it to every product git spawn. Call it
 /// directly only for a non-git program that may shell out to git (`gh`).
-pub(crate) fn apply_git_noninteractive_env(cmd: &mut Command) {
+pub fn apply_git_noninteractive_env(cmd: &mut Command) {
     cmd.env("GIT_TERMINAL_PROMPT", "0").env("GIT_PAGER", "");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
@@ -1133,7 +1147,7 @@ impl Git {
     /// only. A read that touches the working tree also runs the superproject's
     /// clean filters, which no flag disables: build it from
     /// [`Self::review_command`] too.
-    pub(crate) const REVIEW_DIFF_ARGS: [&'static str; 4] = [
+    pub const REVIEW_DIFF_ARGS: [&'static str; 4] = [
         "--no-ext-diff",
         "--no-textconv",
         "--submodule=short",
@@ -1145,7 +1159,7 @@ impl Git {
     /// Construct a read-only review command with content conversion disabled.
     /// Review callers also pass [`Self::REVIEW_DIFF_ARGS`] for diffs.
     /// Configured filters otherwise execute even when those flags are present.
-    pub(crate) fn review_command(workspace: &Path) -> anyhow::Result<Command> {
+    pub fn review_command(workspace: &Path) -> anyhow::Result<Command> {
         let overrides = Self::review_filter_overrides(workspace)?;
         let mut command = Self::review_base(workspace)?;
         let mut count = 2;
@@ -1162,7 +1176,7 @@ impl Git {
 
     /// Git with fsmonitor, hooks, lazy fetch and replace objects disabled,
     /// running in `workspace`. [`Self::review_command`] adds filter overrides.
-    pub(crate) fn review_base(workspace: &Path) -> anyhow::Result<Command> {
+    pub fn review_base(workspace: &Path) -> anyhow::Result<Command> {
         use anyhow::Context;
 
         let mut command = Self::command().context("git not found on PATH")?;
@@ -1187,7 +1201,7 @@ impl Git {
                             .env("GIT_CONFIG_KEY_0", "codewhale.reviewConfigCapability")
                             .env("GIT_CONFIG_VALUE_0", &value)
                             .args(["config", "--get", "codewhale.reviewConfigCapability"]);
-                        match crate::snapshot::repo::run_bounded_git_with_timeout(
+                        match run_bounded_git_with_timeout(
                             &mut probe,
                             "config",
                             Self::REVIEW_CONFIG_TIMEOUT,
@@ -1238,7 +1252,7 @@ impl Git {
     /// Config overrides (`key`, `value`) that neutralize every clean/process
     /// filter driver configured for the repository at `workspace`. Callers
     /// apply them through `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`.
-    pub(crate) fn review_filter_overrides(
+    pub fn review_filter_overrides(
         workspace: &Path,
     ) -> anyhow::Result<Vec<(String, &'static str)>> {
         use anyhow::{Context, bail};
@@ -1251,12 +1265,9 @@ impl Git {
             "--get-regexp",
             r"^filter\..*\.(clean|process|required)$",
         ]);
-        let output = crate::snapshot::repo::run_bounded_git_with_timeout(
-            &mut command,
-            "config",
-            Self::REVIEW_CONFIG_TIMEOUT,
-        )
-        .context("Failed to inspect Git review filters")?;
+        let output =
+            run_bounded_git_with_timeout(&mut command, "config", Self::REVIEW_CONFIG_TIMEOUT)
+                .context("Failed to inspect Git review filters")?;
         let no_filters =
             output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty();
         if (!output.status.success() && !no_filters)
@@ -1517,6 +1528,126 @@ pub fn split_interpreter_spec(spec: &str) -> (String, Vec<String>) {
     (program, args)
 }
 
+/// Grace granted to the pipe readers after git has exited. A clean git
+/// closes its own write ends, so EOF is already waiting; only a grandchild
+/// that inherited the pipes (a post-checkout hook, a `git gc` pack worker)
+/// can hold them past exit, and it must not hold the turn pipeline either.
+const GIT_PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Run a pre-configured git command under `timeout` with both pipes drained
+/// while the child runs (the same concurrent drain `Command::output`
+/// performs). A wedged git degrades to an error instead of hanging the caller.
+///
+/// The timeout path kills the child and reaps it on a detached thread: on a
+/// hard-wedged mount git can sit in uninterruptible kernel I/O where even
+/// SIGKILL is deferred.
+pub fn run_bounded_git_with_timeout(
+    cmd: &mut std::process::Command,
+    subcommand: &str,
+    timeout: Duration,
+) -> io::Result<Output> {
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    // Drain both pipes while waiting: the restore path's `ls-tree -r` and
+    // the diff commands emit output that grows with workspace size, and a
+    // child blocked on a full pipe buffer never exits — it would turn every
+    // such call into a guaranteed timeout. Readers stream into shared
+    // buffers, and the completion channel lets the collect below bound how
+    // long a grandchild-held pipe may hold the call after git has exited.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let buf = std::sync::Arc::clone(&stdout_buf);
+        let done_tx = done_tx.clone();
+        std::thread::spawn(move || {
+            if let Some(mut reader) = stdout_pipe {
+                read_pipe_to_buffer(&mut reader, &buf);
+            }
+            let _ = done_tx.send(());
+        });
+    }
+    {
+        let buf = std::sync::Arc::clone(&stderr_buf);
+        let done_tx = done_tx.clone();
+        std::thread::spawn(move || {
+            if let Some(mut reader) = stderr_pipe {
+                read_pipe_to_buffer(&mut reader, &buf);
+            }
+            let _ = done_tx.send(());
+        });
+    }
+    drop(done_tx);
+
+    let Some(status) = child.wait_timeout(timeout)? else {
+        let _ = child.kill();
+        // Reap off the pipeline thread (see the doc comment): the kernel may
+        // not deliver the kill until an uninterruptible syscall returns.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("git {subcommand} timed out after {}s", timeout.as_secs()),
+        ));
+    };
+    // Wait for the readers up to the grace, then return what was captured. A
+    // clean git already closed its write ends, so both readers deliver
+    // immediately; the grace only covers a pipe still held open by an
+    // inherited copy (a daemonizing hook). On expiry the captured output is
+    // returned with a note on stderr instead of silently truncating; the
+    // reader itself ends whenever whatever holds the pipe exits, holding
+    // only a pipe read — never the turn pipeline.
+    let mut partial = false;
+    let mut drained = 0;
+    while drained < 2 {
+        match done_rx.recv_timeout(GIT_PIPE_DRAIN_GRACE) {
+            Ok(()) => drained += 1,
+            Err(_) => {
+                partial = true;
+                break;
+            }
+        }
+    }
+    let stdout = stdout_buf.lock().map(|buf| buf.clone()).unwrap_or_default();
+    let mut stderr = stderr_buf.lock().map(|buf| buf.clone()).unwrap_or_default();
+    if partial {
+        if !stderr.is_empty() && stderr.last() != Some(&b'\n') {
+            stderr.push(b'\n');
+        }
+        stderr.extend_from_slice(
+            b"[codewhale] git output pipes did not close after git exited \
+              (kept open by a hook or subprocess?); captured output may be partial\n",
+        );
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Read a child's pipe to end into a shared buffer, tolerating interruption.
+fn read_pipe_to_buffer(reader: &mut impl io::Read, buf: &std::sync::Mutex<Vec<u8>>) {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(read) => {
+                if let Ok(mut buf) = buf.lock() {
+                    buf.extend_from_slice(&chunk[..read]);
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1564,10 +1695,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn version_probes_scrub_credentials_preloads_and_close_stdin() {
-        let _home = crate::test_support::SealedHome::new();
-        let _secret =
-            crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "synthetic-probe-secret");
-        let _preload = crate::test_support::EnvVarGuard::set("NODE_OPTIONS", "synthetic-preload");
+        let _home = codewhale_runtime::test_support::SealedHome::new();
+        let _secret = codewhale_runtime::test_support::EnvVarGuard::set(
+            "DEEPSEEK_API_KEY",
+            "synthetic-probe-secret",
+        );
+        let _preload =
+            codewhale_runtime::test_support::EnvVarGuard::set("NODE_OPTIONS", "synthetic-preload");
         let mut command = version_probe_command("/bin/sh");
         command.args(["-c", "[ -z \"${DEEPSEEK_API_KEY+x}\" ] && [ -z \"${NODE_OPTIONS+x}\" ] && ! read ignored && printf clean"]);
         let output = probe_output(&mut command, true, VERSION_PROBE_TIMEOUT).unwrap();
@@ -1674,6 +1808,7 @@ mod tests {
                 good.clone(),
                 later,
             ],
+            "",
         );
         assert_eq!(resolution.selected, Some((good, (22, 20, 0))));
         assert_eq!(resolution.rejected.len(), 3);
@@ -1720,6 +1855,7 @@ mod tests {
             select_runtime(
                 kind,
                 candidates.iter().map(|path| (*path).clone()).collect(),
+                "",
             )
         };
 
@@ -1869,7 +2005,8 @@ mod tests {
 
         // A failing override never falls through to a search.
         let broken = script("broken-bun", "exit 3");
-        let bun_only = resolve_extension_host_runtime(Choice::Bun, None, Some(broken.as_path()));
+        let bun_only =
+            resolve_extension_host_runtime(Choice::Bun, None, Some(broken.as_path()), "");
         assert!(bun_only.selected.is_none());
         let failure = bun_only.failure();
         assert!(
@@ -1883,6 +2020,7 @@ mod tests {
             Choice::Auto,
             Some(node.as_path()),
             Some(broken.as_path()),
+            "",
         );
         let summary = auto.summary();
         assert!(summary.starts_with("node 24.1.0 at "), "{summary}");
@@ -2227,8 +2365,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runtime_commands_do_not_inherit_parent_secret_env() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _secret = crate::test_support::EnvVarGuard::set(
+        let _env_lock = codewhale_runtime::test_support::lock_test_env();
+        let _secret = codewhale_runtime::test_support::EnvVarGuard::set(
             "CODEWHALE_TEST_RUNTIME_SECRET",
             "runtime-secret-value",
         );
@@ -2264,9 +2402,11 @@ mod tests {
         if !Git::available() {
             return;
         }
-        let _env_lock = crate::test_support::lock_test_env();
-        let _secret =
-            crate::test_support::EnvVarGuard::set("CODEWHALE_TEST_GIT_SECRET", "git-secret-value");
+        let _env_lock = codewhale_runtime::test_support::lock_test_env();
+        let _secret = codewhale_runtime::test_support::EnvVarGuard::set(
+            "CODEWHALE_TEST_GIT_SECRET",
+            "git-secret-value",
+        );
         let repo = tempfile::tempdir().expect("repo");
         let hooks = tempfile::tempdir().expect("hooks");
         let marker = hooks.path().join("seen");
@@ -2366,7 +2506,7 @@ mod tests {
             assert!(!repo.join("helper-seen").exists());
             return;
         }
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_runtime::test_support::lock_test_env();
         let real_git = resolve_executable_path("git", "--version").expect("absolute native Git");
         let repo = tempfile::tempdir().unwrap();
         let wrapper_dir = tempfile::tempdir().unwrap();
@@ -2441,7 +2581,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         const CHILD: &str = "CODEWHALE_TEST_GIT_REVIEW_PATH_CHANGE";
         if let Some(repo) = std::env::var_os(CHILD) {
-            let _lock = crate::test_support::lock_test_env();
+            let _lock = codewhale_runtime::test_support::lock_test_env();
             let repo = PathBuf::from(repo);
             let initial = Git::review_command(&repo)
                 .unwrap()
@@ -2451,7 +2591,7 @@ mod tests {
             assert!(initial.status.success());
             assert_eq!(initial.stdout, b"false\n");
             let changed = std::env::var_os("CODEWHALE_TEST_CHANGED_GIT_PATH").unwrap();
-            let _path = crate::test_support::EnvVarGuard::set("PATH", changed);
+            let _path = codewhale_runtime::test_support::EnvVarGuard::set("PATH", changed);
             let output = Git::review_command(&repo)
                 .unwrap()
                 .args(["status", "--porcelain"])
@@ -2466,7 +2606,7 @@ mod tests {
             );
             return;
         }
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_runtime::test_support::lock_test_env();
         let real_git = resolve_executable_path("git", "--version").expect("absolute native Git");
         let quoted_git = real_git.replace('\'', "'\\''");
         let repo = tempfile::tempdir().unwrap();

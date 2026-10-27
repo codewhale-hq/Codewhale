@@ -4,8 +4,10 @@
 //! surface; `/chat/completions` is the common primary endpoint.
 
 use std::collections::HashMap;
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -57,31 +59,31 @@ use codewhale_secrets::sanitize::redact_url_for_display;
 /// acknowledgement. This covers ordinary turns, auto-route classification,
 /// advisor calls, detached subagents, compaction, purge, and streaming without
 /// serializing independent RuntimeThreadManager stores.
-#[cfg(not(test))]
+#[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 static RUNTIME_CHAT_INFERENCE_GATE: OnceLock<Arc<RwLock<()>>> = OnceLock::new();
 
 /// Unit tests run many independent Tokio runtimes in one process. Keying the
 /// otherwise-identical gate by runtime keeps unrelated libtest cases from
 /// manufacturing contention while preserving exact read/write behavior among
 /// tasks on the same current-thread or multi-thread runtime.
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 static RUNTIME_CHAT_INFERENCE_TEST_GATES: OnceLock<
     StdMutex<HashMap<RuntimeChatInferenceTestScope, std::sync::Weak<RwLock<()>>>>,
 > = OnceLock::new();
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RuntimeChatInferenceTestScope {
     Runtime(tokio::runtime::Id),
     Thread(std::thread::ThreadId),
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 fn runtime_chat_inference_gate() -> Arc<RwLock<()>> {
     Arc::clone(RUNTIME_CHAT_INFERENCE_GATE.get_or_init(|| Arc::new(RwLock::new(()))))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 fn runtime_chat_inference_gate() -> Arc<RwLock<()>> {
     let scope = tokio::runtime::Handle::try_current()
         .map(|handle| RuntimeChatInferenceTestScope::Runtime(handle.id()))
@@ -108,7 +110,8 @@ pub(crate) struct RemoteControlInferencePermit {
     _gate: OwnedRwLockReadGuard<()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) async fn acquire_runtime_chat_inference_ownership() -> RuntimeChatInferenceOwnership {
     let gate = runtime_chat_inference_gate().write_owned().await;
     RuntimeChatInferenceOwnership { _gate: gate }
@@ -126,98 +129,6 @@ pub(crate) fn try_acquire_runtime_chat_inference_ownership() -> Option<RuntimeCh
 pub(crate) async fn acquire_remote_control_inference_participant() -> RemoteControlInferencePermit {
     let gate = runtime_chat_inference_gate().read_owned().await;
     RemoteControlInferencePermit { _gate: gate }
-}
-
-pub(super) fn to_api_tool_name(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            out.push(ch);
-        } else if ch == '-' {
-            out.push_str("--");
-        } else {
-            out.push_str("-x");
-            out.push_str(&format!("{:06X}", ch as u32));
-            out.push('-');
-        }
-    }
-    out
-}
-
-pub(super) fn from_api_tool_name(name: &str) -> String {
-    let mut out = String::new();
-    let mut iter = name.chars().peekable();
-    while let Some(ch) = iter.next() {
-        if ch != '-' {
-            out.push(ch);
-            continue;
-        }
-        if let Some('-') = iter.peek().copied() {
-            iter.next();
-            out.push('-');
-            continue;
-        }
-        if iter.peek().copied() == Some('x') {
-            iter.next();
-            let mut hex = String::new();
-            for _ in 0..6 {
-                if let Some(h) = iter.next() {
-                    hex.push(h);
-                } else {
-                    break;
-                }
-            }
-            // Only decode if we got exactly 6 hex digits (matching encoder output).
-            // Fewer digits means a truncated/malformed sequence — pass through as-is.
-            if hex.len() == 6
-                && let Ok(code) = u32::from_str_radix(&hex, 16)
-                && let Some(decoded) = std::char::from_u32(code)
-            {
-                if let Some('-') = iter.peek().copied() {
-                    iter.next();
-                }
-                out.push(decoded);
-                continue;
-            }
-            out.push('-');
-            out.push('x');
-            out.push_str(&hex);
-            continue;
-        }
-        out.push('-');
-    }
-
-    // Second pass: decode bare hex escapes (e.g. `x00002E`) that the model
-    // may produce when it mangles the `-x00002E-` delimiter form.  Only
-    // decode when the resulting character is one that `to_api_tool_name`
-    // would have encoded (not alphanumeric, not `_`, not `-`).
-    decode_bare_hex_escapes(&out)
-}
-
-/// Decode bare `x[0-9A-Fa-f]{6}` sequences (optionally followed by `-`)
-/// that survive the standard delimiter-based pass.  This handles cases
-/// where the model strips or replaces the leading `-` of `-x00002E-`.
-pub(super) fn decode_bare_hex_escapes(input: &str) -> String {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"x([0-9A-Fa-f]{6})-?").unwrap());
-
-    let result = re.replace_all(input, |caps: &regex::Captures| {
-        let hex = &caps[1];
-        if let Ok(code) = u32::from_str_radix(hex, 16)
-            && let Some(decoded) = std::char::from_u32(code)
-        {
-            // Only decode characters that to_api_tool_name would have encoded
-            if !decoded.is_ascii_alphanumeric() && decoded != '_' && decoded != '-' {
-                return decoded.to_string();
-            }
-        }
-        // Not a character we'd encode — leave as-is
-        caps[0].to_string()
-    });
-    result.into_owned()
 }
 
 // === Types ===
@@ -430,9 +341,6 @@ fn non_streaming_request_envelope() -> Duration {
     NON_STREAMING_REQUEST_ENVELOPE
 }
 
-pub(super) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 1024 * 1024; // 1 MB
-pub(super) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
-pub(super) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -621,31 +529,6 @@ fn auth_fix_hint(route: &str, key_source: &str) -> String {
         format!("sign in again for {route}")
     } else {
         format!("codewhale auth set --provider {route}")
-    }
-}
-
-fn buffer_pool() -> &'static StdMutex<Vec<Vec<u8>>> {
-    static POOL: OnceLock<StdMutex<Vec<Vec<u8>>>> = OnceLock::new();
-    POOL.get_or_init(|| StdMutex::new(Vec::new()))
-}
-
-fn acquire_stream_buffer() -> Vec<u8> {
-    if let Ok(mut pool) = buffer_pool().lock() {
-        pool.pop().unwrap_or_else(|| Vec::with_capacity(8192))
-    } else {
-        Vec::with_capacity(8192)
-    }
-}
-
-fn release_stream_buffer(mut buf: Vec<u8>) {
-    buf.clear();
-    if buf.capacity() > 256 * 1024 {
-        buf.shrink_to(256 * 1024);
-    }
-    if let Ok(mut pool) = buffer_pool().lock()
-        && pool.len() < 8
-    {
-        pool.push(buf);
     }
 }
 
@@ -973,9 +856,6 @@ pub(crate) fn redact_json_model_bound_text(
 
 // === Helpers ===
 
-/// Maximum bytes to read from an error response body (64 KB).
-pub(super) const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
-
 /// How much of a provider's HTTP error body may be shown to the user.
 ///
 /// The catalog probe is the one request that contacts a `base_url` the user
@@ -1183,22 +1063,6 @@ where
     .await
     .map_err(|_| CatalogRefreshError::Network)??;
     Ok((body, deadline))
-}
-
-/// Read an error response body with a size limit to prevent unbounded allocation.
-pub(super) async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
-    use futures_util::StreamExt;
-    let mut stream = response.bytes_stream();
-    let mut buf = Vec::with_capacity(max_bytes.min(8192));
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else { break };
-        let remaining = max_bytes.saturating_sub(buf.len());
-        if remaining == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-    }
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 pub(crate) async fn bounded_provider_catalog_text(
@@ -3947,14 +3811,14 @@ impl CodewhaleClient {
     /// model, capabilities, or pricing, per the #3385 contract.
     pub async fn fetch_catalog_delta(&self) -> Result<ProviderCatalogDelta, CatalogRefreshError> {
         if self.api_provider == ProviderKind::Ollama {
-            let origin = crate::local_ollama::ollama_native_origin(&self.base_url);
+            let origin = ollama_catalog::ollama_native_origin(&self.base_url);
             let tags_url = reqwest::Url::parse(&format!("{origin}/api/tags"))
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?;
             let (body, deadline) = self
                 .models_document_at(tags_url, None, ModelsRequestMode::Refresh)
                 .await
                 .map_err(ModelsFetchError::into_catalog)?;
-            let (tags, mut profiles) = crate::local_ollama::parse_ollama_tags_with_profiles(&body)
+            let (tags, mut profiles) = ollama_catalog::parse_ollama_tags_with_profiles(&body)
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?;
             if tags.iter().any(|tag| {
                 self.model_bound_secret_values
@@ -3965,7 +3829,7 @@ impl CodewhaleClient {
             }
             let fetched = tokio::time::timeout_at(
                 deadline,
-                crate::local_ollama::fetch_tag_profiles(&tags, &profiles, |tag| {
+                ollama_catalog::fetch_tag_profiles(&tags, &profiles, |tag| {
                     let origin = &origin;
                     async move {
                         let result = async {
@@ -3988,7 +3852,7 @@ impl CodewhaleClient {
                             .map_err(|reason| {
                                 anyhow::anyhow!("Ollama profile rejected: {reason:?}")
                             })?;
-                            crate::local_ollama::parse_ollama_show_response(&body)
+                            ollama_catalog::parse_ollama_show_response(&body)
                         }
                         .await;
                         result.map_err(|error: anyhow::Error| {
@@ -4012,7 +3876,7 @@ impl CodewhaleClient {
             .ok()
             .and_then(Result::ok)
             .map(|(body, _)| body);
-            let delta = crate::local_ollama::ollama_catalog_delta(
+            let delta = ollama_catalog::ollama_catalog_delta(
                 &self.catalog_provider_id(),
                 &self.base_url,
                 &tags,
@@ -4096,9 +3960,9 @@ impl CodewhaleClient {
     /// seeds remain available with a typed failed receipt.
     pub fn spawn_active_provider_catalog_refresh(config: &Config) {
         // Unit tests use explicit fixture refreshes; never probe a developer's provider.
-        #[cfg(test)]
+        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
         let _ = config;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
         {
             let Ok(identity) = config.active_provider_identity() else {
                 return;
@@ -4206,9 +4070,9 @@ impl CodewhaleClient {
     /// rather than reimplemented. Failures stay non-fatal: a route that cannot
     /// answer keeps its persisted and configured rows.
     pub fn spawn_configured_provider_catalog_refresh(config: &Config) {
-        #[cfg(test)]
+        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
         let _ = config;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
         {
             let active = config.active_provider_identity().ok();
             for identity in crate::provider_lake::configured_providers(config) {
@@ -6343,437 +6207,6 @@ pub(crate) fn main_turn_pricing_quote_at(
     })
 }
 
-pub(super) fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
-    match system {
-        Some(SystemPrompt::Text(text)) => Some(text),
-        Some(SystemPrompt::Blocks(blocks)) => {
-            let joined = blocks
-                .into_iter()
-                .map(|b| b.text)
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n");
-            if joined.trim().is_empty() {
-                None
-            } else {
-                Some(joined)
-            }
-        }
-        None => None,
-    }
-}
-
-/// Write DeepSeek's Chat Completions thinking controls from the shared tier
-/// table.
-///
-/// The table (`client::deepseek_effort`) is the only place the tier ladder is
-/// written down; this function is just the Chat wire's spelling of it. An
-/// effort string the table does not name is not a DeepSeek tier request, so
-/// nothing is written rather than guessing a field the user did not ask for.
-fn apply_deepseek_chat_reasoning_effort(body: &mut Value, normalized: &str) {
-    let Some(tier) = deepseek_effort::deepseek_effort_tier(normalized) else {
-        return;
-    };
-    if let Some(value) = tier.chat_reasoning_effort() {
-        body["reasoning_effort"] = json!(value);
-    }
-    body["thinking"] = json!({
-        "type": if tier.chat_thinking_enabled() { "enabled" } else { "disabled" },
-    });
-}
-
-pub(super) fn apply_reasoning_effort(
-    body: &mut Value,
-    effort: Option<&str>,
-    provider: ProviderKind,
-) {
-    let Some(effort) = effort else {
-        return;
-    };
-    let normalized = effort.trim().to_ascii_lowercase();
-    // DeepSeek's first-party routes read their tier ladder from the one
-    // annotated table (`client::deepseek_effort`), shared with the Responses
-    // wire, so a documented mapping change is a single edit. Every other
-    // provider keeps its own dialect below.
-    if matches!(provider, ProviderKind::Deepseek) {
-        apply_deepseek_chat_reasoning_effort(body, &normalized);
-        return;
-    }
-    if provider == ProviderKind::Stepfun {
-        // Step 3.5 has no documented effort selector. The other coding models
-        // are always reasoning-capable; do not invent an Off wire value.
-        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
-        let tier = match (model, normalized.as_str()) {
-            ("step-5-preview" | "step-3.7-flash" | "step-3.5-flash-2603", "minimal" | "low") => {
-                Some("low")
-            }
-            ("step-5-preview" | "step-3.7-flash", "medium") => Some("medium"),
-            ("step-3.5-flash-2603", "medium") => Some("high"),
-            (
-                "step-5-preview" | "step-3.7-flash" | "step-3.5-flash-2603",
-                "high" | "max" | "xhigh" | "ultra",
-            ) => Some("high"),
-            _ => None,
-        };
-        if let Some(tier) = tier {
-            body["reasoning_effort"] = json!(tier);
-        }
-        return;
-    }
-    match normalized.as_str() {
-        "off" | "disabled" | "none" | "false" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::XiaomiMimo
-            | ProviderKind::Novita
-            | ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Together
-            | ProviderKind::Atlascloud
-            | ProviderKind::Zai => {
-                body["thinking"] = json!({ "type": "disabled" });
-            }
-            // TelecomJS TokenHub: the gateway's OpenAI Chat Completions API
-            // (POST /v1/chat/completions) does not document `reasoning_effort`
-            // or `thinking` as supported parameters. The `thinking` field is
-            // only available on the Anthropic Messages API (POST /v1/messages)
-            // with a different shape ({"type":"enabled","budget_tokens":N}).
-            // Since CodeWhale routes TelecomJS through the Chat Completions
-            // path, we must NOT inject these fields — the gateway may silently
-            // ignore them or reject the request, and not every gateway model
-            // (qwen-max, deepseek-chat, gpt-4o, claude, etc.) accepts the same
-            // reasoning dialect (#4188 review: verify against actual behavior).
-            ProviderKind::Telecomjs => {}
-            // Eden AI documents `thinking` only for Anthropic Claude models.
-            // This gateway can route unrelated model families, so the generic
-            // provider must not inject a model-specific reasoning dialect.
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio (DashScope): its top-level controls are route- AND
-            // model-specific, so the provider enum alone cannot decide them —
-            // a custom `base_url` on the same identity is an arbitrary
-            // gateway. `apply_modelstudio_route_reasoning_controls` in
-            // client::chat is the sole writer; it strips these fields for all
-            // four variants and re-adds them only on a verified Alibaba host.
-            // Source: <https://www.alibabacloud.com/help/en/model-studio/deep-thinking>
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            ProviderKind::OpenaiCodex => {
-                // OpenAI Codex uses Responses API — thinking handled differently
-            }
-            ProviderKind::Fireworks => {}
-            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
-            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
-            // the canonical OpenAI extension to disable thinking is
-            // `chat_template_kwargs.enable_thinking`. The old
-            // `thinking: {type: disabled}` field is Anthropic-native and
-            // silently ignored by vLLM — the model still emits a full
-            // reasoning trace into the `reasoning` field (which this client
-            // doesn't surface), causing 10+ seconds of perceived "freeze"
-            // before the first content token (PR #1480 by @h3c-hexin).
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": false,
-                });
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::Arcee
-            | ProviderKind::Huggingface
-            | ProviderKind::Modelscope
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable/disable.
-                body["thinking"] = json!({ "type": "disabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama OpenAI-compat endpoint accepts think param.
-                body["think"] = json!(false);
-            }
-            ProviderKind::OllamaCloud => {
-                // Ollama Cloud stays on the documented OpenAI-compatible
-                // `/v1/chat/completions` wire. Native `/api/chat` uses
-                // `think`; this wire uses `reasoning_effort`.
-                body["reasoning_effort"] = json!("none");
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": false,
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            // DeepSeek-compatible hosted routes: low/medium both map to high.
-            // Their own wire contracts are not verified here, so the historic
-            // collapse stays rather than inventing unsupported wire values.
-            ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Atlascloud => {
-                body["reasoning_effort"] = json!("high");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            // TelecomJS: see comment in the "off" branch above — the gateway's
-            // Chat Completions API does not support reasoning_effort or thinking.
-            ProviderKind::Telecomjs => {}
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio: see the "off" branch — the route- and model-aware
-            // shaper in client::chat is the sole writer of these fields.
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            // OpenRouter/OrcaRouter/Novita/Together: pass through the actual
-            // user-chosen value. OpenRouter's unified scale is
-            // none/minimal/low/medium/high/xhigh; DeepSeek models hosted there
-            // accept those directly.
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::Novita
-            | ProviderKind::Together => {
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::XiaomiMimo => {
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Arcee | ProviderKind::Huggingface | ProviderKind::Modelscope => {
-                let value = match normalized.as_str() {
-                    "minimal" => "minimal",
-                    "low" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Fireworks => {
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": true,
-                });
-                // vLLM supports low/medium/high natively — pass through the
-                // user-chosen value instead of hard-coding "high".
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::OpenaiCodex
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable.
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama think param.
-                body["think"] = json!(true);
-            }
-            ProviderKind::OllamaCloud => {
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": true,
-                    "reasoning_effort": "high",
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Zai => {
-                body["thinking"] = json!({
-                    "type": "enabled",
-                    "clear_thinking": false,
-                });
-            }
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        "xhigh" | "max" | "highest" | "ultra" | "ultracode" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Atlascloud => {
-                body["reasoning_effort"] = json!("max");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            // TelecomJS: see comment in the "off" branch above — the gateway's
-            // Chat Completions API does not support reasoning_effort or thinking.
-            ProviderKind::Telecomjs => {}
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio: see the "off" branch — the route- and model-aware
-            // shaper in client::chat is the sole writer of these fields.
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::Novita
-            | ProviderKind::Together => {
-                body["reasoning_effort"] = json!("xhigh");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::XiaomiMimo => {
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Arcee | ProviderKind::Huggingface | ProviderKind::Modelscope => {
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Fireworks => {
-                body["reasoning_effort"] = json!("max");
-            }
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": true,
-                });
-                // vLLM only supports none/low/medium/high — downgrade
-                // "max" to "high" instead of sending an invalid value.
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::OpenaiCodex
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable.
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama think param.
-                body["think"] = json!(true);
-            }
-            ProviderKind::OllamaCloud => {
-                body["reasoning_effort"] = json!("max");
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": true,
-                    "reasoning_effort": "max",
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Zai => {
-                body["thinking"] = json!({
-                    "type": "enabled",
-                    "clear_thinking": false,
-                });
-            }
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        _ => {}
-    }
-}
-
 impl CodewhaleClient {
     pub(crate) fn can_request_fim_completion(&self) -> bool {
         self.api_provider != ProviderKind::OpencodeZen
@@ -6842,8 +6275,10 @@ mod chat;
 mod deepseek_effort;
 #[cfg(test)]
 mod ds4_tests;
+pub(crate) mod ollama_catalog;
 mod prepared;
 mod provider_native_search;
+pub(crate) mod reasoning_effort;
 mod responses;
 mod role_placement;
 mod stream_entry;
@@ -6865,9 +6300,17 @@ pub(crate) fn stream_first_response_bound(open: Duration, idle: Duration) -> Dur
 #[cfg(test)]
 pub(crate) use stream_entry::first_byte_timeout as stream_first_byte_timeout;
 pub(crate) use stream_entry::is_stream_open_transport_failure;
-mod wire;
+pub(crate) mod wire;
 
 // Retain the crate-visible accounting helpers at the existing client seam.
+#[cfg(test)]
+use reasoning_effort::apply_reasoning_effort;
+use wire::{ERROR_BODY_MAX_BYTES, bounded_error_text};
+#[cfg(test)]
+use wire::{
+    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, from_api_tool_name, release_stream_buffer,
+    to_api_tool_name,
+};
 pub(super) use wire::{parse_usage, saturating_u32};
 
 #[cfg(test)]

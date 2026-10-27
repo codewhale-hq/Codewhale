@@ -57,7 +57,7 @@ const MAX_INSTALL_REDIRECTS: usize = 5;
 
 /// Connect and total budgets for install and registry-sync HTTP requests.
 fn install_http_timeouts() -> (std::time::Duration, std::time::Duration) {
-    if cfg!(test) {
+    if cfg!(any(test, feature = "test-support")) {
         // Short enough that the stalled-server regression test finishes
         // quickly, long enough that happy-path tests never approach it.
         (
@@ -99,8 +99,9 @@ async fn guarded_get(
 ) -> Result<reqwest::Response> {
     let decider = NetworkPolicyDecider::new(network.clone(), None);
     let mut current = reqwest::Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    let mut initial_pin: Option<DnsPin> =
-        (cfg!(test) && current.host_str() == Some("127.0.0.1")).then_some(None);
+    let mut initial_pin: Option<DnsPin> = (cfg!(any(test, feature = "test-support"))
+        && current.host_str() == Some("127.0.0.1"))
+    .then_some(None);
     for _ in 0..=MAX_INSTALL_REDIRECTS {
         let host = fetch_target_host(&current)?;
         if matches!(network.decide(&host), Decision::Deny) {
@@ -307,7 +308,6 @@ pub struct InstalledSkill {
     /// SHA-256 over the downloaded tarball bytes. Used by [`update`] to detect
     /// upstream changes without re-extracting; also surfaced for telemetry /
     /// future signature-verification work.
-    #[expect(dead_code)]
     pub source_checksum: String,
 }
 
@@ -375,8 +375,6 @@ pub enum InstallError {
 /// [`DEFAULT_REGISTRY_URL`]. Public for downstream consumers (tests, runtime
 /// API) even though the slash-command path always goes through
 /// [`install_with_registry`] so the user's configured registry wins.
-#[cfg_attr(not(test), expect(dead_code))]
-#[cfg_attr(test, allow(dead_code))]
 pub async fn install(
     source: InstallSource,
     skills_dir: &Path,
@@ -477,7 +475,7 @@ pub async fn install_with_registry(
     // Write the marker last so a partial install never leaves a stale
     // .installed-from on disk. Prefer v2 with package content digest.
     let spec = source_spec_string(&source);
-    let content_digest = match super::package_digest::compute_package_digest(&final_path) {
+    let content_digest = match crate::package_digest::compute_package_digest(&final_path) {
         Ok(digest) => digest,
         Err(err) => {
             let _ = tokio::fs::remove_dir_all(&final_path).await;
@@ -522,8 +520,6 @@ pub async fn install_with_registry(
 /// `/skill update bar` without the user re-typing the spec.
 ///
 /// Convenience wrapper over [`update_with_registry`].
-#[cfg_attr(not(test), expect(dead_code))]
-#[cfg_attr(test, allow(dead_code))]
 pub async fn update(
     name: &str,
     skills_dir: &Path,
@@ -618,7 +614,7 @@ pub fn uninstall(name: &str, skills_dir: &Path) -> Result<()> {
 ///
 /// Refuses to mark system skills (no `.installed-from`) so the bundled
 /// `skill-creator` doesn't accidentally inherit elevated tool privileges.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn trust(name: &str, skills_dir: &Path) -> Result<()> {
     let target = skill_target_path(name, skills_dir)?;
     if !target.exists() {
@@ -628,7 +624,7 @@ pub fn trust(name: &str, skills_dir: &Path) -> Result<()> {
     if !target.join(INSTALLED_FROM_MARKER).exists() {
         return Err(InstallError::NotInstalledHere(name.to_string()).into());
     }
-    let content_digest = super::package_digest::compute_package_digest(&target)
+    let content_digest = crate::package_digest::compute_package_digest(&target)
         .with_context(|| format!("cannot compute content digest for {}", target.display()))?;
     write_trust_v2(&target, &content_digest)?;
     Ok(())
@@ -967,8 +963,8 @@ async fn sync_one_skill(
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct InstalledFromMarker {
-    pub(crate) spec: String,
+pub struct InstalledFromMarker {
+    pub spec: String,
     /// v1 download checksum field.
     #[serde(default)]
     checksum: String,
@@ -983,7 +979,7 @@ pub(crate) struct InstalledFromMarker {
 }
 
 impl InstalledFromMarker {
-    pub(crate) fn source_checksum(&self) -> &str {
+    pub fn source_checksum(&self) -> &str {
         self.source_checksum
             .as_deref()
             .filter(|s| !s.is_empty())
@@ -1093,7 +1089,7 @@ enum DownloadOutcome {
 /// both route `Prompt`/`Deny` hosts through their own approval flows instead
 /// of growing a second download path.
 #[derive(Debug)]
-pub(crate) enum FetchOutcome {
+pub enum FetchOutcome {
     Bytes { bytes: Vec<u8>, url: String },
     NeedsApproval(String),
     Denied(String),
@@ -1103,7 +1099,7 @@ pub(crate) enum FetchOutcome {
 /// and download the first reachable candidate under the network policy.
 /// Registry sources are rejected: skill registry resolution stays inside
 /// [`candidate_urls`], and the plugin install on-ramp has no registry index.
-pub(crate) async fn fetch_tarball(
+pub async fn fetch_tarball(
     source: &InstallSource,
     network: &NetworkPolicy,
     max_size: u64,
@@ -1643,7 +1639,7 @@ fn is_within_selected_root(path: &str, prefix: &str, skill_root: &str) -> bool {
 }
 
 /// Ensure a tar path has no `..` segments and is not absolute.
-pub(crate) fn is_safe_path(path: &Path) -> bool {
+pub fn is_safe_path(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
     }
@@ -1662,8 +1658,8 @@ fn skill_target_path(name: &str, skills_dir: &Path) -> Result<PathBuf> {
     Ok(skills_dir.join(name))
 }
 
-pub(crate) fn validate_skill_name_segment(name: &str) -> Result<&str> {
-    if !super::frontmatter::is_path_safe_skill_name(name) {
+pub fn validate_skill_name_segment(name: &str) -> Result<&str> {
+    if !crate::frontmatter::is_path_safe_skill_name(name) {
         bail!("skill name must be a single path-safe segment (got '{name}')");
     }
     Ok(name)
@@ -1703,11 +1699,11 @@ fn strip_prefix<'a>(path: &'a str, prefix: &str) -> std::borrow::Cow<'a, str> {
 /// Also verifies the leading `---` fence so we reject malformed files early.
 fn parse_frontmatter_name(bytes: &[u8]) -> Result<String> {
     let content = std::str::from_utf8(bytes).context("SKILL.md is not valid UTF-8")?;
-    let parsed = super::frontmatter::parse_frontmatter(content).map_err(anyhow::Error::msg)?;
-    super::frontmatter::validate_skill_frontmatter(
+    let parsed = crate::frontmatter::parse_frontmatter(content).map_err(anyhow::Error::msg)?;
+    crate::frontmatter::validate_skill_frontmatter(
         parsed.as_ref().map(|(metadata, _)| metadata),
         None,
-        super::frontmatter::SkillValidationMode::Strict,
+        crate::frontmatter::SkillValidationMode::Strict,
     )
     .map_err(anyhow::Error::msg)?;
     let (metadata, _) = parsed.expect("strict validation requires frontmatter");
@@ -1723,7 +1719,7 @@ fn reject_unmarked_update(final_path: &Path, name: &str) -> std::result::Result<
     }
 }
 
-pub(crate) fn source_spec_string(source: &InstallSource) -> String {
+pub fn source_spec_string(source: &InstallSource) -> String {
     match source {
         InstallSource::GitHubRepo(repo) => format!("github:{repo}"),
         InstallSource::DirectUrl(url) => url.clone(),
@@ -1731,7 +1727,7 @@ pub(crate) fn source_spec_string(source: &InstallSource) -> String {
     }
 }
 
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+pub fn sha256_hex(bytes: &[u8]) -> String {
     hex_bytes(Sha256::digest(bytes))
 }
 
@@ -1776,7 +1772,7 @@ mod tests {
         fs::write(baseline.join("SKILL.md"), body).unwrap();
         fs::write(baseline.join(".hidden"), b"payload").unwrap();
         fs::write(baseline.join("nested/.trusted"), b"nested payload").unwrap();
-        let digest = super::super::package_digest::compute_package_digest(&baseline).unwrap();
+        let digest = crate::package_digest::compute_package_digest(&baseline).unwrap();
         let forged = serde_json::json!({"schema_version": 2, "content_digest": digest}).to_string();
         let bytes = skill_tarball(&[
             ("repo-main/SKILL.md", body, 0o644),
@@ -1797,7 +1793,7 @@ mod tests {
             b"payload"
         );
         assert_eq!(
-            super::super::package_digest::compute_package_digest(&staged.staged_path).unwrap(),
+            crate::package_digest::compute_package_digest(&staged.staged_path).unwrap(),
             digest
         );
         fs::rename(&staged.staged_path, skills.join("demo")).unwrap();

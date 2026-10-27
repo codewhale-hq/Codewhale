@@ -19,14 +19,15 @@ use codewhale_models::{
 };
 use codewhale_runtime::logging;
 
+use super::CodewhaleClient;
 use super::chat::REASONING_REPLAY_PLACEHOLDER;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
-use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
-use super::{
-    CodewhaleClient, ERROR_BODY_MAX_BYTES, bounded_error_text, from_api_tool_name,
-    system_to_instructions, to_api_tool_name,
+use super::wire::{
+    ERROR_BODY_MAX_BYTES, bounded_error_text, from_api_tool_name, system_to_instructions,
+    to_api_tool_name,
 };
+use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
 
 const CHATGPT_TOOL_NAMESPACE: &str = "codewhale";

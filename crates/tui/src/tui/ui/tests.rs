@@ -1837,7 +1837,10 @@ fn scroll_test_question_view() -> UserInputView {
     UserInputView::new(
         "question-scroll",
         UserInputRequest {
+                require_typed_answers: false,
             questions: vec![UserInputQuestion {
+                detail: None,
+                intent: None,
                 header: "Choose".into(),
                 id: "choice".into(),
                 question: "Review the transcript before choosing a path.".into(),
@@ -16360,12 +16363,14 @@ fn turn_liveness_preserves_pending_user_input_beyond_tool_timeout() {
         app.pending_user_input_prompt = Some((
             "question-1".into(),
             crate::tools::user_input::UserInputRequest {
+                require_typed_answers: false,
                 questions: Vec::new(),
             },
         ));
         app.view_stack.push(UserInputView::new(
             "question-1",
             crate::tools::user_input::UserInputRequest {
+                require_typed_answers: false,
                 questions: Vec::new(),
             },
             app.ui_locale,
@@ -16420,6 +16425,7 @@ fn turn_liveness_preserves_pending_user_input_beyond_tool_timeout() {
 
 fn install_pending_question(app: &mut App, id: &str) {
     let request = crate::tools::user_input::UserInputRequest {
+        require_typed_answers: false,
         questions: Vec::new(),
     };
     app.pending_user_input_prompt = Some((id.into(), request.clone()));
@@ -16480,6 +16486,13 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
     // Neither a previous request nor a wrapping call's different id owns it.
     observe_human_request_settlement(&mut app, &completion("input-old"));
     observe_human_request_settlement(&mut app, &completion("outer-call"));
+    observe_human_request_settlement(
+        &mut app,
+        &EngineEvent::UserInputClosed {
+            id: "input-old".into(),
+            outcome: crate::core::events::UserInputClosedOutcome::Cancelled,
+        },
+    );
     apply_user_input_submission_result(&mut app, "input-old", Ok(()));
     assert_eq!(app.turn_last_activity_at, Some(activity));
     assert_eq!(
@@ -16507,6 +16520,16 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
     assert!(app.pending_user_input_prompt.is_some());
     assert!(app.view_stack.contains_kind(ModalKind::UserInput));
     assert_eq!(app.status_toasts.len(), 1);
+    observe_human_request_settlement(
+        &mut app,
+        &EngineEvent::UserInputClosed {
+            id: "input-new".into(),
+            outcome: crate::core::events::UserInputClosedOutcome::Answered,
+        },
+    );
+    assert!(app.pending_user_input_prompt.is_none());
+    assert!(!app.view_stack.contains_kind(ModalKind::UserInput));
+    assert_eq!(app.turn_last_activity_at, Some(activity));
 }
 
 #[test]
@@ -17801,7 +17824,7 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     app.current_session_metadata = Some(session.metadata.clone());
     let origin_scope = crate::cost_status::scope_token();
     let owner = "interactive:active-deleted-origin:origin-turn";
-    crate::cost_status::register_persistent_interactive_runtime_usage_sink_for_test(
+    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
         owner,
         origin_scope,
         &session.metadata.id,
@@ -26625,7 +26648,7 @@ fn turn_inspector_timeline_numbers_semantic_entries_and_checkpoint_actions() {
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace");
     std::fs::write(workspace.join("src.rs"), "fn main() {}\n").expect("source");
-    let repo = crate::snapshot::SnapshotRepo::open_or_init(&workspace).expect("snapshot repo");
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace).expect("snapshot repo");
     repo.snapshot("pre-turn:12: Fix timeline")
         .expect("pre-turn snapshot");
 
@@ -28437,6 +28460,7 @@ async fn stale_parent_approval_is_resolved_unavailable_not_dropped() {
     let question = EngineEvent::UserInputRequired {
         id: "stale-question".to_string(),
         request: crate::tools::user_input::UserInputRequest {
+            require_typed_answers: false,
             questions: Vec::new(),
         },
     };
@@ -33759,6 +33783,7 @@ fn notification_input_failure_keeps_the_request_and_success_retires_only_its_act
     app.pending_user_input_prompt = Some((
         "input-a".into(),
         crate::tools::user_input::UserInputRequest {
+            require_typed_answers: false,
             questions: Vec::new(),
         },
     ));
@@ -33808,6 +33833,7 @@ fn notification_input_result_never_reopens_or_clears_a_different_pending_questio
     app.pending_user_input_prompt = Some((
         "input-b".into(),
         crate::tools::user_input::UserInputRequest {
+            require_typed_answers: false,
             questions: Vec::new(),
         },
     ));

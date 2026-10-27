@@ -605,7 +605,7 @@ struct RuntimePin {
     /// or removal mid-session changes nothing until the next process; a
     /// binary replaced at the pinned path is refused at the handshake). With
     /// the one-line summary of why it was chosen, for `/plugin`.
-    pinned: Option<(crate::dependencies::HostRuntime, String)>,
+    pinned: Option<(codewhale_dependencies::HostRuntime, String)>,
     /// `runtime = "auto"` only: a Bun host failed to launch or handshake
     /// before anything was pinned, so every later launch this session
     /// resolves Node.
@@ -619,7 +619,7 @@ struct RuntimePin {
 fn prepare_launch(
     options: &ExtensionHostOptions,
     tier: HostTier,
-    pinned: Option<(crate::dependencies::HostRuntime, String)>,
+    pinned: Option<(codewhale_dependencies::HostRuntime, String)>,
     bun_failed: bool,
     snapshot_state_paths: &[PathBuf],
 ) -> Result<(supervisor::HostLaunch, Option<String>), String> {
@@ -631,10 +631,11 @@ fn prepare_launch(
             } else {
                 options.runtime
             };
-            let mut resolution = crate::dependencies::resolve_extension_host_runtime(
+            let mut resolution = codewhale_dependencies::resolve_extension_host_runtime(
                 choice,
                 options.node_override.as_deref(),
                 options.bun_override.as_deref(),
+                crate::extension_host::bundle_sha256(),
             );
             // Report the configured choice, not the Node-only fallback.
             resolution.choice = options.runtime;
@@ -675,7 +676,7 @@ fn host_root(options: &ExtensionHostOptions) -> Result<PathBuf, String> {
 /// Blocking; creates the host's data dir and probes bubblewrap on Linux.
 pub(crate) fn planned_sandbox(
     options: &ExtensionHostOptions,
-    runtime: &crate::dependencies::HostRuntime,
+    runtime: &codewhale_dependencies::HostRuntime,
     tier: HostTier,
 ) -> Result<supervisor::HostSandbox, String> {
     supervisor::planned_sandbox(tier, runtime, &host_root(options)?)
@@ -941,6 +942,24 @@ impl HostEvents for Events {
                 shared
                     .execution_broker
                     .serve(&shared, self.generation, params, cx)
+                    .await
+            }
+            protocol::HostRequest::UserQuestion(params) => {
+                let shared = self
+                    .shared
+                    .upgrade()
+                    .ok_or_else(|| refuse("extension host manager is gone"))?;
+                if shared
+                    .tier_runtime(self.tier)
+                    .host_generation
+                    .load(Ordering::SeqCst)
+                    != self.generation
+                {
+                    return Err(refuse("stale host generation"));
+                }
+                shared
+                    .core_calls
+                    .serve_question(&shared, self.tier, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::SessionCheckpoint(params) => {
@@ -2730,7 +2749,7 @@ impl ExtensionHostManager {
                 };
             if shared.options.runtime
                 != codewhale_config::extension_host::ExtensionHostRuntime::Auto
-                || launch.runtime.kind != crate::dependencies::HostRuntimeKind::Bun
+                || launch.runtime.kind != codewhale_dependencies::HostRuntimeKind::Bun
                 || summary.is_none()
             {
                 break Err(reason);

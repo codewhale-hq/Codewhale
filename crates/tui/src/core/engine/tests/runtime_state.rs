@@ -132,10 +132,11 @@ async fn a_session_boundary_abandons_the_previous_mcp_boot() {
     assert!(joined.unwrap_err().is_cancelled(), "the pass was aborted");
 }
 
-fn empty_user_input_request() -> crate::tools::user_input::UserInputRequest {
-    crate::tools::user_input::UserInputRequest {
-        questions: Vec::new(),
-    }
+fn user_input_request() -> crate::tools::user_input::UserInputRequest {
+    serde_json::from_value(serde_json::json!({
+        "questions":[{"id":"choice","question":"Answer?","allow_free_text":true}]
+    }))
+    .unwrap()
 }
 
 #[tokio::test]
@@ -195,11 +196,102 @@ async fn an_undeliverable_user_input_request_fails_fast() {
     // C02-19: the question cannot reach a host (its event channel is closed,
     // while the answer channel stays open), so nobody can ever answer it.
     let workspace = tempdir().unwrap();
-    let (mut engine, handle) = quiet_engine(deterministic_engine_config(workspace.path()));
+    let (mut engine, handle) = quiet_engine(EngineConfig {
+        user_input_responder: true,
+        ..deterministic_engine_config(workspace.path())
+    });
+    engine.config.user_input_responder = false;
+    assert!(matches!(
+        engine
+            .await_user_input("unavailable", user_input_request())
+            .await,
+        Err(ToolError::ExecutionFailed { .. })
+    ));
+    assert!(handle.rx_event.write().await.try_recv().is_err());
+    engine.config.user_input_responder = true;
+    engine.host_profile = EngineHostProfile::Child;
+    assert!(matches!(
+        engine.await_user_input("child", user_input_request()).await,
+        Err(ToolError::ExecutionFailed { .. })
+    ));
+    engine.host_profile = EngineHostProfile::Normal;
+    let (tiny, _tiny_rx) = mpsc::channel(1);
+    let regular = std::mem::replace(&mut engine.tx_event, tiny);
+    assert!(matches!(
+        engine.await_user_input("tiny", user_input_request()).await,
+        Err(ToolError::ExecutionFailed { .. })
+    ));
+    engine.tx_event = regular;
+    for timed_out in [false, true] {
+        let (full, mut full_rx) = mpsc::channel(2);
+        full.send(Event::Status {
+            message: "first".into(),
+        })
+        .await
+        .unwrap();
+        full.send(Event::Status {
+            message: "second".into(),
+        })
+        .await
+        .unwrap();
+        let regular = std::mem::replace(&mut engine.tx_event, full);
+        engine.config.user_input_timeout = timed_out.then_some(Duration::from_millis(10));
+        let withdrawal = CancellationToken::new();
+        let invocation_clock = std::sync::Mutex::new(crate::tools::codemode::PauseClock::new());
+        {
+            let wait = engine.await_user_input_withdrawal(
+                "undisplayed",
+                user_input_request(),
+                withdrawal.clone(),
+                Some(&invocation_clock),
+            );
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(2), &mut wait)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                invocation_clock
+                    .lock()
+                    .unwrap()
+                    .remaining(Duration::from_millis(1))
+                    .is_none()
+            );
+            if timed_out {
+                assert!(matches!(wait.await, Err(ToolError::Timeout { .. })));
+            } else {
+                withdrawal.cancel();
+                assert!(matches!(wait.await, Err(ToolError::Cancelled { .. })));
+            }
+        }
+        assert!(matches!(full_rx.try_recv(), Ok(Event::Status { .. })));
+        assert!(matches!(full_rx.try_recv(), Ok(Event::Status { .. })));
+        assert!(full_rx.try_recv().is_err());
+        engine.tx_event = regular;
+    }
+    engine.config.user_input_timeout = None;
+    {
+        let wait = engine.await_user_input("disconnected", user_input_request());
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(
+            matches!(handle.rx_event.write().await.recv().await,Some(Event::UserInputRequired {id,..}) if id == "disconnected")
+        );
+        handle.rx_event.write().await.close();
+        assert!(matches!(wait.await, Err(ToolError::ExecutionFailed { .. })));
+    }
+    assert!(
+        matches!(handle.rx_event.write().await.recv().await,Some(Event::UserInputClosed {id,outcome:crate::core::events::UserInputClosedOutcome::Unavailable}) if id == "disconnected")
+    );
     handle.rx_event.write().await.close();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        engine.await_user_input("ask-undeliverable", empty_user_input_request()),
+        engine.await_user_input("ask-undeliverable", user_input_request()),
     )
     .await
     .expect("an undeliverable question must not wait for an answer");
@@ -216,12 +308,13 @@ async fn an_open_user_input_question_is_not_charged_to_the_turn() {
     let workspace = tempdir().unwrap();
     let wait = Duration::from_millis(400);
     let (mut engine, _handle) = quiet_engine(EngineConfig {
+        user_input_responder: true,
         user_input_timeout: Some(wait),
         ..deterministic_engine_config(workspace.path())
     });
     let before = engine.turn_wall_clock.spent();
     let result = engine
-        .await_user_input("ask-unanswered", empty_user_input_request())
+        .await_user_input("ask-unanswered", user_input_request())
         .await;
     assert!(
         matches!(result, Err(ToolError::Timeout { .. })),
@@ -232,44 +325,153 @@ async fn an_open_user_input_question_is_not_charged_to_the_turn() {
         charged < wait / 2,
         "the human wait was charged to the turn budget: {charged:?}"
     );
+    for withdraw in [false, true] {
+        let (mut engine, handle) = quiet_engine(EngineConfig {
+            user_input_responder: true,
+            ..deterministic_engine_config(workspace.path())
+        });
+        let withdrawal = CancellationToken::new();
+        let invocation_clock = std::sync::Mutex::new(crate::tools::codemode::PauseClock::new());
+        let (accepted, rejected) = tokio::sync::oneshot::channel();
+        {
+            let wait = engine.await_user_input_withdrawal(
+                "withdrawn",
+                user_input_request(),
+                withdrawal.clone(),
+                Some(&invocation_clock),
+            );
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), &mut wait)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                invocation_clock
+                    .lock()
+                    .unwrap()
+                    .remaining(Duration::from_millis(1))
+                    .is_some()
+            );
+            handle
+                .tx_user_input
+                .send(UserInputDecision::Submitted {
+                    id: "withdrawn".into(),
+                    response: UserInputResponse {
+                        answers: Vec::new(),
+                    },
+                    accepted,
+                })
+                .await
+                .unwrap();
+            if withdraw {
+                withdrawal.cancel();
+                assert!(matches!(wait.await, Err(ToolError::Cancelled { .. })));
+            }
+        }
+        assert!(!rejected.await.unwrap());
+        assert!(
+            matches!(handle.rx_event.write().await.recv().await, Some(Event::UserInputRequired {id,..}) if id == "withdrawn")
+        );
+        assert!(
+            matches!(handle.rx_event.write().await.recv().await, Some(Event::UserInputClosed {id,outcome:crate::core::events::UserInputClosedOutcome::Cancelled}) if id == "withdrawn")
+        );
+        let resumed = engine.turn_wall_clock.spent();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            invocation_clock
+                .lock()
+                .unwrap()
+                .remaining(Duration::from_millis(1))
+                .is_none()
+        );
+        assert!(
+            engine.turn_wall_clock.spent().saturating_sub(resumed) >= Duration::from_millis(15)
+        );
+    }
 }
 
 #[tokio::test]
 async fn user_input_acknowledges_only_live_answer_or_cancellation() {
     for timeout in [None, Some(Duration::ZERO)] {
         for cancel in [false, true] {
-            let workspace = tempdir().unwrap();
-            let (mut engine, handle) = quiet_engine(EngineConfig {
-                user_input_timeout: timeout,
-                ..deterministic_engine_config(workspace.path())
-            });
-            let waiter = tokio::spawn(async move {
-                engine
-                    .await_user_input("live-question", empty_user_input_request())
-                    .await
-            });
-            assert!(matches!(handle.rx_event.write().await.recv().await,
-                Some(Event::UserInputRequired { id, .. }) if id == "live-question"));
-            if cancel {
-                handle
-                    .cancel_user_input("live-question")
-                    .await
-                    .expect("live cancel accepted");
-                assert!(matches!(
-                    waiter.await.unwrap(),
-                    Err(ToolError::Cancelled { .. })
-                ));
-            } else {
-                handle
-                    .submit_user_input(
-                        "live-question",
+            for typed in [false, true] {
+                let workspace = tempdir().unwrap();
+                let (mut engine, handle) = quiet_engine(EngineConfig {
+                    user_input_responder: true,
+                    user_input_timeout: timeout,
+                    ..deterministic_engine_config(workspace.path())
+                });
+                let mut request = user_input_request();
+                request.require_typed_answers = typed;
+                let waiter =
+                    tokio::spawn(
+                        async move { engine.await_user_input("live-question", request).await },
+                    );
+                assert!(matches!(handle.rx_event.write().await.recv().await,
+                    Some(Event::UserInputRequired {id, ..}) if id == "live-question"));
+                if cancel {
+                    handle
+                        .cancel_user_input("live-question")
+                        .await
+                        .expect("live cancel accepted");
+                    let error = waiter.await.unwrap().unwrap_err();
+                    if typed {
+                        assert_eq!(
+                            error.metadata(),
+                            Some(&serde_json::json!({"user_question_error": "ASK_CANCELLED"}))
+                        );
+                    } else {
+                        assert!(matches!(&error, ToolError::Cancelled { .. }));
+                        assert!(error.metadata().is_none());
+                    }
+                } else {
+                    if typed {
+                        assert!(
+                            handle
+                                .submit_user_input(
+                                    "live-question",
+                                    UserInputResponse {
+                                        answers: Vec::new()
+                                    }
+                                )
+                                .await
+                                .is_err()
+                        );
+                    }
+                    let response = if typed {
+                        serde_json::from_value(serde_json::json!({"answers":[{"id":"choice","kind":"custom","label":"","value":"answer"}]})).unwrap()
+                    } else {
                         UserInputResponse {
                             answers: Vec::new(),
-                        },
+                        }
+                    };
+                    handle
+                        .submit_user_input("live-question", response)
+                        .await
+                        .expect("live answer accepted");
+                    assert!(waiter.await.unwrap().is_ok());
+                }
+                loop {
+                    if let Some(Event::UserInputClosed { id, outcome }) = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        handle.rx_event.write().await.recv(),
                     )
                     .await
-                    .expect("live answer accepted");
-                assert!(waiter.await.unwrap().is_ok());
+                    .expect("close receipt must arrive")
+                    {
+                        assert_eq!(id, "live-question");
+                        assert_eq!(
+                            outcome,
+                            if cancel {
+                                crate::core::events::UserInputClosedOutcome::Cancelled
+                            } else {
+                                crate::core::events::UserInputClosedOutcome::Answered
+                            }
+                        );
+                        break;
+                    }
+                }
             }
         }
     }
@@ -280,11 +482,12 @@ async fn user_input_expired_deadline_or_cancellation_rejects_ready_reply() {
     for canceled in [false, true] {
         let workspace = tempdir().unwrap();
         let (mut engine, handle) = quiet_engine(EngineConfig {
+            user_input_responder: true,
             user_input_timeout: (!canceled).then_some(Duration::from_millis(200)),
             ..deterministic_engine_config(workspace.path())
         });
         let cancel = engine.cancel_token.clone();
-        let wait = engine.await_user_input("expired-question", empty_user_input_request());
+        let wait = engine.await_user_input("expired-question", user_input_request());
         tokio::pin!(wait);
         assert!(
             tokio::time::timeout(Duration::from_millis(5), &mut wait)
@@ -328,10 +531,13 @@ async fn user_input_expired_deadline_or_cancellation_rejects_ready_reply() {
 #[tokio::test]
 async fn user_input_mismatched_and_abandoned_replies_do_not_end_live_wait() {
     let workspace = tempdir().unwrap();
-    let (mut engine, handle) = quiet_engine(deterministic_engine_config(workspace.path()));
+    let (mut engine, handle) = quiet_engine(EngineConfig {
+        user_input_responder: true,
+        ..deterministic_engine_config(workspace.path())
+    });
     let waiter = tokio::spawn(async move {
         engine
-            .await_user_input("current-question", empty_user_input_request())
+            .await_user_input("current-question", user_input_request())
             .await
     });
     assert!(matches!(
@@ -374,6 +580,7 @@ async fn user_input_mismatched_and_abandoned_replies_do_not_end_live_wait() {
             "current-question",
             UserInputResponse {
                 answers: vec![crate::tools::user_input::UserInputAnswer {
+                    kind: None,
                     id: "choice".into(),
                     label: "Live".into(),
                     value: "accepted-live-reply".into(),

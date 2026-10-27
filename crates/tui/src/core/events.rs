@@ -22,6 +22,15 @@ use crate::tools::user_input::UserInputRequest;
 use codewhale_config::ProviderKind;
 use codewhale_models::{Message, SystemPrompt, Tool, Usage};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputClosedOutcome {
+    Answered,
+    Cancelled,
+    TimedOut,
+    Unavailable,
+}
+
 /// Status receipt carried by the one request a reasoning-only / empty-stop
 /// nudge rides (C02-04). The nudge itself never joins the session.
 pub(crate) const REQUEST_NUDGE_RECEIPT_PREFIX: &str =
@@ -507,11 +516,11 @@ pub enum Event {
     /// (`pre_turn`), before one file-modifying tool call (`tool`), after that
     /// call (`post_tool`, recording hosts only), or after the turn
     /// (`post_turn`). A host that records these on its turn records owns
-    /// exactly those restore points (see `crate::snapshot::WorkspaceSnapshotRef`).
+    /// exactly those restore points (see `codewhale_snapshot::WorkspaceSnapshotRef`).
     /// With `EngineConfig::record_restore_points` every receipt of a turn
     /// arrives before its `TurnComplete`.
     WorkspaceSnapshotTaken {
-        snapshot: crate::snapshot::WorkspaceSnapshotRef,
+        snapshot: codewhale_snapshot::WorkspaceSnapshotRef,
     },
 
     /// Immutable billing route captured at CodeWhale's pre-permit application
@@ -870,6 +879,11 @@ pub enum Event {
     UserInputRequired {
         id: String,
         request: UserInputRequest,
+    },
+
+    UserInputClosed {
+        id: String,
+        outcome: UserInputClosedOutcome,
     },
 
     /// Authoritative API conversation state from the engine session.

@@ -13,11 +13,13 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
 - `crates/net` 拥有网络策略与审计、目标地址和 DNS 检查、代理解析及 Claude 导入规划。工具上下文、传输授权、重定向和响应大小限制仍由调用方负责。纯扩展宿主设置归 `crates/config` 所有。
 - `crates/notify` 拥有共享通知内容脱敏、注意力和类别门控、声音策略及本地音频派发。TUI 保留终端输出端，原生宿主保留横幅提交通道。
 - `crates/util` 拥有共享字符串、路径与原子写入辅助函数、受限工作区文件访问、链接与文件身份检查、捆绑文件读取、`.git` 名称规则和独占文件锁。
+- `crates/dependencies` 负责外部工具解析与受限子进程探测；`crates/snapshot` 负责回合前后的侧仓库快照；`crates/lsp` 负责语言服务器客户端；`crates/repl` 负责 Python REPL 运行时与 RLM 上下文文件。
+- `crates/skill-install` 拥有社区技能安装器（GitHub 与压缩包来源、精选注册表、受限解压、安装与信任标记）、包内容摘要以及共享的 `SKILL.md` 前置元数据读取器。其 SSRF DNS 固定与缩短的超时仅在仅限开发依赖的 `test-support` 特性下放宽。
 - `crates/tui` 正按照 `docs/design/TUI_DECONSTRUCTION.md` 记录的顺序拆分为以智能体
   工作分区为单位的 crate：契约、工具库、服务、提供方、运行时、叶子功能 crate、TUI 视图
   与宿主。TUI 始终是唯一写终端的 crate。在某个模块迁走之前，
   它仍位于 `crates/tui/src` 下的原路径。
-- LSP 子系统（`crates/tui/src/lsp/`）已完整接入引擎的工具执行后路径
+- LSP 子系统（`crates/lsp/src/`）已完整接入引擎的工具执行后路径
   （`core/engine/lsp_hooks.rs`），在 `File` 写入、编辑和补丁动作之后提供内联诊断。
 - swarm 智能体（agent）系统已在 v0.8.5 移除。当前生效的子智能体（sub-agent）接口面
   是单一的 `agent` 工具；持久化 RLM 会话可通过延迟加载的 `rlm` 动作族使用。
@@ -216,7 +218,7 @@ Chat Completions 驱动回合。
 ### 扩展系统
 
 - **`mcp.rs`** - 面向外部工具服务器的 Model Context Protocol 客户端
-- **`skills/`** - 针对本地 `SKILL.md` 文件的技能（skill）发现与注册表，外加安装与审计
+- **`skills/`** - 针对本地 `SKILL.md` 文件的技能（skill）发现与注册表，外加审计与变更（安装器位于 `crates/skill-install`）
 - **`hooks.rs`** - 带条件的执行前/后钩子
 
 ### 用户界面

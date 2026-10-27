@@ -1123,8 +1123,8 @@ impl ToolRegistryBuilder {
     /// sees a binary it can't actually use.
     #[must_use]
     pub fn with_pandoc_tools(self) -> Self {
-        if crate::dependencies::host_tool_available("pandoc_convert", || {
-            crate::dependencies::resolve_pandoc().is_some()
+        if codewhale_dependencies::host_tool_available("pandoc_convert", || {
+            codewhale_dependencies::resolve_pandoc().is_some()
         }) {
             use super::pandoc::PandocConvertTool;
             self.with_tool(Arc::new(PandocConvertTool))
@@ -1138,7 +1138,8 @@ impl ToolRegistryBuilder {
     /// Tesseract when installed.
     #[must_use]
     pub fn with_image_ocr_tools(self) -> Self {
-        if crate::dependencies::host_tool_available("image_ocr", super::image_ocr::ocr_available) {
+        if codewhale_dependencies::host_tool_available("image_ocr", super::image_ocr::ocr_available)
+        {
             use super::image_ocr::ImageOcrTool;
             self.with_tool(Arc::new(ImageOcrTool))
         } else {
@@ -1303,7 +1304,7 @@ impl ToolRegistryBuilder {
     /// Include the `revert_turn` tool. Approval-gated since it mutates
     /// the workspace; the model uses it when the user asks to "undo my
     /// last edit". Backed by the per-workspace snapshot side-repo
-    /// (`crate::snapshot`).
+    /// (`codewhale_snapshot`).
     #[must_use]
     pub fn with_revert_turn_tool(self) -> Self {
         use super::revert_turn::RevertTurnTool;
@@ -1410,7 +1411,7 @@ impl ToolRegistryBuilder {
     }
 
     /// Include the model-facing LSP intelligence tools. They reuse the
-    /// session [`crate::lsp::LspManager`] attached to `ToolContext` and never
+    /// session [`codewhale_lsp::LspManager`] attached to `ToolContext` and never
     /// spawn a second server lifecycle.
     #[must_use]
     pub fn with_lsp_tool(self) -> Self {

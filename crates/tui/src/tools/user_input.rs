@@ -6,6 +6,7 @@ use super::spec::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 /// Default ceiling on `request_user_input.questions` (#5949). Raised from the
 /// former hard-coded 3 so research/planning turns that need four or more
@@ -98,17 +99,37 @@ fn clamp_with_warn(raw: Option<u32>, default: usize, min: usize, max: usize, key
     clamped
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UserInputOption {
     pub label: String,
+    #[serde(default)]
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum UserInputIntent {
+    PlanReview {
+        approve: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UserInputQuestion {
+    #[serde(default)]
     pub header: String,
     pub id: String,
     pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<UserInputIntent>,
+    #[serde(default)]
     pub options: Vec<UserInputOption>,
     /// When `true`, the modal offers a free-text "Other" response in addition
     /// to the fixed options. Defaults to `false` for backwards compatibility
@@ -120,8 +141,11 @@ pub struct UserInputQuestion {
     pub multi_select: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UserInputRequest {
+    #[serde(default)]
+    pub require_typed_answers: bool,
     pub questions: Vec<UserInputQuestion>,
 }
 
@@ -137,9 +161,10 @@ impl UserInputRequest {
         value: &Value,
         limits: UserInputLimits,
     ) -> Result<Self, ToolError> {
-        let request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|e| {
+        let mut request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|e| {
             ToolError::invalid_input(format!("Invalid request_user_input payload: {e}"))
         })?;
+        request.require_typed_answers = false;
         request.validate_with_limits(limits)?;
         Ok(request)
     }
@@ -150,6 +175,7 @@ impl UserInputRequest {
     }
 
     pub fn validate_with_limits(&self, limits: UserInputLimits) -> Result<(), ToolError> {
+        self.validate_transport()?;
         if self.questions.is_empty() {
             return Err(ToolError::invalid_input(
                 "request_user_input.questions must be non-empty",
@@ -167,21 +193,6 @@ impl UserInputRequest {
             )));
         }
         for q in &self.questions {
-            if q.header.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.header cannot be empty",
-                ));
-            }
-            if q.id.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.id cannot be empty",
-                ));
-            }
-            if q.question.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.question cannot be empty",
-                ));
-            }
             if q.options.len() < MIN_CONFIGURABLE_OPTIONS || q.options.len() > limits.max_options {
                 return Err(ToolError::invalid_input(format!(
                     "request_user_input.questions.options must contain \
@@ -192,31 +203,171 @@ impl UserInputRequest {
                     got = q.options.len(),
                 )));
             }
-            for opt in &q.options {
-                if opt.label.trim().is_empty() {
+        }
+        Ok(())
+    }
+
+    pub fn validate_transport(&self) -> Result<(), ToolError> {
+        if self.questions.is_empty() || self.questions.len() > MAX_CONFIGURABLE_QUESTIONS {
+            return Err(ToolError::invalid_input(
+                "User input must contain 1 to 10 questions",
+            ));
+        }
+        if serde_json::to_vec(self)
+            .map_err(|_| ToolError::invalid_input("Invalid user input request"))?
+            .len()
+            > 1024 * 1024
+        {
+            return Err(ToolError::invalid_input("User input request exceeds 1 MiB"));
+        }
+        let mut ids = HashSet::new();
+        for question in &self.questions {
+            if question.id.trim().is_empty()
+                || question.question.trim().is_empty()
+                || !ids.insert(&question.id)
+            {
+                return Err(ToolError::invalid_input(
+                    "User input questions require unique nonempty ids and nonempty text",
+                ));
+            }
+            if question.options.len() > 1000
+                || (question.options.is_empty() && !question.allow_free_text)
+            {
+                return Err(ToolError::invalid_input(
+                    "User input supports at most 1000 choices per question; zero choices requires free text",
+                ));
+            }
+            let mut labels = HashSet::new();
+            for option in &question.options {
+                if option.label.trim().is_empty() || !labels.insert(&option.label) {
                     return Err(ToolError::invalid_input(
-                        "request_user_input option label cannot be empty",
+                        "User input choices require unique nonempty labels",
                     ));
                 }
-                if opt.description.trim().is_empty() {
+            }
+            if let Some(UserInputIntent::PlanReview { approve, .. }) = &question.intent {
+                if !labels.contains(approve)
+                    || question
+                        .detail
+                        .as_ref()
+                        .is_none_or(|detail| detail.trim().is_empty())
+                {
                     return Err(ToolError::invalid_input(
-                        "request_user_input option description cannot be empty",
+                        "Plan review requires detail and an offered approve choice",
                     ));
                 }
             }
         }
         Ok(())
     }
+
+    pub fn validate_response(&self, response: &UserInputResponse) -> Result<(), ToolError> {
+        if response.answers.len() > 10020
+            || serde_json::to_vec(response)
+                .map_err(|_| ToolError::invalid_input("Invalid user input response"))?
+                .len()
+                > 1024 * 1024
+        {
+            return Err(ToolError::invalid_input(
+                "User input response exceeds its transport limits",
+            ));
+        }
+        if response.answers.iter().any(|answer| {
+            !self
+                .questions
+                .iter()
+                .any(|question| question.id == answer.id)
+        }) {
+            return Err(ToolError::invalid_input("Answer names an unknown question"));
+        }
+        if !self.require_typed_answers
+            && response.answers.iter().all(|answer| answer.kind.is_none())
+        {
+            return Ok(());
+        }
+        if response.answers.iter().any(|answer| answer.kind.is_none()) {
+            return Err(ToolError::invalid_input(
+                "This question requires typed answers; use a client that supports choice, custom and skipped answers",
+            ));
+        }
+        for question in &self.questions {
+            let mut choices = HashSet::new();
+            let mut custom = false;
+            let mut skipped = false;
+            let mut count = 0;
+            for answer in response
+                .answers
+                .iter()
+                .filter(|answer| answer.id == question.id)
+            {
+                count += 1;
+                match answer.kind {
+                    Some(UserInputAnswerKind::Choice) => {
+                        if answer.label != answer.value
+                            || !question
+                                .options
+                                .iter()
+                                .any(|option| option.label == answer.value)
+                            || !choices.insert(&answer.value)
+                        {
+                            return Err(ToolError::invalid_input(
+                                "Answer must select each offered label at most once",
+                            ));
+                        }
+                    }
+                    Some(UserInputAnswerKind::Custom) => {
+                        if (self.require_typed_answers && !question.allow_free_text)
+                            || custom
+                            || !answer.label.is_empty()
+                            || answer.value.trim().is_empty()
+                        {
+                            return Err(ToolError::invalid_input("Invalid custom answer"));
+                        }
+                        custom = true;
+                    }
+                    Some(UserInputAnswerKind::Skipped) => {
+                        if skipped || !answer.label.is_empty() || !answer.value.is_empty() {
+                            return Err(ToolError::invalid_input("Invalid skipped answer"));
+                        }
+                        skipped = true;
+                    }
+                    None => unreachable!(),
+                }
+            }
+            if count == 0
+                || (skipped && count != 1)
+                || (!question.multi_select && choices.len() + usize::from(custom) > 1)
+            {
+                return Err(ToolError::invalid_input(
+                    "Answer must explicitly answer or skip each question and respect single selection",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputAnswerKind {
+    Choice,
+    Custom,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UserInputAnswer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<UserInputAnswerKind>,
     pub id: String,
     pub label: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UserInputResponse {
     pub answers: Vec<UserInputAnswer>,
 }
@@ -281,7 +432,7 @@ impl ToolSpec for RequestUserInputTool {
                                         "label": { "type": "string" },
                                         "description": { "type": "string" }
                                     },
-                                    "required": ["label", "description"]
+                                    "required": ["label"]
                                 },
                                 "minItems": MIN_CONFIGURABLE_OPTIONS,
                                 "maxItems": self.limits.max_options
@@ -297,7 +448,7 @@ impl ToolSpec for RequestUserInputTool {
                                 "default": false
                             }
                         },
-                        "required": ["header", "id", "question", "options"]
+                        "required": ["id", "question", "options"]
                     },
                     "minItems": 1,
                     "maxItems": self.limits.max_questions
@@ -333,10 +484,13 @@ mod tests {
     #[test]
     fn validates_request_shape() {
         let request = UserInputRequest {
+            require_typed_answers: false,
             questions: vec![UserInputQuestion {
                 header: "Pick".to_string(),
                 id: "choice".to_string(),
                 question: "Which option?".to_string(),
+                detail: None,
+                intent: None,
                 options: vec![
                     UserInputOption {
                         label: "A".to_string(),
@@ -352,6 +506,102 @@ mod tests {
             }],
         };
         assert!(request.validate().is_ok());
+        for count in [0, 1, 100, 1000] {
+            let menu: UserInputRequest = serde_json::from_value(json!({
+                "require_typed_answers":true,
+                "questions":[{"id":"menu", "question":"Choose", "allow_free_text":true,
+                    "options":(0..count).map(|i| json!({"label":format!("Choice {i}")})).collect::<Vec<_>>() }]
+            })).unwrap();
+            assert!(menu.validate_transport().is_ok());
+            assert!(menu.validate().is_err());
+            assert!(menu.questions[0].header.is_empty());
+            assert!(
+                menu.questions[0]
+                    .options
+                    .iter()
+                    .all(|option| option.description.is_empty())
+            );
+        }
+        let mut menu: UserInputRequest = serde_json::from_value(json!({
+            "require_typed_answers":true,
+            "questions":[{"id":"menu", "question":"Choose", "allow_free_text":true, "multi_select":true,
+                "options":[{"label":"Other"},{"label":"left, right"}]}]
+        })).unwrap();
+        let mut response: UserInputResponse = serde_json::from_value(json!({"answers":[
+            {"id":"menu","kind":"choice","label":"Other","value":"Other"},
+            {"id":"menu","kind":"choice","label":"left, right","value":"left, right"},
+            {"id":"menu","kind":"custom","label":"","value":"custom text"}
+        ]}))
+        .unwrap();
+        assert!(menu.validate_response(&response).is_ok());
+        let exact = serde_json::to_value(&response).unwrap();
+        assert_eq!(exact["answers"][1]["value"], "left, right");
+        menu.questions[0].multi_select = false;
+        assert!(menu.validate_response(&response).is_err());
+        menu.questions[0].multi_select = true;
+        response.answers.push(response.answers[0].clone());
+        assert!(menu.validate_response(&response).is_err());
+        response.answers.pop();
+        response.answers[0].kind = None;
+        assert!(menu.validate_response(&response).is_err());
+        for answers in [
+            json!([]),
+            json!([{"id":"unknown","kind":"skipped","label":"","value":""}]),
+            json!([{"id":"menu","kind":"choice","label":"unknown","value":"unknown"}]),
+            json!([{"id":"menu","kind":"choice","label":"Other","value":"wrong"}]),
+            json!([{"id":"menu","kind":"custom","label":"Other","value":"text"}]),
+            json!([{"id":"menu","kind":"custom","label":"","value":" "}]),
+            json!([{"id":"menu","kind":"skipped","label":"","value":""},{"id":"menu","kind":"custom","label":"","value":"text"}]),
+        ] {
+            let response = serde_json::from_value(json!({"answers":answers})).unwrap();
+            assert!(menu.validate_response(&response).is_err());
+        }
+        let skipped = serde_json::from_value(
+            json!({"answers":[{"id":"menu","kind":"skipped","label":"","value":""}]}),
+        )
+        .unwrap();
+        assert!(menu.validate_response(&skipped).is_ok());
+        let custom = serde_json::from_value(
+            json!({"answers":[{"id":"menu","kind":"custom","label":"","value":"legacy custom"}]}),
+        )
+        .unwrap();
+        menu.questions[0].allow_free_text = false;
+        assert!(menu.validate_response(&custom).is_err());
+        menu.require_typed_answers = false;
+        assert!(menu.validate_response(&custom).is_ok());
+        let mixed = serde_json::from_value(json!({"answers":[{"id":"menu","kind":"custom","label":"","value":"legacy custom"},{"id":"menu","label":"Other","value":"Other"}]})).unwrap();
+        assert!(menu.validate_response(&mixed).is_err());
+        menu.require_typed_answers = true;
+        menu.questions[0].allow_free_text = true;
+        menu.questions[0].intent = Some(UserInputIntent::PlanReview {
+            approve: "Other".into(),
+            call_id: Some("display-only".into()),
+        });
+        assert!(menu.validate_transport().is_err());
+        menu.questions[0].detail = Some("Plan detail".into());
+        assert!(menu.validate_transport().is_ok());
+        menu.questions[0].options[0].label = "Different".into();
+        assert!(menu.validate_transport().is_err());
+        menu.questions[0].intent = None;
+        menu.questions.push(menu.questions[0].clone());
+        assert!(menu.validate_transport().is_err());
+        menu.questions.pop();
+        menu.questions[0].options = vec![
+            UserInputOption {
+                label: "duplicate".into(),
+                description: String::new()
+            };
+            1001
+        ];
+        assert!(menu.validate_transport().is_err());
+        menu.questions[0].options.truncate(2);
+        assert!(menu.validate_transport().is_err());
+        menu.questions[0].options.clear();
+        menu.questions[0].allow_free_text = false;
+        assert!(menu.validate_transport().is_err());
+        menu.questions[0].allow_free_text = true;
+        menu.questions[0].detail = Some("x".repeat(1024 * 1024));
+        assert!(menu.validate_transport().is_err());
     }
 
     #[test]
@@ -379,6 +629,13 @@ mod tests {
         assert_eq!(request.questions[0].options.len(), 4);
         assert!(request.questions[0].allow_free_text);
         assert!(request.questions[0].multi_select);
+        let mut input = input;
+        input["require_typed_answers"] = json!(true);
+        assert!(
+            !UserInputRequest::from_value(&input)
+                .unwrap()
+                .require_typed_answers
+        );
     }
 
     #[test]
@@ -426,6 +683,8 @@ mod tests {
             header: header.to_string(),
             id: id.to_string(),
             question: "?".to_string(),
+            detail: None,
+            intent: None,
             options: vec![
                 UserInputOption {
                     label: "A".to_string(),
@@ -443,6 +702,7 @@ mod tests {
 
     fn questions(count: usize) -> UserInputRequest {
         UserInputRequest {
+            require_typed_answers: false,
             questions: (1..=count)
                 .map(|i| yes_no_question(&format!("Q{i}"), &format!("q{i}")))
                 .collect(),

@@ -10,8 +10,8 @@
 //! `Rlm` / `RlmBatch` requests it submits an admitted Core turn at depth-1.
 //! Python and its persistent session never retain this borrowed dispatcher.
 
-use crate::repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use codewhale_models::Usage;
+use codewhale_repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use futures_util::future::join_all;
 use std::sync::Arc;
 use std::sync::Mutex;

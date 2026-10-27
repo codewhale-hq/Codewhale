@@ -32,4 +32,23 @@ function SessionId(id) {
 
 const PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
 
-export { createUserMessage, SessionId, PERSONA_PREFIX_SECTION }
+var HarnessError = class extends Error {
+	code;
+	constructor(message, code, options) {
+		super(message, options);
+		this.code = code;
+		this.name = new.target.name;
+	}
+};
+
+var UserQuestionError = class extends HarnessError {
+	constructor(message, code, options) {
+		super(message, code, options);
+		this.name = "UserQuestionError";
+	}
+};
+
+Object.defineProperty(HarnessError, "name", { value: "HarnessError" });
+Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
+
+export { createUserMessage, SessionId, PERSONA_PREFIX_SECTION, HarnessError, UserQuestionError }

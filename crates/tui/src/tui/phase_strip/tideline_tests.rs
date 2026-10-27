@@ -672,6 +672,7 @@ fn clock_distinguishes_working_from_waiting_on_something() {
     app.pending_user_input_prompt = Some((
         "tool-call-1".to_string(),
         crate::tools::user_input::UserInputRequest {
+            require_typed_answers: false,
             questions: Vec::new(),
         },
     ));

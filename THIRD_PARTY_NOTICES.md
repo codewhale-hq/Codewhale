@@ -110,7 +110,8 @@ excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.2 (`lib/index.js`), under the
 same licence text. `crates/tui/extension-host/src/dsh/dsh-message-compat.js`
 contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.2,
 `@deepseek-ai/dsh-llm` 0.2.1-rc.2, `@deepseek-ai/dsh-session` 0.2.1-rc.2,
-`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.2 and
+`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.2,
+`@deepseek-ai/dsh-user-questions` 0.2.1-rc.2 and
 `@deepseek-ai/dsh-util-crypto` 0.2.1-rc.2, under the same licence text.
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness>

@@ -47,7 +47,7 @@ mod constitution;
 mod notification_delivery;
 
 #[cfg(test)]
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 use crate::automation_manager::{
     AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
@@ -247,7 +247,7 @@ struct RuntimeWorkspaceScope {
     directory: Arc<std::fs::File>,
     mcp: Mutex<Option<(u64, Arc<Mutex<McpPool>>)>>,
     mcp_policy: parking_lot::Mutex<Value>,
-    lsp: std::sync::OnceLock<Arc<crate::lsp::LspManager>>,
+    lsp: std::sync::OnceLock<Arc<codewhale_lsp::LspManager>>,
     owner: SharedRuntimeThreadManager,
     cleanup_runtime: tokio::runtime::Handle,
     /// The workspace drive lease held for this scope's lifetime: at most one
@@ -1075,6 +1075,8 @@ struct ThreadSummary {
     pending_attention_count: usize,
     last_read_item_id: Option<String>,
     unread: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_thread_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1274,14 +1276,7 @@ struct DecideApprovalResponse {
 
 #[derive(Debug, Deserialize)]
 struct SubmitUserInputBody {
-    answers: Vec<UserInputAnswerBody>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UserInputAnswerBody {
-    id: String,
-    label: String,
-    value: String,
+    answers: Vec<crate::tools::user_input::UserInputAnswer>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1655,7 +1650,7 @@ fn replay_flag_is_absent(replayed: &bool) -> bool {
 }
 
 fn install_runtime_server_workshop_budgets(config: &Config) -> codewhale_config::WorkshopConfig {
-    crate::tools::large_output_router::install_active_workshop(config.workshop.as_ref())
+    codewhale_runtime::active_workshop::install_active_workshop(config.workshop.as_ref())
 }
 
 #[cfg(test)]
@@ -2872,7 +2867,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route(
             "/v1/user-input/{thread_id}/{input_id}",
-            post(submit_user_input),
+            post(submit_user_input).delete(cancel_user_input_request),
         )
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task))
@@ -3670,6 +3665,7 @@ async fn list_threads_summary(
             pending_attention_count,
             last_read_item_id,
             unread,
+            parent_thread_id: thread.parent_thread_id,
         });
     }
 
@@ -5715,7 +5711,7 @@ fn mutation_context_settings(
     String,
     Option<PathBuf>,
 ) {
-    use crate::skills::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
+    use codewhale_skill_install::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
     let config = state.config.read();
     let network = config
         .network
@@ -5814,8 +5810,8 @@ async fn install_skill_api(
     State(state): State<RuntimeApiState>,
     Json(req): Json<InstallSkillRequest>,
 ) -> Result<(StatusCode, Json<SkillMutationReceiptResponse>), ApiError> {
-    use crate::skills::install::InstallSource;
     use crate::skills::mutation::{MutationContext, SkillMutationRequest, SkillTargetScope};
+    use codewhale_skill_install::install::InstallSource;
 
     let source = InstallSource::parse(&req.source)
         .map_err(|err| ApiError::bad_request(format!("invalid install source: {err}")))?;
@@ -6299,20 +6295,33 @@ async fn submit_user_input(
     Path((thread_id, input_id)): Path<(String, String)>,
     Json(req): Json<SubmitUserInputBody>,
 ) -> Result<Json<SubmitUserInputResponse>, ApiError> {
-    use crate::tools::user_input::{UserInputAnswer, UserInputResponse};
-    let answers: Vec<UserInputAnswer> = req
-        .answers
-        .into_iter()
-        .map(|a| UserInputAnswer {
-            id: a.id,
-            label: a.label,
-            value: a.value,
-        })
-        .collect();
-    let response = UserInputResponse { answers };
+    let response = crate::tools::user_input::UserInputResponse {
+        answers: req.answers,
+    };
     let delivered = state
         .runtime_threads
         .submit_user_input(&thread_id, &input_id, response)
+        .await
+        .map_err(map_thread_err)?;
+    if !delivered {
+        return Err(ApiError::not_found(format!(
+            "no pending user-input request with id '{input_id}'"
+        )));
+    }
+    Ok(Json(SubmitUserInputResponse {
+        ok: true,
+        input_id,
+        delivered,
+    }))
+}
+
+async fn cancel_user_input_request(
+    State(state): State<RuntimeApiState>,
+    Path((thread_id, input_id)): Path<(String, String)>,
+) -> Result<Json<SubmitUserInputResponse>, ApiError> {
+    let delivered = state
+        .runtime_threads
+        .cancel_user_input(&thread_id, &input_id)
         .await
         .map_err(map_thread_err)?;
     if !delivered {
@@ -8370,8 +8379,8 @@ const PATCH_UNDO_WORKSPACE_UNAVAILABLE: &str = "workspace_unavailable";
 /// the snapshot store still holds.
 struct UndoSegment {
     turn_id: String,
-    pre: crate::snapshot::SnapshotId,
-    post: crate::snapshot::SnapshotId,
+    pre: codewhale_snapshot::SnapshotId,
+    post: codewhale_snapshot::SnapshotId,
     pre_label: String,
     /// Paths that changed in the window only while one of the turn's own
     /// tool calls was running: the turn's changes.
@@ -8389,9 +8398,9 @@ struct UndoSegment {
 /// turn and is skipped. `None` means a window the engine never closed (the
 /// turn died before its post-turn snapshot) or no window at all.
 fn turn_snapshot_windows(
-    snapshots: &[crate::snapshot::WorkspaceSnapshotRef],
+    snapshots: &[codewhale_snapshot::WorkspaceSnapshotRef],
 ) -> Option<Vec<std::ops::RangeInclusive<usize>>> {
-    use crate::snapshot::WorkspaceSnapshotKind;
+    use codewhale_snapshot::WorkspaceSnapshotKind;
     let mut windows = Vec::new();
     let mut open = None;
     for (index, snapshot) in snapshots.iter().enumerate() {
@@ -8442,7 +8451,7 @@ fn declared_write_path(workspace: &FsPath, raw: &str) -> Option<PathBuf> {
         .components()
         .filter(|component| !matches!(component, Component::CurDir))
         .collect();
-    crate::snapshot::workspace_relative_path(workspace, rel.to_str()?)
+    codewhale_snapshot::workspace_relative_path(workspace, rel.to_str()?)
 }
 
 /// Who could have changed the workspace in the span after one receipt.
@@ -8463,7 +8472,7 @@ enum SpanWriter {
 fn attribute_window(
     workspace: &FsPath,
     turn_id: &str,
-    receipts: &[crate::snapshot::WorkspaceSnapshotRef],
+    receipts: &[codewhale_snapshot::WorkspaceSnapshotRef],
 ) -> Result<
     (
         std::collections::BTreeSet<PathBuf>,
@@ -8471,7 +8480,7 @@ fn attribute_window(
     ),
     ApiError,
 > {
-    use crate::snapshot::WorkspaceSnapshotKind;
+    use codewhale_snapshot::WorkspaceSnapshotKind;
     let mut owned = std::collections::BTreeSet::new();
     let mut foreign = std::collections::BTreeSet::new();
     // Undeclared calls whose `post_tool` receipt is still ahead: everything
@@ -8651,7 +8660,7 @@ fn patch_undo_workspace_files(
 
     // Every repository failure is operational and aborts: "nothing to
     // restore" cannot be proven while Git is unavailable.
-    let repo = crate::snapshot::SnapshotRepo::open_or_init(workspace).map_err(|e| {
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(workspace).map_err(|e| {
         ApiError::internal(format!(
             "Snapshot repo unavailable; conversation preserved: {e}"
         ))
@@ -8662,8 +8671,8 @@ fn patch_undo_workspace_files(
         .list(usize::MAX)
         .map_err(|e| ApiError::internal(format!("Failed to list snapshots: {e}")))?;
     let resolve = |turn_id: &str,
-                   receipt: &crate::snapshot::WorkspaceSnapshotRef|
-     -> Result<(crate::snapshot::SnapshotId, String), ApiError> {
+                   receipt: &codewhale_snapshot::WorkspaceSnapshotRef|
+     -> Result<(codewhale_snapshot::SnapshotId, String), ApiError> {
         listed
             .iter()
             .find(|snapshot| receipt.matches(snapshot))
@@ -8745,7 +8754,10 @@ fn patch_undo_workspace_files(
     // path -> (content to restore, content the dropped turns left)
     let mut plan: std::collections::BTreeMap<
         PathBuf,
-        (crate::snapshot::SnapshotId, crate::snapshot::SnapshotId),
+        (
+            codewhale_snapshot::SnapshotId,
+            codewhale_snapshot::SnapshotId,
+        ),
     > = std::collections::BTreeMap::new();
     for segment in &segments {
         let changed = repo
@@ -8848,7 +8860,7 @@ fn patch_undo_workspace_files(
         .with_code(PATCH_UNDO_UNTRUSTED));
     }
 
-    let restore_plan: Vec<(PathBuf, crate::snapshot::SnapshotId)> = to_restore
+    let restore_plan: Vec<(PathBuf, codewhale_snapshot::SnapshotId)> = to_restore
         .iter()
         .map(|(path, before, _)| (path.clone(), before.clone()))
         .collect();
@@ -8986,7 +8998,7 @@ async fn revert_thread_file(
 }
 
 fn snapshot_id_is_well_formed(id: &str) -> bool {
-    crate::snapshot::SnapshotId::is_well_formed(id)
+    codewhale_snapshot::SnapshotId::is_well_formed(id)
 }
 
 fn expected_hash_is_well_formed(hash: &str) -> bool {
@@ -9001,7 +9013,7 @@ fn expected_hash_is_well_formed(hash: &str) -> bool {
 
 fn revert_file_from_snapshot(
     workspace: &FsPath,
-    owned: &[crate::snapshot::WorkspaceSnapshotRef],
+    owned: &[codewhale_snapshot::WorkspaceSnapshotRef],
     req: &RevertThreadFileRequest,
 ) -> Result<RevertThreadFileResponse, ApiError> {
     // Every caller-supplied path passes through this one gate. It accepts a
@@ -9009,20 +9021,21 @@ fn revert_file_from_snapshot(
     // rejects everything else (`..`, empty, or outside the work tree). The
     // name is used literally: brackets, spaces and glob characters are part
     // of the filename, never a pattern.
-    let rel = crate::snapshot::workspace_relative_path(workspace, &req.path).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "path must name a regular file inside the thread workspace {}; got '{}'",
-            workspace.display(),
-            req.path
-        ))
-    })?;
+    let rel =
+        codewhale_snapshot::workspace_relative_path(workspace, &req.path).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "path must name a regular file inside the thread workspace {}; got '{}'",
+                workspace.display(),
+                req.path
+            ))
+        })?;
     if !workspace.is_dir() {
         return Err(ApiError::conflict(format!(
             "Workspace directory {} is not available; mount or restore it before restoring files.",
             workspace.display()
         )));
     }
-    let repo = crate::snapshot::SnapshotRepo::open_or_init(workspace)
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(workspace)
         .map_err(|e| ApiError::internal(format!("Snapshot repo unavailable: {e}")))?;
     repo.validate_restore_file(&rel)
         .map_err(map_file_restore_err)?;
@@ -9036,13 +9049,13 @@ fn revert_file_from_snapshot(
     // `tree_id` its turn record holds (a prune rewrites commit ids but keeps
     // trees). A foreign, unrecorded or pruned id is a conflict the client
     // resolves by refreshing its change record.
-    let restore_points: Vec<&crate::snapshot::WorkspaceSnapshotRef> = owned
+    let restore_points: Vec<&codewhale_snapshot::WorkspaceSnapshotRef> = owned
         .iter()
         .filter(|receipt| {
             matches!(
                 receipt.kind,
-                crate::snapshot::WorkspaceSnapshotKind::Tool
-                    | crate::snapshot::WorkspaceSnapshotKind::PreTurn
+                codewhale_snapshot::WorkspaceSnapshotKind::Tool
+                    | codewhale_snapshot::WorkspaceSnapshotKind::PreTurn
             )
         })
         .collect();
@@ -10631,6 +10644,7 @@ fn map_compat_stream_event(event: &crate::runtime_threads::RuntimeEventRecord) -
                     "thread_id": event.thread_id,
                     "turn_id": event.turn_id,
                     "status": status,
+                    "outcome": payload.get("outcome"),
                     "terminal": payload.get("terminal").and_then(Value::as_bool).unwrap_or(false),
                 }),
             ))
@@ -10945,9 +10959,9 @@ async fn restore_snapshot(
 }
 
 fn restore_snapshot_for_workspace(workspace: &FsPath, id: &str) -> Result<(), ApiError> {
-    let repo = crate::snapshot::SnapshotRepo::open_or_init(workspace)
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(workspace)
         .map_err(|e| ApiError::internal(format!("Snapshot repo init failed: {e}")))?;
-    let snapshot_id = crate::snapshot::SnapshotId::parse(id)
+    let snapshot_id = codewhale_snapshot::SnapshotId::parse(id)
         .map_err(|e| ApiError::bad_request(format!("Invalid snapshot id: {e}")))?;
     repo.restore(&snapshot_id)
         .map_err(|e| ApiError::internal(format!("Snapshot restore failed: {e}")))
@@ -10968,7 +10982,7 @@ fn snapshot_entries_for_workspace(
             )));
         }
     };
-    let repo = crate::snapshot::SnapshotRepo::open_or_init(workspace)
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(workspace)
         .map_err(|e| ApiError::internal(format!("Snapshot repo unavailable: {e}")))?;
     let snapshots = repo
         .list(limit)

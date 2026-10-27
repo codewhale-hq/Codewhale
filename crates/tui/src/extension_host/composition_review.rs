@@ -40,10 +40,11 @@ pub(crate) fn review(input: &Value) -> Result<Value, String> {
             } else {
                 options.runtime
             };
-            crate::dependencies::resolve_extension_host_runtime(
+            codewhale_dependencies::resolve_extension_host_runtime(
                 choice,
                 options.node_override.as_deref(),
                 options.bun_override.as_deref(),
+                crate::extension_host::bundle_sha256(),
             )
             .selected
             .ok_or("composition reviewer runtime is unavailable")?

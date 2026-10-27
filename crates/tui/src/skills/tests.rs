@@ -2395,8 +2395,8 @@ fn project_skills_require_workspace_trust() {
 #[test]
 fn hidden_and_backup_payload_changes_stale_the_trust_receipt() {
     use super::audit::{self, SkillAuditMode, TrustState};
-    use super::install::{INSTALLED_FROM_MARKER, TRUSTED_MARKER, write_trust_v2};
-    use super::package_digest::compute_package_digest;
+    use codewhale_skill_install::install::{INSTALLED_FROM_MARKER, TRUSTED_MARKER, write_trust_v2};
+    use codewhale_skill_install::package_digest::compute_package_digest;
     use std::fs;
     let tmp = tempfile::tempdir().unwrap();
     let package = tmp.path().join(".codewhale/skills/demo");

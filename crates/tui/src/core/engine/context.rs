@@ -861,7 +861,7 @@ pub(super) fn context_does_not_fit_message(
             format!("Choose {what}.")
         }
     };
-    if local_ollama && crate::local_ollama::looks_like_non_chat_tag(model) {
+    if local_ollama && crate::client::ollama_catalog::looks_like_non_chat_tag(model) {
         return format!("{model} can't chat. {}", pick("a chat model"));
     }
     let larger = if local_ollama {

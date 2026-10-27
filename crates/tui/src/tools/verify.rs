@@ -44,9 +44,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::client::CodewhaleClient;
-use crate::dependencies::ExternalTool;
 use crate::llm_client::LlmClient;
 use crate::reasoning_preference::ReasoningEffort;
+use codewhale_dependencies::ExternalTool;
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use codewhale_runtime::features::Feature;
 use codewhale_util::utils::truncate_with_ellipsis;
@@ -677,7 +677,7 @@ async fn gather_diff_evidence(
 /// Run `git diff <args>` in `workspace`. Returns `Ok(None)` for an empty diff or
 /// when git is unavailable, and `Err` when git runs but reports failure.
 async fn run_git_diff(workspace: &Path, args: &[String]) -> Result<Option<String>, ToolError> {
-    if !crate::dependencies::Git::available() {
+    if !codewhale_dependencies::Git::available() {
         // git not installed: degrade gracefully rather than failing the tool.
         return Ok(None);
     }
@@ -688,7 +688,7 @@ async fn run_git_diff(workspace: &Path, args: &[String]) -> Result<Option<String
         // filters from running during the diff.
         let mut cmd = super::git::read_only_git_command(&workspace)?;
         cmd.arg("diff")
-            .args(crate::dependencies::Git::REVIEW_DIFF_ARGS)
+            .args(codewhale_dependencies::Git::REVIEW_DIFF_ARGS)
             .args(&args)
             .arg("--");
         cmd.output()
@@ -1124,7 +1124,7 @@ mod tests {
     // === git diff evidence gathering ===
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let mut cmd = crate::dependencies::Git::command().expect("git available");
+        let mut cmd = codewhale_dependencies::Git::command().expect("git available");
         cmd.args(args).current_dir(dir);
         let out = cmd.output().expect("run git");
         assert!(
@@ -1261,7 +1261,7 @@ mod tests {
         // usually wants to verify before claiming done. With a base set, the
         // gatherer must include BOTH the committed-since-base changes AND the
         // uncommitted working-tree changes.
-        if crate::dependencies::Git::command().is_none() {
+        if codewhale_dependencies::Git::command().is_none() {
             return; // no git in this environment — nothing to exercise.
         }
 

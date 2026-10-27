@@ -3238,6 +3238,9 @@ pub(crate) fn settle_pending_human_requests(app: &mut App) {
 /// completion cannot settle a different, inner request id.
 pub(crate) fn observe_human_request_settlement(app: &mut App, event: &EngineEvent) {
     match event {
+        EngineEvent::UserInputClosed { id, .. } => {
+            settle_user_input_request(app, id);
+        }
         EngineEvent::ToolCallComplete { id, .. } => {
             settle_user_input_request(app, id);
             crate::tui::pending_requests::retire(app, id);

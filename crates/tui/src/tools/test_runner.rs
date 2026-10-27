@@ -16,7 +16,7 @@ use super::spec::{
     optional_bool, optional_str,
 };
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 /// Tool for running `cargo test` in the workspace root.
 pub struct RunTestsTool;
@@ -162,7 +162,7 @@ async fn run_cargo(
     context: &ToolContext,
     timeout: Duration,
 ) -> Result<codewhale_runtime::process_tree::ContainedOutput, ToolError> {
-    let Some(cargo) = crate::dependencies::Cargo::resolve() else {
+    let Some(cargo) = codewhale_dependencies::Cargo::resolve() else {
         return Err(ToolError::not_available(
             "cargo is not installed or not in PATH",
         ));
@@ -238,7 +238,7 @@ mod tests {
             NEXT_CARGO_PROJECT.fetch_add(1, Ordering::Relaxed)
         );
         fs::create_dir_all(&project_dir).expect("create project dir");
-        let status = crate::dependencies::Cargo::command()
+        let status = codewhale_dependencies::Cargo::command()
             .expect("cargo not found")
             .args(["init", "--lib", "--vcs", "none", "-q"])
             .arg("--name")

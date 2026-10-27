@@ -300,17 +300,17 @@ impl BridgeFixture {
         &self,
         prompt: String,
         model: Option<String>,
-    ) -> crate::repl::runtime::SingleResp {
+    ) -> codewhale_repl::runtime::SingleResp {
         self.bridge().dispatch_rlm(prompt, model).await
     }
 }
-impl crate::repl::runtime::RpcDispatcher for BridgeFixture {
+impl codewhale_repl::runtime::RpcDispatcher for BridgeFixture {
     fn dispatch<'a>(
         &'a self,
-        request: crate::repl::runtime::RpcRequest,
-    ) -> Pin<Box<dyn Future<Output = crate::repl::runtime::RpcResponse> + Send + 'a>> {
+        request: codewhale_repl::runtime::RpcRequest,
+    ) -> Pin<Box<dyn Future<Output = codewhale_repl::runtime::RpcResponse> + Send + 'a>> {
         Box::pin(async move {
-            crate::repl::runtime::RpcDispatcher::dispatch(&self.bridge(), request).await
+            codewhale_repl::runtime::RpcDispatcher::dispatch(&self.bridge(), request).await
         })
     }
 }

@@ -374,7 +374,7 @@ pub(crate) fn reasoning_capability_for_route(
     let body_for = |effort: ReasoningEffort| -> String {
         let mut body = serde_json::json!({});
         let value = effort.api_value_for_route(provider, base_url, wire_model);
-        crate::client::apply_reasoning_effort(&mut body, value, provider);
+        crate::client::reasoning_effort::apply_reasoning_effort(&mut body, value, provider);
         // `reasoning_split` is a transport concern the client sets for every
         // tier; it carries no reasoning depth, so it must not make tiers look
         // distinct or make a no-control route look controllable.

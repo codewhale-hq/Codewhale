@@ -174,11 +174,11 @@ test('injecting a service the host does not provide fails with its name', async 
   const { result } = await activate(host, 'needs-secrets', plugin.entry)
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `secrets`/)
-  const provided = tempPlugin("export const inject = ['shellHooks', 'sessions']; export function apply(ctx) { if (!ctx.shellHooks || typeof ctx.sessions.flush !== 'function') throw new Error('missing provided service') }\n")
+  const provided = tempPlugin("export const inject = ['shellHooks', 'sessions', 'userQuestions']; export function apply(ctx) { if (!ctx.shellHooks || typeof ctx.sessions.flush !== 'function' || typeof ctx.userQuestions.ask !== 'function') throw new Error('missing provided service') }\n")
   t.after(() => provided.cleanup())
   const available = await activate(host, 'needs-shell-hooks', provided.entry)
   assert.equal(available.result.status, 'ok', available.result.diagnostic)
-  for (const service of ['llm', 'systemPrompt', 'agents', 'subagents', 'userQuestions']) {
+  for (const service of ['llm', 'systemPrompt', 'agents', 'subagents']) {
     const pure = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
 export const inject = [${JSON.stringify(service)}]
 export function apply() { createUserMessage({ content: [], source: { kind: 'fixture' } }) }
@@ -197,7 +197,7 @@ test('an unsupported DSH peer fails the import loudly', async (t) => {
   const { result } = await activate(host, 'needs-agent', plugin.entry)
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
-  for (const specifier of ['@deepseek-ai/dsh-llm/typert', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types', '@deepseek-ai/dsh-system-prompt/src/index.js']) {
+  for (const specifier of ['@deepseek-ai/dsh-llm/typert', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types', '@deepseek-ai/dsh-system-prompt/src/index.js', '@deepseek-ai/dsh-user-questions/typert', '@deepseek-ai/dsh-user-questions/remote']) {
     const subpath = tempPlugin(`import '${specifier}'\nexport function apply() {}\n`)
     t.after(subpath.cleanup)
     const packageName = specifier.split('/').slice(0, 2).join('/')
@@ -771,10 +771,24 @@ import assert from 'node:assert/strict'
 import * as llm from '@deepseek-ai/dsh-llm'
 import * as session from '@deepseek-ai/dsh-session'
 import * as prompt from '@deepseek-ai/dsh-system-prompt'
+import * as questions from '@deepseek-ai/dsh-user-questions'
 export const name = 'dsh-style'
 export const inject = ['commands']
 export function apply(ctx) {
-  assert.deepEqual(Object.keys(llm), ['createUserMessage'])
+  assert.deepEqual(Object.keys(llm), ['HarnessError', 'createUserMessage'])
+  assert.deepEqual(Object.keys(questions), ['UserQuestionError'])
+  const cause = new Error('original cause')
+  const failure = new questions.UserQuestionError('human cancelled', 'ASK_CANCELLED', { cause })
+  assert.ok(failure instanceof questions.UserQuestionError)
+  assert.ok(failure instanceof llm.HarnessError)
+  assert.ok(failure instanceof Error)
+  assert.equal(failure.name, 'UserQuestionError')
+  assert.equal(failure.message, 'human cancelled')
+  assert.equal(failure.code, 'ASK_CANCELLED')
+  assert.equal(failure.cause, cause)
+  const baseFailure = new llm.HarnessError('base', 'FIXTURE', { cause })
+  assert.equal(baseFailure.name, 'HarnessError')
+  assert.equal(baseFailure.cause, cause)
   assert.deepEqual(Object.keys(session), ['SessionId'])
   assert.deepEqual(Object.keys(prompt), ['PERSONA_PREFIX_SECTION'])
   assert.equal(prompt.PERSONA_PREFIX_SECTION, 'deployment:persona-prefix')
@@ -821,7 +835,7 @@ export function apply(ctx) {
 }
 `)
   t.after(plugin.cleanup)
-  for (const name of ['dsh-llm', 'dsh-session', 'dsh-system-prompt']) {
+  for (const name of ['dsh-llm', 'dsh-session', 'dsh-system-prompt', 'dsh-user-questions']) {
     const root = join(plugin.dir, 'node_modules', '@deepseek-ai', name)
     mkdirSync(root, { recursive: true })
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${name}`, type: 'module', main: 'index.js' }))
@@ -1155,15 +1169,23 @@ test('several core calls can be in flight at once, each answered to its own requ
 
 test('storage survives owner reload, refuses disposed owner access, and call identity is per invocation', async (t) => {
   let checkpointResult = true
-  const host = await startHost({ checkpoint: () => typeof checkpointResult === 'function' ? checkpointResult() : checkpointResult })
+  let questionResult = { answers: [{ id: 'review', kind: 'choice', label: 'Other', value: 'Other' }] }
+  const host = await startHost({
+    checkpoint: () => typeof checkpointResult === 'function' ? checkpointResult() : checkpointResult,
+    userQuestions: (params, id) => typeof questionResult === 'function' ? questionResult(params, id) : questionResult,
+  })
   t.after(() => host.stop())
   const plugin = tempPlugin(`
-export const inject = ['tools', 'commands', 'storage', 'sessions']
+import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
+export const inject = ['tools', 'commands', 'storage', 'sessions', 'userQuestions']
 let savedStorage
 let savedAgent
 let savedSessions
+let savedQuestions
+let queuedQuestionOutcome
 export async function apply(ctx, config) {
-  if (config.capture) { savedStorage = ctx.storage; savedSessions = ctx.sessions }
+  if (config.capture) { savedStorage = ctx.storage; savedSessions = ctx.sessions; savedQuestions = ctx.userQuestions }
   const identity = (exec) => ({
     frozen: Object.isFrozen(exec),
     sessionId: exec.sessionId ?? null,
@@ -1179,6 +1201,44 @@ export async function apply(ctx, config) {
   })
   ctx.tools.register({ name: config.tool, description: 'Read owner-local state.', parameters: { type: 'object' },
     async execute(input, exec) {
+      if (input.questionProbe) return queuedQuestionOutcome ?? null
+      if (input.ask) {
+        try {
+          const service = input.ask === 'foreign-owner' ? savedQuestions : ctx.userQuestions
+          const agent = input.ask === 'forged' ? { id: exec.agent?.id, session: exec.agent?.session } : input.ask === 'retained' ? savedAgent : exec.agent
+          const request = { agent, questions: input.questions ?? [{ id: 'review', question: 'Review?', options: [{ label: 'Other' }] }] }
+          if (input.optionalUndefined) {
+            request.signal = undefined
+            request.wait = undefined
+            request.questions = request.questions.map(question => ({
+              ...question, header: question.header, detail: question.detail, multiSelect: question.multiSelect,
+              intent: question.intent === undefined ? undefined : { ...question.intent, callId: undefined },
+              options: question.options?.map(option => ({ ...option, description: undefined })),
+            }))
+          }
+          if (input.shape === 'accessor') Object.defineProperty(request.questions[0], 'detail', { enumerable: true, get() { throw new Error('question getter executed') } })
+          if (input.shape === 'symbol') request.questions[0][Symbol('hidden')] = 'value'
+          if (input.shape === 'nonplain') Object.setPrototypeOf(request.questions[0], { hidden: true })
+          if (input.shape === 'sparse') request.questions = new Array(1)
+          if (input.shape === 'extra-array-key') request.questions.extra = true
+          if (input.shape === 'wait') request.wait = 1
+          if (input.shape === 'signal') request.signal = {}
+          if (input.shape === 'aborted') request.signal = AbortSignal.abort()
+          if (input.ask === 'queued-abort') {
+            const checkpoint = ctx.sessions.flush(exec.agent.session)
+            const controller = new AbortController()
+            const queued = service.ask({ ...request, signal: controller.signal })
+            controller.abort()
+            queuedQuestionOutcome = await queued.then(value => ({ answered: value }), error => ({ questionError: error.code }))
+            await checkpoint
+            return queuedQuestionOutcome
+          }
+          return { asked: input.many ? await Promise.all([service.ask(request), service.ask(request)]) : await service.ask(request) }
+        } catch (error) {
+          if (typeof error.code === 'string' && (!(error instanceof UserQuestionError) || !(error instanceof HarnessError) || error.name !== 'UserQuestionError')) throw new Error('lost question error singleton')
+          return { questionError: error.code ?? 'untyped' }
+        }
+      }
       if (input.flush) {
         try {
           const target = input.flush === 'forged' ? { header: { cwd: exec.workspace } } : input.flush === 'retained' ? savedAgent?.session : exec.agent?.session
@@ -1260,12 +1320,155 @@ export async function apply(ctx, config) {
   releaseCheckpoint(true)
   checkpointResult = true
   assert.deepEqual(await host.call('host/ping', {}), {})
+  const questionIdentity = { ...rootIdentity, question_ticket: 'exact-question-ticket' }
+  for (const [input, extra, code] of [
+    [{ ask: 'current' }, rootIdentity, ErrorCode.NotAvailable],
+    [{ ask: 'current' }, checkpointIdentity, ErrorCode.NotAvailable],
+    [{ ask: 'current' }, identity, 'DELEGATED_CALLER'],
+    [{ ask: 'current' }, { question_ticket: 'missing-context-ticket' }, ErrorCode.NotAvailable],
+    [{ ask: 'forged' }, questionIdentity, 'CALLER_NOT_LIVE'],
+    [{ ask: 'retained' }, questionIdentity, 'CALLER_NOT_LIVE'],
+  ]) assert.deepEqual((await tool('first_state', input, extra)).structured, { questionError: code })
+  assert.equal(host.questions.length, 0)
+  for (const shape of ['accessor', 'symbol', 'nonplain', 'sparse', 'extra-array-key', 'signal']) {
+    assert.deepEqual((await tool('first_state', { ask: 'current', shape }, questionIdentity)).structured, { questionError: ErrorCode.InvalidParams }, shape)
+  }
+  assert.deepEqual((await tool('first_state', { ask: 'current', questions: [] }, questionIdentity)).structured, { questionError: 'EMPTY_QUESTIONS' })
+  assert.deepEqual((await tool('first_state', { ask: 'current', shape: 'wait' }, questionIdentity)).structured, { questionError: ErrorCode.NotAvailable })
+  assert.deepEqual((await tool('first_state', { ask: 'current', shape: 'aborted' }, questionIdentity)).structured, { questionError: 'ASK_ABORTED' })
+  assert.equal(host.questions.length, 0)
+  for (const question of [
+    { id: 'plan', question: 'Proceed?', detail: 'Plan', options: [{ label: 'yes' }], intent: { kind: 'plan-review', approve: 'missing' } },
+    { id: 'plan', question: 'Proceed?', options: [{ label: 'yes' }], intent: { kind: 'plan-review', approve: 'yes' } },
+  ]) assert.deepEqual((await tool('first_state', { ask: 'current', questions: [question] }, questionIdentity)).structured, { questionError: 'BAD_INTENT' })
+  assert.equal(host.questions.length, 0)
+  const selectedOther = { answers: [{ id: 'review', selected: ['Other'] }] }
+  assert.deepEqual((await tool('first_state', { ask: 'current', optionalUndefined: true }, questionIdentity)).structured, { asked: selectedOther })
+  assert.deepEqual(host.questions[0], {
+    id: host.questions[0].id, owner: first.ref, ticket: 'exact-question-ticket',
+    questions: [{ id: 'review', question: 'Review?', header: '', options: [{ label: 'Other', description: '' }], allow_free_text: true, multi_select: false }],
+  })
+  questionResult = { answers: [{ id: 'free', kind: 'custom', label: '', value: 'Other, literally typed' }] }
+  for (const options of [undefined, []]) {
+    assert.deepEqual((await tool('first_state', { ask: 'current', optionalUndefined: true, questions: [{ id: 'free', question: 'Explain', ...(options === undefined ? {} : { options }) }] }, questionIdentity)).structured,
+      { asked: { answers: [{ id: 'free', selected: [], custom: 'Other, literally typed' }] } })
+    assert.deepEqual(host.questions.at(-1).questions[0].options, [])
+  }
+  const labels = Array.from({ length: 100 }, (_, index) => index === 0 ? 'Other' : index === 99 ? 'one,two' : 'choice-' + index)
+  questionResult = { answers: [{ id: 'many', kind: 'choice', label: 'one,two', value: 'one,two' }] }
+  assert.deepEqual((await tool('first_state', { ask: 'current', optionalUndefined: true, questions: [{ id: 'many', question: 'Choose', options: labels.map(label => ({ label })) }] }, questionIdentity)).structured,
+    { asked: { answers: [{ id: 'many', selected: ['one,two'] }] } })
+  assert.deepEqual(host.questions.at(-1).questions[0].options, labels.map(label => ({ label, description: '' })))
+  questionResult = { answers: [{ id: 'plan', kind: 'choice', label: 'Approve', value: 'Approve' }] }
+  assert.deepEqual((await tool('first_state', { ask: 'current', optionalUndefined: true, questions: [{ id: 'plan', question: 'Proceed?', detail: 'Reviewed plan', options: [{ label: 'Approve' }], intent: { kind: 'plan-review', approve: 'Approve' } }] }, questionIdentity)).structured,
+    { asked: { answers: [{ id: 'plan', selected: ['Approve'] }] } })
+  assert.deepEqual(host.questions.at(-1).questions[0].intent, { kind: 'plan-review', approve: 'Approve' })
+  const mixedQuestions = [
+    { id: 'multi', question: 'Choose several', multiSelect: true, detail: 'Exact labels', options: [{ label: 'Other' }, { label: 'a,b' }] },
+    { id: 'skip', question: 'Optional', options: [] },
+  ]
+  questionResult = { answers: [
+    { id: 'skip', kind: 'skipped', label: '', value: '' },
+    { id: 'multi', kind: 'choice', label: 'Other', value: 'Other' },
+    { id: 'multi', kind: 'choice', label: 'a,b', value: 'a,b' },
+    { id: 'multi', kind: 'custom', label: '', value: 'my, own text' },
+  ] }
+  assert.deepEqual((await tool('first_state', { ask: 'current', questions: mixedQuestions }, questionIdentity)).structured,
+    { asked: { answers: [{ id: 'multi', selected: ['Other', 'a,b'], custom: 'my, own text' }, { id: 'skip', selected: [] }] } })
+  assert.equal(host.questions.at(-1).questions[0].detail, 'Exact labels')
+  assert.equal(host.questions.at(-1).questions[0].multi_select, true)
+  questionResult = { answers: [{ id: 'multi', kind: 'choice', label: 'Other', value: 'Other' }] }
+  assert.deepEqual((await tool('first_state', { ask: 'current', questions: mixedQuestions }, questionIdentity)).structured, { questionError: ErrorCode.Internal })
+  const choice = { id: 'review', kind: 'choice', label: 'Other', value: 'Other' }
+  for (const receipt of [
+    null, {}, { answers: null }, { answers: [] }, { answers: [null] },
+    { answers: [{ ...choice, id: 'foreign' }] }, { answers: [{ ...choice, kind: 'unknown' }] },
+    { answers: [{ id: 'review', label: 'Other', value: 'Other' }] },
+    { answers: [{ ...choice, value: 'Other, something' }] }, { answers: [choice, choice] },
+    { answers: [{ ...choice, label: 'not offered', value: 'not offered' }] },
+    { answers: [{ id: 'review', kind: 'custom', label: 'Other', value: 'custom' }] },
+    { answers: [{ id: 'review', kind: 'custom', label: '', value: ' ' }] },
+    { answers: [choice, { id: 'review', kind: 'custom', label: '', value: 'custom' }] },
+    { answers: [{ id: 'review', kind: 'skipped', label: '', value: '' }, choice] },
+    { answers: [{ id: 'review', kind: 'skipped', label: '', value: 'not empty' }] },
+  ]) {
+    questionResult = receipt
+    assert.deepEqual((await tool('first_state', { ask: 'current' }, questionIdentity)).structured, { questionError: ErrorCode.Internal }, JSON.stringify(receipt))
+  }
+  questionResult = { error: { code: ErrorCode.Refused, message: 'questions refused' } }
+  assert.deepEqual((await tool('first_state', { ask: 'current' }, questionIdentity)).structured, { questionError: ErrorCode.Refused })
+  for (const [code, data, expected] of [
+    [ErrorCode.NotAvailable, { user_question_error: 'NO_PROVIDER' }, 'NO_PROVIDER'],
+    [ErrorCode.NotAvailable, undefined, ErrorCode.NotAvailable],
+    [ErrorCode.NotAvailable, { user_question_error: 'unknown' }, ErrorCode.NotAvailable],
+    [ErrorCode.Refused, { user_question_error: 'NO_PROVIDER' }, ErrorCode.Refused],
+    [ErrorCode.Cancelled, undefined, ErrorCode.Cancelled],
+    [ErrorCode.Cancelled, { user_question_error: 'ASK_CANCELLED' }, 'ASK_CANCELLED'],
+    [ErrorCode.NotAvailable, { user_question_error: 'ASK_CANCELLED' }, ErrorCode.NotAvailable],
+    [ErrorCode.Cancelled, { user_question_error: 'NO_PROVIDER' }, ErrorCode.Cancelled],
+  ]) {
+    questionResult = { error: { code, message: 'answerer result', ...(data === undefined ? {} : { data }) } }
+    assert.deepEqual((await tool('first_state', { ask: 'current' }, questionIdentity)).structured, { questionError: expected })
+  }
+  inFlight = 0
+  peak = 0
+  questionResult = async () => {
+    inFlight++
+    peak = Math.max(peak, inFlight)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    inFlight--
+    return { answers: [choice] }
+  }
+  assert.deepEqual((await tool('first_state', { ask: 'current', many: true }, questionIdentity)).structured, { asked: [selectedOther, selectedOther] })
+  assert.equal(peak, 1, 'one invocation serializes its questions')
+  const beforeQueued = host.questions.length
+  checkpointResult = new Promise(resolve => { releaseCheckpoint = resolve })
+  const queuedQuestion = host.request('tool/call', {
+    handle: handle('first_state'), call_id: 'queued-question', input: { ask: 'queued-abort' }, deadline_ms: 5000,
+    ...questionIdentity, checkpoint_ticket: 'question-queue-checkpoint-ticket',
+  })
+  await host.waitFor(message => message.method === 'session/checkpoint' && message.params.ticket === 'question-queue-checkpoint-ticket')
+  assert.deepEqual((await tool('first_state', { questionProbe: true })).structured, { questionError: 'ASK_ABORTED' })
+  assert.equal(host.questions.length, beforeQueued, 'a cancelled queued question never reaches core')
+  releaseCheckpoint(true)
+  assert.deepEqual((await queuedQuestion.promise).structured, { questionError: 'ASK_ABORTED' })
+  checkpointResult = true
+  let releaseQuestion
+  questionResult = new Promise(resolve => { releaseQuestion = resolve })
+  const pendingQuestion = host.request('tool/call', {
+    handle: handle('first_state'), call_id: 'cancel-question', input: { ask: 'current' }, deadline_ms: 5000,
+    ...rootIdentity, question_ticket: 'cancel-question-ticket',
+  })
+  await host.waitFor(message => message.method === 'user-questions/ask' && message.params.ticket === 'cancel-question-ticket')
+  const questionRequest = host.questions.find(request => request.ticket === 'cancel-question-ticket')
+  const cancelledQuestion = host.waitFor(message => message.method === '$/cancel' && message.params.id === questionRequest.id)
+  host.cancel(pendingQuestion.id)
+  await assert.rejects(pendingQuestion.promise, error => error.code === ErrorCode.Cancelled)
+  await cancelledQuestion
+  host.send({ jsonrpc: '2.0', id: questionRequest.id, result: { answers: [choice] } })
+  releaseQuestion({ answers: [choice] })
+  questionResult = { answers: [choice] }
+  assert.deepEqual(await host.call('host/ping', {}), {})
+  assert.deepEqual((await tool('first_state', { ask: 'current' }, questionIdentity)).structured, { asked: selectedOther })
   assert.equal(host.coreCalls.length, 0, 'read-only projections do not grant core calls')
   const command = await host.call('command/run', { handle: handle('first-state'), command_id: 'state-command', raw_input: '', deadline_ms: 5000, ...identity })
   assert.deepEqual(JSON.parse(command.text), { frozen: true, sessionId: 'session-one', agentId: 'agent-one', originTurnId: 'turn-one' })
-  await host.call('ext/deactivate', { owner: first.ref })
   const other = await activate(host, 'other-state-owner', plugin.entry, { config: { tool: 'other_state', command: 'other-state' }, data_dir: otherDir })
   assert.equal(other.result.status, 'ok')
+  const beforeForeign = host.questions.length
+  assert.deepEqual((await tool('other_state', { ask: 'foreign-owner' }, questionIdentity)).structured, { questionError: ErrorCode.NotAvailable })
+  assert.equal(host.questions.length, beforeForeign)
+  questionResult = new Promise(resolve => { releaseQuestion = resolve })
+  const disposedQuestion = host.request('tool/call', {
+    handle: handle('first_state'), call_id: 'disposed-question', input: { ask: 'current' }, deadline_ms: 5000,
+    ...rootIdentity, question_ticket: 'disposed-question-ticket',
+  })
+  await host.waitFor(message => message.method === 'user-questions/ask' && message.params.ticket === 'disposed-question-ticket')
+  await host.call('ext/deactivate', { owner: first.ref })
+  releaseQuestion({ answers: [choice] })
+  assert.deepEqual((await disposedQuestion.promise).structured, { questionError: ErrorCode.Cancelled })
+  questionResult = { answers: [choice] }
+  assert.deepEqual((await tool('other_state', { ask: 'foreign-owner' }, questionIdentity)).structured, { questionError: ErrorCode.NotAvailable })
   assert.deepEqual((await tool('other_state', { flush: 'foreign-owner' }, checkpointIdentity)).structured, { flushError: ErrorCode.NotAvailable })
   assert.deepEqual((await tool('other_state', { saved: true })).structured, { error: 'not_available' })
   assert.equal((await tool('other_state')).structured.value, null, 'another owner directory has separate state')

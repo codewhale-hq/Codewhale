@@ -836,7 +836,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)] // mirrors `gate_nested_call`
     async fn repl_fence_blocked_reason(
         &mut self,
-        blocks: &[crate::repl::ReplBlock],
+        blocks: &[codewhale_repl::ReplBlock],
         // What the approval card says would run, e.g. "the reply's ```repl
         // block(s) in the session REPL kernel".
         what_runs: &str,
@@ -3509,7 +3509,7 @@ impl Engine {
                     {
                         tool_restore_point = self
                             .take_restore_point(
-                                crate::snapshot::WorkspaceSnapshotKind::Tool,
+                                codewhale_snapshot::WorkspaceSnapshotKind::Tool,
                                 format!("tool:{tool_id}"),
                                 Some(tool_id.as_str()),
                                 super::file_write_tool_target_paths(&tool_name, &tool_input),
@@ -3614,7 +3614,7 @@ impl Engine {
                     // Close the span the call ran in (recording hosts only).
                     if tool_restore_point && self.config.record_restore_points {
                         self.take_restore_point(
-                            crate::snapshot::WorkspaceSnapshotKind::PostTool,
+                            codewhale_snapshot::WorkspaceSnapshotKind::PostTool,
                             format!("post-tool:{tool_id}"),
                             Some(tool_id.as_str()),
                             None,
@@ -3773,6 +3773,48 @@ impl Engine {
                 Some(request) = requests.recv() => {
                     let request = match request {
                         crate::tools::codemode::NestedCallRequest::Tool(request) => request,
+                        crate::tools::codemode::NestedCallRequest::UserQuestion { caller, mut request, withdraw, clock, reply } => {
+                            if reply.is_closed() || withdraw.is_cancelled() {
+                                continue;
+                            }
+                            if extension.is_none() || self.child_host.is_some() || caller.agent_id.is_some()
+                                || caller.session_id != self.session.id || caller.workspace != self.session.workspace
+                                || Some(caller.turn_id.as_str()) != checkpoint_turn_id.as_deref()
+                            {
+                                let _ = reply.send(Err(ToolError::not_available("user question does not belong to a serving root turn")));
+                                continue;
+                            }
+                            if !self.config.user_input_responder {
+                                let _ = reply.send(Err(ToolError::execution_failed_with_metadata(
+                                    "no user-questions answerer accepted the request",
+                                    serde_json::json!({"user_question_error": "NO_PROVIDER"}),
+                                )));
+                                continue;
+                            }
+                            request.require_typed_answers = true;
+                            for question in &mut request.questions {
+                                question.allow_free_text = true;
+                            }
+                            if let Err(error) = request.validate_transport() {
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
+                            let request_id = format!("question_{}", uuid::Uuid::new_v4().simple());
+                            let outcome = {
+                                let wait = self.await_user_input_withdrawal(&request_id, request, withdraw, Some(clock.as_ref()));
+                                tokio::pin!(wait);
+                                tokio::select! {
+                                    biased;
+                                    () = cancel.cancelled() => {
+                                        return (Ok(RichToolResult::plain(interrupted_active_tool_result())), true);
+                                    }
+                                    result = &mut run => return (result, false),
+                                    result = &mut wait => result,
+                                }
+                            };
+                            let _ = reply.send(outcome);
+                            continue;
+                        }
                         crate::tools::codemode::NestedCallRequest::Checkpoint { caller, withdraw, reply } => {
                             if reply.is_closed() || withdraw.is_cancelled() {
                                 continue;
@@ -3916,7 +3958,7 @@ impl Engine {
         if !code_execution_offered(mode, tool_catalog, nested_gate_env.tool_policy) {
             return refused("code execution is not available on this turn".to_string());
         }
-        let block = crate::repl::ReplBlock {
+        let block = codewhale_repl::ReplBlock {
             code,
             start_offset: 0,
             end_offset: 0,
@@ -4254,7 +4296,7 @@ impl Engine {
             &plan.input,
         ) {
             self.take_restore_point(
-                crate::snapshot::WorkspaceSnapshotKind::Tool,
+                codewhale_snapshot::WorkspaceSnapshotKind::Tool,
                 format!("tool:{nested_id}"),
                 Some(nested_id.as_str()),
                 super::file_write_tool_target_paths(&plan.name, &plan.input),

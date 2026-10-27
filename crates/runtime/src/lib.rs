@@ -12,6 +12,7 @@
 
 pub use codewhale_command_contract::elapsed;
 
+pub mod active_workshop;
 pub mod audit;
 pub mod browser;
 pub mod child_env;

@@ -146,7 +146,7 @@ pub(crate) fn is_sha256_hex(value: &str) -> bool {
 pub(crate) fn confined_workspace_path(workspace_roots: &[PathBuf], raw: &str) -> Option<String> {
     let rel = workspace_roots
         .iter()
-        .find_map(|root| crate::snapshot::workspace_relative_path(root, raw))?;
+        .find_map(|root| codewhale_snapshot::workspace_relative_path(root, raw))?;
     relative_display(&rel)
 }
 
@@ -244,7 +244,7 @@ pub(crate) fn artifact_refs_from_tool_metadata(
     // turn — never from the tool's result metadata, which a tool controls.
     let restore_snapshot_id = context
         .restore_snapshot_id
-        .filter(|id| crate::snapshot::SnapshotId::is_well_formed(id))
+        .filter(|id| codewhale_snapshot::SnapshotId::is_well_formed(id))
         .map(str::to_owned);
 
     if let Some(mutation) = metadata.get("mutation") {
@@ -497,11 +497,11 @@ pub(crate) struct WorkspaceDelta {
 /// pre-turn restore point recorded on the turn, which file-revert accepts
 /// for this thread.
 pub(crate) fn delta_refs(
-    delta: &crate::snapshot::SnapshotDelta,
+    delta: &codewhale_snapshot::SnapshotDelta,
     restore_snapshot_id: Option<&str>,
     recorded_at: DateTime<Utc>,
 ) -> Vec<TurnArtifactRef> {
-    use crate::snapshot::DeltaChange;
+    use codewhale_snapshot::DeltaChange;
     delta
         .entries
         .iter()

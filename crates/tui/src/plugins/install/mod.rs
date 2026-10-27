@@ -3,7 +3,7 @@
 //! Fetches a plugin bundle from a local directory, a `github:owner/repo`
 //! archive, or a direct tarball URL, and places it under the user plugins
 //! root (`~/.codewhale/plugins/<name>/`). This module deliberately mirrors
-//! [`crate::skills::install`]: the download, network-gating, traversal
+//! [`codewhale_skill_install::install`]: the download, network-gating, traversal
 //! rejection, and marker machinery is *reused* from there (`fetch_tarball`,
 //! `is_safe_path`, `write_installed_from_v2`, `INSTALLED_FROM_MARKER`), while
 //! the scan/extract step is plugin-shaped (a bundle is rooted at the single
@@ -43,7 +43,7 @@
 //!   containment guards shared with discovery.
 //!
 //! Fetching is not ours: remote bytes come from
-//! [`crate::skills::install::fetch_tarball`], network gating included.
+//! [`codewhale_skill_install::install::fetch_tarball`], network gating included.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,11 +67,11 @@ pub struct PluginContentMismatch {
 }
 
 use crate::plugins::manifest::PluginManifest;
-use crate::skills::install::{
-    self as skill_install, FetchOutcome, InstallSource, InstalledFromMarker, fetch_tarball,
-    sha256_hex, source_spec_string,
-};
 use codewhale_net::network_policy::NetworkPolicy;
+use codewhale_skill_install::install::{
+    self as skill_install, FetchOutcome, INSTALLED_FROM_MARKER, InstallSource, InstalledFromMarker,
+    fetch_tarball, sha256_hex, source_spec_string,
+};
 
 pub(crate) mod dsh;
 mod place;
@@ -84,10 +84,6 @@ mod tests;
 use place::{ensure_target_within_plugins_dir, finalize_install, plugin_target_path};
 use stage::stage_local_copy;
 use tarball::stage_tarball;
-
-/// Marker file shared with the skill installer. Its presence means "this
-/// bundle was placed by `/plugin install`" and enables update/uninstall.
-pub use crate::skills::install::INSTALLED_FROM_MARKER;
 
 /// Default per-bundle size cap. Mirrors the skill installer; the runtime
 /// staging budget in `registry.rs` stays the outer bound.

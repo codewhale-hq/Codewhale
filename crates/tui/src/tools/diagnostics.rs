@@ -234,18 +234,18 @@ fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dependencies::ExternalTool;
+    use codewhale_dependencies::ExternalTool;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codewhale_dependencies::Git::available()
     }
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codewhale_dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);

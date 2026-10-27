@@ -1931,9 +1931,9 @@ pub(crate) async fn update_provider_catalog(
 }
 
 pub(crate) async fn refresh_local_ollama_catalog(config: &Config, identity: &ProviderIdentity) {
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
     let _ = (config, identity);
-    #[cfg(not(test))]
+    #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
     {
         if identity.provider != ProviderKind::Ollama {
             return;

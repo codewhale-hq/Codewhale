@@ -67,7 +67,10 @@ pub(crate) fn request(locale: Locale) -> UserInputRequest {
         description: tr(locale, description).into_owned(),
     };
     UserInputRequest {
+        require_typed_answers: false,
         questions: vec![UserInputQuestion {
+            detail: None,
+            intent: None,
             header: tr(locale, MessageId::PlanHandoffHeader).into_owned(),
             id: QUESTION_ID.to_string(),
             question: tr(locale, MessageId::PlanHandoffQuestion).into_owned(),
@@ -126,6 +129,7 @@ mod tests {
                 id: QUESTION_ID.to_string(),
                 label: label.to_string(),
                 value: value.to_string(),
+                kind: None,
             }],
         }
     }

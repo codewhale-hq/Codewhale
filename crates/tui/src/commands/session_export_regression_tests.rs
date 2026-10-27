@@ -21,13 +21,13 @@ use codewhale_command_contract::facets::{
 use codewhale_command_contract::handler::CommandCapabilities;
 
 use crate::error_taxonomy::ErrorSeverity;
-use crate::snapshot::SnapshotRepo;
 use crate::test_support::{EnvVarGuard, TestEnvLock};
 use crate::tui::app::{App, TuiOptions};
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::HistoryCell;
 use codewhale_models::{ContentBlock, ImageUrlContent, Message, Role, ToolCaller};
 use codewhale_runtime::config::Config;
+use codewhale_snapshot::SnapshotRepo;
 
 use crate::commands::session_export_test_support::{
     assert_only_export_facet_exposed, normalize_export_time, normalize_recorded_export,
@@ -312,7 +312,7 @@ fn adapter_projects_absent_restore_points_without_creating_a_repo() {
     let workspace = harness.temp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace");
     harness.app.workspace = workspace.clone();
-    let before = crate::snapshot::snapshot_git_dir(&workspace).expect("snapshot path");
+    let before = codewhale_snapshot::snapshot_git_dir(&workspace).expect("snapshot path");
     assert!(!before.exists(), "precondition: no side repo yet");
 
     let projection = conversation_projection(&mut harness.app);
@@ -322,7 +322,7 @@ fn adapter_projects_absent_restore_points_without_creating_a_repo() {
         RestorePointProjection::None
     ));
     assert!(
-        !crate::snapshot::snapshot_git_dir(&workspace)
+        !codewhale_snapshot::snapshot_git_dir(&workspace)
             .expect("snapshot path")
             .exists(),
         "projection must never create the snapshot repo"
@@ -1291,14 +1291,14 @@ fn command_export_does_not_create_a_snapshot_repo_for_a_fresh_workspace() {
     std::fs::create_dir_all(&workspace).expect("workspace");
     let app = &mut harness.app;
     app.workspace = workspace.clone();
-    let before = crate::snapshot::snapshot_git_dir(&workspace).expect("snapshot path");
+    let before = codewhale_snapshot::snapshot_git_dir(&workspace).expect("snapshot path");
     assert!(!before.exists(), "precondition: no side repo yet");
 
     let result = dispatch(app, Some("clipboard"));
     assert!(!result.is_error, "{:?}", result.message);
 
     assert!(
-        !crate::snapshot::snapshot_git_dir(&workspace)
+        !codewhale_snapshot::snapshot_git_dir(&workspace)
             .expect("snapshot path")
             .exists(),
         "export must never create the side repo"

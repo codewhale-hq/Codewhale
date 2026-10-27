@@ -31,6 +31,7 @@ import {
   type ToolResultWire,
 } from './protocol.ts'
 import { RpcError, type RpcPeer } from './rpc.ts'
+import { UserQuestionError } from './dsh/dsh-message-compat.js'
 import { explainImportError } from './dsh/resolve-hooks.ts'
 import compatibility from './dsh/compatibility.json' with { type: 'json' }
 import { assertSupportedJsonSchema, validateJsonSchemaValue, ToolOutputError } from './dsh/dsh-tools-compat.js'
@@ -135,6 +136,9 @@ function withDeadline<T>(promise: Promise<T>, ms: number, label: string): Promis
 interface ToolInvocation {
   owner: OwnerRecord
   session: object | undefined
+  agent: object | undefined
+  questionTicket: string | undefined
+  delegated: boolean
   ticket: string | undefined
   signal: AbortSignal
   active: boolean
@@ -306,6 +310,121 @@ export class HostRoot {
         return result
       }
     }
+    class UserQuestionsShim extends Service {
+      constructor(ctx: any) { super(ctx, 'userQuestions') }
+      async ask(request: { agent?: unknown; questions: unknown; signal?: AbortSignal; wait?: unknown }) {
+        const invocation = host.toolInvocations.getStore()
+        const owner: OwnerRecord | undefined = (this.ctx as any)[OWNER]
+        const data = (value: unknown, allowed: string[]): Record<string, unknown> => {
+          if (value === null || typeof value !== 'object' || Array.isArray(value)
+            || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, 'expected a plain question object')
+          const result: Record<string, unknown> = Object.create(null)
+          for (const key of Reflect.ownKeys(value)) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, key)!
+            if (typeof key !== 'string' || !allowed.includes(key) || !descriptor.enumerable || !('value' in descriptor)) throw new RpcError(ErrorCode.InvalidParams, 'unsupported question property')
+            if (descriptor.value !== undefined) result[key] = descriptor.value
+          }
+          return result
+        }
+        const list = (value: unknown, maximum: number): unknown[] => {
+          if (!Array.isArray(value) || value.length > maximum || Reflect.ownKeys(value).length !== value.length + 1) throw new RpcError(ErrorCode.InvalidParams, 'invalid question array')
+          return Array.from({ length: value.length }, (_, index) => {
+            const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+            if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) throw new RpcError(ErrorCode.InvalidParams, 'invalid question array item')
+            return descriptor.value
+          })
+        }
+        const input = data(request, ['agent', 'questions', 'signal', 'wait'])
+        if (input.wait !== undefined) throw new RpcError(ErrorCode.NotAvailable, 'timed or continued questions are not yet supported')
+        request = input as typeof request
+        if (request.signal !== undefined && !(request.signal instanceof AbortSignal)) {
+          throw new RpcError(ErrorCode.InvalidParams, 'question signal must be an AbortSignal')
+        }
+        if (request.signal?.aborted) throw new UserQuestionError('ask_user_question was aborted before the user answered', 'ASK_ABORTED')
+        const items = list(request.questions, 10)
+        if (items.length === 0) throw new UserQuestionError('ask_user_question requires at least one question', 'EMPTY_QUESTIONS')
+        if (request.agent === undefined) throw new RpcError(ErrorCode.NotAvailable, 'userQuestions.ask requires this live tool invocation’s agent')
+        if (!invocation || !invocation.active || invocation.signal.aborted || invocation.agent === undefined || request.agent !== invocation.agent) {
+          throw new UserQuestionError('human interaction requires the exact live calling agent when an agent is supplied', 'CALLER_NOT_LIVE')
+        }
+        if (invocation.owner !== owner || owner?.state !== 'active' || owner.disposing) throw new RpcError(ErrorCode.NotAvailable, 'userQuestions.ask service owner is no longer current')
+        if (invocation.delegated) throw new UserQuestionError("human interaction is unavailable while the calling agent is owned by another live agent; include the unresolved question or decision in the child agent's final result", 'DELEGATED_CALLER')
+        const live = () => invocation.active && !invocation.signal.aborted
+          && invocation.owner === owner && owner?.state === 'active' && !owner.disposing
+          && invocation.questionTicket !== undefined && request.agent === invocation.agent
+        if (!live()) throw new RpcError(ErrorCode.NotAvailable, 'userQuestions.ask requires this live tool invocation’s question ticket')
+        const signal = request.signal === undefined ? invocation.signal : AbortSignal.any([invocation.signal, request.signal])
+        const questions = items.map(value => {
+          const question = data(value, ['id', 'question', 'header', 'detail', 'options', 'multiSelect', 'intent'])
+          const options = list(question.options === undefined ? [] : question.options, 1000)
+          const intent = question.intent === undefined ? undefined : data(question.intent, ['kind', 'approve', 'callId'])
+          if (intent !== undefined && intent.kind !== 'plan-review') throw new RpcError(ErrorCode.InvalidParams, 'unsupported question intent')
+          return {
+            id: question.id, question: question.question, header: question.header === undefined ? '' : question.header,
+            ...(question.detail === undefined ? {} : { detail: question.detail }),
+            ...(intent === undefined ? {} : { intent: { kind: 'plan-review', approve: intent.approve,
+              ...(intent.callId === undefined ? {} : { call_id: intent.callId }) } }),
+            options: options.map(option => {
+              const item = data(option, ['label', 'description'])
+              return { label: item.label, description: item.description === undefined ? '' : item.description }
+            }),
+            allow_free_text: true, multi_select: question.multiSelect === undefined ? false : question.multiSelect,
+          }
+        })
+        if (!isJson(questions)) throw new RpcError(ErrorCode.InvalidParams, 'question data must be lossless JSON')
+        for (const question of questions) {
+          if (question.intent === undefined) continue
+          if (!question.options.some(option => option.label === question.intent!.approve)) throw new UserQuestionError('question ' + question.id + ' declares an intent whose approve label names none of its options', 'BAD_INTENT')
+          if (question.detail === undefined) throw new UserQuestionError('question ' + question.id + ' declares an intent without the detail it reviews', 'BAD_INTENT')
+        }
+        if (Buffer.byteLength(JSON.stringify(questions)) > 1024 * 1024) throw new RpcError(ErrorCode.InvalidParams, 'question payload exceeds 1 MiB')
+        const call = invocation!
+        const run = async () => {
+          if (!live() || signal.aborted) throw new RpcError(ErrorCode.Cancelled, 'question invocation ended')
+          const result = await host.rpc.request<unknown>('user-questions/ask', { owner: call.owner.ref, ticket: call.questionTicket, questions }, signal).catch(error => {
+            if (error instanceof RpcError && isJson(error.data)
+              && error.data !== null && typeof error.data === 'object' && !Array.isArray(error.data)) {
+              const code = error.data.user_question_error
+              if ((error.code === ErrorCode.NotAvailable && code === 'NO_PROVIDER')
+                || (error.code === ErrorCode.Cancelled && code === 'ASK_CANCELLED')) {
+                throw new UserQuestionError(error.message, code, { cause: error })
+              }
+            }
+            if (signal.aborted) throw new UserQuestionError('ask_user_question was aborted before the user answered', 'ASK_ABORTED', { cause: error })
+            throw error
+          })
+          if (!live() || signal.aborted) throw new RpcError(ErrorCode.Cancelled, 'question invocation ended')
+          if (!isJson(result) || result === null || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.answers)) {
+            throw new RpcError(ErrorCode.Internal, 'invalid question answer receipt')
+          }
+          const answers = questions.map(question => ({ id: question.id, selected: [] as string[], custom: undefined as string | undefined, skipped: false, rows: 0 }))
+          for (const row of result.answers) {
+            if (row === null || typeof row !== 'object' || Array.isArray(row) || typeof row.label !== 'string' || typeof row.value !== 'string') throw new RpcError(ErrorCode.Internal, 'invalid question answer row')
+            const answer = answers.find(answer => answer.id === row.id)
+            const question = questions.find(question => question.id === row.id)
+            if (!answer || !question || answer.skipped) throw new RpcError(ErrorCode.Internal, 'question answer identity mismatch')
+            if (row.kind === 'choice' && row.label === row.value && question.options.some(option => option.label === row.value) && !answer.selected.includes(row.value)) answer.selected.push(row.value)
+            else if (row.kind === 'custom' && row.label === '' && row.value.trim() !== '' && answer.custom === undefined) answer.custom = row.value
+            else if (row.kind === 'skipped' && row.label === '' && row.value === '' && answer.rows === 0) answer.skipped = true
+            else throw new RpcError(ErrorCode.Internal, 'ambiguous question answer receipt')
+            answer.rows += 1
+            if (!question.multi_select && answer.selected.length + (answer.custom === undefined ? 0 : 1) > 1) throw new RpcError(ErrorCode.Internal, 'invalid single-select answer')
+          }
+          if (answers.some(answer => answer.rows === 0)) throw new RpcError(ErrorCode.Internal, 'missing question answer')
+          return { answers: answers.map(({ id, selected, custom }) => ({ id, selected, ...(custom === undefined ? {} : { custom }) })) }
+        }
+        const result = call.pending.then(run)
+        call.pending = result.then(() => undefined, () => undefined)
+        let cancel: () => void = () => {}
+        const cancelled = new Promise<never>((_, reject) => {
+          cancel = () => reject(new UserQuestionError('ask_user_question was aborted before the user answered', 'ASK_ABORTED'))
+          signal.addEventListener('abort', cancel, { once: true })
+          if (signal.aborted) cancel()
+        })
+        return Promise.race([result, cancelled]).finally(() => signal.removeEventListener('abort', cancel))
+      }
+    }
+    Object.freeze(UserQuestionsShim.prototype)
     Object.freeze(SessionsShim.prototype)
     Object.freeze(StorageShim.prototype)
     shimClasses.set('tools', ToolsShim)
@@ -313,6 +432,7 @@ export class HostRoot {
     shimClasses.set('prompt', PromptShim)
     shimClasses.set('storage', StorageShim)
     shimClasses.set('sessions', SessionsShim)
+    shimClasses.set('userQuestions', UserQuestionsShim)
     shimClasses.set('skills', SkillsShim)
     shimClasses.set('avatars', AvatarsShim)
     shimClasses.set('mcp',McpShim)
@@ -322,6 +442,7 @@ export class HostRoot {
     root.plugin(PromptShim)
     root.plugin(StorageShim)
     root.plugin(SessionsShim)
+    root.plugin(UserQuestionsShim)
     root.plugin(SkillsShim)
     root.plugin(AvatarsShim)
     root.plugin(McpShim)
@@ -592,6 +713,9 @@ export class HostRoot {
     const invocation: ToolInvocation = {
       owner: local.owner,
       session: agent?.session,
+      agent,
+      questionTicket: identity?.question_ticket,
+      delegated: identity?.agent_id !== undefined,
       ticket: identity?.checkpoint_ticket,
       signal: AbortSignal.any([signal, closed.signal]),
       active: true,
@@ -652,6 +776,7 @@ export class HostRoot {
 
 /** The read-only context a call carries beyond its input; a field the core did not send is absent. */
 interface InvocationIdentityWire {
+  question_ticket?: string
   checkpoint_ticket?: string
   session_id?: string
   agent_id?: string

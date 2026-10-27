@@ -409,7 +409,7 @@ impl Engine {
         )?;
         let mut kernel = None;
         if invocation.mode != RlmMode::Completion {
-            let path = tempfile::TempPath::try_from_path(crate::rlm::session::write_context_file(
+            let path = tempfile::TempPath::try_from_path(codewhale_repl::write_context_file(
                 &invocation.prompt,
             )?)?;
             let cancel = caller
@@ -421,7 +421,7 @@ impl Engine {
                 biased;
                 () = cancel.cancelled() => Err("RLM Python startup cancelled by its originating turn".to_string()),
                 () = wait_for_deadline(invocation.deadline) => Err("RLM Python startup exhausted its original wall-clock deadline".to_string()),
-                result = crate::repl::PythonRuntime::spawn_with_context(&path) => result,
+                result = codewhale_repl::PythonRuntime::spawn_with_context(&path) => result,
             };
             match startup {
                 Ok(runtime) => {
@@ -792,7 +792,7 @@ impl CapturedRlmCaller {
                     usage,
                 );
             } else {
-                crate::cost_status::report_effective_route_for_interactive_origin(
+                crate::usage_persistence::report_effective_route_for_interactive_origin(
                     self.origin_scope,
                     &self.origin_session,
                     &self.origin_turn,
@@ -810,7 +810,7 @@ impl CapturedRlmCaller {
                 reason,
             );
         } else {
-            crate::cost_status::report_missing_usage_for_interactive_origin(
+            crate::usage_persistence::report_missing_usage_for_interactive_origin(
                 self.origin_scope,
                 &self.origin_session,
                 &self.origin_turn,

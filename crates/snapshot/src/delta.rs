@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use sha2::{Digest, Sha256};
 
 use super::{SnapshotId, SnapshotRepo};
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 /// Blobs above this size are reported by size only: hashing them for a
 /// Preview list is not worth the I/O, and the read route refuses them anyway.
@@ -61,7 +61,7 @@ struct RawChange {
 }
 
 fn git(repo: &SnapshotRepo) -> io::Result<Command> {
-    let mut command = crate::dependencies::Git::command()
+    let mut command = codewhale_dependencies::Git::command()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?;
     command
         .arg("--git-dir")
@@ -380,7 +380,7 @@ impl SnapshotRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, TestEnvLock, lock_test_env};
+    use codewhale_runtime::test_support::{EnvVarGuard, TestEnvLock, lock_test_env};
     use std::fs;
 
     struct Home {

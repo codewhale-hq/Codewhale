@@ -264,7 +264,18 @@ pub struct McpManagerSnapshot {
 /// Structured clarification request (`request_user_input`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserInputRequest {
+    #[serde(default)]
+    pub require_typed_answers: bool,
     pub questions: Vec<UserInputQuestionEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputClosedOutcome {
+    Answered,
+    Cancelled,
+    TimedOut,
+    Unavailable,
 }
 
 /// Which permission gate produced a `ToolGateDecision`.
@@ -743,6 +754,12 @@ pub enum EventMsg {
         id: String,
         request: UserInputRequest,
     },
+    UserInputClosed {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        id: String,
+        outcome: UserInputClosedOutcome,
+    },
     /// Authoritative API conversation state (`Message`s / `SystemPrompt`
     /// serialized).
     SessionUpdated {
@@ -873,6 +890,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "approval_required",
     "approval_withdrawn",
     "user_input_required",
+    "user_input_closed",
     "session_updated",
     "elevation_required",
     "lsp_repair_update",
@@ -934,6 +952,7 @@ impl EventMsg {
             Self::ApprovalRequired { .. } => "approval_required",
             Self::ApprovalWithdrawn { .. } => "approval_withdrawn",
             Self::UserInputRequired { .. } => "user_input_required",
+            Self::UserInputClosed { .. } => "user_input_closed",
             Self::SessionUpdated { .. } => "session_updated",
             Self::ElevationRequired { .. } => "elevation_required",
             Self::LspRepairUpdate { .. } => "lsp_repair_update",
@@ -995,6 +1014,7 @@ impl EventMsg {
             | Self::ApprovalRequired { thread_id, .. }
             | Self::ApprovalWithdrawn { thread_id, .. }
             | Self::UserInputRequired { thread_id, .. }
+            | Self::UserInputClosed { thread_id, .. }
             | Self::SessionUpdated { thread_id, .. }
             | Self::ElevationRequired { thread_id, .. }
             | Self::LspRepairUpdate { thread_id, .. }
@@ -1056,6 +1076,7 @@ impl EventMsg {
             | Self::ApprovalRequired { session_id, .. }
             | Self::ApprovalWithdrawn { session_id, .. }
             | Self::UserInputRequired { session_id, .. }
+            | Self::UserInputClosed { session_id, .. }
             | Self::SessionUpdated { session_id, .. }
             | Self::ElevationRequired { session_id, .. }
             | Self::LspRepairUpdate { session_id, .. }
@@ -1482,15 +1503,27 @@ mod tests {
                 session_id: s.clone(),
                 id: "c2".into(),
                 request: UserInputRequest {
+                    require_typed_answers: true,
                     questions: vec![UserInputQuestionEvent {
                         header: "h".into(),
                         id: "q1".into(),
                         question: "?".into(),
+                        detail: Some("Exact detail".into()),
+                        intent: Some(crate::UserInputIntentEvent::PlanReview {
+                            approve: "Proceed".into(),
+                            call_id: Some("plan-1".into()),
+                        }),
                         options: vec![],
                         allow_free_text: true,
                         multi_select: false,
                     }],
                 },
+            },
+            EventMsg::UserInputClosed {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                id: "c2".into(),
+                outcome: UserInputClosedOutcome::TimedOut,
             },
             EventMsg::SessionUpdated {
                 thread_id: t.clone(),

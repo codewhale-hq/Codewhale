@@ -70,6 +70,7 @@ workspace = true
 [features]
 default = []
 long-running-tests = []
+test-thread-scoped-state = []
 # Accepted compatibility feature names. Allocators belong exclusively to the
 # canonical codewhale-cli executable; these library aliases have no effect.
 mimalloc-allocator = []
@@ -110,6 +111,11 @@ codewhale-runtime = { path = "../runtime", version = "0.10.2" }
 codewhale-sandbox = { path = "../sandbox", version = "0.10.2" }
 codewhale-secrets = { path = "../secrets", version = "0.10.2" }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2" }
+codewhale-lsp = { path = "../lsp", version = "0.10.2" }
+codewhale-repl = { path = "../repl", version = "0.10.2" }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
 codewhale-util = { path = "../util", version = "0.10.2" }
 codewhale-tools = { path = "../tools", version = "0.10.2" }
 codewhale-workflow = { path = "../workflow", version = "0.10.2" }
@@ -205,6 +211,9 @@ shell-words = "1.1.1"
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }
+codewhale-lsp = { path = "../lsp", version = "0.10.2", features = ["test-support"] }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2", features = ["test-support"] }
 codewhale-notify = { path = "../notify", version = "0.10.2", features = ["test-thread-scoped-state"] }
 codewhale-config = { path = "../config", version = "0.10.2", features = ["schema", "test-support"] }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2", features = [
@@ -215,6 +224,7 @@ codewhale-runtime = { path = "../runtime", version = "0.10.2", features = [
     "test-thread-scoped-state",
 ] }
 codewhale-sandbox = { path = "../sandbox", version = "0.10.2", features = ["test-support"] }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
 codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }
 codewhale-models = { path = "../models", version = "0.10.2", features = [
     "test-support",

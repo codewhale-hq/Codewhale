@@ -38,6 +38,7 @@ var METHODS = [
   { name: "registry/unregister", direction: "host_to_core", request: true, params: "UnregisterParams", tiers: ["plugin", "builtin"] },
   { name: "core/call", direction: "host_to_core", request: true, params: "CoreCallParams", tiers: ["plugin", "builtin"] },
   { name: "session/checkpoint", direction: "host_to_core", request: true, params: "SessionCheckpointParams", tiers: ["plugin", "builtin"] },
+  { name: "user-questions/ask", direction: "host_to_core", request: true, params: "UserQuestionParams", tiers: ["plugin", "builtin"] },
   { name: "proc/launch", direction: "host_to_core", request: true, params: "ProcLaunchParams", tiers: ["builtin"] },
   { name: "proc/read", direction: "host_to_core", request: true, params: "ProcSessionParams", tiers: ["builtin"] },
   { name: "proc/write", direction: "host_to_core", request: true, params: "ProcWriteParams", tiers: ["builtin"] },
@@ -231,11 +232,31 @@ var SHAPES = {
   ToolCallParams: {
     strict: false,
     required: { handle: "uint", call_id: "string", input: "json", deadline_ms: "uint" },
-    optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
+    optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
   },
   UnregisterParams: {
     strict: true,
     required: { owner: { ref: "OwnerRef" }, handle: "uint" },
+    optional: {}
+  },
+  UserInputIntent: {
+    strict: false,
+    required: { approve: "string", kind: { enum: ["plan-review"] } },
+    optional: { call_id: "string" }
+  },
+  UserInputOption: {
+    strict: false,
+    required: { label: "string" },
+    optional: { description: "string" }
+  },
+  UserInputQuestion: {
+    strict: false,
+    required: { id: "string", question: "string" },
+    optional: { header: "string", detail: "string", intent: { ref: "UserInputIntent" }, options: { items: { ref: "UserInputOption" } }, allow_free_text: "boolean", multi_select: "boolean" }
+  },
+  UserQuestionParams: {
+    strict: true,
+    required: { owner: { ref: "OwnerRef" }, ticket: "string", questions: { items: { ref: "UserInputQuestion" } } },
     optional: {}
   }
 };

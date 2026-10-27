@@ -269,10 +269,10 @@ fn spawn_turn_stall_watchdog_every(
     tx_event: mpsc::Sender<Event>,
     tick: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
     let test_dir = codewhale_runtime::stall_report::stall_record_dir();
     tokio::spawn(async move {
-        #[cfg(test)]
+        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
         codewhale_runtime::stall_report::set_test_stall_record_dir(test_dir);
         let mut ticker = tokio::time::interval(tick);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

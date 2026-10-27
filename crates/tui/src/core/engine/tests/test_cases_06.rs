@@ -498,8 +498,7 @@ fn env_only_auth_error_gets_recovery_hint() {
 fn config_auth_error_does_not_blame_env() {
     let _guard = lock_test_env();
     let _env = ScopedDeepSeekApiKey::set("stale-env-key");
-    let cfg = Config::default()
-    .with_legacy_root(Some("fresh-config-key".to_string()), None);
+    let cfg = Config::default().with_legacy_root(Some("fresh-config-key".to_string()), None);
     let (engine, _handle) = Engine::new(EngineConfig::default(), &cfg);
 
     let message =
@@ -720,7 +719,10 @@ fn external_user_message_op(content: &str, mode: AppMode, config: &Config) -> Op
         content: content.to_string(),
         images: Vec::new(),
         mode,
-        route: resolved_route_for_test(config, codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
+        route: resolved_route_for_test(
+            config,
+            codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+        ),
         compaction: Box::new(CompactionConfig::default()),
         initial_routed_usage: Box::default(),
         goal_objective: None,
@@ -750,7 +752,11 @@ fn external_user_message_op_with_submission(
     submission_id: Option<String>,
 ) -> Op {
     let mut op = external_user_message_op(content, mode, config);
-    if let Op::SendMessage(TurnSpec { submission_id: token, .. }) = &mut op {
+    if let Op::SendMessage(TurnSpec {
+        submission_id: token,
+        ..
+    }) = &mut op
+    {
         *token = submission_id;
     }
     op
@@ -763,7 +769,10 @@ fn auto_review_message_op(content: &str, config: &Config) -> Op {
         content: content.to_string(),
         images: Vec::new(),
         mode: AppMode::Agent,
-        route: resolved_route_for_test(config, codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
+        route: resolved_route_for_test(
+            config,
+            codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+        ),
         compaction: Box::new(CompactionConfig::default()),
         initial_routed_usage: Box::default(),
         goal_objective: None,
@@ -1291,7 +1300,7 @@ async fn narrowing_the_posture_discards_python_kernels() {
         client,
     );
     // Without a Python interpreter there is no kernel to discard.
-    let Ok(kernel) = crate::repl::runtime::PythonRuntime::new().await else {
+    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::new().await else {
         return;
     };
     engine.repl_kernel = Some(kernel);
@@ -1354,7 +1363,7 @@ async fn a_broken_repl_kernel_is_replaced_by_the_next_turn() {
     engine.session.auto_approve = true;
 
     // What a turn dropped mid-round leaves behind.
-    let mut stale = crate::repl::PythonRuntime::new().await.expect("spawn");
+    let mut stale = codewhale_repl::PythonRuntime::new().await.expect("spawn");
     let dropped = tokio::time::timeout(
         Duration::from_millis(50),
         stale.execute("import time\ntime.sleep(30)"),

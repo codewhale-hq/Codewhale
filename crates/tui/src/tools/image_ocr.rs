@@ -74,7 +74,7 @@ impl ToolSpec for ImageOcrTool {
 
 pub(crate) fn ocr_available() -> bool {
     std::env::var_os("CODEWHALE_LOCAL_OCR_UNAVAILABLE").is_none()
-        && (crate::dependencies::resolve_tesseract().is_some() || native_ocr_available())
+        && (codewhale_dependencies::resolve_tesseract().is_some() || native_ocr_available())
 }
 
 const OCR_TIMEOUT: Duration = Duration::from_secs(120);
@@ -202,12 +202,13 @@ impl CapturedOcr {
             let supplied = self.overrides.as_ref().map(|value| value.tesseract.clone());
             #[cfg(all(test, unix))]
             {
-                supplied
-                    .unwrap_or_else(|| crate::dependencies::resolve_tesseract().map(OsString::from))
+                supplied.unwrap_or_else(|| {
+                    codewhale_dependencies::resolve_tesseract().map(OsString::from)
+                })
             }
             #[cfg(not(all(test, unix)))]
             {
-                crate::dependencies::resolve_tesseract().map(OsString::from)
+                codewhale_dependencies::resolve_tesseract().map(OsString::from)
             }
         };
         OcrNativeStep {

@@ -1218,7 +1218,7 @@ pub fn repository_tool_workspace(
     required_head: Option<&str>,
 ) -> Option<PathBuf> {
     let required = required_head.map(str::trim).filter(|head| !head.is_empty());
-    let mut command = crate::dependencies::Git::review_base(workspace).ok()?;
+    let mut command = codewhale_dependencies::Git::review_base(workspace).ok()?;
     command.current_dir(workspace).args(["rev-parse", "HEAD"]);
     let output = command.output().ok()?;
     if !output.status.success() {
@@ -1230,7 +1230,7 @@ pub fn repository_tool_workspace(
     {
         return None;
     }
-    let mut status = crate::dependencies::Git::review_base(workspace).ok()?;
+    let mut status = codewhale_dependencies::Git::review_base(workspace).ok()?;
     status
         .current_dir(workspace)
         .args(["status", "--porcelain"]);

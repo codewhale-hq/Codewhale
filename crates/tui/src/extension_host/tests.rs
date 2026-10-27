@@ -673,10 +673,11 @@ fn every_package_in_the_bundle_has_a_licence_notice_and_a_third_party_entry() {
 /// A Node for the integration tests, or `None` (skip) when there is none and
 /// the tests were not explicitly required.
 pub(crate) fn node_for_tests(test: &str) -> Option<PathBuf> {
-    let resolution = crate::dependencies::resolve_extension_host_runtime(
+    let resolution = codewhale_dependencies::resolve_extension_host_runtime(
         codewhale_config::extension_host::ExtensionHostRuntime::Node,
         None,
         None,
+        crate::extension_host::bundle_sha256(),
     );
     match resolution.selected.as_ref() {
         Some(runtime) => Some(runtime.path.clone()),
@@ -1664,10 +1665,11 @@ fn compiled_image_for_tests() -> Option<PathBuf> {
         return None;
     };
     let binary = PathBuf::from(binary);
-    let resolution = crate::dependencies::resolve_extension_host_runtime(
+    let resolution = codewhale_dependencies::resolve_extension_host_runtime(
         codewhale_config::extension_host::ExtensionHostRuntime::Bun,
         None,
         Some(&binary),
+        crate::extension_host::bundle_sha256(),
     );
     let runtime = resolution
         .selected
@@ -2695,6 +2697,7 @@ async fn ordinary_exit_rejects_requests_from_a_drained_calls_waker() {
                 workspace: None,
                 ticket: None,
                 checkpoint_ticket: None,
+                question_ticket: None,
                 session_id: None,
                 agent_id: None,
                 origin_turn_id: None,
@@ -2756,6 +2759,7 @@ async fn idle_retirement_seals_admission_and_does_not_wait_for_heartbeat() {
                 workspace: None,
                 ticket: None,
                 checkpoint_ticket: None,
+                question_ticket: None,
                 session_id: None,
                 agent_id: None,
                 origin_turn_id: None,
@@ -2853,6 +2857,7 @@ async fn two_dirty_teardowns_wait_for_a_live_call_then_replay_without_spending_c
                 workspace: None,
                 ticket: None,
                 checkpoint_ticket: None,
+                question_ticket: None,
                 session_id: None,
                 agent_id: None,
                 origin_turn_id: None,
@@ -3503,10 +3508,11 @@ async fn explicit_retry_refreshes_same_byte_authority_without_inheriting_old_han
 /// A Bun >= 1.4.0 for the Bun integration tests, or `None` (skip) unless
 /// `CODEWHALE_EXT_HOST_BUN_TESTS` requires one.
 fn bun_for_tests(test: &str) -> Option<PathBuf> {
-    let resolution = crate::dependencies::resolve_extension_host_runtime(
+    let resolution = codewhale_dependencies::resolve_extension_host_runtime(
         codewhale_config::extension_host::ExtensionHostRuntime::Bun,
         None,
         None,
+        crate::extension_host::bundle_sha256(),
     );
     match resolution.selected {
         Some(runtime) => Some(runtime.path),
@@ -3572,7 +3578,7 @@ fn node_is_the_default_runtime_and_bun_is_an_opt_in() {
 
 #[test]
 fn launch_plan_gives_each_runtime_its_own_flags() {
-    use crate::dependencies::{HostRuntime, HostRuntimeKind};
+    use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
     let home = tempfile::tempdir().unwrap();
     let bundle = home.path().join("codewhale-extension-host.mjs");
     for (kind, expected) in [
@@ -3605,7 +3611,7 @@ fn launch_plan_gives_each_runtime_its_own_flags() {
             compiled: false,
             native_code_flags: match kind {
                 HostRuntimeKind::Bun => Vec::new(),
-                HostRuntimeKind::Node => crate::dependencies::NODE_NATIVE_CODE_FLAGS.to_vec(),
+                HostRuntimeKind::Node => codewhale_dependencies::NODE_NATIVE_CODE_FLAGS.to_vec(),
             },
         };
         let launch = super::supervisor::plan_launch(
@@ -3683,14 +3689,18 @@ async fn handshake_refuses_a_runtime_or_version_mismatch_and_an_unapplied_kernel
     let Some(node) = node_for_tests("handshake_refuses_a_runtime_or_version_mismatch") else {
         return;
     };
-    use crate::dependencies::HostRuntimeKind;
+    use codewhale_dependencies::HostRuntimeKind;
     let home = tempfile::tempdir().unwrap();
     let bundle = super::materialize_bundle(home.path()).unwrap();
     // Resolved, so the Node gets the native-code flags it accepts.
-    let runtime =
-        crate::dependencies::resolve_extension_host_runtime(NODE, Some(node.as_path()), None)
-            .selected
-            .expect("the test Node resolves");
+    let runtime = codewhale_dependencies::resolve_extension_host_runtime(
+        NODE,
+        Some(node.as_path()),
+        None,
+        crate::extension_host::bundle_sha256(),
+    )
+    .selected
+    .expect("the test Node resolves");
     struct NoEvents;
     impl super::supervisor::HostEvents for NoEvents {
         fn register(&self, _: &protocol::RegisterParams) -> protocol::RegisterResult {
@@ -3772,10 +3782,14 @@ async fn handshake_refuses_a_tier_or_built_in_module_digest_mismatch() {
     }
     let home = tempfile::tempdir().unwrap();
     let bundle = super::materialize_bundle(home.path()).unwrap();
-    let runtime =
-        crate::dependencies::resolve_extension_host_runtime(NODE, Some(node.as_path()), None)
-            .selected
-            .expect("the test Node resolves");
+    let runtime = codewhale_dependencies::resolve_extension_host_runtime(
+        NODE,
+        Some(node.as_path()),
+        None,
+        crate::extension_host::bundle_sha256(),
+    )
+    .selected
+    .expect("the test Node resolves");
     let launch_for = |tier: HostTier| {
         super::supervisor::plan_launch(tier, &runtime, &bundle, home.path(), 1 << 30, &[]).unwrap()
     };
@@ -4010,7 +4024,7 @@ async fn auto_uses_node_for_the_session_when_the_bun_host_fails_to_start() {
 async fn memory_hog_is_stopped(
     manager: Arc<ExtensionHostManager>,
     fixture: &FixturePlugins,
-    kind: crate::dependencies::HostRuntimeKind,
+    kind: codewhale_dependencies::HostRuntimeKind,
 ) {
     use super::supervisor::MemoryEnforcement;
     let engine = manager.attach(fixture.registry());
@@ -4048,7 +4062,7 @@ async fn memory_hog_is_stopped(
         {
             assert!(
                 message.contains("allocation failed")
-                    || (kind == crate::dependencies::HostRuntimeKind::Bun
+                    || (kind == codewhale_dependencies::HostRuntimeKind::Bun
                         && message.ends_with("RangeError: Out of memory")),
                 "{message}"
             );
@@ -4114,7 +4128,7 @@ async fn memory_cap_stops_a_node_host() {
     memory_hog_is_stopped(
         manager,
         &fixture,
-        crate::dependencies::HostRuntimeKind::Node,
+        codewhale_dependencies::HostRuntimeKind::Node,
     )
     .await;
 }
@@ -4128,7 +4142,12 @@ async fn memory_cap_stops_a_bun_host() {
     let _policy = TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["memory-hog"]).await;
     let manager = bun_manager(&fixture, bun, memory_cap_supervision());
-    memory_hog_is_stopped(manager, &fixture, crate::dependencies::HostRuntimeKind::Bun).await;
+    memory_hog_is_stopped(
+        manager,
+        &fixture,
+        codewhale_dependencies::HostRuntimeKind::Bun,
+    )
+    .await;
 }
 
 /// Actual Rust containment/memory authority, using the same exact compiled
@@ -4142,7 +4161,12 @@ async fn compiled_native_host_memory_cap_is_enforced() {
     let _policy = TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["memory-hog"]).await;
     let manager = bun_manager(&fixture, binary, memory_cap_supervision());
-    memory_hog_is_stopped(manager, &fixture, crate::dependencies::HostRuntimeKind::Bun).await;
+    memory_hog_is_stopped(
+        manager,
+        &fixture,
+        codewhale_dependencies::HostRuntimeKind::Bun,
+    )
+    .await;
     eprintln!(
         "compiled-native-memory=passed platform={} arch={}",
         std::env::consts::OS,
@@ -4995,7 +5019,7 @@ fn a_plugin_named_like_a_tier_zero_owner_fails_validation_and_never_reaches_the_
 #[test]
 fn launch_plans_carry_their_tier_and_use_a_data_directory_each() {
     #[cfg(not(windows))]
-    use crate::dependencies::{HostRuntime, HostRuntimeKind};
+    use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
     let home = tempfile::tempdir().unwrap();
     #[cfg(windows)]
     let bundle = super::materialize_bundle(home.path()).unwrap();
@@ -5003,9 +5027,14 @@ fn launch_plans_carry_their_tier_and_use_a_data_directory_each() {
     let bundle = home.path().join("codewhale-extension-host.mjs");
     // Windows admission verifies the real copied runtime and exact bundle.
     #[cfg(windows)]
-    let runtime = crate::dependencies::resolve_extension_host_runtime(NODE, None, None)
-        .selected
-        .expect("tier planning requires the test Node runtime on Windows");
+    let runtime = codewhale_dependencies::resolve_extension_host_runtime(
+        NODE,
+        None,
+        None,
+        crate::extension_host::bundle_sha256(),
+    )
+    .selected
+    .expect("tier planning requires the test Node runtime on Windows");
     #[cfg(not(windows))]
     let runtime = HostRuntime {
         compiled: false,

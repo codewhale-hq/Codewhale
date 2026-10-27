@@ -643,8 +643,8 @@ mod tests {
     #[tokio::test]
     async fn wall_clock_deadline_interrupts_pending_work_and_keeps_partial_result() {
         let _home = crate::test_support::SealedHome::new();
-        use crate::dependencies::ExternalTool as _;
-        assert!(crate::dependencies::Python::resolve().is_some());
+        use codewhale_dependencies::ExternalTool as _;
+        assert!(codewhale_dependencies::Python::resolve().is_some());
         for pending_model in [true, false] {
             let partial = if pending_model {
                 "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```"

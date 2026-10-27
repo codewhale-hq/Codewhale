@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use std::path::{Component, Path};
 
 /// Parsed frontmatter: lowercased metadata keys and the body after the fence.
-pub(crate) type Frontmatter<'a> = (HashMap<String, String>, &'a str);
+pub type Frontmatter<'a> = (HashMap<String, String>, &'a str);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SkillValidationMode {
+pub enum SkillValidationMode {
     Lenient,
     Strict,
 }
@@ -16,7 +16,7 @@ pub(crate) enum SkillValidationMode {
 /// Runtime accepts incomplete authoring metadata with visible warnings;
 /// installation requires frontmatter, a path-safe name, and a description.
 /// Neither mode grants tools, model selection, execution, or fork authority.
-pub(crate) fn validate_skill_frontmatter(
+pub fn validate_skill_frontmatter(
     metadata: Option<&HashMap<String, String>>,
     path: Option<&Path>,
     mode: SkillValidationMode,
@@ -98,7 +98,7 @@ pub(crate) fn validate_skill_frontmatter(
     Ok(warnings)
 }
 
-pub(crate) fn parse_frontmatter_bool(value: &str) -> Option<bool> {
+pub fn parse_frontmatter_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => Some(true),
         "false" | "no" | "off" | "0" => Some(false),
@@ -106,7 +106,7 @@ pub(crate) fn parse_frontmatter_bool(value: &str) -> Option<bool> {
     }
 }
 
-pub(crate) fn is_path_safe_skill_name(name: &str) -> bool {
+pub fn is_path_safe_skill_name(name: &str) -> bool {
     if name.is_empty()
         || name.trim() != name
         || name.chars().any(char::is_whitespace)
@@ -124,9 +124,7 @@ pub(crate) fn is_path_safe_skill_name(name: &str) -> bool {
 /// lowercased; values are unquoted, and YAML block scalars (`>`, `|`, with
 /// chomping) are folded the way `SKILL.md` has always read them. This is the
 /// one frontmatter reader: skills and Claude Code agent files both use it.
-pub(crate) fn parse_frontmatter(
-    content: &str,
-) -> std::result::Result<Option<Frontmatter<'_>>, String> {
+pub fn parse_frontmatter(content: &str) -> std::result::Result<Option<Frontmatter<'_>>, String> {
     let content = content
         .strip_prefix('\u{feff}')
         .unwrap_or(content)
@@ -392,7 +390,7 @@ mod tests {
     fn metadata_short_description_captured() {
         // Actual Codex sample frontmatter, retaining its nested metadata map.
         let (metadata, _) = parse_frontmatter(include_str!(
-            "../../tests/fixtures/skills/codex-skill-creator.md"
+            "../tests/fixtures/skills/codex-skill-creator.md"
         ))
         .unwrap()
         .unwrap();
@@ -411,7 +409,7 @@ mod tests {
     #[test]
     fn real_claude_fixture_preserves_block_sequence_and_authority_warning() {
         let (metadata, _) =
-            parse_frontmatter(include_str!("../../tests/fixtures/skills/claude-access.md"))
+            parse_frontmatter(include_str!("../tests/fixtures/skills/claude-access.md"))
                 .unwrap()
                 .unwrap();
         assert_eq!(metadata["name"], "access");

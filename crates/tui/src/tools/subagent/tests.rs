@@ -8243,7 +8243,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         }
         // The converter registers only when the `pandoc` binary exists.
         if matches!(role, FleetRole::Builder | FleetRole::Worker)
-            && crate::dependencies::resolve_pandoc().is_some()
+            && codewhale_dependencies::resolve_pandoc().is_some()
         {
             expected.insert("pandoc_convert".to_string());
         }

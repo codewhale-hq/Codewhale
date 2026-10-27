@@ -221,6 +221,13 @@ pub(crate) enum NestedCallRequest {
         withdraw: CancellationToken,
         reply: oneshot::Sender<Result<bool, ToolError>>,
     },
+    UserQuestion {
+        caller: crate::core::events::SessionCheckpointCaller,
+        request: crate::tools::user_input::UserInputRequest,
+        withdraw: CancellationToken,
+        clock: Arc<Mutex<PauseClock>>,
+        reply: oneshot::Sender<Result<crate::tools::user_input::UserInputResponse, ToolError>>,
+    },
 }
 
 pub(crate) struct NestedToolCallRequest {
@@ -349,6 +356,36 @@ impl NestedCallGate {
         }
     }
 
+    pub(crate) async fn user_question(
+        &self,
+        caller: crate::core::events::SessionCheckpointCaller,
+        request: crate::tools::user_input::UserInputRequest,
+        withdraw: CancellationToken,
+        clock: Arc<Mutex<PauseClock>>,
+    ) -> Result<crate::tools::user_input::UserInputResponse, ToolError> {
+        if self.extension.is_none() {
+            return Err(ToolError::not_available(
+                "user questions require a directly served extension invocation",
+            ));
+        }
+        let (reply, answer) = oneshot::channel();
+        let request = NestedCallRequest::UserQuestion {
+            caller,
+            request,
+            withdraw: withdraw.clone(),
+            clock,
+            reply,
+        };
+        tokio::select! {
+            biased;
+            () = withdraw.cancelled() => Err(ToolError::cancelled("user question was withdrawn")),
+            result = async {
+                self.requests.send(request).await.map_err(|_| ToolError::not_available("the turn no longer serves user questions"))?;
+                answer.await.map_err(|_| ToolError::not_available("owning host did not answer the user question"))?
+            } => result,
+        }
+    }
+
     /// Ask the serving turn loop to decide one nested call. A gate nobody
     /// serves any more refuses.
     pub(crate) async fn ask(&self, name: String, input: Value) -> NestedCallVerdict {
@@ -423,6 +460,12 @@ impl NestedCallGate {
             while let Some(request) = requests.recv().await {
                 let request = match request {
                     NestedCallRequest::Tool(request) => request,
+                    NestedCallRequest::UserQuestion { reply, .. } => {
+                        let _ = reply.send(Err(ToolError::not_available(
+                            "fixture has no user question backend",
+                        )));
+                        continue;
+                    }
                     NestedCallRequest::Checkpoint { reply, .. } => {
                         let _ = reply.send(Err(ToolError::not_available(
                             "fixture has no session checkpoint backend",
@@ -579,7 +622,16 @@ impl PauseClock {
     }
 }
 
-struct PauseGuard<'a>(&'a Mutex<PauseClock>);
+pub(crate) struct PauseGuard<'a>(&'a Mutex<PauseClock>);
+
+impl<'a> PauseGuard<'a> {
+    pub(crate) fn new(clock: &'a Mutex<PauseClock>) -> Self {
+        if let Ok(mut clock) = clock.lock() {
+            clock.pause();
+        }
+        Self(clock)
+    }
+}
 
 impl Drop for PauseGuard<'_> {
     fn drop(&mut self) {
@@ -713,10 +765,7 @@ impl CodemodeInvoker {
     }
 
     fn pause(&self) -> PauseGuard<'_> {
-        if let Ok(mut clock) = self.clock.lock() {
-            clock.pause();
-        }
-        PauseGuard(&self.clock)
+        PauseGuard::new(&self.clock)
     }
 
     /// Time left before the deadline ([`PauseClock::remaining`]).
@@ -1649,6 +1698,12 @@ mod tests {
             while let Some(request) = requests.recv().await {
                 let request = match request {
                     NestedCallRequest::Tool(request) => request,
+                    NestedCallRequest::UserQuestion { reply, .. } => {
+                        let _ = reply.send(Err(ToolError::not_available(
+                            "fixture has no user question backend",
+                        )));
+                        continue;
+                    }
                     NestedCallRequest::Checkpoint { reply, .. } => {
                         let _ = reply.send(Err(ToolError::not_available(
                             "fixture has no session checkpoint backend",

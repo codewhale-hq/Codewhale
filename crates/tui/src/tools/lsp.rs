@@ -1,6 +1,6 @@
 //! Model-facing LSP code-intelligence tool.
 //!
-//! Extends the existing [`crate::lsp::LspManager`] lifecycle — never spawns a
+//! Extends the existing [`codewhale_lsp::LspManager`] lifecycle — never spawns a
 //! competing server pool. Operations: diagnostics, read_lints, symbols,
 //! definition, references.
 
@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-use crate::lsp::LintReadStatus;
+use codewhale_lsp::LintReadStatus;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -128,7 +128,7 @@ struct ReadLintsDiagnostic {
 #[derive(Serialize)]
 struct ReadLintsFile {
     #[serde(flatten)]
-    freshness: crate::lsp::DiagnosticFreshness,
+    freshness: codewhale_lsp::DiagnosticFreshness,
     file: String,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -352,9 +352,9 @@ fn resolve_lint_path(workspace: &Path, raw: &str) -> Result<PathBuf, ToolError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::{Diagnostic, Language, LspConfig, LspManager, Severity};
     use crate::tools::spec::ToolContext;
     use async_trait::async_trait;
+    use codewhale_lsp::{Diagnostic, Language, LspConfig, LspManager, Severity};
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -367,13 +367,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::lsp::LspTransport for CountingTransport {
+    impl codewhale_lsp::LspTransport for CountingTransport {
         async fn diagnostics_for(
             &self,
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<codewhale_lsp::client::DiagnosticPublication> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(vec![Diagnostic {
                 line: 1,
@@ -400,13 +400,13 @@ mod tests {
     struct EmptyTransport;
 
     #[async_trait]
-    impl crate::lsp::LspTransport for EmptyTransport {
+    impl codewhale_lsp::LspTransport for EmptyTransport {
         async fn diagnostics_for(
             &self,
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<codewhale_lsp::client::DiagnosticPublication> {
             Ok(Vec::new().into())
         }
 
@@ -427,13 +427,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::lsp::LspTransport for FixedTransport {
+    impl codewhale_lsp::LspTransport for FixedTransport {
         async fn diagnostics_for(
             &self,
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<codewhale_lsp::client::DiagnosticPublication> {
             Ok(self.items.clone().into())
         }
 
@@ -443,13 +443,13 @@ mod tests {
     struct ErrorTransport;
 
     #[async_trait]
-    impl crate::lsp::LspTransport for ErrorTransport {
+    impl codewhale_lsp::LspTransport for ErrorTransport {
         async fn diagnostics_for(
             &self,
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<codewhale_lsp::client::DiagnosticPublication> {
             anyhow::bail!("server exploded")
         }
 
@@ -459,13 +459,13 @@ mod tests {
     struct TimeoutTransport;
 
     #[async_trait]
-    impl crate::lsp::LspTransport for TimeoutTransport {
+    impl codewhale_lsp::LspTransport for TimeoutTransport {
         async fn diagnostics_for(
             &self,
             _path: &Path,
             _text: &str,
             _wait: Duration,
-        ) -> anyhow::Result<crate::lsp::client::DiagnosticPublication> {
+        ) -> anyhow::Result<codewhale_lsp::client::DiagnosticPublication> {
             std::future::pending().await
         }
 

@@ -2131,7 +2131,7 @@ async fn create_summary(
                         &response.usage,
                     );
                 } else {
-                    crate::cost_status::report_effective_route_for_interactive_origin(
+                    crate::usage_persistence::report_effective_route_for_interactive_origin(
                         *scope,
                         session,
                         agent,
@@ -2148,7 +2148,7 @@ async fn create_summary(
                     &cost_route,
                 );
             } else {
-                crate::cost_status::report_unreceipted_for_interactive_origin(
+                crate::usage_persistence::report_unreceipted_for_interactive_origin(
                     *scope,
                     session,
                     agent,

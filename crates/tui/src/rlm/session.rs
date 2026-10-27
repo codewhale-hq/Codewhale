@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::repl::PythonRuntime;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
+use codewhale_repl::PythonRuntime;
 
 pub type SharedRlmSessionStore = Arc<Mutex<HashMap<String, Arc<Mutex<RlmSession>>>>>;
 
@@ -105,18 +105,6 @@ impl Default for RlmSessionConfig {
             share_session: false,
         }
     }
-}
-
-pub fn write_context_file(body: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!(
-        "session_{}_{}.txt",
-        std::process::id(),
-        Uuid::new_v4().simple()
-    ));
-    std::fs::write(&path, body)?;
-    Ok(path)
 }
 
 #[derive(Debug, Clone)]

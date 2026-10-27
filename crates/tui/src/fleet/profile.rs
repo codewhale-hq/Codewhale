@@ -452,7 +452,7 @@ pub fn load_claude_agent_profiles_from_dir_in(
 fn load_claude_agent_file(root: Option<&Path>, path: &Path) -> Result<AgentProfile> {
     let raw = read_profile_text(root, path)
         .with_context(|| format!("reading Claude agent {}", path.display()))?;
-    let (metadata, body) = crate::skills::parse_frontmatter(&raw)
+    let (metadata, body) = codewhale_skill_install::frontmatter::parse_frontmatter(&raw)
         .map_err(|err| anyhow!("parsing Claude agent {}: {err}", path.display()))?
         .ok_or_else(|| {
             anyhow!(

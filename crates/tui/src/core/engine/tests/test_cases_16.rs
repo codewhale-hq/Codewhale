@@ -25,9 +25,7 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     assert!(crate::runtime_handoff::is_internal_runtime_handoff(
         &warning
     ));
-    assert!(codewhale_models::turn_classify::is_runtime_owned_user_message(
-        &warning
-    ));
+    assert!(codewhale_models::turn_classify::is_runtime_owned_user_message(&warning));
     // The transcript side (no history cell for it) is pinned in
     // `tui::history::tests`, keeping this runtime test off the UI crate path.
     assert!(
@@ -52,9 +50,7 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     assert!(!crate::runtime_handoff::is_internal_runtime_handoff(
         &quoted
     ));
-    assert!(!codewhale_models::turn_classify::is_runtime_owned_user_message(
-        &quoted
-    ));
+    assert!(!codewhale_models::turn_classify::is_runtime_owned_user_message(&quoted));
     engine.session.add_message(prompt.clone());
     let initial = engine.session.messages.len();
     engine.refresh_pinned_header_for_turn(&context).unwrap();
@@ -846,8 +842,8 @@ async fn dropped_operation_span_completes_as_cancelled() {
 
 #[tokio::test]
 async fn code_execution_does_not_inherit_parent_secret_env() {
-    use crate::dependencies::ExternalTool as _;
-    if !crate::dependencies::Python::available() {
+    use codewhale_dependencies::ExternalTool as _;
+    if !codewhale_dependencies::Python::available() {
         // `dependencies::tests::runtime_commands_do_not_inherit_parent_secret_env`
         // still covers the scrubbed Python constructor without Python.
         return;
@@ -914,8 +910,8 @@ async fn code_execution_scenario() {
 
 #[tokio::test]
 async fn interpreter_execution_policy_preserves_readonly_and_exact_call_elevation() {
-    use codewhale_sandbox::SandboxPolicy;
     use crate::tools::spec::ToolContext;
+    use codewhale_sandbox::SandboxPolicy;
     for tool in [CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME] {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside workspace");

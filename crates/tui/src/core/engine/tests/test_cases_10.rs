@@ -455,7 +455,7 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
     // cross-platform built-in profile. Pin host capabilities because Windows
     // system-directory lookup can find interpreters outside PATH. Keep the
     // nonexistent PATH root for the canonical shell spelling below.
-    let _host_tools = crate::dependencies::pin_recorded_host_tools(Vec::new());
+    let _host_tools = codewhale_dependencies::pin_recorded_host_tools(Vec::new());
     let _path = EnvVarGuard::set("PATH", tmp.path().join("no-host-interpreters"));
     // Shell syntax is part of the tool schema. A bare name plus the empty
     // PATH resolves to the same `bash` spelling on Unix and Windows without
@@ -1287,8 +1287,8 @@ async fn deferred_tool_first_use_does_not_emit_a_retry_status() {
         .mount(&server)
         .await;
 
-    let api_config = Config::default()
-    .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
+    let api_config =
+        Config::default().with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let (engine, handle) = Engine::new(
         EngineConfig {
             model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),

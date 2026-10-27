@@ -2404,7 +2404,8 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
         .as_mut()
         .context("tampered full graph")?
         .entries[3];
-    let codewhale_runtime::session_tree::SessionEntryKind::Message { message } = &mut entry.kind
+    let codewhale_runtime::session_tree::SessionEntryKind::Message { message } =
+        std::sync::Arc::make_mut(&mut entry.kind)
     else {
         anyhow::bail!("inactive fixture entry lost its message");
     };

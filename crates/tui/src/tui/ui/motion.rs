@@ -158,13 +158,11 @@ pub(crate) fn rail_min_chat_width(idle_empty: bool) -> u16 {
 pub(crate) fn status_animation_interval_ms(app: &App) -> u64 {
     if app.effective_low_motion_for_status() {
         crate::tui::display_refresh::adaptive_animation_interval_ms(true)
-    } else if matches!(
-        app.view_stack.top_kind(),
-        Some(ModalKind::Approval | ModalKind::Elevation | ModalKind::UserInput)
-    ) || !(app.is_loading
-        || app.is_compacting
-        || app.is_purging
-        || crate::tui::subagent_routing::running_agent_count(app) > 0)
+    } else if decision_prompt_waiting(app)
+        || !(app.is_loading
+            || app.is_compacting
+            || app.is_purging
+            || crate::tui::subagent_routing::running_agent_count(app) > 0)
     {
         UI_QUIET_STATUS_ANIMATION_MS
     } else {

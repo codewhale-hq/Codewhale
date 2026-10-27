@@ -28,7 +28,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use uuid::Uuid;
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 use codewhale_runtime::child_env;
 
 // ---------------------------------------------------------------------------
@@ -218,7 +218,7 @@ impl PythonRuntime {
         let session_id = Uuid::new_v4().simple().to_string();
         let bootstrap = render_bootstrap(&session_id);
 
-        let mut cmd = crate::dependencies::Python::tokio_command().ok_or_else(|| {
+        let mut cmd = codewhale_dependencies::Python::tokio_command().ok_or_else(|| {
             "no Python interpreter found on PATH (tried python3, python, py -3). \
              Install Python 3 and restart codewhale."
                 .to_string()
@@ -360,7 +360,7 @@ impl PythonRuntime {
     /// acquire quoting semantics. The old owned file is released only after
     /// the kernel has successfully loaded the replacement.
     pub async fn replace_context(&mut self, body: &str) -> Result<(), String> {
-        let path = crate::rlm::session::write_context_file(body)
+        let path = crate::write_context_file(body)
             .map_err(|e| format!("write refreshed REPL context: {e}"))?;
         let path_literal = serde_json::to_string(&path.to_string_lossy())
             .map_err(|e| format!("encode refreshed REPL context path: {e}"))?;

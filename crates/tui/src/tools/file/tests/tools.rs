@@ -639,7 +639,7 @@ fn clean_pdf_text_preserves_leading_indentation() {
 
 #[tokio::test]
 async fn read_file_pdf_path_uses_optional_pdftotext_adapter() {
-    if !sample_pdf_present() || crate::dependencies::resolve_pdftotext().is_none() {
+    if !sample_pdf_present() || codewhale_dependencies::resolve_pdftotext().is_none() {
         return;
     }
     let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");

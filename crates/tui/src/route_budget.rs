@@ -98,7 +98,7 @@ const TOOL_OUTPUT_INLINE_OPT_IN_MAX_CHARS: usize = 2 * 1024 * 1024;
 pub(crate) fn route_inline_char_budget(window_tokens: Option<u32>) -> usize {
     route_inline_char_budget_with_raise(
         window_tokens,
-        crate::tools::large_output_router::active_tool_result_max_bytes(),
+        codewhale_runtime::active_workshop::active_tool_result_max_bytes(),
     )
 }
 

@@ -38,11 +38,11 @@ fn code_execution_description_does_not_claim_process_sandboxing() {
 /// Python output must match our UTF-8 decoder even with non-UTF-8 parent stdio.
 #[tokio::test]
 async fn code_execution_returns_utf8_stdout_and_stderr() {
-    use crate::dependencies::ExternalTool as _;
     use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_dependencies::ExternalTool as _;
 
     let _env_lock = lock_test_env();
-    if !crate::dependencies::Python::available() {
+    if !codewhale_dependencies::Python::available() {
         return;
     }
     let _encoding = EnvVarGuard::set("PYTHONIOENCODING", "gbk");
@@ -458,7 +458,7 @@ fn execute_tools_is_eager_in_code_mode_and_deferred_in_direct() {
 #[cfg(unix)]
 #[tokio::test]
 async fn dropped_code_execution_kills_the_interpreter_tree() {
-    if crate::dependencies::resolve_python_interpreter().is_none() {
+    if codewhale_dependencies::resolve_python_interpreter().is_none() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");

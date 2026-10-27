@@ -357,6 +357,10 @@ fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
         } => json!({
             "event":"approval_resolved","id":id,"outcome":"cancelled"
         }),
+        Event::UserInputClosed { id, outcome } => json!({
+            "event":"approval_resolved", "id":id,
+            "outcome":if matches!(outcome, crate::core::events::UserInputClosedOutcome::Answered) { "approved" } else { "cancelled" }
+        }),
         Event::AgentSpawned { id, .. } => json!({"event":"agent_spawned","id":id}),
         Event::AgentProgress { id, activity, .. } => json!({
             "event":"agent_progress",

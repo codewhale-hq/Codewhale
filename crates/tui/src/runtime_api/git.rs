@@ -52,7 +52,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::dependencies::{ExternalTool as _, Git};
+use codewhale_dependencies::{ExternalTool as _, Git};
 
 use super::workspace::{
     FILE_SERVE_MAX_BYTES, canonical_workspace, collect_workspace_status, content_revision,
@@ -82,6 +82,7 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_COMMIT_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_BRANCH_NAME_BYTES: usize = 256;
 const MAX_PATH_ARGS: usize = 512;
+const MAX_PATCH_BYTES: usize = 1024 * 1024;
 /// Per-read bound on working-tree bytes hashed for `files[].rev`. Rows past
 /// the budget get a stat fingerprint (`s-` token) instead of a content digest
 /// (`c-` token), so a large untracked tree cannot turn a status poll into
@@ -121,7 +122,7 @@ async fn git_read(workspace: &FsPath, args: &[&str]) -> Result<GitRun, ApiError>
 
 /// Write path for operator-driven mutations. Non-interactive by contract:
 /// [`Git::tokio_command`] carries the shared no-prompt environment
-/// ([`crate::dependencies::apply_git_noninteractive_env`]) so a credential or
+/// ([`codewhale_dependencies::apply_git_noninteractive_env`]) so a credential or
 /// key prompt can never hang the request. Hooks and filters run exactly as they do for the user's own
 /// `git` — a Review-sheet commit is the user's commit.
 async fn git_write(workspace: &FsPath, args: Vec<String>) -> Result<GitRun, ApiError> {
@@ -1459,6 +1460,8 @@ pub(super) struct GitPathsRequest {
     /// Optional preconditions (#6647); absent keeps the unchecked behaviour.
     #[serde(default)]
     expect: Option<GitExpect>,
+    #[serde(default)]
+    patch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1894,10 +1897,124 @@ fn literal_path_args(subcommand: &[&str], paths: Vec<String>) -> Vec<String> {
     args
 }
 
+fn validated_patch(patch: &str, path: &str) -> Result<(), ApiError> {
+    let refuse = |why: &str| Err(ApiError::bad_request(format!("patch {why}")));
+    if patch.len() > MAX_PATCH_BYTES {
+        return refuse(&format!("must be at most {MAX_PATCH_BYTES} bytes"));
+    }
+    let header = format!("diff --git a/{path} b/{path}");
+    let old = format!("--- a/{path}");
+    let new = format!("+++ b/{path}");
+    let (mut seen_old, mut seen_new, mut hunks) = (false, false, 0usize);
+    let (mut old_left, mut new_left) = (0usize, 0usize);
+    for line in patch.lines() {
+        if old_left > 0 || new_left > 0 {
+            match line.as_bytes().first() {
+                Some(b' ') | None => {
+                    old_left = old_left.saturating_sub(1);
+                    new_left = new_left.saturating_sub(1);
+                }
+                Some(b'-') => old_left = old_left.saturating_sub(1),
+                Some(b'+') => new_left = new_left.saturating_sub(1),
+                Some(b'\\') => {}
+                _ => return refuse("has a hunk shorter than its header"),
+            }
+            continue;
+        }
+        if line.starts_with('\\') {
+            continue;
+        }
+        if let Some(range) = line.strip_prefix("@@ ") {
+            if !(seen_old && seen_new) {
+                return refuse(&format!("must start with --- a/{path} and +++ b/{path}"));
+            }
+            let mut counts = range.split_whitespace().take(2).map(|side| {
+                let side = &side[1..];
+                match side.split_once(',') {
+                    Some((_, count)) => count.parse::<usize>().ok(),
+                    None => side.parse::<usize>().ok().map(|_| 1),
+                }
+            });
+            let (Some(Some(a)), Some(Some(b))) = (counts.next(), counts.next()) else {
+                return refuse("has a malformed @@ line");
+            };
+            (old_left, new_left) = (a, b);
+            hunks += 1;
+        } else if line.starts_with("diff --git ") {
+            if line != header {
+                return refuse(&format!("may change only {path}"));
+            }
+            (seen_old, seen_new) = (false, false);
+        } else if line.starts_with("--- ") {
+            if line != old {
+                return refuse(&format!("may change only {path}, and not create it"));
+            }
+            seen_old = true;
+        } else if line.starts_with("+++ ") {
+            if line != new {
+                return refuse(&format!("may change only {path}, and not delete it"));
+            }
+            seen_new = true;
+        } else if !line.starts_with("index ") {
+            return refuse("may only change lines (no rename, copy, mode or binary changes)");
+        }
+    }
+    if hunks == 0 || old_left > 0 || new_left > 0 {
+        return refuse("needs at least one complete hunk");
+    }
+    Ok(())
+}
+
+async fn patch_write(
+    state: &RuntimeApiState,
+    request: GitPathsRequest,
+    apply: &[&str],
+) -> Result<Json<Value>, GitWriteError> {
+    let patch = request.patch.clone().unwrap_or_default();
+    if request.all || request.paths.len() != 1 {
+        return Err(ApiError::bad_request("patch needs exactly one path").into());
+    }
+    let (_, paths, expect) = paths_and_expect(request, false)?;
+    validated_patch(&patch, &paths[0])?;
+    let file = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new()?;
+        file.write_all(patch.as_bytes())?;
+        file.flush()?;
+        Ok::<_, std::io::Error>(file)
+    })
+    .await
+    .map_err(|_| ApiError::internal("patch staging failed"))?
+    .map_err(|error| ApiError::internal(format!("patch staging failed: {error}")))?;
+    let workspace = canonical_workspace(&state.workspace)?;
+    let place = git_read_ok(&workspace, &["rev-parse", "--show-cdup", "--show-prefix"]).await?;
+    let mut place = place.lines();
+    let (cdup, prefix) = (
+        place.next().unwrap_or_default().to_string(),
+        place.next().unwrap_or_default().to_string(),
+    );
+    let mut args = Vec::new();
+    if !cdup.is_empty() {
+        args.extend(["-C".to_string(), cdup]);
+    }
+    args.extend(apply.iter().map(|arg| arg.to_string()));
+    if !prefix.is_empty() {
+        args.push(format!("--directory={prefix}"));
+    }
+    args.push("--".to_string());
+    args.push(file.path().to_string_lossy().into_owned());
+    let result = guarded_write(state, expect, args).await;
+    drop(file);
+    result
+}
+
 pub(super) async fn git_stage(
     State(state): State<RuntimeApiState>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    if request.patch.is_some() {
+        return patch_write(&state, request, &["apply", "--cached"]).await;
+    }
     let (all, paths, expect) = paths_and_expect(request, true)?;
     let args = if all {
         vec!["add".to_string(), "--all".to_string()]
@@ -1911,6 +2028,9 @@ pub(super) async fn git_unstage(
     State(state): State<RuntimeApiState>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    if request.patch.is_some() {
+        return patch_write(&state, request, &["apply", "--cached", "--reverse"]).await;
+    }
     let (all, paths, expect) = paths_and_expect(request, true)?;
     let args = if all {
         // `:/` is pathspec magic for the repository root, so this one form
@@ -1930,6 +2050,9 @@ pub(super) async fn git_discard(
     State(state): State<RuntimeApiState>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    if request.patch.is_some() {
+        return patch_write(&state, request, &["apply", "--reverse"]).await;
+    }
     let (_, paths, expect) = paths_and_expect(request, false)?;
     guarded_write(&state, expect, literal_path_args(&["checkout"], paths)).await
 }

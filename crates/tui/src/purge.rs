@@ -737,7 +737,7 @@ pub async fn run_purge(
             .unwrap_or_default(),
         response.id
     );
-    crate::cost_status::report_effective_route_for_interactive_origin(
+    crate::usage_persistence::report_effective_route_for_interactive_origin(
         cost_scope,
         session_id,
         &source_id,

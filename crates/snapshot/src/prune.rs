@@ -34,7 +34,7 @@ pub fn prune_older_than(workspace: &Path, max_age: Duration) -> io::Result<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_runtime::test_support::{EnvVarGuard, lock_test_env};
     use tempfile::tempdir;
 
     #[test]

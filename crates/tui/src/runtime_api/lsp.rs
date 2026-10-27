@@ -28,8 +28,8 @@ use serde_json::{Value, json};
 
 use super::workspace::{canonical_workspace, precheck_file_target, relative_request_path};
 use super::{ApiError, RuntimeApiState};
-use crate::lsp::LspManager;
-use crate::lsp::registry::Language;
+use codewhale_lsp::LspManager;
+use codewhale_lsp::registry::Language;
 
 const LSP_OPERATIONS: &[&str] = &["diagnostics", "symbols", "definition", "references"];
 const LANGUAGES: &[Language] = &[
@@ -58,7 +58,7 @@ async fn lsp_manager(state: &RuntimeApiState) -> Result<Arc<LspManager>, ApiErro
         .read()
         .lsp
         .clone()
-        .map(crate::lsp::LspConfig::from)
+        .map(codewhale_lsp::LspConfig::from)
         .unwrap_or_default();
     Ok(state
         .workspace_scope

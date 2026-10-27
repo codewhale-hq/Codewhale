@@ -756,10 +756,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn actual_github_host_draft_read_and_operator_use_one_owned_artifact() {
         let _policy = crate::plugins::activation::TestPolicyGuard::extension_host(false);
-        let runtime = crate::dependencies::resolve_extension_host_runtime(
+        let runtime = codewhale_dependencies::resolve_extension_host_runtime(
             codewhale_config::extension_host::ExtensionHostRuntime::Node,
             None,
             None,
+            crate::extension_host::bundle_sha256(),
         );
         let Some(runtime) = runtime.selected else {
             assert_ne!(

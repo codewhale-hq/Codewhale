@@ -30,15 +30,15 @@ pub fn snapshot_dir_for(workspace: &Path) -> io::Result<PathBuf> {
 
 /// The shared snapshot store. An unsealed test gets a private one: a snapshot
 /// repo opened by a fixture must not land in the developer's real store.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn snapshot_state_base() -> io::Result<PathBuf> {
-    match crate::test_support::unsealed_state_dir("snapshots") {
+    match codewhale_runtime::test_support::unsealed_state_dir("snapshots") {
         Some(base) => Ok(base),
         None => codewhale_config::resolve_state_dir("snapshots").map_err(io::Error::other),
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn snapshot_state_base() -> io::Result<PathBuf> {
     codewhale_config::resolve_state_dir("snapshots").map_err(io::Error::other)
 }
@@ -68,7 +68,7 @@ pub fn ensure_snapshot_dir(workspace: &Path) -> io::Result<PathBuf> {
 /// Strip a trailing `.worktrees/<name>` segment so all worktrees of the
 /// same checkout share a `project_hash`. If the path doesn't look like a
 /// worktree it's returned unchanged.
-pub(crate) fn strip_worktree_suffix(path: &Path) -> PathBuf {
+pub fn strip_worktree_suffix(path: &Path) -> PathBuf {
     let mut components: Vec<_> = path.components().collect();
     if components.len() >= 2
         && let Some(parent) = components.get(components.len() - 2)
@@ -87,10 +87,10 @@ pub(crate) fn strip_worktree_suffix(path: &Path) -> PathBuf {
 /// Hex-encoded deterministic FNV-1a digest. This is only a directory tag, not
 /// a security boundary, but it must remain stable across process launches.
 ///
-/// `pub(crate)` because the workspace drive lease derives its own file layout
+/// `pub` because the workspace drive lease derives its own file layout
 /// from the same project/worktree split (`workspace_lease::WorkspaceDriveLease::lease_path`),
 /// and two copies of this hash would be two things to keep in step.
-pub(crate) fn stable_hex(path: &Path) -> String {
+pub fn stable_hex(path: &Path) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in path.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
@@ -141,10 +141,11 @@ mod tests {
 
     #[test]
     fn explicit_profile_owns_snapshot_creation_and_lookup() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_runtime::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let profile = tmp.path().join("selected-profile");
-        let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &profile);
+        let _profile =
+            codewhale_runtime::test_support::EnvVarGuard::set("CODEWHALE_HOME", &profile);
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let expected = snapshot_dir_with_base(&workspace, &profile.join("snapshots"));
@@ -163,9 +164,10 @@ mod tests {
 
     #[test]
     fn invalid_profile_is_an_error_without_ambient_fallback() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_runtime::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
-        let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative-profile");
+        let _profile =
+            codewhale_runtime::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative-profile");
         assert!(snapshot_dir_for(tmp.path()).is_err());
         assert!(snapshot_git_dir(tmp.path()).is_err());
         assert!(ensure_snapshot_dir(tmp.path()).is_err());

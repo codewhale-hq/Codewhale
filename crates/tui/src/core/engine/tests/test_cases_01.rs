@@ -961,7 +961,7 @@ fn snapshot_notice_precedes_first_provider_call_and_is_owned_by_session() {
 #[test]
 fn recorded_snapshot_receipts_bracket_the_turn_and_its_file_writes() {
     use crate::llm_client::mock::{MockLlmClient, canned};
-    use crate::snapshot::WorkspaceSnapshotKind;
+    use codewhale_snapshot::WorkspaceSnapshotKind;
     let _env = lock_test_env();
     let root = tempdir().unwrap();
     let _home = EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1086,7 +1086,7 @@ fn recorded_snapshot_receipts_bracket_the_turn_and_its_file_writes() {
             Some(&["out.md".to_string()][..])
         );
 
-        let repo = crate::snapshot::SnapshotRepo::open_existing(&workspace)
+        let repo = codewhale_snapshot::SnapshotRepo::open_existing(&workspace)
             .unwrap()
             .expect("snapshot repo");
         let listed = repo.list(usize::MAX).unwrap();
@@ -1097,8 +1097,8 @@ fn recorded_snapshot_receipts_bracket_the_turn_and_its_file_writes() {
         );
         let delta = repo
             .diff_snapshots(
-                &crate::snapshot::SnapshotId::parse(&receipts[0].tree_id).unwrap(),
-                &crate::snapshot::SnapshotId::parse(&receipts[3].tree_id).unwrap(),
+                &codewhale_snapshot::SnapshotId::parse(&receipts[0].tree_id).unwrap(),
+                &codewhale_snapshot::SnapshotId::parse(&receipts[3].tree_id).unwrap(),
                 100,
             )
             .unwrap();

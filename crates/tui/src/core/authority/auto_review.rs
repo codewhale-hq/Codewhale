@@ -988,7 +988,7 @@ fn file_write_delete_paths(
 /// silently allowed.
 fn paths_git_cannot_restore(workspace: &std::path::Path, paths: &[String]) -> Vec<String> {
     let run = |args: &[&str]| -> Option<bool> {
-        let mut command = crate::dependencies::Git::review_command(workspace).ok()?;
+        let mut command = codewhale_dependencies::Git::review_command(workspace).ok()?;
         // Paths are file names, never patterns: `notes[1].txt` must not match
         // a tracked `notes1.txt`, nor `:(glob)*` every tracked file.
         command
@@ -2022,7 +2022,7 @@ fn strictly_inside(workspace: Option<&std::path::Path>, target: &str) -> bool {
         return false;
     };
     if target.contains(['*', '?', '[', ']', '{', '}', '~', '$'])
-        || crate::snapshot::repo::unsafe_workspace_snapshot_reason(
+        || codewhale_snapshot::repo::unsafe_workspace_snapshot_reason(
             &workspace
                 .canonicalize()
                 .unwrap_or_else(|_| workspace.to_path_buf()),

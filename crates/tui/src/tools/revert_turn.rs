@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use crate::snapshot::SnapshotRepo;
+use codewhale_snapshot::SnapshotRepo;
 
 /// Default offset: revert the most-recent turn (i.e. the last `pre-turn:*`
 /// snapshot in history).

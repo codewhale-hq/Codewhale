@@ -152,7 +152,7 @@ mod tests {
         );
         inside(
             "snapshots",
-            &crate::snapshot::snapshot_dir_for(Path::new("/nonexistent/codewhale-fence-probe"))
+            &codewhale_snapshot::snapshot_dir_for(Path::new("/nonexistent/codewhale-fence-probe"))
                 .expect("snapshot dir"),
         );
         let audit = codewhale_runtime::audit::audit_log_path().expect("audit log path");

@@ -952,6 +952,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         .max_subagents
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
     EngineConfig {
+        user_input_responder: true,
         session_checkpoint_backend: Some(crate::core::events::SessionCheckpointProjection::Exact),
         model: app.model.clone(),
         active_route_limits: app.active_route_limits,
@@ -1031,7 +1032,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         // The TUI records no snapshot receipts; its post-turn snapshot stays
         // off the input path (#234).
         record_restore_points: false,
-        lsp_config: config.lsp.clone().map(crate::lsp::LspConfig::from),
+        lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
         fleet_roster: std::sync::Arc::new(crate::fleet::identity::load_effective_roster(
@@ -1075,7 +1076,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         reasoning_only_reprompt_message: Some(config.reasoning_only_reprompt_message().to_string()),
         locale_tag: app.ui_locale.tag().to_string(),
         workshop: {
-            crate::tools::large_output_router::install_active_workshop(config.workshop.as_ref());
+            codewhale_runtime::active_workshop::install_active_workshop(config.workshop.as_ref());
             config.workshop.clone()
         },
         search_provider: config.search_provider(),

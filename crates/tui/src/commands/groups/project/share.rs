@@ -23,8 +23,8 @@ use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 
 use crate::commands::CommandResult;
 use crate::commands::groups::session::export::render_conversation;
-use crate::dependencies::ExternalTool;
 use crate::tui::app::AppAction;
+use codewhale_dependencies::ExternalTool;
 
 const VISIBILITY_NOTE: &str =
     "a secret GitHub gist (unlisted, not private: anyone with the link can read it)";
@@ -253,7 +253,7 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
 /// Upload a file as a secret GitHub gist using the `gh` CLI. `gh gist
 /// create` makes secret gists unless `--public` is passed; it never is here.
 fn upload_gist(path: &Path) -> Result<String, String> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codewhale_dependencies::Gh::command()
         .ok_or_else(|| "the `gh` CLI was not found".to_string())?;
     let output = cmd
         .args(gist_create_args(path))

@@ -183,7 +183,7 @@
   "crates/tui/src/delivery_files.rs": {
     "path_canonicalize": 2
   },
-  "crates/tui/src/dependencies.rs": {
+  "crates/dependencies/src/lib.rs": {
     "std_fs": 2
   },
   "crates/tui/src/doctor_fix.rs": {
@@ -301,10 +301,10 @@
   "crates/tui/src/remote_setup/bundle.rs": {
     "std_fs": 2
   },
-  "crates/tui/src/repl/runtime.rs": {
+  "crates/repl/src/runtime.rs": {
     "std_fs": 1
   },
-  "crates/tui/src/rlm/session.rs": {
+  "crates/repl/src/lib.rs": {
     "std_fs": 2
   },
   "crates/tui/src/runtime_api.rs": {
@@ -340,11 +340,11 @@
   "crates/tui/src/session_secret_scrub.rs": {
     "std_fs": 8
   },
-  "crates/tui/src/snapshot/paths.rs": {
+  "crates/snapshot/src/paths.rs": {
     "path_canonicalize": 1,
     "std_fs": 1
   },
-  "crates/tui/src/snapshot/repo.rs": {
+  "crates/snapshot/src/repo.rs": {
     "path_canonicalize": 4,
     "std_fs": 18,
     "thread_sleep": 1

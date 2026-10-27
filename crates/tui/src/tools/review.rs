@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::client::CodewhaleClient;
 #[cfg(test)]
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 use codewhale_models::Usage;
 use codewhale_util::utils::truncate_with_ellipsis;
 
@@ -1932,7 +1932,7 @@ async fn resolve_diff_target(
     };
 
     let mut args = vec!["diff".to_string()];
-    args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+    args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
     if staged {
         args.push("--cached".to_string());
         if let Some(base_commit) = base_commit {
@@ -1988,7 +1988,7 @@ async fn run_review_git(
 ) -> Result<std::process::Output, ToolError> {
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let mut cmd = crate::dependencies::Git::review_command(&workspace)
+        let mut cmd = codewhale_dependencies::Git::review_command(&workspace)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         cmd.args(args).output().map_err(|e| {
             ToolError::execution_failed(format!("Failed to {operation} with git: {e}"))
@@ -2965,7 +2965,7 @@ mod tests {
     }
 
     fn fixture_git(workspace: &Path, args: &[&str]) -> std::process::Output {
-        let mut command = crate::dependencies::Git::command().expect("git test dependency");
+        let mut command = codewhale_dependencies::Git::command().expect("git test dependency");
         let output = command
             .args(args)
             .current_dir(workspace)

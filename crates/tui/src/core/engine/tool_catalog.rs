@@ -27,7 +27,7 @@ use codewhale_execpolicy::tool_rules::{tool_denied, tool_matches_any_rule};
 use codewhale_models::Tool;
 
 use crate::core::session::ToolActivationCache;
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 use codewhale_runtime::features::{Feature, Features};
 use codewhale_runtime::regex_cache::compile_user_regex;
 pub(crate) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
@@ -302,11 +302,11 @@ pub(crate) fn ensure_advanced_tooling(
     // `python3` isn't on PATH — the model treated the tool as reliable
     // once it appeared in the catalog. We now probe at catalog-build
     // time and only advertise when an interpreter resolves. See
-    // `crate::dependencies::resolve_python_interpreter` for the probe.
+    // `codewhale_dependencies::resolve_python_interpreter` for the probe.
     if mode != AppMode::Plan
         && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)
-        && crate::dependencies::host_tool_available(CODE_EXECUTION_TOOL_NAME, || {
-            crate::dependencies::resolve_python_interpreter().is_some()
+        && codewhale_dependencies::host_tool_available(CODE_EXECUTION_TOOL_NAME, || {
+            codewhale_dependencies::resolve_python_interpreter().is_some()
         })
     {
         catalog.push(Tool {
@@ -347,8 +347,8 @@ pub(crate) fn ensure_advanced_tooling(
     // the tool only when `resolve_node()` succeeds.
     if mode != AppMode::Plan
         && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
-        && crate::dependencies::host_tool_available(JS_EXECUTION_TOOL_NAME, || {
-            crate::dependencies::resolve_node().is_some()
+        && codewhale_dependencies::host_tool_available(JS_EXECUTION_TOOL_NAME, || {
+            codewhale_dependencies::resolve_node().is_some()
         })
     {
         let mut tool = crate::tools::js_execution::js_execution_tool_definition();
@@ -761,7 +761,7 @@ pub(crate) fn measure_deferred_tools(
                 .filter(|name| {
                     wire.omitted_tool_names
                         .iter()
-                        .any(|omitted| crate::client::from_api_tool_name(omitted) == **name)
+                        .any(|omitted| crate::client::wire::from_api_tool_name(omitted) == **name)
                 })
                 .cloned()
                 .collect()
@@ -1652,10 +1652,10 @@ pub(super) async fn execute_code_execution_tool(
     context: &ToolContext,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
-    let interpreter = crate::dependencies::Python::resolve().ok_or_else(|| {
+    let interpreter = codewhale_dependencies::Python::resolve().ok_or_else(|| {
         ToolError::execution_failed("code_execution: Python interpreter became unavailable")
     })?;
-    let (program, mut args) = crate::dependencies::split_interpreter_spec(&interpreter);
+    let (program, mut args) = codewhale_dependencies::split_interpreter_spec(&interpreter);
     args.push("-".to_string());
     let budget = Duration::from_secs(120);
     let mut cmd =

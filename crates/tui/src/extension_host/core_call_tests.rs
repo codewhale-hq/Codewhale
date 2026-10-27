@@ -57,6 +57,12 @@ fn serve(mut requests: mpsc::Receiver<NestedCallRequest>, server: Arc<Server>) {
         while let Some(request) = requests.recv().await {
             let request = match request {
                 NestedCallRequest::Tool(request) => request,
+                NestedCallRequest::UserQuestion { reply, .. } => {
+                    let _ = reply.send(Err(ToolError::not_available(
+                        "fixture has no user question backend",
+                    )));
+                    continue;
+                }
                 NestedCallRequest::Checkpoint { reply, .. } => {
                     let _ = reply.send(Err(ToolError::not_available(
                         "fixture has no session checkpoint backend",
@@ -798,6 +804,7 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
     let mut f = fixture(true);
     let incomplete = f.begin(7, &f.owner);
     assert!(incomplete.checkpoint_ticket().is_none());
+    assert!(incomplete.question_ticket().is_none());
     drop(incomplete);
     f.context = f
         .context
@@ -812,6 +819,115 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         .with_origin_turn_id("checkpoint-turn");
     let guard = f.begin(7, &f.owner);
     let checkpoint_ticket = guard.checkpoint_ticket().unwrap().to_string();
+    let question_ticket = guard.question_ticket().unwrap().to_string();
+    let questions = vec![crate::tools::user_input::UserInputQuestion {
+        id: "question".into(),
+        question: "Choose or write".into(),
+        header: String::new(),
+        detail: None,
+        intent: None,
+        options: Vec::new(),
+        allow_free_text: false,
+        multi_select: false,
+    }];
+    let (cx, _violations, _cancel) = HostRequestContext::for_test(20);
+    let unavailable = f
+        .manager
+        .shared
+        .core_calls
+        .serve_question(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::UserQuestionParams {
+                owner: f.owner.clone(),
+                ticket: question_ticket.clone(),
+                questions: questions.clone(),
+            },
+            cx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unavailable.code, error_code::NOT_AVAILABLE);
+    assert!(
+        unavailable
+            .message
+            .contains("fixture has no user question backend")
+    );
+    let (wrong_method, _) = f
+        .serve(HostTier::Plugin, 7, &f.owner, &question_ticket)
+        .await;
+    assert!(refused(&wrong_method));
+    for (tier, generation, owner, ticket) in [
+        (
+            HostTier::Plugin,
+            7,
+            f.owner.clone(),
+            guard.ticket().to_string(),
+        ),
+        (
+            HostTier::Plugin,
+            7,
+            f.owner.clone(),
+            checkpoint_ticket.clone(),
+        ),
+        (
+            HostTier::Plugin,
+            7,
+            f.other.clone(),
+            question_ticket.clone(),
+        ),
+        (
+            HostTier::Builtin,
+            7,
+            f.owner.clone(),
+            question_ticket.clone(),
+        ),
+        (
+            HostTier::Plugin,
+            8,
+            f.owner.clone(),
+            question_ticket.clone(),
+        ),
+    ] {
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(21);
+        let result = f
+            .manager
+            .shared
+            .core_calls
+            .serve_question(
+                &f.manager.shared,
+                tier,
+                generation,
+                super::protocol::UserQuestionParams {
+                    owner,
+                    ticket,
+                    questions: questions.clone(),
+                },
+                cx,
+            )
+            .await;
+        assert!(refused(&result), "{result:?}");
+    }
+    let (cx, _violations, _cancel) = HostRequestContext::for_test(22);
+    let malformed = f
+        .manager
+        .shared
+        .core_calls
+        .serve_question(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::UserQuestionParams {
+                owner: f.owner.clone(),
+                ticket: question_ticket.clone(),
+                questions: Vec::new(),
+            },
+            cx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(malformed.code, error_code::INVALID_PARAMS);
     let (cx, _violations, _cancel) = HostRequestContext::for_test(2);
     let unavailable = f
         .manager
@@ -845,6 +961,12 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
             7,
             f.owner.clone(),
             guard.ticket().to_string(),
+        ),
+        (
+            HostTier::Plugin,
+            7,
+            f.owner.clone(),
+            question_ticket.clone(),
         ),
         (
             HostTier::Plugin,
@@ -918,6 +1040,187 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
     assert!(withdraw.is_cancelled());
     assert!(reply.is_closed());
     drop(pending);
+    {
+        let pending = f.begin(7, &f.owner);
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(23);
+        let question = f.manager.shared.core_calls.serve_question(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::UserQuestionParams {
+                owner: f.owner.clone(),
+                ticket: pending.question_ticket().unwrap().to_string(),
+                questions: questions.clone(),
+            },
+            cx,
+        );
+        tokio::pin!(question);
+        let request = tokio::select! {
+            result = &mut question => panic!("question unexpectedly settled: {result:?}"),
+            request = requests.recv() => request.unwrap(),
+        };
+        let NestedCallRequest::UserQuestion {
+            caller,
+            request,
+            withdraw,
+            reply,
+            ..
+        } = request
+        else {
+            panic!("expected typed question")
+        };
+        assert_eq!(caller.session_id, "checkpoint-session");
+        assert_eq!(caller.turn_id, "checkpoint-turn");
+        assert_eq!(caller.workspace, f.context.workspace);
+        assert!(caller.agent_id.is_none());
+        assert!(request.require_typed_answers);
+        assert!(request.questions[0].allow_free_text);
+        assert!(!withdraw.is_cancelled());
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(24);
+        let checkpoint = f.manager.shared.core_calls.serve_checkpoint(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::SessionCheckpointParams {
+                owner: f.owner.clone(),
+                ticket: pending.checkpoint_ticket().unwrap().to_string(),
+            },
+            cx,
+        );
+        tokio::pin!(checkpoint);
+        assert!(tokio::time::timeout(Duration::from_millis(2), async {
+            tokio::select! {
+                result = &mut checkpoint => panic!("checkpoint passed an unanswered question: {result:?}"),
+                request = requests.recv() => panic!("parallel session request: {}", request.is_some()),
+            }
+        }).await.is_err());
+        let response = crate::tools::user_input::UserInputResponse {
+            answers: vec![crate::tools::user_input::UserInputAnswer {
+                kind: Some(crate::tools::user_input::UserInputAnswerKind::Custom),
+                id: "question".into(),
+                label: String::new(),
+                value: "exact, custom Other".into(),
+            }],
+        };
+        request.validate_response(&response).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        reply.send(Ok(response)).unwrap();
+        assert_eq!(question.await.unwrap(), expected);
+        let request = tokio::select! {
+            result = &mut checkpoint => panic!("checkpoint unexpectedly settled: {result:?}"),
+            request = requests.recv() => request.unwrap(),
+        };
+        let NestedCallRequest::Checkpoint { reply, .. } = request else {
+            panic!("expected serialized checkpoint")
+        };
+        reply.send(Ok(true)).unwrap();
+        assert_eq!(checkpoint.await.unwrap(), Value::Bool(true));
+    }
+    for (error, expected_code, expected_data) in [
+        (
+            ToolError::not_available("backend closed"),
+            error_code::NOT_AVAILABLE,
+            None,
+        ),
+        (
+            ToolError::execution_failed_with_metadata(
+                "no responder",
+                json!({"user_question_error": "NO_PROVIDER", "internal": "not forwarded"}),
+            ),
+            error_code::NOT_AVAILABLE,
+            Some(json!({"user_question_error": "NO_PROVIDER"})),
+        ),
+        (
+            ToolError::execution_failed_with_metadata(
+                "other failure",
+                json!({"user_question_error": "OTHER"}),
+            ),
+            error_code::NOT_AVAILABLE,
+            None,
+        ),
+        (
+            ToolError::execution_failed_with_metadata(
+                "human cancelled",
+                json!({"user_question_error": "ASK_CANCELLED", "internal": "not forwarded"}),
+            ),
+            error_code::CANCELLED,
+            Some(json!({"user_question_error": "ASK_CANCELLED"})),
+        ),
+        (
+            ToolError::cancelled("human cancelled"),
+            error_code::CANCELLED,
+            None,
+        ),
+    ] {
+        let pending = f.begin(7, &f.owner);
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(26);
+        let question = f.manager.shared.core_calls.serve_question(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::UserQuestionParams {
+                owner: f.owner.clone(),
+                ticket: pending.question_ticket().unwrap().to_string(),
+                questions: questions.clone(),
+            },
+            cx,
+        );
+        tokio::pin!(question);
+        let request = tokio::select! {
+            result = &mut question => panic!("question unexpectedly settled: {result:?}"),
+            request = requests.recv() => request.unwrap(),
+        };
+        let NestedCallRequest::UserQuestion { reply, .. } = request else {
+            panic!("expected typed question")
+        };
+        reply.send(Err(error)).unwrap();
+        let result = question.await.unwrap_err();
+        assert_eq!(result.code, expected_code);
+        assert_eq!(result.data, expected_data);
+    }
+    for cancellation in ["host", "invocation", "revocation"] {
+        let mut pending = Some(f.begin(7, &f.owner));
+        let ticket = pending
+            .as_ref()
+            .unwrap()
+            .question_ticket()
+            .unwrap()
+            .to_string();
+        let (cx, _violations, cancel) = HostRequestContext::for_test(25);
+        let question = f.manager.shared.core_calls.serve_question(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::UserQuestionParams {
+                owner: f.owner.clone(),
+                ticket,
+                questions: questions.clone(),
+            },
+            cx,
+        );
+        tokio::pin!(question);
+        let request = tokio::select! {
+            result = &mut question => panic!("question unexpectedly settled: {result:?}"),
+            request = requests.recv() => request.unwrap(),
+        };
+        match cancellation {
+            "host" => cancel.cancel(),
+            "invocation" => drop(pending.take()),
+            "revocation" => f.manager.shared.core_calls.revoke_host(HostTier::Plugin, 7),
+            _ => unreachable!(),
+        }
+        assert_eq!(question.await.unwrap_err().code, error_code::CANCELLED);
+        let NestedCallRequest::UserQuestion {
+            withdraw, reply, ..
+        } = request
+        else {
+            panic!("expected typed question")
+        };
+        assert!(withdraw.is_cancelled());
+        assert!(reply.is_closed());
+        drop(pending);
+    }
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
     let mut child_context = f.context.clone();
     child_context.execution.owner_agent_id = Some("child".into());
     let child = f
@@ -935,7 +1238,11 @@ async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() 
         )
         .unwrap();
     assert!(child.checkpoint_ticket().is_none());
+    assert!(child.question_ticket().is_none());
     drop(child);
+    drop(guard);
+    let guard = f.begin(7, &f.owner);
+    let checkpoint_ticket = guard.checkpoint_ticket().unwrap().to_string();
     // The owner is replaced by a new activation: its token changes, so the
     // old one the host still holds no longer names the current owner.
     let ticket = guard.ticket().to_string();

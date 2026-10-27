@@ -632,7 +632,7 @@ pub(crate) async fn run_exec_agent(
             execution_config
                 .lsp
                 .clone()
-                .map(crate::lsp::LspConfig::from)
+                .map(codewhale_lsp::LspConfig::from)
         })
         .flatten();
     let mut engine_features = execution_config.features();
@@ -814,7 +814,7 @@ pub(crate) async fn run_exec_agent(
             .tag()
             .to_string(),
         workshop: {
-            crate::tools::large_output_router::install_active_workshop(config.workshop.as_ref());
+            codewhale_runtime::active_workshop::install_active_workshop(config.workshop.as_ref());
             config.workshop.clone()
         },
         search_provider: execution_config.search_provider(),
@@ -836,6 +836,7 @@ pub(crate) async fn run_exec_agent(
             &execution_config,
         ),
         user_input_timeout: execution_config.user_input_timeout(),
+        user_input_responder: false,
         goal_max_steps: None,
         tools: if fleet_authority_active {
             None

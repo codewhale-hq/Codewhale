@@ -417,7 +417,7 @@ async fn evaluate(
                         .is_some_and(|u| u.complete && (u.input_tokens > 0 || u.output_tokens > 0)),
                     shadow: true,
                     valid_answers: response.answers_validated != Some(false),
-                    evidence: crate::model_routing::AutoRouteDecisionEvidence {
+                    evidence: codewhale_models::auto_route_evidence::AutoRouteDecisionEvidence {
                         choice: intent
                             .as_ref()
                             .map_or_else(|| "invalid".to_string(), |v| v.choice.clone()),

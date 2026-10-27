@@ -158,7 +158,7 @@ fn legacy_journal(history: &LegacyThreadHistory) -> Result<SessionJournal> {
         entries.push(SessionEntry {
             id: id(row.id),
             parent_id: row.parent_entry_id.map(id),
-            kind: SessionEntryKind::Message { message },
+            kind: std::sync::Arc::new(SessionEntryKind::Message { message }),
             created_at: DateTime::<Utc>::from_timestamp(row.created_at, 0)
                 .ok_or_else(|| anyhow!("invalid legacy history timestamp"))?,
             spawn_depth: 0,

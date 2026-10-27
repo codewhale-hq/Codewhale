@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::install::{
+use crate::install::{
     DEFAULT_MAX_SIZE_BYTES, INSTALLED_FROM_MARKER, TRUSTED_MARKER, is_reserved_root_metadata,
 };
 

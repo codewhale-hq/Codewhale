@@ -29,13 +29,13 @@ impl Engine {
         // fence is not a way around that: it runs only when the tool is
         // on this turn's surface, and only after the same approval.
         let repl_fence_present = has_sendable_assistant_content
-            && crate::repl::sandbox::has_repl_block(current_text_visible);
+            && codewhale_repl::sandbox::has_repl_block(current_text_visible);
         let repl_fence_offered =
             code_execution_offered(progress.mode, &progress.tool_catalog, tool_policy);
         let mut repl_fence_skip_reason = (repl_fence_present && !repl_fence_offered)
             .then(|| "code execution is not available on this turn".to_string());
         let repl_blocks = if repl_fence_present && repl_fence_offered {
-            crate::repl::sandbox::extract_repl_blocks(current_text_visible)
+            codewhale_repl::sandbox::extract_repl_blocks(current_text_visible)
         } else {
             Vec::new()
         };
@@ -91,7 +91,7 @@ impl Engine {
                         Err("REPL startup cancelled".into())
                     }
                     () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL startup".into()),
-                    result = crate::repl::runtime::PythonRuntime::new() => result,
+                    result = codewhale_repl::runtime::PythonRuntime::new() => result,
                 };
                 self.repl_kernel = match startup {
                     Ok(runtime) => Some(runtime),

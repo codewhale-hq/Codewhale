@@ -15,7 +15,7 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 mod acp_server;
 pub mod agent_roster;
@@ -35,9 +35,9 @@ mod conformance;
 mod context_report;
 mod core;
 mod cost_status;
+mod usage_persistence;
 /// Guarded installation I/O reusing Engine's confined file primitives.
 pub mod delivery_files;
-mod dependencies;
 mod doctor;
 mod doctor_fix;
 mod error_taxonomy;
@@ -52,7 +52,6 @@ mod image_attach;
 mod integrations;
 mod llm_client;
 mod local_ollama;
-mod lsp;
 mod mcp;
 mod mcp_server;
 mod model_inventory;
@@ -76,7 +75,6 @@ pub mod reasoning_preference;
 mod receipts;
 mod remote_control;
 mod remote_setup;
-pub mod repl;
 mod repo_law;
 mod request_manifest;
 mod request_tuning;
@@ -111,7 +109,6 @@ mod session_reconcile;
 mod session_resume;
 mod session_secret_scrub;
 mod skills;
-mod snapshot;
 mod superfast;
 mod task_manager;
 mod telemetry_notice;
@@ -5835,7 +5832,7 @@ async fn run_doctor(
     println!();
     println!("{}", "Tool Dependencies:".bold());
 
-    match crate::dependencies::resolve_python_interpreter() {
+    match codewhale_dependencies::resolve_python_interpreter() {
         Some(name) => println!(
             "  {} Python: {} → code_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -5845,7 +5842,7 @@ async fn run_doctor(
             println!(
                 "  {} Python: not found (tried {:?})",
                 "✗".truecolor(red_r, red_g, red_b),
-                crate::dependencies::PYTHON_CANDIDATES,
+                codewhale_dependencies::PYTHON_CANDIDATES,
             );
             println!("    code_execution tool is NOT advertised to the model on this install.");
             println!("    Install Python 3 and ensure one of those names is on PATH:");
@@ -5864,7 +5861,7 @@ async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_node() {
+    match codewhale_dependencies::resolve_node() {
         Some(_) => println!(
             "  {} Node.js: present → js_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -5911,10 +5908,11 @@ async fn run_doctor(
             crate::extension_host::tier::HostTier::Plugin
         };
         let resolution = tokio::task::spawn_blocking(move || {
-            let resolution = crate::dependencies::resolve_extension_host_runtime(
+            let resolution = codewhale_dependencies::resolve_extension_host_runtime(
                 options.runtime,
                 options.node_override.as_deref(),
                 options.bun_override.as_deref(),
+                crate::extension_host::bundle_sha256(),
             );
             let sandbox = resolution
                 .selected
@@ -5974,7 +5972,7 @@ async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_pandoc() {
+    match codewhale_dependencies::resolve_pandoc() {
         Some(_) => println!(
             "  {} pandoc: present → pandoc_convert tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -5997,7 +5995,7 @@ async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_tesseract() {
+    match codewhale_dependencies::resolve_tesseract() {
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(
@@ -6042,7 +6040,7 @@ async fn run_doctor(
     // PDF text extraction is an optional integration. Codewhale itself stays
     // a single required executable; file and web tools report a typed
     // failed `binary_unavailable` result when Poppler is not installed.
-    match crate::dependencies::resolve_pdftotext() {
+    match codewhale_dependencies::resolve_pdftotext() {
         Some(_) => println!(
             "  {} pdftotext: available → PDF text extraction enabled",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -9211,10 +9209,10 @@ fn rustc_version() -> String {
     // `RustC::available()` resolves the tool once, capturing the `--version`
     // banner as a side effect of the probe; reuse it instead of launching a
     // second rustc process (each launch loads libLLVM).
-    if !crate::dependencies::RustC::available() {
+    if !codewhale_dependencies::RustC::available() {
         return "not installed (only needed to build from source)".to_string();
     }
-    crate::dependencies::rustc_version_banner().unwrap_or_else(|| "unknown".to_string())
+    codewhale_dependencies::rustc_version_banner().unwrap_or_else(|| "unknown".to_string())
 }
 
 /// List saved sessions
@@ -10030,8 +10028,11 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        manager.promote_interrupted_checkpoint(&id);
+        let stale_checkpoint = manager.promote_interrupted_checkpoint(&id);
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
+        if stale_checkpoint {
+            let _ = manager.clear_session_checkpoint(&id);
+        }
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
         // that snapshot to a different saved project. Match the same physical/
@@ -11218,7 +11219,7 @@ fn run_gh_pr_diff(number: u32, repo: Option<&str>, view: &GhPullRequest) -> Resu
 }
 
 fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codewhale_dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
     if let Some(r) = repo {
@@ -11238,7 +11239,7 @@ fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
 /// belongs to. `gh api` needs an explicit repository path, unlike `gh pr`
 /// which infers it from the working directory.
 fn run_gh_repo_name() -> Result<String> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codewhale_dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("repo")
         .arg("view")
@@ -11636,7 +11637,7 @@ fn run_gh_post_pr_review(
     if !comments.is_empty() {
         payload["comments"] = serde_json::json!(comments);
     }
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codewhale_dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("api")
         .arg("--method")
@@ -11776,11 +11777,11 @@ fn collect_diff(
             pr_view.context("PR snapshot is required")?,
         )?
     } else {
-        let mut cmd = crate::dependencies::Git::review_command(workspace)?;
+        let mut cmd = codewhale_dependencies::Git::review_command(workspace)?;
         // Review repository content without executing its diff drivers.
         cmd.current_dir(workspace)
             .arg("diff")
-            .args(crate::dependencies::Git::REVIEW_DIFF_ARGS);
+            .args(codewhale_dependencies::Git::REVIEW_DIFF_ARGS);
         if args.staged {
             cmd.arg("--cached");
         }
@@ -11814,7 +11815,7 @@ fn collect_base_commit_messages(
     path: Option<&std::path::Path>,
     workspace: &std::path::Path,
 ) -> Result<String> {
-    let mut cmd = crate::dependencies::Git::review_command(workspace)?;
+    let mut cmd = codewhale_dependencies::Git::review_command(workspace)?;
     cmd.current_dir(workspace)
         .args([
             "log",
@@ -11854,7 +11855,7 @@ fn collect_base_commit_messages(
 /// becomes that one line; any other failure (dubious ownership, permissions,
 /// a corrupt repository) keeps git's stderr, which names the fix.
 fn ensure_review_workspace_is_git_repo(workspace: &std::path::Path) -> Result<()> {
-    let output = crate::dependencies::Git::review_command(workspace)?
+    let output = codewhale_dependencies::Git::review_command(workspace)?
         .current_dir(workspace)
         .args(["rev-parse", "--is-inside-work-tree"])
         .output()
@@ -11935,7 +11936,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     tmp.write_all(patch.as_bytes())?;
     let tmp_path = tmp.path().to_path_buf();
 
-    let output = crate::dependencies::Git::command()
+    let output = codewhale_dependencies::Git::command()
         .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?
         .arg("apply")
         .arg("--whitespace=nowarn")

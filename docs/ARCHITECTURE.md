@@ -13,6 +13,8 @@ boundary has held since v0.9.1):
 - `crates/net` owns network policy/auditing, destination and DNS guards, proxy resolution, and Claude import planning. Host tool context, transport grants, redirects and response limits stay with their callers. Pure extension-host settings belong to `crates/config`.
 - `crates/notify` owns shared notification payload redaction, attention/category gates, sound policy, and local audio dispatch. TUI retains terminal sinks and native hosts retain banner submission.
 - `crates/util` owns shared string/path/atomic-write helpers, confined workspace file access, link and file-identity checks, bundle file readers, the `.git` name rule and the exclusive file lock.
+- `crates/dependencies` owns external-tool resolution and bounded subprocess probes (git, python, node, bun); `crates/snapshot` the pre/post-turn side-repo snapshots; `crates/lsp` the language-server client; `crates/repl` the Python REPL runtime and RLM context files.
+- `crates/skill-install` owns the community-skill installer (GitHub and tarball sources, the curated registry, bounded extraction, install and trust markers), the package content digest and the shared `SKILL.md` frontmatter reader. Its SSRF DNS pin and shortened timeouts are relaxed only under its dev-dependency-only `test-support` feature.
 
 <img src="assets/architecture.webp" alt="Codewhale architecture: clients reach the one turn loop, Engine::run_turn, through the CLI or the Runtime API; the engine uses crates/core to build requests, runs tools under approval and sandbox policy, routes to any provider through crates/config, and logs everything model-visible to the session store." width="1000">
 
@@ -26,7 +28,7 @@ rather than a traced write path.
   TUI views and hosts, in the order `docs/design/TUI_DECONSTRUCTION.md`
   records. The TUI stays the only crate that writes to the terminal. Until a
   module has moved, its path under `crates/tui/src` is still where it lives.
-- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's
+- The LSP subsystem (`crates/lsp/src/`) is fully wired into the engine's
   post-tool-execution path (`core/engine/lsp_hooks.rs`), providing inline
   diagnostics after `File` write, edit, and patch actions.
 - The swarm agent system was removed in v0.8.5. The active sub-agent surface is
@@ -282,7 +284,7 @@ drives turns through Chat Completions.
 ### Extension Systems
 
 - **`mcp.rs`** - Model Context Protocol client for external tool servers
-- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus install and audit
+- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus audit and mutation (the installer lives in `crates/skill-install`)
 - **`hooks.rs`** - Pre/post execution hooks with conditions
 
 ### User Interface

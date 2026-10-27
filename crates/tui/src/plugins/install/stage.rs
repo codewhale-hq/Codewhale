@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::plugins::manifest::PluginManifest;
-use crate::skills::install::validate_skill_name_segment;
+use codewhale_skill_install::install::{INSTALLED_FROM_MARKER, validate_skill_name_segment};
 
-use super::{INSTALLED_FROM_MARKER, PluginInstallError};
+use super::PluginInstallError;
 
 /// File count cap for local copies, mirroring the registry staging budget.
 const MAX_BUNDLE_FILES: usize = 4_096;

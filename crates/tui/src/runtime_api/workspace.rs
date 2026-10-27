@@ -8,7 +8,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::dependencies::Git;
+use codewhale_dependencies::Git;
 use codewhale_util::git_metadata::is_git_metadata_name;
 
 use super::{ApiError, RuntimeApiState};
@@ -1025,7 +1025,7 @@ pub(super) async fn workspace_instructions(
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::dependencies::ExternalTool as _;
+    use codewhale_dependencies::ExternalTool as _;
 
     #[cfg(unix)]
     #[test]

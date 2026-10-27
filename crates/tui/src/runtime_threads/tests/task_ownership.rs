@@ -198,6 +198,7 @@ async fn shutdown_drains_accepted_user_input_receipt_after_caller_disconnects() 
             id: "input_drain".into(),
             turn_id: "turn_drain".into(),
             request: crate::tools::user_input::UserInputRequest {
+                require_typed_answers: false,
                 questions: Vec::new(),
             },
         },

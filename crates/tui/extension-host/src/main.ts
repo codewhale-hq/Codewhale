@@ -13,7 +13,7 @@ import * as schemastery from '@deepseek-ai/schemastery'
 import * as cosmokit from '@deepseek-ai/cosmokit'
 import * as dshUtilValues from '@deepseek-ai/dsh-util-values'
 import * as dshToolsCompat from './dsh/dsh-tools-compat.js'
-import { createUserMessage, SessionId, PERSONA_PREFIX_SECTION } from './dsh/dsh-message-compat.js'
+import { createUserMessage, SessionId, PERSONA_PREFIX_SECTION, HarnessError, UserQuestionError } from './dsh/dsh-message-compat.js'
 import * as dshComposition from './dsh/composition.ts'
 import * as dshLoader from './dsh/upstream/loader/src/index.ts'
 import * as dshInclude from './dsh/upstream/include/src/index.ts'
@@ -83,7 +83,8 @@ installResolveHooks({
   cosmokit: cosmokit as unknown as Record<string, unknown>,
   'dsh-util-values': dshUtilValues as unknown as Record<string, unknown>,
   'dsh-tools': dshToolsCompat as unknown as Record<string, unknown>,
-  'dsh-llm-values': { createUserMessage },
+  'dsh-llm-values': { createUserMessage, HarnessError },
+  'dsh-user-questions-values': { UserQuestionError },
   'dsh-session-values': { SessionId },
   'dsh-system-prompt-values': { PERSONA_PREFIX_SECTION },
   'dsh-composition': dshComposition as unknown as Record<string, unknown>,

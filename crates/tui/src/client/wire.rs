@@ -6,7 +6,8 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use codewhale_models::{ServerToolUsage, Usage};
+use codewhale_models::{ServerToolUsage, SystemPrompt, Usage};
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 pub(crate) fn saturating_u32(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
@@ -296,6 +297,167 @@ impl SseLineDecoder {
     pub(super) fn finish(mut self) -> Result<Option<String>, SseLineError> {
         flush_sse_line(&mut self.buffer)
     }
+}
+
+pub(crate) fn to_api_tool_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else if ch == '-' {
+            out.push_str("--");
+        } else {
+            out.push_str("-x");
+            out.push_str(&format!("{:06X}", ch as u32));
+            out.push('-');
+        }
+    }
+    out
+}
+
+pub(crate) fn from_api_tool_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut iter = name.chars().peekable();
+    while let Some(ch) = iter.next() {
+        if ch != '-' {
+            out.push(ch);
+            continue;
+        }
+        if let Some('-') = iter.peek().copied() {
+            iter.next();
+            out.push('-');
+            continue;
+        }
+        if iter.peek().copied() == Some('x') {
+            iter.next();
+            let mut hex = String::new();
+            for _ in 0..6 {
+                if let Some(h) = iter.next() {
+                    hex.push(h);
+                } else {
+                    break;
+                }
+            }
+            // Only decode if we got exactly 6 hex digits (matching encoder output).
+            // Fewer digits means a truncated/malformed sequence — pass through as-is.
+            if hex.len() == 6
+                && let Ok(code) = u32::from_str_radix(&hex, 16)
+                && let Some(decoded) = std::char::from_u32(code)
+            {
+                if let Some('-') = iter.peek().copied() {
+                    iter.next();
+                }
+                out.push(decoded);
+                continue;
+            }
+            out.push('-');
+            out.push('x');
+            out.push_str(&hex);
+            continue;
+        }
+        out.push('-');
+    }
+
+    // Second pass: decode bare hex escapes (e.g. `x00002E`) that the model
+    // may produce when it mangles the `-x00002E-` delimiter form.  Only
+    // decode when the resulting character is one that `to_api_tool_name`
+    // would have encoded (not alphanumeric, not `_`, not `-`).
+    decode_bare_hex_escapes(&out)
+}
+
+pub(crate) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 1024 * 1024; // 1 MB
+
+pub(crate) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
+
+pub(crate) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
+
+fn buffer_pool() -> &'static StdMutex<Vec<Vec<u8>>> {
+    static POOL: OnceLock<StdMutex<Vec<Vec<u8>>>> = OnceLock::new();
+    POOL.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+pub(crate) fn acquire_stream_buffer() -> Vec<u8> {
+    if let Ok(mut pool) = buffer_pool().lock() {
+        pool.pop().unwrap_or_else(|| Vec::with_capacity(8192))
+    } else {
+        Vec::with_capacity(8192)
+    }
+}
+
+pub(crate) fn release_stream_buffer(mut buf: Vec<u8>) {
+    buf.clear();
+    if buf.capacity() > 256 * 1024 {
+        buf.shrink_to(256 * 1024);
+    }
+    if let Ok(mut pool) = buffer_pool().lock()
+        && pool.len() < 8
+    {
+        pool.push(buf);
+    }
+}
+
+/// Maximum bytes to read from an error response body (64 KB).
+pub(crate) const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
+
+/// Read an error response body with a size limit to prevent unbounded allocation.
+pub(crate) async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+pub(crate) fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
+    match system {
+        Some(SystemPrompt::Text(text)) => Some(text),
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let joined = blocks
+                .into_iter()
+                .map(|b| b.text)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            if joined.trim().is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        }
+        None => None,
+    }
+}
+
+/// Decode bare `x[0-9A-Fa-f]{6}` sequences (optionally followed by `-`)
+/// that survive the standard delimiter-based pass.  This handles cases
+/// where the model strips or replaces the leading `-` of `-x00002E-`.
+fn decode_bare_hex_escapes(input: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"x([0-9A-Fa-f]{6})-?").unwrap());
+
+    let result = re.replace_all(input, |caps: &regex::Captures| {
+        let hex = &caps[1];
+        if let Ok(code) = u32::from_str_radix(hex, 16)
+            && let Some(decoded) = std::char::from_u32(code)
+        {
+            // Only decode characters that to_api_tool_name would have encoded
+            if !decoded.is_ascii_alphanumeric() && decoded != '_' && decoded != '-' {
+                return decoded.to_string();
+            }
+        }
+        // Not a character we'd encode — leave as-is
+        caps[0].to_string()
+    });
+    result.into_owned()
 }
 
 #[cfg(test)]

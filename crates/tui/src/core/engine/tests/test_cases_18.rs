@@ -700,7 +700,7 @@ fn parse_patch_paths_skips_dev_null() {
 
 #[tokio::test]
 async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
-    use crate::lsp::{Diagnostic, Language, Severity};
+    use codewhale_lsp::{Diagnostic, Language, Severity};
     use std::sync::Arc;
 
     let tmp = tempdir().expect("tempdir");
@@ -709,7 +709,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(&target, "let x: i32 = \"not a number\";").unwrap();
 
-    let lsp_config = crate::lsp::LspConfig::default();
+    let lsp_config = codewhale_lsp::LspConfig::default();
     let engine_config = EngineConfig {
         workspace: workspace.clone(),
         lsp_config: Some(lsp_config),
@@ -718,7 +718,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
     let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
 
     // Install a fake transport that always reports a type error.
-    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+    let fake = Arc::new(codewhale_lsp::tests::FakeTransport::new(vec![Diagnostic {
         line: 1,
         column: 14,
         severity: Severity::Error,
@@ -770,7 +770,7 @@ async fn post_edit_hook_is_silent_when_lsp_disabled() {
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(&target, "fn main() {}").unwrap();
 
-    let lsp_config = crate::lsp::LspConfig {
+    let lsp_config = codewhale_lsp::LspConfig {
         enabled: false,
         ..Default::default()
     };
@@ -792,17 +792,17 @@ async fn post_edit_hook_is_silent_when_lsp_disabled() {
 
 #[tokio::test]
 async fn post_edit_hook_skips_unknown_tool_names() {
-    use crate::lsp::{Diagnostic, Language, Severity};
+    use codewhale_lsp::{Diagnostic, Language, Severity};
     use std::sync::Arc;
 
     let tmp = tempdir().expect("tempdir");
     let engine_config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
-        lsp_config: Some(crate::lsp::LspConfig::default()),
+        lsp_config: Some(codewhale_lsp::LspConfig::default()),
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
-    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+    let fake = Arc::new(codewhale_lsp::tests::FakeTransport::new(vec![Diagnostic {
         line: 1,
         column: 1,
         severity: Severity::Error,
@@ -1074,7 +1074,7 @@ async fn mcp_boot_reports_ready_server_before_stalled_server_finishes() {
 
 #[tokio::test]
 async fn first_turn_waits_for_explicit_mcp_schema_without_waiting_for_unrelated_server() {
-    let Some(node) = crate::dependencies::resolve_node() else {
+    let Some(node) = codewhale_dependencies::resolve_node() else {
         return;
     };
     let tmp = tempdir().expect("tempdir");
@@ -1450,7 +1450,7 @@ lines.on('line', async (line) => {
 /// timeout on "it would have started by now".
 #[tokio::test]
 async fn lazy_boot_leaves_unselected_servers_unspawned() {
-    let Some(node) = crate::dependencies::resolve_node() else {
+    let Some(node) = codewhale_dependencies::resolve_node() else {
         return;
     };
     let tmp = tempdir().expect("tempdir");
@@ -1628,7 +1628,7 @@ async fn mcp_search_fixture(
     Arc<crate::llm_client::mock::MockLlmClient>,
 ) {
     let node =
-        crate::dependencies::resolve_node().expect("MCP discovery qualification requires Node");
+        codewhale_dependencies::resolve_node().expect("MCP discovery qualification requires Node");
     let tmp = tempdir().expect("tempdir");
     let server = tmp.path().join("discovery.mjs");
     fs::write(&server, r#"import fs from 'node:fs';

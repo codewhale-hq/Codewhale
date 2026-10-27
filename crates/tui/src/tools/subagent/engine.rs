@@ -64,7 +64,7 @@ impl ChildAccountingProjection {
                     route,
                     reason,
                 ),
-                None => crate::cost_status::report_missing_usage_for_interactive_origin(
+                None => crate::usage_persistence::report_missing_usage_for_interactive_origin(
                     self.origin.cost_scope,
                     &self.origin.session_id,
                     &self.owner,

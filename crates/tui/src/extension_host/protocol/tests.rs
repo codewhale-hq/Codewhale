@@ -8,7 +8,7 @@
 //! under CI, like every conformance golden), then rebuild `dist/`.
 //!
 //! Known limit: a wire shape outside that vocabulary (floats, inline
-//! objects, unions in params) panics here rather than being approximated.
+//! objects, multi-variant unions in params) panics here rather than being approximated.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -50,6 +50,7 @@ fn params_schema(method: &str, generator: &mut SchemaGenerator) -> Schema {
         "registry/unregister" => generator.subschema_for::<UnregisterParams>(),
         "core/call" => generator.subschema_for::<CoreCallParams>(),
         "session/checkpoint" => generator.subschema_for::<SessionCheckpointParams>(),
+        "user-questions/ask" => generator.subschema_for::<UserQuestionParams>(),
         "ext/faulted" => generator.subschema_for::<FaultedParams>(),
         "log" => generator.subschema_for::<LogParams>(),
         other => panic!("method `{other}` has no params type in the TypeScript generator"),
@@ -206,6 +207,10 @@ fn parse_def(name: &str, schema: &Value) -> Def {
             .collect();
         return match consts {
             Some(values) => Def::Enum(values),
+            None if members.len() == 1 => Def::Object {
+                strict: members[0].get("additionalProperties") == Some(&Value::Bool(false)),
+                fields: object_fields(name, &members[0]),
+            },
             None => Def::Union(
                 members
                     .iter()
@@ -263,7 +268,7 @@ fn kind(ty: &Ty, defs: &BTreeMap<String, Def>) -> String {
             ),
             Def::Union(_) => panic!("{name}: the host validator does not check unions"),
         },
-        Ty::Const(value) => panic!("`{value}`: a tag outside a union"),
+        Ty::Const(value) => format!("{{ enum: [{}] }}", quote(value)),
         Ty::Array(item) => format!("{{ items: {} }}", kind(item, defs)),
     }
 }
@@ -358,6 +363,7 @@ fn render() -> String {
     let _ = generator.subschema_for::<ToolResultWire>();
     let _ = generator.subschema_for::<CommandResultWire>();
     let _ = generator.subschema_for::<HookVerdictWire>();
+    let _ = generator.subschema_for::<crate::tools::user_input::UserInputResponse>();
     let defs: BTreeMap<String, Def> = generator
         .definitions()
         .iter()
@@ -497,6 +503,11 @@ const CORE_ONLY: &[&str] = &[
 /// Every method, with why it gives the host no core authority. Adding a
 /// method means adding its row here, in review, with that reason.
 const REVIEWED: &[(&str, &str, &str)] = &[
+    (
+        "host_to_core",
+        "user-questions/ask",
+        "opaque live root-invocation ticket and bounded question data; the existing Engine owns request identity, human wait, typed answer validation and cancellation; no host-selected session, reply, approval or new turn",
+    ),
     (
         "host_to_core",
         "session/checkpoint",
@@ -695,7 +706,7 @@ fn host_protocol_never_gains_core_authority() {
     );
     // Nothing is decoded or sent outside the table: every method-shaped
     // literal in this module is a table row.
-    let literal = regex::Regex::new(r#""([A-Za-z$][\w$]*/[A-Za-z_]+)""#).expect("regex");
+    let literal = regex::Regex::new(r#""([A-Za-z$][\w$-]*/[A-Za-z_]+)""#).expect("regex");
     let source = include_str!("../protocol.rs");
     let mut seen = 0;
     for capture in literal.captures_iter(source) {
@@ -779,6 +790,40 @@ fn a_method_reserved_for_the_builtin_tier_is_refused_in_both_directions() {
 /// plugin tier by accident.
 #[test]
 fn production_methods_follow_their_tier_rows_and_reserved_families_stay_builtin_only() {
+    for count in [0, 1, 100] {
+        let mut questions = json!([{
+            "id": "q", "question": "Choose", "header": "",
+            "options": (0..count).map(|index| json!({"label": format!("choice-{index}"), "description": ""})).collect::<Vec<_>>(),
+            "allow_free_text": true, "multi_select": true,
+        }]);
+        if count > 0 {
+            questions[0]["detail"] = json!("Review this exact plan");
+            questions[0]["intent"] =
+                json!({"kind":"plan-review", "approve":"choice-0", "call_id":"plan-call"});
+        }
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 87, "method": "user-questions/ask",
+            "params": { "owner": {"plugin_id":"question-owner", "owner_token":"opaque", "generation":1}, "ticket":"question-ticket", "questions":questions },
+        });
+        for tier in HostTier::ALL {
+            let parsed = parse_host_message(frame.clone(), tier).unwrap();
+            assert_eq!(parsed.to_value(), frame);
+            let HostMessage::Request {
+                request: HostRequest::UserQuestion(params),
+                ..
+            } = parsed
+            else {
+                panic!("wrong question variant")
+            };
+            assert_eq!(params.questions[0].options.len(), count);
+            assert!(parse_core_message(frame.clone(), tier).is_err());
+            for field in ["session_id", "request_id", "require_typed_answers"] {
+                let mut forged = frame.clone();
+                forged["params"][field] = json!("foreign-selector");
+                assert!(parse_host_message(forged, tier).is_err());
+            }
+        }
+    }
     for spec in METHODS {
         for tier in HostTier::ALL {
             assert_eq!(

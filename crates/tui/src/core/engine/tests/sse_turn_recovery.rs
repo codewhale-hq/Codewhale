@@ -349,6 +349,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
                 Event::ApprovalRequired { .. }
                     | Event::ElevationRequired { .. }
                     | Event::UserInputRequired { .. }
+                    | Event::UserInputClosed { .. }
             ),
             "this regression has no pending approval or user-input gate: {event:?}"
         );

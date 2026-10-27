@@ -1009,6 +1009,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-dependencies"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-config",
+ "codewhale-paths",
+ "codewhale-runtime",
+ "codewhale-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wait-timeout",
+]
+
+[[package]]
 name = "codewhale-execpolicy"
 version = "0.10.2"
 dependencies = [
@@ -1066,6 +1084,24 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "codewhale-lsp"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "codewhale-config",
+ "codewhale-runtime",
+ "codewhale-util",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1227,6 +1263,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-repl"
+version = "0.10.2"
+dependencies = [
+ "codewhale-dependencies",
+ "codewhale-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codewhale-runtime"
 version = "0.10.2"
 dependencies = [
@@ -1334,6 +1382,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-skill-install"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-net",
+ "codewhale-paths",
+ "codewhale-util",
+ "flate2",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-snapshot"
+version = "0.10.2"
+dependencies = [
+ "codewhale-config",
+ "codewhale-dependencies",
+ "codewhale-paths",
+ "codewhale-runtime",
+ "codewhale-util",
+ "fd-lock",
+ "ignore",
+ "libc",
+ "serde",
+ "sha2 0.11.1",
+ "tempfile",
+ "tracing",
+ "wait-timeout",
+]
+
+[[package]]
 name = "codewhale-state"
 version = "0.10.2"
 dependencies = [
@@ -1405,10 +1493,12 @@ dependencies = [
  "codewhale-commands",
  "codewhale-config",
  "codewhale-core",
+ "codewhale-dependencies",
  "codewhale-execpolicy",
  "codewhale-hooks",
  "codewhale-lane",
  "codewhale-localization",
+ "codewhale-lsp",
  "codewhale-mcp",
  "codewhale-memory",
  "codewhale-models",
@@ -1419,10 +1509,13 @@ dependencies = [
  "codewhale-protocol",
  "codewhale-ratatui",
  "codewhale-release",
+ "codewhale-repl",
  "codewhale-runtime",
  "codewhale-sandbox",
  "codewhale-sanitize",
  "codewhale-secrets",
+ "codewhale-skill-install",
+ "codewhale-snapshot",
  "codewhale-telemetry",
  "codewhale-tools",
  "codewhale-util",

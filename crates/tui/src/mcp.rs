@@ -1442,14 +1442,14 @@ fn verify_mcp_skill_file(file: &McpSkillFile, result: &serde_json::Value) -> Res
             .decode(blob)
             .context("MCP skill file blob is not base64")?
     };
-    let digest = sha2::Sha256::digest(&bytes).iter().fold(
-        String::from("sha256:"),
-        |mut out, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(out, "{byte:02x}");
-            out
-        },
-    );
+    let digest =
+        sha2::Sha256::digest(&bytes)
+            .iter()
+            .fold(String::from("sha256:"), |mut out, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(out, "{byte:02x}");
+                out
+            });
     anyhow::ensure!(
         bytes.len() as u64 == file.size && digest == file.digest,
         "MCP skill file '{}' does not match its listed size and digest; it was not loaded",
@@ -4498,7 +4498,9 @@ impl McpPool {
             .iter_mut()
             .filter(|(_, connection)| connection.is_transport_ready())
             .filter_map(|(name, connection)| {
-                connection.catalog_needs_revalidation().then(|| name.clone())
+                connection
+                    .catalog_needs_revalidation()
+                    .then(|| name.clone())
             })
             .collect();
         let mut refreshed = Vec::new();

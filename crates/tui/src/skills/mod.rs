@@ -4,25 +4,13 @@ pub mod audit;
 /// Provider-free contract tests for the bundled starter pack (#4698).
 #[cfg(test)]
 mod catalog_matrix;
-mod frontmatter;
-pub(crate) use frontmatter::parse_frontmatter;
-use frontmatter::{SkillValidationMode, parse_frontmatter_bool, validate_skill_frontmatter};
-pub mod install;
+use codewhale_skill_install::frontmatter::{
+    SkillValidationMode, parse_frontmatter, parse_frontmatter_bool, validate_skill_frontmatter,
+};
 pub mod mutation;
-mod package_digest;
 pub mod recommend;
 pub mod roots;
 mod system;
-// Re-exports kept for documentation parity and downstream consumers; the
-// binary itself imports directly from `skills::install`. `#[allow(...)]`
-// silences the dead-code warning that fires because no `bin` source path
-// references these names through `skills::*`.
-#[allow(unused_imports)]
-pub use install::{
-    DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, INSTALLED_FROM_MARKER, InstallOutcome,
-    InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
-    SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
-};
 #[allow(unused_imports)]
 pub use roots::{
     CompatibleHarness, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId,

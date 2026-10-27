@@ -1903,6 +1903,7 @@ fn load_rules_from_dir(
 
 /// User-owned global instructions may intentionally resolve through links.
 #[cfg(test)]
+#[cfg_attr(windows, expect(dead_code))]
 fn load_global_context_file(path: &Path) -> Result<String, ProjectContextError> {
     load_global_context_file_limited(path, DEFAULT_FILE_MAX_BYTES)
 }

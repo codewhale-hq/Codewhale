@@ -1366,8 +1366,8 @@ pub(crate) async fn handle_skill_mutation_requested(
     app: &mut App,
     request: crate::skills::mutation::SkillMutationRequest,
 ) {
-    use crate::skills::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
     use crate::skills::mutation::{MutationContext, SkillMutationOutcome, SkillMutationRequest};
+    use codewhale_skill_install::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
 
     let focus = match &request {
         SkillMutationRequest::ImportExternal { source_id, .. } => Some(source_id.clone()),

@@ -31,15 +31,16 @@ use codewhale_models::{
 };
 use codewhale_runtime::logging;
 
+use super::CodewhaleClient;
 use super::prepared::WireDialect;
+use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
-use super::wire::{extract_sse_data_value, flush_sse_line, push_sse_event_data, take_sse_line};
-use super::{
-    CodewhaleClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
-    SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer,
-    apply_reasoning_effort, bounded_error_text, from_api_tool_name, parse_usage,
-    release_stream_buffer, system_to_instructions, to_api_tool_name,
+use super::wire::{
+    ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
+    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
+    parse_usage, release_stream_buffer, system_to_instructions, to_api_tool_name,
 };
+use super::wire::{extract_sse_data_value, flush_sse_line, push_sse_event_data, take_sse_line};
 use codewhale_config::route::RouteLimits;
 use codewhale_models::Role;
 

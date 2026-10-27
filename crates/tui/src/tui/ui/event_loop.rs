@@ -347,7 +347,7 @@ impl TranslationAccountingContext {
                 self.origin_session_id.as_deref(),
                 self.origin_turn_id.as_deref(),
             ) {
-                crate::cost_status::report_effective_route_for_interactive_origin(
+                crate::usage_persistence::report_effective_route_for_interactive_origin(
                     self.cost_scope,
                     session_id,
                     turn_id,
@@ -369,7 +369,7 @@ impl TranslationAccountingContext {
                 self.origin_session_id.as_deref(),
                 self.origin_turn_id.as_deref(),
             ) {
-                crate::cost_status::report_unreceipted_for_interactive_origin(
+                crate::usage_persistence::report_unreceipted_for_interactive_origin(
                     self.cost_scope,
                     session_id,
                     turn_id,
@@ -4517,6 +4517,7 @@ pub(crate) async fn run_event_loop(
                     }
                     // Retired by pending_requests before session/idle filters.
                     EngineEvent::ApprovalWithdrawn { .. } => {}
+                    EngineEvent::UserInputClosed { .. } => {}
                     EngineEvent::UserInputRequired { id, request } => {
                         app.pending_user_input_prompt = Some((id.clone(), request.clone()));
                         app.view_stack
@@ -5080,13 +5081,19 @@ pub(crate) async fn run_event_loop(
         let underwater_motion =
             underwater_ambient_motion || underwater_completion_motion || launch_motion;
         let animation_active = status_motion || underwater_motion;
+        let animation_interval = Duration::from_millis(animation_interval_ms(
+            app,
+            status_motion,
+            underwater_motion,
+            cadence_tier,
+        ));
         // #6728: what the loop knows about its own quiet. Anything that
         // wants a prompt reaction moves `last_ui_activity`; the idle poll
         // and the automation scan back off from it.
         let idle_facts = IdleFacts {
             has_running_agents,
-            animation_active,
-            durable_tasks_active,
+            animation_active: animation_active
+                && animation_interval < Duration::from_millis(UI_QUIESCENT_POLL_MS),
             input_pending: !pending_terminal_events.is_empty(),
             pending_engine_op: pending_subagent_list_refresh,
         };
@@ -5112,12 +5119,6 @@ pub(crate) async fn run_event_loop(
                 ),
             ));
         }
-        let animation_interval = Duration::from_millis(animation_interval_ms(
-            app,
-            status_motion,
-            underwater_motion,
-            cadence_tier,
-        ));
         let motion_policy = app.motion_policy();
         if animation_active && last_status_frame.elapsed() >= animation_interval {
             let translation_animated = streaming_thinking::animate_pending_translation(
@@ -5324,20 +5325,23 @@ pub(crate) async fn run_event_loop(
             }
         }
 
-        let mut poll_timeout =
-            if app.is_loading || has_running_agents || app.is_compacting || app.is_purging {
-                Duration::from_millis(active_poll_ms(app))
-            } else {
-                // Relaxes only once the UI has been quiescent and quiet for
-                // `UI_QUIESCENT_AFTER` (#6728); every deadline below still
-                // shortens it, and input returns the loop at once.
-                idle_poll_duration(
-                    app,
-                    &idle_facts,
-                    now,
-                    now.saturating_duration_since(last_ui_activity),
-                )
-            };
+        let mut poll_timeout = if (app.is_loading && !decision_prompt_waiting(app))
+            || has_running_agents
+            || app.is_compacting
+            || app.is_purging
+        {
+            Duration::from_millis(active_poll_ms(app))
+        } else {
+            // Relaxes only once the UI has been quiescent and quiet for
+            // `UI_QUIESCENT_AFTER` (#6728); every deadline below still
+            // shortens it, and input returns the loop at once.
+            idle_poll_duration(
+                app,
+                &idle_facts,
+                now,
+                now.saturating_duration_since(last_ui_activity),
+            )
+        };
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }

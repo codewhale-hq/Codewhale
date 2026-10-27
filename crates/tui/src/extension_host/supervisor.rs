@@ -91,8 +91,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::dependencies::{HostRuntime, HostRuntimeKind};
 use crate::tools::codemode::PauseClock;
+use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
 
 use super::protocol::{
     self, CoreRequest, Direction, HelloParams, HostLimits, HostMessage, HostNotification,
@@ -291,7 +291,7 @@ pub const HOST_MEMORY_CAP: u64 = 1 << 30;
 /// `extension-host/test/harness.mjs` (`HOST_ARGS`).
 ///
 /// - Node: a 256 MB old-space cap, `__proto__` throws, no native addons,
-///   and the [`crate::dependencies::NODE_NATIVE_CODE_FLAGS`] this Node
+///   and the [`codewhale_dependencies::NODE_NATIVE_CODE_FLAGS`] this Node
 ///   accepts (`node:sqlite`, and `node:ffi` where it exists). On Windows it
 ///   also keeps symlinked paths as given, so module resolution never lstats
 ///   the drive root the LPAC cannot read.
@@ -1369,6 +1369,11 @@ pub(crate) fn registry_host_request<E: HostEvents + ?Sized>(
             events.unregister(&params);
             Ok(json!({}))
         }
+        HostRequest::UserQuestion(_) => Err(RpcErrorWire {
+            code: error_code::NOT_AVAILABLE,
+            message: "user-questions/ask is not served here".to_string(),
+            data: None,
+        }),
         HostRequest::SessionCheckpoint(_) => Err(RpcErrorWire {
             code: error_code::REFUSED,
             message: "session/checkpoint is not served here".to_string(),
@@ -1551,6 +1556,7 @@ pub(crate) struct HostProcess {
     /// How the cap is enforced for this process, settled at the handshake.
     memory: Arc<std::sync::OnceLock<MemoryEnforcement>>,
     pub sandbox: HostSandbox,
+    #[cfg_attr(windows, expect(dead_code))]
     native_snapshot_roots: Vec<PathBuf>,
     tree: Arc<codewhale_runtime::process_tree::ProcessTree>,
     #[cfg(windows)]

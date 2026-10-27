@@ -234,10 +234,10 @@ fn read_snapshot_blob(
     snapshot_id: &str,
     path: &str,
 ) -> Result<Option<Vec<u8>>, ApiError> {
-    let Ok(id) = crate::snapshot::SnapshotId::parse(snapshot_id) else {
+    let Ok(id) = codewhale_snapshot::SnapshotId::parse(snapshot_id) else {
         return Ok(None);
     };
-    let Some(repo) = crate::snapshot::SnapshotRepo::open_existing(workspace)
+    let Some(repo) = codewhale_snapshot::SnapshotRepo::open_existing(workspace)
         .map_err(|error| ApiError::internal(format!("snapshot repo unavailable: {error}")))?
     else {
         return Ok(None);
@@ -501,14 +501,14 @@ fn call_span_files(
     limit: usize,
 ) -> Result<CallSpanOutcome, ApiError> {
     let (Ok(pre), Ok(post)) = (
-        crate::snapshot::SnapshotId::parse(pre_tree),
-        crate::snapshot::SnapshotId::parse(post_tree),
+        codewhale_snapshot::SnapshotId::parse(pre_tree),
+        codewhale_snapshot::SnapshotId::parse(post_tree),
     ) else {
         return Err(ApiError::internal(
             "a recorded restore point is not a valid snapshot id",
         ));
     };
-    let Some(repo) = crate::snapshot::SnapshotRepo::open_existing(workspace)
+    let Some(repo) = codewhale_snapshot::SnapshotRepo::open_existing(workspace)
         .map_err(|error| ApiError::internal(format!("snapshot repo unavailable: {error}")))?
     else {
         // No store at all. Its receipts cannot be resolved any more than a
@@ -520,7 +520,7 @@ fn call_span_files(
     // Asked before the diff: git's answer to a pruned object is a failure of
     // the whole command, and a caller has to tell "these were pruned" apart
     // from "this repo is broken".
-    let has_tree = |id: &crate::snapshot::SnapshotId| {
+    let has_tree = |id: &codewhale_snapshot::SnapshotId| {
         repo.has_tree(id)
             .map_err(|error| ApiError::internal(format!("snapshot tree lookup failed: {error}")))
     };

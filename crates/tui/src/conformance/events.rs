@@ -297,7 +297,7 @@ fn run_scripted_turn_with_deadline(
     // Held across the whole turn: the engine builds and refreshes its system
     // prompt on this thread's current-thread runtime.
     let _environment = crate::prompts::pin_recorded_environment(&os, &shell);
-    let _host_tools = crate::dependencies::pin_recorded_host_tools(recorded_host_tools(case));
+    let _host_tools = codewhale_dependencies::pin_recorded_host_tools(recorded_host_tools(case));
     let record = runtime.block_on(async {
         let config = Config::default();
         let engine_config = EngineConfig {

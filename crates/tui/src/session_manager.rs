@@ -1306,7 +1306,7 @@ impl SavedSession {
                     .iter()
                     .filter(|entry| {
                         matches!(
-                            entry.kind,
+                            *entry.kind,
                             codewhale_runtime::session_tree::SessionEntryKind::Message { .. }
                         )
                     })
@@ -3700,10 +3700,11 @@ impl SessionManager {
     /// it while the turn's file edits stayed on disk.
     pub fn attach_session(&self, id: &str) -> std::io::Result<(SessionRecovery, SessionLease)> {
         let lease = self.reserve_session_for_attach(id)?;
-        let recovery = match self.promote_interrupted_checkpoint(id) {
-            Some(kept) => self.persist_resumed_repair(kept),
-            None => self.resume_session(id)?,
-        };
+        let stale_checkpoint = self.promote_interrupted_checkpoint(id);
+        let recovery = self.resume_session(id)?;
+        if stale_checkpoint {
+            let _ = self.clear_session_checkpoint(id);
+        }
         Ok((recovery, lease))
     }
 
@@ -3711,35 +3712,35 @@ impl SessionManager {
     /// checkpoint is the newer of the two (or there is no document yet), then
     /// consume it. Callers hold the session's attach lease. A stale checkpoint
     /// never replaces a newer document; an unreadable document and a failed
-    /// save leave both files as they were.
-    pub(crate) fn promote_interrupted_checkpoint(&self, id: &str) -> Option<SessionRecovery> {
+    /// save leave both files as they were. Only a document about to be
+    /// replaced is read in full; otherwise the comparison reads its metadata.
+    /// Returns true when the checkpoint is stale: it is left for the caller to
+    /// clear once the full document has been read.
+    pub(crate) fn promote_interrupted_checkpoint(&self, id: &str) -> bool {
         let Ok(Some(checkpoint)) = self.load_session_checkpoint(id) else {
-            return None;
+            return false;
         };
-        let kept = match self.recover_session_for_resume(id) {
-            Ok(saved) if saved.session.metadata.updated_at >= checkpoint.metadata.updated_at => {
-                Some(saved)
-            }
+        match self.load_session_metadata_by_id(id) {
+            Ok(saved) if saved.updated_at >= checkpoint.metadata.updated_at => return true,
             Ok(_) => {
+                if self.load_session_snapshot(id).is_err() {
+                    return false;
+                }
                 let mut promoted = checkpoint;
                 self.merge_persisted_lifecycle(&mut promoted.metadata);
                 if self.save_session(&promoted).is_err() {
-                    return None;
+                    return false;
                 }
-                None
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if self.save_session(&checkpoint).is_err() {
-                    return None;
+                    return false;
                 }
-                None
             }
-            // A document that exists but cannot be read is not ours to
-            // replace here; the attach reports it and the checkpoint stays.
-            Err(_) => return None,
-        };
+            Err(_) => return false,
+        }
         let _ = self.clear_session_checkpoint(id);
-        kept
+        false
     }
 
     /// [`Self::attach_session`] with a partial-ID prefix.
@@ -4713,7 +4714,7 @@ fn copy_file_create_new(src: &Path, dst: &Path) -> io::Result<bool> {
 /// Always non-fatal. Returns silently — callers don't need the count
 /// (the underlying repo logs at WARN if anything blew up).
 pub fn prune_workspace_snapshots(workspace: &Path, max_age: std::time::Duration) {
-    match crate::snapshot::prune_older_than(workspace, max_age) {
+    match codewhale_snapshot::prune_older_than(workspace, max_age) {
         Ok(0) => {}
         Ok(n) => {
             tracing::debug!(target: "snapshot", "boot prune removed {n} snapshot(s)");

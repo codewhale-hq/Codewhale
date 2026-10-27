@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::dependencies::{ExternalTool, Git};
 use crate::tools::spec::ToolError;
+use codewhale_dependencies::{ExternalTool, Git};
 
 use codewhale_agent_contract::role::FleetRole;
 

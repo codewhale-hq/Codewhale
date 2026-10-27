@@ -56,7 +56,7 @@ async fn read_file_missing_pdftotext_is_a_failed_typed_outcome() {
 /// no reason. Bytes are now the only bound.
 #[tokio::test]
 async fn contract_read_returns_a_file_of_more_than_two_thousand_short_lines_whole() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let content = (0..5_000)
         .map(|index| format!("line-{index}"))
         .collect::<Vec<_>>()
@@ -110,9 +110,9 @@ fn contract_read_byte_limit_keeps_only_complete_utf8_lines() {
 
 #[test]
 fn read_budget_precedence_is_request_then_workshop_then_default() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
 
-    crate::tools::large_output_router::install_active_workshop(None);
+    codewhale_runtime::active_workshop::install_active_workshop(None);
     assert_eq!(effective_read_max_bytes(None), READ_DEFAULT_MAX_BYTES);
     assert_eq!(effective_read_max_bytes(Some(250_000)), 250_000);
     // Above the model-requestable maximum clamps down instead of erroring.
@@ -123,7 +123,7 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
     // A request below the active baseline leaves the baseline in place.
     assert_eq!(effective_read_max_bytes(Some(10)), READ_DEFAULT_MAX_BYTES);
 
-    crate::tools::large_output_router::install_active_workshop(Some(
+    codewhale_runtime::active_workshop::install_active_workshop(Some(
         &codewhale_config::WorkshopConfig {
             read_result_max_bytes: Some(700_000),
             ..Default::default()
@@ -132,7 +132,7 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
     assert_eq!(effective_read_max_bytes(None), 700_000);
     assert_eq!(effective_read_max_bytes(Some(200_000)), 700_000);
     // The workshop override keeps the 2 MiB absolute ceiling.
-    crate::tools::large_output_router::install_active_workshop(Some(
+    codewhale_runtime::active_workshop::install_active_workshop(Some(
         &codewhale_config::WorkshopConfig {
             read_result_max_bytes: Some(READ_RESULT_ABSOLUTE_MAX_BYTES * 4),
             ..Default::default()
@@ -142,12 +142,12 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
         effective_read_max_bytes(None),
         READ_RESULT_ABSOLUTE_MAX_BYTES
     );
-    crate::tools::large_output_router::install_active_workshop(None);
+    codewhale_runtime::active_workshop::install_active_workshop(None);
 }
 
 #[tokio::test]
 async fn contract_read_max_bytes_raises_the_budget_for_one_call() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
     let line = "y".repeat(199);
     let content = std::iter::repeat_n(line.as_str(), 1_500)
@@ -187,7 +187,7 @@ async fn contract_read_max_bytes_raises_the_budget_for_one_call() {
 
 #[tokio::test]
 async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
     // 999-byte lines: 100 of them plus their 99 separators are 99 999 bytes,
     // one under the 100 000-byte budget, so page one is exactly lines 1-100.
@@ -235,7 +235,7 @@ async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer(
 /// file.
 #[tokio::test]
 async fn contract_read_reports_size_and_truncation_for_huge_files() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
     let line = "x".repeat(99);
     let content = std::iter::repeat_n(line.as_str(), 110_000)
@@ -280,7 +280,7 @@ async fn contract_read_reports_size_and_truncation_for_huge_files() {
 /// terminates with an untruncated page whose union is the whole file.
 #[tokio::test]
 async fn contract_read_pages_stay_bounded_and_cover_the_whole_file() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
     let content = (0..3_000)
         .map(|index| format!("paged-line-{index:05}"))
@@ -388,7 +388,7 @@ async fn grep_then_read_flow_targets_matched_lines() {
 
 #[tokio::test]
 async fn contract_read_reports_huge_first_line_with_exact_bash_fallback() {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         temporary.path().join("huge.txt"),

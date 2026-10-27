@@ -98,7 +98,7 @@ impl Engine {
         let blocks = std::mem::take(&mut self.pending_lsp_blocks);
         let found: usize = blocks.iter().map(|b| b.items.len()).sum();
         let files = blocks.len();
-        let rendered = crate::lsp::render_blocks(&blocks);
+        let rendered = codewhale_lsp::render_blocks(&blocks);
         if rendered.is_empty() {
             return;
         }

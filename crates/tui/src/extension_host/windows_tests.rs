@@ -98,7 +98,7 @@ fn windows_acl_edit_guard_serializes_processes() {
 }
 
 fn runtime(choice: ExtensionHostRuntime, override_path: Option<&Path>) -> Option<HostRuntime> {
-    let resolution = crate::dependencies::resolve_extension_host_runtime(
+    let resolution = codewhale_dependencies::resolve_extension_host_runtime(
         choice,
         (choice == ExtensionHostRuntime::Node)
             .then_some(override_path)
@@ -106,6 +106,7 @@ fn runtime(choice: ExtensionHostRuntime, override_path: Option<&Path>) -> Option
         (choice == ExtensionHostRuntime::Bun)
             .then_some(override_path)
             .flatten(),
+        crate::extension_host::bundle_sha256(),
     );
     match resolution.selected {
         Some(runtime) => Some(runtime),
@@ -129,8 +130,8 @@ async fn owner_boundary(runtime: HostRuntime) {
     let _policy = TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["secret-probe"]).await;
     let choice = match runtime.kind {
-        crate::dependencies::HostRuntimeKind::Node => ExtensionHostRuntime::Node,
-        crate::dependencies::HostRuntimeKind::Bun => ExtensionHostRuntime::Bun,
+        codewhale_dependencies::HostRuntimeKind::Node => ExtensionHostRuntime::Node,
+        codewhale_dependencies::HostRuntimeKind::Bun => ExtensionHostRuntime::Bun,
     };
     let registry = fixture.registry();
     let plugin = registry.get("secret-probe").unwrap();

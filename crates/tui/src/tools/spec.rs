@@ -20,12 +20,12 @@ use unicode_normalization::UnicodeNormalization;
 
 use codewhale_execpolicy::ApprovalMode;
 
-use crate::lsp::LspManager;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use codewhale_agent_contract::worker_profile::ShellPolicy;
+use codewhale_lsp::LspManager;
 use codewhale_net::network_policy::NetworkPolicyDecider;
 use codewhale_runtime::features::Features;
 use codewhale_sandbox::backend::SandboxBackend;
@@ -1405,7 +1405,7 @@ impl ToolContext {
 /// binary, timeout, unknown language) degrades to an empty string rather than
 /// propagating an error to the caller.
 pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
-    use crate::lsp::render_blocks;
+    use codewhale_lsp::render_blocks;
 
     let manager = match context.lsp_manager.as_ref() {
         Some(m) if m.config().enabled => m,

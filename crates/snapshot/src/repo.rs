@@ -19,9 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use wait_timeout::ChildExt as _;
-
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::{ExternalTool, run_bounded_git_with_timeout};
 
 use super::paths::{ensure_snapshot_dir, snapshot_git_dir};
 
@@ -161,7 +159,7 @@ pub struct PathRestoreOutcome {
 /// A snapshot as it was just written: its commit and the root tree it holds.
 ///
 /// The commit id can be rewritten by the prune that follows every snapshot
-/// once the repo holds more than [`crate::snapshot::DEFAULT_MAX_SNAPSHOTS`]
+/// once the repo holds more than [`crate::DEFAULT_MAX_SNAPSHOTS`]
 /// (see `rebuild_survivor_chain`); the tree id cannot, because a tree is
 /// content-addressed and the rebuild re-commits the same tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -488,8 +486,8 @@ impl SnapshotRepo {
         // and stores metadata in `.git`. We then continue to use
         // explicit `--git-dir` / `--work-tree` flags for every other
         // command so behaviour is invariant of cwd.
-        let mut git =
-            crate::dependencies::Git::command().ok_or_else(|| io_other("git not found on PATH"))?;
+        let mut git = codewhale_dependencies::Git::command()
+            .ok_or_else(|| io_other("git not found on PATH"))?;
         let init = git.arg("init").arg("--quiet").arg(parent);
         let init = run_bounded_git(init, "init")
             .map_err(|e| io_other(format!("failed to run git init: {e}")))?;
@@ -782,8 +780,8 @@ impl SnapshotRepo {
     }
 
     /// Point the side repo's HEAD branch at a commit id that does not exist.
-    #[cfg(test)]
-    pub(crate) fn point_head_at_missing_commit_for_test(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn point_head_at_missing_commit_for_test(&self) {
         let branch = run_git(&self.git_dir, &self.work_tree, &["symbolic-ref", "HEAD"])
             .expect("symbolic-ref");
         let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
@@ -1452,7 +1450,7 @@ impl SnapshotRepo {
         let index = scratch.path().join("index");
         let run = |args: &[&str]| -> io::Result<String> {
             let subcommand = args.first().copied().unwrap_or("git");
-            let mut cmd = crate::dependencies::Git::command()
+            let mut cmd = codewhale_dependencies::Git::command()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?;
             cmd.env("GIT_INDEX_FILE", &index)
                 .arg("--git-dir")
@@ -2045,7 +2043,7 @@ impl SnapshotRepo {
     /// age instead of stamping "now".
     fn commit_tree_preserving_date(&self, args: &[&str], timestamp: i64) -> io::Result<String> {
         let date = format!("{timestamp} +0000");
-        let mut command = crate::dependencies::Git::command()
+        let mut command = codewhale_dependencies::Git::command()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?;
         command
             .arg("--git-dir")
@@ -2080,7 +2078,7 @@ impl SnapshotRepo {
     /// The survivors are rebuilt as a fresh orphan chain; each keeps its
     /// tree, label, session id and timestamp, and the dropped ones become
     /// unreachable for gc to reclaim.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn prune_keep_last_n(&self, max_count: usize) -> io::Result<usize> {
         self.with_write_lock(|| self.prune_keep_last_n_locked(max_count, 1))
     }
@@ -2377,16 +2375,10 @@ fn cleanup_stale_pack_temps_in(
 // snapshot-disabled-with-warning and proceeds without the git data. Tests
 // use a tighter budget so a regression that deadlocks a child on its own
 // output fails in seconds instead of hanging for the full window.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Grace granted to the pipe readers after git has exited. A clean git
-/// closes its own write ends, so EOF is already waiting; only a grandchild
-/// that inherited the pipes (a post-checkout hook, a `git gc` pack worker)
-/// can hold them past exit, and it must not hold the turn pipeline either.
-const GIT_PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// Run a pre-configured git command under [`GIT_COMMAND_TIMEOUT`] with both
 /// pipes drained while the child runs (the same concurrent drain
@@ -2406,115 +2398,8 @@ fn run_bounded_git(cmd: &mut std::process::Command, subcommand: &str) -> io::Res
     run_bounded_git_with_timeout(cmd, subcommand, GIT_COMMAND_TIMEOUT)
 }
 
-pub(crate) fn run_bounded_git_with_timeout(
-    cmd: &mut std::process::Command,
-    subcommand: &str,
-    timeout: Duration,
-) -> io::Result<Output> {
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
-    // Drain both pipes while waiting: the restore path's `ls-tree -r` and
-    // the diff commands emit output that grows with workspace size, and a
-    // child blocked on a full pipe buffer never exits — it would turn every
-    // such call into a guaranteed timeout. Readers stream into shared
-    // buffers, and the completion channel lets the collect below bound how
-    // long a grandchild-held pipe may hold the call after git has exited.
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    {
-        let buf = std::sync::Arc::clone(&stdout_buf);
-        let done_tx = done_tx.clone();
-        std::thread::spawn(move || {
-            if let Some(mut reader) = stdout_pipe {
-                read_pipe_to_buffer(&mut reader, &buf);
-            }
-            let _ = done_tx.send(());
-        });
-    }
-    {
-        let buf = std::sync::Arc::clone(&stderr_buf);
-        let done_tx = done_tx.clone();
-        std::thread::spawn(move || {
-            if let Some(mut reader) = stderr_pipe {
-                read_pipe_to_buffer(&mut reader, &buf);
-            }
-            let _ = done_tx.send(());
-        });
-    }
-    drop(done_tx);
-
-    let Some(status) = child.wait_timeout(timeout)? else {
-        let _ = child.kill();
-        // Reap off the pipeline thread (see the doc comment): the kernel may
-        // not deliver the kill until an uninterruptible syscall returns.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("git {subcommand} timed out after {}s", timeout.as_secs()),
-        ));
-    };
-    // Wait for the readers up to the grace, then return what was captured. A
-    // clean git already closed its write ends, so both readers deliver
-    // immediately; the grace only covers a pipe still held open by an
-    // inherited copy (a daemonizing hook). On expiry the captured output is
-    // returned with a note on stderr instead of silently truncating; the
-    // reader itself ends whenever whatever holds the pipe exits, holding
-    // only a pipe read — never the turn pipeline.
-    let mut partial = false;
-    let mut drained = 0;
-    while drained < 2 {
-        match done_rx.recv_timeout(GIT_PIPE_DRAIN_GRACE) {
-            Ok(()) => drained += 1,
-            Err(_) => {
-                partial = true;
-                break;
-            }
-        }
-    }
-    let stdout = stdout_buf.lock().map(|buf| buf.clone()).unwrap_or_default();
-    let mut stderr = stderr_buf.lock().map(|buf| buf.clone()).unwrap_or_default();
-    if partial {
-        if !stderr.is_empty() && stderr.last() != Some(&b'\n') {
-            stderr.push(b'\n');
-        }
-        stderr.extend_from_slice(
-            b"[codewhale] git output pipes did not close after git exited \
-              (kept open by a hook or subprocess?); captured output may be partial\n",
-        );
-    }
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-/// Read a child's pipe to end into a shared buffer, tolerating interruption.
-fn read_pipe_to_buffer(reader: &mut impl io::Read, buf: &std::sync::Mutex<Vec<u8>>) {
-    let mut chunk = [0_u8; 8192];
-    loop {
-        match reader.read(&mut chunk) {
-            Ok(0) => return,
-            Ok(read) => {
-                if let Ok(mut buf) = buf.lock() {
-                    buf.extend_from_slice(&chunk[..read]);
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return,
-        }
-    }
-}
-
 fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output> {
-    let mut cmd = crate::dependencies::Git::command()
+    let mut cmd = codewhale_dependencies::Git::command()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?;
     cmd.arg("--git-dir")
         .arg(git_dir)
@@ -2541,7 +2426,7 @@ fn io_other(msg: impl Into<String>) -> io::Error {
 
 /// `text` whole, or the longest prefix that fits in `max_bytes` and ends on a
 /// char boundary; the flag says which of the two the caller got.
-pub(crate) fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> (String, bool) {
+pub fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);
     }
@@ -2617,7 +2502,7 @@ pub fn estimate_workspace_size_bounded(
     Ok(total)
 }
 
-pub(crate) fn unsafe_workspace_snapshot_reason(
+pub fn unsafe_workspace_snapshot_reason(
     workspace: &Path,
     home: Option<&Path>,
 ) -> Option<&'static str> {
@@ -2716,7 +2601,7 @@ fn ancestor_is_not_a_directory(root: &Path, rel: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_test_env;
+    use codewhale_runtime::test_support::lock_test_env;
     use std::fs::{File, FileTimes};
     use tempfile::tempdir;
 
@@ -2792,11 +2677,11 @@ mod tests {
     /// owns the process-wide env-var mutex so tests across modules
     /// don't trample each other's home env vars.
     pub(super) struct ScopedHome {
-        _vars: Vec<crate::test_support::EnvVarGuard>,
-        _guard: crate::test_support::TestEnvLock,
+        _vars: Vec<codewhale_runtime::test_support::EnvVarGuard>,
+        _guard: codewhale_runtime::test_support::TestEnvLock,
     }
     pub(super) fn scoped_home(home: &Path) -> ScopedHome {
-        use crate::test_support::EnvVarGuard;
+        use codewhale_runtime::test_support::EnvVarGuard;
         let guard = lock_test_env();
         ScopedHome {
             _vars: vec![
@@ -3274,9 +3159,9 @@ mod tests {
         let held = peer.write().expect("peer holds the write lock");
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let env_ticket = crate::test_support::env_scope_ticket();
+        let env_ticket = codewhale_runtime::test_support::env_scope_ticket();
         let opener = std::thread::spawn(move || {
-            let _membership = crate::test_support::join_env_scope(env_ticket);
+            let _membership = codewhale_runtime::test_support::join_env_scope(env_ticket);
             let opened = SnapshotRepo::open_or_init(&workspace);
             let _ = done_tx.send(());
             opened
@@ -3919,7 +3804,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        crate::dependencies::Git::command()
+        codewhale_dependencies::Git::command()
             .expect("git not found")
             .arg("-C")
             .arg(&workspace)
@@ -3928,7 +3813,7 @@ mod tests {
             .status()
             .unwrap();
         std::fs::write(workspace.join("tracked.txt"), b"committed").unwrap();
-        crate::dependencies::Git::command()
+        codewhale_dependencies::Git::command()
             .expect("git not found")
             .arg("-C")
             .arg(&workspace)
@@ -3936,7 +3821,7 @@ mod tests {
             .arg("tracked.txt")
             .status()
             .unwrap();
-        crate::dependencies::Git::command()
+        codewhale_dependencies::Git::command()
             .expect("git not found")
             .arg("-C")
             .arg(&workspace)
@@ -3950,7 +3835,7 @@ mod tests {
             .arg("init")
             .status()
             .unwrap();
-        let user_head_before = crate::dependencies::Git::command()
+        let user_head_before = codewhale_dependencies::Git::command()
             .expect("git not found")
             .arg("-C")
             .arg(&workspace)
@@ -3967,7 +3852,7 @@ mod tests {
         repo.snapshot("post-turn:1").unwrap();
         repo.restore(&id).unwrap();
 
-        let user_head_after = crate::dependencies::Git::command()
+        let user_head_after = codewhale_dependencies::Git::command()
             .expect("git not found")
             .arg("-C")
             .arg(&workspace)

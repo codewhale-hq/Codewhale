@@ -240,7 +240,7 @@ impl DeliveryEvidence {
         candidates.extend(baseline.dirty.keys().cloned());
         if let Some(head) = baseline.head.as_deref() {
             let mut args = vec!["diff"];
-            args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS);
+            args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS);
             args.extend(["--name-only", "-z", head, "HEAD", "--"]);
             let output = git(&baseline.root, &args)?;
             for path in output

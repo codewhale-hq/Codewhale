@@ -1679,7 +1679,7 @@ below are historical proposals unless that table leaves the choice open.
 - `crates/runtime/src/features.rs`
 - `config.example.toml:1228`
 - `crates/tui/src/mcp.rs:536-575,753-756,2852-2865`
-- `crates/tui/src/dependencies.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)
+- `crates/dependencies/src/lib.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)
 - `crates/tui/src/tools/{plugin.rs:1-20,57-172, registry.rs:53-63,360-440, spec.rs:1436-1550, codemode.rs:193-238}` (main)
 - `crates/tui/src/core/engine.rs:4672,4895-4915,7360-7400`; `core/engine/{tool_catalog.rs:136-155, tool_preparation.rs:40-60, dispatch.rs:870-886}`
 - `crates/tui/src/mcp.rs:929-1000` (`ReviewedStdioLaunch`), `:1265-1274` (`approval_hint_for`); `mcp/oauth.rs:700-760`

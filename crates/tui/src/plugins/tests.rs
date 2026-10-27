@@ -1095,7 +1095,7 @@ fn dsh_packages_import_through_the_reviewed_install_and_update_flow() {
         config
             .user_plugins_dir
             .join("docs-dsh")
-            .join(super::install::INSTALLED_FROM_MARKER),
+            .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
     )
     .unwrap();
     assert!(marker.contains("dsh:"), "{marker}");
@@ -1177,7 +1177,7 @@ fn installed_bundles_land_disabled_and_untrusted_then_follow_the_trust_flow() {
         config
             .user_plugins_dir
             .join("demo")
-            .join(super::install::INSTALLED_FROM_MARKER)
+            .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER)
             .exists()
     );
 
@@ -1327,7 +1327,7 @@ fn mutation_update_accepts_unchanged_local_installs_and_refuses_foreign_scopes()
     let before = [
         installed.join("plugin.toml"),
         installed.join("skills/hello/SKILL.md"),
-        installed.join(super::install::INSTALLED_FROM_MARKER),
+        installed.join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
     ]
     .map(|path| {
         let bytes = fs::read(&path).unwrap();

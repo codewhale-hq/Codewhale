@@ -268,14 +268,14 @@ fn working_set_reaches_model_as_turn_metadata() {
 
 #[test]
 fn turn_metadata_includes_git_workspace_snapshot_in_repo() {
-    use crate::dependencies::ExternalTool;
+    use codewhale_dependencies::ExternalTool;
 
-    if !crate::dependencies::Git::available() {
+    if !codewhale_dependencies::Git::available() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    let init = crate::dependencies::Git::output(&["init", "-q"], root);
+    let init = codewhale_dependencies::Git::output(&["init", "-q"], root);
     if init.is_err() || !init.unwrap().status.success() {
         return;
     }
@@ -304,14 +304,14 @@ fn turn_metadata_includes_git_workspace_snapshot_in_repo() {
 /// block's bytes and priming caution), a changed one must re-emit it once.
 #[test]
 fn turn_metadata_git_snapshot_emitted_only_on_change() {
-    use crate::dependencies::ExternalTool;
+    use codewhale_dependencies::ExternalTool;
 
-    if !crate::dependencies::Git::available() {
+    if !codewhale_dependencies::Git::available() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    let init = crate::dependencies::Git::output(&["init", "-q"], root);
+    let init = codewhale_dependencies::Git::output(&["init", "-q"], root);
     if init.is_err() || !init.unwrap().status.success() {
         return;
     }

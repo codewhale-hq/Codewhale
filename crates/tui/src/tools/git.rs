@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -218,7 +218,7 @@ fn git_diff_blocking(input: Value, context: &ToolContext) -> Result<ToolResult, 
         "diff".to_string(),
         "--no-color".to_string(),
     ];
-    args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+    args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
     args.push(format!("--unified={unified}"));
     if cached {
         args.push("--cached".to_string());
@@ -331,7 +331,7 @@ fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolR
         "--no-color".to_string(),
         "-U3".to_string(),
     ];
-    diff_args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+    diff_args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
     if let Some(pathspec) = &git_ctx.pathspec {
         diff_args.push("--".to_string());
         diff_args.push(pathspec.display().to_string());
@@ -391,7 +391,7 @@ fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolR
         "--cached".to_string(),
         "--quiet".to_string(),
     ];
-    staged_args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+    staged_args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
     let index_has_staged_changes =
         run_git_command(working_dir, &staged_args)?.status.code() == Some(1);
 
@@ -507,17 +507,17 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 
 /// Build the git command for the read-only workspace tools (`git_status`,
 /// `git_diff`, `git_log`, `git_show`, `git_blame`, `verify`). It goes through
-/// [`crate::dependencies::Git::review_command`], so fsmonitor, hooks and
+/// [`codewhale_dependencies::Git::review_command`], so fsmonitor, hooks and
 /// clean/process filters from the workspace's own config do not run.
 pub(super) fn read_only_git_command(
     working_dir: &Path,
 ) -> Result<std::process::Command, ToolError> {
-    if !crate::dependencies::Git::available() {
+    if !codewhale_dependencies::Git::available() {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
         ));
     }
-    crate::dependencies::Git::review_command(working_dir)
+    codewhale_dependencies::Git::review_command(working_dir)
         .map_err(|e| ToolError::execution_failed(format!("Failed to prepare git: {e:#}")))
 }
 
@@ -1224,12 +1224,12 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codewhale_dependencies::Git::available()
     }
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codewhale_dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
 
@@ -1241,7 +1241,7 @@ mod tests {
 
     fn commit_all(root: &Path, message: &str) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codewhale_dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["add", "."]);
@@ -1273,7 +1273,7 @@ mod tests {
         )
         .expect("write hook");
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod");
-        let status = crate::dependencies::Git::status(
+        let status = codewhale_dependencies::Git::status(
             &["config", "core.fsmonitor", &hook.to_string_lossy()],
             tmp.path(),
         )
@@ -1374,8 +1374,8 @@ mod tests {
         assert!(uncached.content.contains("diff --git"));
         assert!(uncached.content.contains("lib.rs"));
 
-        let _ =
-            crate::dependencies::Git::status(&["add", "src/lib.rs"], tmp.path()).expect("git add");
+        let _ = codewhale_dependencies::Git::status(&["add", "src/lib.rs"], tmp.path())
+            .expect("git add");
 
         let cached = tool
             .execute(json!({ "path": "src", "cached": true }), &ctx)
@@ -1840,7 +1840,7 @@ Binary files a/image.png and b/image.png differ
         let external = script("external.sh", "");
         let textconv = script("textconv.sh", "cat \"$1\"\n");
         let git = |dir: &Path, args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, dir).expect("git should spawn");
+            let status = codewhale_dependencies::Git::status(args, dir).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         let identity = ["-c", "user.email=test@example.com", "-c", "user.name=Test"];

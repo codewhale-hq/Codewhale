@@ -4600,14 +4600,14 @@ fn hardened_readonly_argv(command: &str) -> Result<(String, Vec<String>)> {
                 let at = subcommand_index + 1;
                 argv.splice(
                     at..at,
-                    crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from),
+                    codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from),
                 );
             }
             "log" | "show" => {
                 let at = subcommand_index + 1;
                 argv.splice(
                     at..at,
-                    crate::dependencies::Git::REVIEW_DIFF_ARGS
+                    codewhale_dependencies::Git::REVIEW_DIFF_ARGS
                         .into_iter()
                         .chain(["--no-show-signature"])
                         .map(String::from),
@@ -6248,7 +6248,7 @@ impl ToolSpec for BashTool {
             let overrides = tokio::task::spawn_blocking(move || {
                 let mut overrides = std::collections::BTreeSet::new();
                 for dir in git_dirs {
-                    overrides.extend(crate::dependencies::Git::review_filter_overrides(&dir)?);
+                    overrides.extend(codewhale_dependencies::Git::review_filter_overrides(&dir)?);
                 }
                 anyhow::Ok(overrides)
             })
