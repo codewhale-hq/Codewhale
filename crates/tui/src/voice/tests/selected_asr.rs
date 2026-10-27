@@ -7,9 +7,9 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::config::Config;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::voice::{ASR_MODEL, DictateError, VOICE_CONTROL_MODEL, transcribe_selected};
+use codewhale_runtime::config::Config;
 
 const FIXTURE_KEY: &str = "fixture-provider-key";
 

@@ -1,0 +1,43 @@
+[package]
+name = "codewhale-util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale shared utilities, confined workspace files, path identity and file locks"
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["dep:codewhale-runtime", "codewhale-runtime/test-support"]
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-models = { path = "../models", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2", optional = true }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+futures-util = "0.3.31"
+ignore = "0.4"
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

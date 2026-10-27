@@ -51,7 +51,10 @@ pub(super) fn format_shell_job_list(jobs: &[ShellJobSnapshot]) -> String {
             exit_label(job.exit_code, &job.status),
             task
         ));
-        lines.push(format!("  cwd: {}", crate::utils::display_path(&job.cwd)));
+        lines.push(format!(
+            "  cwd: {}",
+            codewhale_util::utils::display_path(&job.cwd)
+        ));
         lines.push(format!("  cmd: {}", job.command));
         let tail = if !job.stderr_tail.trim().is_empty() {
             job.stderr_tail.trim()
@@ -239,7 +242,7 @@ pub(crate) fn format_shell_job_detail(detail: &ShellJobDetail) -> String {
         format!("Job: {}", job.id),
         format!("Status: {}", detail_status_label(job)),
         format!("Command: {}", job.command),
-        format!("Cwd: {}", crate::utils::display_path(&job.cwd)),
+        format!("Cwd: {}", codewhale_util::utils::display_path(&job.cwd)),
     ];
     if let Some(owner) = job
         .owner_agent_name

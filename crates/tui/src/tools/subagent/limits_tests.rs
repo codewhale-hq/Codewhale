@@ -84,30 +84,31 @@ fn child_runtime_budget_context_reports_every_resolved_limit() {
     let mut runtime = stub_runtime();
     runtime.worker_profile.wall_time_secs = Some(1_800);
     runtime.worker_profile.wall_deadline_ms = Some(epoch_millis_now() + 1_700_000);
-    let context = child_runtime_budget_context(&runtime, 50, 49);
-    assert!(context.contains("Runtime budget (host-enforced"));
+    let context = child_runtime_budget_context(&runtime, 50);
+    assert!(context.contains("Runtime limits:"));
     assert!(context.contains("wall clock: task work stops about"));
     assert!(context.contains("total run budget 30m 00s"));
-    assert!(context.contains("49 model turns of task work (limit 50"));
-    assert!(context.contains("reserved hand-back turn"));
-    assert!(context.contains("Commit or checkpoint work-in-progress early"));
+    assert!(context.contains("50 model turns"));
+    assert!(!context.contains("reserved"));
+    assert!(context.contains("configured owner limits are enforced"));
     assert!(context.contains("There is no token budget and no per-step context cap"));
 }
 
 #[test]
 fn child_runtime_budget_context_names_unbounded_limits_honestly() {
     let runtime = stub_runtime();
-    let context = child_runtime_budget_context(&runtime, 0, 0);
+    let context = child_runtime_budget_context(&runtime, 0);
     assert!(context.contains("wall clock: no wall-clock limit."));
     assert!(context.contains("model steps: no per-run step cap."));
     assert!(context.contains("There is no token budget"));
-    assert!(context.contains("reserved hand-back turn"));
+    assert!(context.contains("Continue until the task is complete"));
+    assert!(!context.contains("reserved hand-back turn"));
 }
 
 #[test]
 fn child_runtime_budget_context_tells_the_child_it_compacts_like_the_parent() {
     let mut runtime = stub_runtime();
-    let context = child_runtime_budget_context(&runtime, 0, 0);
+    let context = child_runtime_budget_context(&runtime, 0);
     assert!(
         !context.contains("no automatic compaction"),
         "children compact like the parent: {context}"
@@ -123,7 +124,7 @@ fn child_runtime_budget_context_tells_the_child_it_compacts_like_the_parent() {
 
     // The parent's opt-out is the child's opt-out, and the prompt says so.
     runtime.compaction.enabled = false;
-    let context = child_runtime_budget_context(&runtime, 0, 0);
+    let context = child_runtime_budget_context(&runtime, 0);
     assert!(
         context.contains("Automatic context compaction is disabled for this session"),
         "{context}"
@@ -196,26 +197,6 @@ fn child_compaction_config_inherits_the_parent_policy_for_the_child_route() {
 }
 
 #[test]
-fn child_budget_pacing_notice_fires_at_three_quarters_of_each_bound() {
-    let started_at = Instant::now() - Duration::from_secs(80);
-    let deadline = started_at + Duration::from_secs(100);
-    let notice = child_budget_pacing_notice(started_at, Some(deadline), 38, 50)
-        .expect("all three bounds past 75%");
-    assert!(notice.contains("kind=\"budget_pacing\""));
-    assert!(notice.contains("wall clock:"));
-    assert!(notice.contains("model steps: 38 of 50 used"));
-}
-
-#[test]
-fn child_budget_pacing_notice_stays_silent_with_headroom() {
-    let started_at = Instant::now();
-    let deadline = started_at + Duration::from_secs(100);
-    assert!(child_budget_pacing_notice(started_at, Some(deadline), 10, 50).is_none());
-    // No bound at all means there is nothing to pace against.
-    assert!(child_budget_pacing_notice(started_at, None, 9_999, 0).is_none());
-}
-
-#[test]
 fn per_call_budget_fields_reject_empty_zero_null_negative_and_oversized_values() {
     for field in ["max_steps", "wall_time_secs"] {
         for invalid in [
@@ -233,8 +214,8 @@ fn per_call_budget_fields_reject_empty_zero_null_negative_and_oversized_values()
         }
     }
     for (field, value) in [
-        ("max_steps", u64::from(MAX_SUBAGENT_STEPS) + 1),
-        ("wall_time_secs", MAX_CHILD_WALL_TIME.as_secs() + 1),
+        ("max_steps", u64::from(u32::MAX) + 1),
+        ("wall_time_secs", u64::MAX / 1_000 + 1),
     ] {
         let mut input = json!({"prompt": "inspect"});
         input[field] = json!(value);
@@ -328,7 +309,7 @@ async fn launch_narrows_all_limits_and_continuation_cannot_restart_deadline() {
 }
 
 #[tokio::test]
-async fn explicit_wall_time_may_exceed_the_built_in_default() {
+async fn child_wall_time_is_unbounded_unless_an_owner_sets_it() {
     let tmp = tempdir().unwrap();
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
@@ -358,18 +339,43 @@ async fn explicit_wall_time_may_exceed_the_built_in_default() {
         guard.worker_records[&child.agent_id]
             .spec
             .runtime_profile
-            .wall_time_secs
+            .clone()
     };
     let mut guard = manager.write().await;
+    let unbounded = spawn(&mut guard, None);
+    assert_eq!(unbounded.wall_time_secs, None);
+    assert_eq!(unbounded.wall_deadline_ms, None);
     assert_eq!(
-        spawn(&mut guard, None),
-        Some(DEFAULT_CHILD_WALL_TIME.as_secs())
+        spawn(&mut guard, Some(Duration::from_secs(48 * 60 * 60))).wall_time_secs,
+        Some(48 * 60 * 60),
+        "an owner-selected limit is not shortened by a built-in ceiling"
     );
-    assert_eq!(
-        spawn(&mut guard, Some(Duration::from_secs(4 * 60 * 60))),
-        Some(4 * 60 * 60),
-        "an explicit request may raise the built-in 30-minute default"
-    );
+    drop(guard);
+    for owner_steps in [0, 7] {
+        runtime.worker_profile.max_steps = owner_steps;
+        let result = AgentTool::new(Arc::clone(&manager), runtime.clone())
+            .execute(
+                json!({
+                    "action": "start",
+                    "type": "explore",
+                    "prompt": "inspect",
+                    "max_steps": 1,
+                    "wall_time_secs": 1,
+                    "max_output_tokens": 1,
+                    "max_depth": 0
+                }),
+                &runtime.context,
+            )
+            .await
+            .expect("legacy model caps cannot restrict the child");
+        let receipt: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(receipt["effective_limits"]["max_steps"], owner_steps);
+        assert!(receipt["effective_limits"]["wall_deadline_ms"].is_null());
+        assert_eq!(receipt["ignored_limit_fields"].as_array().unwrap().len(), 4);
+        let guard = manager.read().await;
+        let record = &guard.worker_records[receipt["agent_id"].as_str().unwrap()];
+        assert_eq!(record.spec.max_spawn_depth, runtime.max_spawn_depth);
+    }
 }
 
 #[tokio::test]
@@ -428,7 +434,8 @@ async fn root_fork_of_depth_two_leaf_cannot_regain_a_generation() {
     runtime.manager = Arc::clone(&manager);
     runtime.cancel_token.cancel();
     let mut guard = manager.write().await;
-    let (canonical, directory) = crate::runtime_api::open_workspace_directory(tmp.path()).unwrap();
+    let (canonical, directory) =
+        codewhale_util::workspace_dir::open_workspace_directory(tmp.path()).unwrap();
     guard
         .admit_coordination_workspace(tmp.path().to_path_buf(), canonical, Arc::new(directory))
         .unwrap();

@@ -496,7 +496,10 @@ pub fn write_fleet_artifact_ref(
     Ok(FleetArtifactRef {
         kind,
         path: rel_path,
-        checksum: Some(format!("sha256:{}", crate::hashing::sha256_hex(contents))),
+        checksum: Some(format!(
+            "sha256:{}",
+            codewhale_runtime::hashing::sha256_hex(contents)
+        )),
         mime_type: mime_type.map(str::to_string),
         size_bytes: Some(contents.len() as u64),
     })
@@ -571,7 +574,7 @@ pub fn prepare_verification_receipt(
     // stale verifier may finish after a retry has started; it is allowed to
     // leave an orphaned evidence file, but it must never overwrite the file a
     // winning attempt's durable receipt references.
-    let evidence_hash = crate::hashing::sha256_hex(&bytes);
+    let evidence_hash = codewhale_runtime::hashing::sha256_hex(&bytes);
     let filename = format!(
         "verification-receipt-attempt-{:010}-{}.json",
         input.attempt, evidence_hash

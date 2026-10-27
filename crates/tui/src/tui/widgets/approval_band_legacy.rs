@@ -231,7 +231,8 @@ impl<'a> ApprovalWidget<'a> {
                     } else {
                         Cow::Borrowed("  ")
                     };
-                    let truncated = crate::utils::truncate_with_ellipsis(sline, max_width, "...");
+                    let truncated =
+                        codewhale_util::utils::truncate_with_ellipsis(sline, max_width, "...");
                     body.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
@@ -922,7 +923,7 @@ fn push_params_detail_line(
     let params_str = request.params_display();
     let params_width = card_width.saturating_sub(14) as usize;
     let params_truncated =
-        crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
+        codewhale_util::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -955,8 +956,11 @@ fn push_permission_rule_save_preview(
         let budget = (card_width as usize)
             .saturating_sub(10 + summary.chars().count() + 3 + more.chars().count())
             .max(12);
-        let entries =
-            crate::utils::truncate_with_ellipsis(&preview.entries.join("; "), budget, "...");
+        let entries = codewhale_util::utils::truncate_with_ellipsis(
+            &preview.entries.join("; "),
+            budget,
+            "...",
+        );
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -982,7 +986,8 @@ fn push_permission_rule_save_preview(
 
     let entry_width = card_width.saturating_sub(10) as usize;
     let entries = preview.entries.join("; ");
-    let truncated = crate::utils::truncate_with_ellipsis(&entries, entry_width.max(20), "...");
+    let truncated =
+        codewhale_util::utils::truncate_with_ellipsis(&entries, entry_width.max(20), "...");
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),

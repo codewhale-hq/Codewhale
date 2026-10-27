@@ -29,6 +29,8 @@ use std::time::Duration;
 use crate::hashing::sha256_hex;
 
 mod compiled_host;
+#[cfg(any(unix, windows))]
+pub(crate) mod uninstall;
 
 const GITHUB_LATEST_RELEASE_PAGE_URL: &str =
     "https://github.com/codewhale-hq/CodeWhale/releases/latest";
@@ -61,6 +63,8 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     let plan = update_plan_for_exe(&current_exe);
     let channel = ReleaseChannel::from_beta_flag(beta);
     let current_version = env!("CARGO_PKG_VERSION");
+    let build_version = env!("CODEWHALE_BUILD_VERSION");
+    let unreleased_checkout_build = build_version.ends_with(" (dev)");
     let proxy = proxy_arg
         .as_deref()
         .map(validate_and_build_proxy)
@@ -68,7 +72,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
 
     println!("Checking for {} updates...", channel.label());
     println!("Current binary: {}", current_exe.display());
-    println!("Current version: v{current_version}");
+    println!("Current version: v{build_version}");
     if legacy_binary {
         println!();
         println!("{}", legacy_binary_message(&current_exe));
@@ -94,7 +98,14 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             .with_context(update_network_fallback_hint)?;
         let latest_tag = &fetched.release.tag_name;
         println!("Latest {} release: {latest_tag}", channel.label());
-        if update_is_needed(channel, current_version, latest_tag)? {
+        let replace_same_version = unreleased_checkout_build
+            && compare_release_versions(current_version, latest_tag)? == Ordering::Equal;
+        if update_is_needed(channel, current_version, latest_tag)? || replace_same_version {
+            if replace_same_version {
+                println!(
+                    "This build is not a published release ({build_version}); the {latest_tag} release artifact replaces it."
+                );
+            }
             if install_method.supports_self_update() && !protected_location {
                 println!(
                     "Update available. Run `{} update` to install {latest_tag}.",
@@ -138,7 +149,9 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             fetched.source.describe()
         );
     }
-    if !update_is_needed(channel, current_version, latest_tag)? {
+    let replace_same_version = unreleased_checkout_build
+        && compare_release_versions(current_version, latest_tag)? == Ordering::Equal;
+    if !update_is_needed(channel, current_version, latest_tag)? && !replace_same_version {
         if compare_release_versions(current_version, latest_tag)? == Ordering::Greater {
             println!(
                 "Current build is newer than the latest published release; keeping v{current_version}. No downgrade or download performed."
@@ -147,6 +160,11 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             println!("Already up to date; no download needed.");
         }
         return Ok(());
+    }
+    if replace_same_version {
+        println!(
+            "This build is not a published release ({build_version}); installing the {latest_tag} release artifact over it."
+        );
     }
 
     // Reject unrelated command paths before downloads or any sibling changes.
@@ -189,6 +207,10 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     // Step 4: Replace command paths only after the download and the running
     // executable identity verify. The preflight happens before a colocated
     // compatibility path can change, then the identity is checked just in time.
+    #[cfg(unix)]
+    let mut command_receipt = uninstall::CommandReceipt::capture(&current_exe)?;
+    #[cfg(windows)]
+    let had_receipt = uninstall::CommandReceipt::capture(&current_exe)?.is_some();
     let mut host_update = compiled_host::prepare(
         &download,
         latest_tag,
@@ -206,13 +228,38 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             validate_update_target(target, &executable_identity)
         })
     })();
+    #[cfg(unix)]
+    let receipt_renewal = command_receipt
+        .as_mut()
+        .map(|receipt| receipt.renew(&bytes))
+        .transpose();
+    #[cfg(windows)]
+    let receipt_renewal = if had_receipt {
+        uninstall::CommandReceipt::capture_accepting(&current_exe, Some(&sha256_hex(&bytes)))
+            .and_then(|receipt| {
+                receipt
+                    .context("command ownership receipt disappeared during update")?
+                    .renew(&bytes)
+            })
+            .map(Some)
+    } else {
+        Ok(None)
+    };
     if let Err(error) = replaced {
         if let Some(host) = &mut host_update {
             host.rollback()
                 .context("compiled-host rollback failed; retained backup path is reported below")?;
         }
+        #[cfg(any(unix, windows))]
+        if let Err(renewal) = receipt_renewal {
+            return Err(error.context(format!(
+                "command ownership receipt could not be renewed after partial update: {renewal:#}"
+            )));
+        }
         return Err(error);
     }
+    #[cfg(any(unix, windows))]
+    receipt_renewal.context("binaries updated, but command ownership receipt renewal failed; preserved receipt/recovery paths require attention")?;
     if let Some(host) = &host_update {
         println!(
             "Updated the qualified compiled image, notices and relink source beside this CLI; Node remains default."
@@ -1284,7 +1331,10 @@ fn parse_checksum_manifest(text: &str) -> Result<HashMap<String, String>> {
             bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
         }
 
-        let (hash, rest) = trimmed.split_at(64);
+        let (hash, rest) = trimmed
+            .get(..64)
+            .zip(trimmed.get(64..))
+            .with_context(|| format!("invalid SHA256 manifest line {}: {trimmed}", index + 1))?;
         if !hash.chars().all(|ch| ch.is_ascii_hexdigit())
             || rest.is_empty()
             || !rest.chars().next().is_some_and(char::is_whitespace)

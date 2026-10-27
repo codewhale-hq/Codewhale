@@ -32,7 +32,7 @@ use crate::mcp::McpPool;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::utils::write_atomic;
+use codewhale_util::utils::write_atomic;
 
 // === Registry API response types ===
 
@@ -818,7 +818,7 @@ fn merge_incremental_entries(
 /// memory, and atomically replace the cache file. Retried on failure;
 /// the old snapshot survives any failed sync.
 async fn sync_once(path: &Path) -> Result<(), ToolError> {
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()

@@ -4,9 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codewhale_workflow_js::testing::{FakeDriver, FakeReply};
-use codewhale_workflow_js::{
-    ProgressEvent, WORKFLOW_LIFETIME_CAP, WorkflowJsError, WorkflowRunCancel, WorkflowVm,
-};
+use codewhale_workflow_js::{ProgressEvent, WorkflowJsError, WorkflowRunCancel, WorkflowVm};
 use serde_json::json;
 
 async fn run(
@@ -964,37 +962,34 @@ async fn repair_is_refused_when_the_shared_budget_is_exhausted() {
 }
 
 #[tokio::test]
-async fn repair_is_refused_when_the_shared_wall_clock_is_spent() {
+async fn legacy_task_wall_clock_does_not_prevent_schema_repair() {
     let driver = Arc::new(FakeDriver::new());
+    driver.on("[schema repair", FakeReply::Complete("{}".to_string()));
     driver.on_with_delay(
         "slow prose",
         FakeReply::Complete("eventually, still not json".to_string()),
         Duration::from_millis(1_100),
     );
 
-    let message = script_message(
-        run(
-            &driver,
-            r#"
+    let result = run(
+        &driver,
+        r#"
             return await task({
                 description: "slow prose",
                 wallTimeSecs: 1,
                 responseSchema: { "type": "object" },
             });
             "#,
-            json!(null),
-        )
-        .await,
-    );
+        json!(null),
+    )
+    .await
+    .expect("legacy task wall time cannot stop repair");
 
-    assert!(
-        message.contains("repair skipped: no wall-time left from wallTimeSecs"),
-        "{message}"
-    );
+    assert_eq!(result, json!({}));
     assert_eq!(
         driver.spawn_count(),
-        1,
-        "the repair inherits the spent clock, not a fresh one"
+        2,
+        "schema repair follows the runtime's trusted limits"
     );
 }
 
@@ -1312,30 +1307,24 @@ async fn unbounded_budget_reads_as_null_total_and_infinite_remaining() {
 }
 
 #[tokio::test]
-async fn lifetime_cap_throws_on_spawn_attempt_1001() {
+async fn sequential_work_continues_past_one_thousand_children() {
     let driver = Arc::new(FakeDriver::new());
     let value = run(
         &driver,
         r#"
         let completed = 0;
-        try {
-            for (let i = 0; i < 1001; i++) {
-                await task({ description: "t" + i });
-                completed++;
-            }
-            return "no-throw";
-        } catch (err) {
-            return { completed, message: String(err) };
+        for (let i = 0; i < 1001; i++) {
+            await task({ description: "t" + i });
+            completed++;
         }
+        return completed;
         "#,
         json!(null),
     )
     .await
     .unwrap();
-    assert_eq!(value["completed"], json!(WORKFLOW_LIFETIME_CAP));
-    let message = value["message"].as_str().unwrap();
-    assert!(message.contains("lifetime agent cap (1000)"), "{message}");
-    assert_eq!(driver.spawn_count(), WORKFLOW_LIFETIME_CAP as usize);
+    assert_eq!(value, json!(1001));
+    assert_eq!(driver.spawn_count(), 1001);
 }
 
 #[tokio::test]
@@ -2643,16 +2632,13 @@ async fn tools_call_failure_throws_agent_kind() {
 }
 
 #[tokio::test]
-async fn tools_call_cap_rejects_runaway_loops() {
-    let err = run_tools(
-        r#"for (let i = 0; i < 55; i++) { await tools.call("read", {}); } return "never";"#,
+async fn tools_calls_continue_past_fifty_while_the_host_admits_them() {
+    let result = run_tools(
+        r#"let completed = 0; for (let i = 0; i < 55; i++) { await tools.call("read", {}); completed++; } return completed;"#,
     )
-    .await;
-    let message = script_message(err);
-    assert!(
-        message.contains("per-run tool-call cap"),
-        "unexpected: {message}"
-    );
+    .await
+    .expect("admitted calls continue until the script completes");
+    assert_eq!(result, json!(55));
 }
 
 /// A platform-native absolute path for `unix_path` (`/a/b`): unchanged on

@@ -10,20 +10,20 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::network_policy::NetworkPolicy;
+use codewhale_net::network_policy::NetworkPolicy;
 
 use super::audit::{
     AuditedSkill, AuditedSkillId, DigestState, SkillActionKind, SkillAuditMode, SkillSourceKind,
     scan_with_configured,
 };
-use super::install::{
-    self, InstallOutcome, InstallSource, UpdateResult, write_installed_from_v2, write_trust_v2,
-};
 use super::normalize_skill_name_for_lookup;
-use super::package_digest;
 use super::roots::{
     SkillRootCatalog, SkillRootDescriptor, SkillRootKind, SkillScope, safe_display_path,
 };
+use codewhale_skill_install::install::{
+    self, InstallOutcome, InstallSource, UpdateResult, write_installed_from_v2, write_trust_v2,
+};
+use codewhale_skill_install::package_digest;
 
 /// Project vs global CodeWhale-owned install target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -999,7 +999,7 @@ fn trust_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network_policy::NetworkPolicy;
+    use codewhale_net::network_policy::NetworkPolicy;
     use tempfile::TempDir;
 
     fn write_skill(dir: &Path, name: &str, body: &str) {

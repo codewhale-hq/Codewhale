@@ -20,7 +20,6 @@ use crate::compaction::{
     CompactionConfig, compaction_pressure_reached_with_billed, estimate_input_tokens_conservative,
     estimate_input_tokens_for_pressure,
 };
-use crate::config::Config;
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec, UserInputProvenance};
@@ -28,6 +27,7 @@ use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::route_runtime::{ResolvedRuntimeRoute, resolve_runtime_route};
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::app::App;
+use codewhale_runtime::config::Config;
 
 const THRESHOLD: usize = 40_000;
 const PRIVATE_BASE_URL: &str = "https://private-fixture.test/v1";
@@ -35,12 +35,12 @@ const PRIVATE_MODEL: &str = "private-fixture-deployment";
 const PRIVATE_WINDOW: u32 = 200_000;
 
 fn private_route_config() -> Config {
-    Config {
-        provider: Some("custom".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    {
+        let __cw_config_init_0_0 = Some("custom".to_string());
+        let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom: std::collections::HashMap::from([(
                 "custom".to_string(),
-                crate::config::ProviderConfig {
+                codewhale_runtime::config::ProviderConfig {
                     kind: Some("openai-compatible".to_string()),
                     api_key: Some("test-private-key".to_string()),
                     base_url: Some(PRIVATE_BASE_URL.to_string()),
@@ -50,8 +50,11 @@ fn private_route_config() -> Config {
                 },
             )]),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_0_value: Config = Default::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
 }
 
@@ -302,7 +305,7 @@ fn one_pressure_number_across_mid_turn_compaction_and_route_switch() {
             .expect("write fixture");
 
         let default_config = Config::default();
-        let route_a = resolve(&default_config, crate::config::DEFAULT_TEXT_MODEL);
+        let route_a = resolve(&default_config, codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL);
         let private_config = private_route_config();
         let route_b = resolve(&private_config, PRIVATE_MODEL);
         assert_ne!(

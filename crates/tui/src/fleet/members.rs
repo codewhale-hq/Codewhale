@@ -9,11 +9,11 @@
 
 use std::path::Path;
 
-use super::role::public_role_label;
 use super::store::{
     FleetFile, FleetMember, FleetScope, FleetStoreError, load_fleet_at, load_fleet_in_scope,
     member_pins, provider_ids_match, resolve_selected_fleet, save_fleet, set_selected, slugify,
 };
+use codewhale_agent_contract::role::public_role_label;
 use codewhale_localization::{Locale, MessageId, tr};
 
 /// Default name for the personal fleet created by the first `/fleet add` or

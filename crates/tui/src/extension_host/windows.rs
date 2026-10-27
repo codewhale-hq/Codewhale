@@ -51,9 +51,9 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_OVERRIDE;
 
-use crate::dependencies::{HostRuntime, HostRuntimeKind};
-use crate::fleet::files::WindowsDirectory;
-use crate::process_tree::ProcessTree;
+use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
+use codewhale_runtime::process_tree::ProcessTree;
+use codewhale_util::files::WindowsDirectory;
 
 const PROBE_SOURCE: &str = include_str!("../../extension-host/src/windows-sandbox-probe.mjs");
 const PROBE_DEADLINE: Duration = Duration::from_secs(15);
@@ -233,7 +233,7 @@ impl Profile {
 
 impl Profile {
     fn remember(&self, path: &Path, file: &File, kind: GrantKind) -> io::Result<()> {
-        let value = crate::plugins::windows_file_identity(file)?;
+        let value = codewhale_util::path_identity::windows_file_identity(file)?;
         let mut grants = self
             .grants
             .lock()
@@ -329,7 +329,7 @@ fn retire_scope(root: &Path, scope: &GrantScope, sid: PSID) -> io::Result<()> {
         root_file = acl_file_with_share(root, 1 | 2 | 4)?;
         &root_file
     };
-    let value = crate::plugins::windows_file_identity(file)?;
+    let value = codewhale_util::path_identity::windows_file_identity(file)?;
     if (value.volume, value.index) != scope.identity {
         return Err(io::Error::other(
             "recorded grant object was replaced; refusing cleanup",
@@ -355,7 +355,7 @@ fn retire_scope(root: &Path, scope: &GrantScope, sid: PSID) -> io::Result<()> {
         }
         let mut work = || -> io::Result<()> {
             let metadata = fs::symlink_metadata(&path)?;
-            if crate::plugins::metadata_is_link_or_reparse(&metadata) {
+            if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
                 return Err(io::Error::other(
                     "profile retirement refuses links/reparse points",
                 ));
@@ -440,8 +440,8 @@ fn acl_file_with_share(path: &Path, share: u32) -> io::Result<File> {
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file()
-        || crate::plugins::metadata_is_link_or_reparse(&metadata)
-        || crate::plugins::windows_file_identity(&file)?.links != 1
+        || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+        || codewhale_util::path_identity::windows_file_identity(&file)?.links != 1
     {
         return Err(io::Error::other(
             "profile ACL operation refuses a linked/nonregular file",
@@ -484,7 +484,7 @@ impl NativeSandbox {
             )?;
             let mut source = in_step(
                 "open runtime",
-                crate::plugins::manifest::open_bundle_file(&original),
+                codewhale_util::bundle_file::open_bundle_file(&original),
             )?;
             if source.metadata()?.len() > 512 * 1024 * 1024 {
                 return Err(io::Error::other(
@@ -573,7 +573,7 @@ impl NativeSandbox {
                 return Err(io::Error::other("sandbox grant tree exceeds 65536 entries"));
             }
             let metadata = fs::symlink_metadata(&path)?;
-            if crate::plugins::metadata_is_link_or_reparse(&metadata) {
+            if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
                 return Err(io::Error::other(
                     "sandbox grant refuses a link/reparse point",
                 ));
@@ -707,7 +707,7 @@ impl NativeSandbox {
             "CODEWHALE_WINDOWS_PROBE_CHILD_ARGS".to_string(),
             serde_json::to_string(&args)?,
         );
-        let env = crate::child_env::sanitized_plugin_mcp_env_from(
+        let env = codewhale_runtime::child_env::sanitized_plugin_mcp_env_from(
             std::env::vars_os(),
             runtime_env
                 .iter()

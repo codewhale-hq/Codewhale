@@ -49,9 +49,9 @@ its own. Real work happens in sub-agents the script launches.
 ### Scale
 
 - Up to **16 concurrent** live agents in one run (additional spawns wait for a slot).
-- Up to **1_000 agents per run** (VM lifetime spawn cap).
-- Configured `max_children` and `max_concurrent` can narrow these limits.
-- Automatic launch is model-judged on scope; the host enforces only the hard `max_children` / `max_depth` ceilings.
+- No default cumulative child limit; `[workflow] max_children = 0` leaves total work uncapped.
+- Owners can set a positive `max_children` limit and configure `max_concurrent`.
+- Automatic launch is model-judged on scope; the host enforces configured owner limits and plan validation.
 - Plan the population the work needs and let the host queue and clamp it.
   These ceilings are enforcement, not a reason to pre-shrink a valid plan.
 
@@ -137,26 +137,25 @@ gates: [{
 }]
 ```
 
-A gate that blocks its own role can never pass, so the plan is rejected when it
-is submitted, before any child is dispatched; the error names the gate and both
-fields. A `blocks_role` that names a role from an **earlier** phase is not
-caught there and still deadlocks the run. That failure reads
-`spawn rejected: workflow gate blocks role \`implement\`: waiting for required
- gate outcome`, the run ends `Failed`, and because the blocked phase never
-started, **the work its children would have done never happens and produces no
-result** — the phases that already ran are the only salvageable part. Retrying
-with the same plan reproduces it, so treat the message as a plan defect, not a
-transient dispatch error.
+Admission rejects a gate that blocks its own role, a cycle of role gates,
+and a gate whose explicitly named prerequisite first occurs after its blocked
+role in a sequential plan. Diagnostics name the contradictory gate and roles
+before any child starts. Parallel structure, unknown profile roles and dynamic
+raw JavaScript order are not assigned a total order; runtime gates still enforce the prerequisite at dispatch.
 
-Two habits keep this from costing a run:
+Native singleton and sequence steps use the same settled behavior as parallel
+steps. Ordinary failures retain partial results and let independent work
+continue. A step whose required input failed or is missing is skipped with a
+named reason; it never receives an empty substitute and never launches a child.
+Raw JavaScript `task()` remains fail-fast unless the author uses the existing
+settled combinators. Reducers can explicitly summarize partial inputs; they
+must disclose missing inputs instead of claiming that blocked work ran.
 
-- Read the gate block back before launch and check that every `blocks_role`
-  names a role in a **later** phase than the gated `role`. With at most one
-gate, `blocks_role` is never the gated role itself.
-- Make each phase's result usable on its own. A localize/implement/verify split
-  survives a dispatch failure in the last phase when the middle phase's
-  findings were already returned, and a phase that only writes files is worth
-  nothing if it never starts.
+Let workers finish their assigned outcome. Legacy model task limits are accepted
+for compatibility but ignored, and token hints are not spend caps. Actual owner
+limits belong in operator, role/Fleet, parent or saved-runtime configuration.
+Preserve partial findings and exact blockers for a follow-up instead of discarding
+completed work. Schema repair cannot invent a deadline from a legacy task field.
 
 ## Verification
 
@@ -182,18 +181,18 @@ filesystem of its own — effects live in the workers.
 Workflow-to-Runtime launch validation applies a conservative default shape
 before any Workflow IR is lowered to selected workers:
 
-- up to 1,000 total worker agents per Workflow run;
+- no default total worker limit; a positive owner-configured `max_children` still applies;
 - up to 16 live worker agents at once; larger populations queue (block) on the
   host's per-run concurrency gate until a live slot frees, then select through
   fleet and execute through Runtime;
-- Workflow IR structural nesting no deeper than 5;
-- Runtime child delegation defaults to 3 levels and has an opt-in hard ceiling
-  of 8; that execution budget is independent of Workflow IR shape;
+- no default structural nesting cap; positive owner `workflow.max_depth` values apply;
+- no default Runtime delegation depth cap; explicit owner restrictions remain
+  independent of Workflow IR shape;
 - loops require `max_iterations`;
 - dynamic `expand` nodes require `max_children` and a template.
 
 Those limits distinguish population from instantaneous launch concurrency. A
-valid 1,000-agent Workflow can still drain through a smaller Runtime worker
+long-running Workflow can still drain through a smaller Runtime worker
 pool. Model selection stays per member: a DeepSeek preset can suggest
 `deepseek-v4-pro` for the orchestrator and `deepseek-v4-flash` for nearby
 workers, but users and agents may override any slot when the task calls for it.

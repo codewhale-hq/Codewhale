@@ -220,10 +220,14 @@ fn retry_status_count(events: &[Event]) -> usize {
 async fn verify_next_user_turn_after_loss(failure: Failure) {
     let server = LoopbackSse::start(failure).await;
     let workspace = tempdir().unwrap();
-    let config = Config {
-        provider: Some("custom".to_string()),
-        default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-        ..Config::default()
+    let config = {
+        let __cw_config_init_0_0 = Some("custom".to_string());
+        let __cw_config_init_0_1 =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
     .with_legacy_root(
         Some("synthetic-loopback-key".to_string()),
@@ -275,7 +279,9 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         );
     }
     let partial_count = match failure {
-        Failure::TruncatedBody => usize::try_from(super::super::MAX_STREAM_RETRIES).unwrap() + 1,
+        Failure::TruncatedBody => {
+            usize::try_from(super::super::DEFAULT_STREAM_MAX_RESUMES).unwrap() + 1
+        }
         Failure::StalledBody => 1,
     };
     assert_eq!(
@@ -290,7 +296,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         "terminal parent-request count must match POSTs observed by the loopback"
     );
     let expected_resumes = match failure {
-        Failure::TruncatedBody => super::super::MAX_STREAM_RETRIES,
+        Failure::TruncatedBody => super::super::DEFAULT_STREAM_MAX_RESUMES,
         Failure::StalledBody => 0,
     };
     assert_eq!(first_terminal.stream_resumes, expected_resumes);

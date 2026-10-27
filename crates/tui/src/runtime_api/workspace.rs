@@ -8,8 +8,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::dependencies::Git;
-use crate::snapshot::is_git_metadata_name;
+use codewhale_dependencies::Git;
+use codewhale_util::git_metadata::is_git_metadata_name;
 
 use super::{ApiError, RuntimeApiState};
 
@@ -133,7 +133,7 @@ pub(super) struct WorkspaceTrustRequest {
 pub(super) struct WorkspaceTrustResponse {
     workspace: PathBuf,
     /// The verdict as it stands *after* the write, read back through the same
-    /// gate ([`crate::config::is_workspace_trusted`]) the engine consults.
+    /// gate ([`codewhale_runtime::config::is_workspace_trusted`]) the engine consults.
     /// Echoing the request would report an intention; this reports the fact a
     /// client would see on its next read, so a write that landed somewhere the
     /// read path does not look is a `false` here rather than a lie.
@@ -148,8 +148,8 @@ pub(super) struct WorkspaceTrustResponse {
 ///
 /// This route is the only writer a GUI has. A client never edits `config.toml`
 /// itself: that decision lives with the engine, which owns the same file the
-/// read path ([`crate::config::is_workspace_trusted`]) consults. The write goes
-/// through [`crate::config::set_workspace_trust`] — the very function behind the
+/// read path ([`codewhale_runtime::config::is_workspace_trusted`]) consults. The write goes
+/// through [`codewhale_runtime::config::set_workspace_trust`] — the very function behind the
 /// TUI's `/trust on --save` — so both front ends and the gate agree on one
 /// document, and neither can drift into a second source of truth.
 ///
@@ -164,10 +164,13 @@ pub(super) async fn update_workspace_trust(
     let trusted = request.trusted;
     let target = workspace.clone();
     let (config_path, recorded) = tokio::task::spawn_blocking(move || {
-        let config_path = crate::config::set_workspace_trust(&target, trusted)?;
+        let config_path = codewhale_runtime::config::set_workspace_trust(&target, trusted)?;
         // Read back through the engine's own gate rather than trusting the
         // write: the two are only ever allowed to agree.
-        Ok::<_, anyhow::Error>((config_path, crate::config::is_workspace_trusted(&target)))
+        Ok::<_, anyhow::Error>((
+            config_path,
+            codewhale_runtime::config::is_workspace_trusted(&target),
+        ))
     })
     .await
     .map_err(|_| ApiError::internal("workspace trust update failed"))?
@@ -203,7 +206,7 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
         // Computed before the early returns below: whether the workspace is a
         // git repository has nothing to do with whether the user trusted it,
         // and a non-repo project still has skills and hooks to skip.
-        workspace_trusted: crate::config::is_workspace_trusted(workspace),
+        workspace_trusted: codewhale_runtime::config::is_workspace_trusted(workspace),
     };
 
     let Some(repo_check) = run_git(workspace, &["rev-parse", "--is-inside-work-tree"]) else {
@@ -491,7 +494,7 @@ pub(super) fn relative_request_path(raw: &str, allow_root: bool) -> Result<PathB
         };
     }
     let path = PathBuf::from(trimmed);
-    if !crate::fleet::files::path_is_confined(&path) {
+    if !codewhale_util::files::path_is_confined(&path) {
         return Err(ApiError::bad_request(
             "path must be workspace-relative without . or .. components",
         ));
@@ -531,7 +534,7 @@ fn confined_directory(root: &FsPath, relative: &FsPath) -> Result<PathBuf, ApiEr
         let metadata = std::fs::symlink_metadata(&directory)
             .map_err(|error| map_fs_error(error, "directory"))?;
         if metadata.file_type().is_symlink()
-            || crate::plugins::metadata_is_link_or_reparse(&metadata)
+            || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
         {
             return Err(ApiError::forbidden("symlinks are not followed"));
         }
@@ -591,7 +594,7 @@ fn list_workspace_directory(
         let is_link = file_type.is_symlink()
             || metadata
                 .as_ref()
-                .is_some_and(crate::plugins::metadata_is_link_or_reparse);
+                .is_some_and(codewhale_util::path_identity::metadata_is_link_or_reparse);
         let kind = if is_link {
             "symlink"
         } else if file_type.is_dir() {
@@ -632,8 +635,8 @@ pub(super) fn open_confined_file(
     root: &FsPath,
     relative: &FsPath,
     create: bool,
-) -> Result<crate::fleet::files::WorkspaceFile, ApiError> {
-    crate::fleet::files::WorkspaceFile::open(root, relative, create)
+) -> Result<codewhale_util::files::WorkspaceFile, ApiError> {
+    codewhale_util::files::WorkspaceFile::open(root, relative, create)
         .map_err(|error| map_fs_error(error, "file"))
 }
 
@@ -646,15 +649,15 @@ pub(super) fn open_confined_file_resolved(
     root: &FsPath,
     relative: &FsPath,
     create: bool,
-) -> Result<crate::fleet::files::WorkspaceFile, ApiError> {
-    crate::fleet::files::WorkspaceFile::open_resolved_root(root, relative, create)
+) -> Result<codewhale_util::files::WorkspaceFile, ApiError> {
+    codewhale_util::files::WorkspaceFile::open_resolved_root(root, relative, create)
         .map_err(|error| map_fs_error(error, "file"))
 }
 
 /// Read one confined file completely (bounded by `FILE_SERVE_MAX_BYTES`) so
 /// the revision always describes the whole file.
 pub(super) fn read_confined_bytes(
-    file: &crate::fleet::files::WorkspaceFile,
+    file: &codewhale_util::files::WorkspaceFile,
 ) -> Result<ConfinedFileBytes, ApiError> {
     let mut handle = file
         .open_file()
@@ -709,7 +712,7 @@ pub(super) fn precheck_file_target(
     match std::fs::symlink_metadata(root.join(relative)) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink()
-                || crate::plugins::metadata_is_link_or_reparse(&metadata)
+                || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
             {
                 return Err(ApiError::forbidden("symlinks are not followed"));
             }
@@ -814,7 +817,7 @@ fn write_workspace_file(
     // opener, which refuses links at every component. This is the user's own
     // file, not a private store: keep its mode on edit, follow the umask on
     // creation.
-    let file = crate::fleet::files::WorkspaceFile::open_shared(&root, relative, created)
+    let file = codewhale_util::files::WorkspaceFile::open_shared(&root, relative, created)
         .map_err(|error| map_fs_error(error, "file"))?;
     if let Some(expected) = expected_revision {
         let current = read_confined_bytes(&file)?;
@@ -843,7 +846,7 @@ fn write_workspace_file(
 }
 
 pub(super) fn publish_workspace_file(
-    file: &crate::fleet::files::WorkspaceFile,
+    file: &codewhale_util::files::WorkspaceFile,
     bytes: &[u8],
     created: bool,
 ) -> Result<(), ApiError> {
@@ -890,9 +893,13 @@ pub(super) struct WorkspaceInstructionsResponse {
     /// True when no file-based instructions exist anywhere and the
     /// prompt carries the ephemeral generated context instead.
     generated_fallback: bool,
-    /// Aggregate byte ceiling applied across instructions and rules at
-    /// render (`project_context::MAX_PROJECT_INSTRUCTION_BYTES`).
-    aggregate_budget_bytes: usize,
+    /// Resolved per-scope ceilings in estimated tokens (#6526): the global
+    /// scope, the project scope (instructions + rules), the static-prefix
+    /// guard, and the usable window they are percentages of.
+    global_budget_tokens: usize,
+    project_budget_tokens: usize,
+    static_guard_tokens: Option<usize>,
+    usable_window_tokens: Option<usize>,
     /// Warnings from the real load pass — includes assembly-level notices
     /// (unimported foreign formats, ignored WHALE.md, constitution parse)
     /// alongside what per-source `warning` fields already carry.
@@ -935,20 +942,31 @@ pub(super) async fn workspace_instructions(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<WorkspaceInstructionsResponse>, ApiError> {
     let workspace = state.workspace.clone();
-    let home = crate::config::effective_home_dir();
-    let configured = state.config.read().instructions_paths();
+    let config = state.config.read().clone();
+    let configured = config.instructions_paths();
+    let settings = crate::project_context::InstructionSettings::from_config(&config);
+    let foreign_imports = settings
+        .imports
+        .keys()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let budgets =
+        crate::project_context::InstructionBudgets::resolve(Some(&settings.budget), None, None)
+            .map_err(ApiError::internal)?;
 
     let (sources, generated_fallback, warnings, workspace_root) =
         tokio::task::spawn_blocking(move || {
-            let sources = crate::project_context::project_instruction_sources(
+            let sources = crate::project_context::project_instruction_sources_with_settings(
                 &workspace,
-                home.as_deref(),
+                &settings,
                 &configured,
             );
             // The real load pass supplies assembly-level warnings and tells us
             // whether the ephemeral generated context is what the prompt
             // carries. Cached — this is the same call the engine makes.
-            let ctx = crate::project_context::load_project_context_with_parents(&workspace);
+            let ctx =
+                crate::project_context::load_project_context_with_settings(&workspace, &settings);
             let generated_fallback = ctx.instructions.is_some() && ctx.source_path.is_none();
             // `project_instruction_sources` canonicalizes the workspace (the
             // `/var` → `/private/var` class of alias), so relative paths must
@@ -993,13 +1011,12 @@ pub(super) async fn workspace_instructions(
                 warning: source.warning,
             })
             .collect(),
-        foreign_imports: crate::project_context::foreign_instruction_imports()
-            .keys()
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        foreign_imports,
         generated_fallback,
-        aggregate_budget_bytes: crate::project_context::MAX_PROJECT_INSTRUCTION_BYTES,
+        global_budget_tokens: budgets.global_tokens,
+        project_budget_tokens: budgets.project_tokens,
+        static_guard_tokens: budgets.static_guard_tokens,
+        usable_window_tokens: budgets.usable_window_tokens,
         warnings,
     }))
 }
@@ -1008,7 +1025,7 @@ pub(super) async fn workspace_instructions(
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::dependencies::ExternalTool as _;
+    use codewhale_dependencies::ExternalTool as _;
 
     #[cfg(unix)]
     #[test]

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use codewhale_config::{PluginAuthority, PluginId};
+
 use super::activation::{PluginActivationCapability, PluginActivationPolicy};
 use super::manifest::{
     PluginCompatibility, PluginInventory, PluginManifest, ResolvedPluginComponents,
@@ -56,44 +58,6 @@ impl PluginOrigin {
 impl fmt::Display for PluginOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PluginId(pub String);
-
-impl PluginId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Persistable proof of the exact reviewed plugin authority attached to a
-/// Skill or MCP server. Runtime contexts keep this receipt instead of a
-/// pointer to mutable process-global discovery state, and revalidate it at
-/// every side-effect boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PluginAuthority {
-    pub plugin_id: PluginId,
-    pub plugin_name: String,
-    pub workspace: PathBuf,
-    pub state_path: PathBuf,
-    pub source_manifest: PathBuf,
-    pub staged_manifest: PathBuf,
-    pub content_hash: String,
-    pub capability_hash: String,
-    /// Monotonic generation of this plugin's persisted authority. Any trust,
-    /// enablement, disablement, or revocation transition invalidates receipts
-    /// held by another process immediately, even when hashes are unchanged.
-    pub state_generation: u64,
-}
-
-impl fmt::Display for PluginId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -242,7 +206,12 @@ impl LoadedPlugin {
     }
 
     #[must_use]
-    pub fn authority(&self, state_path: PathBuf, workspace: PathBuf) -> Option<PluginAuthority> {
+    pub(super) fn authority(
+        &self,
+        state_path: PathBuf,
+        workspace: PathBuf,
+        managed_policy_path: PathBuf,
+    ) -> Option<PluginAuthority> {
         let staged_root = self.staged_root.as_ref()?;
         // The staged tree mirrors the source bundle byte-for-byte, so both
         // share one manifest file name (`plugin.json` or legacy
@@ -256,6 +225,8 @@ impl LoadedPlugin {
             plugin_name: self.name().to_string(),
             workspace,
             state_path,
+            managed_policy_path: Some(managed_policy_path.clone()),
+            managed_policy_source: Some(managed_policy_path),
             source_manifest: self.canonical_root.join(&manifest_name),
             staged_manifest: staged_root.join(&manifest_name),
             content_hash: self.content_hash.clone(),

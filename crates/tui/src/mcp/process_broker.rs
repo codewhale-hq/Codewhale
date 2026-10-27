@@ -22,7 +22,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex as TokioMutex;
 
 use super::McpServerConfig;
-use crate::child_env;
+use codewhale_runtime::child_env;
 
 pub(crate) struct BrokerSession {
     child: Arc<TokioMutex<Child>>,
@@ -33,7 +33,7 @@ pub(crate) struct BrokerSession {
     /// Keep the reviewed executable/script descriptors alive through cleanup.
     _reviewed_launch: Option<super::ReviewedStdioLaunch>,
     /// Owned until Drop transfers it to the bounded asynchronous cleanup.
-    process_tree: Option<Arc<crate::process_tree::ProcessTree>>,
+    process_tree: Option<Arc<codewhale_runtime::process_tree::ProcessTree>>,
 }
 
 /// How long `BrokerSession::shutdown` waits for the child to exit on SIGTERM
@@ -131,7 +131,7 @@ impl BrokerSession {
                 command_process
             },
         );
-        crate::utils::suppress_tokio_console_window(&mut cmd);
+        codewhale_util::utils::suppress_tokio_console_window(&mut cmd);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -198,7 +198,7 @@ impl BrokerSession {
                 && super::is_node_command(command)
                 && launch_cwd.is_none_or(|directory| directory.is_dir())
             {
-                format!("MCP server {server_name} could not start because Node.js was not found. Install Node.js from https://nodejs.org/ and restart Codewhale with node on PATH. Built-in Computer Use requires Node.js 20 or newer.")
+                format!("MCP server {server_name} could not start because Node.js was not found. Install Node.js from https://nodejs.org/ and restart Codewhale with node on PATH. Computer Use requires Node.js 20 or newer.")
             } else if config.reviewed_plugin.is_some() {
                 format!(
                     "MCP stdio spawn failed (transport=stdio server={server_name} reviewed-plugin argv_count={} env_count={})",
@@ -215,7 +215,8 @@ impl BrokerSession {
             anyhow::Error::new(error).context(message)
         })?;
 
-        let process_tree = match crate::process_tree::ProcessTree::attach_tokio(&child) {
+        let process_tree = match codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child)
+        {
             Ok(tree) => Arc::new(tree),
             Err(error) => {
                 let _ = child.start_kill();
@@ -424,13 +425,16 @@ fn send_sigterm(child: &Child, contained: bool) -> bool {
 
 async fn terminate_child_for_authority_change(
     child: &Arc<TokioMutex<Child>>,
-    tree: &crate::process_tree::ProcessTree,
+    tree: &codewhale_runtime::process_tree::ProcessTree,
 ) {
     let mut child = child.lock().await;
     terminate_child(&mut child, Some(tree)).await;
 }
 
-async fn terminate_child(child: &mut Child, tree: Option<&crate::process_tree::ProcessTree>) {
+async fn terminate_child(
+    child: &mut Child,
+    tree: Option<&codewhale_runtime::process_tree::ProcessTree>,
+) {
     // Reap an already-exited child before resolving its PID. Until it is
     // reaped, the OS cannot recycle that identity; after it is reaped there is
     // nothing left to signal. This avoids a PID-only watcher ever targeting an

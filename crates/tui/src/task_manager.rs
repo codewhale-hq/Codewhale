@@ -22,13 +22,13 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::config::Config;
 use crate::runtime_threads::{
     CreateThreadRequest, RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock,
     RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
     SharedRuntimeThreadManager, StartTurnRequest,
 };
-use crate::utils::spawn_supervised;
+use codewhale_runtime::config::Config;
+use codewhale_util::utils::spawn_supervised;
 
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
@@ -38,6 +38,7 @@ const TIMELINE_HEAD_KEEP: usize = 8;
 const ARTIFACT_THRESHOLD: usize = 1200;
 const TASK_EVENT_CHANNEL_CAPACITY: usize = 256;
 const EVENT_CURSOR_BATCH: usize = 256;
+const DESTINATION_BUSY_RETRY: Duration = Duration::from_secs(2);
 const EVENT_CATCHUP_POLL: Duration = Duration::from_millis(200);
 // v4 binds execution to a trusted Runtime scope. Older executors must not
 // ignore its eligibility or generation fence.
@@ -347,6 +348,8 @@ pub struct TaskRecord {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
     /// Trusted execution provenance, distinct from model-visible ownership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_scope: Option<String>,
@@ -470,6 +473,8 @@ pub struct NewTaskRequest {
     /// `auto_approve`, which the runtime only reads when no posture is given.
     pub permission_posture: Option<String>,
     pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
 }
 
 impl NewTaskRequest {
@@ -488,6 +493,7 @@ impl NewTaskRequest {
             auto_approve: Some(task.auto_approve),
             permission_posture: task.permission_posture.clone(),
             owner_session_id: task.owner_session_id.clone(),
+            destination_thread_id: task.destination_thread_id.clone(),
         }
     }
 
@@ -507,6 +513,7 @@ impl NewTaskRequest {
             auto_approve: Some(true),
             permission_posture: None,
             owner_session_id: None,
+            destination_thread_id: None,
         }
     }
 }
@@ -696,6 +703,7 @@ pub struct ExecutionTask {
     trust_mode: bool,
     auto_approve: bool,
     permission_posture: Option<String>,
+    destination_thread_id: Option<String>,
 }
 
 impl From<&TaskRecord> for ExecutionTask {
@@ -712,6 +720,7 @@ impl From<&TaskRecord> for ExecutionTask {
             trust_mode: task.trust_mode,
             auto_approve: task.auto_approve,
             permission_posture: task.permission_posture.clone(),
+            destination_thread_id: task.destination_thread_id.clone(),
         }
     }
 }
@@ -869,37 +878,72 @@ impl TaskExecutor for EngineTaskExecutor {
         if cancel.is_cancelled() {
             return TaskExecutionResult::from_reason(TaskTerminalReason::Canceled, None);
         }
-        let thread = match self
-            .runtime_threads
-            .create_thread(task.thread_request())
-            .await
-        {
-            Ok(thread) => thread,
-            Err(err) => {
-                return TaskExecutionResult::failed(format!(
-                    "Failed to create runtime thread: {err}"
-                ));
-            }
-        };
+        let (thread_id, turn) = if let Some(destination) = task.destination_thread_id.clone() {
+            let deadline = Instant::now() + self.limits.wall_time;
+            let turn = loop {
+                match self
+                    .runtime_threads
+                    .start_scheduled_turn(&destination, &task.prompt, &task.id)
+                    .await
+                {
+                    Ok(Some(turn)) => break turn,
+                    Ok(None) if Instant::now() < deadline => {
+                        tokio::select! {
+                            () = cancel.cancelled() => {
+                                return TaskExecutionResult::from_reason(
+                                    TaskTerminalReason::Canceled,
+                                    None,
+                                );
+                            }
+                            () = tokio::time::sleep(DESTINATION_BUSY_RETRY) => {}
+                        }
+                    }
+                    Ok(None) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} stayed busy past the task wall-time budget"
+                        ));
+                    }
+                    Err(err) => {
+                        return TaskExecutionResult::failed(format!(
+                            "Destination thread {destination} cannot take this turn: {err}"
+                        ));
+                    }
+                }
+            };
+            (destination, turn)
+        } else {
+            let thread = match self
+                .runtime_threads
+                .create_thread(task.thread_request())
+                .await
+            {
+                Ok(thread) => thread,
+                Err(err) => {
+                    return TaskExecutionResult::failed(format!(
+                        "Failed to create runtime thread: {err}"
+                    ));
+                }
+            };
 
-        if cancel.is_cancelled() {
-            return TaskExecutionResult::from_reason(TaskTerminalReason::Canceled, None);
-        }
-        let turn = match self
-            .runtime_threads
-            .start_turn(&thread.id, task.turn_request())
-            .await
-        {
-            Ok(turn) => turn,
-            Err(err) => {
-                return TaskExecutionResult::failed(format!("Failed to start task: {err}"));
+            if cancel.is_cancelled() {
+                return TaskExecutionResult::from_reason(TaskTerminalReason::Canceled, None);
+            }
+            match self
+                .runtime_threads
+                .start_turn(&thread.id, task.turn_request())
+                .await
+            {
+                Ok(turn) => (thread.id, turn),
+                Err(err) => {
+                    return TaskExecutionResult::failed(format!("Failed to start task: {err}"));
+                }
             }
         };
 
         emit_task_event(
             &events,
             TaskExecutionEvent::ThreadLinked {
-                thread_id: thread.id.clone(),
+                thread_id: thread_id.clone(),
                 turn_id: turn.id.clone(),
             },
         )
@@ -914,7 +958,7 @@ impl TaskExecutor for EngineTaskExecutor {
 
         drive_engine_turn(
             self.runtime_threads.as_ref(),
-            &thread.id,
+            &thread_id,
             &turn.id,
             events,
             cancel,
@@ -1930,7 +1974,7 @@ impl TaskManager {
     /// no-op.
     pub(crate) async fn reload_runtime_config_with(
         &self,
-        edit: impl FnOnce(&mut crate::config::Config),
+        edit: impl FnOnce(&mut codewhale_runtime::config::Config),
     ) -> Result<()> {
         let Some(runtime) = &self.runtime_threads else {
             return Ok(());
@@ -2050,7 +2094,7 @@ impl TaskManager {
         // thread. Running it here as well refuses an unknown mode or posture
         // at the boundary the request crossed, instead of after the task has
         // sat in the durable queue and a worker has claimed it.
-        crate::runtime_policy::RuntimePolicyProjection::from_request(
+        codewhale_runtime::runtime_policy::RuntimePolicyProjection::from_request(
             req.mode
                 .as_deref()
                 .filter(|mode| !mode.trim().is_empty())
@@ -2100,6 +2144,7 @@ impl TaskManager {
             thread_id: None,
             turn_id: None,
             owner_session_id: req.owner_session_id,
+            destination_thread_id: req.destination_thread_id,
             execution_scope: Some(self.execution_scope().to_string()),
             execution_generation: None,
             cancel_requested_seq: 0,
@@ -3605,6 +3650,7 @@ pub(crate) fn validate_bound_task_request(
 ) -> Result<()> {
     if task.prompt != request.prompt.trim()
         || task.owner_session_id != request.owner_session_id
+        || task.destination_thread_id != request.destination_thread_id
         || task.model_provider != request.model_provider
         || task.model_provider_id != request.model_provider_id
         || request
@@ -3930,7 +3976,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
     let payload = serde_json::to_string_pretty(value)?;
-    crate::utils::write_atomic(path, payload.as_bytes())
+    codewhale_util::utils::write_atomic(path, payload.as_bytes())
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 
@@ -4019,38 +4065,52 @@ mod tests {
     }
 
     fn provider_default_model_cases() -> Vec<(&'static str, Config, &'static str)> {
-        let deepseek = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some("deepseek-v4-flash".to_string()),
-            ..Config::default()
+        let deepseek = {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some("deepseek-v4-flash".to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
 
-        let zai = Config {
-            provider: Some("zai".to_string()),
+        let zai = {
+            let __cw_config_init_1_0 = Some("zai".to_string());
             // Exercise provider-aware rejection of a stale DeepSeek root default.
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Config::default()
+            let __cw_config_init_1_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.default_text_model = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
 
-        let mut custom_providers = crate::config::ProvidersConfig::default();
+        let mut custom_providers = codewhale_runtime::config::ProvidersConfig::default();
         custom_providers.custom.insert(
             "acme".to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 base_url: Some("http://127.0.0.1:1/v1".to_string()),
                 model: Some("acme-coder".to_string()),
                 kind: Some("openai-compatible".to_string()),
-                ..crate::config::ProviderConfig::default()
+                ..codewhale_runtime::config::ProviderConfig::default()
             },
         );
-        let custom = Config {
-            provider: Some("acme".to_string()),
-            providers: Some(custom_providers),
-            ..Config::default()
+        let custom = {
+            let __cw_config_init_2_0 = Some("acme".to_string());
+            let __cw_config_init_2_1 = Some(custom_providers);
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
 
         vec![
             ("deepseek", deepseek, "deepseek-v4-flash"),
-            ("zai", zai, crate::config::DEFAULT_ZAI_MODEL),
+            (
+                "zai",
+                zai,
+                codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL,
+            ),
             ("custom", custom, "acme-coder"),
         ]
     }
@@ -5401,6 +5461,7 @@ mod tests {
         let task_id = "task_stale_running".to_string();
         let started_at = Utc::now() - chrono::Duration::seconds(30);
         let task = TaskRecord {
+            destination_thread_id: None,
             schema_version: CURRENT_TASK_SCHEMA_VERSION,
             id: task_id.clone(),
             prompt: "long-running shell work".to_string(),
@@ -5609,6 +5670,7 @@ mod tests {
                 .await?;
 
         let req = NewTaskRequest {
+            destination_thread_id: None,
             prompt: "fix TODOs and write a README".to_string(),
             name: None,
             model: None,
@@ -6113,6 +6175,7 @@ mod tests {
 
     fn sample_task_record() -> TaskRecord {
         TaskRecord {
+            destination_thread_id: None,
             schema_version: CURRENT_TASK_SCHEMA_VERSION,
             id: "task_0123456789abcdef".to_string(),
             prompt: "bound timeline".to_string(),

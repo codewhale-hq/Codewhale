@@ -338,7 +338,7 @@
       "id": "orcarouter",
       "label": "OrcaRouter",
       "base_url": "https://api.orcarouter.ai/v1",
-      "default_model": "deepseek/deepseek-v4-pro",
+      "default_model": "deepseek/deepseek-v4.1-flash-1017",
       "env_vars": [
         "ORCAROUTER_API_KEY"
       ],
@@ -950,7 +950,7 @@
       "id": "openai-codex",
       "label": "OpenAI Codex (ChatGPT)",
       "base_url": "https://api.openai.com/v1",
-      "default_model": "gpt-5.6",
+      "default_model": "gpt-6.1-sol",
       "env_vars": [
         "OPENAI_CODEX_ACCESS_TOKEN",
         "CODEX_ACCESS_TOKEN"
@@ -1000,7 +1000,7 @@
       "id": "anthropic",
       "label": "Anthropic",
       "base_url": "https://api.anthropic.com",
-      "default_model": "claude-sonnet-4-6",
+      "default_model": "claude-sonnet-5-5",
       "env_vars": [
         "ANTHROPIC_API_KEY"
       ],
@@ -1133,7 +1133,7 @@
       "id": "stepfun",
       "label": "StepFun / StepFlash",
       "base_url": "https://api.stepfun.ai/v1",
-      "default_model": "step-3.7-flash",
+      "default_model": "step-5-preview",
       "env_vars": [
         "STEPFUN_API_KEY",
         "STEP_API_KEY"

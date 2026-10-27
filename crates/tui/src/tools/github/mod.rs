@@ -202,7 +202,7 @@ impl ToolSpec for GithubTool {
         let action = self.resolve_action(&input)?;
         if context
             .features
-            .enabled(crate::features::Feature::GithubHost)
+            .enabled(codewhale_runtime::features::Feature::GithubHost)
         {
             let request = host::Request::capture(action, &input, context)?;
             return crate::extension_host::manager()
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn close_refuses_when_git_cannot_determine_worktree_status() {
-        use crate::dependencies::{ExternalTool, Git};
+        use codewhale_dependencies::{ExternalTool, Git};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         assert!(

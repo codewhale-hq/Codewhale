@@ -87,9 +87,8 @@ jobs:
     # Both cold macOS artifact builds on 0.10.1 exhausted 90 minutes inside
     # compilation. Keep the full CI build budget; packaging stays capped below.
     timeout-minutes: 210
-    # FreeBSD is a source-build target validated via `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked`
-    # (see packaging/freebsd/README.md and docs/INSTALL.md#freebsd). The 7×1 prebuilt matrix stays 7 targets;
-    # FreeBSD has no prebuilt asset, no npm binary, and no matrix bloat — it builds from source.
+    # FreeBSD is a source-build target with no prebuilt asset, no npm binary and no CI check
+    # (see packaging/freebsd/README.md and docs/INSTALL.md#freebsd).
     strategy:
       fail-fast: false
       matrix:

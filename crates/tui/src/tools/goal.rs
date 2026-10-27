@@ -349,7 +349,7 @@ impl GoalState {
             ))
             .or(Some(now));
         let stall_window_exhausted = state.status == Some(GoalStatus::Active)
-            && state.repeated_gap_count >= crate::goal_loop::MAX_REPEATED_GAP_PASSES;
+            && state.repeated_gap_count >= codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES;
         if let Err(error) = snapshot.validate_stall_state() {
             tracing::warn!("holding invalid restored goal paused: {error}");
             state.status = Some(GoalStatus::Paused);
@@ -491,10 +491,10 @@ impl GoalState {
         // non-limit pause into the durable `ThreadGoalStatus::Paused`, so this
         // needs no second gate in `decide_continuation` and survives a restart
         // until someone explicitly resumes.
-        if self.repeated_gap_count >= crate::goal_loop::MAX_REPEATED_GAP_PASSES {
+        if self.repeated_gap_count >= codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES {
             tracing::warn!(
                 repeated_gap_count = self.repeated_gap_count,
-                max_repeated_gap_passes = crate::goal_loop::MAX_REPEATED_GAP_PASSES,
+                max_repeated_gap_passes = codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES,
                 "goal stall pause: critical verifier reported an equivalent gap set on \
                  consecutive passes; pausing for inspection instead of spending further"
             );
@@ -824,7 +824,7 @@ pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
         goal_json,
         continuation_index,
-        crate::goal_loop::MAX_REPEATED_GAP_PASSES,
+        codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES,
     )
 }
 
@@ -1992,7 +1992,7 @@ mod tests {
             .create("stall on purpose".to_string(), None)
             .expect("create goal");
 
-        for pass in 1..crate::goal_loop::MAX_REPEATED_GAP_PASSES {
+        for pass in 1..codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES {
             state
                 .record_not_achieved(not_achieved_review(
                     GoalReviewRole::Critical,
@@ -2023,7 +2023,7 @@ mod tests {
         let stalled = state.snapshot();
         assert_eq!(
             stalled.repeated_gap_count,
-            crate::goal_loop::MAX_REPEATED_GAP_PASSES
+            codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES
         );
         assert_eq!(stalled.status, "paused");
         assert_eq!(stalled.pause_reason, Some(GoalPauseReason::NoProgress));
@@ -2053,7 +2053,7 @@ mod tests {
             .create("one turn, several reports".to_string(), None)
             .expect("create goal");
 
-        for _ in 0..(crate::goal_loop::MAX_REPEATED_GAP_PASSES + 2) {
+        for _ in 0..(codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES + 2) {
             state
                 .record_not_achieved(not_achieved_review(
                     GoalReviewRole::Critical,
@@ -2241,7 +2241,7 @@ mod tests {
         assert!(
             prompt.contains(&format!(
                 "{} equivalent gap sets in a row",
-                crate::goal_loop::MAX_REPEATED_GAP_PASSES
+                codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES
             )),
             "{prompt}"
         );
@@ -2375,7 +2375,7 @@ mod tests {
             status: "active".to_string(),
             continuation_count: 3,
             last_gap_fingerprint: Some("b".repeat(64)),
-            repeated_gap_count: crate::goal_loop::MAX_REPEATED_GAP_PASSES,
+            repeated_gap_count: codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES,
             last_gap_pass: Some(3),
             ..Default::default()
         };
@@ -2387,7 +2387,7 @@ mod tests {
 
         // One below the ceiling restores as ordinary Active state.
         let below = GoalSnapshot {
-            repeated_gap_count: crate::goal_loop::MAX_REPEATED_GAP_PASSES - 1,
+            repeated_gap_count: codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES - 1,
             ..snapshot
         };
         let state = GoalState::from_snapshot(&below);

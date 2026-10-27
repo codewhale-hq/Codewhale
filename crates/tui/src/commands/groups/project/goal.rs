@@ -197,14 +197,13 @@ fn resume_goal(
         return CommandResult::error("No paused goal set. Use /goal <objective> first.");
     }
 
-    // Resuming an already-active goal is a no-op: the continuation loop is
-    // already running, and re-asserting Active could stack a second
-    // autonomous turn. Report progress instead.
     if effective_goal_status(goal) == ProjectGoalStatus::Active {
         if goal.pending_controls {
             return CommandResult::message(translate(presentation, "goal_control_accepted"));
         }
-        return goal_status(goal, presentation);
+        if goal.is_loading || goal.goal_continuation_waiting {
+            return goal_status(goal, presentation);
+        }
     }
 
     CommandResult::action(AppAction::SetGoalStatus {
@@ -315,7 +314,7 @@ mod tests {
     /// the `tool_search` activation path.
     #[test]
     fn bare_goal_brief_names_only_callable_tools() {
-        crate::tools::canonical_action::tests::assert_text_names_only_callable_tools(
+        crate::tools::canonical_action_tests::assert_text_names_only_callable_tools(
             "bare /goal brief",
             BARE_GOAL_BRIEF,
         );
@@ -505,19 +504,28 @@ mod tests {
     }
 
     #[test]
-    fn resume_on_an_active_goal_is_a_no_op_report() {
-        // Re-asserting Active while the loop is already running must not
-        // schedule a second autonomous turn.
+    fn resume_on_an_active_goal_only_kicks_when_idle() {
         let mut goal = goal_state();
         goal.objective = Some("Keep the build green".to_string());
         goal.status = ProjectGoalStatus::Active;
-        let resumed = run(&goal, Some("resume"));
-        assert!(!resumed.is_error);
-        assert!(
-            resumed.action.is_none(),
-            "no control op on already-active goal"
-        );
-        assert!(resumed.message.unwrap().contains("Keep the build green"));
+        for (is_loading, waiting) in [(false, false), (true, false), (false, true)] {
+            goal.is_loading = is_loading;
+            goal.goal_continuation_waiting = waiting;
+            let resumed = run(&goal, Some("resume"));
+            assert!(!resumed.is_error);
+            if is_loading || waiting {
+                assert!(resumed.action.is_none());
+                assert!(resumed.message.unwrap().contains("Keep the build green"));
+            } else {
+                assert!(matches!(
+                    resumed.action,
+                    Some(AppAction::SetGoalStatus {
+                        status: crate::tools::goal::GoalStatus::Active,
+                        clear: false
+                    })
+                ));
+            }
+        }
     }
 
     #[test]

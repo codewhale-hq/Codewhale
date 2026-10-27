@@ -23,6 +23,14 @@ pub(crate) struct ConfigAdapter<'a> {
 }
 
 impl CommandConfigContext for ConfigAdapter<'_> {
+    fn translation_enabled(&self) -> bool {
+        self.host.app.borrow().translation_enabled
+    }
+
+    fn set_translation_enabled(&mut self, enabled: bool) {
+        self.host.app.borrow_mut().translation_enabled = enabled;
+    }
+
     fn config_path(&self) -> Option<PathBuf> {
         self.host.app.borrow().config_path.clone()
     }
@@ -62,7 +70,7 @@ impl CommandConfigContext for ConfigAdapter<'_> {
     }
 
     fn search_provider_names(&self) -> &'static str {
-        crate::config::SearchProvider::names_hint()
+        codewhale_runtime::config::SearchProvider::names_hint()
     }
 
     fn set_search_provider(&mut self, value: &str, persist: bool) -> ConfigReply {
@@ -157,7 +165,7 @@ impl CommandConfigContext for ConfigAdapter<'_> {
     }
 
     fn display_path(&self, path: &std::path::Path) -> String {
-        crate::utils::display_path(path).to_string()
+        codewhale_util::utils::display_path(path).to_string()
     }
 }
 
@@ -363,7 +371,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
     fn logout(&mut self) -> Result<CommandLogoutOutcome, LogoutFailure> {
         let mut app = self.host.app.borrow_mut();
         let provider = app.provider_identity_for_persistence().to_string();
-        match crate::config::clear_active_provider_api_key(&provider) {
+        match codewhale_runtime::config::clear_active_provider_api_key(&provider) {
             Ok(()) => {
                 app.onboarding = crate::tui::app::OnboardingState::Provider;
                 app.onboarding_needs_api_key = true;

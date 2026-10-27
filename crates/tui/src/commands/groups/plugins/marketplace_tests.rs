@@ -3,9 +3,9 @@
 //! reviewed installer, and the no-auto-anything invariants.
 
 use super::*;
-use crate::config::Config;
 use crate::tui::app::{App, TuiOptions};
 use codewhale_localization::Locale;
+use codewhale_runtime::config::Config;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -79,61 +79,6 @@ fn write_demo_bundle(dir: &Path) {
 
 fn marketplace_state_path(codewhale_home: &Path) -> std::path::PathBuf {
     codewhale_home.join("plugins/marketplaces.json")
-}
-
-#[test]
-fn marketplace_builtin_candidate_routes_to_existing_bundle_review() {
-    let _lock = crate::test_support::lock_test_env();
-    let root = TempDir::new().unwrap();
-    let codewhale_home = root.path().join("home");
-    fs::create_dir_all(&codewhale_home).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
-    let (mut app, _temp) = create_test_app(root.path());
-    let original = app
-        .plugin_registry
-        .get("computer-use")
-        .expect("shipped bundle")
-        .clone();
-    let result =
-        plugins_with_kimi_home_override(&mut app, Some("marketplace show codewhale"), None);
-    assert!(!result.is_error);
-    let text = result.message.unwrap();
-    assert!(
-        !text.contains(r"/plugin marketplace install codewhale computer\-use"),
-        "{text}"
-    );
-    assert!(
-        text.contains(&format!(
-            "/plugin show {}",
-            escape_review_text(original.id.as_str())
-        )),
-        "{text}"
-    );
-    assert!(
-        text.contains("/plugin marketplace install codewhale whalewiki"),
-        "{text}"
-    );
-    let result = plugins_with_kimi_home_override(
-        &mut app,
-        Some("marketplace install codewhale computer-use"),
-        None,
-    );
-    // B5: the published install command succeeds and says it is built in.
-    assert!(!result.is_error, "{:?}", result.message);
-    let message = result.message.unwrap();
-    assert!(message.contains("built into Codewhale"), "{message}");
-    assert!(
-        message.contains(&format!(
-            "/plugin show {}",
-            escape_review_text(original.id.as_str())
-        )),
-        "{message}"
-    );
-    let retained = app.plugin_registry.get("computer-use").unwrap();
-    assert_eq!(retained.content_hash, original.content_hash);
-    assert_eq!(retained.trust_status, original.trust_status);
-    assert_eq!(retained.enabled, original.enabled);
-    assert!(!codewhale_home.join("plugins/computer-use").exists());
 }
 
 #[test]

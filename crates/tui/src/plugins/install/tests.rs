@@ -133,7 +133,7 @@ fn raw_tarball(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
 
 fn allow_all() -> NetworkPolicy {
     NetworkPolicy {
-        default: crate::network_policy::DecisionToml::Allow,
+        default: codewhale_net::network_policy::DecisionToml::Allow,
         ..Default::default()
     }
 }
@@ -326,6 +326,10 @@ async fn exact_local_install_rejects_changed_bytes_before_placement() {
             .unwrap()
             .content_hash;
     fs::write(source.join("README.md"), "changed after review\n").unwrap();
+    let actual =
+        crate::plugins::manifest::PluginManifest::validate_from_path(&source.join("plugin.toml"))
+            .unwrap()
+            .content_hash;
 
     let error = install_with_expected_content_hash(
         PluginInstallSource::parse(source.to_str().unwrap()).unwrap(),
@@ -338,7 +342,15 @@ async fn exact_local_install_rejects_changed_bytes_before_placement() {
     .await
     .unwrap_err();
 
-    assert!(format!("{error:#}").contains("source changed after review"));
+    let mismatch = error.downcast_ref::<PluginContentMismatch>().unwrap();
+    assert_eq!(mismatch.expected, expected);
+    assert_eq!(mismatch.actual, actual);
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "plugin source changed after review: expected content hash {expected}, copied bytes hash is {actual}; nothing was installed"
+        )
+    );
     assert!(!plugins.join("exact-demo").exists());
     assert!(
         fs::read_dir(&plugins).unwrap().all(|entry| !entry

@@ -10,9 +10,9 @@ use codewhale_config::provider::all_providers;
 use codewhale_config::route::{LogicalModelRef, RouteRequest, RouteResolver};
 
 use super::*;
-use crate::config::{Config, ProviderConfig};
 use crate::cost_status::EffectiveRouteEnvelope;
 use crate::test_support::EnvVarGuard;
+use codewhale_runtime::config::{Config, ProviderConfig};
 
 // Identity, exact wire ID, exact endpoint, protocol, captured billing mode.
 // Keep literal model/endpoint values in reviewed exemptions: referring to an
@@ -83,9 +83,11 @@ fn shipped_default_routes_have_reviewed_pricing_coverage() {
             })
             .unwrap_or_else(|error| panic!("{} default cannot resolve: {error}", entry.id()));
         let provider = entry.kind();
-        let mut config = Config {
-            provider: Some(entry.id().to_string()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_0_0 = Some(entry.id().to_string());
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         if provider == ProviderKind::Custom {
             config
@@ -111,9 +113,11 @@ fn shipped_default_routes_have_reviewed_pricing_coverage() {
     let built_in_count = defaults.len();
     for descriptor in bundled_provider_descriptors() {
         assert_eq!(descriptor.wire, DescriptorWire::OpenaiCompatible);
-        let mut config = Config {
-            provider: Some(descriptor.id.clone()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_1_0 = Some(descriptor.id.clone());
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value
         };
         config
             .providers

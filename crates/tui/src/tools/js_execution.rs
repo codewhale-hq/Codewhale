@@ -13,7 +13,7 @@
 //! and local execution with an external backend are refused. This is not a
 //! persistent REPL; source is read from stdin rather than a host temporary file.
 //!
-//! Registration is gated by [`crate::dependencies::resolve_node`]:
+//! Registration is gated by [`codewhale_dependencies::resolve_node`]:
 //! when Node is missing the tool is simply not advertised, so the
 //! model never sees a runtime it can't actually use. See
 //! `core::engine::tool_catalog::ensure_advanced_tooling` for the
@@ -23,7 +23,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 use serde_json::{Value, json};
 
 use crate::tools::spec::{ToolContext, ToolError, ToolResult, required_str};
@@ -150,7 +150,7 @@ pub async fn execute_js_execution_tool(
     context: &ToolContext,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
-    let node = crate::dependencies::Node::resolve().ok_or_else(|| {
+    let node = codewhale_dependencies::Node::resolve().ok_or_else(|| {
         ToolError::execution_failed("js_execution: Node.js runtime became unavailable")
     })?;
     let budget = js_execution_timeout();
@@ -167,7 +167,10 @@ pub async fn execute_js_execution_tool(
     }
     let output = tokio::time::timeout(
         budget,
-        crate::process_tree::contained_output_with_input(&mut cmd, code.as_bytes().to_vec()),
+        codewhale_runtime::process_tree::contained_output_with_input(
+            &mut cmd,
+            code.as_bytes().to_vec(),
+        ),
     )
     .await
     .map_err(|_| ToolError::Timeout {
@@ -205,7 +208,7 @@ mod tests {
     /// The tool simply isn't advertised in that case, so happy-path
     /// tests don't fail; they just don't exercise the spawn path.
     fn node_present() -> bool {
-        crate::dependencies::resolve_node().is_some()
+        codewhale_dependencies::resolve_node().is_some()
     }
 
     fn proxy_env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
@@ -301,13 +304,13 @@ mod tests {
                     require('fs').writeFileSync('grandchild.pid', String(child.pid));\n\
                     setInterval(() => {}, 1000);";
         let input = json!({ "code": code });
-        let grandchild = crate::process_tree::drop_once_pid_written(
+        let grandchild = codewhale_runtime::process_tree::drop_once_pid_written(
             execute_js_execution_tool(&input, tmp.path(), &ToolContext::new(tmp.path())),
             &tmp.path().join("grandchild.pid"),
         )
         .await;
         assert!(
-            crate::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
+            codewhale_runtime::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
             "a process started by the dropped script is still running"
         );
     }

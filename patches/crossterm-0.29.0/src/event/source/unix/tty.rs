@@ -9,7 +9,7 @@ use signal_hook::low_level::pipe;
 
 use crate::event::timeout::PollTimeout;
 use crate::event::Event;
-use filedescriptor::{poll, pollfd, POLLIN};
+use filedescriptor::{poll, pollfd, POLLERR, POLLHUP, POLLIN};
 
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
@@ -144,22 +144,46 @@ impl EventSource for UnixInternalEventSource {
                 }
                 Ok(_) => (),
             };
-            if fds[0].revents & POLLIN != 0 {
+            if fds[0].revents & (POLLIN | POLLHUP | POLLERR) != 0 {
                 loop {
-                    let read_count = read_complete(&self.tty, &mut self.tty_buffer)?;
-                    if read_count > 0 {
-                        self.parser.advance(
-                            &self.tty_buffer[..read_count],
-                            read_count == TTY_BUFFER_SIZE,
-                        );
+                    if !self.tty.read_ready()? {
+                        break;
                     }
+                    let read_count = match self.tty.read(&mut self.tty_buffer) {
+                        Ok(0) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "terminal input source closed",
+                            ));
+                        }
+                        Ok(read_count) => read_count,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            if fds[0].revents & (POLLHUP | POLLERR) != 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "terminal input source closed",
+                                ));
+                            }
+                            break;
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                            if timeout.elapsed() {
+                                return Ok(None);
+                            }
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    self.parser.advance(
+                        &self.tty_buffer[..read_count],
+                        read_count == TTY_BUFFER_SIZE,
+                    );
 
                     if let Some(event) = self.parser.next() {
                         return Ok(Some(event));
                     }
-
-                    if read_count == 0 {
-                        break;
+                    if timeout.elapsed() {
+                        return Ok(None);
                     }
                 }
             }

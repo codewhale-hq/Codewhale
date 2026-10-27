@@ -6,5 +6,5 @@ Pressure: low
 Estimated active context: 48 tokens
 Budget used: 0.0%
 Overflow guard: 48 tokens (conservative 1.5x estimate that blocks oversized requests; not the pressure the meter and auto-compaction read)
-Top sources: Bundled constitution, language policy, and output policy (1803), Core execution discipline (295), Project instructions (160), Authority recap (88), Runtime environment (21)
+Top sources: Bundled constitution, language policy, and output policy (1803), Core execution discipline (295), Authority recap (88), Runtime environment (21), Project instructions (0)
 action: <none>

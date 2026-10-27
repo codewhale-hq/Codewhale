@@ -14,11 +14,8 @@
 //!   of width-independent [`Block`]s. The block kind already records all the
 //!   classification decisions (heading level, list bullet, code block membership)
 //!   that don't depend on width.
-//! * [`render_parsed`] takes a `ParsedMarkdown` plus a width and a base style and
+//! * `render_parsed` takes a `ParsedMarkdown` plus a width and a base style and
 //!   produces `Vec<Line<'static>>`. It only does word-wrap and span styling.
-//!
-//! [`render_markdown`] is kept as a thin convenience that does both — useful for
-//! callers (Thinking body, message body) that don't want to manage the cache.
 //!
 //! The transcript cache layer (see `tui/transcript.rs`) caches the parsed AST per
 //! cell and re-runs only the render step on width changes. That makes resize a
@@ -653,6 +650,7 @@ fn push_parsed_line(
 /// formatting. The AST is owned by the caller (typically the transcript cache),
 /// so width-only changes can call `render_parsed` again with the same AST and
 /// skip the parse step entirely.
+#[cfg(test)]
 #[must_use]
 pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> Vec<Line<'static>> {
     render_parsed_tagged_with_palette(parsed, width, base_style, detected_palette_mode())
@@ -956,9 +954,8 @@ fn highlight_incremental_code_line(
 
 /// Convenience wrapper: parse + render in one call.
 ///
-/// Equivalent to `render_parsed(&parse(content), width, base_style)`. Callers
-/// that don't manage their own cache (the Thinking body, the immediate message
-/// body) use this.
+/// Equivalent to `render_parsed(&parse(content), width, base_style)`.
+#[cfg(test)]
 #[must_use]
 pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line<'static>> {
     let parsed = parse(content);

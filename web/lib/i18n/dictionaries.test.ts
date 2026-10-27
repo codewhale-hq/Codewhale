@@ -311,7 +311,7 @@ describe("website dictionaries", () => {
     const enKeys = Object.keys(EN_COMPUTER_USE).sort();
     for (const locale of [...DICTIONARY_LOCALES, "und"]) {
       expect(Object.keys(getComputerUse(locale)).sort(), `${locale} computer-use keys`).toEqual(enKeys);
-      expect(getComputerUse(locale).steps, `${locale} computer-use steps`).toHaveLength(4);
+      expect(getComputerUse(locale).steps, `${locale} computer-use steps`).toHaveLength(3);
     }
     // The download page is translated for every routed locale, not passed
     // through: each dictionary locale resolves its own object with its own

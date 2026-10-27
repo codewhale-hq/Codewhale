@@ -121,9 +121,9 @@ fn request_draft(app: &App, focus: &str) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tools::github::GithubTool;
     use crate::tools::spec::{ToolContext, ToolSpec};
+    use codewhale_runtime::config::Config;
     use serde_json::json;
     use tempfile::TempDir;
 

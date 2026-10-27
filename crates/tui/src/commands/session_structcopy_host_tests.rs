@@ -1,12 +1,12 @@
 //! Real-host preservation fixtures, captured before FEAT-026 production edits.
 //! These fixtures stay outside the portable session command closure.
 use super::{CommandResult, execute};
-use crate::config::Config;
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use crate::tui::app::{App, TuiOptions};
 use crate::tui::clipboard::ClipboardHandler;
 use codewhale_localization::{Locale, tr};
 use codewhale_models::{ContentBlock, ImageUrlContent, Message, Role, ToolCaller};
+use codewhale_runtime::config::Config;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -374,6 +374,8 @@ fn structcopy_host_exposes_exact_authority_and_filters_private_data_before_cross
         trust,
         login,
         work_surface,
+        navigation,
+        voice_input,
     } = bundle.contexts(capabilities).into_parts();
     assert!(
         permissions.is_none()
@@ -383,6 +385,8 @@ fn structcopy_host_exposes_exact_authority_and_filters_private_data_before_cross
             && trust.is_none()
             && login.is_none()
             && work_surface.is_none()
+            && navigation.is_none()
+            && voice_input.is_none()
     );
     assert!(presentation.is_some());
     assert!(

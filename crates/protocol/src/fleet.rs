@@ -17,6 +17,26 @@ use serde_json::Value;
 
 use super::Status;
 
+/// Explicit boundary migration for pre-Fleet serialized role tokens.
+///
+/// Call this only at load / parse edges. Runtime code must use Fleet role
+/// names via `FleetRole::as_str`. Returns `None` for tokens that are
+/// already canonical or unknown — callers should prefer `FleetRole::parse`
+/// for full acceptance (canonical + legacy).
+#[must_use]
+pub fn migrate_legacy_role_token(token: &str) -> Option<&'static str> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "worker" | "general-purpose" | "general_purpose" | "default" => Some("general"),
+        "scout" | "exploration" | "explorer" => Some("explore"),
+        "plan" | "planning" | "awaiter" => Some("planner"),
+        "review" | "code-review" | "code_review" => Some("reviewer"),
+        "builder" | "implementer" | "implementation" => Some("implement"),
+        "verifier" | "verify" | "verification" | "validator" | "tester" => Some("test"),
+        "consultant" | "oracle" => Some("advisor"),
+        _ => None,
+    }
+}
+
 pub const FLEET_PROTOCOL_VERSION: &str = "0.1.0";
 
 /// Globally unique identifier for a fleet run.
@@ -1870,5 +1890,122 @@ mod tests {
                 "resolved-route JSON must not contain secret marker {needle:?}: {json}"
             );
         }
+    }
+}
+
+/// Runtime delegation has no default product depth limit. Explicit owner
+/// values still restrict child authority; zero disables delegation.
+pub const DEFAULT_SPAWN_DEPTH: u32 = u32::MAX;
+
+/// Shell posture, ordered most → least restrictive so `min_with` is the safe
+/// side of a clamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellCeiling {
+    None,
+    ReadOnly,
+    Full,
+}
+
+impl ShellCeiling {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ReadOnly => "read_only",
+            Self::Full => "full",
+        }
+    }
+
+    #[must_use]
+    pub fn min_with(self, other: Self) -> Self {
+        if self <= other { self } else { other }
+    }
+}
+
+/// A Runtime child-authority envelope.
+///
+/// This type is intentionally not part of `ExactMember`. Exact Fleet files
+/// choose identity, route, and reasoning; Runtime intersects its role posture
+/// with the live parent after member selection. Keeping the envelope as a
+/// separate type lets receipts describe the authority that Runtime actually
+/// installed without turning a saved Fleet into a trust boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionCeiling {
+    pub write: bool,
+    /// Whether the Runtime child may be handed a **model-visible network tool**
+    /// (fetch, browse, HTTP).
+    ///
+    /// This is deliberately *not* a statement about transport. Host-owned
+    /// provider inference — the ordinary API call CodeWhale makes on the
+    /// member's behalf — always happens over the network and is not governed
+    /// by this field. A child with `network_tool = false` still runs on a
+    /// remote model; it simply has no tool with which to reach the network
+    /// itself. Receipts disclose that distinction rather than implying an
+    /// air-gap.
+    #[serde(alias = "network")]
+    pub network_tool: bool,
+    pub shell: ShellCeiling,
+    /// Nested-delegation budget the Runtime child may consume.
+    pub delegation_depth: u32,
+    /// Whether the Runtime child may be handed tools at all.
+    pub tools: bool,
+}
+
+impl PermissionCeiling {
+    /// The Router's fixed posture: no tools (so no network tool), no shell, no
+    /// writes, no delegation. Not configurable — see `RouterMember`.
+    ///
+    /// The Router itself is still *inferred* by its configured provider over
+    /// the network; that is host-owned transport, disclosed on the receipt.
+    pub const ROUTER: Self = Self {
+        write: false,
+        network_tool: false,
+        shell: ShellCeiling::None,
+        delegation_depth: 0,
+        tools: false,
+    };
+
+    /// Legacy named presets retained for Runtime compatibility and tests.
+    ///
+    /// The exact Fleet parser accepts a historic `permissions` key only as
+    /// ignored input; no preset selected here is projected onto a member.
+    pub fn preset(name: &str) -> Option<Self> {
+        let base = |write, network_tool, shell, delegation_depth| Self {
+            write,
+            network_tool,
+            shell,
+            delegation_depth,
+            tools: true,
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::ROUTER),
+            "analyst" => Some(base(false, false, ShellCeiling::None, 0)),
+            "read_only" | "readonly" => Some(base(false, false, ShellCeiling::ReadOnly, 0)),
+            "tester" | "verifier" => Some(base(false, false, ShellCeiling::Full, 0)),
+            "read_write" | "readwrite" => Some(base(true, false, ShellCeiling::Full, 0)),
+            "full" => Some(base(true, true, ShellCeiling::Full, 1)),
+            _ => None,
+        }
+    }
+
+    /// Narrow this ceiling against the active session posture. Every field
+    /// takes the more restrictive side, so the result can never grant more
+    /// than either input.
+    #[must_use]
+    pub fn clamp_to(self, session: Self) -> Self {
+        Self {
+            write: self.write && session.write,
+            network_tool: self.network_tool && session.network_tool,
+            shell: self.shell.min_with(session.shell),
+            delegation_depth: self.delegation_depth.min(session.delegation_depth),
+            tools: self.tools && session.tools,
+        }
+    }
+}
+
+impl Default for PermissionCeiling {
+    fn default() -> Self {
+        Self::preset("read_only").expect("read_only is a known preset")
     }
 }

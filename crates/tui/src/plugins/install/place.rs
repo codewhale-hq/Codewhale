@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::skills::install::{self as skill_install, validate_skill_name_segment};
+use codewhale_skill_install::install::{
+    self as skill_install, INSTALLED_FROM_MARKER, validate_skill_name_segment,
+};
 
 use super::stage::StagedPlugin;
-use super::{INSTALLED_FROM_MARKER, InstalledPlugin, PluginInstallError, PluginInstallOutcome};
+use super::{InstalledPlugin, PluginInstallError, PluginInstallOutcome};
 
 pub(super) fn finalize_install(
     staged: StagedPlugin,

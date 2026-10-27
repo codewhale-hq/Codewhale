@@ -15,11 +15,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::fleet_exact::{
-    ExactFleet, ExactFleetError, FrozenRoute, PermissionCeiling, RequestedReasoning,
-    canonical_member_key, canonical_role_key,
+    ExactFleet, ExactFleetError, FrozenRoute, RequestedReasoning, canonical_member_key,
+    canonical_role_key,
 };
 use crate::named_fleet::{FleetDocument, FleetSchema};
 use crate::reasoning_router::CapturedReasoningRouter;
+use codewhale_protocol::fleet::PermissionCeiling;
 
 /// A Fleet identity qualified by where the definition came from.
 ///
@@ -682,11 +683,11 @@ permissions = "analyst"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_exact::ShellCeiling;
     use crate::reasoning_router::{
         LEGACY_INLINE_ROUTER_ORIGIN, REASONING_ROUTER_SERVICE_KIND, ReasoningRouterProfile,
         RouterCallReasoning,
     };
+    use codewhale_protocol::fleet::ShellCeiling;
 
     /// A Fleet that references a saved, reusable Router profile — the shape new
     /// Fleets use.

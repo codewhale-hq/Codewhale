@@ -484,7 +484,7 @@ fn fetch_artifact_id(url: &str, bytes: &[u8]) -> String {
     let mut identity = Vec::with_capacity(url.len() + bytes.len());
     identity.extend_from_slice(url.as_bytes());
     identity.extend_from_slice(bytes);
-    let digest = crate::hashing::sha256_hex(&identity);
+    let digest = codewhale_runtime::hashing::sha256_hex(&identity);
     format!("fetch_{}", &digest[..16])
 }
 
@@ -772,7 +772,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_policy_denies_blocked_host() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),
             allow: vec!["api.deepseek.com".to_string()],
@@ -793,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_opt_in_does_not_allow_restricted_ip_literal() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Allow.into(),

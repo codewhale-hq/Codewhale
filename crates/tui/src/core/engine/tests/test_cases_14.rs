@@ -55,7 +55,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
         |block| matches!(block, ContentBlock::Text { text, .. } if text == "Keep the original task")
     ));
     let restored =
-        crate::runtime_handoff::restored_subagent_checkpoint_display(&snapshot.messages[1])
+        codewhale_models::turn_classify::restored_subagent_checkpoint_display(&snapshot.messages[1])
             .expect("projected headless checkpoint");
     assert!(restored.contains("agent_headless"));
     assert!(restored.contains("Checkpoint: engine restore is covered."));
@@ -68,7 +68,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
 #[tokio::test]
 async fn session_snapshot_records_the_literal_custom_table_id() {
     let tmp = tempdir().expect("tempdir");
-    let api_config = crate::config::parse_config_base(
+    let api_config = codewhale_runtime::config::parse_config_base(
         r#"provider = "custom"
 [providers.custom]
 kind = "openai-compatible"
@@ -134,9 +134,7 @@ async fn edit_last_turn_preserves_current_mode() {
         .mount(&server)
         .await;
 
-    let api_config = Config {
-        ..Config::default()
-    }
+    let api_config = Config::default()
     .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -271,9 +269,7 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
         .mount(&server)
         .await;
 
-    let api_config = Config {
-        ..Config::default()
-    }
+    let api_config = Config::default()
     .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -412,9 +408,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
         .mount(&server)
         .await;
 
-    let api_config = Config {
-        ..Config::default()
-    }
+    let api_config = Config::default()
     .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -633,9 +627,11 @@ async fn provider_runtime_status_reports_configured_zai_cap_without_client() {
         let _lock = lock_test_env();
         let _zai_key = EnvVarGuard::remove("ZAI_API_KEY");
         let _zai_alt_key = EnvVarGuard::remove("Z_AI_API_KEY");
-        let api_config = Config {
-            provider: Some("zai".to_string()),
-            ..Config::default()
+        let api_config = {
+            let __cw_config_init_3_0 = Some("zai".to_string());
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value
         };
         Engine::new(EngineConfig::default(), &api_config)
     };
@@ -649,7 +645,7 @@ async fn provider_runtime_status_reports_configured_zai_cap_without_client() {
     assert_eq!(status.provider, ProviderKind::Zai);
     assert_eq!(
         status.request_concurrency_limit,
-        Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
+        Some(codewhale_runtime::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
     );
     assert_eq!(status.active_provider_requests, 0);
 
@@ -731,9 +727,9 @@ fn context_budget_scenario() {
         let _lock = lock_test_env();
         let budget = context_input_budget_for_provider(ProviderKind::OpenaiCodex, "gpt-5.5")
             .expect("OpenAI Codex should use a conservative fallback without route metadata");
-        let expected = usize::try_from(crate::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
+        let expected = usize::try_from(codewhale_runtime::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
             .expect("context window fits usize")
-            - crate::config::provider_capability(ProviderKind::OpenaiCodex, "gpt-5.5")
+            - crate::provider_lake::provider_capability(ProviderKind::OpenaiCodex, "gpt-5.5")
                 .max_output
                 .expect("Codex route publishes a deliberate conservative output cap")
                 as usize
@@ -754,19 +750,19 @@ fn route_context_scenario() {
 
         assert_eq!(
             budget.window_tokens,
-            u64::from(crate::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
+            u64::from(codewhale_runtime::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
         );
         assert_eq!(
             budget.output_cap_tokens,
             u64::from(
-                crate::config::provider_capability(ProviderKind::OpenaiCodex, "gpt-5.5")
+                crate::provider_lake::provider_capability(ProviderKind::OpenaiCodex, "gpt-5.5")
                     .max_output
                     .expect("Codex route publishes a deliberate conservative output cap")
             )
         );
         assert_eq!(
             budget.pressure,
-            crate::context_budget::PressureLevel::Critical
+            codewhale_runtime::context_budget::PressureLevel::Critical
         );
         assert!(!budget.fits_additional(1));
     }
@@ -873,7 +869,7 @@ async fn preflight_guard_measures_honest_input_against_the_input_ceiling() {
     let target_ceiling = u64::try_from((honest + inflated) / 2).unwrap();
     engine.active_route_limits = Some(codewhale_config::route::RouteLimits {
         context_tokens: Some(
-            target_ceiling + output_cap + crate::context_budget::CONTEXT_HEADROOM_TOKENS,
+            target_ceiling + output_cap + codewhale_runtime::context_budget::CONTEXT_HEADROOM_TOKENS,
         ),
         input_tokens: None,
         output_tokens: Some(output_cap),
@@ -1588,7 +1584,7 @@ fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor(
     // which is what proves the metadata (not the tool name) did the work.
     let unbudgeted = ToolResult::success(content.clone());
     let compacted = compact_tool_result_for_context("deepseek-v3.2-128k", "read", &unbudgeted);
-    assert!(compacted.contains(crate::tools::truncate::SPILLOVER_RECOVERY_HINT));
+    assert!(compacted.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT));
     assert!(compacted.len() < content.len());
 
     // A result that overran its own declared budget is not exempt.
@@ -1596,7 +1592,7 @@ fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor(
         "read_budget_bytes": 1_000
     }));
     let compacted_overrun = compact_tool_result_for_context("deepseek-v3.2-128k", "read", &overrun);
-    assert!(compacted_overrun.contains(crate::tools::truncate::SPILLOVER_RECOVERY_HINT));
+    assert!(compacted_overrun.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT));
 }
 
 #[test]

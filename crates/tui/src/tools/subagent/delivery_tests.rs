@@ -502,7 +502,7 @@ async fn enforced_readonly_python_queries_sqlite_under_a_live_peer_write_claim()
         runtime.context = ToolContext::new(tmp.path());
         runtime.context.auto_approve = true;
         runtime.context.elevated_sandbox_policy =
-            Some(crate::sandbox::SandboxPolicy::DangerFullAccess);
+            Some(codewhale_sandbox::SandboxPolicy::DangerFullAccess);
         #[cfg(target_os = "linux")]
         runtime
             .context

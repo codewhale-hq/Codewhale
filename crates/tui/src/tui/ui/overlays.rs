@@ -208,13 +208,13 @@ pub(crate) async fn cycle_permission_posture(
         app.config_profile.as_deref(),
         &app.workspace,
     );
-    let changed = if control == crate::config::ApprovalPolicyControl::RootConfig {
+    let changed = if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
         app.cycle_root_approval_posture()
     } else {
         app.cycle_approval_posture()
     };
     if changed {
-        if control == crate::config::ApprovalPolicyControl::RootConfig {
+        if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
             config.approval_policy = None;
         }
         sync_mode_update(app, engine_handle).await;
@@ -328,9 +328,11 @@ pub(crate) fn open_diff_pager(app: &mut App, title: String, diff: &str) {
     // `PagerView::from_text` applies to every other pager body.
     let mut sanitized = String::with_capacity(diff.len());
     crate::tui::osc8::strip_ansi_into(diff, &mut sanitized);
-    let lines = crate::tui::diff_render::render_diff(&sanitized, width.saturating_sub(2));
-    app.view_stack
-        .push(PagerView::new(title, lines).with_copy_text(sanitized));
+    app.view_stack.push(PagerView::from_diff(
+        title,
+        sanitized,
+        width.saturating_sub(2),
+    ));
 }
 
 pub(crate) fn open_context_inspector(app: &mut App) {
@@ -338,7 +340,7 @@ pub(crate) fn open_context_inspector(app: &mut App) {
 }
 
 pub(crate) fn open_external_url(url: &str) -> Result<()> {
-    crate::utils::open_url(url)
+    codewhale_runtime::browser::open_url(url)
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
@@ -413,7 +415,7 @@ pub(crate) fn toggle_live_transcript_overlay(app: &mut App) {
 pub(crate) fn open_model_picker_for_provider(
     app: &mut App,
     config: &Config,
-    identity: &crate::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
 ) {
     if let Err(reason) = config.verify_provider_identity(identity) {
         app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
@@ -439,7 +441,10 @@ pub(crate) fn open_model_picker_for_provider(
 /// explicit empty array — not a missing key — is what disables defaults, so we
 /// store `Some(vec![])` rather than `None`.
 pub(crate) fn disable_hotbar(app: &mut App, config: &mut Config) {
-    match crate::config_persistence::persist_hotbar_bindings(app.config_path.as_deref(), &[]) {
+    match codewhale_runtime::config_persistence::persist_hotbar_bindings(
+        app.config_path.as_deref(),
+        &[],
+    ) {
         Ok(path) => {
             config.hotbar = Some(Vec::new());
             app.status_message = Some(format!(
@@ -523,7 +528,7 @@ pub(crate) fn push_approval_request_view(
     approval_key: &str,
     approval_grouping_key: &str,
     intent_summary: Option<&str>,
-    default_selection: crate::config::ApprovalDefaultSelection,
+    default_selection: codewhale_runtime::config::ApprovalDefaultSelection,
     timeout: Option<std::time::Duration>,
 ) {
     let mut request = ApprovalRequest::new_with_intent(

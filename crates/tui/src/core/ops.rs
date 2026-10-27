@@ -4,10 +4,10 @@
 //! allowing the UI to remain responsive while the engine processes requests.
 
 use crate::compaction::CompactionConfig;
-use crate::config::ProviderKind;
 use crate::route_runtime::ResolvedRuntimeRoute;
 use crate::tools::goal::GoalStatus;
 use codewhale_config::AppMode;
+use codewhale_config::ProviderKind;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{Message, SystemPrompt};
 use codewhale_protocol::runtime::DynamicToolSpec;
@@ -15,6 +15,8 @@ use std::path::PathBuf;
 
 /// Prefix used for tool-call ids created by local composer shell shortcuts.
 pub const USER_SHELL_TOOL_ID_PREFIX: &str = "user_shell_";
+
+pub type FleetMemberStarted = Result<String, String>;
 
 /// Snapshot of session state for saving to disk.
 /// Returned by `Op::GetSessionSnapshot` via a oneshot channel.
@@ -37,6 +39,8 @@ pub struct SessionSnapshot {
     pub model_provider_id: Option<String>,
     pub workspace: PathBuf,
     pub system_prompt: Option<SystemPrompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_assembly: Option<serde_json::Value>,
     pub mode: String,
 }
 
@@ -235,6 +239,10 @@ pub struct TurnSpec {
 /// Operations that can be submitted to the engine.
 #[derive(Debug)]
 pub enum Op {
+    Review {
+        turn: TurnSpec,
+        request: codewhale_protocol::op::ReviewOperation,
+    },
     /// Send a message to the AI
     SendMessage(TurnSpec),
 
@@ -321,6 +329,13 @@ pub enum Op {
     /// children answer with a receipt explaining why they cannot continue.
     FollowUpSubAgent { agent_id: String, text: String },
 
+    StartFleetMember {
+        start: Box<crate::tools::subagent::FleetMemberStart>,
+        tx: std::sync::Arc<
+            std::sync::Mutex<Option<tokio::sync::oneshot::Sender<FleetMemberStarted>>>,
+        >,
+    },
+
     /// Change the operating mode
     ChangeMode {
         mode: AppMode,
@@ -356,7 +371,7 @@ pub enum Op {
 
     /// Update the web-search backend for subsequent tool calls.
     SetSearchProvider {
-        provider: crate::config::SearchProvider,
+        provider: codewhale_runtime::config::SearchProvider,
     },
 
     /// Replace the engine's merged Fleet roster after the setup wizard saves a

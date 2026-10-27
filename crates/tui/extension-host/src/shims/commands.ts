@@ -30,14 +30,17 @@
  * so `' hello'`), `commandId`, `signal` (aborted when the core cancels the
  * call), an always-empty `attachments`, and the read-only strings `workspace`
  * (where the user ran the command) and `dataDir` (the plugin's own writable
- * directory). Not provided: DSH's `agent`
- * (the host has no agent or session handle), attachments (`input.attachments`
- * is refused), `recordInput`/`definitionId` (accepted, ignored: the core logs
- * nothing about a command), `list`/`find`/`execute`, and `sourceEventSeq`
+ * directory). With an authoritative caller session, `agent` exposes its id
+ * and one text-only followup captured during this command and returned as
+ * Submit after successful completion. It is sealed on settlement or cancel.
+ * No general agent/session service is provided. Not provided: attachments (`input.attachments`
+ * is refused), `recordInput`/`definitionId` (accepted, ignored: Core owns
+ * command receipts), `list`/`find`/`execute`, and `sourceEventSeq`
  * (accepted in a result, ignored).
  */
 import { Service } from '@deepseek-ai/cordis'
 import type { CommandResultWire } from '../protocol.ts'
+import { isJson } from '../json.ts'
 import type { OwnedEntry, OwnerBase } from './owned.ts'
 
 /** DSH's command grammar. The core enforces the same one. */
@@ -71,6 +74,7 @@ export interface CommandInvocation {
   readonly sessionId?: string
   readonly agentId?: string
   readonly originTurnId?: string
+  readonly agent: Readonly<{ id: string; followup(message: unknown): void }>
 }
 
 /** Reject an invalid definition before it reaches the core, with a message that names the problem. */
@@ -116,19 +120,74 @@ export function commandSpec(command: NormalizedCommand) {
 }
 
 export function makeInvocation(
+  command: string,
   args: string,
   commandId: string,
   signal: AbortSignal,
   context: { workspace?: string; dataDir?: string; sessionId?: string; agentId?: string; originTurnId?: string } = {},
-): CommandInvocation {
-  return Object.freeze({
+) {
+  let open = !signal.aborted
+  let prompt: string | undefined
+  let failure: Error | undefined
+  const close = () => {
+    open = false
+    prompt = undefined
+    signal.removeEventListener('abort', close)
+  }
+  signal.addEventListener('abort', close, { once: true })
+  const reject: (reason: string) => never = (reason) => {
+    failure ??= new TypeError(`command "${command}" followup ${reason}`)
+    throw failure
+  }
+  const agent = context.sessionId?.trim() ? Object.freeze({
+    id: context.agentId ?? context.sessionId,
+    followup(message: unknown) {
+      if (!open || signal.aborted) reject('is unavailable after command settlement or cancellation')
+      if (failure) throw failure
+      if (prompt !== undefined) reject('accepts exactly one message per invocation')
+      if (!isJson(message) || message === null || Array.isArray(message) || typeof message !== 'object') {
+        reject('requires a lossless JSON user message')
+      }
+      if (Object.keys(message).some(key => !['id', 'role', 'content', 'source'].includes(key))
+        || typeof message.id !== 'string' || message.id.trim() === '' || message.id.length > 256
+        || message.role !== 'user') reject('requires only id, user role, content and source fields')
+      const source = message.source
+      if (!source || Array.isArray(source) || typeof source !== 'object'
+        || Object.keys(source).some(key => key !== 'kind') || typeof source.kind !== 'string'
+        || source.kind.trim() === '' || source.kind.length > 128) reject('requires a source with one bounded kind')
+      const content = message.content
+      if (!Array.isArray(content) || content.length !== 1) reject('requires exactly one text block')
+      const block = content[0]
+      if (!block || Array.isArray(block) || typeof block !== 'object'
+        || Object.keys(block).some(key => key !== 'type' && key !== 'text')
+        || block.type !== 'text' || typeof block.text !== 'string') reject('requires exactly one plain text block')
+      if (block.text.trim() === '' || Buffer.byteLength(block.text, 'utf8') > 128 * 1024) reject('text must be non-empty and at most 128 KiB')
+      prompt = block.text
+    },
+  }) : undefined
+  const invocation = Object.freeze(Object.defineProperty({
     commandId,
     args,
     rawInput: args === '' ? '' : ` ${args}`,
     attachments: NO_ATTACHMENTS,
     signal,
     ...context,
-  })
+  }, 'agent', { get() {
+    if (!agent) reject('requires an authoritative caller session')
+    return agent
+  } })) as CommandInvocation
+  return {
+    invocation,
+    close,
+    complete(value: unknown): CommandResultWire {
+      if (!open || signal.aborted) reject('is unavailable after command settlement or cancellation')
+      if (failure) throw failure
+      const result = normalizeResult(command, value)
+      if (prompt === undefined || result.kind === 'error') return result
+      if (result.kind === 'submit') reject('conflicts with an explicit Submit result')
+      return { kind: 'submit', prompt, ...(result.text === undefined ? {} : { text: result.text }) }
+    },
+  }
 }
 
 /** Validate and detach whatever a handler returned. */

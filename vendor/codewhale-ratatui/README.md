@@ -676,7 +676,7 @@ let composer = NativeComposer::new("Review the changes").focused(true);
 let workbar = Workbar::new(WorkbarPanel::Tasks, vec![
     WorkbarRow::new("task:review", "Review the changes").mark("●"),
 ]);
-let shell = TerminalShell::new(composer.desired_height(area.width, area.height))
+let shell = TerminalShell::new(composer.desired_height(area.width, area.height / 2))
     .workbar_rows(workbar.height(area.width, &theme));
 shell.paint(area, buf, &theme);
 let regions = shell.areas(area);

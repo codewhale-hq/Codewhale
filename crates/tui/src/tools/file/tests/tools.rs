@@ -639,7 +639,7 @@ fn clean_pdf_text_preserves_leading_indentation() {
 
 #[tokio::test]
 async fn read_file_pdf_path_uses_optional_pdftotext_adapter() {
-    if !sample_pdf_present() || crate::dependencies::resolve_pdftotext().is_none() {
+    if !sample_pdf_present() || codewhale_dependencies::resolve_pdftotext().is_none() {
         return;
     }
     let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
@@ -686,7 +686,7 @@ async fn test_write_file_tool() {
             "path": "output.txt",
             "outcome": "created",
             "size": "test content".len(),
-            "sha256": crate::hashing::sha256_hex(b"test content"),
+            "sha256": codewhale_runtime::hashing::sha256_hex(b"test content"),
         }])
     );
     assert!(
@@ -1223,7 +1223,7 @@ async fn test_edit_file_tool() {
             "path": "edit_me.txt",
             "outcome": "updated",
             "size": fs::read(tmp.path().join("edit_me.txt")).expect("edited").len(),
-            "sha256": crate::hashing::sha256_hex(
+            "sha256": codewhale_runtime::hashing::sha256_hex(
                 fs::read(tmp.path().join("edit_me.txt")).expect("edited")
             ),
         }])
@@ -2932,7 +2932,7 @@ async fn read_file_refusal_names_the_callers_spelling_not_the_symlink_target() {
     );
 }
 
-// Reads process-global `HOME` (via `effective_home_dir`) and then resolves `~`
+// Reads process-global `HOME` (via `codewhale_paths::user_home`) and then resolves `~`
 // again through the tool, so it must hold the env lock for the whole span: any
 // sibling that rebinds `HOME` between those two reads makes the fixture path
 // stop matching the tilde path.
@@ -2943,7 +2943,7 @@ async fn read_and_write_file_home_path_in_allowed_real_home_fixture() {
     let home = tempfile::tempdir().expect("home tempdir");
     let _home = crate::test_support::EnvVarGuard::set("HOME", home.path());
     let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", home.path());
-    let real_home = crate::config::effective_home_dir().expect("test home must be available");
+    let real_home = codewhale_paths::user_home().expect("test home must be available");
     let home_fixture = tempfile::Builder::new()
         .prefix("cw_home_tool_fixture_")
         .tempdir_in(&real_home)
@@ -3061,7 +3061,7 @@ async fn read_file_home_path_trusted_external_allowance() {
     // test needs is mutual exclusion against siblings that DO rebind `HOME`,
     // not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
-    let real_home = crate::config::effective_home_dir().expect("test home must be available");
+    let real_home = codewhale_paths::user_home().expect("test home must be available");
     let trusted_fixture = tempfile::Builder::new()
         .prefix("cw_home_trusted_fixture_")
         .tempdir_in(&real_home)
@@ -3230,7 +3230,7 @@ async fn read_file_refusal_names_home_spelling_not_denied_symlink_target() {
     // test needs is mutual exclusion against siblings that DO rebind `HOME`,
     // not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
-    let real_home = crate::config::effective_home_dir().expect("test home must be available");
+    let real_home = codewhale_paths::user_home().expect("test home must be available");
     let home_fixture = tempfile::Builder::new()
         .prefix("cw_home_symlink_fixture_")
         .tempdir_in(&real_home)

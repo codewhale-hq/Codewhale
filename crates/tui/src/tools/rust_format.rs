@@ -113,7 +113,10 @@ async fn nearest_config(path: &Path) -> Option<PathBuf> {
 /// Run `rustfmt` over `source`, returning its output, or `None` on any failure.
 async fn rustfmt(path: &Path, source: &str) -> Option<String> {
     let mut command = Command::new("rustfmt");
-    crate::child_env::apply_to_tokio_command(&mut command, std::iter::empty::<(&str, &str)>());
+    codewhale_runtime::child_env::apply_to_tokio_command(
+        &mut command,
+        std::iter::empty::<(&str, &str)>(),
+    );
     command
         .arg("--emit")
         .arg("stdout")

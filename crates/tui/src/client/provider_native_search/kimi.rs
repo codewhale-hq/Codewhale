@@ -9,10 +9,9 @@ use super::{
     ProviderNativeSearchClient, ProviderNativeSearchRequest, ProviderNativeSearchResponse,
     citation_from_url, citations_from_text, finish_reason_is_length, joined_answer, push_citation,
 };
-use crate::{
-    client::api_url,
-    config::{MOONSHOT_KIMI_K3_MODEL, moonshot_base_url_is_exact_kimi_code},
-};
+use crate::client::api_url;
+use codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL;
+use codewhale_runtime::config::moonshot_base_url_is_exact_kimi_code;
 
 const MAX_NATIVE_SEARCH_ROUNDS: usize = 4;
 const MAX_NATIVE_SEARCH_TOOL_CALLS: usize = 8;
@@ -327,7 +326,7 @@ fn parse_final_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ProviderConfig, ProvidersConfig};
+    use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
     use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -433,9 +432,9 @@ mod tests {
 
     #[test]
     fn model_without_a_documented_ceiling_keeps_4096() {
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("moonshot".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 moonshot: ProviderConfig {
                     api_key: Some("moonshot-test-key".to_string()),
                     base_url: Some("https://api.moonshot.ai/v1".to_string()),
@@ -443,8 +442,11 @@ mod tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let client = ProviderNativeSearchClient::new(
             crate::client::CodewhaleClient::new(&config).expect("test Moonshot client"),
@@ -462,9 +464,9 @@ mod tests {
     #[tokio::test]
     async fn k3_formula_executes_tool_fiber_and_returns_citations() {
         let server = MockServer::start().await;
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("moonshot".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 moonshot: ProviderConfig {
                     api_key: Some("moonshot-test-key".to_string()),
                     base_url: Some(format!("{}/v1", server.uri())),
@@ -472,8 +474,11 @@ mod tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let client = ProviderNativeSearchClient::new(
             crate::client::CodewhaleClient::new(&config).expect("test Moonshot client"),

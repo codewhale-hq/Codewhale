@@ -38,6 +38,7 @@ pub struct DiffFileSummary {
 #[derive(Debug, Clone)]
 pub struct BoundedDiffRender {
     pub lines: Vec<Line<'static>>,
+    pub origins: Vec<usize>,
     pub omitted_rows: usize,
 }
 
@@ -52,8 +53,11 @@ pub fn render_diff_bounded(diff: &str, width: u16, max_body_rows: usize) -> Boun
     let mut rendered = render_diff_body_bounded(diff, width, max_body_rows);
     if !summaries.is_empty() {
         let mut lines = render_diff_summary(&summaries, width);
+        let mut origins = vec![0; lines.len()];
+        origins.extend(rendered.origins.iter().map(|origin| origin + 1));
         lines.append(&mut rendered.lines);
         rendered.lines = lines;
+        rendered.origins = origins;
     }
     rendered
 }
@@ -278,29 +282,38 @@ pub fn render_diff_body_bounded(diff: &str, width: u16, max_rows: usize) -> Boun
 
 struct BoundedLineCollector {
     lines: Vec<Line<'static>>,
+    origins: Vec<usize>,
     max_rows: usize,
     total_rows: usize,
+    source_rows: usize,
 }
 
 impl BoundedLineCollector {
     fn new(max_rows: usize) -> Self {
         Self {
             lines: Vec::with_capacity(max_rows.min(256)),
+            origins: Vec::with_capacity(max_rows.min(256)),
             max_rows,
             total_rows: 0,
+            source_rows: 0,
         }
     }
 
     fn extend(&mut self, rows: Vec<Line<'static>>) {
         self.total_rows = self.total_rows.saturating_add(rows.len());
         let remaining = self.max_rows.saturating_sub(self.lines.len());
+        let kept = rows.len().min(remaining);
         self.lines.extend(rows.into_iter().take(remaining));
+        self.origins
+            .extend(std::iter::repeat_n(self.source_rows, kept));
+        self.source_rows += 1;
     }
 
     fn finish(self) -> BoundedDiffRender {
         BoundedDiffRender {
             omitted_rows: self.total_rows.saturating_sub(self.lines.len()),
             lines: self.lines,
+            origins: self.origins,
         }
     }
 }

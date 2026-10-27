@@ -519,7 +519,7 @@ Codewhale's ambient environment. Its environment is built as:
 
 1. a sanitized fixed allowlist of parent variables — `PATH`, `HOME`, `USER`,
    `LANG` and the other `LC_*`/locale entries, `TERM`, `SHELL`, `TMPDIR`,
-   proxy variables, color/terminal entries such as `NO_COLOR`, `CARGO_HOME`/`RUSTUP_HOME`/`RUSTUP_TOOLCHAIN`, the Windows system and MSVC toolchain entries, and other platform keys (the full list lives in `crates/tui/src/child_env.rs`) — and nothing else. Variables
+   proxy variables, color/terminal entries such as `NO_COLOR`, `CARGO_HOME`/`RUSTUP_HOME`/`RUSTUP_TOOLCHAIN`, the Windows system and MSVC toolchain entries, and other platform keys (the full list lives in `crates/runtime/src/child_env.rs`) — and nothing else. Variables
    outside that allowlist, including anything that looks like a secret, are
    dropped;
 2. then the `KEY=VALUE` pairs your `shell_env` hooks produced, applied on top.

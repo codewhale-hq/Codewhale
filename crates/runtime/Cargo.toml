@@ -11,19 +11,20 @@ description = "Headless Codewhale runtime, split out of the terminal UI one modu
 workspace = true
 
 # Test helpers (process-global state guards, snapshots, diff renders) that
-# the TUI's tests use. It only *adds* `pub` items; it changes no behavior.
+# the TUI's tests use. It adds `pub` items, and the side-effect trap that
+# counts external credential reads; it also exposes the existing shared test fixtures.
 # The TUI enables it from [dev-dependencies] only, so `-p codewhale-cli` /
 # `-p codewhale-tui` release builds never see it; a `--workspace
 # --all-features` build does, which is harmless for helpers.
 #
 # `test-thread-scoped-state` is the one behavior switch: it makes the retry
-# banner and the provider-wide `Retry-After` pause per-thread so concurrent
-# tests cannot see each other's HTTP retries (see `retry_status`). It takes
+# banner, provider-wide `Retry-After` pause, and configuration state paths
+# use the existing sealed test scope. It takes
 # effect only with debug assertions, so no optimized build ever carries it,
 # even under `--all-features`.
 [features]
-test-support = ["dep:tempfile"]
-test-thread-scoped-state = []
+test-support = ["dep:ring"]
+test-thread-scoped-state = ["test-support"]
 
 [lib]
 name = "codewhale_runtime"
@@ -33,6 +34,19 @@ path = "src/lib.rs"
 # crossterm, ansi-to-tui or a terminal component kit.
 # scripts/check-command-crate-boundaries.py enforces that with `cargo tree -p`.
 [dependencies]
+base64 = "0.23.1"
+codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
+codewhale-localization = { path = "../localization", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+dirs.workspace = true
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
+parking_lot = "0.12"
+reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
+ring = { version = "0.17", optional = true }
+shellexpand = "3"
+toml_edit.workspace = true
 ahash = "0.8"
 anyhow.workspace = true
 chrono.workspace = true
@@ -44,28 +58,42 @@ codewhale-lane = { path = "../lane", version = "0.10.2" }
 codewhale-memory = { path = "../memory", version = "0.10.2" }
 codewhale-models = { path = "../models", version = "0.10.2" }
 codewhale-palette = { path = "../palette", version = "0.10.2", default-features = false }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
 colored = "3.0.0"
 fd-lock = "4.0.4"
 lru = "0.18"
-parking_lot = "0.12"
 regex = "1.11"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
-tempfile = { workspace = true, optional = true }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+wait-timeout = "0.2"
 
 [dev-dependencies]
+futures-util = "0.3"
+ring = "0.17"
+wiremock = "0.6"
 codewhale-models = { path = "../models", version = "0.10.2", features = [
     "test-support",
 ] }
 tempfile.workspace = true
-wait-timeout = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+portable-pty = "0.9"
+
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
+# JWT verification uses upstream assembly objects when NASM is unavailable.
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["prebuilt-nasm"] }

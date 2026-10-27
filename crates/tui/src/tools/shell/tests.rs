@@ -20,7 +20,7 @@ fn shell_catalog_guidance_matches_execution() {
     let command = schema["properties"]["command"]["description"]
         .as_str()
         .unwrap();
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codewhale_sandbox::shell_dispatcher::global_dispatcher();
     assert!(command.contains(dispatcher.kind().binary()));
     assert!(
         !tool.description().contains(command),
@@ -79,7 +79,7 @@ fn export_shell_guidance_eval_fixture() {
         "name": tool.name,
         "description": tool.description,
         "input_schema": tool.input_schema,
-        "shell": crate::shell_dispatcher::global_dispatcher().kind().binary(),
+        "shell": codewhale_sandbox::shell_dispatcher::global_dispatcher().kind().binary(),
     });
     std::fs::write(path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
 }
@@ -393,13 +393,13 @@ async fn foreground_shell_results_carry_the_spawned_execution_receipt() {
     );
 
     let hooks = crate::hooks::HookExecutor::new(
-        crate::hooks::HooksConfig {
+        codewhale_config::hooks::HooksConfig {
             enabled: true,
-            hooks: vec![crate::hooks::Hook::new(
-                crate::hooks::HookEvent::ToolCallAfter,
+            hooks: vec![codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::ToolCallAfter,
                 "true",
             )],
-            ..crate::hooks::HooksConfig::default()
+            ..codewhale_config::hooks::HooksConfig::default()
         },
         workspace.clone(),
     );
@@ -504,13 +504,13 @@ async fn execution_receipt_keeps_spawn_cwd_when_the_command_retargets_the_worksp
         .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
     context.auto_approve = true;
     context.runtime.hook_executor = Some(std::sync::Arc::new(crate::hooks::HookExecutor::new(
-        crate::hooks::HooksConfig {
+        codewhale_config::hooks::HooksConfig {
             enabled: true,
-            hooks: vec![crate::hooks::Hook::new(
-                crate::hooks::HookEvent::ToolCallAfter,
+            hooks: vec![codewhale_config::hooks::Hook::new(
+                codewhale_config::hooks::HookEvent::ToolCallAfter,
                 "true",
             )],
-            ..crate::hooks::HooksConfig::default()
+            ..codewhale_config::hooks::HooksConfig::default()
         },
         workspace.clone(),
     )));
@@ -538,7 +538,7 @@ async fn execution_receipt_keeps_spawn_cwd_when_the_command_retargets_the_worksp
 async fn lowercase_bash_keeps_raw_command_under_readonly_policy() {
     let workspace = tempdir().expect("workspace");
     let context = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let result = LowercaseBashTool
         .execute(json!({"command": "pwd"}), &context)
         .await
@@ -558,7 +558,7 @@ async fn lowercase_bash_keeps_raw_command_under_readonly_policy() {
 async fn lowercase_bash_readonly_refusal_names_work_mode() {
     let workspace = tempdir().expect("workspace");
     let context = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let error = LowercaseBashTool
         .execute(json!({"command": "touch blocked-by-plan"}), &context)
         .await
@@ -806,7 +806,7 @@ fn echo_command(message: &str) -> String {
 }
 
 fn sleep_command(seconds: u64) -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codewhale_sandbox::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return format!("Start-Sleep -Seconds {seconds}");
     }
@@ -822,7 +822,7 @@ fn sleep_command(seconds: u64) -> String {
 }
 
 fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codewhale_sandbox::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return format!("Start-Sleep -Seconds {seconds}; echo {message}");
     }
@@ -838,7 +838,7 @@ fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
 }
 
 fn echo_stdin_command() -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codewhale_sandbox::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return "[Console]::In.ReadToEnd()".to_string();
     }
@@ -1113,17 +1113,17 @@ fn exec_shell_parallel_flags_are_input_aware() {
 async fn readonly_shell_refuses_raw_string_external_backend() {
     struct Backend(std::sync::atomic::AtomicBool);
     #[async_trait::async_trait]
-    impl crate::sandbox::backend::SandboxBackend for Backend {
-        fn kind(&self) -> crate::sandbox::backend::SandboxKind {
-            crate::sandbox::backend::SandboxKind::OpenSandbox
+    impl codewhale_sandbox::backend::SandboxBackend for Backend {
+        fn kind(&self) -> codewhale_sandbox::backend::SandboxKind {
+            codewhale_sandbox::backend::SandboxKind::OpenSandbox
         }
         async fn exec(
             &self,
             _cmd: &str,
             _env: &std::collections::HashMap<String, String>,
-        ) -> anyhow::Result<crate::sandbox::backend::SandboxOutput> {
+        ) -> anyhow::Result<codewhale_sandbox::backend::SandboxOutput> {
             self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(crate::sandbox::backend::SandboxOutput {
+            Ok(codewhale_sandbox::backend::SandboxOutput {
                 stdout: String::new(),
                 stderr: String::new(),
                 exit_code: 0,
@@ -1134,7 +1134,7 @@ async fn readonly_shell_refuses_raw_string_external_backend() {
     let tmp = tempdir().expect("tempdir");
     let backend = std::sync::Arc::new(Backend(std::sync::atomic::AtomicBool::new(false)));
     let mut context = ToolContext::new(tmp.path().to_path_buf())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     context.sandbox_backend = Some(backend.clone());
     let error = BashTool::read_only("Bash")
         .execute(json!({"action": "run", "command": "pwd"}), &context)
@@ -1149,15 +1149,15 @@ async fn readonly_shell_refuses_raw_string_external_backend() {
 async fn lowercase_bash_refuses_non_streaming_external_backend() {
     struct Backend(std::sync::atomic::AtomicBool);
     #[async_trait::async_trait]
-    impl crate::sandbox::backend::SandboxBackend for Backend {
-        fn kind(&self) -> crate::sandbox::backend::SandboxKind {
-            crate::sandbox::backend::SandboxKind::OpenSandbox
+    impl codewhale_sandbox::backend::SandboxBackend for Backend {
+        fn kind(&self) -> codewhale_sandbox::backend::SandboxKind {
+            codewhale_sandbox::backend::SandboxKind::OpenSandbox
         }
         async fn exec(
             &self,
             _cmd: &str,
             _env: &std::collections::HashMap<String, String>,
-        ) -> anyhow::Result<crate::sandbox::backend::SandboxOutput> {
+        ) -> anyhow::Result<codewhale_sandbox::backend::SandboxOutput> {
             self.0.store(true, std::sync::atomic::Ordering::SeqCst);
             unreachable!("lowercase bash must fail before external dispatch")
         }
@@ -1228,7 +1228,7 @@ fn readonly_argv_is_shell_free_and_disables_git_helpers() {
 #[cfg(unix)]
 #[tokio::test]
 async fn readonly_git_reads_run_no_clean_filter_or_textconv() {
-    use crate::dependencies::ExternalTool as _;
+    use codewhale_dependencies::ExternalTool as _;
     use std::os::unix::fs::PermissionsExt as _;
     let workspace = tempdir().expect("workspace");
     let outside = tempdir().expect("outside");
@@ -1238,7 +1238,7 @@ async fn readonly_git_reads_run_no_clean_filter_or_textconv() {
     let helper = helper.display().to_string();
     let repo = workspace.path();
     let git = |args: &[&str]| {
-        let status = crate::dependencies::Git::status(args, repo).expect("git should spawn");
+        let status = codewhale_dependencies::Git::status(args, repo).expect("git should spawn");
         assert!(status.success(), "git {args:?} failed");
     };
     git(&["init", "-q"]);
@@ -1253,8 +1253,8 @@ async fn readonly_git_reads_run_no_clean_filter_or_textconv() {
     git(&["config", "diff.conv.textconv", &helper]);
     std::fs::write(repo.join("c.txt"), "c2\n").expect("modify");
 
-    let ctx =
-        ToolContext::new(repo).with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+    let ctx = ToolContext::new(repo)
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let tool = BashTool::new("Bash");
     for command in ["git diff", "git blame c.txt"] {
         let result = tool
@@ -1464,21 +1464,21 @@ fn readonly_github_shell_calls_obey_the_host_network_policy_before_spawn() {
     let tmp = tempdir().expect("tempdir");
     let context = |default| {
         ToolContext::new(tmp.path()).with_network_policy(
-            crate::network_policy::NetworkPolicyDecider::new(
-                crate::network_policy::NetworkPolicy {
+            codewhale_net::network_policy::NetworkPolicyDecider::new(
+                codewhale_net::network_policy::NetworkPolicy {
                     default,
-                    ..crate::network_policy::NetworkPolicy::default()
+                    ..codewhale_net::network_policy::NetworkPolicy::default()
                 },
                 None,
             ),
         )
     };
 
-    let allow = context(crate::network_policy::DecisionToml::Allow);
+    let allow = context(codewhale_net::network_policy::DecisionToml::Allow);
     enforce_readonly_network_reads("gh issue view 5287", &allow)
         .expect("allowed github.com policy");
 
-    let deny = context(crate::network_policy::DecisionToml::Deny);
+    let deny = context(codewhale_net::network_policy::DecisionToml::Deny);
     let denied = enforce_readonly_network_reads("gh issue list", &deny)
         .expect_err("deny must stop before spawning gh")
         .to_string();
@@ -1486,15 +1486,15 @@ fn readonly_github_shell_calls_obey_the_host_network_policy_before_spawn() {
     enforce_readonly_network_reads("git status", &deny)
         .expect("local reads do not consult the network policy");
 
-    let prompt = context(crate::network_policy::DecisionToml::Prompt);
+    let prompt = context(codewhale_net::network_policy::DecisionToml::Prompt);
     let prompted = enforce_readonly_network_reads("gh issue view 5287", &prompt)
         .expect_err("headless Scout cannot prompt interactively")
         .to_string();
     assert!(prompted.contains("requires network approval"));
 
     // Read-only agents: every admitted network segment is judged.
-    let readonly_deny = context(crate::network_policy::DecisionToml::Deny)
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+    let readonly_deny = context(codewhale_net::network_policy::DecisionToml::Deny)
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     for command in ["gh pr view 1 | head", "ls && gh issue list"] {
         let denied = enforce_readonly_network_reads(command, &readonly_deny)
             .expect_err("a network read inside a composition is still judged")
@@ -1528,7 +1528,7 @@ fn exec_shell_interact_requires_approval() {
 async fn read_only_shell_policy_blocks_non_readonly_commands() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let tool = BashTool::new("Bash");
 
     for (input, rule) in [
@@ -1572,7 +1572,7 @@ async fn read_only_refusal_names_child_alternatives_instead_of_mode_switch() {
     // and only tools a read-only child actually has (#6015).
     let tmp = tempdir().expect("tempdir");
     let child_ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly)
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly)
         .with_owner_agent("agent_child", "child");
     let tool = BashTool::new("Bash");
     let message = tool
@@ -1595,7 +1595,7 @@ async fn read_only_refusal_names_child_alternatives_instead_of_mode_switch() {
     assert!(!tmp.path().join("evil.txt").exists());
 
     let parent_ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let message = tool
         .execute(json!({"command": "cargo build"}), &parent_ctx)
         .await
@@ -1642,7 +1642,7 @@ async fn read_only_shell_runs_chains_and_leading_cd() {
     std::fs::write(workspace.path().join("sub").join("a.txt"), "alpha\n").expect("a");
     std::fs::write(workspace.path().join("b.txt"), "beta\n").expect("b");
     let ctx = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let tool = BashTool::new("Bash");
     let result = tool
         .execute(json!({"command": "cd sub && ls"}), &ctx)
@@ -1683,7 +1683,7 @@ async fn read_only_shell_runs_chains_and_leading_cd() {
 async fn read_only_operand_checks_apply_to_every_segment() {
     let workspace = tempdir().expect("workspace");
     let ctx = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let error = BashTool::new("Bash")
         .execute(json!({"command": "gh pr view 1 && cat /etc/passwd"}), &ctx)
         .await
@@ -1705,7 +1705,7 @@ async fn read_only_shell_resolves_operands_from_the_effective_cwd() {
     std::os::unix::fs::symlink(outside.path().join("secret"), subdir.join("secret-link"))
         .expect("symlink");
     let ctx = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let error = BashTool::new("Bash")
         .execute(
             json!({"action": "run", "command": "cat secret-link", "cwd": "subdir"}),
@@ -1722,20 +1722,20 @@ async fn read_only_shell_resolves_operands_from_the_effective_cwd() {
 async fn read_only_shell_skips_shell_env_hooks() {
     let tmp = tempdir().expect("tempdir");
     let marker = tmp.path().join("hook-ran");
-    let hook = crate::hooks::Hook::new(
-        crate::hooks::HookEvent::ShellEnv,
+    let hook = codewhale_config::hooks::Hook::new(
+        codewhale_config::hooks::HookEvent::ShellEnv,
         &format!("printf hit > '{}'", marker.display()),
     );
     let executor = crate::hooks::HookExecutor::new(
-        crate::hooks::HooksConfig {
+        codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: vec![hook],
-            ..crate::hooks::HooksConfig::default()
+            ..codewhale_config::hooks::HooksConfig::default()
         },
         tmp.path().to_path_buf(),
     );
     let mut context = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     context.runtime.hook_executor = Some(std::sync::Arc::new(executor));
 
     let result = BashTool::read_only("Bash")
@@ -1750,7 +1750,7 @@ async fn read_only_shell_skips_shell_env_hooks() {
 async fn read_only_shell_policy_allows_readonly_inspection() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
 
     let result = BashTool::new("Bash")
         .execute(json!({"command": "pwd"}), &ctx)
@@ -2400,7 +2400,7 @@ fn shell_execution_preserves_custom_windows_sdk_root_env() {
 
     let tmp = tempdir().expect("tempdir");
     let mut manager = ShellManager::new(tmp.path().to_path_buf());
-    let command = if crate::shell_dispatcher::global_dispatcher()
+    let command = if codewhale_sandbox::shell_dispatcher::global_dispatcher()
         .kind()
         .is_powershell()
     {
@@ -3448,7 +3448,7 @@ async fn await_shell_wait_registration(context: &ToolContext) {
 
 fn wait_detach_output_command(marker: &str) -> String {
     let separator = if cfg!(windows)
-        && !crate::shell_dispatcher::global_dispatcher()
+        && !codewhale_sandbox::shell_dispatcher::global_dispatcher()
             .kind()
             .is_powershell()
     {
@@ -4546,7 +4546,7 @@ fn issue_1691_quoted_commit_message_round_trips() {
         Duration::from_secs(5),
     );
 
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codewhale_sandbox::shell_dispatcher::global_dispatcher();
     // The whole command (with quotes) is a single argv entry. The actual
     // shell binary can vary by platform — and the dispatcher may wrap the
     // payload (encoding prefix, exit-code capture) — but the payload itself
@@ -5059,7 +5059,7 @@ fn bash_schema_declares_what_each_action_requires() {
 #[test]
 fn bash_required_groups_survive_a_provider_that_drops_root_composition() {
     let mut schema = BashTool::new("Bash").input_schema();
-    let note = crate::tools::schema_sanitize::sanitize_for_responses(&mut schema)
+    let note = codewhale_models::schema_sanitize::sanitize_for_responses(&mut schema)
         .expect("dropped required groups must be restated for the model");
 
     assert!(note.contains("At least one"), "{note}");
@@ -5470,7 +5470,7 @@ async fn readonly_pipeline_preserves_arguments_and_disables_git_helpers() {
         std::fs::write(workspace.path().join(name), "option-shaped filename\n").unwrap();
     }
     let ctx = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     let tool = BashTool::new("Bash");
     for command in ["sort * | cat", "sed -n 1p * | cat", "cat * | cat"] {
         // #6675: a word-leading unquoted `*` is refused before anything runs
@@ -5520,7 +5520,7 @@ async fn readonly_sed_extra_options_never_mutate_files() {
     let source = workspace.path().join("input.txt");
     std::fs::write(&source, "first\nsecond\n").unwrap();
     let ctx = ToolContext::new(workspace.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly);
     for command in [
         "sed -n 1p input.txt -i",
         "sed -n 1p -i.bak input.txt",
@@ -5998,7 +5998,7 @@ async fn note_tool_refuses_symlinked_targets_that_leave_the_workspace() {
 
     let linked_file = workspace.path().join("notes.md");
     std::os::unix::fs::symlink(&rc, &linked_file).expect("symlink notes file");
-    let context = ToolContext::with_options(workspace.path(), false, &linked_file, "mcp.json");
+    let context = ToolContext::with_options(workspace.path(), false, &linked_file);
     let err = NoteTool
         .execute(json!({"content": "appended text"}), &context)
         .await
@@ -6007,12 +6007,8 @@ async fn note_tool_refuses_symlinked_targets_that_leave_the_workspace() {
 
     let linked_dir = workspace.path().join("notes");
     std::os::unix::fs::symlink(outside.path(), &linked_dir).expect("symlink notes dir");
-    let context = ToolContext::with_options(
-        workspace.path(),
-        false,
-        linked_dir.join("sub/notes.md"),
-        "mcp.json",
-    );
+    let context =
+        ToolContext::with_options(workspace.path(), false, linked_dir.join("sub/notes.md"));
     let err = NoteTool
         .execute(json!({"content": "appended text"}), &context)
         .await
@@ -6023,7 +6019,7 @@ async fn note_tool_refuses_symlinked_targets_that_leave_the_workspace() {
     assert!(!outside.path().join("sub").exists());
 
     let plain = workspace.path().join("docs/notes.md");
-    let context = ToolContext::with_options(workspace.path(), false, &plain, "mcp.json");
+    let context = ToolContext::with_options(workspace.path(), false, &plain);
     NoteTool
         .execute(json!({"content": "kept"}), &context)
         .await

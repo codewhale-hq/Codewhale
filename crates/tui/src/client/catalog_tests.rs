@@ -5,7 +5,7 @@ use super::tests::{
     openrouter_client_for,
 };
 use super::*;
-use crate::config::{ProviderConfig, ProvidersConfig};
+use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use wiremock::matchers::{method, path};
@@ -17,17 +17,20 @@ const CURSOR: &str = "cursor/second +?&=雪-canary";
 #[tokio::test]
 async fn chatgpt_models_http_uses_visible_roster_and_rejects_secret_labels() {
     let server = MockServer::start().await;
-    let client = CodewhaleClient::new(&Config {
-        provider: Some("openai-codex".into()),
-        providers: Some(ProvidersConfig {
+    let client = CodewhaleClient::new(&{
+        let __cw_config_init_0_0 = Some("openai-codex".into());
+        let __cw_config_init_0_1 = Some(ProvidersConfig {
             openai_codex: ProviderConfig {
                 api_key: Some(KEY.into()),
                 base_url: Some(format!("{}/v1", server.uri())),
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     })
     .expect("explicit local ChatGPT protocol fixture");
     mount_models_json(
@@ -104,9 +107,9 @@ async fn chatgpt_models_http_uses_visible_roster_and_rejects_secret_labels() {
 }
 
 fn anthropic_client(base_url: &str) -> CodewhaleClient {
-    let mut client = CodewhaleClient::new(&Config {
-        provider: Some("anthropic".into()),
-        providers: Some(ProvidersConfig {
+    let mut client = CodewhaleClient::new(&{
+        let __cw_config_init_1_0 = Some("anthropic".into());
+        let __cw_config_init_1_1 = Some(ProvidersConfig {
             anthropic: ProviderConfig {
                 api_key: Some(KEY.into()),
                 base_url: Some(base_url.into()),
@@ -117,8 +120,11 @@ fn anthropic_client(base_url: &str) -> CodewhaleClient {
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_1_value: Config = Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
     })
     .expect("explicit local Anthropic fixture client");
     client.retry.enabled = false;
@@ -155,7 +161,7 @@ async fn collect_fixture(
     server: &MockServer,
     limits: ModelsFetchLimits,
 ) -> Result<String, ModelsFetchError> {
-    let http = crate::tls::reqwest_client_builder()
+    let http = codewhale_release::tls::reqwest_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
@@ -271,7 +277,7 @@ async fn anthropic_after_id_completes_both_public_consumers_with_frozen_headers(
 async fn unpaginated_rosters_stay_single_request_and_unknown_continuation_refuses() {
     for go in [false, true] {
         let server = MockServer::start().await;
-        let id = crate::config::opencode_go_models()[0];
+        let id = codewhale_config::opencode_go_models()[0];
         mount_models_json(&server, 200, json!({"data":[{"id":id}]})).await;
         let mut client = if go {
             opencode_go_client_for(&server)
@@ -347,17 +353,20 @@ async fn opencode_go_published_unpaginated_roster_keeps_documented_protocols() {
         )
         .mount(&server)
         .await;
-    let mut client = CodewhaleClient::new(&Config {
-        provider: Some("opencode-go".into()),
-        providers: Some(ProvidersConfig {
+    let mut client = CodewhaleClient::new(&{
+        let __cw_config_init_2_0 = Some("opencode-go".into());
+        let __cw_config_init_2_1 = Some(ProvidersConfig {
             opencode_go: ProviderConfig {
                 api_key: Some(KEY.into()),
                 base_url: Some(base_url.clone()),
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_2_value: Config = Config::default();
+        __cw_config_init_2_value.provider = __cw_config_init_2_0;
+        __cw_config_init_2_value.providers = __cw_config_init_2_1;
+        __cw_config_init_2_value
     })
     .expect("explicit local Go route");
     client.retry.enabled = false;
@@ -639,7 +648,9 @@ async fn chunked_catalog_body_is_bounded_without_content_length() {
             read_head(&mut stream).await;
             stream.write_all(response.as_bytes()).await.unwrap();
         });
-        let http = crate::tls::reqwest_client_builder().build().unwrap();
+        let http = codewhale_release::tls::reqwest_client_builder()
+            .build()
+            .unwrap();
         let result = collect_models_document(
             reqwest::Url::parse(&endpoint).unwrap(),
             None,
@@ -686,7 +697,7 @@ async fn traversal_deadline_bounds_pending_and_completed_later_pages() {
     // Fetch the first fixture response before starting the short clock so host
     // scheduling/connection setup cannot make this accidentally a page-one test.
     let mut first = Some(
-        crate::tls::reqwest_client_builder()
+        codewhale_release::tls::reqwest_client_builder()
             .build()
             .unwrap()
             .get(format!("{}/v1/models", server.uri()))
@@ -942,7 +953,10 @@ async fn later_page_failure_preserves_complete_same_scope_cache_and_observation_
 }
 
 fn assert_no_canaries(error: &anyhow::Error) {
-    let surfaced = format!("{error:#} {error:?} {:?}", crate::retry_status::snapshot());
+    let surfaced = format!(
+        "{error:#} {error:?} {:?}",
+        codewhale_runtime::retry_status::snapshot()
+    );
     for canary in [KEY, CURSOR, "cursor%2Fsecond", "custom-header-canary"] {
         assert!(
             !surfaced.contains(canary),
@@ -990,11 +1004,11 @@ async fn catalog_errors_surface_the_provider_reason_without_client_secrets() {
     )
     .await;
     let client = anthropic_client(&echoing.uri());
-    crate::retry_status::clear();
+    codewhale_runtime::retry_status::clear();
     let error = client.list_models().await.unwrap_err();
     assert!(format!("{error:#}").contains(REASON), "{error:#}");
     assert_no_canaries(&error);
-    crate::retry_status::clear();
+    codewhale_runtime::retry_status::clear();
 }
 
 #[tokio::test]
@@ -1021,14 +1035,14 @@ async fn later_page_http_and_transport_errors_do_not_expose_cursor_or_key() {
         client.retry.max_retries = 1;
         client.retry.initial_delay = 0.001;
         client.retry.max_delay = 0.001;
-        crate::retry_status::clear();
+        codewhale_runtime::retry_status::clear();
         let error = client.list_models().await.unwrap_err();
         assert_no_canaries(&error);
         if !isolated {
-            assert!(crate::retry_status::snapshot().is_failed());
+            assert!(codewhale_runtime::retry_status::snapshot().is_failed());
         }
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
-        crate::retry_status::clear();
+        codewhale_runtime::retry_status::clear();
 
         server.reset().await;
         mount_page(
@@ -1090,7 +1104,7 @@ async fn later_page_http_and_transport_errors_do_not_expose_cursor_or_key() {
     );
     server.abort();
     let _ = server.await;
-    crate::retry_status::clear();
+    codewhale_runtime::retry_status::clear();
 }
 
 #[tokio::test]
@@ -1210,10 +1224,13 @@ async fn custom_messages_wire_listing_authenticates_with_bearer() {
             ..ProviderConfig::default()
         },
     );
-    let client = CodewhaleClient::new(&Config {
-        provider: Some("relay-messages-wire".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    let client = CodewhaleClient::new(&{
+        let __cw_config_init_3_0 = Some("relay-messages-wire".to_string());
+        let __cw_config_init_3_1 = Some(providers);
+        let mut __cw_config_init_3_value: Config = Config::default();
+        __cw_config_init_3_value.provider = __cw_config_init_3_0;
+        __cw_config_init_3_value.providers = __cw_config_init_3_1;
+        __cw_config_init_3_value
     })
     .expect("custom Messages-wire relay client");
 

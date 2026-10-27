@@ -51,7 +51,7 @@ export const LIMITS = { max_frame: 32 * 1024 * 1024, max_inflight: 256, dispose_
  * cancelled is not answered. Requests are recorded in `coreCalls`, the host's
  * `$/cancel` ids in `cancels`.
  */
-export async function startHost({ admit, env, ownGroup = false, tier = 'plugin', coreCall, compiledHost, cwd } = {}) {
+export async function startHost({ admit, env, ownGroup = false, tier = 'plugin', coreCall, checkpoint, compiledHost, cwd } = {}) {
   const started = performance.now()
   // `ownGroup` spawns the host as a process-group leader and tells it so, as
   // the Rust core does on Unix.
@@ -71,6 +71,7 @@ export async function startHost({ admit, env, ownGroup = false, tier = 'plugin',
     logs: [],
     faulted: [],
     coreCalls: [],
+    checkpoints: [],
     cancels: [],
     registry: [],
     hello: null,
@@ -142,9 +143,12 @@ export async function startHost({ admit, env, ownGroup = false, tier = 'plugin',
           case '$/cancel':
             host.cancels.push(message.params.id)
             break
+          case 'session/checkpoint':
           case 'core/call': {
-            host.coreCalls.push({ id: message.id, ...message.params })
-            const answer = coreCall ? coreCall(message.params, message.id) : { error: { code: -32002, message: 'no core/call handler' } }
+            const handler = message.method === 'session/checkpoint' ? checkpoint : coreCall
+            const records = message.method === 'session/checkpoint' ? host.checkpoints : host.coreCalls
+            records.push({ id: message.id, ...message.params })
+            const answer = handler ? handler(message.params, message.id) : { error: { code: -32002, message: 'no handler for ' + message.method } }
             const id = message.id
             Promise.resolve(answer).then((value) => {
               if (host.cancels.includes(id) || child.exitCode !== null || stopping) return

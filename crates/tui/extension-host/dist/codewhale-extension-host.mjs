@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { harness: "782094d964894c91fc74da1704d3a793163e9605cc802dd7760578b5ba83135d", mcp: "3a64805433d63f34822ae71230a432ccdbd956174bc8575d5a0a001fda8c50cf" };
+    define_BUILTIN_MODULE_DIGESTS_default = { harness: "ad24207f93d963dcffe1967f6863f416117d9acd67cdfccbcef59c12ccb39f92", mcp: "50516f554ba8786b3282c8f576a11e86df189ac7fd226176a5d1b618042246ea" };
   }
 });
 
@@ -2167,6 +2167,1103 @@ var init_lib2 = __esm({
           constructor &&= Object.getPrototypeOf(constructor);
         }
         return false;
+      }
+    };
+  }
+});
+
+// node_modules/@deepseek-ai/dsh-util-values/lib/index.js
+var lib_exports4 = {};
+__export(lib_exports4, {
+  WeakMapWithValues: () => WeakMapWithValues,
+  assertNever: () => assertNever,
+  deepEqualJson: () => deepEqualJson,
+  deepFreeze: () => deepFreeze,
+  isJsonValue: () => isJsonValue,
+  snapshotJsonValue: () => snapshotJsonValue
+});
+function assertNever(value, context) {
+  const rendered = JSON.stringify(value) ?? String(value);
+  throw new Error(`unreachable variant${context ? ` in ${context}` : ""}: ${rendered}`);
+}
+function hasIntrinsicConstructor(prototype, name) {
+  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  if (typeof constructor !== "function") return false;
+  try {
+    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
+  } catch {
+    return false;
+  }
+}
+function isIntrinsicObjectPrototype(value) {
+  return Object.getPrototypeOf(value) === null && hasIntrinsicConstructor(value, "Object");
+}
+function hasPlainArrayPrototype(value) {
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(prototype) || !hasIntrinsicConstructor(prototype, "Array")) return false;
+  const objectPrototype = Object.getPrototypeOf(prototype);
+  return typeof objectPrototype === "object" && objectPrototype !== null && isIntrinsicObjectPrototype(objectPrototype);
+}
+function hasPlainObjectPrototype(value) {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === null || typeof prototype === "object" && isIntrinsicObjectPrototype(prototype);
+}
+function enumerableStringKeys(value) {
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string" || !Object.prototype.propertyIsEnumerable.call(value, key))) return void 0;
+  return keys;
+}
+function walkJsonValue(value, detach) {
+  const ancestors = /* @__PURE__ */ new Set();
+  let root;
+  const assign = (destination, item) => {
+    if (destination === void 0) return;
+    if (destination.kind === "root") root = item;
+    else if (destination.kind === "array") destination.target[destination.index] = item;
+    else Object.defineProperty(destination.target, destination.key, {
+      value: item,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  };
+  const tasks = [{
+    kind: "visit",
+    value,
+    ...detach ? { destination: { kind: "root" } } : {}
+  }];
+  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
+    if (task.kind === "leave") {
+      ancestors.delete(task.source);
+      continue;
+    }
+    if (task.kind === "array-item") {
+      if (!Object.prototype.hasOwnProperty.call(task.source, task.index)) return void 0;
+      tasks.push({
+        kind: "visit",
+        value: task.source[task.index],
+        ...task.target === void 0 ? {} : { destination: {
+          kind: "array",
+          target: task.target,
+          index: task.index
+        } }
+      });
+      continue;
+    }
+    if (task.kind === "object-property") {
+      tasks.push({
+        kind: "visit",
+        value: task.source[task.key],
+        ...task.target === void 0 ? {} : { destination: {
+          kind: "object",
+          target: task.target,
+          key: task.key
+        } }
+      });
+      continue;
+    }
+    const current2 = task.value;
+    if (current2 === null) {
+      assign(task.destination, null);
+      continue;
+    }
+    if (typeof current2 === "boolean" || typeof current2 === "string") {
+      assign(task.destination, current2);
+      continue;
+    }
+    if (typeof current2 === "number") {
+      if (!Number.isFinite(current2) || Object.is(current2, -0)) return void 0;
+      assign(task.destination, current2);
+      continue;
+    }
+    if (typeof current2 !== "object") return void 0;
+    if (ancestors.has(current2)) return void 0;
+    if (Array.isArray(current2)) {
+      if (!hasPlainArrayPrototype(current2)) return void 0;
+      const length = current2.length;
+      if (Reflect.ownKeys(current2).length !== length + 1) return void 0;
+      const target2 = detach ? [] : void 0;
+      if (target2 !== void 0) assign(task.destination, target2);
+      ancestors.add(current2);
+      tasks.push({
+        kind: "leave",
+        source: current2
+      });
+      for (let index = length - 1; index >= 0; index--) tasks.push({
+        kind: "array-item",
+        source: current2,
+        index,
+        ...target2 === void 0 ? {} : { target: target2 }
+      });
+      continue;
+    }
+    if (!hasPlainObjectPrototype(current2)) return void 0;
+    const keys = enumerableStringKeys(current2);
+    if (keys === void 0) return void 0;
+    const target = detach ? {} : void 0;
+    if (target !== void 0) assign(task.destination, target);
+    ancestors.add(current2);
+    tasks.push({
+      kind: "leave",
+      source: current2
+    });
+    for (let index = keys.length - 1; index >= 0; index--) {
+      const key = keys[index];
+      if (key === void 0) return void 0;
+      tasks.push({
+        kind: "object-property",
+        source: current2,
+        key,
+        ...target === void 0 ? {} : { target }
+      });
+    }
+  }
+  return detach ? root : true;
+}
+function snapshotJsonValue(value) {
+  return walkJsonValue(value, true);
+}
+function isJsonValue(value) {
+  return walkJsonValue(value, false) === true;
+}
+function deepEqualJson(a, b) {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((entry, index) => deepEqualJson(entry, b[index]));
+  }
+  const left = a;
+  const right = b;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => key in right && deepEqualJson(left[key], right[key]));
+}
+function deepFreeze(value) {
+  const seen = /* @__PURE__ */ new WeakSet();
+  const pending = [{
+    kind: "visit",
+    node: value
+  }];
+  while (pending.length > 0) {
+    const task = pending.pop();
+    if (task === void 0) continue;
+    if (task.kind === "property") {
+      pending.push({
+        kind: "visit",
+        node: task.source[task.key]
+      });
+      continue;
+    }
+    const node = task.node;
+    if (node === null || typeof node !== "object") continue;
+    if (node instanceof AbortSignal) continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    Object.freeze(node);
+    const keys = Object.keys(node);
+    for (let index = keys.length - 1; index >= 0; index--) {
+      const key = keys[index];
+      if (key === void 0) continue;
+      pending.push({
+        kind: "property",
+        source: node,
+        key
+      });
+    }
+  }
+  return value;
+}
+var WeakMapWithValues;
+var init_lib3 = __esm({
+  "node_modules/@deepseek-ai/dsh-util-values/lib/index.js"() {
+    init_define_BUILTIN_MODULE_DIGESTS();
+    WeakMapWithValues = class {
+      keys = /* @__PURE__ */ new WeakMap();
+      valueSet = /* @__PURE__ */ new Set();
+      /** Live strongly retained values in insertion order. */
+      values = this.valueSet;
+      /**
+      * Read the value associated with a key.
+      * @param key - weakly held lookup key.
+      * @returns the associated value, or absence.
+      */
+      get(key) {
+        return this.keys.get(key);
+      }
+      /**
+      * Test whether a key has an association.
+      * @param key - weakly held lookup key.
+      * @returns whether the key is present.
+      */
+      has(key) {
+        return this.keys.has(key);
+      }
+      /**
+      * Associate one key with one caller-unique value.
+      * @param key - weakly held lookup key.
+      * @param value - strongly retained value that belongs to no other key.
+      * @returns this container.
+      */
+      set(key, value) {
+        if (this.keys.has(key)) {
+          const previous = this.keys.get(key);
+          if (previous === value) return this;
+          this.valueSet.delete(previous);
+        }
+        this.keys.set(key, value);
+        this.valueSet.add(value);
+        return this;
+      }
+      /**
+      * Remove one association and its strongly retained value.
+      * @param key - weakly held lookup key.
+      * @returns whether an association was removed.
+      */
+      delete(key) {
+        if (!this.keys.has(key)) return false;
+        const value = this.keys.get(key);
+        const deleted = this.keys.delete(key);
+        this.valueSet.delete(value);
+        return deleted;
+      }
+      /** Remove every association and strongly retained value. */
+      clear() {
+        this.keys = /* @__PURE__ */ new WeakMap();
+        this.valueSet.clear();
+      }
+    };
+  }
+});
+
+// src/dsh/dsh-tools-compat.js
+var dsh_tools_compat_exports = {};
+__export(dsh_tools_compat_exports, {
+  HarnessError: () => HarnessError,
+  JsonSchemaError: () => JsonSchemaError,
+  TOOL_ABORTED: () => TOOL_ABORTED,
+  TOOL_ABORTED_BEFORE_DISPATCH: () => TOOL_ABORTED_BEFORE_DISPATCH,
+  ToolArgsError: () => ToolArgsError,
+  ToolNotFoundError: () => ToolNotFoundError,
+  ToolOutputError: () => ToolOutputError,
+  assertObjectJsonSchema: () => assertObjectJsonSchema,
+  assertSupportedJsonSchema: () => assertSupportedJsonSchema,
+  defineTool: () => defineTool,
+  parameterSchemaSpecToJsonSchema: () => parameterSchemaSpecToJsonSchema,
+  validateArgs: () => validateArgs,
+  validateJsonSchemaValue: () => validateJsonSchemaValue,
+  valueSchemaSpecToJsonSchema: () => valueSchemaSpecToJsonSchema
+});
+function hasIntrinsicConstructor2(prototype, name) {
+  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  if (typeof constructor !== "function") return false;
+  try {
+    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
+  } catch {
+    return false;
+  }
+}
+function isIntrinsicObjectPrototype2(value) {
+  return Object.getPrototypeOf(value) === null && hasIntrinsicConstructor2(value, "Object");
+}
+function isPlainJsonRecord(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || typeof prototype === "object" && isIntrinsicObjectPrototype2(prototype);
+  } catch {
+    return false;
+  }
+}
+function hasPlainArrayPrototype2(value) {
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(prototype) || !hasIntrinsicConstructor2(prototype, "Array")) return false;
+  const objectPrototype = Object.getPrototypeOf(prototype);
+  return typeof objectPrototype === "object" && objectPrototype !== null && isIntrinsicObjectPrototype2(objectPrototype);
+}
+function hasOnlyEnumerableStringKeys(value) {
+  try {
+    return Reflect.ownKeys(value).every((key) => typeof key === "string" && Object.prototype.propertyIsEnumerable.call(value, key));
+  } catch {
+    return false;
+  }
+}
+function isJsonSchemaRecord(value) {
+  return isPlainJsonRecord(value) && hasOnlyEnumerableStringKeys(value);
+}
+function isPlainJsonArray(value) {
+  if (!Array.isArray(value)) return false;
+  try {
+    if (!hasPlainArrayPrototype2(value) || Reflect.ownKeys(value).length !== value.length + 1) return false;
+    for (let index = 0; index < value.length; index++) if (!Object.hasOwn(value, index)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isJsonNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0);
+}
+function scalarMatches(type2, value) {
+  switch (type2) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return isJsonNumber(value);
+    case "integer":
+      return isJsonNumber(value) && Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "null":
+      return value === null;
+    /* v8 ignore next -- JsonSchemaScalarType is closed; this retains compile-time exhaustiveness. */
+    default:
+      return assertNever(type2, "JsonSchemaType");
+  }
+}
+function checkObjectSchemaTail(node, path, properties, violations) {
+  const hasRequired = Object.hasOwn(node, "required");
+  const required = hasRequired ? node.required : void 0;
+  if (hasRequired) if (!isPlainJsonArray(required) || required.some((entry) => typeof entry !== "string")) violations.push(`${path}.required must be an array of strings`);
+  else {
+    const declared = isJsonSchemaRecord(properties) ? properties : {};
+    for (const key of required) if (!Object.hasOwn(declared, key)) violations.push(`${path}.required names "${key}" which is not in properties`);
+  }
+  if (Object.hasOwn(node, "additionalProperties") && typeof node.additionalProperties !== "boolean") violations.push(`${path}.additionalProperties must be a boolean`);
+}
+function checkSchemaNode(root, rootPath, violations, seen) {
+  const tasks = [{
+    kind: "enter",
+    node: root,
+    path: rootPath
+  }];
+  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
+    if (task.kind === "leave") {
+      seen.delete(task.node);
+      continue;
+    }
+    if (task.kind === "one-of-tail") {
+      for (const key of ONE_OF_SIBLING_KEYWORDS) if (Object.hasOwn(task.node, key)) violations.push(`${task.path}.${key} is not supported beside oneOf`);
+      continue;
+    }
+    if (task.kind === "object-tail") {
+      checkObjectSchemaTail(task.node, task.path, task.properties, violations);
+      continue;
+    }
+    const { node, path } = task;
+    if (!isJsonSchemaRecord(node)) {
+      violations.push(`${path} must be a schema object`);
+      continue;
+    }
+    if (seen.has(node)) {
+      violations.push(`${path} is circular`);
+      continue;
+    }
+    seen.add(node);
+    tasks.push({
+      kind: "leave",
+      node
+    });
+    for (const key of Object.keys(node)) {
+      if (CONSTRAINT_KEYWORDS.has(key)) continue;
+      if (ANNOTATION_KEYWORDS.has(key)) {
+        try {
+          if (!isJsonValue(node[key])) violations.push(`${path}.${key} annotation must be lossless JSON data`);
+        } catch {
+          violations.push(`${path}.${key} annotation must be lossless JSON data`);
+        }
+        continue;
+      }
+      violations.push(`${path}.${key} is not a supported keyword (subset: type/oneOf/properties/required/additionalProperties/items/enum/const + annotations)`);
+    }
+    if (Object.hasOwn(node, "description") && typeof node.description !== "string") violations.push(`${path}.description must be a string`);
+    if (Object.hasOwn(node, "title") && typeof node.title !== "string") violations.push(`${path}.title must be a string`);
+    const hasType = Object.hasOwn(node, "type");
+    const hasOneOf = Object.hasOwn(node, "oneOf");
+    if (hasType && hasOneOf) {
+      violations.push(`${path} cannot declare both type and oneOf`);
+      continue;
+    }
+    if (!hasType && !hasOneOf) {
+      for (const key of ONE_OF_SIBLING_KEYWORDS) if (Object.hasOwn(node, key)) violations.push(`${path}.${key} requires type or oneOf`);
+      continue;
+    }
+    if (hasOneOf) {
+      const oneOf = node.oneOf;
+      tasks.push({
+        kind: "one-of-tail",
+        node,
+        path
+      });
+      if (!isPlainJsonArray(oneOf) || oneOf.length < 2) violations.push(`${path}.oneOf must be an array of at least two schemas`);
+      else for (let index = oneOf.length - 1; index >= 0; index--) tasks.push({
+        kind: "enter",
+        node: oneOf[index],
+        path: `${path}.oneOf[${index}]`
+      });
+      continue;
+    }
+    const type2 = node.type;
+    if (typeof type2 !== "string" || !SCHEMA_TYPES.includes(type2)) {
+      violations.push(Array.isArray(type2) ? `${path}.type must be a single type string (type arrays are not supported)` : `${path}.type must be one of ${SCHEMA_TYPES.join("/")}`);
+      continue;
+    }
+    const schemaType = type2;
+    for (const [key, types3] of Object.entries({
+      properties: ["object"],
+      required: ["object"],
+      additionalProperties: ["object"],
+      items: ["array"],
+      enum: [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null"
+      ],
+      const: [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null"
+      ]
+    })) if (Object.hasOwn(node, key) && !types3.includes(schemaType)) violations.push(`${path}.${key} is not supported on type "${schemaType}"`);
+    switch (schemaType) {
+      case "object": {
+        const properties = Object.hasOwn(node, "properties") ? node.properties : void 0;
+        tasks.push({
+          kind: "object-tail",
+          node,
+          path,
+          properties
+        });
+        if (Object.hasOwn(node, "properties")) if (!isJsonSchemaRecord(properties)) violations.push(`${path}.properties must be an object of schemas`);
+        else {
+          const entries = Object.entries(properties);
+          for (let index = entries.length - 1; index >= 0; index--) {
+            const entry = entries[index];
+            if (entry === void 0) continue;
+            tasks.push({
+              kind: "enter",
+              node: entry[1],
+              path: `${path}.properties.${entry[0]}`
+            });
+          }
+        }
+        break;
+      }
+      case "array":
+        if (Object.hasOwn(node, "items")) tasks.push({
+          kind: "enter",
+          node: node.items,
+          path: `${path}.items`
+        });
+        break;
+      case "string":
+      case "number":
+      case "integer":
+      case "boolean":
+      case "null": {
+        const hasEnum = Object.hasOwn(node, "enum");
+        const allowed = hasEnum ? node.enum : void 0;
+        const enumValid = isPlainJsonArray(allowed) && allowed.length > 0 && allowed.every((entry) => scalarMatches(schemaType, entry));
+        if (hasEnum && !enumValid) violations.push(`${path}.enum must be a non-empty array of ${schemaType} values`);
+        const hasConst = Object.hasOwn(node, "const");
+        const declaredConst = hasConst ? node.const : void 0;
+        const constValid = scalarMatches(schemaType, declaredConst);
+        if (hasConst) {
+          if (!constValid) violations.push(`${path}.const must be a ${schemaType} value`);
+          else if (enumValid && !allowed.includes(declaredConst)) violations.push(`${path}.const must be one of ${path}.enum when both are declared`);
+        }
+        break;
+      }
+      /* v8 ignore next -- schemaType was narrowed from the closed SCHEMA_TYPES table above. */
+      default:
+        assertNever(schemaType, "JsonSchemaType");
+    }
+  }
+}
+function assertSupportedJsonSchema(schema3) {
+  const violations = [];
+  checkSchemaNode(schema3, "schema", violations, /* @__PURE__ */ new Set());
+  if (violations.length > 0) throw new JsonSchemaError(violations);
+}
+function assertObjectJsonSchema(schema3) {
+  const violations = [];
+  checkSchemaNode(schema3, "schema", violations, /* @__PURE__ */ new Set());
+  if (violations.length === 0 && (!isJsonSchemaRecord(schema3) || !Object.hasOwn(schema3, "type") || schema3.type !== "object")) violations.push('schema.type must be "object" (structured output is object-rooted)');
+  if (violations.length > 0) throw new JsonSchemaError(violations);
+}
+function safelyIsJsonValue(value) {
+  try {
+    return isJsonValue(value);
+  } catch {
+    return false;
+  }
+}
+function diagnosticPath(path) {
+  return path === "" ? "arguments" : path;
+}
+function propertyPath(path, key) {
+  return path === "" ? key : `${path}.${key}`;
+}
+function losslessValueViolation(path) {
+  return [`"${diagnosticPath(path)}" must be a lossless JSON value`];
+}
+function appendViolations(target, source) {
+  for (const violation of source) target.push(violation);
+}
+function valueFrame(node, value, path) {
+  return {
+    node,
+    value,
+    path,
+    catches: false,
+    phase: "start",
+    children: [],
+    childIndex: 0,
+    violations: [],
+    tailViolations: [],
+    matches: 0
+  };
+}
+function checkScalarValue(node, value, path) {
+  const allowed = Object.hasOwn(node, "enum") ? node.enum : void 0;
+  if (allowed !== void 0 && !allowed.includes(value)) return [`"${diagnosticPath(path)}" must be one of ${JSON.stringify(allowed)}`];
+  if (Object.hasOwn(node, "const") && value !== node.const) return [`"${diagnosticPath(path)}" must be ${JSON.stringify(node.const)}`];
+  return [];
+}
+function checkValue(schema3, value, path) {
+  const frames = [valueFrame(schema3, value, path)];
+  let rootResult;
+  const receive = (result) => {
+    const parent = frames.at(-1);
+    if (parent === void 0) {
+      rootResult = result;
+      return;
+    }
+    if (parent.kind === "oneOf") {
+      if (result.length === 0) parent.matches++;
+    } else appendViolations(parent.violations, result);
+  };
+  const finish = (result) => {
+    frames.pop();
+    receive(result);
+  };
+  while (frames.length > 0) {
+    const frame = frames.at(-1);
+    if (frame === void 0) break;
+    try {
+      if (frame.phase === "children") {
+        if (frame.childIndex < frame.children.length) {
+          const child = frame.children[frame.childIndex];
+          if (child === void 0) throw new Error("missing schema-value child frame");
+          frame.childIndex++;
+          frames.push(valueFrame(child.node, child.value, child.path));
+          continue;
+        }
+        if (frame.kind === "oneOf") {
+          finish(frame.matches === 1 ? [] : [`"${diagnosticPath(frame.path)}" must match exactly one oneOf branch (matched ${frame.matches})`]);
+          continue;
+        }
+        appendViolations(frame.violations, frame.tailViolations);
+        if (frame.violations.length > 0) finish(frame.violations);
+        else if (frame.kind === "object") finish(safelyIsJsonValue(frame.value) ? [] : [`"${diagnosticPath(frame.path)}" must be a lossless JSON object`]);
+        else finish(safelyIsJsonValue(frame.value) ? [] : [`"${diagnosticPath(frame.path)}" must be a dense lossless JSON array`]);
+        continue;
+      }
+      const nodeType = Object.hasOwn(frame.node, "type") ? frame.node.type : void 0;
+      frame.catches = !(nodeType !== void 0 && !SCHEMA_TYPES.includes(nodeType));
+      const oneOf = Object.hasOwn(frame.node, "oneOf") ? frame.node.oneOf : void 0;
+      if (oneOf !== void 0) {
+        frame.kind = "oneOf";
+        frame.children = Array.from(oneOf, (branch) => ({
+          node: branch,
+          value: frame.value,
+          path: frame.path
+        }));
+        frame.childIndex = 0;
+        frame.matches = 0;
+        frame.phase = "children";
+        continue;
+      }
+      if (nodeType === void 0) {
+        finish(safelyIsJsonValue(frame.value) ? [] : losslessValueViolation(frame.path));
+        continue;
+      }
+      switch (nodeType) {
+        case "object": {
+          if (!isPlainJsonRecord(frame.value)) {
+            finish([`"${diagnosticPath(frame.path)}" must be an object`]);
+            break;
+          }
+          const properties = Object.hasOwn(frame.node, "properties") ? frame.node.properties ?? {} : {};
+          const violations = [];
+          const required = Object.hasOwn(frame.node, "required") ? frame.node.required ?? [] : [];
+          for (const key of required) if (!Object.hasOwn(frame.value, key) || frame.value[key] === void 0) violations.push(`missing required property "${propertyPath(frame.path, key)}"`);
+          const children = [];
+          for (const [key, child] of Object.entries(properties)) {
+            if (!Object.hasOwn(frame.value, key) || frame.value[key] === void 0) continue;
+            children.push({
+              node: child,
+              value: frame.value[key],
+              path: propertyPath(frame.path, key)
+            });
+          }
+          const tailViolations = [];
+          if (Object.hasOwn(frame.node, "additionalProperties") && frame.node.additionalProperties === false) {
+            for (const key of Object.keys(frame.value)) if (!Object.hasOwn(properties, key)) tailViolations.push(`"${propertyPath(frame.path, key)}" is not a declared property (additionalProperties: false)`);
+          }
+          frame.kind = "object";
+          frame.children = children;
+          frame.childIndex = 0;
+          frame.violations = violations;
+          frame.tailViolations = tailViolations;
+          frame.phase = "children";
+          break;
+        }
+        case "array": {
+          if (!Array.isArray(frame.value)) {
+            finish([`"${diagnosticPath(frame.path)}" must be an array`]);
+            break;
+          }
+          const items = Object.hasOwn(frame.node, "items") ? frame.node.items : void 0;
+          const children = items === void 0 ? [] : frame.value.flatMap((entry, index) => [{
+            node: items,
+            value: entry,
+            path: `${frame.path}[${index}]`
+          }]);
+          frame.kind = "array";
+          frame.children = children;
+          frame.childIndex = 0;
+          frame.violations = [];
+          frame.phase = "children";
+          break;
+        }
+        case "string":
+          finish(typeof frame.value === "string" ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be a string`]);
+          break;
+        case "number":
+          finish(typeof frame.value !== "number" ? [`"${diagnosticPath(frame.path)}" must be a number`] : !isJsonNumber(frame.value) ? [`"${diagnosticPath(frame.path)}" must be a finite JSON number`] : checkScalarValue(frame.node, frame.value, frame.path));
+          break;
+        case "integer":
+          finish(!isJsonNumber(frame.value) || !Number.isInteger(frame.value) ? [`"${diagnosticPath(frame.path)}" must be an integer`] : checkScalarValue(frame.node, frame.value, frame.path));
+          break;
+        case "boolean":
+          finish(typeof frame.value === "boolean" ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be a boolean`]);
+          break;
+        case "null":
+          finish(frame.value === null ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be null`]);
+          break;
+        default:
+          finish(assertNever(nodeType, "JsonSchemaType"));
+      }
+    } catch (error) {
+      let failed = frames.pop();
+      while (failed !== void 0 && !failed.catches) failed = frames.pop();
+      if (failed === void 0) throw error;
+      receive(losslessValueViolation(failed.path));
+    }
+  }
+  return rootResult ?? losslessValueViolation(path);
+}
+function validateJsonSchemaValue(schema3, value, path = "value") {
+  return checkValue(schema3, value, path);
+}
+function authorError(message) {
+  throw new JsonSchemaError([message]);
+}
+function copyAnnotations(source, target) {
+  if (Object.hasOwn(source, "description")) target.description = source.description;
+  if (Object.hasOwn(source, "title")) target.title = source.title;
+  if (Object.hasOwn(source, "default")) target.default = source.default;
+  if (Object.hasOwn(source, "examples")) target.examples = source.examples;
+}
+function assertAuthorKeys(source, path, allowed) {
+  for (const key of Object.keys(source)) if (!allowed.includes(key)) authorError(`${path}.${key} is not supported by the value schema DSL`);
+}
+function assignCompiledNode(destination, node) {
+  switch (destination.kind) {
+    case "root":
+      destination.holder.value = node;
+      break;
+    case "property":
+      Object.defineProperty(destination.target, destination.key, {
+        value: node,
+        enumerable: true,
+        configurable: true,
+        writable: true
+      });
+      break;
+    case "item":
+      destination.target.items = node;
+      break;
+    case "one-of":
+      destination.target[destination.index] = node;
+      break;
+  }
+}
+function assignCompiledPropertyMap(destination, compiled) {
+  if (destination.kind === "root") destination.holder.value = compiled;
+  else destination.target.properties = compiled.properties;
+}
+function runSchemaCompiler(initial) {
+  const seen = /* @__PURE__ */ new Set();
+  const tasks = [initial];
+  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
+    if (task.kind === "leave") {
+      seen.delete(task.input);
+      continue;
+    }
+    if (task.kind === "property-map-tail") {
+      if (task.required.length > 0) {
+        task.compiled.required = task.required;
+        if (task.destination.kind === "object") task.destination.target.required = task.required;
+      }
+      continue;
+    }
+    if (task.kind === "property") {
+      if (!isJsonSchemaRecord(task.property)) authorError(`${task.path} must be a value schema object`);
+      if (Object.hasOwn(task.property, "required") && task.property.required !== true) authorError(`${task.path}.required must be true when present`);
+      if (Object.hasOwn(task.property, "required") && task.property.required === true) task.required.push(task.key);
+      tasks.push({
+        kind: "value",
+        input: task.property,
+        path: task.path,
+        allowRequired: true,
+        destination: {
+          kind: "property",
+          target: task.properties,
+          key: task.key
+        }
+      });
+      continue;
+    }
+    if (task.kind === "property-map") {
+      if (!isJsonSchemaRecord(task.input)) authorError(`${task.path} must be an object of value schemas`);
+      if (seen.has(task.input)) authorError(`${task.path} is circular`);
+      seen.add(task.input);
+      const compiled = { properties: {} };
+      const required = [];
+      assignCompiledPropertyMap(task.destination, compiled);
+      tasks.push({
+        kind: "leave",
+        input: task.input
+      });
+      tasks.push({
+        kind: "property-map-tail",
+        compiled,
+        required,
+        destination: task.destination
+      });
+      const entries = Object.entries(task.input);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index];
+        if (entry === void 0) continue;
+        tasks.push({
+          kind: "property",
+          property: entry[1],
+          path: `${task.path}.${entry[0]}`,
+          key: entry[0],
+          properties: compiled.properties,
+          required
+        });
+      }
+      continue;
+    }
+    const { input, path } = task;
+    if (!isJsonSchemaRecord(input)) authorError(`${path} must be a value schema object`);
+    if (seen.has(input)) authorError(`${path} is circular`);
+    seen.add(input);
+    const authorKeys = [...ANNOTATION_KEYS, ...task.allowRequired ? ["required"] : []];
+    const node = {};
+    assignCompiledNode(task.destination, node);
+    tasks.push({
+      kind: "leave",
+      input
+    });
+    if (Object.hasOwn(input, "oneOf")) {
+      assertAuthorKeys(input, path, [
+        ...authorKeys,
+        "oneOf",
+        "type"
+      ]);
+      if (Object.hasOwn(input, "type")) authorError(`${path} cannot declare both type and oneOf`);
+      if (!isPlainJsonArray(input.oneOf)) authorError(`${path}.oneOf must be an array of at least two value schemas`);
+      const branches = [];
+      node.oneOf = branches;
+      copyAnnotations(input, node);
+      for (let index = input.oneOf.length - 1; index >= 0; index--) tasks.push({
+        kind: "value",
+        input: input.oneOf[index],
+        path: `${path}.oneOf[${index}]`,
+        allowRequired: false,
+        destination: {
+          kind: "one-of",
+          target: branches,
+          index
+        }
+      });
+      continue;
+    }
+    const inputType = Object.hasOwn(input, "type") ? input.type : void 0;
+    switch (inputType) {
+      case "json":
+        assertAuthorKeys(input, path, [...authorKeys, "type"]);
+        copyAnnotations(input, node);
+        break;
+      case "object":
+        assertAuthorKeys(input, path, [
+          ...authorKeys,
+          "type",
+          "properties",
+          "additionalProperties"
+        ]);
+        if (!Object.hasOwn(input, "additionalProperties") || typeof input.additionalProperties !== "boolean") authorError(`${path}.additionalProperties must be explicitly true or false`);
+        node.type = "object";
+        copyAnnotations(input, node);
+        node.additionalProperties = input.additionalProperties;
+        if (Object.hasOwn(input, "properties")) tasks.push({
+          kind: "property-map",
+          input: input.properties,
+          path: `${path}.properties`,
+          destination: {
+            kind: "object",
+            target: node
+          }
+        });
+        break;
+      case "array":
+        assertAuthorKeys(input, path, [
+          ...authorKeys,
+          "type",
+          "items"
+        ]);
+        node.type = "array";
+        copyAnnotations(input, node);
+        if (Object.hasOwn(input, "items")) tasks.push({
+          kind: "value",
+          input: input.items,
+          path: `${path}.items`,
+          allowRequired: false,
+          destination: {
+            kind: "item",
+            target: node
+          }
+        });
+        break;
+      case "string":
+      case "number":
+      case "integer":
+      case "boolean":
+      case "null":
+        assertAuthorKeys(input, path, [
+          ...authorKeys,
+          "type",
+          "enum",
+          "const"
+        ]);
+        node.type = inputType;
+        copyAnnotations(input, node);
+        if (Object.hasOwn(input, "enum")) {
+          if (!isPlainJsonArray(input.enum)) authorError(`${path}.enum must be a non-empty array of scalar values`);
+          node.enum = Array.from(input.enum, (entry) => entry);
+        }
+        if (Object.hasOwn(input, "const")) node.const = input.const;
+        break;
+      default:
+        authorError(`${path}.type must be string/number/integer/boolean/null/array/object/json, or use oneOf`);
+    }
+  }
+}
+function compilePropertyMap(input, path) {
+  const holder = {};
+  runSchemaCompiler({
+    kind: "property-map",
+    input,
+    path,
+    destination: {
+      kind: "root",
+      holder
+    }
+  });
+  return holder.value ?? authorError(`${path} did not compile`);
+}
+function compileValueSchema(input, path) {
+  const holder = {};
+  runSchemaCompiler({
+    kind: "value",
+    input,
+    path,
+    allowRequired: false,
+    destination: {
+      kind: "root",
+      holder
+    }
+  });
+  return holder.value ?? authorError(`${path} did not compile`);
+}
+function valueSchemaSpecToJsonSchema(spec) {
+  const schema3 = compileValueSchema(spec, "schema");
+  assertSupportedJsonSchema(schema3);
+  return schema3;
+}
+function parameterSchemaSpecToJsonSchema(spec) {
+  const compiled = compilePropertyMap(spec, "parameters");
+  const schema3 = {
+    type: "object",
+    properties: compiled.properties,
+    ...compiled.required === void 0 ? {} : { required: compiled.required }
+  };
+  assertSupportedJsonSchema(schema3);
+  return schema3;
+}
+function validateArgs(spec, args) {
+  return validateJsonSchemaValue(parameterSchemaSpecToJsonSchema(spec), args, "");
+}
+function defineTool(options) {
+  const userExecute = options.execute;
+  const userFinalizeContent = options.finalizeContent;
+  const userProjectContent = options.projectContent;
+  const userRender = options.output.render;
+  const userPresentationMeta = options.output.presentationMeta;
+  const userPresentCall = options.presentCall;
+  const userPresentResult = options.presentResult;
+  const userIsConcurrencySafe = options.isConcurrencySafe;
+  if (options.timeoutMs !== void 0 && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) throw new Error(`defineTool(${options.name}): timeoutMs must be a positive finite number`);
+  const parameters = parameterSchemaSpecToJsonSchema(options.parameters);
+  const outputSchema = valueSchemaSpecToJsonSchema(options.output.schema);
+  const validate = (args) => validateJsonSchemaValue(parameters, args, "");
+  const tool = {
+    name: options.name,
+    description: options.description,
+    parameters,
+    output: {
+      schema: outputSchema,
+      render(args, value) {
+        return userRender(args, value);
+      },
+      ...userPresentationMeta !== void 0 ? { presentationMeta(args, value) {
+        return userPresentationMeta(args, value);
+      } } : {}
+    },
+    ...options.deferLoading === true ? { deferLoading: options.deferLoading } : {},
+    ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+    async execute(args, exec) {
+      const violations = validate(args);
+      if (violations.length > 0) throw new ToolArgsError(violations);
+      return userExecute(args, exec);
+    }
+  };
+  if (userProjectContent) tool.projectContent = (exec, result) => userProjectContent(exec, result);
+  if (userFinalizeContent) tool.finalizeContent = (exec, result) => userFinalizeContent(exec, result);
+  if (userPresentCall) tool.presentCall = (args) => {
+    if (validate(args).length > 0) return void 0;
+    return userPresentCall(args);
+  };
+  if (userPresentResult) tool.presentResult = (args, result) => {
+    if (validate(args).length > 0) return void 0;
+    return userPresentResult(args, result);
+  };
+  if (userIsConcurrencySafe) tool.isConcurrencySafe = (args) => {
+    if (validate(args).length > 0) return false;
+    return userIsConcurrencySafe(args);
+  };
+  return tool;
+}
+var HarnessError, JsonSchemaError, CONSTRAINT_KEYWORDS, ANNOTATION_KEYWORDS, SCHEMA_TYPES, ONE_OF_SIBLING_KEYWORDS, ANNOTATION_KEYS, ToolArgsError, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolNotFoundError, ToolOutputError;
+var init_dsh_tools_compat = __esm({
+  "src/dsh/dsh-tools-compat.js"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib3();
+    HarnessError = class extends Error {
+      code;
+      constructor(message, code, options) {
+        super(message, options);
+        this.code = code;
+        this.name = new.target.name;
+      }
+    };
+    JsonSchemaError = class extends HarnessError {
+      /** Individual schema violations in walk order. */
+      violations;
+      constructor(violations) {
+        super(`unsupported JSON schema: ${violations.join("; ")}`, "UNSUPPORTED_SCHEMA");
+        this.name = "JsonSchemaError";
+        this.violations = violations;
+      }
+    };
+    CONSTRAINT_KEYWORDS = /* @__PURE__ */ new Set([
+      "type",
+      "oneOf",
+      "properties",
+      "required",
+      "additionalProperties",
+      "items",
+      "enum",
+      "const"
+    ]);
+    ANNOTATION_KEYWORDS = /* @__PURE__ */ new Set([
+      "description",
+      "title",
+      "default",
+      "examples"
+    ]);
+    SCHEMA_TYPES = [
+      "object",
+      "array",
+      "string",
+      "number",
+      "integer",
+      "boolean",
+      "null"
+    ];
+    ONE_OF_SIBLING_KEYWORDS = [
+      "properties",
+      "required",
+      "additionalProperties",
+      "items",
+      "enum",
+      "const"
+    ];
+    ANNOTATION_KEYS = [
+      "description",
+      "title",
+      "default",
+      "examples"
+    ];
+    ToolArgsError = class extends HarnessError {
+      /** Individual violations in schema-walk order. */
+      violations;
+      constructor(violations) {
+        super(`invalid arguments: ${violations.join("; ")}`, "INVALID_ARGS");
+        this.name = "ToolArgsError";
+        this.violations = violations;
+      }
+    };
+    TOOL_ABORTED = "ABORTED";
+    TOOL_ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH";
+    ToolNotFoundError = class extends HarnessError {
+      /**
+      * @param toolName - the name the caller asked for.
+      * @param reachableFrom - how the model reaches this tool instead, when the
+      *   name IS visible and only the presentation denies calling it directly.
+      *   Omitted for a name that is registered nowhere.
+      */
+      constructor(toolName, reachableFrom) {
+        super(reachableFrom === void 0 ? `unknown tool "${toolName}"` : `unknown tool "${toolName}": ${reachableFrom}`, "UNKNOWN_TOOL");
+        this.name = "ToolNotFoundError";
+      }
+    };
+    ToolOutputError = class extends HarnessError {
+      /** Schema/value violations in validation order. */
+      violations;
+      constructor(toolName, violations) {
+        super(`tool "${toolName}" returned invalid output: ${violations.join("; ")}`, "INVALID_TOOL_OUTPUT");
+        this.name = "ToolOutputError";
+        this.violations = violations;
       }
     };
   }
@@ -12685,6 +13782,277 @@ var init_bun_closure = __esm({
   }
 });
 
+// src/dsh/compatibility.json
+var compatibility_default;
+var init_compatibility = __esm({
+  "src/dsh/compatibility.json"() {
+    compatibility_default = {
+      version: 2,
+      target_dsh_version: "0.2.1-rc.2",
+      provided_services: [
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "shellHooks",
+        "logger",
+        "events",
+        "reflect",
+        "registry",
+        "sessions"
+      ],
+      refused_services: [
+        "shellHooks",
+        "loader",
+        "approval",
+        "agents",
+        "subagents",
+        "sessions",
+        "llm",
+        "sandboxPolicy",
+        "credentials",
+        "fs",
+        "subprocess",
+        "systemPrompt",
+        "runtimeLoop",
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "logger"
+      ],
+      row_bridges: {
+        "@deepseek-ai/dsh-mcp-client": "mcp",
+        "@deepseek-ai/dsh-skill-filesystem": "skills",
+        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
+        "@deepseek-ai/dsh-persona": "persona"
+      },
+      module_singletons: {
+        "@codewhale/dsh-composition": "dsh-composition",
+        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
+        "@deepseek-ai/cordis-plugin-include": "dsh-include",
+        "@deepseek-ai/cordis-plugin-group": "dsh-group",
+        "@deepseek-ai/cordis": "cordis",
+        "@deepseek-ai/schemastery": "schemastery",
+        "@deepseek-ai/cosmokit": "cosmokit",
+        cosmokit: "cosmokit",
+        "@deepseek-ai/dsh-tools": "dsh-tools",
+        "@deepseek-ai/dsh-util-values": "dsh-util-values",
+        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
+        "@deepseek-ai/dsh-llm": "dsh-llm-values",
+        "@deepseek-ai/dsh-session": "dsh-session-values",
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values"
+      },
+      definition_api: {
+        package: "@deepseek-ai/dsh-tools",
+        version: "0.2.1-rc.2",
+        license: "MIT",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.1-rc.2.tgz",
+        integrity: "sha512-K3gET3VPbtxM66pkeRsEGrZ+bQKiBqrTbNXiIreBKu0hP+qPvlSwhiSI5MTnFp2tMFK5rpuYMZosRIdbfrbJ/g==",
+        source_file: "lib/index.js",
+        source_sha256: "1e53932e7c4213ea24a7d87f06960b7a7702cb21f8a5741c97242b4a470a442a",
+        source_lines: [
+          [
+            8,
+            888
+          ],
+          [
+            2625,
+            2655
+          ]
+        ],
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be"
+      },
+      command_followup: "one-text-message-submit-on-success",
+      pure_api: {
+        file: "src/dsh/dsh-message-compat.js",
+        source_sha256: "efbafde829c7ecde345ccbc84d94b676466330b7073da05163f93c03b1defc32",
+        exports: {
+          "@deepseek-ai/dsh-llm": [
+            "createUserMessage"
+          ],
+          "@deepseek-ai/dsh-session": [
+            "SessionId"
+          ],
+          "@deepseek-ai/dsh-system-prompt": [
+            "PERSONA_PREFIX_SECTION"
+          ]
+        },
+        packages: [
+          {
+            package: "@deepseek-ai/dsh-brand",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.1-rc.2.tgz",
+            integrity: "sha512-T2kcygikRS8rv8cKjgho2x381EgGprv5yQmvHl4/iYbuHE19OW+SLGtHWbV27PGdSHz5U8CJxasYzFosKW4e2A==",
+            tarball_sha256: "abc43c2daa0c476881cd3441d57e662e386f6e07bf60fbde8c9e41e126f70716",
+            source_file: "lib/index.js",
+            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
+            excerpts: [
+              {
+                name: "brandString",
+                lines: [
+                  20,
+                  22
+                ],
+                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-crypto",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.1-rc.2.tgz",
+            integrity: "sha512-V4SxvXL4ZbY5RYJckVtmo3qz4YsA52pYKvDF13+8hsDCEmQIv9YfmLRMA61pjK/i05pGMe3p1pPhAB6L+NOIEA==",
+            tarball_sha256: "333710abf757d423118d9d48f8376d5731eea802bbefeb9f1182db6d58360195",
+            source_file: "lib/index.js",
+            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
+            excerpts: [
+              {
+                name: "randomUUID",
+                lines: [
+                  27,
+                  33
+                ],
+                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-llm",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.1-rc.2.tgz",
+            integrity: "sha512-3xfoMDHEpUJGcH2Lu+lNXUJYRBclYfBkdCG9Au02VzIjYAm9BrFmc/MNuaVTg0vwgvPpTsd6Fx1IeGtfmQFvlg==",
+            tarball_sha256: "00e45b51cf850817c7a27c00203a1715853f9e476ff44256e895f8aafda2b8ba",
+            source_file: "lib/index.js",
+            source_sha256: "d18d8ae4c8d961e628708c1e4698e09716a0ebb80e55a672e0bde1029bec1155",
+            excerpts: [
+              {
+                name: "createMessage",
+                lines: [
+                  37,
+                  42
+                ],
+                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
+              },
+              {
+                name: "createUserMessage",
+                lines: [
+                  59,
+                  64
+                ],
+                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-session",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.1-rc.2.tgz",
+            integrity: "sha512-WDA4lIrXtG5nf1dn2wrA4UzEr7D6e8T3AdPpVSZ7eY4N4ICMDZ0RYuD4GkM+iSb7WkLojdO8ljr0etiIMEbqJg==",
+            tarball_sha256: "72b538e5e120e1f79c923ad527742640fe56cba50db0a7bacdc12ad73e0225e7",
+            source_file: "lib/index.js",
+            source_sha256: "2f5dd07cb5c744a29abbb8003a8a4cefd9e582c6e2538074ca299a0ddd02a3bf",
+            excerpts: [
+              {
+                name: "SessionId",
+                lines: [
+                  13,
+                  15
+                ],
+                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-system-prompt",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.1-rc.2.tgz",
+            integrity: "sha512-X1WG2FMyfZapAkcCYyTl0UO5vVqDcCsA9wECJY7eeDTLHJDsqrilQJg2DRgHQzM+2/7T01QyzFZhKd7hfALJxg==",
+            tarball_sha256: "d186153582b801c3f16a84d1a0651910957be7498929381a48ae6fe49666206d",
+            source_file: "lib/index.js",
+            source_sha256: "7be9f7aafbf345d01ddcc12fd297b16e9a1d41283a6a04073b867becca0bf020",
+            excerpts: [
+              {
+                name: "PERSONA_PREFIX_SECTION",
+                lines: [
+                  59,
+                  59
+                ],
+                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-values",
+            version: "0.2.1-rc.2",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.1-rc.2.tgz",
+            integrity: "sha512-mgnByPadOgZtoBxbwMI184li494O6sNn66/NvdqN0RIrzAJmFGpFxpjFkQtQN/yetwWhlx7Ic17+6p7eKl8DNg==",
+            tarball_sha256: "2b273a4eae9cd3a40a57f82a28489b763cd66bddc5c91953e5473e2e45e740cb",
+            source_file: "lib/index.js",
+            source_sha256: "4322a2aacdfe38476d2bbc62338120beea1e1660346d7db5b6c1e1f927a26b7c",
+            excerpts: [
+              {
+                name: "deepFreeze",
+                lines: [
+                  824,
+                  860
+                ],
+                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: false
+          }
+        ],
+        reuse: {
+          package: "@deepseek-ai/dsh-util-values",
+          version: "0.1.7-alpha.2",
+          file: "lib/index.js",
+          symbol: "deepFreeze",
+          lines: [
+            194,
+            230
+          ],
+          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+        }
+      },
+      tool_caller_projection: "readonly-id-session-header-cwd",
+      session_methods: {
+        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      }
+    };
+  }
+});
+
 // src/dsh/resolve-hooks.ts
 import * as nodeModule2 from "node:module";
 import { createHash as createHash2 } from "node:crypto";
@@ -12697,9 +14065,9 @@ function packageName(specifier) {
 }
 function classifySpecifier(specifier) {
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
-  if (specifier in SUBPATH_SINGLETONS) return SUBPATH_SINGLETONS[specifier];
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
   const name = packageName(specifier);
-  if (name in SINGLETONS) {
+  if (Object.hasOwn(SINGLETONS, name)) {
     if (specifier !== name) throw new UnsupportedPeerError(specifier);
     return SINGLETONS[name];
   }
@@ -12743,7 +14111,7 @@ function installBunResolver(modules) {
   bun.plugin({
     name: "codewhale-host-modules",
     setup(build) {
-      for (const [specifier, key] of Object.entries({ ...SINGLETONS, ...SUBPATH_SINGLETONS })) {
+      for (const [specifier, key] of Object.entries(SINGLETONS)) {
         if (key in modules) build.module(specifier, () => ({ exports: modules[key], loader: "object" }));
       }
       build.onResolve({ filter: /^[^./]/ }, (args) => {
@@ -12893,7 +14261,7 @@ function installResolveHooks(modules) {
     }
   });
 }
-var SCHEME, REGISTRY_KEY, SINGLETONS, SUBPATH_SINGLETONS, UnsupportedPeerError, PEER_PATH, reviewedClosures, installed;
+var SCHEME, REGISTRY_KEY, SINGLETONS, UnsupportedPeerError, PEER_PATH, reviewedClosures, installed;
 var init_resolve_hooks = __esm({
   "src/dsh/resolve-hooks.ts"() {
     "use strict";
@@ -12901,23 +14269,10 @@ var init_resolve_hooks = __esm({
     init_canonical_path();
     init_runtime();
     init_bun_closure();
+    init_compatibility();
     SCHEME = "codewhale-host:";
     REGISTRY_KEY = /* @__PURE__ */ Symbol.for("codewhale.extension-host.modules");
-    SINGLETONS = {
-      "@codewhale/dsh-composition": "dsh-composition",
-      "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
-      "@deepseek-ai/cordis-plugin-include": "dsh-include",
-      "@deepseek-ai/cordis-plugin-group": "dsh-group",
-      "@deepseek-ai/cordis": "cordis",
-      "@deepseek-ai/schemastery": "schemastery",
-      "@deepseek-ai/cosmokit": "cosmokit",
-      cosmokit: "cosmokit",
-      "@deepseek-ai/dsh-tools": "dsh-tools",
-      "@deepseek-ai/dsh-util-values": "dsh-util-values"
-    };
-    SUBPATH_SINGLETONS = {
-      "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand"
-    };
+    SINGLETONS = compatibility_default.module_singletons;
     UnsupportedPeerError = class extends Error {
       constructor(specifier) {
         super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
@@ -13090,6 +14445,7 @@ var init_protocol_generated = __esm({
       { name: "registry/register", direction: "host_to_core", request: true, params: "RegisterParams", tiers: ["plugin", "builtin"] },
       { name: "registry/unregister", direction: "host_to_core", request: true, params: "UnregisterParams", tiers: ["plugin", "builtin"] },
       { name: "core/call", direction: "host_to_core", request: true, params: "CoreCallParams", tiers: ["plugin", "builtin"] },
+      { name: "session/checkpoint", direction: "host_to_core", request: true, params: "SessionCheckpointParams", tiers: ["plugin", "builtin"] },
       { name: "proc/launch", direction: "host_to_core", request: true, params: "ProcLaunchParams", tiers: ["builtin"] },
       { name: "proc/read", direction: "host_to_core", request: true, params: "ProcSessionParams", tiers: ["builtin"] },
       { name: "proc/write", direction: "host_to_core", request: true, params: "ProcWriteParams", tiers: ["builtin"] },
@@ -13203,12 +14559,12 @@ var init_protocol_generated = __esm({
       McpHttpHeaders: {
         strict: true,
         required: {},
-        optional: { accept: "string", content_type: "string", mcp_session_id: "string", mcp_protocol_version: "string" }
+        optional: { accept: "string", content_type: "string", mcp_session_id: "string", mcp_protocol_version: "string", mcp_method: "string", mcp_name: "string" }
       },
       McpOpenParams: {
         strict: true,
         required: { owner: { ref: "OwnerRef" }, session_id: "string", launch_ticket: "string", transport: "string", initialize_grant: { ref: "McpOperationGrant" }, initialized_grant: { ref: "McpOperationGrant" }, client_version: "string", deadline_ms: "uint" },
-        optional: {}
+        optional: { discover_grant: { ref: "McpOperationGrant" } }
       },
       McpOperationGrant: {
         strict: true,
@@ -13275,10 +14631,15 @@ var init_protocol_generated = __esm({
         required: { code: "integer", message: "string" },
         optional: { data: "json" }
       },
+      SessionCheckpointParams: {
+        strict: true,
+        required: { owner: { ref: "OwnerRef" }, ticket: "string" },
+        optional: {}
+      },
       ToolCallParams: {
         strict: false,
         required: { handle: "uint", call_id: "string", input: "json", deadline_ms: "uint" },
-        optional: { workspace: "string", ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
+        optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", session_id: "string", agent_id: "string", origin_turn_id: "string" }
       },
       UnregisterParams: {
         strict: true,
@@ -13731,7 +15092,7 @@ var init_hooks = __esm({
 import { constants as constants2 } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename as rename2, unlink } from "node:fs/promises";
 import { isAbsolute as isAbsolute3, join } from "node:path";
-import { createHash as createHash3, randomUUID } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay2 } from "node:timers/promises";
 function checkKey(key) {
   if (typeof key !== "string" || !key.length || key.includes("\0") || Buffer.byteLength(key) > STORAGE_LIMITS.keyBytes) {
@@ -13850,7 +15211,7 @@ function createStorage({ dataDir, isActive, onWarning }) {
     const encoded = JSON.stringify({ version: 1, key, value }) + "\n";
     await readRecord(directory2, name);
     await checkQuota(directory2, name, Buffer.byteLength(encoded));
-    const temporary = join(directory2, `.pending-${randomUUID()}.tmp`);
+    const temporary = join(directory2, `.pending-${randomUUID2()}.tmp`);
     let file;
     let published = false;
     try {
@@ -14091,15 +15452,63 @@ function commandSpec(command) {
     ...command.argumentHint === void 0 ? {} : { argument_hint: command.argumentHint }
   };
 }
-function makeInvocation(args, commandId, signal, context = {}) {
-  return Object.freeze({
+function makeInvocation(command, args, commandId, signal, context = {}) {
+  let open2 = !signal.aborted;
+  let prompt;
+  let failure;
+  const close = () => {
+    open2 = false;
+    prompt = void 0;
+    signal.removeEventListener("abort", close);
+  };
+  signal.addEventListener("abort", close, { once: true });
+  const reject = (reason) => {
+    failure ??= new TypeError(`command "${command}" followup ${reason}`);
+    throw failure;
+  };
+  const agent = context.sessionId?.trim() ? Object.freeze({
+    id: context.agentId ?? context.sessionId,
+    followup(message) {
+      if (!open2 || signal.aborted) reject("is unavailable after command settlement or cancellation");
+      if (failure) throw failure;
+      if (prompt !== void 0) reject("accepts exactly one message per invocation");
+      if (!isJson(message) || message === null || Array.isArray(message) || typeof message !== "object") {
+        reject("requires a lossless JSON user message");
+      }
+      if (Object.keys(message).some((key) => !["id", "role", "content", "source"].includes(key)) || typeof message.id !== "string" || message.id.trim() === "" || message.id.length > 256 || message.role !== "user") reject("requires only id, user role, content and source fields");
+      const source = message.source;
+      if (!source || Array.isArray(source) || typeof source !== "object" || Object.keys(source).some((key) => key !== "kind") || typeof source.kind !== "string" || source.kind.trim() === "" || source.kind.length > 128) reject("requires a source with one bounded kind");
+      const content = message.content;
+      if (!Array.isArray(content) || content.length !== 1) reject("requires exactly one text block");
+      const block = content[0];
+      if (!block || Array.isArray(block) || typeof block !== "object" || Object.keys(block).some((key) => key !== "type" && key !== "text") || block.type !== "text" || typeof block.text !== "string") reject("requires exactly one plain text block");
+      if (block.text.trim() === "" || Buffer.byteLength(block.text, "utf8") > 128 * 1024) reject("text must be non-empty and at most 128 KiB");
+      prompt = block.text;
+    }
+  }) : void 0;
+  const invocation = Object.freeze(Object.defineProperty({
     commandId,
     args,
     rawInput: args === "" ? "" : ` ${args}`,
     attachments: NO_ATTACHMENTS,
     signal,
     ...context
-  });
+  }, "agent", { get() {
+    if (!agent) reject("requires an authoritative caller session");
+    return agent;
+  } }));
+  return {
+    invocation,
+    close,
+    complete(value) {
+      if (!open2 || signal.aborted) reject("is unavailable after command settlement or cancellation");
+      if (failure) throw failure;
+      const result = normalizeResult(command, value);
+      if (prompt === void 0 || result.kind === "error") return result;
+      if (result.kind === "submit") reject("conflicts with an explicit Submit result");
+      return { kind: "submit", prompt, ...result.text === void 0 ? {} : { text: result.text } };
+    }
+  };
 }
 function normalizeResult(command, value) {
   if (value === void 0 || value === null) return { kind: "success" };
@@ -14150,6 +15559,7 @@ var init_commands = __esm({
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_lib2();
+    init_json();
     COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
     NO_ATTACHMENTS = Object.freeze([]);
   }
@@ -14190,15 +15600,21 @@ function abortedBy(signal) {
 }
 function renderResult(definition, input, value) {
   let blocks = void 0;
-  if (typeof definition.output?.render === "function") {
+  if (definition.output !== void 0) {
+    if (!isJson(value)) throw new ToolOutputError(definition.name, ["value must be lossless JSON"]);
+    const violations = validateJsonSchemaValue(definition.output.schema, value);
+    if (violations.length > 0) throw new ToolOutputError(definition.name, violations);
     blocks = definition.output.render(input, value);
+    if (!Array.isArray(blocks)) throw new ToolOutputError(definition.name, ["output.render must return an array of content blocks"]);
   }
   const content = [];
   if (Array.isArray(blocks)) {
     for (const block of blocks) {
-      if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
-        content.push({ type: "text", text: block.text });
+      if (!block || typeof block !== "object" || block.type !== "text" || typeof block.text !== "string") {
+        throw new ToolOutputError(definition.name, ["output.render returned an unsupported content block; this host accepts text blocks only"]);
       }
+      if (Reflect.ownKeys(block).some((key) => key !== "type" && key !== "text")) throw new ToolOutputError(definition.name, ["output.render returned unsupported text-block fields"]);
+      content.push({ type: "text", text: block.text });
     }
   } else {
     content.push({ type: "text", text: typeof value === "string" ? value : safeStringify(value) });
@@ -14221,6 +15637,16 @@ function validateDefinition(definition) {
   if (definition.parameters !== void 0 && (typeof definition.parameters !== "object" || definition.parameters === null)) {
     throw new TypeError(`tool \`${definition.name}\` parameters must be a JSON schema object`);
   }
+  if (definition.output !== void 0) {
+    if (!definition.output || typeof definition.output !== "object" || typeof definition.output.render !== "function") {
+      throw new TypeError(`tool \`${definition.name}\` output must declare a schema and render function`);
+    }
+    assertSupportedJsonSchema(definition.output.schema);
+  }
+  for (const field of ["projectContent", "finalizeContent", "timeoutMs"]) {
+    if (definition[field] !== void 0) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH execution field \`${field}\``);
+  }
+  if (definition.deferLoading === true) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH deferred loading`);
 }
 function pickPlugin(module) {
   const candidate = module?.default ?? module;
@@ -14258,6 +15684,8 @@ var init_root = __esm({
     init_protocol();
     init_rpc();
     init_resolve_hooks();
+    init_compatibility();
+    init_dsh_tools_compat();
     init_json();
     init_core();
     init_owned();
@@ -14271,32 +15699,8 @@ var init_root = __esm({
     init_tier();
     init_commands();
     OWNER = /* @__PURE__ */ Symbol.for("codewhale.extension-host.owner");
-    REFUSED_SERVICES = /* @__PURE__ */ new Set([
-      "shellHooks",
-      "loader",
-      // one host-owned composition loader; plugins may not replace it
-      "approval",
-      "agents",
-      "subagents",
-      "sessions",
-      "llm",
-      "sandboxPolicy",
-      "credentials",
-      "fs",
-      "subprocess",
-      "systemPrompt",
-      "runtimeLoop",
-      // the one Rust Engine owns scheduling and execution
-      "tools",
-      "commands",
-      "prompt",
-      "storage",
-      "skills",
-      "avatars",
-      "mcp",
-      "logger"
-    ]);
-    PROVIDED_SERVICES = /* @__PURE__ */ new Set(["tools", "commands", "prompt", "storage", "skills", "avatars", "mcp", "logger", "events", "reflect", "registry"]);
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(compatibility_default.provided_services);
     ACTIVATE_DEADLINE_MS = 5e3;
     DISPOSE_DEADLINE_MS = 2e3;
     ownerStorage = new AsyncLocalStorage();
@@ -14386,10 +15790,13 @@ var init_root = __esm({
             super(ctx, "tools");
           }
           /** DSH `ctx.tools.register(defineTool(...))`: returns an idempotent disposer. */
-          register(definition) {
+          register(definition, options) {
             const ctx = this.ctx;
             const owner = ctx[OWNER];
             if (!owner) throw new Error("tools.register called outside an extension owner");
+            if (options !== void 0 && (!options || typeof options !== "object" || Array.isArray(options) || Reflect.ownKeys(options).length !== 0)) {
+              throw new TypeError("tools.register options are unsupported by the Codewhale DSH 0.2.1-rc.2 definition adapter");
+            }
             validateDefinition(definition);
             return ctx.effect(() => host2.addTool(owner, definition), `tools.register(${JSON.stringify(definition.name)})`);
           }
@@ -14430,11 +15837,35 @@ var init_root = __esm({
             return this.api().delete(key);
           }
         }
+        class SessionsShim extends Service {
+          constructor(ctx) {
+            super(ctx, "sessions");
+          }
+          async flush(session) {
+            const invocation = host2.toolInvocations.getStore();
+            const owner = this.ctx[OWNER];
+            const live = () => invocation && invocation.active && !invocation.signal.aborted && invocation.owner === owner && owner?.state === "active" && !owner.disposing && invocation.ticket !== void 0 && session === invocation.session && session !== void 0;
+            if (!live()) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
+            const call = invocation;
+            const run = async () => {
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              const result2 = await host2.rpc.request("session/checkpoint", { owner: call.owner.ref, ticket: call.ticket }, call.signal);
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
+              return result2;
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            return result;
+          }
+        }
+        Object.freeze(SessionsShim.prototype);
         Object.freeze(StorageShim.prototype);
         shimClasses.set("tools", ToolsShim);
         shimClasses.set("commands", CommandsShim);
         shimClasses.set("prompt", PromptShim);
         shimClasses.set("storage", StorageShim);
+        shimClasses.set("sessions", SessionsShim);
         shimClasses.set("skills", SkillsShim);
         shimClasses.set("avatars", AvatarsShim);
         shimClasses.set("mcp", McpShim);
@@ -14443,6 +15874,7 @@ var init_root = __esm({
         root.plugin(CommandsShim);
         root.plugin(PromptShim);
         root.plugin(StorageShim);
+        root.plugin(SessionsShim);
         root.plugin(SkillsShim);
         root.plugin(AvatarsShim);
         root.plugin(McpShim);
@@ -14453,6 +15885,7 @@ var init_root = __esm({
       rpc;
       tier;
       root;
+      toolInvocations = new AsyncLocalStorage();
       owners = /* @__PURE__ */ new Map();
       toolRegistrations;
       commandRegistrations;
@@ -14703,12 +16136,30 @@ var init_root = __esm({
         }
         const definition = local.definition;
         const core2 = ticket === void 0 ? {} : { core: makeCoreApi(this.rpc, local.owner.ref, ticket, signal) };
-        const exec = Object.freeze({ signal, callId, args: input, ...callContext(local.owner, workspace, identity), ...core2 });
-        const run = ownerStorage.run(local.owner, async () => {
+        const agent = workspace && identity?.session_id ? Object.freeze({
+          id: identity.agent_id ?? identity.session_id,
+          session: Object.freeze({ header: Object.freeze({ cwd: workspace }) })
+        }) : void 0;
+        const exec = Object.freeze({ signal, callId, args: input, ...callContext(local.owner, workspace, identity), ...core2, ...agent === void 0 ? {} : { agent } });
+        const closed = new AbortController();
+        const invocation = {
+          owner: local.owner,
+          session: agent?.session,
+          ticket: identity?.checkpoint_ticket,
+          signal: AbortSignal.any([signal, closed.signal]),
+          active: true,
+          pending: Promise.resolve()
+        };
+        const run = ownerStorage.run(local.owner, () => this.toolInvocations.run(invocation, async () => {
           const value = await definition.execute(input, exec);
           return renderResult(definition, input, value);
-        });
-        return Promise.race([run, abortedBy(signal)]);
+        }));
+        try {
+          return await Promise.race([run, abortedBy(signal)]);
+        } finally {
+          invocation.active = false;
+          closed.abort();
+        }
       }
       /** `command/run`: only for a handle the core admitted, and only on a user's own invocation. */
       async callCommand(handle, rawInput, commandId, signal, workspace, identity) {
@@ -14717,11 +16168,20 @@ var init_root = __esm({
           throw new RpcError(ErrorCode.NotAvailable, `command handle ${handle} is not live`);
         }
         const { definition } = local;
+        const call = makeInvocation(definition.name, rawInput, commandId, signal, callContext(local.owner, workspace, identity));
         const run = ownerStorage.run(local.owner, async () => {
-          const value = await definition.handler(makeInvocation(rawInput, commandId, signal, callContext(local.owner, workspace, identity)));
-          return normalizeResult(definition.name, value);
+          try {
+            const value = await definition.handler(call.invocation);
+            return call.complete(value);
+          } finally {
+            call.close();
+          }
         });
-        return Promise.race([run, abortedBy(signal)]);
+        try {
+          return await Promise.race([run, abortedBy(signal)]);
+        } finally {
+          call.close();
+        }
       }
       async evaluateHook(params, signal) {
         const local = this.hookRegistrations.byHandle.get(params.handle);
@@ -15049,7 +16509,7 @@ function reviewComposition(spec) {
   return { version: 1, entries, warnings, skipped, layers };
 }
 function hasReviewedRowBridge(name) {
-  return name === "@deepseek-ai/dsh-mcp-client" || name === "@deepseek-ai/dsh-skill-filesystem" || name === "@deepseek-ai/dsh-hooks-claude-code" || name === "@deepseek-ai/dsh-hooks-codex" || name === PERSONA;
+  return Object.hasOwn(compatibility_default.row_bridges, name);
 }
 function compositionRowProblem(name) {
   return UNSUPPORTED_ROWS.get(name);
@@ -15171,6 +16631,7 @@ var init_composition = __esm({
     init_resolve_hooks();
     init_persona();
     init_agent_presets();
+    init_compatibility();
     MAX_LAYERS = 64;
     MAX_SOURCE_BYTES = 1024 * 1024;
     MAX_DATA_BYTES = 4 * 1024 * 1024;
@@ -15943,1091 +17404,38 @@ defineMethod("transform", [
 
 // src/main.ts
 init_lib();
+init_lib3();
+init_dsh_tools_compat();
 
-// node_modules/@deepseek-ai/dsh-util-values/lib/index.js
-var lib_exports4 = {};
-__export(lib_exports4, {
-  WeakMapWithValues: () => WeakMapWithValues,
-  assertNever: () => assertNever,
-  deepEqualJson: () => deepEqualJson,
-  deepFreeze: () => deepFreeze,
-  isJsonValue: () => isJsonValue,
-  snapshotJsonValue: () => snapshotJsonValue
-});
+// src/dsh/dsh-message-compat.js
 init_define_BUILTIN_MODULE_DIGESTS();
-function assertNever(value, context) {
-  const rendered = JSON.stringify(value) ?? String(value);
-  throw new Error(`unreachable variant${context ? ` in ${context}` : ""}: ${rendered}`);
-}
-function hasIntrinsicConstructor(prototype, name) {
-  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
-  if (typeof constructor !== "function") return false;
-  try {
-    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
-  } catch {
-    return false;
-  }
-}
-function isIntrinsicObjectPrototype(value) {
-  return Object.getPrototypeOf(value) === null && hasIntrinsicConstructor(value, "Object");
-}
-function hasPlainArrayPrototype(value) {
-  const prototype = Object.getPrototypeOf(value);
-  if (!Array.isArray(prototype) || !hasIntrinsicConstructor(prototype, "Array")) return false;
-  const objectPrototype = Object.getPrototypeOf(prototype);
-  return typeof objectPrototype === "object" && objectPrototype !== null && isIntrinsicObjectPrototype(objectPrototype);
-}
-function hasPlainObjectPrototype(value) {
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === null || typeof prototype === "object" && isIntrinsicObjectPrototype(prototype);
-}
-function enumerableStringKeys(value) {
-  const keys = Reflect.ownKeys(value);
-  if (keys.some((key) => typeof key !== "string" || !Object.prototype.propertyIsEnumerable.call(value, key))) return void 0;
-  return keys;
-}
-function walkJsonValue(value, detach) {
-  const ancestors = /* @__PURE__ */ new Set();
-  let root;
-  const assign = (destination, item) => {
-    if (destination === void 0) return;
-    if (destination.kind === "root") root = item;
-    else if (destination.kind === "array") destination.target[destination.index] = item;
-    else Object.defineProperty(destination.target, destination.key, {
-      value: item,
-      enumerable: true,
-      configurable: true,
-      writable: true
-    });
-  };
-  const tasks = [{
-    kind: "visit",
-    value,
-    ...detach ? { destination: { kind: "root" } } : {}
-  }];
-  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
-    if (task.kind === "leave") {
-      ancestors.delete(task.source);
-      continue;
-    }
-    if (task.kind === "array-item") {
-      if (!Object.prototype.hasOwnProperty.call(task.source, task.index)) return void 0;
-      tasks.push({
-        kind: "visit",
-        value: task.source[task.index],
-        ...task.target === void 0 ? {} : { destination: {
-          kind: "array",
-          target: task.target,
-          index: task.index
-        } }
-      });
-      continue;
-    }
-    if (task.kind === "object-property") {
-      tasks.push({
-        kind: "visit",
-        value: task.source[task.key],
-        ...task.target === void 0 ? {} : { destination: {
-          kind: "object",
-          target: task.target,
-          key: task.key
-        } }
-      });
-      continue;
-    }
-    const current2 = task.value;
-    if (current2 === null) {
-      assign(task.destination, null);
-      continue;
-    }
-    if (typeof current2 === "boolean" || typeof current2 === "string") {
-      assign(task.destination, current2);
-      continue;
-    }
-    if (typeof current2 === "number") {
-      if (!Number.isFinite(current2) || Object.is(current2, -0)) return void 0;
-      assign(task.destination, current2);
-      continue;
-    }
-    if (typeof current2 !== "object") return void 0;
-    if (ancestors.has(current2)) return void 0;
-    if (Array.isArray(current2)) {
-      if (!hasPlainArrayPrototype(current2)) return void 0;
-      const length = current2.length;
-      if (Reflect.ownKeys(current2).length !== length + 1) return void 0;
-      const target2 = detach ? [] : void 0;
-      if (target2 !== void 0) assign(task.destination, target2);
-      ancestors.add(current2);
-      tasks.push({
-        kind: "leave",
-        source: current2
-      });
-      for (let index = length - 1; index >= 0; index--) tasks.push({
-        kind: "array-item",
-        source: current2,
-        index,
-        ...target2 === void 0 ? {} : { target: target2 }
-      });
-      continue;
-    }
-    if (!hasPlainObjectPrototype(current2)) return void 0;
-    const keys = enumerableStringKeys(current2);
-    if (keys === void 0) return void 0;
-    const target = detach ? {} : void 0;
-    if (target !== void 0) assign(task.destination, target);
-    ancestors.add(current2);
-    tasks.push({
-      kind: "leave",
-      source: current2
-    });
-    for (let index = keys.length - 1; index >= 0; index--) {
-      const key = keys[index];
-      if (key === void 0) return void 0;
-      tasks.push({
-        kind: "object-property",
-        source: current2,
-        key,
-        ...target === void 0 ? {} : { target }
-      });
-    }
-  }
-  return detach ? root : true;
-}
-function snapshotJsonValue(value) {
-  return walkJsonValue(value, true);
-}
-function isJsonValue(value) {
-  return walkJsonValue(value, false) === true;
-}
-function deepEqualJson(a, b) {
-  if (a === b) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((entry, index) => deepEqualJson(entry, b[index]));
-  }
-  const left = a;
-  const right = b;
-  const keys = Object.keys(left);
-  if (keys.length !== Object.keys(right).length) return false;
-  return keys.every((key) => key in right && deepEqualJson(left[key], right[key]));
-}
-function deepFreeze(value) {
-  const seen = /* @__PURE__ */ new WeakSet();
-  const pending = [{
-    kind: "visit",
-    node: value
-  }];
-  while (pending.length > 0) {
-    const task = pending.pop();
-    if (task === void 0) continue;
-    if (task.kind === "property") {
-      pending.push({
-        kind: "visit",
-        node: task.source[task.key]
-      });
-      continue;
-    }
-    const node = task.node;
-    if (node === null || typeof node !== "object") continue;
-    if (node instanceof AbortSignal) continue;
-    if (seen.has(node)) continue;
-    seen.add(node);
-    Object.freeze(node);
-    const keys = Object.keys(node);
-    for (let index = keys.length - 1; index >= 0; index--) {
-      const key = keys[index];
-      if (key === void 0) continue;
-      pending.push({
-        kind: "property",
-        source: node,
-        key
-      });
-    }
-  }
+init_lib3();
+function brandString(value) {
   return value;
 }
-var WeakMapWithValues = class {
-  keys = /* @__PURE__ */ new WeakMap();
-  valueSet = /* @__PURE__ */ new Set();
-  /** Live strongly retained values in insertion order. */
-  values = this.valueSet;
-  /**
-  * Read the value associated with a key.
-  * @param key - weakly held lookup key.
-  * @returns the associated value, or absence.
-  */
-  get(key) {
-    return this.keys.get(key);
-  }
-  /**
-  * Test whether a key has an association.
-  * @param key - weakly held lookup key.
-  * @returns whether the key is present.
-  */
-  has(key) {
-    return this.keys.has(key);
-  }
-  /**
-  * Associate one key with one caller-unique value.
-  * @param key - weakly held lookup key.
-  * @param value - strongly retained value that belongs to no other key.
-  * @returns this container.
-  */
-  set(key, value) {
-    if (this.keys.has(key)) {
-      const previous = this.keys.get(key);
-      if (previous === value) return this;
-      this.valueSet.delete(previous);
-    }
-    this.keys.set(key, value);
-    this.valueSet.add(value);
-    return this;
-  }
-  /**
-  * Remove one association and its strongly retained value.
-  * @param key - weakly held lookup key.
-  * @returns whether an association was removed.
-  */
-  delete(key) {
-    if (!this.keys.has(key)) return false;
-    const value = this.keys.get(key);
-    const deleted = this.keys.delete(key);
-    this.valueSet.delete(value);
-    return deleted;
-  }
-  /** Remove every association and strongly retained value. */
-  clear() {
-    this.keys = /* @__PURE__ */ new WeakMap();
-    this.valueSet.clear();
-  }
-};
-
-// src/dsh/dsh-tools-compat.js
-var dsh_tools_compat_exports = {};
-__export(dsh_tools_compat_exports, {
-  HarnessError: () => HarnessError,
-  JsonSchemaError: () => JsonSchemaError,
-  TOOL_ABORTED: () => TOOL_ABORTED,
-  TOOL_ABORTED_BEFORE_DISPATCH: () => TOOL_ABORTED_BEFORE_DISPATCH,
-  ToolArgsError: () => ToolArgsError,
-  ToolNotFoundError: () => ToolNotFoundError,
-  ToolOutputError: () => ToolOutputError,
-  assertObjectJsonSchema: () => assertObjectJsonSchema,
-  assertSupportedJsonSchema: () => assertSupportedJsonSchema,
-  defineTool: () => defineTool,
-  parameterSchemaSpecToJsonSchema: () => parameterSchemaSpecToJsonSchema,
-  validateArgs: () => validateArgs,
-  validateJsonSchemaValue: () => validateJsonSchemaValue,
-  valueSchemaSpecToJsonSchema: () => valueSchemaSpecToJsonSchema
-});
-init_define_BUILTIN_MODULE_DIGESTS();
-var HarnessError = class extends Error {
-  code;
-  constructor(message, code, options) {
-    super(message, options);
-    this.code = code;
-    this.name = new.target.name;
-  }
-};
-var JsonSchemaError = class extends HarnessError {
-  /** Individual schema violations in walk order. */
-  violations;
-  constructor(violations) {
-    super(`unsupported JSON schema: ${violations.join("; ")}`, "UNSUPPORTED_SCHEMA");
-    this.name = "JsonSchemaError";
-    this.violations = violations;
-  }
-};
-var CONSTRAINT_KEYWORDS = /* @__PURE__ */ new Set([
-  "type",
-  "oneOf",
-  "properties",
-  "required",
-  "additionalProperties",
-  "items",
-  "enum",
-  "const"
-]);
-var ANNOTATION_KEYWORDS = /* @__PURE__ */ new Set([
-  "description",
-  "title",
-  "default",
-  "examples"
-]);
-var SCHEMA_TYPES = [
-  "object",
-  "array",
-  "string",
-  "number",
-  "integer",
-  "boolean",
-  "null"
-];
-function hasIntrinsicConstructor2(prototype, name) {
-  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
-  if (typeof constructor !== "function") return false;
-  try {
-    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
-  } catch {
-    return false;
-  }
+function randomUUID() {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const hex = Array.from(bytes, (byte, index) => {
+    return (index === 6 ? byte & 15 | 64 : index === 8 ? byte & 63 | 128 : byte).toString(16).padStart(2, "0");
+  }).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-function isIntrinsicObjectPrototype2(value) {
-  return Object.getPrototypeOf(value) === null && hasIntrinsicConstructor2(value, "Object");
+function createMessage(input) {
+  return deepFreeze(structuredClone({
+    ...input,
+    id: brandString(randomUUID())
+  }));
 }
-function isPlainJsonRecord(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === null || typeof prototype === "object" && isIntrinsicObjectPrototype2(prototype);
-  } catch {
-    return false;
-  }
-}
-function hasPlainArrayPrototype2(value) {
-  const prototype = Object.getPrototypeOf(value);
-  if (!Array.isArray(prototype) || !hasIntrinsicConstructor2(prototype, "Array")) return false;
-  const objectPrototype = Object.getPrototypeOf(prototype);
-  return typeof objectPrototype === "object" && objectPrototype !== null && isIntrinsicObjectPrototype2(objectPrototype);
-}
-function hasOnlyEnumerableStringKeys(value) {
-  try {
-    return Reflect.ownKeys(value).every((key) => typeof key === "string" && Object.prototype.propertyIsEnumerable.call(value, key));
-  } catch {
-    return false;
-  }
-}
-function isJsonSchemaRecord(value) {
-  return isPlainJsonRecord(value) && hasOnlyEnumerableStringKeys(value);
-}
-function isPlainJsonArray(value) {
-  if (!Array.isArray(value)) return false;
-  try {
-    if (!hasPlainArrayPrototype2(value) || Reflect.ownKeys(value).length !== value.length + 1) return false;
-    for (let index = 0; index < value.length; index++) if (!Object.hasOwn(value, index)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function isJsonNumber(value) {
-  return typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0);
-}
-function scalarMatches(type2, value) {
-  switch (type2) {
-    case "string":
-      return typeof value === "string";
-    case "number":
-      return isJsonNumber(value);
-    case "integer":
-      return isJsonNumber(value) && Number.isInteger(value);
-    case "boolean":
-      return typeof value === "boolean";
-    case "null":
-      return value === null;
-    /* v8 ignore next -- JsonSchemaScalarType is closed; this retains compile-time exhaustiveness. */
-    default:
-      return assertNever(type2, "JsonSchemaType");
-  }
-}
-var ONE_OF_SIBLING_KEYWORDS = [
-  "properties",
-  "required",
-  "additionalProperties",
-  "items",
-  "enum",
-  "const"
-];
-function checkObjectSchemaTail(node, path, properties, violations) {
-  const hasRequired = Object.hasOwn(node, "required");
-  const required = hasRequired ? node.required : void 0;
-  if (hasRequired) if (!isPlainJsonArray(required) || required.some((entry) => typeof entry !== "string")) violations.push(`${path}.required must be an array of strings`);
-  else {
-    const declared = isJsonSchemaRecord(properties) ? properties : {};
-    for (const key of required) if (!Object.hasOwn(declared, key)) violations.push(`${path}.required names "${key}" which is not in properties`);
-  }
-  if (Object.hasOwn(node, "additionalProperties") && typeof node.additionalProperties !== "boolean") violations.push(`${path}.additionalProperties must be a boolean`);
-}
-function checkSchemaNode(root, rootPath, violations, seen) {
-  const tasks = [{
-    kind: "enter",
-    node: root,
-    path: rootPath
-  }];
-  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
-    if (task.kind === "leave") {
-      seen.delete(task.node);
-      continue;
-    }
-    if (task.kind === "one-of-tail") {
-      for (const key of ONE_OF_SIBLING_KEYWORDS) if (Object.hasOwn(task.node, key)) violations.push(`${task.path}.${key} is not supported beside oneOf`);
-      continue;
-    }
-    if (task.kind === "object-tail") {
-      checkObjectSchemaTail(task.node, task.path, task.properties, violations);
-      continue;
-    }
-    const { node, path } = task;
-    if (!isJsonSchemaRecord(node)) {
-      violations.push(`${path} must be a schema object`);
-      continue;
-    }
-    if (seen.has(node)) {
-      violations.push(`${path} is circular`);
-      continue;
-    }
-    seen.add(node);
-    tasks.push({
-      kind: "leave",
-      node
-    });
-    for (const key of Object.keys(node)) {
-      if (CONSTRAINT_KEYWORDS.has(key)) continue;
-      if (ANNOTATION_KEYWORDS.has(key)) {
-        try {
-          if (!isJsonValue(node[key])) violations.push(`${path}.${key} annotation must be lossless JSON data`);
-        } catch {
-          violations.push(`${path}.${key} annotation must be lossless JSON data`);
-        }
-        continue;
-      }
-      violations.push(`${path}.${key} is not a supported keyword (subset: type/oneOf/properties/required/additionalProperties/items/enum/const + annotations)`);
-    }
-    if (Object.hasOwn(node, "description") && typeof node.description !== "string") violations.push(`${path}.description must be a string`);
-    if (Object.hasOwn(node, "title") && typeof node.title !== "string") violations.push(`${path}.title must be a string`);
-    const hasType = Object.hasOwn(node, "type");
-    const hasOneOf = Object.hasOwn(node, "oneOf");
-    if (hasType && hasOneOf) {
-      violations.push(`${path} cannot declare both type and oneOf`);
-      continue;
-    }
-    if (!hasType && !hasOneOf) {
-      for (const key of ONE_OF_SIBLING_KEYWORDS) if (Object.hasOwn(node, key)) violations.push(`${path}.${key} requires type or oneOf`);
-      continue;
-    }
-    if (hasOneOf) {
-      const oneOf = node.oneOf;
-      tasks.push({
-        kind: "one-of-tail",
-        node,
-        path
-      });
-      if (!isPlainJsonArray(oneOf) || oneOf.length < 2) violations.push(`${path}.oneOf must be an array of at least two schemas`);
-      else for (let index = oneOf.length - 1; index >= 0; index--) tasks.push({
-        kind: "enter",
-        node: oneOf[index],
-        path: `${path}.oneOf[${index}]`
-      });
-      continue;
-    }
-    const type2 = node.type;
-    if (typeof type2 !== "string" || !SCHEMA_TYPES.includes(type2)) {
-      violations.push(Array.isArray(type2) ? `${path}.type must be a single type string (type arrays are not supported)` : `${path}.type must be one of ${SCHEMA_TYPES.join("/")}`);
-      continue;
-    }
-    const schemaType = type2;
-    for (const [key, types3] of Object.entries({
-      properties: ["object"],
-      required: ["object"],
-      additionalProperties: ["object"],
-      items: ["array"],
-      enum: [
-        "string",
-        "number",
-        "integer",
-        "boolean",
-        "null"
-      ],
-      const: [
-        "string",
-        "number",
-        "integer",
-        "boolean",
-        "null"
-      ]
-    })) if (Object.hasOwn(node, key) && !types3.includes(schemaType)) violations.push(`${path}.${key} is not supported on type "${schemaType}"`);
-    switch (schemaType) {
-      case "object": {
-        const properties = Object.hasOwn(node, "properties") ? node.properties : void 0;
-        tasks.push({
-          kind: "object-tail",
-          node,
-          path,
-          properties
-        });
-        if (Object.hasOwn(node, "properties")) if (!isJsonSchemaRecord(properties)) violations.push(`${path}.properties must be an object of schemas`);
-        else {
-          const entries = Object.entries(properties);
-          for (let index = entries.length - 1; index >= 0; index--) {
-            const entry = entries[index];
-            if (entry === void 0) continue;
-            tasks.push({
-              kind: "enter",
-              node: entry[1],
-              path: `${path}.properties.${entry[0]}`
-            });
-          }
-        }
-        break;
-      }
-      case "array":
-        if (Object.hasOwn(node, "items")) tasks.push({
-          kind: "enter",
-          node: node.items,
-          path: `${path}.items`
-        });
-        break;
-      case "string":
-      case "number":
-      case "integer":
-      case "boolean":
-      case "null": {
-        const hasEnum = Object.hasOwn(node, "enum");
-        const allowed = hasEnum ? node.enum : void 0;
-        const enumValid = isPlainJsonArray(allowed) && allowed.length > 0 && allowed.every((entry) => scalarMatches(schemaType, entry));
-        if (hasEnum && !enumValid) violations.push(`${path}.enum must be a non-empty array of ${schemaType} values`);
-        const hasConst = Object.hasOwn(node, "const");
-        const declaredConst = hasConst ? node.const : void 0;
-        const constValid = scalarMatches(schemaType, declaredConst);
-        if (hasConst) {
-          if (!constValid) violations.push(`${path}.const must be a ${schemaType} value`);
-          else if (enumValid && !allowed.includes(declaredConst)) violations.push(`${path}.const must be one of ${path}.enum when both are declared`);
-        }
-        break;
-      }
-      /* v8 ignore next -- schemaType was narrowed from the closed SCHEMA_TYPES table above. */
-      default:
-        assertNever(schemaType, "JsonSchemaType");
-    }
-  }
-}
-function assertSupportedJsonSchema(schema3) {
-  const violations = [];
-  checkSchemaNode(schema3, "schema", violations, /* @__PURE__ */ new Set());
-  if (violations.length > 0) throw new JsonSchemaError(violations);
-}
-function assertObjectJsonSchema(schema3) {
-  const violations = [];
-  checkSchemaNode(schema3, "schema", violations, /* @__PURE__ */ new Set());
-  if (violations.length === 0 && (!isJsonSchemaRecord(schema3) || !Object.hasOwn(schema3, "type") || schema3.type !== "object")) violations.push('schema.type must be "object" (structured output is object-rooted)');
-  if (violations.length > 0) throw new JsonSchemaError(violations);
-}
-function safelyIsJsonValue(value) {
-  try {
-    return isJsonValue(value);
-  } catch {
-    return false;
-  }
-}
-function diagnosticPath(path) {
-  return path === "" ? "arguments" : path;
-}
-function propertyPath(path, key) {
-  return path === "" ? key : `${path}.${key}`;
-}
-function losslessValueViolation(path) {
-  return [`"${diagnosticPath(path)}" must be a lossless JSON value`];
-}
-function appendViolations(target, source) {
-  for (const violation of source) target.push(violation);
-}
-function valueFrame(node, value, path) {
-  return {
-    node,
-    value,
-    path,
-    catches: false,
-    phase: "start",
-    children: [],
-    childIndex: 0,
-    violations: [],
-    tailViolations: [],
-    matches: 0
-  };
-}
-function checkScalarValue(node, value, path) {
-  const allowed = Object.hasOwn(node, "enum") ? node.enum : void 0;
-  if (allowed !== void 0 && !allowed.includes(value)) return [`"${diagnosticPath(path)}" must be one of ${JSON.stringify(allowed)}`];
-  if (Object.hasOwn(node, "const") && value !== node.const) return [`"${diagnosticPath(path)}" must be ${JSON.stringify(node.const)}`];
-  return [];
-}
-function checkValue(schema3, value, path) {
-  const frames = [valueFrame(schema3, value, path)];
-  let rootResult;
-  const receive = (result) => {
-    const parent = frames.at(-1);
-    if (parent === void 0) {
-      rootResult = result;
-      return;
-    }
-    if (parent.kind === "oneOf") {
-      if (result.length === 0) parent.matches++;
-    } else appendViolations(parent.violations, result);
-  };
-  const finish = (result) => {
-    frames.pop();
-    receive(result);
-  };
-  while (frames.length > 0) {
-    const frame = frames.at(-1);
-    if (frame === void 0) break;
-    try {
-      if (frame.phase === "children") {
-        if (frame.childIndex < frame.children.length) {
-          const child = frame.children[frame.childIndex];
-          if (child === void 0) throw new Error("missing schema-value child frame");
-          frame.childIndex++;
-          frames.push(valueFrame(child.node, child.value, child.path));
-          continue;
-        }
-        if (frame.kind === "oneOf") {
-          finish(frame.matches === 1 ? [] : [`"${diagnosticPath(frame.path)}" must match exactly one oneOf branch (matched ${frame.matches})`]);
-          continue;
-        }
-        appendViolations(frame.violations, frame.tailViolations);
-        if (frame.violations.length > 0) finish(frame.violations);
-        else if (frame.kind === "object") finish(safelyIsJsonValue(frame.value) ? [] : [`"${diagnosticPath(frame.path)}" must be a lossless JSON object`]);
-        else finish(safelyIsJsonValue(frame.value) ? [] : [`"${diagnosticPath(frame.path)}" must be a dense lossless JSON array`]);
-        continue;
-      }
-      const nodeType = Object.hasOwn(frame.node, "type") ? frame.node.type : void 0;
-      frame.catches = !(nodeType !== void 0 && !SCHEMA_TYPES.includes(nodeType));
-      const oneOf = Object.hasOwn(frame.node, "oneOf") ? frame.node.oneOf : void 0;
-      if (oneOf !== void 0) {
-        frame.kind = "oneOf";
-        frame.children = Array.from(oneOf, (branch) => ({
-          node: branch,
-          value: frame.value,
-          path: frame.path
-        }));
-        frame.childIndex = 0;
-        frame.matches = 0;
-        frame.phase = "children";
-        continue;
-      }
-      if (nodeType === void 0) {
-        finish(safelyIsJsonValue(frame.value) ? [] : losslessValueViolation(frame.path));
-        continue;
-      }
-      switch (nodeType) {
-        case "object": {
-          if (!isPlainJsonRecord(frame.value)) {
-            finish([`"${diagnosticPath(frame.path)}" must be an object`]);
-            break;
-          }
-          const properties = Object.hasOwn(frame.node, "properties") ? frame.node.properties ?? {} : {};
-          const violations = [];
-          const required = Object.hasOwn(frame.node, "required") ? frame.node.required ?? [] : [];
-          for (const key of required) if (!Object.hasOwn(frame.value, key) || frame.value[key] === void 0) violations.push(`missing required property "${propertyPath(frame.path, key)}"`);
-          const children = [];
-          for (const [key, child] of Object.entries(properties)) {
-            if (!Object.hasOwn(frame.value, key) || frame.value[key] === void 0) continue;
-            children.push({
-              node: child,
-              value: frame.value[key],
-              path: propertyPath(frame.path, key)
-            });
-          }
-          const tailViolations = [];
-          if (Object.hasOwn(frame.node, "additionalProperties") && frame.node.additionalProperties === false) {
-            for (const key of Object.keys(frame.value)) if (!Object.hasOwn(properties, key)) tailViolations.push(`"${propertyPath(frame.path, key)}" is not a declared property (additionalProperties: false)`);
-          }
-          frame.kind = "object";
-          frame.children = children;
-          frame.childIndex = 0;
-          frame.violations = violations;
-          frame.tailViolations = tailViolations;
-          frame.phase = "children";
-          break;
-        }
-        case "array": {
-          if (!Array.isArray(frame.value)) {
-            finish([`"${diagnosticPath(frame.path)}" must be an array`]);
-            break;
-          }
-          const items = Object.hasOwn(frame.node, "items") ? frame.node.items : void 0;
-          const children = items === void 0 ? [] : frame.value.flatMap((entry, index) => [{
-            node: items,
-            value: entry,
-            path: `${frame.path}[${index}]`
-          }]);
-          frame.kind = "array";
-          frame.children = children;
-          frame.childIndex = 0;
-          frame.violations = [];
-          frame.phase = "children";
-          break;
-        }
-        case "string":
-          finish(typeof frame.value === "string" ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be a string`]);
-          break;
-        case "number":
-          finish(typeof frame.value !== "number" ? [`"${diagnosticPath(frame.path)}" must be a number`] : !isJsonNumber(frame.value) ? [`"${diagnosticPath(frame.path)}" must be a finite JSON number`] : checkScalarValue(frame.node, frame.value, frame.path));
-          break;
-        case "integer":
-          finish(!isJsonNumber(frame.value) || !Number.isInteger(frame.value) ? [`"${diagnosticPath(frame.path)}" must be an integer`] : checkScalarValue(frame.node, frame.value, frame.path));
-          break;
-        case "boolean":
-          finish(typeof frame.value === "boolean" ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be a boolean`]);
-          break;
-        case "null":
-          finish(frame.value === null ? checkScalarValue(frame.node, frame.value, frame.path) : [`"${diagnosticPath(frame.path)}" must be null`]);
-          break;
-        default:
-          finish(assertNever(nodeType, "JsonSchemaType"));
-      }
-    } catch (error) {
-      let failed = frames.pop();
-      while (failed !== void 0 && !failed.catches) failed = frames.pop();
-      if (failed === void 0) throw error;
-      receive(losslessValueViolation(failed.path));
-    }
-  }
-  return rootResult ?? losslessValueViolation(path);
-}
-function validateJsonSchemaValue(schema3, value, path = "value") {
-  return checkValue(schema3, value, path);
-}
-var ANNOTATION_KEYS = [
-  "description",
-  "title",
-  "default",
-  "examples"
-];
-function authorError(message) {
-  throw new JsonSchemaError([message]);
-}
-function copyAnnotations(source, target) {
-  if (Object.hasOwn(source, "description")) target.description = source.description;
-  if (Object.hasOwn(source, "title")) target.title = source.title;
-  if (Object.hasOwn(source, "default")) target.default = source.default;
-  if (Object.hasOwn(source, "examples")) target.examples = source.examples;
-}
-function assertAuthorKeys(source, path, allowed) {
-  for (const key of Object.keys(source)) if (!allowed.includes(key)) authorError(`${path}.${key} is not supported by the value schema DSL`);
-}
-function assignCompiledNode(destination, node) {
-  switch (destination.kind) {
-    case "root":
-      destination.holder.value = node;
-      break;
-    case "property":
-      Object.defineProperty(destination.target, destination.key, {
-        value: node,
-        enumerable: true,
-        configurable: true,
-        writable: true
-      });
-      break;
-    case "item":
-      destination.target.items = node;
-      break;
-    case "one-of":
-      destination.target[destination.index] = node;
-      break;
-  }
-}
-function assignCompiledPropertyMap(destination, compiled) {
-  if (destination.kind === "root") destination.holder.value = compiled;
-  else destination.target.properties = compiled.properties;
-}
-function runSchemaCompiler(initial) {
-  const seen = /* @__PURE__ */ new Set();
-  const tasks = [initial];
-  for (let task = tasks.pop(); task !== void 0; task = tasks.pop()) {
-    if (task.kind === "leave") {
-      seen.delete(task.input);
-      continue;
-    }
-    if (task.kind === "property-map-tail") {
-      if (task.required.length > 0) {
-        task.compiled.required = task.required;
-        if (task.destination.kind === "object") task.destination.target.required = task.required;
-      }
-      continue;
-    }
-    if (task.kind === "property") {
-      if (!isJsonSchemaRecord(task.property)) authorError(`${task.path} must be a value schema object`);
-      if (Object.hasOwn(task.property, "required") && task.property.required !== true) authorError(`${task.path}.required must be true when present`);
-      if (Object.hasOwn(task.property, "required") && task.property.required === true) task.required.push(task.key);
-      tasks.push({
-        kind: "value",
-        input: task.property,
-        path: task.path,
-        allowRequired: true,
-        destination: {
-          kind: "property",
-          target: task.properties,
-          key: task.key
-        }
-      });
-      continue;
-    }
-    if (task.kind === "property-map") {
-      if (!isJsonSchemaRecord(task.input)) authorError(`${task.path} must be an object of value schemas`);
-      if (seen.has(task.input)) authorError(`${task.path} is circular`);
-      seen.add(task.input);
-      const compiled = { properties: {} };
-      const required = [];
-      assignCompiledPropertyMap(task.destination, compiled);
-      tasks.push({
-        kind: "leave",
-        input: task.input
-      });
-      tasks.push({
-        kind: "property-map-tail",
-        compiled,
-        required,
-        destination: task.destination
-      });
-      const entries = Object.entries(task.input);
-      for (let index = entries.length - 1; index >= 0; index--) {
-        const entry = entries[index];
-        if (entry === void 0) continue;
-        tasks.push({
-          kind: "property",
-          property: entry[1],
-          path: `${task.path}.${entry[0]}`,
-          key: entry[0],
-          properties: compiled.properties,
-          required
-        });
-      }
-      continue;
-    }
-    const { input, path } = task;
-    if (!isJsonSchemaRecord(input)) authorError(`${path} must be a value schema object`);
-    if (seen.has(input)) authorError(`${path} is circular`);
-    seen.add(input);
-    const authorKeys = [...ANNOTATION_KEYS, ...task.allowRequired ? ["required"] : []];
-    const node = {};
-    assignCompiledNode(task.destination, node);
-    tasks.push({
-      kind: "leave",
-      input
-    });
-    if (Object.hasOwn(input, "oneOf")) {
-      assertAuthorKeys(input, path, [
-        ...authorKeys,
-        "oneOf",
-        "type"
-      ]);
-      if (Object.hasOwn(input, "type")) authorError(`${path} cannot declare both type and oneOf`);
-      if (!isPlainJsonArray(input.oneOf)) authorError(`${path}.oneOf must be an array of at least two value schemas`);
-      const branches = [];
-      node.oneOf = branches;
-      copyAnnotations(input, node);
-      for (let index = input.oneOf.length - 1; index >= 0; index--) tasks.push({
-        kind: "value",
-        input: input.oneOf[index],
-        path: `${path}.oneOf[${index}]`,
-        allowRequired: false,
-        destination: {
-          kind: "one-of",
-          target: branches,
-          index
-        }
-      });
-      continue;
-    }
-    const inputType = Object.hasOwn(input, "type") ? input.type : void 0;
-    switch (inputType) {
-      case "json":
-        assertAuthorKeys(input, path, [...authorKeys, "type"]);
-        copyAnnotations(input, node);
-        break;
-      case "object":
-        assertAuthorKeys(input, path, [
-          ...authorKeys,
-          "type",
-          "properties",
-          "additionalProperties"
-        ]);
-        if (!Object.hasOwn(input, "additionalProperties") || typeof input.additionalProperties !== "boolean") authorError(`${path}.additionalProperties must be explicitly true or false`);
-        node.type = "object";
-        copyAnnotations(input, node);
-        node.additionalProperties = input.additionalProperties;
-        if (Object.hasOwn(input, "properties")) tasks.push({
-          kind: "property-map",
-          input: input.properties,
-          path: `${path}.properties`,
-          destination: {
-            kind: "object",
-            target: node
-          }
-        });
-        break;
-      case "array":
-        assertAuthorKeys(input, path, [
-          ...authorKeys,
-          "type",
-          "items"
-        ]);
-        node.type = "array";
-        copyAnnotations(input, node);
-        if (Object.hasOwn(input, "items")) tasks.push({
-          kind: "value",
-          input: input.items,
-          path: `${path}.items`,
-          allowRequired: false,
-          destination: {
-            kind: "item",
-            target: node
-          }
-        });
-        break;
-      case "string":
-      case "number":
-      case "integer":
-      case "boolean":
-      case "null":
-        assertAuthorKeys(input, path, [
-          ...authorKeys,
-          "type",
-          "enum",
-          "const"
-        ]);
-        node.type = inputType;
-        copyAnnotations(input, node);
-        if (Object.hasOwn(input, "enum")) {
-          if (!isPlainJsonArray(input.enum)) authorError(`${path}.enum must be a non-empty array of scalar values`);
-          node.enum = Array.from(input.enum, (entry) => entry);
-        }
-        if (Object.hasOwn(input, "const")) node.const = input.const;
-        break;
-      default:
-        authorError(`${path}.type must be string/number/integer/boolean/null/array/object/json, or use oneOf`);
-    }
-  }
-}
-function compilePropertyMap(input, path) {
-  const holder = {};
-  runSchemaCompiler({
-    kind: "property-map",
-    input,
-    path,
-    destination: {
-      kind: "root",
-      holder
-    }
+function createUserMessage(input) {
+  return createMessage({
+    ...input,
+    role: "user"
   });
-  return holder.value ?? authorError(`${path} did not compile`);
 }
-function compileValueSchema(input, path) {
-  const holder = {};
-  runSchemaCompiler({
-    kind: "value",
-    input,
-    path,
-    allowRequired: false,
-    destination: {
-      kind: "root",
-      holder
-    }
-  });
-  return holder.value ?? authorError(`${path} did not compile`);
+function SessionId(id) {
+  return brandString(id);
 }
-function valueSchemaSpecToJsonSchema(spec) {
-  const schema3 = compileValueSchema(spec, "schema");
-  assertSupportedJsonSchema(schema3);
-  return schema3;
-}
-function parameterSchemaSpecToJsonSchema(spec) {
-  const compiled = compilePropertyMap(spec, "parameters");
-  const schema3 = {
-    type: "object",
-    properties: compiled.properties,
-    ...compiled.required === void 0 ? {} : { required: compiled.required }
-  };
-  assertSupportedJsonSchema(schema3);
-  return schema3;
-}
-var ToolArgsError = class extends HarnessError {
-  /** Individual violations in schema-walk order. */
-  violations;
-  constructor(violations) {
-    super(`invalid arguments: ${violations.join("; ")}`, "INVALID_ARGS");
-    this.name = "ToolArgsError";
-    this.violations = violations;
-  }
-};
-function validateArgs(spec, args) {
-  return validateJsonSchemaValue(parameterSchemaSpecToJsonSchema(spec), args, "");
-}
-function defineTool(options) {
-  const userExecute = options.execute;
-  const userFinalizeContent = options.finalizeContent;
-  const userProjectContent = options.projectContent;
-  const userRender = options.output.render;
-  const userPresentationMeta = options.output.presentationMeta;
-  const userPresentCall = options.presentCall;
-  const userPresentResult = options.presentResult;
-  const userIsConcurrencySafe = options.isConcurrencySafe;
-  if (options.timeoutMs !== void 0 && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) throw new Error(`defineTool(${options.name}): timeoutMs must be a positive finite number`);
-  const parameters = parameterSchemaSpecToJsonSchema(options.parameters);
-  const outputSchema = valueSchemaSpecToJsonSchema(options.output.schema);
-  const validate = (args) => validateJsonSchemaValue(parameters, args, "");
-  const tool = {
-    name: options.name,
-    description: options.description,
-    parameters,
-    output: {
-      schema: outputSchema,
-      render(args, value) {
-        return userRender(args, value);
-      },
-      ...userPresentationMeta !== void 0 ? { presentationMeta(args, value) {
-        return userPresentationMeta(args, value);
-      } } : {}
-    },
-    ...options.deferLoading === true ? { deferLoading: options.deferLoading } : {},
-    ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-    async execute(args, exec) {
-      const violations = validate(args);
-      if (violations.length > 0) throw new ToolArgsError(violations);
-      return userExecute(args, exec);
-    }
-  };
-  if (userProjectContent) tool.projectContent = (exec, result) => userProjectContent(exec, result);
-  if (userFinalizeContent) tool.finalizeContent = (exec, result) => userFinalizeContent(exec, result);
-  if (userPresentCall) tool.presentCall = (args) => {
-    if (validate(args).length > 0) return void 0;
-    return userPresentCall(args);
-  };
-  if (userPresentResult) tool.presentResult = (args, result) => {
-    if (validate(args).length > 0) return void 0;
-    return userPresentResult(args, result);
-  };
-  if (userIsConcurrencySafe) tool.isConcurrencySafe = (args) => {
-    if (validate(args).length > 0) return false;
-    return userIsConcurrencySafe(args);
-  };
-  return tool;
-}
-var TOOL_ABORTED = "ABORTED";
-var TOOL_ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH";
-var ToolNotFoundError = class extends HarnessError {
-  /**
-  * @param toolName - the name the caller asked for.
-  * @param reachableFrom - how the model reaches this tool instead, when the
-  *   name IS visible and only the presentation denies calling it directly.
-  *   Omitted for a name that is registered nowhere.
-  */
-  constructor(toolName, reachableFrom) {
-    super(reachableFrom === void 0 ? `unknown tool "${toolName}"` : `unknown tool "${toolName}": ${reachableFrom}`, "UNKNOWN_TOOL");
-    this.name = "ToolNotFoundError";
-  }
-};
-var ToolOutputError = class extends HarnessError {
-  /** Schema/value violations in validation order. */
-  violations;
-  constructor(toolName, violations) {
-    super(`tool "${toolName}" returned invalid output: ${violations.join("; ")}`, "INVALID_TOOL_OUTPUT");
-    this.name = "ToolOutputError";
-    this.violations = violations;
-  }
-};
+var PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
 
 // src/main.ts
 init_composition();
@@ -17212,6 +17620,9 @@ installResolveHooks({
   cosmokit: lib_exports,
   "dsh-util-values": lib_exports4,
   "dsh-tools": dsh_tools_compat_exports,
+  "dsh-llm-values": { createUserMessage },
+  "dsh-session-values": { SessionId },
+  "dsh-system-prompt-values": { PERSONA_PREFIX_SECTION },
   "dsh-composition": composition_exports,
   "dsh-loader": src_exports,
   "dsh-include": src_exports2,

@@ -100,6 +100,10 @@ export async function POST(req: Request) {
     );
   }
 
+  if (!req.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return NextResponse.json({ error: "content-type must be application/json" }, { status: 415 });
+  }
+
   // Count the real body bytes (Content-Length is only an early rejection)
   // and answer malformed JSON with a 400 instead of an unhandled 500.
   let body: unknown;

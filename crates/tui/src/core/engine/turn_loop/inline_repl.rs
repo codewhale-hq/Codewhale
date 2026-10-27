@@ -1,6 +1,7 @@
 //! One private phase of the existing Engine turn loop.
 
 use super::*;
+use crate::rlm::bridge::wait_for_deadline;
 
 impl Engine {
     pub(super) async fn run_inline_repl_phase(
@@ -28,13 +29,13 @@ impl Engine {
         // fence is not a way around that: it runs only when the tool is
         // on this turn's surface, and only after the same approval.
         let repl_fence_present = has_sendable_assistant_content
-            && crate::repl::sandbox::has_repl_block(current_text_visible);
+            && codewhale_repl::sandbox::has_repl_block(current_text_visible);
         let repl_fence_offered =
             code_execution_offered(progress.mode, &progress.tool_catalog, tool_policy);
         let mut repl_fence_skip_reason = (repl_fence_present && !repl_fence_offered)
             .then(|| "code execution is not available on this turn".to_string());
         let repl_blocks = if repl_fence_present && repl_fence_offered {
-            crate::repl::sandbox::extract_repl_blocks(current_text_visible)
+            codewhale_repl::sandbox::extract_repl_blocks(current_text_visible)
         } else {
             Vec::new()
         };
@@ -80,11 +81,7 @@ impl Engine {
                 .await;
         }
         if !repl_blocks.is_empty() && repl_fence_skip_reason.is_none() {
-            let child_deadline =
-                tokio::time::Instant::now() + crate::tools::subagent::DEFAULT_CHILD_WALL_TIME;
-            let repl_deadline = self
-                .nested_work_deadline()
-                .map_or(child_deadline, |parent| parent.min(child_deadline));
+            let repl_deadline = self.nested_work_deadline();
             // A kernel left broken by a dropped turn refuses every round; kill it.
             drop(self.repl_kernel.take_if(|kernel| kernel.is_broken()));
             if self.repl_kernel.is_none() {
@@ -93,12 +90,8 @@ impl Engine {
                     () = self.cancel_token.cancelled() => {
                         Err("REPL startup cancelled".into())
                     }
-                    result = tokio::time::timeout_at(
-                        repl_deadline,
-                        crate::repl::runtime::PythonRuntime::new(),
-                    ) => result.unwrap_or_else(|_| {
-                        Err("parent turn deadline reached during REPL startup".into())
-                    }),
+                    () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL startup".into()),
+                    result = codewhale_repl::runtime::PythonRuntime::new() => result,
                 };
                 self.repl_kernel = match startup {
                     Ok(runtime) => Some(runtime),
@@ -119,15 +112,11 @@ impl Engine {
                     () = self.cancel_token.cancelled() => {
                         Err("REPL context refresh cancelled".into())
                     }
-                    result = tokio::time::timeout_at(
-                        repl_deadline,
-                        self.repl_kernel
-                            .as_mut()
-                            .expect("REPL kernel initialized above")
-                            .replace_context(&kernel_context),
-                    ) => result.unwrap_or_else(|_| {
-                        Err("parent turn deadline reached during REPL context refresh".into())
-                    }),
+                    () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL context refresh".into()),
+                    result = self.repl_kernel
+                        .as_mut()
+                        .expect("REPL kernel initialized above")
+                        .replace_context(&kernel_context) => result,
                 };
                 if let Err(e) = refresh_result {
                     // A broken subprocess cannot be trusted to retain
@@ -176,21 +165,15 @@ impl Engine {
                     .map_or_else(crate::rlm::bridge::RlmUsageAccumulator::new, |state| {
                         state.usage.clone()
                     });
-                crate::rlm::RlmBridge::with_usage_accumulator(
-                    caller,
-                    depth,
-                    Duration::from_secs(600),
-                    usage,
-                )
-                .with_events(self.tx_event.clone())
-                .with_deadline(Some(repl_deadline))
-                .with_gate(self.rlm_host.as_ref().and_then(|state| state.gate.clone()))
+                crate::rlm::RlmBridge::with_usage_accumulator(caller, depth, usage)
+                    .with_events(self.tx_event.clone())
+                    .with_deadline(repl_deadline)
+                    .with_gate(self.rlm_host.as_ref().and_then(|state| state.gate.clone()))
             });
             let repl_started = Instant::now();
 
             let mut final_result: Option<String> = None;
             let mut kernel_failed = false;
-            let mut empty_cap_hit = false;
             for (i, block) in repl_blocks.iter().enumerate() {
                 let round_num = i + 1;
                 let _ = self
@@ -208,15 +191,11 @@ impl Engine {
                     () = self.cancel_token.cancelled() => {
                         Err("REPL execution cancelled".into())
                     }
-                    result = tokio::time::timeout_at(
-                        repl_deadline,
-                        self.repl_kernel
-                            .as_mut()
-                            .expect("REPL kernel stays alive during a round")
-                            .run(&block.code, bridge.as_ref()),
-                    ) => result.unwrap_or_else(|_| {
-                        Err("REPL execution reached the parent turn deadline".into())
-                    }),
+                    () = wait_for_deadline(repl_deadline) => Err("REPL execution reached the parent turn deadline".into()),
+                    result = self.repl_kernel
+                        .as_mut()
+                        .expect("REPL kernel stays alive during a round")
+                        .run(&block.code, bridge.as_ref()) => result,
                 };
 
                 match round_result {
@@ -267,11 +246,6 @@ impl Engine {
                             break;
                         }
 
-                        // Empty-round guard + provenance (PROMPT-repl-fence-fix.md parts 2 & 3).
-                        // Detection stays prompt-only (has_repl_block unchanged) to preserve
-                        // saved-transcript replay (tools/rlm.rs kept). Provenance makes clear
-                        // the block was the assistant's own; empty rounds get guidance + a
-                        // consecutive cap so the model cannot loop forever.
                         let is_empty_round = !round.has_error
                             && round.stdout.trim().is_empty()
                             && round.stderr.trim().is_empty()
@@ -279,29 +253,14 @@ impl Engine {
                         if is_empty_round {
                             progress.consecutive_empty_repl_rounds =
                                 progress.consecutive_empty_repl_rounds.saturating_add(1);
-                            let hit_cap = progress.consecutive_empty_repl_rounds >= 3;
-                            let feedback = if hit_cap {
-                                format!(
-                                    "[Your emitted ```repl block (round {round_num}) produced no observable output — print something, call a helper, or stop emitting REPL blocks and answer. No output for {consecutive_empty_repl_rounds} consecutive rounds; stopping empty loop]\n[0 child query RPC(s)]",
-                                    consecutive_empty_repl_rounds =
-                                        progress.consecutive_empty_repl_rounds
-                                )
-                            } else {
-                                format!(
-                                    "[Your emitted ```repl block (round {round_num}) produced no observable output — print something, call a helper, or stop emitting REPL blocks and answer]\n[0 child query RPC(s)]"
-                                )
-                            };
+                            let feedback = format!(
+                                "[Your emitted ```repl block (round {round_num}) produced no observable output. Inspect the state or print a result when needed, and finish when the task is complete.]\n[0 child query RPC(s)]"
+                            );
                             self.add_session_message(self.runtime_text_message_with_turn_metadata(
                                 feedback,
                                 UserInputProvenance::Runtime,
                             ))
                             .await;
-                            if hit_cap {
-                                empty_cap_hit = true;
-                                // Honest stop: do not continue the turn with a lying
-                                // "stopping" string. The cap is real.
-                                break;
-                            }
                         } else if self.rlm_host.is_some() {
                             progress.consecutive_empty_repl_rounds = 0;
                         } else {
@@ -338,12 +297,15 @@ impl Engine {
                         ))
                         .await;
                         if self.rlm_host.is_some() {
-                            progress.turn_error =
-                                Some(if tokio::time::Instant::now() >= repl_deadline {
+                            progress.turn_error = Some(
+                                if repl_deadline
+                                    .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                                {
                                     format!("RLM original wall-clock deadline exhausted: {e}")
                                 } else {
                                     e.clone()
-                                });
+                                },
+                            );
                         }
                         // A transport error or timeout means Python
                         // may still be executing unknown code. Do not
@@ -415,21 +377,6 @@ impl Engine {
                 return PhaseResult::Break;
             }
 
-            if empty_cap_hit {
-                if let Some(state) = self.rlm_host.as_mut() {
-                    state.termination = Some(crate::rlm::turn::RlmTermination::NoCode);
-                    return PhaseResult::Return((
-                        TurnOutcomeStatus::Failed,
-                        Some("RLM: 3 consecutive empty REPL rounds".into()),
-                    ));
-                }
-                // Empty cap already fed back with honest "stopping" text
-                // inside the round loop. End the turn now instead of
-                // letting the outer ladder synthesize another provider
-                // request.
-                return PhaseResult::Break;
-            }
-
             // No FINAL — let the model iterate with the feedback.
             let _ = self.send_event(Event::status(format!(
                             "Continuing — REPL round feedback (consecutive_empty={consecutive_empty_repl_rounds})", consecutive_empty_repl_rounds = progress.consecutive_empty_repl_rounds
@@ -464,26 +411,14 @@ impl Engine {
             return PhaseResult::Break;
         }
         let text_final = crate::rlm::turn::parse_text_final(&text);
-        if state.total_rpcs > 0
-            && let Some(answer) = text_final.as_ref()
-        {
+        if let Some(answer) = text_final.as_ref() {
             state.final_answer = Some(answer.clone());
             state.termination = Some(crate::rlm::turn::RlmTermination::Final);
             return PhaseResult::Break;
         }
         let Some(code) = crate::rlm::turn::extract_repl_code(&text) else {
             state.consecutive_no_code = state.consecutive_no_code.saturating_add(1);
-            if state.consecutive_no_code >= crate::rlm::turn::MAX_CONSECUTIVE_NO_CODE {
-                state.termination = Some(crate::rlm::turn::RlmTermination::NoCode);
-                if text_final.is_some() {
-                    return PhaseResult::Break;
-                }
-                return PhaseResult::Return((
-                    TurnOutcomeStatus::Failed,
-                    Some("RLM: model failed to emit ```repl after 3 consecutive rounds".into()),
-                ));
-            }
-            let reminder = "Reminder: emit Python inside a ```repl … ``` fence, inspect `_context` through bounded helpers, and call finalize(value) when done. A prose FINAL before any helper RPC does not demonstrate use of the input.";
+            let reminder = "Continue the task with Python inside a ```repl … ``` fence when computation is needed. Inspect `_context` through bounded helpers when the answer depends on it. Return FINAL(value) or call finalize(value) when the task is complete.";
             self.add_session_message(self.runtime_text_message_with_turn_metadata(
                 reminder.to_string(),
                 UserInputProvenance::Runtime,

@@ -425,11 +425,33 @@ pub fn worth_a_look(suspected: &[ReviewIssue]) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewCoreOutcome {
     Completed,
     NoFinalAnswer,
     StepBudgetExhausted,
+    LeakedToolCall,
+}
+
+fn leaks_tool_call_markup(text: &str) -> bool {
+    let mut prose = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (index, part) in line.split('`').enumerate() {
+            if index % 2 == 0 {
+                prose.push_str(part);
+            }
+        }
+        prose.push('\n');
+    }
+    crate::core::engine::streaming::contains_fake_tool_wrapper(&prose)
 }
 
 #[derive(Debug, Clone)]
@@ -767,6 +789,8 @@ pub async fn run_review_core(
         if calls.is_empty() {
             outcome = if final_text.trim().is_empty() {
                 ReviewCoreOutcome::NoFinalAnswer
+            } else if leaks_tool_call_markup(&final_text) {
+                ReviewCoreOutcome::LeakedToolCall
             } else {
                 ReviewCoreOutcome::Completed
             };
@@ -1194,7 +1218,7 @@ pub fn repository_tool_workspace(
     required_head: Option<&str>,
 ) -> Option<PathBuf> {
     let required = required_head.map(str::trim).filter(|head| !head.is_empty());
-    let mut command = crate::dependencies::Git::review_base(workspace).ok()?;
+    let mut command = codewhale_dependencies::Git::review_base(workspace).ok()?;
     command.current_dir(workspace).args(["rev-parse", "HEAD"]);
     let output = command.output().ok()?;
     if !output.status.success() {
@@ -1206,7 +1230,7 @@ pub fn repository_tool_workspace(
     {
         return None;
     }
-    let mut status = crate::dependencies::Git::review_base(workspace).ok()?;
+    let mut status = codewhale_dependencies::Git::review_base(workspace).ok()?;
     status
         .current_dir(workspace)
         .args(["status", "--porcelain"]);

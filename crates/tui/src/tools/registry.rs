@@ -18,12 +18,12 @@ use crate::client::CodewhaleClient;
 use crate::tools::goal::SharedGoalState;
 use codewhale_models::Tool;
 
-use super::schema_canonicalize;
-use super::schema_sanitize;
 use super::spec::{
     ApprovalRequirement, RichToolResult, ToolCapability, ToolContext, ToolError, ToolResult,
     ToolResultContentBlock, ToolSpec,
 };
+use codewhale_models::schema_canonicalize;
+use codewhale_models::schema_sanitize;
 
 // === Types ===
 
@@ -43,7 +43,7 @@ pub struct ToolRegistry {
 pub(crate) fn override_refusal_notice(tool_name: &str) -> String {
     format!(
         "Refused [tools.overrides.{name}]: a script or command override cannot replace the built-in tool '{name}', which stays active. Set type = \"disabled\" to turn it off, or key the override by a new tool name.",
-        name = crate::safe_label::SafeLabel::identifier(tool_name)
+        name = codewhale_runtime::safe_label::SafeLabel::identifier(tool_name)
     )
 }
 
@@ -65,7 +65,7 @@ impl ToolRegistry {
             tracing::warn!(
                 previous_origin = ?previous.registration_origin(),
                 replacement_origin = ?tool.registration_origin(),
-                "Overwriting existing tool: {}", crate::safe_label::SafeLabel::identifier(&name)
+                "Overwriting existing tool: {}", codewhale_runtime::safe_label::SafeLabel::identifier(&name)
             );
         }
         self.tools.insert(name, tool);
@@ -104,12 +104,14 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name, returning the full `ToolResult`.
+    #[cfg(test)]
     pub async fn execute_full(&self, name: &str, input: Value) -> Result<ToolResult, ToolError> {
         self.execute_rich_full(name, input)
             .await
             .map(RichToolResult::into_result)
     }
 
+    #[cfg(test)]
     pub(crate) async fn execute_rich_full(
         &self,
         name: &str,
@@ -469,7 +471,7 @@ impl ToolRegistry {
     #[cfg(test)]
     pub fn apply_overrides(
         &mut self,
-        overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
+        overrides: &std::collections::HashMap<String, codewhale_runtime::config::ToolOverride>,
         plugin_dir: &Path,
         builtin_names: &std::collections::HashSet<String>,
     ) -> Vec<String> {
@@ -482,7 +484,7 @@ impl ToolRegistry {
     }
     pub(crate) fn apply_overrides_with_executor(
         &mut self,
-        overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
+        overrides: &std::collections::HashMap<String, codewhale_runtime::config::ToolOverride>,
         plugin_dir: &Path,
         builtin_names: &std::collections::HashSet<String>,
         executor: crate::tools::plugin::PluginExecutor,
@@ -490,7 +492,7 @@ impl ToolRegistry {
         let mut refused = Vec::new();
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
-                crate::config::ToolOverride::Disabled => {
+                codewhale_runtime::config::ToolOverride::Disabled => {
                     if self.remove_tool(tool_name) {
                         tracing::info!("Tool '{}' disabled via config override", tool_name);
                     } else {
@@ -566,7 +568,7 @@ impl ToolRegistry {
                     previous_origin = ?previous.registration_origin(),
                     plugin_origin = ?tool.registration_origin(),
                     "Cannot load plugin tool '{}': name is already registered; script tools cannot replace a registered tool, so give the script its own name",
-                    crate::safe_label::SafeLabel::identifier(tool.name())
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
                 );
                 continue;
             }
@@ -659,12 +661,12 @@ pub(crate) fn enforce_tool_authority(
     tool: &dyn ToolSpec,
     context: &ToolContext,
 ) -> Result<(), ToolError> {
-    crate::core::engine::tool_catalog::enforce_tool_denial(context, name, input)?;
+    crate::tools::execution_envelope::enforce_tool_denial(context, name, input)?;
     if let Some(mode) = context.acp_host {
-        let canonical = super::canonical_action::canonical_action_alias(name, input);
+        let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         if matches!(name, "bash" | "Bash" | "exec_shell") || canonical.starts_with("exec_shell") {
             let prepared = tool.prepare(input.clone(), context)?;
-            if context.shell_policy == crate::worker_profile::ShellPolicy::None
+            if context.shell_policy == codewhale_agent_contract::worker_profile::ShellPolicy::None
                 || prepared
                     .input
                     .get("action")
@@ -791,7 +793,8 @@ pub(crate) fn enforce_tool_authority(
         if bounded_verifier {
             use crate::tools::execution_envelope::{VerificationBound, classify_verification};
 
-            let canonical = crate::tools::canonical_action::canonical_action_alias(name, input);
+            let canonical =
+                codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
             if matches!(
                 classify_verification(canonical, input),
                 Some(VerificationBound::Default | VerificationBound::Filter)
@@ -848,7 +851,7 @@ pub(crate) fn enforce_tool_authority(
 }
 
 fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<String>>, ToolError> {
-    let canonical = crate::tools::canonical_action::canonical_action_alias(name, input);
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
     let is_patch = canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"));
     if is_patch {
@@ -856,7 +859,7 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
-        let paths = crate::tools::apply_patch::preflight_apply_patch(&patch_input)
+        let paths = codewhale_tools::patch_preflight::preflight_apply_patch(&patch_input)
             .map_err(|error| ToolError::invalid_input(error.to_string()))?
             .touched_files;
         return Ok(Some(paths));
@@ -893,11 +896,11 @@ pub struct ToolRegistryBuilder {
 /// gated behind feature flags or config state.
 #[derive(Clone)]
 pub struct AgentToolSurfaceOptions {
-    pub shell_policy: crate::worker_profile::ShellPolicy,
+    pub shell_policy: codewhale_agent_contract::worker_profile::ShellPolicy,
     pub apply_patch_enabled: bool,
     pub web_search_enabled: bool,
     pub memory_tool_enabled: bool,
-    pub vision_config: Option<crate::config::VisionModelConfig>,
+    pub vision_config: Option<codewhale_runtime::config::VisionModelConfig>,
     pub speech_output_dir: Option<PathBuf>,
     pub goal_state: Option<SharedGoalState>,
     /// Register the agent-callable `verify` self-critique tool (#4196).
@@ -915,7 +918,7 @@ pub struct AgentToolSurfaceOptions {
 
 impl AgentToolSurfaceOptions {
     #[must_use]
-    pub fn new(shell_policy: crate::worker_profile::ShellPolicy) -> Self {
+    pub fn new(shell_policy: codewhale_agent_contract::worker_profile::ShellPolicy) -> Self {
         Self {
             shell_policy,
             apply_patch_enabled: false,
@@ -983,7 +986,7 @@ impl ToolRegistryBuilder {
                     existing_origin = ?existing.registration_origin(),
                     refused_origin = ?tool.registration_origin(),
                     "Refusing runtime dynamic tool that collides with a registered tool: {}",
-                    crate::safe_label::SafeLabel::identifier(tool.name())
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
                 );
                 continue;
             }
@@ -1120,8 +1123,8 @@ impl ToolRegistryBuilder {
     /// sees a binary it can't actually use.
     #[must_use]
     pub fn with_pandoc_tools(self) -> Self {
-        if crate::dependencies::host_tool_available("pandoc_convert", || {
-            crate::dependencies::resolve_pandoc().is_some()
+        if codewhale_dependencies::host_tool_available("pandoc_convert", || {
+            codewhale_dependencies::resolve_pandoc().is_some()
         }) {
             use super::pandoc::PandocConvertTool;
             self.with_tool(Arc::new(PandocConvertTool))
@@ -1135,7 +1138,8 @@ impl ToolRegistryBuilder {
     /// Tesseract when installed.
     #[must_use]
     pub fn with_image_ocr_tools(self) -> Self {
-        if crate::dependencies::host_tool_available("image_ocr", super::image_ocr::ocr_available) {
+        if codewhale_dependencies::host_tool_available("image_ocr", super::image_ocr::ocr_available)
+        {
             use super::image_ocr::ImageOcrTool;
             self.with_tool(Arc::new(ImageOcrTool))
         } else {
@@ -1269,7 +1273,7 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_vision_tools(
         self,
-        config: crate::config::VisionModelConfig,
+        config: codewhale_runtime::config::VisionModelConfig,
         route_client: Option<CodewhaleClient>,
     ) -> Self {
         use crate::vision::tools::ImageAnalyzeTool;
@@ -1300,7 +1304,7 @@ impl ToolRegistryBuilder {
     /// Include the `revert_turn` tool. Approval-gated since it mutates
     /// the workspace; the model uses it when the user asks to "undo my
     /// last edit". Backed by the per-workspace snapshot side-repo
-    /// (`crate::snapshot`).
+    /// (`codewhale_snapshot`).
     #[must_use]
     pub fn with_revert_turn_tool(self) -> Self {
         use super::revert_turn::RevertTurnTool;
@@ -1407,7 +1411,7 @@ impl ToolRegistryBuilder {
     }
 
     /// Include the model-facing LSP intelligence tools. They reuse the
-    /// session [`crate::lsp::LspManager`] attached to `ToolContext` and never
+    /// session [`codewhale_lsp::LspManager`] attached to `ToolContext` and never
     /// spawn a second server lifecycle.
     #[must_use]
     pub fn with_lsp_tool(self) -> Self {
@@ -1508,7 +1512,7 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_agent_tools_policy(
         self,
-        shell_policy: crate::worker_profile::ShellPolicy,
+        shell_policy: codewhale_agent_contract::worker_profile::ShellPolicy,
         user_input_limits: super::user_input::UserInputLimits,
     ) -> Self {
         let builder = self
@@ -1535,11 +1539,13 @@ impl ToolRegistryBuilder {
             .with_finance_tool();
 
         match shell_policy {
-            crate::worker_profile::ShellPolicy::Full => {
+            codewhale_agent_contract::worker_profile::ShellPolicy::Full => {
                 builder.with_shell_tools().with_runtime_task_shell_tools()
             }
-            crate::worker_profile::ShellPolicy::ReadOnly => builder.with_read_only_shell_tool(),
-            crate::worker_profile::ShellPolicy::None => builder,
+            codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly => {
+                builder.with_read_only_shell_tool()
+            }
+            codewhale_agent_contract::worker_profile::ShellPolicy::None => builder,
         }
     }
 
@@ -1750,7 +1756,7 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn registration_origin(&self) -> std::borrow::Cow<'_, str> {
-        use crate::safe_label::SafeLabel;
+        use codewhale_runtime::safe_label::SafeLabel;
         match &self.server_name {
             Some(server) => format!(
                 "MCP server {}, tool {}",

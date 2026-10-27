@@ -8,7 +8,7 @@
       "label": "Anthropic",
       "endpoint": "https://api.anthropic.com",
       "wire": "anthropic-messages",
-      "defaultModel": "claude-sonnet-4-6",
+      "defaultModel": "claude-sonnet-5-5",
       "envVars": [
         "ANTHROPIC_API_KEY"
       ],
@@ -50,15 +50,15 @@
           "canonical": "anthropic/claude-opus-5-5"
         },
         {
-          "id": "claude-sonnet-4-6",
-          "default": true
+          "id": "claude-sonnet-4-6"
         },
         {
           "id": "claude-sonnet-5"
         },
         {
           "id": "claude-sonnet-5-5",
-          "canonical": "anthropic/claude-sonnet-5-5"
+          "canonical": "anthropic/claude-sonnet-5-5",
+          "default": true
         }
       ],
       "transport": "anthropic-messages"
@@ -217,16 +217,16 @@
       "models": [
         {
           "id": "deepseek-flash",
-          "canonical": "deepseek/deepseek-v4.1-flash",
+          "canonical": "deepseek/deepseek-v4.1-flash-1017",
           "default": true
         },
         {
           "id": "deepseek-v4-flash",
-          "canonical": "deepseek/deepseek-v4.1-flash"
+          "canonical": "deepseek/deepseek-v4.1-flash-1017"
         },
         {
           "id": "deepseek-v4-flash-vision-exp",
-          "canonical": "deepseek/deepseek-v4.1-flash"
+          "canonical": "deepseek/deepseek-v4.1-flash-1017"
         },
         {
           "id": "deepseek-v4-pro",
@@ -319,6 +319,50 @@
         {
           "kind": "api-key",
           "label": "API key"
+        }
+      ],
+      "models": [
+        {
+          "id": "gemini-3.1-flash-lite"
+        },
+        {
+          "id": "gemini-3.1-pro-preview",
+          "default": true
+        },
+        {
+          "id": "gemini-3.5-flash"
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "canonical": "google/gemini-3.5-flash-lite"
+        },
+        {
+          "id": "gemini-3.6-flash",
+          "canonical": "google/gemini-3.6-flash"
+        },
+        {
+          "id": "gemini-3.7-flash",
+          "canonical": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "gemini-3.8-flash",
+          "canonical": "google/gemini-3.8-flash"
+        },
+        {
+          "id": "gemini-4-argon",
+          "canonical": "google/gemini-4-argon"
+        },
+        {
+          "id": "gemini-flash-latest"
+        },
+        {
+          "id": "gemini-flash-lite-latest"
+        },
+        {
+          "id": "gemma-4-26b-a4b-it"
+        },
+        {
+          "id": "gemma-4-31b-it"
         }
       ],
       "transport": "chat-completions"
@@ -705,7 +749,8 @@
       ],
       "models": [
         {
-          "id": "kimi-k2.6"
+          "id": "kimi-k2.6",
+          "canonical": "moonshotai/kimi-k2.6"
         },
         {
           "id": "kimi-k2.7-code",
@@ -846,6 +891,22 @@
         {
           "id": "gpt-5.6-terra",
           "canonical": "openai/gpt-5.6-terra"
+        },
+        {
+          "id": "gpt-6-astra",
+          "canonical": "openai/gpt-6-astra"
+        },
+        {
+          "id": "gpt-6-luna",
+          "canonical": "openai/gpt-6-luna"
+        },
+        {
+          "id": "gpt-6-sol",
+          "canonical": "openai/gpt-6-sol"
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "canonical": "openai/gpt-6.1-sol"
         }
       ],
       "transport": "chat-completions"
@@ -856,7 +917,7 @@
       "label": "OpenAI Codex (ChatGPT)",
       "endpoint": "https://api.openai.com/v1",
       "wire": "responses",
-      "defaultModel": "gpt-5.6",
+      "defaultModel": "gpt-6.1-sol",
       "envVars": [
         "OPENAI_CODEX_ACCESS_TOKEN",
         "CODEX_ACCESS_TOKEN"
@@ -998,7 +1059,7 @@
       "label": "OrcaRouter",
       "endpoint": "https://api.orcarouter.ai/v1",
       "wire": "chat-completions",
-      "defaultModel": "deepseek/deepseek-v4-pro",
+      "defaultModel": "deepseek/deepseek-v4.1-flash-1017",
       "envVars": [
         "ORCAROUTER_API_KEY"
       ],
@@ -1010,6 +1071,71 @@
         {
           "kind": "oauth",
           "label": "OAuth"
+        }
+      ],
+      "models": [
+        {
+          "id": "anthropic/claude-opus-5",
+          "canonical": "anthropic/claude-opus-5"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5",
+          "canonical": "anthropic/claude-sonnet-5"
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash-0731",
+          "canonical": "deepseek/deepseek-v4-flash-0731"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813",
+          "canonical": "deepseek/deepseek-v4-pro-0813"
+        },
+        {
+          "id": "deepseek/deepseek-v4.1-flash-1017",
+          "default": true
+        },
+        {
+          "id": "google/gemini-flash-latest",
+          "canonical": "google/gemini-flash-latest"
+        },
+        {
+          "id": "grok/grok-4.6",
+          "canonical": "xai/grok-4.6"
+        },
+        {
+          "id": "kimi/kimi-k3",
+          "canonical": "moonshotai/kimi-k3"
+        },
+        {
+          "id": "meta/muse-spark-1.2",
+          "canonical": "meta/muse-spark-1.2"
+        },
+        {
+          "id": "openai/gpt-5.6-sol",
+          "canonical": "openai/gpt-5.6-sol"
+        },
+        {
+          "id": "orcarouter/free"
+        },
+        {
+          "id": "qwen/qwen3.8-27b",
+          "canonical": "alibaba/qwen3.8-27b"
+        },
+        {
+          "id": "qwen/qwen3.8-max",
+          "canonical": "alibaba/qwen3.8-max"
+        },
+        {
+          "id": "tencent/hy3",
+          "canonical": "tencent/hy3"
+        },
+        {
+          "id": "z-ai/glm-5.3",
+          "canonical": "zhipuai/glm-5.3"
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "canonical": "zhipuai/glm-5.3-flash"
         }
       ],
       "transport": "chat-completions"
@@ -1123,7 +1249,7 @@
       "label": "StepFun / StepFlash",
       "endpoint": "https://api.stepfun.ai/v1",
       "wire": "chat-completions",
-      "defaultModel": "step-3.7-flash",
+      "defaultModel": "step-5-preview",
       "envVars": [
         "STEPFUN_API_KEY",
         "STEP_API_KEY"
@@ -1136,19 +1262,21 @@
       ],
       "models": [
         {
-          "id": "step-3.5-flash"
+          "id": "step-3.5-flash",
+          "canonical": "stepfun/step-3.5-flash"
         },
         {
-          "id": "step-3.5-flash-2603"
+          "id": "step-3.5-flash-2603",
+          "canonical": "stepfun/step-3.5-flash-2603"
         },
         {
           "id": "step-3.7-flash",
-          "canonical": "stepfun/step-3.7-flash",
-          "default": true
+          "canonical": "stepfun/step-3.7-flash"
         },
         {
           "id": "step-5-preview",
-          "canonical": "stepfun/step-5-preview"
+          "canonical": "stepfun/step-5-preview",
+          "default": true
         }
       ],
       "transport": "chat-completions"
@@ -1320,10 +1448,12 @@
       ],
       "models": [
         {
-          "id": "mimo-v2.6-flash"
+          "id": "mimo-v2.6-flash",
+          "canonical": "xiaomi/mimo-v2.6-flash"
         },
         {
           "id": "mimo-v2.6-pro",
+          "canonical": "xiaomi/mimo-v2.6-pro",
           "default": true
         }
       ],
@@ -1350,7 +1480,8 @@
       ],
       "models": [
         {
-          "id": "GLM-5-Turbo"
+          "id": "GLM-5-Turbo",
+          "canonical": "zhipuai/glm-5-turbo"
         },
         {
           "id": "GLM-5.2",

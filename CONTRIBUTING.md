@@ -555,7 +555,7 @@ A well-structured PR follows a consistent pattern. Recent exemplars include:
 
 - **#386** — `/init` command: new `crates/tui/src/commands/groups/project/init.rs` module, project-type detection,
   AGENTS.md generation, command registration in `commands/mod.rs`, localization strings.
-- **#389** — Inline LSP diagnostics: LSP subsystem in `crates/tui/src/lsp/`, engine hooks in
+- **#389** — Inline LSP diagnostics: LSP subsystem in `crates/lsp/src/`, engine hooks in
   `crates/tui/src/core/engine/lsp_hooks.rs`, config toggle, test coverage.
 - **#387** — Self-update: new `crates/cli/src/update.rs` module, CLI subcommand registration,
   HTTP download + SHA256 verification + atomic binary replacement.

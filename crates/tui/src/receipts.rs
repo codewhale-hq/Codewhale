@@ -10,7 +10,7 @@
 //!   records plus the `approval.*` events in its append-only event log.
 //!
 //! A terminal session also reads the workspace snapshots the engine already
-//! takes before and after each turn (`crate::snapshot`, when snapshots are
+//! takes before and after each turn (`codewhale_snapshot`, when snapshots are
 //! on): their difference is every file the turn changed, including files a
 //! shell command changed, which no tool record names.
 //!
@@ -30,7 +30,7 @@
 //! the thread, so a thread receipt cannot read them and says that shell file
 //! changes are not itemized. A snapshot difference covers everything that
 //! wrote to the workspace during the turn, not only this agent. Snapshots are
-//! pruned to the newest [`crate::snapshot::DEFAULT_MAX_SNAPSHOTS`], so older
+//! pruned to the newest [`codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS`], so older
 //! turns have none.
 
 use std::collections::{BTreeSet, HashMap};
@@ -150,8 +150,8 @@ pub(crate) fn session_receipt(
                 .iter()
                 .take(outcome.after_message_count)
                 .filter(|message| {
-                    crate::runtime_handoff::classify_user_turn_prompt(message)
-                        != crate::runtime_handoff::UserTurnPromptKind::NotPrompt
+                    codewhale_models::turn_classify::classify_user_turn_prompt(message)
+                        != codewhale_models::turn_classify::UserTurnPromptKind::NotPrompt
                 })
                 .count();
             (
@@ -215,7 +215,7 @@ pub(crate) fn session_receipt(
                 notes.insert(format!(
                     "Shell file changes: {} without a before/after snapshot (snapshots off, or pruned: the newest {} are kept; or a repeated prompt whose snapshots could not be told apart), so files a command changed there are not itemized.",
                     plural(unmatched, "turn", "turns"),
-                    crate::snapshot::DEFAULT_MAX_SNAPSHOTS
+                    codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS
                 ));
             }
             changes
@@ -458,7 +458,7 @@ pub(crate) fn run_receipts_command(
 
 /// Tool calls in transcript order, plus each turn's posture. A turn starts at
 /// a real user prompt, by the same rule edit-last-turn and titles use
-/// ([`crate::runtime_handoff::classify_user_turn_prompt`]); runtime-injected
+/// ([`codewhale_models::turn_classify::classify_user_turn_prompt`]); runtime-injected
 /// messages and tool results do not start one.
 /// Each turn's prompt text (the user's words, without the `<turn_meta>`
 /// block) comes back too: it labels the turn's workspace snapshots.
@@ -490,8 +490,8 @@ fn steps_from_messages(messages: &[Message]) -> (Vec<ToolStep>, Vec<TurnPosture>
     let mut turn_prompts: Vec<TurnPrompt> = Vec::new();
     let mut turn = 0usize;
     for message in messages {
-        if crate::runtime_handoff::classify_user_turn_prompt(message)
-            != crate::runtime_handoff::UserTurnPromptKind::NotPrompt
+        if codewhale_models::turn_classify::classify_user_turn_prompt(message)
+            != codewhale_models::turn_classify::UserTurnPromptKind::NotPrompt
         {
             turn += 1;
             turn_postures.push((turn.to_string(), turn_meta_posture(message)));
@@ -554,7 +554,8 @@ fn steps_from_messages(messages: &[Message]) -> (Vec<ToolStep>, Vec<TurnPosture>
 /// The prompt a user message carries: its text blocks, less the
 /// `<turn_meta>` block the engine appends.
 pub(crate) fn prompt_text(message: &Message) -> Option<String> {
-    let meta_index = crate::runtime_handoff::turn_metadata_text(message).map(|(index, _)| index);
+    let meta_index =
+        codewhale_models::turn_classify::turn_metadata_text(message).map(|(index, _)| index);
     message
         .content
         .iter()
@@ -582,7 +583,7 @@ fn snapshot_turn_changes(
     wanted: Option<&str>,
 ) -> Result<Option<TurnChanges>, String> {
     use crate::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
-    let Some(repo) = crate::snapshot::SnapshotRepo::open_existing(workspace)
+    let Some(repo) = codewhale_snapshot::SnapshotRepo::open_existing(workspace)
         .map_err(|error| error.to_string())?
     else {
         return Ok(None);
@@ -592,7 +593,7 @@ fn snapshot_turn_changes(
     // Pair each post-turn:N with the open pre-turn:N of this session, oldest
     // first. The sequence restarts when the session is resumed, so a pair
     // closes on the first matching post-turn.
-    let mut open: HashMap<u64, (crate::snapshot::SnapshotId, Option<String>)> = HashMap::new();
+    let mut open: HashMap<u64, (codewhale_snapshot::SnapshotId, Option<String>)> = HashMap::new();
     let mut pairs = Vec::new();
     for snapshot in snapshots
         .into_iter()
@@ -706,7 +707,7 @@ fn workspace_relative(path: &str, workspace: Option<&str>) -> String {
 /// The posture line the engine writes into a prompt's `<turn_meta>` block
 /// ([`crate::core::engine::PERMISSION_POSTURE_LINE`]).
 fn turn_meta_posture(message: &Message) -> Option<&'static str> {
-    let (_, meta) = crate::runtime_handoff::turn_metadata_text(message)?;
+    let (_, meta) = codewhale_models::turn_classify::turn_metadata_text(message)?;
     meta.lines().find_map(|line| {
         line.trim()
             .strip_prefix(crate::core::engine::PERMISSION_POSTURE_LINE)
@@ -958,7 +959,8 @@ fn classify(step: &ToolStep, notes: &mut BTreeSet<String>) -> Classified {
     if let Some(files) = mutation_files(facts) {
         return Classified::Listed(ActionKind::FileChange { files });
     }
-    let semantic = crate::tools::canonical_action::canonical_action_alias(&step.name, &step.input);
+    let semantic =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(&step.name, &step.input);
     match semantic {
         "write_file" | "edit_file" | "apply_patch" | "fim_edit" => {
             let files = files_from_input(semantic, &step.input, step.outcome);
@@ -1519,7 +1521,8 @@ const SHELL_TOOLS: [&str; 5] = [
 /// GitHub's reply, or a fetched page. Nothing in it is read as a fact about
 /// the call, not even JSON; only metadata Codewhale wrote is.
 fn result_is_outside_text(step: &ToolStep) -> bool {
-    let semantic = crate::tools::canonical_action::canonical_action_alias(&step.name, &step.input);
+    let semantic =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(&step.name, &step.input);
     step.name.starts_with("mcp_")
         || semantic.starts_with("mcp_")
         || semantic.starts_with("github_")
@@ -1533,7 +1536,8 @@ fn result_is_outside_text(step: &ToolStep) -> bool {
 /// [`result_is_outside_text`], plus a program's own output (code tools) and a
 /// sub-agent's words. Their failure text never proves a refusal.
 fn failure_text_is_outside(step: &ToolStep) -> bool {
-    let semantic = crate::tools::canonical_action::canonical_action_alias(&step.name, &step.input);
+    let semantic =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(&step.name, &step.input);
     result_is_outside_text(step)
         || matches!(
             semantic,
@@ -1602,7 +1606,7 @@ fn failure_evidence(step: &ToolStep) -> FailureEvidence {
     let first = first.strip_prefix("Error: ").unwrap_or(first);
     if first.starts_with("BLOCKED:") {
         let semantic =
-            crate::tools::canonical_action::canonical_action_alias(&step.name, &step.input);
+            codewhale_execpolicy::canonical_action::canonical_action_alias(&step.name, &step.input);
         return if SHELL_TOOLS.contains(&semantic) {
             FailureEvidence::Refused
         } else {

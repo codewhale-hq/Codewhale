@@ -309,8 +309,8 @@ test("telegramSendRetryDelayMs retries only safe send failures", () => {
     telegramSendRetryDelayMs({ errorCode: 429, parameters: { retry_after: 3 } }, 3),
     null
   );
-  assert.equal(telegramSendRetryDelayMs(new TypeError("fetch failed"), 0), 1000);
-  assert.equal(telegramSendRetryDelayMs(new TypeError("fetch failed"), 1), 2000);
+  assert.equal(telegramSendRetryDelayMs(new TypeError("fetch failed"), 0), null);
+  assert.equal(telegramSendRetryDelayMs(new TypeError("fetch failed"), 1), null);
   assert.equal(telegramSendRetryDelayMs(new TypeError("fetch failed"), 2), null);
   assert.equal(telegramSendRetryDelayMs({ name: "AbortError" }, 0), null);
   assert.equal(telegramSendRetryDelayMs({ errorCode: 500 }, 0), null);

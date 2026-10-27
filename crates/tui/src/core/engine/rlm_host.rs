@@ -5,7 +5,7 @@
 use super::turn_loop::usage_has_reported_data;
 use super::*;
 use crate::core::authority::auto_review::AutoReviewPolicy;
-use crate::rlm::bridge::{RlmUsageAccumulator, RlmUsageReservation};
+use crate::rlm::bridge::{RlmUsageAccumulator, RlmUsageReservation, wait_for_deadline};
 use crate::rlm::turn::{RlmRoundTrace, RlmTermination, RlmTurnResult};
 use anyhow::anyhow;
 
@@ -20,7 +20,7 @@ pub(crate) struct RlmInvocation {
     pub mode: RlmMode,
     pub max_tokens: Option<u32>,
     pub task_instructions: Option<String>,
-    pub deadline: tokio::time::Instant,
+    pub deadline: Option<tokio::time::Instant>,
     pub gate: Option<crate::tools::codemode::NestedCallGate>,
     pub events: Option<mpsc::Sender<Event>>,
     pub usage: RlmUsageAccumulator,
@@ -44,7 +44,7 @@ pub(crate) struct CapturedRlmCaller {
     constitution_block: Option<String>,
     approval_store: Result<ApprovalReceiptStore, String>,
     review_policy: Arc<AutoReviewPolicy>,
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
     origin_scope: crate::cost_status::CostScopeToken,
     origin_session: String,
     origin_turn: String,
@@ -112,13 +112,11 @@ impl CapturedRlmCaller {
         let runtime_lease = runtime_owner
             .as_deref()
             .and_then(crate::cost_status::acquire_runtime_usage_lease);
-        let parent_deadline = context.turn_deadline;
-        let default_deadline = tokio::time::Instant::now()
-            + engine
-                .config
-                .turn_wall_clock
-                .min(crate::tools::subagent::DEFAULT_CHILD_WALL_TIME);
-        let deadline = parent_deadline.map_or(default_deadline, |d| d.min(default_deadline));
+        let deadline = context
+            .turn_deadline
+            .into_iter()
+            .chain(engine.nested_work_deadline())
+            .min();
         let result =
             Self {
                 #[cfg(test)]
@@ -191,7 +189,10 @@ impl CapturedRlmCaller {
                 "RLM originating turn is cancelled or unavailable",
             ));
         }
-        if tokio::time::Instant::now() >= self.deadline {
+        if self
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
             return Err(ToolError::execution_failed(
                 "RLM original parent deadline exhausted",
             ));
@@ -204,7 +205,7 @@ impl CapturedRlmCaller {
             .map_err(ToolError::permission_denied)
     }
 
-    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+    pub(crate) fn deadline(&self) -> Option<tokio::time::Instant> {
         self.deadline
     }
 
@@ -219,11 +220,14 @@ impl CapturedRlmCaller {
 
     async fn dispatch_admitted(&self, mut invocation: RlmInvocation) -> RlmTurnResult {
         let started = Instant::now();
-        invocation.deadline = invocation.deadline.min(self.deadline);
+        invocation.deadline = invocation.deadline.into_iter().chain(self.deadline).min();
         if let Err(error) = self.validate_live() {
             return RlmTurnResult::failed(error.to_string(), started.elapsed());
         }
-        if tokio::time::Instant::now() >= invocation.deadline {
+        if invocation
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
             return RlmTurnResult::failed(
                 "RLM original parent deadline exhausted".into(),
                 started.elapsed(),
@@ -274,7 +278,7 @@ impl CapturedRlmCaller {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => { local_cancel.cancel(); break None; }
-                    () = tokio::time::sleep_until(deadline) => { local_cancel.cancel(); break None; }
+                    () = wait_for_deadline(deadline) => { local_cancel.cancel(); break None; }
                     result = &mut call => break Some(result),
                     event = receiver.recv() => {
                         let Some(event) = event else { local_cancel.cancel(); break None; };
@@ -329,7 +333,7 @@ pub(super) struct RlmHostState {
     pub mode: RlmMode,
     pub system_prompt: SystemPrompt,
     pub prompt: String,
-    pub deadline: tokio::time::Instant,
+    pub deadline: Option<tokio::time::Instant>,
     pub gate: Option<crate::tools::codemode::NestedCallGate>,
     pub usage: RlmUsageAccumulator,
     pub max_tokens: Option<u32>,
@@ -384,7 +388,7 @@ impl Engine {
         config.max_steps = if invocation.mode == RlmMode::Completion {
             1
         } else {
-            crate::rlm::turn::MAX_RLM_ITERATIONS
+            caller.config.max_steps
         };
         config.snapshots_enabled = false;
         config.memory_enabled = false;
@@ -394,9 +398,9 @@ impl Engine {
         config.goal_objective = None;
         config.goal_status = GoalStatus::Paused;
         config.goal_state = new_shared_goal_state();
-        config.turn_wall_clock = invocation
-            .deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        config.turn_wall_clock = invocation.deadline.map_or(Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(tokio::time::Instant::now())
+        });
         config.compaction.runtime_cost_owner = caller.runtime_owner.clone();
         let system_prompt = crate::rlm::prompt::captured_rlm_prompt(
             &caller.system,
@@ -405,7 +409,7 @@ impl Engine {
         )?;
         let mut kernel = None;
         if invocation.mode != RlmMode::Completion {
-            let path = tempfile::TempPath::try_from_path(crate::rlm::session::write_context_file(
+            let path = tempfile::TempPath::try_from_path(codewhale_repl::write_context_file(
                 &invocation.prompt,
             )?)?;
             let cancel = caller
@@ -416,9 +420,8 @@ impl Engine {
             let startup = tokio::select! {
                 biased;
                 () = cancel.cancelled() => Err("RLM Python startup cancelled by its originating turn".to_string()),
-                result = tokio::time::timeout_at(invocation.deadline, crate::repl::PythonRuntime::spawn_with_context(&path)) => {
-                    result.map_err(|_| "RLM Python startup exhausted its original wall-clock deadline".to_string()).and_then(|r| r)
-                },
+                () = wait_for_deadline(invocation.deadline) => Err("RLM Python startup exhausted its original wall-clock deadline".to_string()),
+                result = codewhale_repl::PythonRuntime::spawn_with_context(&path) => result,
             };
             match startup {
                 Ok(runtime) => {
@@ -623,7 +626,7 @@ async fn forward_rlm_event(
     event: Event,
     depth: u32,
     cancel: &CancellationToken,
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
 ) {
     if let Some(events) = events
         && let Some(message) = crate::rlm::bridge::nested_rlm_status_line(event, depth)
@@ -631,7 +634,7 @@ async fn forward_rlm_event(
         tokio::select! {
             biased;
             () = cancel.cancelled() => {},
-            _ = tokio::time::sleep_until(deadline) => {},
+            _ = wait_for_deadline(deadline) => {},
             _ = events.send(Event::status(message)) => {},
         }
     }
@@ -647,7 +650,7 @@ impl Engine {
         let mut context = state.caller.context.clone();
         context.rlm_caller = Some(Arc::clone(&state.caller));
         context.cancel_token = Some(self.cancel_token.clone());
-        context.turn_deadline = Some(state.deadline);
+        context.turn_deadline = state.deadline;
         let registry = ToolRegistryBuilder::new().build(context);
         let mut catalog = Vec::new();
         if state.mode != RlmMode::Completion {
@@ -701,15 +704,18 @@ pub(super) struct RlmDispatchedRequest {
 impl RlmDispatchedRequest {
     pub(super) async fn settle_open_error(&mut self, error: &anyhow::Error) {
         if crate::tools::subagent::engine::provider_request_refusal_proven(error) {
-            self.usage.cancel_sync(
-                self.reservation,
-                false,
-                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-            );
-            self.refused = true;
+            self.cancel_unexecuted();
         } else {
             self.settle(&Usage::default(), false).await;
         }
+    }
+    pub(super) fn cancel_unexecuted(&mut self) {
+        self.usage.cancel_sync(
+            self.reservation,
+            false,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+        );
+        self.refused = true;
     }
     pub(super) async fn settle(&mut self, usage: &Usage, complete: bool) {
         if self.settled.is_some() || self.refused {

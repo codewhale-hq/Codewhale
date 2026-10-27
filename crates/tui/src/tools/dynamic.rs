@@ -26,7 +26,7 @@ impl ToolSpec for RuntimeDynamicTool {
         match &self.spec.namespace {
             Some(namespace) => format!(
                 "runtime dynamic namespace {}",
-                crate::safe_label::SafeLabel::identifier(namespace)
+                codewhale_runtime::safe_label::SafeLabel::identifier(namespace)
             )
             .into(),
             None => "runtime dynamic (no namespace)".into(),

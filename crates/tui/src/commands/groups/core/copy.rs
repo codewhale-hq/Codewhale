@@ -83,11 +83,11 @@ fn execute_copy(app: &mut App) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use crate::tui::clipboard::ClipboardHandler;
     use crate::tui::history::{HistoryCell, history_cells_from_message};
     use codewhale_models::{ContentBlock, Message, Role};
+    use codewhale_runtime::config::Config;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 

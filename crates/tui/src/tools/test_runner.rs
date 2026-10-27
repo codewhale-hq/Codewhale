@@ -16,7 +16,7 @@ use super::spec::{
     optional_bool, optional_str,
 };
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 /// Tool for running `cargo test` in the workspace root.
 pub struct RunTestsTool;
@@ -80,7 +80,7 @@ impl ToolSpec for RunTestsTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        crate::core::engine::tool_catalog::enforce_tool_denial(context, self.name(), &input)?;
+        crate::tools::execution_envelope::enforce_tool_denial(context, self.name(), &input)?;
         let all_features = optional_bool(&input, "all_features", false)?;
         let extra_args = optional_str(&input, "args")?
             .map(str::trim)
@@ -161,8 +161,8 @@ async fn run_cargo(
     args: &[String],
     context: &ToolContext,
     timeout: Duration,
-) -> Result<crate::process_tree::ContainedOutput, ToolError> {
-    let Some(cargo) = crate::dependencies::Cargo::resolve() else {
+) -> Result<codewhale_runtime::process_tree::ContainedOutput, ToolError> {
+    let Some(cargo) = codewhale_dependencies::Cargo::resolve() else {
         return Err(ToolError::not_available(
             "cargo is not installed or not in PATH",
         ));
@@ -177,7 +177,10 @@ async fn run_cargo(
         workspace,
         timeout,
     )?;
-    let run = crate::process_tree::contained_output_until(&mut cmd, tokio::time::sleep(timeout));
+    let run = codewhale_runtime::process_tree::contained_output_until(
+        &mut cmd,
+        tokio::time::sleep(timeout),
+    );
     let cancelled = async {
         match context.cancel_token.as_ref() {
             Some(token) => token.cancelled().await,
@@ -235,7 +238,7 @@ mod tests {
             NEXT_CARGO_PROJECT.fetch_add(1, Ordering::Relaxed)
         );
         fs::create_dir_all(&project_dir).expect("create project dir");
-        let status = crate::dependencies::Cargo::command()
+        let status = codewhale_dependencies::Cargo::command()
             .expect("cargo not found")
             .args(["init", "--lib", "--vcs", "none", "-q"])
             .arg("--name")
@@ -533,9 +536,10 @@ mod tests {
             "{:?}",
             run.output
         );
-        let hung = crate::process_tree::read_pid_file(&pid_file, Duration::from_secs(5));
+        let hung =
+            codewhale_runtime::process_tree::read_pid_file(&pid_file, Duration::from_secs(5));
         assert!(
-            crate::process_tree::wait_for_pid_exit(hung, Duration::from_secs(5)),
+            codewhale_runtime::process_tree::wait_for_pid_exit(hung, Duration::from_secs(5)),
             "the timed-out run's process is still running"
         );
     }

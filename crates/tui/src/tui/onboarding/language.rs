@@ -217,9 +217,9 @@ fn option_spans_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use codewhale_localization::Locale;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn app() -> App {

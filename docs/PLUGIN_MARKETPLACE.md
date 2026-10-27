@@ -30,19 +30,22 @@ ambiguous roots, links, oversized archives, and changed plugin identities are
 rejected. The install receipt preserves the source, including its selector,
 so `/plugin update` retains the same bundle selector and reviewed revision.
 
-## Built-in Computer Use across upgrades
+## Computer Use across upgrades
 
-Computer Use also ships inside the binary as a built-in bundle. Each build
-writes its own copy under `$CODEWHALE_HOME/builtin-plugins`, so an upgrade
-presents it as a new bundle. Your review carries over when the capability
-hash is unchanged: a bundle you trusted and enabled stays trusted and enabled
-on the new build. When the capabilities changed, it shows
-`capabilities-changed` and stays off until you review it again with
-`/plugin show computer-use` and `/plugin trust computer-use`. If you revoked
-trust after your most recent review, nothing carries and the new build waits
-for a fresh review; once you review a build again, later upgrades carry that
-review. User and workspace plugins never carry trust: changed bytes
-always need review.
+Computer Use is an ordinary independently released plugin. Install it from
+Connectors or `/plugin marketplace install codewhale computer-use`, review its
+capabilities, then enable it. Install the signed Mac helper from
+[Computer Use setup](https://codewhale.net/computer-use) for native permission
+setup, trust and Pause/Stop controls.
+
+The catalog uses the stable `computer-use.tar.gz` asset on the canonical
+repository's latest release. `/plugin update computer-use` downloads that source;
+changed bytes require review again. Later CU releases need no Engine rebuild.
+Older Engine versions embedded a CU copy. Their snapshots and receipts remain
+intact, but the current Engine does not discover them. Install and review the
+ordinary plugin once; a built-in receipt cannot authorize a new downloaded
+bundle. Existing manually installed or pinned bundles keep their normal source
+and review rules.
 
 ## Chromewhale
 
@@ -60,11 +63,11 @@ until you review it.
 | --- | --- | --- |
 | Catalog, WhaleWiki, Whalesong, Cloudflare Docs | `codewhale-hq/codewhale-plugin-marketplace` | Core catalog snapshot |
 | Bundled skills | Core active catalog and `crates/tui/assets/skills` | Marketplace `skills` and `skills/upstream.json` |
-| Computer Use | `Hmbown/codewhale-cu-plugin` | Marketplace plugin and Core bundled runtime |
+| Computer Use | `codewhale-hq/codewhale-cu-plugin` | Stable release archive; no runtime mirrors |
 
 The `Marketplace connection` workflow validates the exact catalog revision on
 catalog changes. Its weekly and manual runs compare the current public
-marketplace, bundled snapshot, skills, and Computer Use runtime. Drift fails
+marketplace, bundled snapshot, and skills. Drift fails
 the check with a maintenance instruction; it does not rewrite user installs
 or grant new permissions. It uses read-only repository access.
 
@@ -76,7 +79,6 @@ source-owned copies, and run the marketplace checks:
 # After committing canonical skill changes, when intentionally updating skills:
 npm run sync:skills
 npm run check -- --core ../codewhale
-npm run check:cu-sync
 npm test && npm run check:web
 ```
 
@@ -91,22 +93,16 @@ npm test && npm run check:web
 ```
 
 Review the generated snapshot and rebuild Core. Its provenance records the
-exact marketplace commit, and each generated bundle URL pins that immutable
-revision. A later marketplace change requires refreshing the Core snapshot and
-rebuilding; an existing pinned install does not silently follow `main`. Push the
+exact marketplace commit. Local bundle URLs pin that immutable revision; remote
+entries retain their declared source. Updating catalog metadata requires a new
+Core snapshot; updating a remote plugin at its stable release URL does not. An
+existing pinned install does not silently follow `main`. Push the
 reviewed marketplace revision before publishing a Core release that references it. Hosted CI must be green for the
 actual published revisions; local checks do not prove a public URL works.
 
-Core's Computer Use copy (`crates/tui/plugins/computer-use`) is a runtime and
-tests subset of the upstream repository. Copy the upstream files Core already
-carries, plus any new runtime module the server imports and its tests, from the
-reviewed upstream commit. Keep the three deliberate Core variants
-(`package.json`, `README.md`, `tests/manifest.test.mjs`) and bump their version
-to match. Record the commit in `crates/tui/plugins/computer-use.upstream-sha`.
-Add each new runtime file to `COMPUTER_USE_FILES` in
-`crates/tui/src/plugins/builtin.rs`. The
-`computer_use_embed_list_matches_the_vendored_runtime_tree` test fails when
-the two disagree. Then run `npm test` in the vendored directory.
+Computer Use source and checks belong to its canonical repository. Publish its
+qualified `computer-use.tar.gz` release asset before publishing a catalog that
+references that address. Do not copy its runtime or native helper into Core.
 
 Skill wording changes also need behavioral evaluation before claiming better
 outcomes. See [Skill evaluation](SKILL_EVALUATION.md).

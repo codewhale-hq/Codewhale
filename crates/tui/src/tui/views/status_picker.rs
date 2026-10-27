@@ -10,7 +10,7 @@
 //! segments ([`crate::tui::ui::frame::info_segments`]) and the posture bar's
 //! mode chip. Between 0.9.12 and that fix the list was persisted and never
 //! read, so the checklist was decoration — a new variant belongs in
-//! `crates/tui/src/config.rs` only once something paints it.
+//! `crates/runtime/src/config.rs` only once something paints it.
 
 use std::cell::RefCell;
 
@@ -23,14 +23,15 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
-use crate::config::{ProviderKind, StatusItem};
 use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
     centered_modal_area, render_modal_footer, render_modal_surface, render_panel_scroll_rail,
 };
+use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::StatusItem;
 use unicode_width::UnicodeWidthStr;
 
 /// Picker state. We hold both the user's working selection AND the original

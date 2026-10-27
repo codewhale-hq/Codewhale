@@ -186,7 +186,7 @@ export async function deriveFactsFromRemote(ghToken?: string): Promise<RepoFacts
   const [cargo, providerMetadata, sandboxSource, npmPkg, licText, generatedFacts, modelCatalog, latestPublishedRelease] = await Promise.all([
     fetchText("Cargo.toml", source.revision, ghToken),
     fetchText("crates/config/assets/provider_descriptors.json", source.revision, ghToken),
-    fetchText("crates/tui/src/sandbox/mod.rs", source.revision, ghToken),
+    fetchText("crates/sandbox/src/lib.rs", source.revision, ghToken),
     fetchText("npm/codewhale/package.json", source.revision, ghToken),
     fetchText("LICENSE", source.revision, ghToken),
     fetchText("web/lib/facts.generated.ts", source.revision, ghToken),

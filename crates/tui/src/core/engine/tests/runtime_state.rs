@@ -148,6 +148,7 @@ async fn a_session_boundary_discards_and_stops_the_previous_mcp_supervisor() {
         failed: Vec::new(),
         recovered: Vec::new(),
         parked: Vec::new(),
+        refreshed: Vec::new(),
     })
     .await
     .unwrap();

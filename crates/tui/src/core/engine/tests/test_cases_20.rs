@@ -1,5 +1,3 @@
-
-
 #[tokio::test]
 async fn restored_task_binding_is_not_missing_when_its_inventory_is_unavailable()
 -> anyhow::Result<()> {
@@ -693,6 +691,7 @@ async fn supervisor_update_refreshes_error_map_and_generation() {
             failed: Vec::new(),
             recovered: Vec::new(),
             parked: Vec::new(),
+            refreshed: Vec::new(),
         })
         .await;
     assert_eq!(
@@ -710,6 +709,7 @@ async fn supervisor_update_refreshes_error_map_and_generation() {
             failed: Vec::new(),
             recovered: vec!["alpha".to_string()],
             parked: vec!["beta".to_string()],
+            refreshed: Vec::new(),
         })
         .await;
     assert!(!engine.mcp_connection_errors.contains_key("alpha"));
@@ -1370,7 +1370,7 @@ async fn run_computer_use_live_card_case(
     let _backend = EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
     pool.get_or_connect(&server)
         .await
-        .expect("connect real isolated CU plugin");
+        .expect("connect isolated host-decision protocol fixture");
     let name = pool
         .to_api_tools()
         .into_iter()
@@ -1389,6 +1389,7 @@ async fn run_computer_use_live_card_case(
     let mut cfg = deterministic_engine_config(&root.path().join("workspace"));
     cfg.plugin_registry = Some(plugins);
     cfg.mcp_config_path = root.path().join("mcp.json");
+    cfg.tools_always_load.insert(name.clone());
     let (mut engine, handle) = Engine::new_with_model_client(cfg, &config, mock);
     engine.mcp_pool = Some(Arc::new(tokio::sync::Mutex::new(pool)));
     let task = tokio::spawn(engine.run());
@@ -1432,7 +1433,7 @@ async fn run_computer_use_live_card_case(
         "posture={posture:?}, decider={decider:?}"
     );
     let result = completed.expect("consent call has a paired completion");
-    if posture != ApprovalMode::Suggest {
+    if matches!(posture, ApprovalMode::Auto | ApprovalMode::Never) {
         assert!(
             result.is_err(),
             "autonomous posture must block before plugin execution: {result:?}"
@@ -1453,10 +1454,7 @@ async fn run_computer_use_live_card_case(
             assert_eq!(envelope["error"]["code"], "consent_needs_user");
             envelope
         };
-        result.success
-            && outcome["ok"] == true
-            && outcome["scope"] == "foreground"
-            && outcome["decision"] == "allow"
+        result.success && outcome["ok"] == true
     });
     assert_eq!(
         allowed, expected_allowed,
@@ -1468,50 +1466,44 @@ async fn run_computer_use_live_card_case(
 
 #[tokio::test]
 async fn computer_use_human_card_allows_the_exact_live_call() {
-    // The bundled Computer Use plugin applies only to macOS hosts; elsewhere
-    // there is no live plugin to start.
     if !cfg!(target_os = "macos") {
         return;
     }
     let _env = lock_test_env();
-    run_computer_use_live_card_case(
-        ApprovalMode::Suggest,
-        crate::approval_log::ApprovalDecider::User,
-        true,
-        true,
-    )
-    .await;
+    for posture in [ApprovalMode::Suggest, ApprovalMode::Bypass] {
+        run_computer_use_live_card_case(
+            posture,
+            crate::approval_log::ApprovalDecider::User,
+            true,
+            true,
+        )
+        .await;
+    }
 }
 
 #[tokio::test]
 async fn computer_use_session_rule_and_posture_cannot_mint_a_human_decision() {
-    // The bundled Computer Use plugin applies only to macOS hosts; elsewhere
-    // there is no live plugin to start.
     if !cfg!(target_os = "macos") {
         return;
     }
     let _env = lock_test_env();
-    for decider in [
-        crate::approval_log::ApprovalDecider::SessionRule,
-        crate::approval_log::ApprovalDecider::Posture,
-    ] {
-        run_computer_use_live_card_case(ApprovalMode::Suggest, decider, true, false).await;
+    for posture in [ApprovalMode::Suggest, ApprovalMode::Bypass] {
+        for decider in [
+            crate::approval_log::ApprovalDecider::SessionRule,
+            crate::approval_log::ApprovalDecider::Posture,
+        ] {
+            run_computer_use_live_card_case(posture, decider, true, false).await;
+        }
     }
 }
 
 #[tokio::test]
 async fn computer_use_autonomous_postures_block_before_the_plugin() {
-    // The bundled Computer Use plugin applies only to macOS hosts; elsewhere
-    // there is no live plugin to start.
     if !cfg!(target_os = "macos") {
         return;
     }
     let _env = lock_test_env();
-    for posture in [
-        ApprovalMode::Bypass,
-        ApprovalMode::Auto,
-        ApprovalMode::Never,
-    ] {
+    for posture in [ApprovalMode::Auto, ApprovalMode::Never] {
         run_computer_use_live_card_case(
             posture,
             crate::approval_log::ApprovalDecider::User,

@@ -7,12 +7,13 @@ use sha2::{Digest, Sha256};
 
 use super::agent_plugin::resolve_manifest_path;
 use super::manifest::{PluginManifest, ValidatedManifest};
-use super::path_identity::metadata_is_link_or_reparse;
 use super::registry::PluginRegistry;
 use super::types::{
-    LoadedPlugin, PluginDiagnostic, PluginId, PluginOrigin, PluginScope, PluginSkillSnapshot,
+    LoadedPlugin, PluginDiagnostic, PluginOrigin, PluginScope, PluginSkillSnapshot,
     PluginTrustStatus,
 };
+use codewhale_config::PluginId;
+use codewhale_util::path_identity::metadata_is_link_or_reparse;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryConfig {
@@ -525,7 +526,7 @@ fn parse_skill_snapshots_for_roots(
 
 fn read_skill_bytes(root: &Path, path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
-    let file = crate::fs_confined::open_read(root, path)
+    let file = codewhale_util::fs_confined::open_read(root, path)
         .map_err(|e| format!("failed to open plugin Skill without following links: {e}"))?;
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1)
@@ -562,13 +563,13 @@ pub(crate) fn load_staged_skill_snapshots(
 }
 
 pub(crate) fn load_staged_skill_root_snapshots(
-    authority: &super::types::PluginAuthority,
+    authority: &codewhale_config::PluginAuthority,
     relative: &Path,
 ) -> Result<Vec<PluginSkillSnapshot>, String> {
     let staged_root = super::agent_plugin::plugin_root_for_manifest(&authority.staged_manifest)
         .ok_or_else(|| "reviewed plugin has no staged root".to_string())?;
     let root = staged_root.join(relative);
-    crate::fleet::files::reject_linked_path(staged_root, &root).map_err(|e| e.to_string())?;
+    codewhale_util::files::reject_linked_path(staged_root, &root).map_err(|e| e.to_string())?;
     if !root.is_dir() {
         return Err("skill root must be a directory inside the reviewed bundle".to_string());
     }
@@ -640,7 +641,11 @@ pub(super) fn plugin_root_hash(scope: PluginScope, canonical_root: &Path) -> Str
     hasher.update(b"codewhale-plugin-id-v2\0");
     hasher.update(scope.as_str().as_bytes());
     hasher.update(b"\0");
-    super::path_identity::hash_os_path(&mut hasher, b"canonical-plugin-root", canonical_root);
+    codewhale_util::path_identity::hash_os_path(
+        &mut hasher,
+        b"canonical-plugin-root",
+        canonical_root,
+    );
     let digest = hasher.finalize();
     digest[..6]
         .iter()

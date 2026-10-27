@@ -31,10 +31,11 @@ The site renders fine without any of them — `Today's Dispatch` falls back to a
 
 ## Deploy to Cloudflare
 
-Ordinary pushes and pull requests run the web checks and production build, but
-they do **not** deploy. The `deploy` job in `.github/workflows/web.yml` runs
-only for a maintainer-triggered `workflow_dispatch` on `main`. Before approval,
-record the exact 40-character `origin/main` SHA and trigger that ref:
+The `.github/workflows/web.yml` workflow runs only for a maintainer-triggered
+`workflow_dispatch`. Ordinary pushes and pull requests do not start it.
+A dispatch on `main` runs the web checks and production build before deploying.
+At the approved final publication step, record the exact 40-character
+`origin/main` SHA and trigger that ref:
 
 ```bash
 git fetch origin main
@@ -42,9 +43,9 @@ git rev-parse origin/main
 gh workflow run web.yml --repo codewhale-hq/CodeWhale --ref main
 ```
 
-Every green push to `main` also emits a `Deployment approval needed` workflow
-notice with that command. The reminder does not receive Cloudflare credentials
-and cannot deploy; it keeps the manual production approval boundary visible.
+Confirm that the dispatched run resolved to the recorded SHA before treating
+its result as evidence for that candidate. The deploy job checks out the exact
+dispatch SHA even if `main` advances while the run is queued.
 
 The manual job records the pre-deploy source drift, builds the OpenNext bundle,
 deploys only after the protected Cloudflare inputs pass, and then requires the
@@ -157,7 +158,7 @@ default model, Node engines) are never hand-written into pages:
 
 1. **Build time** — `scripts/derive-facts.mjs` runs as `prebuild` (and before
    `npm run dev`), parses the parent repo (`Cargo.toml`, `crates/tui/src/config.rs`,
-   `crates/tui/src/sandbox/mod.rs`, `npm/codewhale/package.json`) and writes
+   `crates/sandbox/src/lib.rs`, `npm/codewhale/package.json`) and writes
    `lib/facts.generated.ts`. Never edit that file by hand.
 2. **Published release** — `data/latest-published-release.json` records the
    latest GitHub Release separately from the source candidate. Install commands

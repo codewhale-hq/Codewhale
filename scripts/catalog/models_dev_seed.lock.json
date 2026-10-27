@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-10-17T09:08:34Z",
-    "sha256": "1fc50db52d13d5c9ac1724212b318c221d6f6fc79541b3178851e0db6d058921"
+    "fetched_at": "2026-10-23T14:52:11Z",
+    "sha256": "32dcb918ab35c61aa6ff1502c153965a3a35135956e9ffe73c7b06d1fa756fee"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -10,12 +10,11 @@
       "name": "DeepSeek V4 Pro 0813",
       "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
       "family": "deepseek-thinking",
-      "release_date": "2026-08-12",
+      "release_date": "2026-08-13",
       "last_updated": "2026-08-22",
       "attachment": false,
       "reasoning": true,
       "tool_call": true,
-      "structured_output": true,
       "temperature": true,
       "open_weights": true,
       "modalities": {
@@ -131,7 +130,6 @@
       "attachment": true,
       "reasoning": true,
       "tool_call": true,
-      "structured_output": true,
       "temperature": true,
       "open_weights": true,
       "modalities": {
@@ -1702,7 +1700,7 @@
         },
         "limit": {
           "context": 262144,
-          "output": 262144
+          "output": 80000
         },
         "cost": {
           "input": 0.25,
@@ -1715,13 +1713,13 @@
     "deepseek": {
       "deepseek-flash": {
         "id": "deepseek-flash",
-        "canonical_model_id": "deepseek/deepseek-v4.1-flash",
-        "name": "DeepSeek V4.1 Flash",
-        "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+        "canonical_model_id": "deepseek/deepseek-v4.1-flash-1017",
+        "name": "DeepSeek V4.1 Flash 1017",
+        "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
         "family": "deepseek-flash",
         "knowledge": "2025-05",
-        "release_date": "2026-09-10",
-        "last_updated": "2026-09-10",
+        "release_date": "2026-10-17",
+        "last_updated": "2026-10-17",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -1754,7 +1752,7 @@
           ]
         },
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "cost": {
@@ -1766,13 +1764,13 @@
       },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
-        "canonical_model_id": "deepseek/deepseek-v4.1-flash",
+        "canonical_model_id": "deepseek/deepseek-v4.1-flash-1017",
         "name": "DeepSeek V4 Flash",
-        "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+        "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
         "family": "deepseek-flash",
         "knowledge": "2025-05",
-        "release_date": "2026-09-10",
-        "last_updated": "2026-09-10",
+        "release_date": "2026-10-17",
+        "last_updated": "2026-10-17",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -1805,7 +1803,7 @@
           ]
         },
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "cost": {
@@ -1818,13 +1816,13 @@
       },
       "deepseek-v4-flash-vision-exp": {
         "id": "deepseek-v4-flash-vision-exp",
-        "canonical_model_id": "deepseek/deepseek-v4.1-flash",
+        "canonical_model_id": "deepseek/deepseek-v4.1-flash-1017",
         "name": "DeepSeek V4 Flash Vision Exp",
-        "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+        "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
         "family": "deepseek-flash",
         "knowledge": "2025-05",
-        "release_date": "2026-09-10",
-        "last_updated": "2026-09-10",
+        "release_date": "2026-10-17",
+        "last_updated": "2026-10-17",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -1857,7 +1855,7 @@
           ]
         },
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "cost": {
@@ -1874,7 +1872,7 @@
         "name": "DeepSeek V4 Pro",
         "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
         "family": "deepseek-thinking",
-        "release_date": "2026-08-12",
+        "release_date": "2026-08-13",
         "last_updated": "2026-08-22",
         "attachment": false,
         "reasoning": true,
@@ -1907,7 +1905,7 @@
           ]
         },
         "limit": {
-          "context": 1000000,
+          "context": 1048576,
           "output": 393216
         },
         "cost": {
@@ -1915,6 +1913,564 @@
           "output": 1.98,
           "cache_read": 0.022,
           "reasoning": 1.98
+        }
+      }
+    },
+    "google": {
+      "gemini-3.1-flash-lite": {
+        "id": "gemini-3.1-flash-lite",
+        "name": "Gemini 3.1 Flash Lite",
+        "description": "Low-latency Gemini model for high-volume multimodal and agent workloads",
+        "family": "gemini-flash-lite",
+        "knowledge": "2025-01",
+        "release_date": "2026-05-07",
+        "last_updated": "2026-05-07",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.25,
+          "output": 1.5,
+          "cache_read": 0.025,
+          "input_audio": 0.5
+        }
+      },
+      "gemini-3.1-pro-preview": {
+        "id": "gemini-3.1-pro-preview",
+        "name": "Gemini 3.1 Pro Preview",
+        "description": "Reasoning-first Gemini preview for agentic coding and complex problem solving",
+        "family": "gemini-pro",
+        "knowledge": "2025-01",
+        "release_date": "2026-02-19",
+        "last_updated": "2026-02-19",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 2,
+          "output": 12,
+          "cache_read": 0.2,
+          "tiers": [
+            {
+              "input": 4,
+              "output": 18,
+              "cache_read": 0.4,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4
+          }
+        }
+      },
+      "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+        "family": "gemini-flash",
+        "knowledge": "2025-01",
+        "release_date": "2026-05-19",
+        "last_updated": "2026-05-19",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 9,
+          "cache_read": 0.15,
+          "input_audio": 1.5
+        }
+      },
+      "gemini-3.5-flash-lite": {
+        "id": "gemini-3.5-flash-lite",
+        "canonical_model_id": "google/gemini-3.5-flash-lite",
+        "name": "Gemini 3.5 Flash Lite",
+        "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+        "family": "gemini-flash-lite",
+        "knowledge": "2026-03",
+        "release_date": "2026-07-21",
+        "last_updated": "2026-07-21",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.3,
+          "output": 2.5,
+          "cache_read": 0.03
+        }
+      },
+      "gemini-3.6-flash": {
+        "id": "gemini-3.6-flash",
+        "canonical_model_id": "google/gemini-3.6-flash",
+        "name": "Gemini 3.6 Flash",
+        "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+        "family": "gemini-flash",
+        "knowledge": "2026-03",
+        "release_date": "2026-07-21",
+        "last_updated": "2026-07-21",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075,
+          "input_audio": 0.75
+        }
+      },
+      "gemini-3.7-flash": {
+        "id": "gemini-3.7-flash",
+        "canonical_model_id": "google/gemini-3.7-flash",
+        "name": "Gemini 3.7 Flash",
+        "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+        "family": "gemini-flash",
+        "knowledge": "2026-03",
+        "release_date": "2026-08-13",
+        "last_updated": "2026-08-13",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075,
+          "input_audio": 0.75
+        }
+      },
+      "gemini-3.8-flash": {
+        "id": "gemini-3.8-flash",
+        "canonical_model_id": "google/gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
+        "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+        "family": "gemini-flash",
+        "release_date": "2026-09-02",
+        "last_updated": "2026-09-02",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075,
+          "input_audio": 0.75
+        }
+      },
+      "gemini-4-argon": {
+        "id": "gemini-4-argon",
+        "canonical_model_id": "google/gemini-4-argon",
+        "name": "Gemini 4 Argon",
+        "description": "Google's flagship reasoning model for complex software engineering, deep math and science, and long-horizon autonomous agents",
+        "family": "gemini",
+        "knowledge": "2026-03",
+        "release_date": "2026-10-13",
+        "last_updated": "2026-10-13",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "input_audio": 2
+        }
+      },
+      "gemini-flash-latest": {
+        "id": "gemini-flash-latest",
+        "name": "Gemini Flash Latest",
+        "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+        "family": "gemini-flash",
+        "knowledge": "2026-03",
+        "release_date": "2026-08-13",
+        "last_updated": "2026-08-13",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075,
+          "input_audio": 0.75
+        }
+      },
+      "gemini-flash-lite-latest": {
+        "id": "gemini-flash-lite-latest",
+        "name": "Gemini Flash-Lite Latest",
+        "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+        "family": "gemini-flash-lite",
+        "knowledge": "2026-03",
+        "release_date": "2026-07-21",
+        "last_updated": "2026-07-21",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.3,
+          "output": 2.5,
+          "cache_read": 0.03
+        }
+      },
+      "gemma-4-26b-a4b-it": {
+        "id": "gemma-4-26b-a4b-it",
+        "name": "Gemma 4 26B A4B IT",
+        "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+        "family": "gemma",
+        "release_date": "2026-04-02",
+        "last_updated": "2026-04-02",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 262144,
+          "output": 32768
+        }
+      },
+      "gemma-4-31b-it": {
+        "id": "gemma-4-31b-it",
+        "name": "Gemma 4 31B IT",
+        "description": "Largest Gemma 4 instruction model for open, self-hosted chat and reasoning",
+        "family": "gemma",
+        "release_date": "2026-04-02",
+        "last_updated": "2026-04-02",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 262144,
+          "output": 32768
         }
       }
     },
@@ -2240,7 +2796,8 @@
           "output": 1.2,
           "cache_read": 0.06,
           "cache_write": 0.375
-        }
+        },
+        "status": "deprecated"
       },
       "MiniMax-M2.7-highspeed": {
         "id": "MiniMax-M2.7-highspeed",
@@ -2272,7 +2829,8 @@
           "output": 2.4,
           "cache_read": 0.06,
           "cache_write": 0.375
-        }
+        },
+        "status": "deprecated"
       },
       "MiniMax-M3": {
         "id": "MiniMax-M3",
@@ -2289,6 +2847,7 @@
           }
         ],
         "tool_call": true,
+        "structured_output": false,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -2303,7 +2862,7 @@
         },
         "limit": {
           "context": 1000000,
-          "output": 512000
+          "output": 524288
         },
         "cost": {
           "input": 0.3,
@@ -2331,12 +2890,13 @@
     "moonshotai": {
       "kimi-k2.6": {
         "id": "kimi-k2.6",
+        "canonical_model_id": "moonshotai/kimi-k2.6",
         "name": "Kimi K2.6",
         "description": "Multimodal Kimi workhorse for agent loops, coding tasks, and visual context",
         "family": "kimi-k2",
         "knowledge": "2025-01",
-        "release_date": "2026-04-21",
-        "last_updated": "2026-04-21",
+        "release_date": "2026-04-20",
+        "last_updated": "2026-04-20",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -2349,7 +2909,7 @@
         },
         "tool_call": true,
         "structured_output": true,
-        "temperature": true,
+        "temperature": false,
         "open_weights": true,
         "modalities": {
           "input": [
@@ -3126,6 +3686,112 @@
           }
         }
       },
+      "gpt-6-astra": {
+        "id": "gpt-6-astra",
+        "canonical_model_id": "openai/gpt-6-astra",
+        "name": "GPT-6 Astra",
+        "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+        "family": "gpt-astra",
+        "knowledge": "2026-04-30",
+        "release_date": "2026-09-04",
+        "last_updated": "2026-09-04",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "cache_read": 1,
+          "cache_write": 12.5,
+          "tiers": [
+            {
+              "input": 20,
+              "output": 75,
+              "cache_read": 2,
+              "cache_write": 25,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 25
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 20,
+                "output": 100,
+                "cache_read": 2,
+                "cache_write": 25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            },
+            "ultrafast": {
+              "cost": {
+                "input": 60,
+                "output": 300,
+                "cache_read": 6,
+                "cache_write": 75
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "ultrafast"
+                }
+              }
+            }
+          }
+        }
+      },
       "gpt-6-luna": {
         "id": "gpt-6-luna",
         "canonical_model_id": "openai/gpt-6-luna",
@@ -3509,9 +4175,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.2088,
-          "output": 0.4176,
-          "cache_read": 0.0174
+          "input": 0.885312,
+          "output": 1.770624,
+          "cache_read": 0.073776
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -3547,7 +4213,8 @@
         "cost": {
           "input": 0,
           "output": 0
-        }
+        },
+        "status": "deprecated"
       },
       "minimax/minimax-m3": {
         "id": "minimax/minimax-m3",
@@ -3622,8 +4289,8 @@
           "output": 235929
         },
         "cost": {
-          "input": 0.15,
-          "output": 1,
+          "input": 0.1,
+          "output": 0.95,
           "cache_read": 0.05
         }
       },
@@ -3878,9 +4545,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.62,
-          "output": 2.42,
-          "cache_read": 0.14
+          "input": 0.0341,
+          "output": 7,
+          "cache_read": 0.033
         }
       },
       "z-ai/glm-5.3": {
@@ -3921,7 +4588,7 @@
         },
         "cost": {
           "input": 0.079,
-          "output": 4.8,
+          "output": 1.4,
           "cache_read": 0.078
         }
       },
@@ -3961,12 +4628,738 @@
         },
         "limit": {
           "context": 1048576,
+          "output": 943717
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.5,
+          "cache_read": 0.03
+        }
+      }
+    },
+    "orcarouter": {
+      "anthropic/claude-opus-5": {
+        "id": "anthropic/claude-opus-5",
+        "canonical_model_id": "anthropic/claude-opus-5",
+        "name": "Claude Opus 5",
+        "description": "Strongest Claude Opus model for coding, agents, and professional work",
+        "family": "claude-opus",
+        "knowledge": "2026-05",
+        "release_date": "2026-07-24",
+        "last_updated": "2026-07-24",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cache_read": 0.5,
+          "cache_write": 10
+        }
+      },
+      "anthropic/claude-sonnet-5": {
+        "id": "anthropic/claude-sonnet-5",
+        "canonical_model_id": "anthropic/claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "description": "Everyday Claude agent model for coding, planning, browsing, and general work",
+        "family": "claude-sonnet",
+        "knowledge": "2026-01-31",
+        "release_date": "2026-06-30",
+        "last_updated": "2026-06-30",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2.5
+        }
+      },
+      "deepseek/deepseek-v4-flash-0731": {
+        "id": "deepseek/deepseek-v4-flash-0731",
+        "canonical_model_id": "deepseek/deepseek-v4-flash-0731",
+        "name": "DeepSeek V4 Flash 0731",
+        "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
+        "family": "deepseek-flash",
+        "knowledge": "2025-05",
+        "release_date": "2026-07-31",
+        "last_updated": "2026-07-31",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.22,
+          "output": 0.66,
+          "cache_read": 0.007
+        }
+      },
+      "deepseek/deepseek-v4-pro-0813": {
+        "id": "deepseek/deepseek-v4-pro-0813",
+        "canonical_model_id": "deepseek/deepseek-v4-pro-0813",
+        "name": "DeepSeek V4 Pro 0813",
+        "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
+        "family": "deepseek-thinking",
+        "release_date": "2026-08-13",
+        "last_updated": "2026-08-22",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "cost": {
+          "input": 0.66,
+          "output": 1.98,
+          "cache_read": 0.022
+        }
+      },
+      "google/gemini-flash-latest": {
+        "id": "google/gemini-flash-latest",
+        "canonical_model_id": "google/gemini-flash-latest",
+        "name": "Gemini Flash Latest",
+        "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+        "family": "gemini-flash",
+        "knowledge": "2026-03",
+        "release_date": "2026-08-13",
+        "last_updated": "2026-08-13",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.5,
+          "output": 3,
+          "cache_read": 0.1
+        }
+      },
+      "grok/grok-4.6": {
+        "id": "grok/grok-4.6",
+        "canonical_model_id": "xai/grok-4.6",
+        "name": "Grok 4.6",
+        "description": "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
+        "family": "grok",
+        "knowledge": "2026-02-01",
+        "release_date": "2026-08-12",
+        "last_updated": "2026-08-12",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 500000,
+          "output": 500000
+        },
+        "cost": {
+          "input": 2,
+          "output": 6,
+          "cache_read": 0.5,
+          "tiers": [
+            {
+              "input": 4,
+              "output": 12,
+              "cache_read": 1,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 4,
+            "output": 12,
+            "cache_read": 1
+          }
+        }
+      },
+      "kimi/kimi-k3": {
+        "id": "kimi/kimi-k3",
+        "canonical_model_id": "moonshotai/kimi-k3",
+        "name": "Kimi K3",
+        "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
+        "family": "kimi-k3",
+        "release_date": "2026-07-16",
+        "last_updated": "2026-07-16",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
           "output": 131072
         },
         "cost": {
-          "input": 0.0341,
-          "output": 0.4182,
-          "cache_read": 0.0109
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.3
+        }
+      },
+      "meta/muse-spark-1.2": {
+        "id": "meta/muse-spark-1.2",
+        "canonical_model_id": "meta/muse-spark-1.2",
+        "name": "Muse Spark 1.2",
+        "description": "Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1 with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows.",
+        "family": "muse",
+        "release_date": "2026-08-05",
+        "last_updated": "2026-08-05",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 1.25,
+          "output": 4.25,
+          "cache_read": 0.15
+        }
+      },
+      "openai/gpt-5.6-sol": {
+        "id": "openai/gpt-5.6-sol",
+        "canonical_model_id": "openai/gpt-5.6-sol",
+        "name": "GPT-5.6 Sol",
+        "description": "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows",
+        "family": "gpt-sol",
+        "knowledge": "2026-02-16",
+        "release_date": "2026-07-09",
+        "last_updated": "2026-07-09",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 4,
+          "output": 20,
+          "cache_read": 0.4,
+          "cache_write": 5,
+          "tiers": [
+            {
+              "input": 8,
+              "output": 30,
+              "cache_read": 0.8,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 8,
+            "output": 30,
+            "cache_read": 0.8
+          }
+        }
+      },
+      "orcarouter/free": {
+        "id": "orcarouter/free",
+        "name": "OrcaRouter Free",
+        "description": "Built-in router over the free tier that scores each request's difficulty and sends light work to the smaller free model and harder work to the stronger one. Priced at zero and never falls back to a paid model.",
+        "family": "auto",
+        "release_date": "2026-08-27",
+        "last_updated": "2026-08-27",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 65536,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0,
+          "output": 0
+        }
+      },
+      "qwen/qwen3.8-27b": {
+        "id": "qwen/qwen3.8-27b",
+        "canonical_model_id": "alibaba/qwen3.8-27b",
+        "name": "Qwen3.8 27B",
+        "description": "Dense 27B vision-language model for coding, agent tasks, and image and video understanding",
+        "family": "qwen",
+        "release_date": "2026-08-14",
+        "last_updated": "2026-08-14",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 262144,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0.33,
+          "output": 2.4
+        }
+      },
+      "qwen/qwen3.8-max": {
+        "id": "qwen/qwen3.8-max",
+        "canonical_model_id": "alibaba/qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "description": "2.4-trillion-parameter MoE flagship for coding, professional work, multimodal understanding, and long-horizon agentic workflows",
+        "family": "qwen",
+        "release_date": "2026-08-03",
+        "last_updated": "2026-08-03",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "xhigh"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 0,
+            "max": 262144
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 2,
+          "output": 6,
+          "cache_read": 0.25,
+          "cache_write": 2.5
+        }
+      },
+      "tencent/hy3": {
+        "id": "tencent/hy3",
+        "canonical_model_id": "tencent/hy3",
+        "name": "Hy3",
+        "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
+        "family": "Hy",
+        "release_date": "2026-07-06",
+        "last_updated": "2026-07-06",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 256000,
+          "input": 192000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 0.18,
+          "output": 0.59,
+          "cache_read": 0.059
+        }
+      },
+      "z-ai/glm-5.3": {
+        "id": "z-ai/glm-5.3",
+        "canonical_model_id": "zhipuai/glm-5.3",
+        "name": "GLM-5.3",
+        "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+        "family": "glm",
+        "release_date": "2026-08-14",
+        "last_updated": "2026-08-14",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 1.26,
+          "output": 3.96,
+          "cache_read": 0.234
+        }
+      },
+      "z-ai/glm-5.3-flash": {
+        "id": "z-ai/glm-5.3-flash",
+        "canonical_model_id": "zhipuai/glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
+        "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
+        "family": "glm-flash",
+        "release_date": "2026-08-26",
+        "last_updated": "2026-08-26",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.5,
+          "cache_read": 0.03
         }
       }
     },
@@ -4061,11 +5454,13 @@
     "stepfun": {
       "step-3.5-flash": {
         "id": "step-3.5-flash",
+        "canonical_model_id": "stepfun/step-3.5-flash",
         "name": "Step 3.5 Flash",
         "description": "StepFun flash lane for quick multimodal reasoning and coding assistance",
+        "family": "step",
         "knowledge": "2025-01",
         "release_date": "2026-01-29",
-        "last_updated": "2026-06-15",
+        "last_updated": "2026-02-13",
         "attachment": false,
         "reasoning": true,
         "reasoning_options": [
@@ -4081,6 +5476,7 @@
           "field": "reasoning_content"
         },
         "tool_call": true,
+        "structured_output": true,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -4097,15 +5493,17 @@
           "output": 256000
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.3,
-          "cache_read": 0.02
+          "input": 0.10461,
+          "output": 0.31384,
+          "cache_read": 0.02092
         }
       },
       "step-3.5-flash-2603": {
         "id": "step-3.5-flash-2603",
+        "canonical_model_id": "stepfun/step-3.5-flash-2603",
         "name": "Step 3.5 Flash 2603",
         "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
+        "family": "step",
         "knowledge": "2025-01",
         "release_date": "2026-04-02",
         "last_updated": "2026-04-02",
@@ -4124,6 +5522,7 @@
           "field": "reasoning_content"
         },
         "tool_call": true,
+        "structured_output": true,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -4140,9 +5539,9 @@
           "output": 256000
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.3,
-          "cache_read": 0.02
+          "input": 0.10461,
+          "output": 0.31384,
+          "cache_read": 0.02092
         }
       },
       "step-3.7-flash": {
@@ -4152,7 +5551,7 @@
         "description": "Newer StepFun flash model for faster agents, coding, and multimodal prompts",
         "knowledge": "2026-03-01",
         "release_date": "2026-05-29",
-        "last_updated": "2026-06-29",
+        "last_updated": "2026-05-29",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -4169,6 +5568,7 @@
           "field": "reasoning_content"
         },
         "tool_call": true,
+        "structured_output": true,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -4187,9 +5587,9 @@
           "output": 256000
         },
         "cost": {
-          "input": 0.185,
-          "output": 1.11,
-          "cache_read": 0.037
+          "input": 0.20175,
+          "output": 1.21052,
+          "cache_read": 0.04035
         }
       },
       "step-5-preview": {
@@ -4216,7 +5616,8 @@
         },
         "tool_call": true,
         "structured_output": true,
-        "open_weights": false,
+        "temperature": true,
+        "open_weights": true,
         "modalities": {
           "input": [
             "text",
@@ -4233,9 +5634,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.959,
-          "output": 2.741,
-          "cache_read": 0.048
+          "input": 1.04613,
+          "output": 2.98895,
+          "cache_read": 0.10461
         }
       }
     },
@@ -4256,7 +5657,8 @@
               "none",
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ]
           }
         ],
@@ -4316,7 +5718,8 @@
             "values": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ]
           }
         ],
@@ -4488,6 +5891,7 @@
     "xiaomi": {
       "mimo-v2.6-flash": {
         "id": "mimo-v2.6-flash",
+        "canonical_model_id": "xiaomi/mimo-v2.6-flash",
         "name": "MiMo-V2.6-Flash",
         "description": "MiMo Flash model for multimodal coding agents and long-context automation",
         "family": "mimo",
@@ -4504,6 +5908,7 @@
           "field": "reasoning_content"
         },
         "tool_call": true,
+        "structured_output": true,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -4529,6 +5934,7 @@
       },
       "mimo-v2.6-pro": {
         "id": "mimo-v2.6-pro",
+        "canonical_model_id": "xiaomi/mimo-v2.6-pro",
         "name": "MiMo-V2.6-Pro",
         "description": "MiMo Pro model for multimodal coding agents and long-context automation",
         "family": "mimo",
@@ -4545,6 +5951,7 @@
           "field": "reasoning_content"
         },
         "tool_call": true,
+        "structured_output": true,
         "temperature": true,
         "open_weights": true,
         "modalities": {
@@ -4572,6 +5979,7 @@
     "zai": {
       "glm-5-turbo": {
         "id": "glm-5-turbo",
+        "canonical_model_id": "zhipuai/glm-5-turbo",
         "name": "GLM-5-Turbo",
         "description": "Faster GLM-5 lane for coding agents that need lower latency",
         "family": "glm",
@@ -4662,6 +6070,9 @@
         "attachment": false,
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -4788,55 +6199,6 @@
           "input": 0.15,
           "output": 0.5,
           "cache_read": 0.03,
-          "cache_write": 0
-        }
-      },
-      "glm-5.3-flashx": {
-        "id": "glm-5.3-flashx",
-        "canonical_model_id": "zhipuai/glm-5.3-flash",
-        "name": "GLM-5.3-FlashX",
-        "description": "High-speed GLM-5.3-Flash serving option for coding and agent workflows",
-        "family": "glm-flash",
-        "release_date": "2026-09-18",
-        "last_updated": "2026-09-18",
-        "attachment": true,
-        "reasoning": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "low",
-              "high",
-              "max"
-            ]
-          }
-        ],
-        "interleaved": {
-          "field": "reasoning_content"
-        },
-        "tool_call": true,
-        "structured_output": true,
-        "temperature": true,
-        "open_weights": true,
-        "modalities": {
-          "input": [
-            "text",
-            "image",
-            "video",
-            "pdf"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "limit": {
-          "context": 1000000,
-          "output": 131072
-        },
-        "cost": {
-          "input": 0.37,
-          "output": 1.25,
-          "cache_read": 0.075,
           "cache_write": 0
         }
       }

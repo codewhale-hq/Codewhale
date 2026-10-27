@@ -10,11 +10,12 @@
 //! `Rlm` / `RlmBatch` requests it submits an admitted Core turn at depth-1.
 //! Python and its persistent session never retain this borrowed dispatcher.
 
-use crate::repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use codewhale_models::Usage;
+use codewhale_repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use futures_util::future::join_all;
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(test)]
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -248,6 +249,13 @@ impl RlmUsageAccumulator {
     }
 }
 
+pub(crate) async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// A dispatcher borrowed by one Python round. Persistent kernels never own
 /// this caller, its services or an Engine. All nested work ends with this borrow.
 pub(crate) struct RlmBridge<'call> {
@@ -255,8 +263,7 @@ pub(crate) struct RlmBridge<'call> {
     depth_remaining: u32,
     usage: RlmUsageAccumulator,
     events: Option<tokio::sync::mpsc::Sender<crate::core::events::Event>>,
-    deadline: tokio::time::Instant,
-    query_timeout: Duration,
+    deadline: Option<tokio::time::Instant>,
     gate: Option<crate::tools::codemode::NestedCallGate>,
 }
 
@@ -264,20 +271,13 @@ impl<'call> RlmBridge<'call> {
     pub(crate) fn new(
         caller: &'call crate::core::engine::rlm_host::CapturedRlmCaller,
         depth_remaining: u32,
-        query_timeout: Duration,
     ) -> Self {
-        Self::with_usage_accumulator(
-            caller,
-            depth_remaining,
-            query_timeout,
-            RlmUsageAccumulator::new(),
-        )
+        Self::with_usage_accumulator(caller, depth_remaining, RlmUsageAccumulator::new())
     }
 
     pub(crate) fn with_usage_accumulator(
         caller: &'call crate::core::engine::rlm_host::CapturedRlmCaller,
         depth_remaining: u32,
-        query_timeout: Duration,
         usage: RlmUsageAccumulator,
     ) -> Self {
         Self {
@@ -286,7 +286,6 @@ impl<'call> RlmBridge<'call> {
             usage,
             events: None,
             deadline: caller.deadline(),
-            query_timeout: query_timeout.clamp(Duration::from_secs(1), Duration::from_secs(600)),
             gate: None,
         }
     }
@@ -300,13 +299,11 @@ impl<'call> RlmBridge<'call> {
     }
 
     pub(crate) fn with_deadline(mut self, deadline: Option<tokio::time::Instant>) -> Self {
-        if let Some(deadline) = deadline {
-            self.deadline = self.deadline.min(deadline);
-        }
+        self.deadline = self.deadline.into_iter().chain(deadline).min();
         self
     }
 
-    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+    pub(crate) fn deadline(&self) -> Option<tokio::time::Instant> {
         self.deadline
     }
 
@@ -336,9 +333,7 @@ impl<'call> RlmBridge<'call> {
                 mode,
                 max_tokens,
                 task_instructions: system,
-                deadline: self
-                    .deadline
-                    .min(tokio::time::Instant::now() + self.query_timeout),
+                deadline: self.deadline,
                 gate: self.gate.clone(),
                 events: self.events.clone(),
                 usage: self.usage.clone(),

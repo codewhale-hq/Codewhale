@@ -1,6 +1,6 @@
 //! `notify` tool — model-callable desktop notification (#1322).
 //!
-//! Delivered by the terminal host through `crate::host_terminal` (OSC 9
+//! Delivered by the terminal host through `codewhale_runtime::host_terminal` (OSC 9
 //! for known capable terminals, BEL fallback on macOS / Linux, `MessageBeep`
 //! on Windows when explicitly opted in). The model decides when to fire —
 //! the tool is intended for "long task done, come back" beats and
@@ -97,7 +97,7 @@ impl ToolSpec for NotifyTool {
         // control-byte-stripped, redacted) and applies the user's method,
         // gate and attention policy. Threshold zero: the model has already
         // decided this is the moment.
-        let receipt = crate::host_terminal::host()
+        let receipt = codewhale_runtime::host_terminal::host()
             .notify_model(title, if body.is_empty() { None } else { Some(body) });
 
         Ok(ToolResult::success(format!("{receipt}: {title}")))

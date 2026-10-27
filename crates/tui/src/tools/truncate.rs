@@ -33,6 +33,7 @@
 //! it exposes a calm expand affordance and the tool-details shortcut opens the
 //! full retained output.
 
+use codewhale_tools::names::SPILLOVER_RECOVERY_HINT;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -93,7 +94,7 @@ pub fn spillover_root() -> Option<PathBuf> {
         return Some(root);
     }
 
-    let home = crate::config::effective_home_dir()?;
+    let home = codewhale_paths::user_home()?;
     let primary = home.join(".codewhale").join(SPILLOVER_DIR_NAME);
     let legacy = home.join(".deepseek").join(SPILLOVER_DIR_NAME);
     if primary.exists() || !legacy.exists() {
@@ -145,13 +146,13 @@ pub(crate) fn publish_legacy_spillover_ownership(
     let ownership = LegacySpilloverOwnership {
         schema_version: LEGACY_SPILLOVER_OWNER_SCHEMA_VERSION,
         origin_session: session_id.to_string(),
-        digest: crate::hashing::sha256_hex(bytes),
+        digest: codewhale_runtime::hashing::sha256_hex(bytes),
         size_bytes: bytes.len().try_into().unwrap_or(u64::MAX),
     };
     let sidecar = legacy_spillover_ownership_path(payload_path);
     let encoded = serde_json::to_vec_pretty(&ownership)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    crate::utils::write_atomic(&sidecar, &encoded)?;
+    codewhale_util::utils::write_atomic(&sidecar, &encoded)?;
     Ok(sidecar)
 }
 
@@ -219,7 +220,7 @@ pub fn write_sha_spillover(sha: &str, content: &str) -> io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    crate::utils::write_atomic(&path, content.as_bytes())?;
+    codewhale_util::utils::write_atomic(&path, content.as_bytes())?;
     Ok(path)
 }
 
@@ -240,7 +241,7 @@ pub fn write_spillover(id: &str, content: &str) -> io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    crate::utils::write_atomic(&path, content.as_bytes())?;
+    codewhale_util::utils::write_atomic(&path, content.as_bytes())?;
     Ok(path)
 }
 
@@ -344,10 +345,6 @@ const HANDLE_ONLY_TAIL_BYTES: usize = 4 * 1024;
 /// the model cannot open the tool details view, so the model-facing footer
 /// carries the artifact path and a recovery instruction instead.
 pub const SPILLOVER_PREVIEW_HINT: &str = "view full output in the tool details view";
-
-/// Sentinel phrase the TUI matches on to recognise a current-format truncated
-/// preview. It must stay a literal substring of every footer variant.
-pub const SPILLOVER_RECOVERY_HINT: &str = "omitted range recovery:";
 
 /// Model-facing recovery instruction for a truncated tool result.
 ///
@@ -559,7 +556,7 @@ fn apply_spillover_inner(
         SPILLOVER_HEAD_BYTES,
         SPILLOVER_TAIL_BYTES,
     );
-    let digest = crate::hashing::sha256_hex(original_content.as_bytes());
+    let digest = codewhale_runtime::hashing::sha256_hex(original_content.as_bytes());
     let path_str = path.display().to_string();
 
     // Keep publishing the legacy ownership proof even though the model-facing
@@ -708,7 +705,7 @@ fn bound_unpersisted_output(result: &mut ToolResult, head_bytes: usize, tail_byt
     let omitted_lines = original[head_len..original_bytes - tail_len]
         .lines()
         .count();
-    let digest = crate::hashing::sha256_hex(original.as_bytes());
+    let digest = codewhale_runtime::hashing::sha256_hex(original.as_bytes());
     result.content = format!(
         "{head}\n\n{}\n\n…\n{tail}",
         preview_footer(omitted, omitted_lines, None, None)
@@ -816,7 +813,7 @@ pub(crate) fn preserve_full_output_for_model_context(
                 relative_path.clone(),
                 &result.content,
             );
-            let digest = crate::hashing::sha256_hex(result.content.as_bytes());
+            let digest = codewhale_runtime::hashing::sha256_hex(result.content.as_bytes());
             let obj = metadata_object_mut(result);
             stamp_artifact_metadata(obj, &absolute_path, &relative_path, &record);
             obj.insert("content_digest".into(), format!("sha256:{digest}").into());
@@ -1021,7 +1018,7 @@ fn apply_adaptive_evidence_inner(
 
     let artifact_id = crate::artifacts::artifact_id_for_tool_call(tool_id);
     let relative_path = crate::artifacts::session_artifact_relative_path(&artifact_id);
-    let digest = crate::hashing::sha256_hex(original.as_bytes());
+    let digest = codewhale_runtime::hashing::sha256_hex(original.as_bytes());
     let now_ms = unix_millis_now();
     let proposed_artifact = EvidenceArtifact {
         handle: artifact_id.clone(),
@@ -1250,7 +1247,7 @@ mod tests {
         let _guard = setup();
         let home = tempdir().unwrap();
         with_test_home(home.path(), || {
-            let provider = crate::config::ProviderKind::Deepseek;
+            let provider = codewhale_config::ProviderKind::Deepseek;
             let model = "deepseek-v3.2-128k";
             let budget =
                 crate::route_budget::route_inline_char_budget_for_route(provider, model, None);
@@ -1360,7 +1357,10 @@ mod tests {
         assert_eq!(metadata["fixture"], "preserved");
         assert_eq!(
             metadata["content_digest"],
-            format!("sha256:{}", crate::hashing::sha256_hex(original.as_bytes()))
+            format!(
+                "sha256:{}",
+                codewhale_runtime::hashing::sha256_hex(original.as_bytes())
+            )
         );
         assert!(metadata.get("artifact_id").is_none());
         assert!(metadata.get("spillover_path").is_none());
@@ -2244,7 +2244,7 @@ mod tests {
             // lane, so a turn artifact ref can carry a revision.
             assert_eq!(
                 metadata["artifact_digest"],
-                crate::hashing::sha256_hex(raw.as_bytes())
+                codewhale_runtime::hashing::sha256_hex(raw.as_bytes())
             );
             let artifact = tmp
                 .path()

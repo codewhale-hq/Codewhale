@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::hashing::sha256_hex;
+use codewhale_runtime::hashing::sha256_hex;
 
 fn derive_raw(prefix: &str, session_id: &str, discriminator: &str) -> String {
     let digest = sha256_hex(format!("{prefix}\u{1f}{session_id}\u{1f}{discriminator}"));

@@ -7,7 +7,7 @@ use super::review::{PrReviewPlan, ReviewOutput};
 use super::review_pr::GhPullRequest;
 use super::spec::{ToolContext, ToolError};
 use crate::extension_host::StockOperation;
-use crate::features::Feature;
+use codewhale_runtime::features::Feature;
 
 pub(crate) fn view_snapshot(view: &GhPullRequest) -> Value {
     json!({"title":view.title,"body":view.body,"base":view.base,"head":view.head,"url":view.url,"head_sha":view.head_sha,"base_sha":view.base_sha,"changed_files":view.changed_files})
@@ -128,7 +128,7 @@ pub(crate) async fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dependencies::ExternalTool;
+    use codewhale_dependencies::ExternalTool;
     #[tokio::test]
     async fn disabled_review_host_refuses_before_demand_or_provider() {
         let temp = tempfile::tempdir().unwrap();
@@ -163,7 +163,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manager = std::sync::Arc::new(crate::extension_host::ExtensionHostManager::new(
             crate::extension_host::ExtensionHostOptions {
-                runtime: crate::config::ExtensionHostRuntime::Node,
+                runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
                 node_override: Some(node),
                 root: Some(root.path().join("host")),
                 ..Default::default()
@@ -172,7 +172,7 @@ mod tests {
         let _manager =
             crate::extension_host::TestManagerGuard::install(std::sync::Arc::clone(&manager));
         let git = |args: &[&str]| {
-            let output = crate::dependencies::Git::command()
+            let output = codewhale_dependencies::Git::command()
                 .unwrap()
                 .args(args)
                 .current_dir(root.path())
@@ -255,7 +255,7 @@ mod tests {
             &plan.passes[0],
             root.path(),
         );
-        let mut flags = crate::features::Features::with_defaults();
+        let mut flags = codewhale_runtime::features::Features::with_defaults();
         flags.enable(Feature::ReviewHost);
         let context = ToolContext::new(root.path()).with_features(flags);
         let prompts = pr_prompts(7, &view, &plan, &context).await.unwrap();

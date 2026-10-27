@@ -55,9 +55,9 @@ env = ["DEEPSEEK_API_KEY"]
 default = "deepseek-flash"
 models = [
   { id = "deepseek-v4-pro", base_model = "deepseek/deepseek-v4-pro-0813" },
-  { id = "deepseek-v4-flash", base_model = "deepseek/deepseek-v4.1-flash" },
-  { id = "deepseek-v4-flash-vision-exp", base_model = "deepseek/deepseek-v4.1-flash" },
-  { id = "deepseek-flash", base_model = "deepseek/deepseek-v4.1-flash" },
+  { id = "deepseek-v4-flash", base_model = "deepseek/deepseek-v4.1-flash-1017" },
+  { id = "deepseek-v4-flash-vision-exp", base_model = "deepseek/deepseek-v4.1-flash-1017" },
+  { id = "deepseek-flash", base_model = "deepseek/deepseek-v4.1-flash-1017" },
 ]
 
 [[providers]]
@@ -216,6 +216,10 @@ models = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-5.3-codex",
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-6.1-sol",
 ]
 
 [[providers]]
@@ -224,7 +228,7 @@ name = "Anthropic"
 api = "https://api.anthropic.com"
 npm = "@ai-sdk/anthropic"
 env = ["ANTHROPIC_API_KEY"]
-default = "claude-sonnet-4-6"
+default = "claude-sonnet-5-5"
 models = [
   "claude-sonnet-4-6",
   "claude-opus-4-8",
@@ -354,12 +358,60 @@ name = "StepFun / StepFlash"
 api = "https://api.stepfun.ai/v1"
 npm = "@ai-sdk/openai-compatible"
 env = ["STEPFUN_API_KEY", "STEP_API_KEY"]
-default = "step-3.7-flash"
+default = "step-5-preview"
 models = [
   "step-3.5-flash",
   "step-3.5-flash-2603",
   "step-3.7-flash",
   "step-5-preview",
+]
+
+[[providers]]
+id = "google"
+name = "Google"
+api = "https://generativelanguage.googleapis.com/v1beta/openai/"
+npm = "@ai-sdk/google"
+env = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]
+default = "gemini-3.1-pro-preview"
+models = [
+  "gemini-4-argon",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
+]
+
+[[providers]]
+id = "orcarouter"
+name = "OrcaRouter"
+api = "https://api.orcarouter.ai/v1"
+npm = "@ai-sdk/openai-compatible"
+env = ["ORCAROUTER_API_KEY"]
+default = "deepseek/deepseek-v4.1-flash-1017"
+models = [
+  { id = "deepseek/deepseek-v4.1-flash-1017", curated = true },
+  "deepseek/deepseek-v4-pro-0813",
+  "deepseek/deepseek-v4-flash-0731",
+  "z-ai/glm-5.3",
+  "z-ai/glm-5.3-flash",
+  "qwen/qwen3.8-max",
+  "qwen/qwen3.8-27b",
+  "grok/grok-4.6",
+  "anthropic/claude-opus-5",
+  "anthropic/claude-sonnet-5",
+  "openai/gpt-5.6-sol",
+  "kimi/kimi-k3",
+  "meta/muse-spark-1.2",
+  "google/gemini-flash-latest",
+  "tencent/hy3",
+  "orcarouter/free",
 ]
 
 [[curated]]
@@ -427,3 +479,25 @@ open_weights = true
 modalities = { "input" = ["text"], "output" = ["text"] }
 limit = { "context" = 1000000, "output" = 384000 }
 cost = { "input" = 1.2, "output" = 1.2, "cache_read" = 0.6 }
+
+[[curated]]
+provider = "orcarouter"
+id = "deepseek/deepseek-v4.1-flash-1017"
+reason = "OrcaRouter's published feed stopped at 2026-08-27 and does not list this id, yet it is the shipped descriptor default. OrcaRouter publishes no price for it and marks up the sibling flash rows, so no USD row is asserted here. Metadata mirrors the same id under other providers in the 2026-10-23 upstream document. The row exists so the default survives an offline or past-TTL start."
+
+[curated.row]
+name = "DeepSeek V4.1 Flash 1017"
+family = "deepseek-flash"
+attachment = false
+reasoning = true
+reasoning_options = [{ "type" = "toggle" }, { "type" = "effort", "values" = ["low", "high", "max"] }]
+interleaved = { "field" = "reasoning_content" }
+tool_call = true
+structured_output = true
+temperature = true
+open_weights = true
+knowledge = "2025-05"
+release_date = "2026-10-17"
+last_updated = "2026-10-17"
+modalities = { "input" = ["text"], "output" = ["text"] }
+limit = { "context" = 1000000, "output" = 384000 }

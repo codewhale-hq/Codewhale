@@ -11,11 +11,12 @@ use codewhale_lane::LaneRegistry;
 use super::{
     BindingId, ChangeCtx, CompatPlanMetadata, CompatProjectionState, CompatTodoBinding, EdgeKind,
     IdempotencyKey, NodeKind, NodeState, OperationBinding, OperationIntent, OperationObservation,
-    OperationOwnerSnapshot, Provenance, ReasoningEffortTier, WorkActivityEvent, WorkEdge,
-    WorkEdgeId, WorkGraph, WorkGraphChange, WorkGraphSnapshot, WorkNode, WorkNodeId, WorkNodePatch,
+    OperationOwnerSnapshot, Provenance, WorkActivityEvent, WorkEdge, WorkEdgeId, WorkGraph,
+    WorkGraphChange, WorkGraphSnapshot, WorkNode, WorkNodeId, WorkNodePatch,
     external_identity_is_well_formed, fleet_task_owner_snapshot, import_legacy,
     lane_owner_snapshot, project_plan, project_todos, validate,
 };
+use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
 
 pub(crate) const ACTIVE_OPERATION_SUMMARY_START: &str =
     "<!-- codewhale:active-work-operations:start -->";
@@ -402,7 +403,7 @@ impl WorkRuntime {
         session_id: Option<&str>,
         requested: ReasoningEffortTier,
         effective: ReasoningEffortTier,
-        provider_kind: crate::config::ProviderKind,
+        provider_kind: codewhale_config::ProviderKind,
         provider: &str,
         endpoint_identity: Option<&str>,
         model: Option<&str>,
@@ -1594,9 +1595,9 @@ mod tests {
                 Some("session"),
                 ReasoningEffortTier::Low,
                 ReasoningEffortTier::High,
-                crate::config::ProviderKind::Moonshot,
+                codewhale_config::ProviderKind::Moonshot,
                 "moonshot",
-                Some(crate::config::DEFAULT_MOONSHOT_BASE_URL),
+                Some(codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL),
                 Some("kimi-k2.5"),
             ),
             Ok(Some(node_id.clone()))
@@ -1618,9 +1619,11 @@ mod tests {
             WorkActivityEvent::ReasoningEffortChanged {
                 requested: ReasoningEffortTier::Low,
                 effective: ReasoningEffortTier::High,
-                provider_kind: Some(crate::config::ProviderKind::Moonshot),
+                provider_kind: Some(codewhale_config::ProviderKind::Moonshot),
                 provider: "moonshot".to_string(),
-                endpoint_identity: Some(crate::config::DEFAULT_MOONSHOT_BASE_URL.to_string()),
+                endpoint_identity: Some(
+                    codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL.to_string()
+                ),
                 model: Some("kimi-k2.5".to_string()),
                 ts,
                 operation: Some(node_id.clone()),

@@ -38,17 +38,17 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
 };
 
-use crate::config::Config;
 use crate::fleet::profile::FleetProfileScope;
-use crate::fleet::role::public_role_label;
 use crate::tui::app::App;
 use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer_with_gutter, render_modal_surface, truncate_view_text,
 };
+use codewhale_agent_contract::role::public_role_label;
 use codewhale_localization::{MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::Config;
 
 const PROFILE_DIR: &str = ".codewhale/agents";
 
@@ -303,8 +303,7 @@ impl FleetSetupSnapshot {
             .fleet
             .as_ref()
             .map(|fleet| fleet.exec.max_spawn_depth)
-            .unwrap_or_else(|| codewhale_config::FleetExecConfig::default().max_spawn_depth)
-            .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING);
+            .unwrap_or_else(|| codewhale_config::FleetExecConfig::default().max_spawn_depth);
         let roster =
             crate::fleet::roster::FleetRoster::load(&config.fleet_config(), &app.workspace);
         let roster_members = roster
@@ -403,7 +402,7 @@ impl FleetSetupSnapshot {
 /// Callers derive a human-readable label from it for UI text.
 pub(crate) fn cross_provider_model_routes(
     config: &Config,
-    active: Option<&crate::config::ProviderIdentity>,
+    active: Option<&codewhale_runtime::config::ProviderIdentity>,
     health: &crate::provider_readiness::ProviderReadinessSnapshot,
 ) -> Vec<(
     String,
@@ -416,8 +415,10 @@ pub(crate) fn cross_provider_model_routes(
     };
     let mut routes = Vec::new();
     for identity in config.provider_identities() {
-        if identity.provider == crate::config::ProviderKind::Antigravity
-            || !crate::config::provider_is_configured_for_active(config, &identity, active)
+        if identity.provider == codewhale_config::ProviderKind::Antigravity
+            || !crate::provider_readiness::provider_is_configured_for_active(
+                config, &identity, active,
+            )
         {
             continue;
         }
@@ -433,8 +434,8 @@ fn append_provider_model_routes(
         crate::provider_readiness::ResolvedProviderReadiness,
     )>,
     config: &Config,
-    active: &crate::config::ProviderIdentity,
-    identity: &crate::config::ProviderIdentity,
+    active: &codewhale_runtime::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     health: &crate::provider_readiness::ProviderReadinessSnapshot,
 ) {
     let mut models = Vec::new();
@@ -496,7 +497,7 @@ pub(super) fn route_matches_query(
 }
 
 pub(super) fn provider_display_label(provider_id: &str) -> String {
-    crate::config::ProviderKind::parse(provider_id)
+    codewhale_config::ProviderKind::parse(provider_id)
         .filter(|provider| provider.as_str() == provider_id)
         .map(|provider| provider.provider().display_name().to_string())
         .unwrap_or_else(|| provider_id.to_string())
@@ -1760,7 +1761,8 @@ impl FleetSetupView {
                         // only this exact provider/model. Hand off to the host
                         // so rendering stays I/O-free.
                         if let Some((provider_id, model)) = self.model_routes.get(idx)
-                            && let Some(provider) = crate::config::ProviderKind::parse(provider_id)
+                            && let Some(provider) =
+                                codewhale_config::ProviderKind::parse(provider_id)
                             && crate::tui::provider_picker::external_consent_target_for_provider(
                                 provider,
                             )
@@ -3275,7 +3277,7 @@ approval_required = true
             known.description
         );
         assert!(
-            known.description.contains("1M ctx"),
+            known.description.contains("1.05M ctx"),
             "{}",
             known.description
         );
@@ -4598,23 +4600,26 @@ approval_required = true
 
     #[test]
     fn fleet_includes_saved_model_outside_bundled_catalog() {
-        let providers = crate::config::ProvidersConfig {
-            openrouter: crate::config::ProviderConfig {
+        let providers = codewhale_runtime::config::ProvidersConfig {
+            openrouter: codewhale_runtime::config::ProviderConfig {
                 api_key: Some("openrouter-test-key".to_string()),
                 model: Some("acme/private-preview".to_string()),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(providers),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let __cw_config_init_0_1 = Some(providers);
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
 
         let routes = cross_provider_model_routes(
             &config,
-            Some(&(config).test_identity_for_kind(crate::config::ProviderKind::Openrouter)),
+            Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Openrouter)),
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
@@ -4642,7 +4647,7 @@ approval_required = true
         ] {
             custom.insert(
                 name.to_string(),
-                crate::config::ProviderConfig {
+                codewhale_runtime::config::ProviderConfig {
                     kind: Some("openai-compatible".to_string()),
                     base_url: Some(base_url.to_string()),
                     model: Some(model.to_string()),
@@ -4651,17 +4656,20 @@ approval_required = true
                 },
             );
         }
-        let config = Config {
-            provider: Some("custom-a".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("custom-a".to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let routes = cross_provider_model_routes(
             &config,
-            Some(&(config).test_identity_for_kind(crate::config::ProviderKind::Custom)),
+            Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Custom)),
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
         assert!(
@@ -4701,10 +4709,13 @@ approval_required = true
 
     #[test]
     fn fleet_routes_keep_legacy_literal_custom_without_named_tables() {
-        let config = Config {
-            provider: Some("custom".to_string()),
-            default_text_model: Some("legacy-custom-model".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_2_0 = Some("custom".to_string());
+            let __cw_config_init_2_1 = Some("legacy-custom-model".to_string());
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.default_text_model = __cw_config_init_2_1;
+            __cw_config_init_2_value
         }
         .with_legacy_root(
             Some("local-test-key".to_string()),
@@ -4713,7 +4724,7 @@ approval_required = true
 
         let routes = cross_provider_model_routes(
             &config,
-            Some(&(config).test_identity_for_kind(crate::config::ProviderKind::Custom)),
+            Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Custom)),
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
@@ -5108,10 +5119,10 @@ approval_required = true
             .canonicalize()
             .expect("canonical private fixture home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &canonical_home);
-        let mut config = crate::config::Config::default();
-        crate::oauth::install_test_chatgpt_registration(&mut config)
+        let mut config = codewhale_runtime::config::Config::default();
+        codewhale_runtime::oauth::install_test_chatgpt_registration(&mut config)
             .expect("owned ChatGPT registration");
-        crate::codex_model_cache::install_test_chatgpt_roster(
+        codewhale_runtime::codex_model_roster::install_test_chatgpt_roster(
             &config,
             &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
         )
@@ -5119,7 +5130,7 @@ approval_required = true
 
         let routes = cross_provider_model_routes(
             &config,
-            Some(&(config).test_identity_for_kind(crate::config::ProviderKind::Moonshot)),
+            Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Moonshot)),
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
@@ -5142,9 +5153,9 @@ approval_required = true
     fn fleet_setup_includes_xai_grok_routes_with_dormant_consent() {
         let _env = crate::test_support::lock_test_env();
         let grok_home = tempfile::tempdir().expect("Grok home");
-        let mut config = crate::config::Config::default();
-        config.providers = Some(crate::config::ProvidersConfig {
-            xai: crate::config::ProviderConfig {
+        let mut config = codewhale_runtime::config::Config::default();
+        config.providers = Some(codewhale_runtime::config::ProvidersConfig {
+            xai: codewhale_runtime::config::ProviderConfig {
                 auth_mode: Some("oauth".to_string()),
                 external_credentials: Some(
                     codewhale_config::ExternalCredentialConsentToml::read_only(
@@ -5160,7 +5171,7 @@ approval_required = true
 
         let routes = cross_provider_model_routes(
             &config,
-            Some(&(config).test_identity_for_kind(crate::config::ProviderKind::Moonshot)),
+            Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Moonshot)),
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 

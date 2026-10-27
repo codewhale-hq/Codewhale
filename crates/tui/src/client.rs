@@ -4,8 +4,10 @@
 //! surface; `/chat/completions` is the common primary endpoint.
 
 use std::collections::HashMap;
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -31,23 +33,25 @@ use codewhale_config::route::{
 };
 use codewhale_config::{auth_mode_disables_api_key, is_upstream_auth_header};
 
-use crate::config::{
-    Config, ProviderIdentity, ProviderKind, RetryPolicy, validate_route,
-    wire_model_for_provider_route,
-};
 use crate::llm_client::{
-    LlmClient, LlmError, RetryConfig as LlmRetryConfig, extract_retry_after,
-    retry_delay_from_error_body, sanitize_http_error_body, with_retry,
+    LlmClient, LlmError, OutboundWireObservation, RetryConfig as LlmRetryConfig,
+    ToolWireMeasurement, extract_retry_after, observe_outbound_wire, retry_delay_from_error_body,
+    sanitize_http_error_body, with_retry,
+};
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::{
+    Config, ProviderIdentity, RetryPolicy, validate_route, wire_model_for_provider_route,
 };
 #[cfg(test)]
 #[path = "client/catalog_tests.rs"]
 mod catalog_tests;
 
-use crate::logging;
 use codewhale_models::Role;
 use codewhale_models::{
     ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt, Usage,
 };
+use codewhale_runtime::logging;
+use codewhale_secrets::sanitize::redact_url_for_display;
 
 /// Every provider request that can feed the interactive TUI's attached CWC run
 /// takes a shared permit at this lowest common dispatch seam. Runtime Chat holds
@@ -55,31 +59,31 @@ use codewhale_models::{
 /// acknowledgement. This covers ordinary turns, auto-route classification,
 /// advisor calls, detached subagents, compaction, purge, and streaming without
 /// serializing independent RuntimeThreadManager stores.
-#[cfg(not(test))]
+#[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 static RUNTIME_CHAT_INFERENCE_GATE: OnceLock<Arc<RwLock<()>>> = OnceLock::new();
 
 /// Unit tests run many independent Tokio runtimes in one process. Keying the
 /// otherwise-identical gate by runtime keeps unrelated libtest cases from
 /// manufacturing contention while preserving exact read/write behavior among
 /// tasks on the same current-thread or multi-thread runtime.
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 static RUNTIME_CHAT_INFERENCE_TEST_GATES: OnceLock<
     StdMutex<HashMap<RuntimeChatInferenceTestScope, std::sync::Weak<RwLock<()>>>>,
 > = OnceLock::new();
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RuntimeChatInferenceTestScope {
     Runtime(tokio::runtime::Id),
     Thread(std::thread::ThreadId),
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 fn runtime_chat_inference_gate() -> Arc<RwLock<()>> {
     Arc::clone(RUNTIME_CHAT_INFERENCE_GATE.get_or_init(|| Arc::new(RwLock::new(()))))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 fn runtime_chat_inference_gate() -> Arc<RwLock<()>> {
     let scope = tokio::runtime::Handle::try_current()
         .map(|handle| RuntimeChatInferenceTestScope::Runtime(handle.id()))
@@ -106,7 +110,7 @@ pub(crate) struct RemoteControlInferencePermit {
     _gate: OwnedRwLockReadGuard<()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
 pub(crate) async fn acquire_runtime_chat_inference_ownership() -> RuntimeChatInferenceOwnership {
     let gate = runtime_chat_inference_gate().write_owned().await;
     RuntimeChatInferenceOwnership { _gate: gate }
@@ -124,98 +128,6 @@ pub(crate) fn try_acquire_runtime_chat_inference_ownership() -> Option<RuntimeCh
 pub(crate) async fn acquire_remote_control_inference_participant() -> RemoteControlInferencePermit {
     let gate = runtime_chat_inference_gate().read_owned().await;
     RemoteControlInferencePermit { _gate: gate }
-}
-
-pub(super) fn to_api_tool_name(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            out.push(ch);
-        } else if ch == '-' {
-            out.push_str("--");
-        } else {
-            out.push_str("-x");
-            out.push_str(&format!("{:06X}", ch as u32));
-            out.push('-');
-        }
-    }
-    out
-}
-
-pub(super) fn from_api_tool_name(name: &str) -> String {
-    let mut out = String::new();
-    let mut iter = name.chars().peekable();
-    while let Some(ch) = iter.next() {
-        if ch != '-' {
-            out.push(ch);
-            continue;
-        }
-        if let Some('-') = iter.peek().copied() {
-            iter.next();
-            out.push('-');
-            continue;
-        }
-        if iter.peek().copied() == Some('x') {
-            iter.next();
-            let mut hex = String::new();
-            for _ in 0..6 {
-                if let Some(h) = iter.next() {
-                    hex.push(h);
-                } else {
-                    break;
-                }
-            }
-            // Only decode if we got exactly 6 hex digits (matching encoder output).
-            // Fewer digits means a truncated/malformed sequence — pass through as-is.
-            if hex.len() == 6
-                && let Ok(code) = u32::from_str_radix(&hex, 16)
-                && let Some(decoded) = std::char::from_u32(code)
-            {
-                if let Some('-') = iter.peek().copied() {
-                    iter.next();
-                }
-                out.push(decoded);
-                continue;
-            }
-            out.push('-');
-            out.push('x');
-            out.push_str(&hex);
-            continue;
-        }
-        out.push('-');
-    }
-
-    // Second pass: decode bare hex escapes (e.g. `x00002E`) that the model
-    // may produce when it mangles the `-x00002E-` delimiter form.  Only
-    // decode when the resulting character is one that `to_api_tool_name`
-    // would have encoded (not alphanumeric, not `_`, not `-`).
-    decode_bare_hex_escapes(&out)
-}
-
-/// Decode bare `x[0-9A-Fa-f]{6}` sequences (optionally followed by `-`)
-/// that survive the standard delimiter-based pass.  This handles cases
-/// where the model strips or replaces the leading `-` of `-x00002E-`.
-pub(super) fn decode_bare_hex_escapes(input: &str) -> String {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"x([0-9A-Fa-f]{6})-?").unwrap());
-
-    let result = re.replace_all(input, |caps: &regex::Captures| {
-        let hex = &caps[1];
-        if let Ok(code) = u32::from_str_radix(hex, 16)
-            && let Some(decoded) = std::char::from_u32(code)
-        {
-            // Only decode characters that to_api_tool_name would have encoded
-            if !decoded.is_ascii_alphanumeric() && decoded != '_' && decoded != '-' {
-                return decoded.to_string();
-            }
-        }
-        // Not a character we'd encode — leave as-is
-        caps[0].to_string()
-    });
-    result.into_owned()
 }
 
 // === Types ===
@@ -287,9 +199,10 @@ pub struct CodewhaleClient {
     /// an account label only, never token material.
     subscription_limit_guidance: Option<String>,
     /// Reviewed runtime authority and OAuth descriptor travel with the frozen route.
-    plugin_provider: Option<Box<crate::config::ProviderConfig>>,
+    plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
     plugin_oauth_read_only: bool,
+    session_provider_keys_only: bool,
     claude_oauth_config: Option<Box<Config>>,
     /// Exact configured credential values removed from model-bound tool
     /// results. Structural redaction handles config/JSON assignments, while
@@ -427,9 +340,6 @@ fn non_streaming_request_envelope() -> Duration {
     NON_STREAMING_REQUEST_ENVELOPE
 }
 
-pub(super) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 1024 * 1024; // 1 MB
-pub(super) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
-pub(super) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -621,31 +531,6 @@ fn auth_fix_hint(route: &str, key_source: &str) -> String {
     }
 }
 
-fn buffer_pool() -> &'static StdMutex<Vec<Vec<u8>>> {
-    static POOL: OnceLock<StdMutex<Vec<Vec<u8>>>> = OnceLock::new();
-    POOL.get_or_init(|| StdMutex::new(Vec::new()))
-}
-
-fn acquire_stream_buffer() -> Vec<u8> {
-    if let Ok(mut pool) = buffer_pool().lock() {
-        pool.pop().unwrap_or_else(|| Vec::with_capacity(8192))
-    } else {
-        Vec::with_capacity(8192)
-    }
-}
-
-fn release_stream_buffer(mut buf: Vec<u8>) {
-    buf.clear();
-    if buf.capacity() > 256 * 1024 {
-        buf.shrink_to(256 * 1024);
-    }
-    if let Ok(mut pool) = buffer_pool().lock()
-        && pool.len() < 8
-    {
-        pool.push(buf);
-    }
-}
-
 impl Clone for CodewhaleClient {
     fn clone(&self) -> Self {
         Self {
@@ -657,6 +542,7 @@ impl Clone for CodewhaleClient {
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
+            session_provider_keys_only: self.session_provider_keys_only,
             claude_oauth_config: self.claude_oauth_config.clone(),
             model_bound_secret_values: Arc::clone(&self.model_bound_secret_values),
             catalog_error_secret_values: Arc::clone(&self.catalog_error_secret_values),
@@ -764,6 +650,9 @@ pub(crate) fn configured_model_bound_secret_values(
 ) -> Vec<String> {
     let mut values = Vec::new();
     push_model_bound_secret(&mut values, Some(active_api_key));
+    for (_, credential) in config.session_provider_keys.read().values() {
+        push_model_bound_secret(&mut values, Some(credential.expose_secret()));
+    }
     push_model_bound_secret(&mut values, config.sandbox_api_key.as_deref());
     push_model_bound_secret(
         &mut values,
@@ -966,9 +855,6 @@ pub(crate) fn redact_json_model_bound_text(
 
 // === Helpers ===
 
-/// Maximum bytes to read from an error response body (64 KB).
-pub(super) const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
-
 /// How much of a provider's HTTP error body may be shown to the user.
 ///
 /// The catalog probe is the one request that contacts a `base_url` the user
@@ -993,8 +879,8 @@ pub(super) enum ErrorBodyDisclosure {
 /// the connection and never answers hangs model-list, catalog refresh, and
 /// health checks forever (ops R4).
 pub(super) const NON_STREAMING_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-const PROVIDER_CATALOG_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-const PROVIDER_CATALOG_MAX_ROWS: usize = 10_000;
+pub(crate) const PROVIDER_CATALOG_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const PROVIDER_CATALOG_MAX_ROWS: usize = 10_000;
 
 #[derive(Clone, Copy)]
 struct ModelsFetchLimits {
@@ -1178,23 +1064,7 @@ where
     Ok((body, deadline))
 }
 
-/// Read an error response body with a size limit to prevent unbounded allocation.
-pub(super) async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
-    use futures_util::StreamExt;
-    let mut stream = response.bytes_stream();
-    let mut buf = Vec::with_capacity(max_bytes.min(8192));
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else { break };
-        let remaining = max_bytes.saturating_sub(buf.len());
-        if remaining == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-    }
-    String::from_utf8_lossy(&buf).into_owned()
-}
-
-async fn bounded_provider_catalog_text(
+pub(crate) async fn bounded_provider_catalog_text(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<String, CatalogRefreshError> {
@@ -1266,15 +1136,6 @@ fn validate_base_url_security(base_url: &str, provider_allows_insecure_http: boo
     anyhow::bail!(
         "Refusing base URL '{display_base_url}': only HTTPS (or explicitly allowed HTTP) URLs are supported.",
     )
-}
-
-/// Mask credentials in a URL for display.
-///
-/// Delegates to the single shared implementation in
-/// [`codewhale_secrets::sanitize`] (FEAT-025 D4) so command sanitization and
-/// client diagnostics cannot drift.
-pub(crate) fn redact_url_for_display(url: &str) -> String {
-    codewhale_secrets::sanitize::redact_url_for_display(url)
 }
 
 pub(super) fn versioned_base_url(base_url: &str) -> String {
@@ -1470,19 +1331,6 @@ fn build_speech_synthesis_body(
 
 // === CodewhaleClient ===
 
-/// Returns true when CODEWHALE_FORCE_HTTP1 (legacy alias: DEEPSEEK_FORCE_HTTP1)
-/// is set to a truthy value (`1`, `true`, `yes`, `on`, case-insensitive). Read
-/// only by `Config::force_http1`, which ORs it with the selected stream config flag; every
-/// client builder and stream open takes that resolved value (#103, #6700). Anything else (unset, `0`,
-/// `false`, ...) leaves HTTP/2 on.
-pub(crate) fn force_http1_from_env() -> bool {
-    std::env::var("CODEWHALE_FORCE_HTTP1")
-        .or_else(|_| std::env::var("DEEPSEEK_FORCE_HTTP1"))
-        .ok()
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-}
-
 /// Read `SSL_CERT_FILE` and add its contents as extra root
 /// certificates on the reqwest builder (#418). Tries the PEM-bundle
 /// parser first (covers single-cert files too), then falls back to
@@ -1570,7 +1418,7 @@ impl CodewhaleClient {
                 .key
                 .as_str()
                 .eq_ignore_ascii_case("ds4")
-            && crate::config::base_url_uses_local_host(&self.base_url)
+            && codewhale_runtime::config::base_url_uses_local_host(&self.base_url)
             && matches!(
                 model.trim().to_ascii_lowercase().as_str(),
                 "deepseek-v4-flash" | "deepseek-v4-pro"
@@ -1692,6 +1540,10 @@ impl CodewhaleClient {
             .map(Box::new);
         if let Some(entry) = &plugin_provider {
             anyhow::ensure!(
+                !config.session_provider_keys_only,
+                "Stored plugin authorization is unavailable under session-only provider key policy"
+            );
+            anyhow::ensure!(
                 entry.oauth.is_some()
                     && config.auth_mode_for_provider(&admitted_identity).as_deref()
                         == Some("oauth"),
@@ -1746,8 +1598,8 @@ impl CodewhaleClient {
             && crate::pricing::is_official_chatgpt_api(&base_url)
         {
             let credentials = config.codex_credentials()?;
-            let guidance = crate::oauth::usage_limit_guidance(
-                crate::oauth::OAuthProvider::Chatgpt,
+            let guidance = codewhale_runtime::oauth::usage_limit_guidance(
+                codewhale_runtime::oauth::OAuthProvider::Chatgpt,
                 credentials.account_label.as_deref(),
             );
             let identity = serde_json::to_vec(&(
@@ -1760,7 +1612,7 @@ impl CodewhaleClient {
             ))?;
             let reasoning_api = format!(
                 "openai-responses-siwc-v1:{}",
-                crate::hashing::sha256_hex(&identity),
+                codewhale_runtime::hashing::sha256_hex(&identity),
             );
             (
                 (credentials.access_token, "ChatGPT sign-in".to_string()),
@@ -1773,16 +1625,16 @@ impl CodewhaleClient {
             // OAuth mode that fell through to an API key names no account.
             let (resolved, xai_sign_in) = config.active_route_api_key_with_xai_sign_in()?;
             let guidance = xai_sign_in.map(|label| {
-                crate::oauth::usage_limit_guidance(
-                    crate::oauth::OAuthProvider::Xai,
+                codewhale_runtime::oauth::usage_limit_guidance(
+                    codewhale_runtime::oauth::OAuthProvider::Xai,
                     label.as_deref(),
                 )
             });
             (resolved, None, guidance, None)
         };
         let subscription_limit_guidance = if api_key_source == "Claude sign-in" {
-            Some(crate::oauth::usage_limit_guidance(
-                crate::oauth::OAuthProvider::Claude,
+            Some(codewhale_runtime::oauth::usage_limit_guidance(
+                codewhale_runtime::oauth::OAuthProvider::Claude,
                 None,
             ))
         } else {
@@ -1960,6 +1812,7 @@ impl CodewhaleClient {
             subscription_limit_guidance,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
+            session_provider_keys_only: config.session_provider_keys_only,
             model_bound_secret_values,
             catalog_error_secret_values,
             model_bound_masking,
@@ -2001,6 +1854,11 @@ impl CodewhaleClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder> {
+        anyhow::ensure!(
+            !self.session_provider_keys_only
+                || (self.claude_oauth_config.is_none() && self.plugin_provider.is_none()),
+            "Stored OAuth authorization is unavailable under session-only provider key policy"
+        );
         if let Some(config) = self.claude_oauth_config.clone() {
             let destination = request
                 .try_clone()
@@ -2015,13 +1873,13 @@ impl CodewhaleClient {
             let read_only = self.plugin_oauth_read_only;
             let token = tokio::task::spawn_blocking(move || {
                 if read_only {
-                    crate::oauth::get_owned_credentials_read_only(
-                        crate::oauth::OAuthProvider::Claude,
+                    codewhale_runtime::oauth::get_owned_credentials_read_only(
+                        codewhale_runtime::oauth::OAuthProvider::Claude,
                         &config,
                     )
                 } else {
-                    crate::oauth::get_owned_credentials(
-                        crate::oauth::OAuthProvider::Claude,
+                    codewhale_runtime::oauth::get_owned_credentials(
+                        codewhale_runtime::oauth::OAuthProvider::Claude,
                         &config,
                     )
                 }
@@ -2065,8 +1923,9 @@ impl CodewhaleClient {
                 Some(provider.http_headers.as_ref().unwrap_or(&empty_headers)),
             )
             .map_err(anyhow::Error::msg)?;
-            let token =
-                crate::oauth::plugin_oauth_access_token(&name, &base_url, descriptor, read_only)?;
+            let token = codewhale_runtime::oauth::plugin_oauth_access_token(
+                &name, &base_url, descriptor, read_only,
+            )?;
             // Refresh may wait on the issuer. Do not send a model request if
             // the review was revoked while that HTTP request was in flight.
             crate::plugins::registry::verify_plugin_component_authority(
@@ -2173,8 +2032,9 @@ impl CodewhaleClient {
     /// Anthropic Messages, and OpenAI Responses — streaming and non-streaming
     /// alike — receive the same sanitized payload.
     fn prepare_model_bound_request(&self, mut request: MessageRequest) -> MessageRequest {
-        let repair =
-            crate::tool_history_repair::repair_tool_call_pairs_for_provider(&mut request.messages);
+        let repair = codewhale_runtime::tool_history_repair::repair_tool_call_pairs_for_provider(
+            &mut request.messages,
+        );
         if !repair.is_empty() {
             tracing::warn!(
                 repaired_call_ids = ?repair.repaired_call_ids,
@@ -2217,8 +2077,6 @@ impl CodewhaleClient {
     /// Alternate models share this client's frozen endpoint and declarations.
     /// Resolution still owns protocol admission, including closed rosters.
     pub(crate) fn resolve_model_route(&self, model: &str) -> Result<ReadyRouteCandidate> {
-        static RESOLVER: OnceLock<RouteResolver> = OnceLock::new();
-        let resolver = RESOLVER.get_or_init(RouteResolver::new);
         // Pin the transport's own wire: a custom-table client constructed
         // from a wire-true candidate keeps speaking that wire even when this
         // internal re-resolution runs config-free (an engine-internal model
@@ -2231,18 +2089,39 @@ impl CodewhaleClient {
             limit_overrides: Vec::new(),
             wire_override: (self.api_provider == ProviderKind::Custom).then_some(self.wire_format),
         };
-        if self.configured_models.is_empty() || self.api_provider == ProviderKind::OpenaiCodex {
-            resolver.resolve(&request)
-        } else {
-            resolver
-                .clone()
-                .with_configured_models(
-                    &self.configured_models,
-                    self.admitted_identity.key.as_str(),
-                    self.api_provider,
-                    &self.base_url,
-                )
+        if self.api_provider == ProviderKind::OpenaiCodex {
+            static CODEX_RESOLVER: OnceLock<RouteResolver> = OnceLock::new();
+            return CODEX_RESOLVER
+                .get_or_init(RouteResolver::new)
                 .resolve(&request)
+                .map_err(anyhow::Error::msg);
+        }
+        // A mid-session model switch must resolve against the same catalog
+        // facts its route was minted from. The bundled resolver alone cannot
+        // see a model published after this build, so a picker row the live
+        // catalog knows would fail here instead of switching.
+        let identity = self.admitted_identity.key.as_str();
+        let mut catalog = crate::provider_lake::runtime_catalog_resolver_for_identity(
+            self.api_provider,
+            Some(identity),
+            &self.base_url,
+            crate::provider_catalog_live::status_for_route(
+                self.api_provider,
+                identity,
+                &self.base_url,
+            ),
+        );
+        catalog.resolver = catalog.resolver.with_configured_models(
+            &self.configured_models,
+            identity,
+            self.api_provider,
+            &self.base_url,
+        );
+        let resolver = &catalog.resolver;
+        if catalog.endpoint_catalog_authoritative {
+            resolver.resolve_with_endpoint_catalog_authority(&request)
+        } else {
+            resolver.resolve(&request)
         }
         .map_err(anyhow::Error::msg)
     }
@@ -2416,6 +2295,17 @@ impl CodewhaleClient {
         config: &Config,
         surface: AuthHeaderSurface,
     ) -> Result<reqwest::ClientBuilder> {
+        let filtered_headers;
+        let extra_headers = if config.session_provider_keys_only {
+            filtered_headers = extra_headers
+                .iter()
+                .filter(|(name, _)| !is_upstream_auth_header(name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            &filtered_headers
+        } else {
+            extra_headers
+        };
         let headers = build_default_headers(
             api_key,
             extra_headers,
@@ -2425,7 +2315,7 @@ impl CodewhaleClient {
             auth_disabled,
             surface,
         )?;
-        let mut builder = crate::tls::reqwest_client_builder()
+        let mut builder = codewhale_release::tls::reqwest_client_builder()
             .default_headers(headers)
             .user_agent(client_user_agent(api_provider))
             .connect_timeout(config.connect_timeout())
@@ -2462,7 +2352,7 @@ impl CodewhaleClient {
             api_key,
             extra_headers,
             ProviderKind::Deepseek,
-            crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
             WireFormat::ChatCompletions,
             false,
             AuthHeaderSurface::Inference,
@@ -2699,7 +2589,7 @@ fn provider_default_wire_format(provider: ProviderKind) -> WireFormat {
 /// fixed policy (or Chat Completions).
 fn provider_wire_format_for_config(
     identity: &ProviderIdentity,
-    config: Option<&crate::config::Config>,
+    config: Option<&codewhale_runtime::config::Config>,
 ) -> WireFormat {
     let api_provider = identity.provider;
     let wire = config.and_then(|cfg| cfg.provider_wire_dialect(identity));
@@ -2805,7 +2695,7 @@ pub async fn verify_provider_api_key(
         AuthHeaderSurface::Listing,
     )
     .map_err(|err| format!("failed to build auth headers: {err:#}"))?;
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .default_headers(headers)
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!(
@@ -2973,6 +2863,85 @@ impl CodewhaleClient {
         request: MessageRequest,
         stream: bool,
     ) -> Result<PreparedOutboundRequest> {
+        let mut prepared = self.prepare_outbound_request_body(request.clone(), stream)?;
+        let original_bytes = prepared.serialized_body_bytes()?;
+        if original_bytes <= prepared::REQUEST_BODY_BYTE_TRIGGER {
+            return Ok(prepared);
+        }
+        let total = codewhale_models::image_window::count_request_images(&request.messages);
+        if total == 0 {
+            return Ok(prepared);
+        }
+        let mut candidate = request.clone();
+        codewhale_models::image_window::cap_request_images_with_notes(
+            &mut candidate.messages,
+            0,
+            prepared::REQUEST_BODY_IMAGE_NOTE,
+            prepared::REQUEST_BODY_IMAGE_NOTE,
+        );
+        prepared = self.prepare_outbound_request_body(candidate, stream)?;
+        let mut body_bytes = prepared.serialized_body_bytes()?;
+        let mut retained = 0;
+        let mut rejected = total;
+        if body_bytes <= prepared::REQUEST_BODY_BYTE_TARGET {
+            while retained + 1 < rejected {
+                let keep = retained + (rejected - retained) / 2;
+                let mut candidate = request.clone();
+                codewhale_models::image_window::cap_request_images_with_notes(
+                    &mut candidate.messages,
+                    keep,
+                    prepared::REQUEST_BODY_IMAGE_NOTE,
+                    prepared::REQUEST_BODY_IMAGE_NOTE,
+                );
+                let candidate = self.prepare_outbound_request_body(candidate, stream)?;
+                let candidate_bytes = candidate.serialized_body_bytes()?;
+                if candidate_bytes <= prepared::REQUEST_BODY_BYTE_TARGET {
+                    retained = keep;
+                    body_bytes = candidate_bytes;
+                    prepared = candidate;
+                } else {
+                    rejected = keep;
+                }
+            }
+        }
+        let chunk_retained =
+            total - codewhale_models::image_window::images_to_elide(total, retained);
+        if chunk_retained < retained {
+            let mut candidate = request.clone();
+            codewhale_models::image_window::cap_request_images_with_notes(
+                &mut candidate.messages,
+                chunk_retained,
+                prepared::REQUEST_BODY_IMAGE_NOTE,
+                prepared::REQUEST_BODY_IMAGE_NOTE,
+            );
+            prepared = self.prepare_outbound_request_body(candidate, stream)?;
+            body_bytes = prepared.serialized_body_bytes()?;
+            retained = chunk_retained;
+        }
+        if body_bytes >= original_bytes {
+            return self.prepare_outbound_request_body(request, stream);
+        }
+        prepared.image_projection = Some(crate::llm_client::ImageProjectionReceipt {
+            cause: "local_request_byte_budget".into(),
+            original_image_blocks: total,
+            omitted_oldest_blocks: total - retained,
+            retained_newest_blocks: retained,
+            body_bytes_before: original_bytes,
+            body_bytes_after: body_bytes,
+            omission_note: prepared::REQUEST_BODY_IMAGE_NOTE.into(),
+        });
+        prepared.image_omission_notice = Some(format!(
+            "Image request budget: omitted {} older image-bearing blocks; retained {retained} newest blocks. Serialized request reduced from {original_bytes} to {body_bytes} bytes. Original images remain in the session.",
+            total - retained,
+        ));
+        Ok(prepared)
+    }
+
+    fn prepare_outbound_request_body(
+        &self,
+        request: MessageRequest,
+        stream: bool,
+    ) -> Result<PreparedOutboundRequest> {
         // Step 0: refuse role/dialect pairs this wire cannot represent, before
         // any dialect builds a body. Doing it here rather than inside each
         // adapter is what stops an unrepresentable role from being discovered
@@ -3061,7 +3030,7 @@ impl CodewhaleClient {
                     let wire_effort = if matches!(self.wire_format, WireFormat::ChatCompletions) {
                         request.reasoning_effort.as_deref().and_then(|effort| {
                             let provider = self.chat_shape_provider(&request.model);
-                            let model = crate::config::wire_model_for_provider_route(
+                            let model = codewhale_runtime::config::wire_model_for_provider_route(
                                 provider,
                                 &self.base_url,
                                 &request.model,
@@ -3746,6 +3715,15 @@ impl CodewhaleClient {
         // Go is unpaginated. A Messages generation dialect or a custom identity
         // resembling a built-in provider does not establish this list contract.
         let cursor_query = (self.api_provider == ProviderKind::Anthropic).then_some("after_id");
+        self.models_document_at(endpoint, cursor_query, mode).await
+    }
+
+    async fn models_document_at(
+        &self,
+        endpoint: reqwest::Url,
+        cursor_query: Option<&str>,
+        mode: ModelsRequestMode,
+    ) -> Result<(String, tokio::time::Instant), ModelsFetchError> {
         collect_models_document(
             endpoint,
             cursor_query,
@@ -3820,17 +3798,101 @@ impl CodewhaleClient {
         catalog_endpoint_is_baseten(self.api_provider, &self.base_url)
     }
 
-    /// Fetch the provider's live `/models` listing as a secret-free
+    /// Fetch the provider's live model listing as a secret-free
     /// [`ProviderCatalogDelta`] (#3385).
     ///
-    /// Uses the same URL construction and auth client as [`Self::list_models`],
-    /// but fetches pages without `send_with_retry` so a refresh
+    /// Uses the listing auth client, with native catalog routes for Ollama,
+    /// and fetches pages without `send_with_retry` so a refresh
     /// failure stays typed and non-fatal — bundled / saved / static rows are
     /// untouched. The delta is scoped to the base-URL fingerprint and stamped
     /// with the fetch time; the API key authorizes the request but is **never**
     /// persisted into the delta or cache. Unknown live rows carry no canonical
     /// model, capabilities, or pricing, per the #3385 contract.
     pub async fn fetch_catalog_delta(&self) -> Result<ProviderCatalogDelta, CatalogRefreshError> {
+        if self.api_provider == ProviderKind::Ollama {
+            let origin = ollama_catalog::ollama_native_origin(&self.base_url);
+            let tags_url = reqwest::Url::parse(&format!("{origin}/api/tags"))
+                .map_err(|_| CatalogRefreshError::InvalidResponse)?;
+            let (body, deadline) = self
+                .models_document_at(tags_url, None, ModelsRequestMode::Refresh)
+                .await
+                .map_err(ModelsFetchError::into_catalog)?;
+            let (tags, mut profiles) = ollama_catalog::parse_ollama_tags_with_profiles(&body)
+                .map_err(|_| CatalogRefreshError::InvalidResponse)?;
+            if tags.iter().any(|tag| {
+                self.model_bound_secret_values
+                    .iter()
+                    .any(|secret| !secret.is_empty() && tag.contains(secret))
+            }) {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
+            let fetched = tokio::time::timeout_at(
+                deadline,
+                ollama_catalog::fetch_tag_profiles(&tags, &profiles, |tag| {
+                    let origin = &origin;
+                    async move {
+                        let result = async {
+                            let request = self
+                                .models_http_client
+                                .post(format!("{origin}/api/show"))
+                                .json(&serde_json::json!({ "model": tag }))
+                                .timeout(Duration::from_secs(2));
+                            let response =
+                                self.authorize_plugin_request(request).await?.send().await?;
+                            anyhow::ensure!(
+                                response.status().is_success(),
+                                "Ollama profile request failed"
+                            );
+                            let body = bounded_provider_catalog_text(
+                                response,
+                                PROVIDER_CATALOG_MAX_RESPONSE_BYTES,
+                            )
+                            .await
+                            .map_err(|reason| {
+                                anyhow::anyhow!("Ollama profile rejected: {reason:?}")
+                            })?;
+                            ollama_catalog::parse_ollama_show_response(&body)
+                        }
+                        .await;
+                        result.map_err(|error: anyhow::Error| {
+                            anyhow::anyhow!(self.redact_model_bound_text(&error.to_string()))
+                        })
+                    }
+                }),
+            )
+            .await
+            .map_err(|_| CatalogRefreshError::Network)?;
+            profiles.extend(fetched);
+            let running_url = reqwest::Url::parse(&format!("{origin}/api/ps"))
+                .map_err(|_| CatalogRefreshError::InvalidResponse)?;
+            let running_deadline =
+                deadline.min(tokio::time::Instant::now() + Duration::from_secs(2));
+            let running = tokio::time::timeout_at(
+                running_deadline,
+                self.models_document_at(running_url, None, ModelsRequestMode::Refresh),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|(body, _)| body);
+            let delta = ollama_catalog::ollama_catalog_delta(
+                &self.catalog_provider_id(),
+                &self.base_url,
+                &tags,
+                &profiles,
+                running.as_deref(),
+            );
+            if tokio::time::Instant::now() >= deadline
+                || delta.offerings.iter().any(|row| {
+                    self.model_bound_secret_values
+                        .iter()
+                        .any(|secret| !secret.is_empty() && row.wire_model_id.contains(secret))
+                })
+            {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
+            return Ok(delta);
+        }
         let (body, deadline) = self
             .models_document(ModelsRequestMode::Refresh)
             .await
@@ -3897,9 +3959,9 @@ impl CodewhaleClient {
     /// seeds remain available with a typed failed receipt.
     pub fn spawn_active_provider_catalog_refresh(config: &Config) {
         // Unit tests use explicit fixture refreshes; never probe a developer's provider.
-        #[cfg(test)]
+        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
         let _ = config;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
         {
             let Ok(identity) = config.active_provider_identity() else {
                 return;
@@ -4007,9 +4069,9 @@ impl CodewhaleClient {
     /// rather than reimplemented. Failures stay non-fatal: a route that cannot
     /// answer keeps its persisted and configured rows.
     pub fn spawn_configured_provider_catalog_refresh(config: &Config) {
-        #[cfg(test)]
+        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
         let _ = config;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
         {
             let active = config.active_provider_identity().ok();
             for identity in crate::provider_lake::configured_providers(config) {
@@ -4044,7 +4106,7 @@ impl CodewhaleClient {
     ) -> Result<SpeechSynthesisResponse> {
         let _inference = self.acquire_remote_control_inference_permit().await;
         let _permit = self.acquire_provider_request_permit().await;
-        if self.api_provider != crate::config::ProviderKind::XiaomiMimo {
+        if self.api_provider != codewhale_config::ProviderKind::XiaomiMimo {
             anyhow::bail!(
                 "speech synthesis requires provider 'xiaomi-mimo' (current: {})",
                 self.api_provider.as_str()
@@ -4263,10 +4325,7 @@ impl CodewhaleClient {
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
-        if self.isolated_request_state {
-            return self.send_with_isolated_retry(build, disclosure).await;
-        }
-        self.send_retry_loop(build, Some(non_streaming_request_envelope()), disclosure)
+        self.send_with_retry_total_error_body(non_streaming_request_envelope(), build, disclosure)
             .await
     }
 
@@ -4278,67 +4337,91 @@ impl CodewhaleClient {
     async fn send_with_retry_total_error_body<F>(
         &self,
         total: Duration,
-        build: F,
+        mut build: F,
         disclosure: &ErrorBodyDisclosure,
     ) -> Result<reqwest::Response>
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
-        if self.isolated_request_state {
-            return self.send_with_isolated_retry(build, disclosure).await;
-        }
-        self.send_retry_loop(build, Some(total), disclosure).await
+        self.send_retry_loop(
+            || {
+                let request = build();
+                let request = if self.isolated_request_state {
+                    request
+                } else {
+                    request.timeout(total)
+                };
+                async move {
+                    let request = self
+                        .authorize_plugin_request(request)
+                        .await
+                        .map_err(|error| LlmError::Other(error.to_string()))?;
+                    request
+                        .send()
+                        .await
+                        .map_err(|error| LlmError::from_reqwest(&error.without_url()))
+                }
+            },
+            Some(total),
+            disclosure,
+        )
+        .await
     }
 
-    /// The streaming-open twin of [`Self::send_with_retry`]: the same retry
-    /// and rate-limit handling with no total deadline anywhere. reqwest's
-    /// per-request timeout wraps the response *body*, so a total set on the
-    /// open would ride along inside the returned body and hard-cut a live
-    /// stream mid-generation. Stream opens stay bounded by the caller's
-    /// `stream_open_timeout` around the open and per-chunk idle checks on
-    /// the returned body instead.
+    /// The streaming-open twin of [`Self::send_with_retry`]: provider backoff
+    /// stays outside each physical response-header wait. No reqwest total
+    /// timeout may ride on the returned body and truncate a live stream.
     pub(super) async fn send_stream_open_with_retry<F>(&self, build: F) -> Result<reqwest::Response>
     where
-        F: FnMut() -> reqwest::RequestBuilder,
+        F: Fn(stream_entry::StreamHttpPolicy) -> reqwest::RequestBuilder,
     {
-        if self.isolated_request_state {
-            return self
-                .send_with_isolated_retry(build, &ErrorBodyDisclosure::Full)
-                .await;
-        }
-        self.send_retry_loop(build, None, &ErrorBodyDisclosure::Full)
-            .await
+        let open_req = self.stream_open_request();
+        self.send_retry_loop(
+            || async {
+                stream_entry::open_sse_response(&open_req, |policy| {
+                    let request = build(policy);
+                    async move {
+                        let request = self.authorize_plugin_request(request).await?;
+                        request.send().await.map_err(|error| {
+                            anyhow::Error::new(LlmError::from_reqwest(&error.without_url()))
+                        })
+                    }
+                })
+                .await
+                .map_err(|error| {
+                    error
+                        .downcast::<LlmError>()
+                        .unwrap_or_else(|error| LlmError::Other(error.to_string()))
+                })
+            },
+            None,
+            &ErrorBodyDisclosure::Full,
+        )
+        .await
     }
 
-    async fn send_retry_loop<F>(
+    async fn send_retry_loop<F, Fut>(
         &self,
-        mut build: F,
+        mut attempt: F,
         attempt_total: Option<Duration>,
         disclosure: &ErrorBodyDisclosure,
     ) -> Result<reqwest::Response>
     where
-        F: FnMut() -> reqwest::RequestBuilder,
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<reqwest::Response, LlmError>>,
     {
+        if self.isolated_request_state {
+            return self.send_with_isolated_retry(attempt, disclosure).await;
+        }
         let retry_cfg: LlmRetryConfig = self.retry.clone().into();
         let pause_scope = self.rate_limit_scope();
         let callback_scope = pause_scope.clone();
-        // Two bounded layers around a non-streaming completion
-        // (`attempt_total` = `Some`): the per-attempt request total (connect
-        // through body end) and an envelope around the whole retry loop (all
-        // attempts + backoff + honored Retry-After). Streaming opens
-        // (`None`) set no deadline at all: any total here would be
-        // inherited by the returned body and truncate the stream, so those
-        // calls keep only the caller's own open budget.
+        // Non-streaming calls retain their whole-retry envelope. Streaming
+        // attempts own their header wait and never carry a total body timeout.
         let retry_future = with_retry(
             &retry_cfg,
             || {
-                // Per-attempt total: unlike the loop envelope below,
-                // reqwest's per-request timeout also covers the response
-                // body, so a slow-drip body cannot outlive the budget.
-                let request = match attempt_total {
-                    Some(total) => build().timeout(total),
-                    None => build(),
-                };
+                let response = attempt();
                 let pause_scope = pause_scope.as_str();
                 async move {
                     // Sleep in bounded slices rather than the full remaining
@@ -4347,18 +4430,13 @@ impl CodewhaleClient {
                     // shortened deadline) must release requests that are
                     // already waiting instead of stranding them for the whole
                     // original window.
-                    while let Some(delay) = crate::retry_status::rate_limit_remaining(pause_scope) {
+                    while let Some(delay) =
+                        codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
+                    {
                         tokio::time::sleep(delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL)).await;
                     }
                     self.wait_for_rate_limit().await;
-                    let request = self
-                        .authorize_plugin_request(request)
-                        .await
-                        .map_err(|error| LlmError::Other(error.to_string()))?;
-                    let response = request
-                        .send()
-                        .await
-                        .map_err(|err| LlmError::from_reqwest(&err.without_url()))?;
+                    let response = response.await?;
                     let status = response.status();
                     if status.is_success() {
                         return Ok(response);
@@ -4384,9 +4462,9 @@ impl CodewhaleClient {
                     delay.as_secs_f64(),
                 ));
                 if matches!(err, LlmError::RateLimited { .. }) {
-                    crate::retry_status::note_rate_limit(&callback_scope, delay);
+                    codewhale_runtime::retry_status::note_rate_limit(&callback_scope, delay);
                 }
-                crate::retry_status::start(attempt + 1, delay, human_reason);
+                codewhale_runtime::retry_status::start(attempt + 1, delay, human_reason);
             })),
         );
         let request_result = if let Some(total) = attempt_total {
@@ -4402,7 +4480,7 @@ impl CodewhaleClient {
                     logging::warn(format!(
                         "non-streaming request envelope exceeded ({loop_envelope:?}); retry loop aborted"
                     ));
-                    crate::retry_status::failed(last.to_string());
+                    codewhale_runtime::retry_status::failed(last.to_string());
                     self.mark_request_failure("non-streaming request envelope exceeded")
                         .await;
                     self.maybe_probe_recovery().await;
@@ -4415,13 +4493,13 @@ impl CodewhaleClient {
 
         match request_result {
             Ok(response) => {
-                crate::retry_status::succeeded();
+                codewhale_runtime::retry_status::succeeded();
                 self.mark_request_success().await;
                 Ok(response)
             }
             Err(err) => {
                 if let LlmError::RateLimited { retry_after, .. } = &err.last_error {
-                    crate::retry_status::note_rate_limit(
+                    codewhale_runtime::retry_status::note_rate_limit(
                         &pause_scope,
                         retry_after
                             .unwrap_or_else(|| retry_cfg.delay_for_attempt(retry_cfg.max_retries)),
@@ -4429,9 +4507,9 @@ impl CodewhaleClient {
                 }
                 let last = err.last_error.to_string();
                 if err.attempts > 1 {
-                    crate::retry_status::failed(last.clone());
+                    codewhale_runtime::retry_status::failed(last.clone());
                 } else {
-                    crate::retry_status::clear();
+                    codewhale_runtime::retry_status::clear();
                 }
                 self.mark_request_failure(&last).await;
                 self.maybe_probe_recovery().await;
@@ -4457,13 +4535,14 @@ impl CodewhaleClient {
     /// The same bounded transport retry policy without process-global retry
     /// banners, provider-wide pause cells, or shared connection-health writes.
     /// Used only by the Auto classifier during read-only request inspection.
-    async fn send_with_isolated_retry<F>(
+    async fn send_with_isolated_retry<F, Fut>(
         &self,
-        mut build: F,
+        mut attempt: F,
         disclosure: &ErrorBodyDisclosure,
     ) -> Result<reqwest::Response>
     where
-        F: FnMut() -> reqwest::RequestBuilder,
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<reqwest::Response, LlmError>>,
     {
         let retry_cfg: LlmRetryConfig = self.retry.clone().into();
         let request_result = crate::llm_client::observe_request_retries(
@@ -4471,17 +4550,10 @@ impl CodewhaleClient {
             with_retry(
                 &retry_cfg,
                 || {
-                    let request = build();
+                    let response = attempt();
                     async move {
                         self.wait_for_rate_limit().await;
-                        let request = self
-                            .authorize_plugin_request(request)
-                            .await
-                            .map_err(|error| LlmError::Other(error.to_string()))?;
-                        let response = request
-                            .send()
-                            .await
-                            .map_err(|err| LlmError::from_reqwest(&err.without_url()))?;
+                        let response = response.await?;
                         let status = response.status();
                         if status.is_success() {
                             return Ok(response);
@@ -4544,7 +4616,7 @@ impl CodewhaleClient {
 /// customer's own `[providers.<name>]` table key when the route is custom.
 /// `ProviderKind::Custom` yields the literal `"custom"` and nothing else, and
 /// no model id is sent for any provider.
-pub(crate) fn record_provider_response(provider: crate::config::ProviderKind, status: u16) {
+pub(crate) fn record_provider_response(provider: codewhale_config::ProviderKind, status: u16) {
     let counters = codewhale_telemetry::session_counters();
     counters.record_provider(provider);
     if let Some(counter) = codewhale_telemetry::counters::http_status_counter(status) {
@@ -4610,13 +4682,110 @@ impl CodewhaleClient {
     ) -> Result<MessageResponse> {
         let _inference = self.acquire_remote_control_inference_permit().await;
         let _permit = self.acquire_provider_request_permit().await;
-        let cacheable =
-            allow_response_cache && crate::llm_response_cache::request_is_cacheable(&request);
-        let prepared = self.prepare_outbound_request(request, false)?;
+        let cacheable = allow_response_cache
+            && codewhale_runtime::llm_response_cache::request_is_cacheable(&request);
+        let prepared = self.prepare_outbound_request(request.clone(), false)?;
+        match self.dispatch_prepared_message(&prepared, cacheable).await {
+            Err(error) => {
+                let Some(retry) =
+                    self.prepare_image_elision_retry(request, false, &prepared, &error)?
+                else {
+                    return Err(error);
+                };
+                crate::llm_client::observe_transport_attempt();
+                self.dispatch_prepared_message(&retry, cacheable).await
+            }
+            result => result,
+        }
+    }
+
+    fn prepare_image_elision_retry(
+        &self,
+        mut request: MessageRequest,
+        stream: bool,
+        previous: &PreparedOutboundRequest,
+        error: &anyhow::Error,
+    ) -> Result<Option<PreparedOutboundRequest>> {
+        if !matches!(
+            error.downcast_ref::<LlmError>(),
+            Some(LlmError::InvalidRequest { status: 413, .. })
+        ) {
+            return Ok(None);
+        }
+        if previous
+            .image_projection
+            .as_ref()
+            .is_some_and(|projection| projection.retained_newest_blocks == 0)
+        {
+            return Ok(None);
+        }
+        let window = codewhale_models::image_window::cap_request_images_with_notes(
+            &mut request.messages,
+            0,
+            prepared::REQUEST_BODY_413_IMAGE_NOTE,
+            prepared::REQUEST_BODY_413_IMAGE_NOTE,
+        );
+        if window.elided == 0 {
+            return Ok(None);
+        }
+        let mut retry = self.prepare_outbound_request(request, stream)?;
+        let before = previous.serialized_body_bytes()?;
+        let after = retry.serialized_body_bytes()?;
+        if after >= before {
+            return Ok(None);
+        }
+        retry.image_projection = Some(crate::llm_client::ImageProjectionReceipt {
+            cause: "initial_http_413".into(),
+            original_image_blocks: window.total,
+            omitted_oldest_blocks: window.elided,
+            retained_newest_blocks: 0,
+            body_bytes_before: before,
+            body_bytes_after: after,
+            omission_note: prepared::REQUEST_BODY_413_IMAGE_NOTE.into(),
+        });
+        retry.image_omission_notice = Some(format!(
+            "HTTP 413 recovery: retrying once without image attachments; serialized request reduced from {before} to {after} bytes. Original images remain in the session.",
+        ));
+        Ok(Some(retry))
+    }
+
+    async fn observe_prepared_request(&self, prepared: &PreparedOutboundRequest) {
+        observe_outbound_wire(|| OutboundWireObservation {
+            provider_id: prepared.endpoint.provider_id.clone(),
+            route_id: self.admitted_identity.persisted_id().map(str::to_owned),
+            endpoint_fingerprint: prepared.endpoint_fingerprint(),
+            wire_model: prepared.wire_model.clone(),
+            wire_dialect: prepared.dialect.as_str().to_owned(),
+            tools: prepared.tool_wire_measurement(),
+            image_projection: prepared.image_projection.clone(),
+        });
+        if let Some(notice) = &prepared.image_omission_notice {
+            crate::llm_client::observe_transport_status(notice.clone()).await;
+        }
+    }
+
+    async fn dispatch_prepared_message(
+        &self,
+        prepared: &PreparedOutboundRequest,
+        cacheable: bool,
+    ) -> Result<MessageResponse> {
+        self.observe_prepared_request(prepared).await;
         match prepared.dialect {
-            WireDialect::OpenAiResponses => self.handle_responses_message(&prepared).await,
-            WireDialect::AnthropicMessages => self.handle_anthropic_message(&prepared).await,
-            WireDialect::ChatCompletions => self.create_message_chat(&prepared, cacheable).await,
+            WireDialect::OpenAiResponses => self.handle_responses_message(prepared).await,
+            WireDialect::AnthropicMessages => self.handle_anthropic_message(prepared).await,
+            WireDialect::ChatCompletions => self.create_message_chat(prepared, cacheable).await,
+        }
+    }
+
+    async fn dispatch_prepared_stream(
+        &self,
+        prepared: &PreparedOutboundRequest,
+    ) -> Result<crate::llm_client::StreamEventBox> {
+        self.observe_prepared_request(prepared).await;
+        match prepared.dialect {
+            WireDialect::OpenAiResponses => self.handle_responses_stream(prepared).await,
+            WireDialect::AnthropicMessages => self.handle_anthropic_stream(prepared).await,
+            WireDialect::ChatCompletions => self.handle_chat_completion_stream(prepared).await,
         }
     }
 }
@@ -4635,6 +4804,14 @@ impl LlmClient for CodewhaleClient {
 
     fn model(&self) -> &str {
         &self.default_model
+    }
+
+    fn measure_outbound_tools(
+        &self,
+        request: MessageRequest,
+    ) -> Result<Option<ToolWireMeasurement>> {
+        self.prepare_outbound_request(request, true)
+            .map(|prepared| Some(prepared.tool_wire_measurement()))
     }
 
     fn billing_base_url(&self) -> Option<&str> {
@@ -4709,22 +4886,30 @@ impl LlmClient for CodewhaleClient {
     ) -> Result<crate::llm_client::StreamEventBox> {
         let inference = self.acquire_remote_control_inference_permit().await;
         let permit = self.acquire_provider_request_permit().await;
-        let prepared = self.prepare_outbound_request(request, true)?;
+        let mut prepared = self.prepare_outbound_request(request.clone(), true)?;
+        let stream = match self.dispatch_prepared_stream(&prepared).await {
+            Err(error) => {
+                let Some(retry) =
+                    self.prepare_image_elision_retry(request, true, &prepared, &error)?
+                else {
+                    return Err(error);
+                };
+                crate::llm_client::observe_transport_attempt();
+                prepared = retry;
+                self.dispatch_prepared_stream(&prepared).await?
+            }
+            Ok(stream) => stream,
+        };
         let projection_warning = (!prepared.omitted_tool_names.is_empty()).then(|| {
             let omitted_tool_count = prepared.omitted_tool_names.len();
             (
                 prepared.endpoint.provider_display.clone(),
-                crate::core::events::bounded_tool_projection_warning_names(
+                codewhale_models::tool_projection::bounded_tool_projection_warning_names(
                     &prepared.omitted_tool_names,
                 ),
                 omitted_tool_count,
             )
         });
-        let stream = match prepared.dialect {
-            WireDialect::OpenAiResponses => self.handle_responses_stream(&prepared).await?,
-            WireDialect::AnthropicMessages => self.handle_anthropic_stream(&prepared).await?,
-            WireDialect::ChatCompletions => self.handle_chat_completion_stream(prepared).await?,
-        };
         let stream = match projection_warning {
             Some((provider, omitted_tool_names, omitted_tool_count)) => {
                 Self::prepend_tool_projection_warning(
@@ -4771,14 +4956,6 @@ struct ModelListItem {
 #[derive(Debug, Deserialize)]
 struct OpenRouterModelItem {
     id: String,
-    // Captured from OpenRouter for future display/deprecation surfaces. The
-    // current CatalogOffering shape has no honest fields for these yet.
-    #[serde(default)]
-    #[expect(dead_code)]
-    name: Option<String>,
-    #[serde(default)]
-    #[expect(dead_code)]
-    created: Option<u64>,
     #[serde(default)]
     context_length: Option<u32>,
     #[serde(default)]
@@ -4794,9 +4971,6 @@ struct OpenRouterModelItem {
     /// separated from image/video/rerank rows without guessing from the name.
     #[serde(default)]
     supported_endpoint_types: Option<Vec<String>>,
-    #[serde(default)]
-    #[expect(dead_code)]
-    expiration_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4973,7 +5147,7 @@ fn parse_models_response_for_provider(
             continue;
         }
         anyhow::ensure!(
-            crate::provider_lake::valid_catalog_model_id(&row.slug)
+            codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.slug)
                 && !row.display_name.trim().is_empty()
                 && row.display_name.len() <= 256
                 && !row.display_name.chars().any(char::is_control),
@@ -5038,7 +5212,7 @@ fn apply_provider_model_cutline(
     let mut models: Vec<_> = models
         .into_iter()
         .filter_map(|mut model| {
-            let canonical = crate::config::opencode_go_model_id(&model.id)?;
+            let canonical = codewhale_runtime::config::opencode_go_model_id(&model.id)?;
             model.id = canonical.to_string();
             Some(model)
         })
@@ -5342,10 +5516,9 @@ fn catalog_delta_from_models_body(
     };
 
     if offerings.iter().any(|row| {
-        !crate::provider_lake::valid_catalog_model_id(&row.wire_model_id)
-            || model_bound_secret_values
-                .iter()
-                .any(|secret| !secret.is_empty() && row.wire_model_id.contains(secret))
+        model_bound_secret_values
+            .iter()
+            .any(|secret| !secret.is_empty() && row.wire_model_id.contains(secret))
     }) {
         return Err(CatalogRefreshError::InvalidResponse);
     }
@@ -5417,7 +5590,7 @@ fn parse_openrouter_models_response(
         if item.id.starts_with('~') {
             continue;
         }
-        if !crate::provider_lake::valid_catalog_model_id(&item.id) {
+        if !codewhale_runtime::catalog_cache::valid_catalog_model_id(&item.id) {
             malformed += 1;
             continue;
         }
@@ -5489,7 +5662,7 @@ fn parse_orcarouter_models_response(
         if item.id.starts_with('~') {
             continue;
         }
-        if !crate::provider_lake::valid_catalog_model_id(&item.id) {
+        if !codewhale_runtime::catalog_cache::valid_catalog_model_id(&item.id) {
             malformed += 1;
             continue;
         }
@@ -5558,10 +5731,7 @@ fn orcarouter_to_catalog_offering(
             Some(cost) if codewhale_config::pricing::catalog_cost_is_valid(&cost) => {
                 offering.cost = Some(cost);
             }
-            _ => {
-                offering.cost = None;
-                offering.cost_source = Some(offering.source.clone());
-            }
+            _ => offering.cost = None,
         }
     }
     Ok(offering)
@@ -5830,10 +6000,7 @@ fn baseten_to_catalog_offering(
     let structured_output = item.supports_structured_output.or(Some(true));
 
     Ok(CatalogOffering {
-        cost_source: (item.pricing.is_some() && cost.is_none()).then(|| CatalogSource::Live {
-            base_url_fingerprint: base_url_fingerprint.to_string(),
-            fetched_at,
-        }),
+        cost_source: None,
         modalities_source: None,
         provider: provider.to_string(),
         wire_model_id: item.id.clone(),
@@ -5990,10 +6157,7 @@ fn openrouter_to_catalog_offering(
     });
 
     Ok(CatalogOffering {
-        cost_source: (item.pricing.is_some() && cost.is_none()).then(|| CatalogSource::Live {
-            base_url_fingerprint: base_url_fingerprint.to_string(),
-            fetched_at,
-        }),
+        cost_source: None,
         modalities_source: None,
         provider: provider.to_string(),
         wire_model_id: item.id.clone(),
@@ -6047,437 +6211,6 @@ pub(crate) fn main_turn_pricing_quote_at(
             dispatched_at,
         )
     })
-}
-
-pub(super) fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
-    match system {
-        Some(SystemPrompt::Text(text)) => Some(text),
-        Some(SystemPrompt::Blocks(blocks)) => {
-            let joined = blocks
-                .into_iter()
-                .map(|b| b.text)
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n");
-            if joined.trim().is_empty() {
-                None
-            } else {
-                Some(joined)
-            }
-        }
-        None => None,
-    }
-}
-
-/// Write DeepSeek's Chat Completions thinking controls from the shared tier
-/// table.
-///
-/// The table (`client::deepseek_effort`) is the only place the tier ladder is
-/// written down; this function is just the Chat wire's spelling of it. An
-/// effort string the table does not name is not a DeepSeek tier request, so
-/// nothing is written rather than guessing a field the user did not ask for.
-fn apply_deepseek_chat_reasoning_effort(body: &mut Value, normalized: &str) {
-    let Some(tier) = deepseek_effort::deepseek_effort_tier(normalized) else {
-        return;
-    };
-    if let Some(value) = tier.chat_reasoning_effort() {
-        body["reasoning_effort"] = json!(value);
-    }
-    body["thinking"] = json!({
-        "type": if tier.chat_thinking_enabled() { "enabled" } else { "disabled" },
-    });
-}
-
-pub(super) fn apply_reasoning_effort(
-    body: &mut Value,
-    effort: Option<&str>,
-    provider: ProviderKind,
-) {
-    let Some(effort) = effort else {
-        return;
-    };
-    let normalized = effort.trim().to_ascii_lowercase();
-    // DeepSeek's first-party routes read their tier ladder from the one
-    // annotated table (`client::deepseek_effort`), shared with the Responses
-    // wire, so a documented mapping change is a single edit. Every other
-    // provider keeps its own dialect below.
-    if matches!(provider, ProviderKind::Deepseek) {
-        apply_deepseek_chat_reasoning_effort(body, &normalized);
-        return;
-    }
-    if provider == ProviderKind::Stepfun {
-        // Step 3.5 has no documented effort selector. The other coding models
-        // are always reasoning-capable; do not invent an Off wire value.
-        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
-        let tier = match (model, normalized.as_str()) {
-            ("step-5-preview" | "step-3.7-flash" | "step-3.5-flash-2603", "minimal" | "low") => {
-                Some("low")
-            }
-            ("step-5-preview" | "step-3.7-flash", "medium") => Some("medium"),
-            ("step-3.5-flash-2603", "medium") => Some("high"),
-            (
-                "step-5-preview" | "step-3.7-flash" | "step-3.5-flash-2603",
-                "high" | "max" | "xhigh" | "ultra",
-            ) => Some("high"),
-            _ => None,
-        };
-        if let Some(tier) = tier {
-            body["reasoning_effort"] = json!(tier);
-        }
-        return;
-    }
-    match normalized.as_str() {
-        "off" | "disabled" | "none" | "false" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::XiaomiMimo
-            | ProviderKind::Novita
-            | ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Together
-            | ProviderKind::Atlascloud
-            | ProviderKind::Zai => {
-                body["thinking"] = json!({ "type": "disabled" });
-            }
-            // TelecomJS TokenHub: the gateway's OpenAI Chat Completions API
-            // (POST /v1/chat/completions) does not document `reasoning_effort`
-            // or `thinking` as supported parameters. The `thinking` field is
-            // only available on the Anthropic Messages API (POST /v1/messages)
-            // with a different shape ({"type":"enabled","budget_tokens":N}).
-            // Since CodeWhale routes TelecomJS through the Chat Completions
-            // path, we must NOT inject these fields — the gateway may silently
-            // ignore them or reject the request, and not every gateway model
-            // (qwen-max, deepseek-chat, gpt-4o, claude, etc.) accepts the same
-            // reasoning dialect (#4188 review: verify against actual behavior).
-            ProviderKind::Telecomjs => {}
-            // Eden AI documents `thinking` only for Anthropic Claude models.
-            // This gateway can route unrelated model families, so the generic
-            // provider must not inject a model-specific reasoning dialect.
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio (DashScope): its top-level controls are route- AND
-            // model-specific, so the provider enum alone cannot decide them —
-            // a custom `base_url` on the same identity is an arbitrary
-            // gateway. `apply_modelstudio_route_reasoning_controls` in
-            // client::chat is the sole writer; it strips these fields for all
-            // four variants and re-adds them only on a verified Alibaba host.
-            // Source: <https://www.alibabacloud.com/help/en/model-studio/deep-thinking>
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            ProviderKind::OpenaiCodex => {
-                // OpenAI Codex uses Responses API — thinking handled differently
-            }
-            ProviderKind::Fireworks => {}
-            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
-            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
-            // the canonical OpenAI extension to disable thinking is
-            // `chat_template_kwargs.enable_thinking`. The old
-            // `thinking: {type: disabled}` field is Anthropic-native and
-            // silently ignored by vLLM — the model still emits a full
-            // reasoning trace into the `reasoning` field (which this client
-            // doesn't surface), causing 10+ seconds of perceived "freeze"
-            // before the first content token (PR #1480 by @h3c-hexin).
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": false,
-                });
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::Arcee
-            | ProviderKind::Huggingface
-            | ProviderKind::Modelscope
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable/disable.
-                body["thinking"] = json!({ "type": "disabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama OpenAI-compat endpoint accepts think param.
-                body["think"] = json!(false);
-            }
-            ProviderKind::OllamaCloud => {
-                // Ollama Cloud stays on the documented OpenAI-compatible
-                // `/v1/chat/completions` wire. Native `/api/chat` uses
-                // `think`; this wire uses `reasoning_effort`.
-                body["reasoning_effort"] = json!("none");
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": false,
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            // DeepSeek-compatible hosted routes: low/medium both map to high.
-            // Their own wire contracts are not verified here, so the historic
-            // collapse stays rather than inventing unsupported wire values.
-            ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Atlascloud => {
-                body["reasoning_effort"] = json!("high");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            // TelecomJS: see comment in the "off" branch above — the gateway's
-            // Chat Completions API does not support reasoning_effort or thinking.
-            ProviderKind::Telecomjs => {}
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio: see the "off" branch — the route- and model-aware
-            // shaper in client::chat is the sole writer of these fields.
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            // OpenRouter/OrcaRouter/Novita/Together: pass through the actual
-            // user-chosen value. OpenRouter's unified scale is
-            // none/minimal/low/medium/high/xhigh; DeepSeek models hosted there
-            // accept those directly.
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::Novita
-            | ProviderKind::Together => {
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::XiaomiMimo => {
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Arcee | ProviderKind::Huggingface | ProviderKind::Modelscope => {
-                let value = match normalized.as_str() {
-                    "minimal" => "minimal",
-                    "low" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Fireworks => {
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": true,
-                });
-                // vLLM supports low/medium/high natively — pass through the
-                // user-chosen value instead of hard-coding "high".
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::OpenaiCodex
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable.
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama think param.
-                body["think"] = json!(true);
-            }
-            ProviderKind::OllamaCloud => {
-                let value = match normalized.as_str() {
-                    "low" | "minimal" => "low",
-                    "medium" | "mid" => "medium",
-                    _ => "high",
-                };
-                body["reasoning_effort"] = json!(value);
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": true,
-                    "reasoning_effort": "high",
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Zai => {
-                body["thinking"] = json!({
-                    "type": "enabled",
-                    "clear_thinking": false,
-                });
-            }
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        "xhigh" | "max" | "highest" | "ultra" | "ultracode" => match provider {
-            // Handled by the shared DeepSeek table above, before this match.
-            ProviderKind::Deepseek => {}
-            ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Volcengine
-            | ProviderKind::Deepinfra
-            | ProviderKind::Atlascloud => {
-                body["reasoning_effort"] = json!("max");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            // TelecomJS: see comment in the "off" branch above — the gateway's
-            // Chat Completions API does not support reasoning_effort or thinking.
-            ProviderKind::Telecomjs => {}
-            ProviderKind::Edenai => {}
-            ProviderKind::Zenmux => {}
-            // CSDN 星图 is OpenAI-compatible but documents no provider-owned
-            // reasoning dialect; do not invent one.
-            ProviderKind::Csdn => {}
-            // The Codewhale API is a passthrough to the account's own
-            // connected provider; it documents no Codewhale-owned
-            // reasoning-effort translation, so nothing is invented here.
-            ProviderKind::Codewhale => {}
-            // Concentrate rides the Responses wire (`reasoning.effort`), never
-            // these Chat Completions controls.
-            ProviderKind::Concentrate => {}
-            // Model Studio: see the "off" branch — the route- and model-aware
-            // shaper in client::chat is the sole writer of these fields.
-            ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {}
-            ProviderKind::Openrouter
-            | ProviderKind::Orcarouter
-            | ProviderKind::Novita
-            | ProviderKind::Together => {
-                body["reasoning_effort"] = json!("xhigh");
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::XiaomiMimo => {
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Arcee | ProviderKind::Huggingface | ProviderKind::Modelscope => {
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Fireworks => {
-                body["reasoning_effort"] = json!("max");
-            }
-            ProviderKind::Vllm => {
-                body["chat_template_kwargs"] = json!({
-                    "enable_thinking": true,
-                });
-                // vLLM only supports none/low/medium/high — downgrade
-                // "max" to "high" instead of sending an invalid value.
-                body["reasoning_effort"] = json!("high");
-            }
-            ProviderKind::Openai
-            | ProviderKind::WanjieArk
-            | ProviderKind::Qianfan
-            | ProviderKind::OpenaiCodex
-            | ProviderKind::Custom => {}
-            ProviderKind::Moonshot => {
-                // #3024: Kimi models accept thinking enable.
-                body["thinking"] = json!({ "type": "enabled" });
-            }
-            ProviderKind::Ollama => {
-                // #3024: Ollama think param.
-                body["think"] = json!(true);
-            }
-            ProviderKind::OllamaCloud => {
-                body["reasoning_effort"] = json!("max");
-            }
-            ProviderKind::Anthropic
-            | ProviderKind::DeepseekAnthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel => {
-                // Thinking shaping happens in the Messages adapter, which
-                // applies each provider's supported control fields.
-            }
-            ProviderKind::NvidiaNim => {
-                body["chat_template_kwargs"] = json!({
-                    "thinking": true,
-                    "reasoning_effort": "max",
-                });
-            }
-            ProviderKind::Minimax => {}
-            ProviderKind::Zai => {
-                body["thinking"] = json!({
-                    "type": "enabled",
-                    "clear_thinking": false,
-                });
-            }
-            ProviderKind::Stepfun => {}
-            ProviderKind::Sakana => {}
-            ProviderKind::LongCat => {}
-            ProviderKind::OpencodeGo | ProviderKind::OpencodeZen => {}
-            ProviderKind::Meta => {}
-            ProviderKind::Xai => {}
-            ProviderKind::Mistral => {}
-            ProviderKind::Google => {}
-            ProviderKind::Antigravity => {}
-        },
-        _ => {}
-    }
 }
 
 impl CodewhaleClient {
@@ -6548,8 +6281,10 @@ mod chat;
 mod deepseek_effort;
 #[cfg(test)]
 mod ds4_tests;
+pub(crate) mod ollama_catalog;
 mod prepared;
 mod provider_native_search;
+pub(crate) mod reasoning_effort;
 mod responses;
 mod role_placement;
 mod stream_entry;
@@ -6570,10 +6305,18 @@ pub(crate) fn stream_first_response_bound(open: Duration, idle: Duration) -> Dur
 
 #[cfg(test)]
 pub(crate) use stream_entry::first_byte_timeout as stream_first_byte_timeout;
-pub(crate) use stream_entry::{is_stream_open_transport_failure, resolve_stream_open_timeout};
-mod wire;
+pub(crate) use stream_entry::is_stream_open_transport_failure;
+pub(crate) mod wire;
 
 // Retain the crate-visible accounting helpers at the existing client seam.
+#[cfg(test)]
+use reasoning_effort::apply_reasoning_effort;
+use wire::{ERROR_BODY_MAX_BYTES, bounded_error_text};
+#[cfg(test)]
+use wire::{
+    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, from_api_tool_name, release_stream_buffer,
+    to_api_tool_name,
+};
 pub(super) use wire::{parse_usage, saturating_u32};
 
 #[cfg(test)]
@@ -6603,7 +6346,7 @@ pub(crate) use chat::{
 };
 pub(crate) use prepared::{
     CallerStreamMode, EndpointIdentity, PreparedOutboundRequest, RouteShape, WireBodyView,
-    WireDialect, canonical_json,
+    WireDialect,
 };
 pub(crate) use provider_native_search::{ProviderNativeSearchClient, ProviderNativeSearchRequest};
 
@@ -6646,32 +6389,36 @@ mod tests {
 #[cfg(test)]
 mod configured_model_client_tests {
     use super::*;
-    use crate::config::{ProviderConfig, ProvidersConfig};
+    use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
 
     fn config() -> Config {
-        Config {
-            provider: Some("deepseek".into()),
-            providers: Some(ProvidersConfig {
+        {
+            let __cw_config_init_0_0 = Some("deepseek".into());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("configured-model-local-fixture".into()),
                     base_url: Some("https://api.deepseek.com".into()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            custom_models: Some(vec![
+            });
+            let __cw_config_init_0_2 = Some(vec![
                 toml::from_str(
                     r#"
-                provider = "deepseek"
-                base_url = "https://api.deepseek.com"
-                id = "deepseek-v4pro"
-                limit = { context = 96000, output = 32 }
-                cost = { input = 1.0, output = 2.0 }
-            "#,
+                    provider = "deepseek"
+                    base_url = "https://api.deepseek.com"
+                    id = "deepseek-v4pro"
+                    limit = { context = 96000, output = 32 }
+                    cost = { input = 1.0, output = 2.0 }
+                "#,
                 )
                 .unwrap(),
-            ]),
-            ..Config::default()
+            ]);
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value.custom_models = __cw_config_init_0_2;
+            __cw_config_init_0_value
         }
     }
 
@@ -6694,7 +6441,7 @@ mod configured_model_client_tests {
         .unwrap();
         let model = "deepseek-v4pro";
         config.providers.as_mut().unwrap().deepseek.model = Some(model.into());
-        crate::config::normalize_model_config_for_test(&mut config);
+        codewhale_runtime::config::normalize_model_config_for_test(&mut config);
         assert_eq!(config.default_model(), model);
         assert_eq!(
             config.providers.as_ref().unwrap().deepseek.model.as_deref(),
@@ -6818,14 +6565,15 @@ mod configured_model_client_tests {
 #[cfg(test)]
 mod openrouter_vendor_tests {
     use super::*;
-    use crate::config::{OPENROUTER_QWEN_3_6_FLASH_MODEL, ProviderConfig, ProvidersConfig};
+    use codewhale_config::catalog::reviewed::constants::OPENROUTER_QWEN_3_6_FLASH_MODEL;
+    use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
     use futures_util::StreamExt;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     fn config(base_url: &str, vendor: Option<&str>) -> Config {
-        Config {
-            provider: Some("openrouter".into()),
-            providers: Some(ProvidersConfig {
+        {
+            let __cw_config_init_1_0 = Some("openrouter".into());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     api_key: Some("vendor-pin-local-fixture".into()),
                     base_url: Some(base_url.into()),
@@ -6834,8 +6582,11 @@ mod openrouter_vendor_tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         }
     }
 
@@ -6920,7 +6671,7 @@ mod openrouter_vendor_tests {
                 .prepare_outbound_request(request(), false)
                 .unwrap()
                 .body;
-            crate::llm_response_cache::ResponseCache::make_key(
+            codewhale_runtime::llm_response_cache::ResponseCache::make_key(
                 "openrouter",
                 &client.base_url,
                 None,

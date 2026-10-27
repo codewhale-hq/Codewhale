@@ -119,8 +119,8 @@ const PROHIBITED_NESTED: &[&str] = &[
     // Recursive RLM rounds are admitted by the turn loop serving the direct
     // `rlm` call; a program has no such server for a nested one.
     "rlm",
-    crate::core::engine::tool_catalog::REQUEST_USER_INPUT_NAME,
-    crate::core::engine::tool_catalog::MULTI_TOOL_PARALLEL_NAME,
+    codewhale_tools::names::REQUEST_USER_INPUT_NAME,
+    codewhale_tools::names::MULTI_TOOL_PARALLEL_NAME,
 ];
 
 /// Model-facing definition. `defer_loading` is decided by the catalog
@@ -214,7 +214,16 @@ pub(crate) enum NestedCallVerdict {
 }
 
 /// One nested call waiting on the turn loop's gate.
-pub(crate) struct NestedCallRequest {
+pub(crate) enum NestedCallRequest {
+    Tool(NestedToolCallRequest),
+    Checkpoint {
+        caller: crate::core::events::SessionCheckpointCaller,
+        withdraw: CancellationToken,
+        reply: oneshot::Sender<Result<bool, ToolError>>,
+    },
+}
+
+pub(crate) struct NestedToolCallRequest {
     pub(crate) name: String,
     pub(crate) input: Value,
     pub(crate) reply: oneshot::Sender<NestedCallVerdict>,
@@ -226,7 +235,7 @@ pub(crate) struct NestedCallRequest {
     pub(crate) withdraw: Option<CancellationToken>,
 }
 
-impl NestedCallRequest {
+impl NestedToolCallRequest {
     /// Nobody is waiting for the answer any more.
     pub(crate) fn is_stale(&self) -> bool {
         self.reply.is_closed()
@@ -314,6 +323,32 @@ impl NestedCallGate {
             .map(|gate| (&gate.caller, gate.specs.as_slice()))
     }
 
+    pub(crate) async fn checkpoint(
+        &self,
+        caller: crate::core::events::SessionCheckpointCaller,
+        withdraw: CancellationToken,
+    ) -> Result<bool, ToolError> {
+        if self.extension.is_none() {
+            return Err(ToolError::not_available(
+                "session checkpoint requires a directly served extension invocation",
+            ));
+        }
+        let (reply, answer) = oneshot::channel();
+        let request = NestedCallRequest::Checkpoint {
+            caller,
+            withdraw: withdraw.clone(),
+            reply,
+        };
+        tokio::select! {
+            biased;
+            () = withdraw.cancelled() => Err(ToolError::cancelled("session checkpoint was withdrawn")),
+            result = async {
+                self.requests.send(request).await.map_err(|_| ToolError::not_available("the turn no longer serves session checkpoints"))?;
+                answer.await.map_err(|_| ToolError::not_available("owning host did not acknowledge the session checkpoint"))?
+            } => result,
+        }
+    }
+
     /// Ask the serving turn loop to decide one nested call. A gate nobody
     /// serves any more refuses.
     pub(crate) async fn ask(&self, name: String, input: Value) -> NestedCallVerdict {
@@ -340,12 +375,12 @@ impl NestedCallGate {
             decision: NestedDecision::Refused,
         };
         let (reply, answer) = oneshot::channel();
-        let request = NestedCallRequest {
+        let request = NestedCallRequest::Tool(NestedToolCallRequest {
             name,
             input,
             reply,
             withdraw: withdraw.clone(),
-        };
+        });
         let wait = async {
             if self.requests.send(request).await.is_err() {
                 return unavailable();
@@ -386,6 +421,15 @@ impl NestedCallGate {
         let (gate, mut requests) = Self::new(None, tx_event, Duration::from_secs(60));
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
+                let request = match request {
+                    NestedCallRequest::Tool(request) => request,
+                    NestedCallRequest::Checkpoint { reply, .. } => {
+                        let _ = reply.send(Err(ToolError::not_available(
+                            "fixture has no session checkpoint backend",
+                        )));
+                        continue;
+                    }
+                };
                 let _ = request.reply.send(answer(&request.name, &request.input));
             }
         });
@@ -403,7 +447,7 @@ impl NestedCallGate {
 pub(crate) fn refusal_before_gate(name: &str, input: &Value, gated: bool) -> Option<String> {
     let lower = name.to_ascii_lowercase();
     if PROHIBITED_NESTED.contains(&lower.as_str())
-        || (!gated && crate::core::engine::tool_catalog::is_tool_search_tool(&lower))
+        || (!gated && codewhale_tools::names::is_tool_search_tool(&lower))
     {
         return Some(format!(
             "`{name}` is not available inside execute_tools programs; call it directly (use workflow/task() for fan-out)"
@@ -1694,6 +1738,15 @@ mod tests {
         let counter = asked.clone();
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
+                let request = match request {
+                    NestedCallRequest::Tool(request) => request,
+                    NestedCallRequest::Checkpoint { reply, .. } => {
+                        let _ = reply.send(Err(ToolError::not_available(
+                            "fixture has no session checkpoint backend",
+                        )));
+                        continue;
+                    }
+                };
                 counter.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(delay).await;
                 let verdict = answer(&request.name, &request.input);

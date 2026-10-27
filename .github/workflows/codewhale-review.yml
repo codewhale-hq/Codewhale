@@ -50,7 +50,7 @@ jobs:
         id: review
         uses: ./
         with:
-          version: ${{ vars.CODEWHALE_REVIEW_VERSION || 'v0.10.0' }}
+          version: ${{ vars.CODEWHALE_REVIEW_VERSION || 'v0.10.2' }}
           provider: codewhale
           model: ${{ vars.CODEWHALE_REVIEW_MODEL }}
           pr-number: ${{ inputs.pr-number }}

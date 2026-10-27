@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::protocol::{
-    CoreRequest, ExecutionRedeemParams, HarnessRunParams, OwnerRef, RpcErrorWire, error_code,
+    CoreRequest, ExecutionRedeemParams, HarnessRunParams, RpcErrorWire, error_code,
 };
 use super::registry::OwnerState;
 use super::supervisor::HostRequestContext;
@@ -20,8 +20,9 @@ use super::tier::HostTier;
 use super::{ExtensionHostManager, ManagerShared, activation};
 use crate::plugins::PluginRegistry;
 use crate::plugins::activation::PluginActivationCapability;
-use crate::plugins::types::PluginAuthority;
 use crate::tools::spec::{ToolContext, ToolError, ToolResult};
+use codewhale_config::OwnerRef;
+use codewhale_config::PluginAuthority;
 
 const DEADLINE: Duration = Duration::from_secs(120);
 const MAX_JOBS: usize = 32;
@@ -254,7 +255,7 @@ fn check_stock_snapshot(operation: StockOperation, input: &Value) -> Result<(), 
 type HookRun = Box<dyn FnOnce(CancellationToken) -> crate::hooks::HookResult + Send>;
 struct HookLaunch {
     run: HookRun,
-    hook: crate::hooks::Hook,
+    hook: codewhale_config::hooks::Hook,
 }
 struct PdfLaunch {
     input: crate::tools::pdf::CapturedPdf,
@@ -394,7 +395,7 @@ impl Broker {
             }
         }
     }
-    pub(super) fn revoke_scope(&self, plugin_id: &str, scope: &super::protocol::EntryRef) {
+    pub(super) fn revoke_scope(&self, plugin_id: &str, scope: &codewhale_config::EntryRef) {
         for job in self.jobs.lock().expect("execution lock").values() {
             if job.caller.plugins.as_ref().is_some_and(|plugins| {
                 plugins
@@ -691,7 +692,7 @@ async fn run_job(shared: Arc<ManagerShared>, job: Arc<Job>) -> Result<Value, Str
             }
             job_worker.check(&shared_worker)?;
             // ShellEnv stdout may contain credentials. It is retained only in Rust.
-            let projection=if launch_hook.hook.event==crate::hooks::HookEvent::ShellEnv {
+            let projection=if launch_hook.hook.event==codewhale_config::hooks::HookEvent::ShellEnv {
                 json!({"kind":"hook","event":"shell_env","success":result.success,"exit_code":result.exit_code,"keys":crate::hooks::shell_env_keys(&result.stdout)})
             } else if launch_hook.hook.native_shell.is_some() {
                 json!({"kind":"hook","event":launch_hook.hook.event.as_str(),"success":result.success,"exit_code":result.exit_code,"stdout":result.stdout,"stderr":result.stderr})
@@ -709,13 +710,16 @@ async fn run_job(shared: Arc<ManagerShared>, job: Arc<Job>) -> Result<Value, Str
         .as_mut()
         .ok_or("execution command is missing")?;
     // The selected Builtin never sees the environment, argv, input, cwd or decision.
-    crate::child_env::apply_to_tokio_command(command, std::iter::empty::<(&str, &str)>());
+    codewhale_runtime::child_env::apply_to_tokio_command(
+        command,
+        std::iter::empty::<(&str, &str)>(),
+    );
     job.check(&shared)?;
     let stop = async {
         let remaining = job.expires.saturating_duration_since(Instant::now());
         tokio::select! { _ = job.cancel.cancelled() => {}, _ = tokio::time::sleep(remaining) => {}, }
     };
-    let output = crate::process_tree::contained_output_with_input_bounded(
+    let output = codewhale_runtime::process_tree::contained_output_with_input_bounded(
         command,
         launch.input,
         MAX_STDOUT,
@@ -782,7 +786,7 @@ impl ExtensionHostManager {
         if operation.is_review()
             && !context
                 .features
-                .enabled(crate::features::Feature::ReviewHost)
+                .enabled(codewhale_runtime::features::Feature::ReviewHost)
         {
             return Err(ToolError::not_available(
                 "Review Host backend is not selected",
@@ -821,7 +825,7 @@ impl ExtensionHostManager {
     ) -> Result<ToolResult, ToolError> {
         if !context
             .features
-            .enabled(crate::features::Feature::GithubHost)
+            .enabled(codewhale_runtime::features::Feature::GithubHost)
         {
             return Err(ToolError::not_available(
                 "GitHub Host backend is not selected",
@@ -913,7 +917,10 @@ impl ExtensionHostManager {
         input: crate::tools::pdf::CapturedPdf,
         context: &ToolContext,
     ) -> Result<(crate::tools::pdf::PdfProcessOutcome, ToolResult), ToolError> {
-        if !context.features.enabled(crate::features::Feature::PdfHost) {
+        if !context
+            .features
+            .enabled(codewhale_runtime::features::Feature::PdfHost)
+        {
             return Err(ToolError::not_available("PDF Host backend is not selected"));
         }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -956,7 +963,10 @@ impl ExtensionHostManager {
         input: crate::tools::image_ocr::CapturedOcr,
         context: &ToolContext,
     ) -> Result<(crate::tools::image_ocr::OcrOutcome, ToolResult), ToolError> {
-        if !context.features.enabled(crate::features::Feature::OcrHost) {
+        if !context
+            .features
+            .enabled(codewhale_runtime::features::Feature::OcrHost)
+        {
             return Err(ToolError::not_available("OCR Host backend is not selected"));
         }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1086,7 +1096,7 @@ impl ExtensionHostManager {
         let mut target = caller.target(&id);
         if let Some(github) = launch.github.as_ref() {
             target["operation"] = json!("github_capture");
-            target["snapshot_sha256"] = json!(crate::hashing::sha256_hex(
+            target["snapshot_sha256"] = json!(codewhale_runtime::hashing::sha256_hex(
                 &serde_json::to_vec(&github.request)
                     .map_err(|_| ToolError::invalid_input("GitHub operation is not JSON"))?
             ));
@@ -1101,7 +1111,7 @@ impl ExtensionHostManager {
         }
         if let Some((operation, input)) = launch.stock.as_ref() {
             target["operation"] = json!(operation.as_str());
-            target["snapshot_sha256"] = json!(crate::hashing::sha256_hex(
+            target["snapshot_sha256"] = json!(codewhale_runtime::hashing::sha256_hex(
                 &serde_json::to_vec(input)
                     .map_err(|_| ToolError::invalid_input("adapter snapshot is not JSON"))?
             ));
@@ -1209,7 +1219,7 @@ impl ExtensionHostManager {
     pub(crate) async fn execute_hook<F>(
         &self,
         caller: crate::hooks::HookCaller,
-        hook: crate::hooks::Hook,
+        hook: codewhale_config::hooks::Hook,
         timeout: Duration,
         query: String,
         run: F,
@@ -1343,7 +1353,7 @@ impl ExtensionHostManager {
             .ok_or("hook process produced no receipt")?;
         // Only Native dialect codecs may project a bounded proposal; final steering stays Rust-owned.
         if hook.native_shell.is_some()
-            && hook.event != crate::hooks::HookEvent::ShellEnv
+            && hook.event != codewhale_config::hooks::HookEvent::ShellEnv
             && let Some(stdout) = value.get("proposal").and_then(Value::as_str)
         {
             if stdout.len() > 64 * 1024 {
@@ -1477,13 +1487,13 @@ mod tests {
         };
         let root = tempfile::tempdir().unwrap();
         let manager = ExtensionHostManager::new(ExtensionHostOptions {
-            runtime: crate::config::ExtensionHostRuntime::Node,
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(root.path().join("host")),
             ..Default::default()
         });
-        let mut features = crate::features::Features::with_defaults();
-        features.enable(crate::features::Feature::ReviewHost);
+        let mut features = codewhale_runtime::features::Features::with_defaults();
+        features.enable(codewhale_runtime::features::Feature::ReviewHost);
         let context = ToolContext::new(root.path()).with_features(features);
         let fixture: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/review-host-parity.json"))
@@ -1582,7 +1592,7 @@ mod tests {
     }
     #[tokio::test(flavor = "current_thread")]
     async fn actual_github_broker_returns_private_core_permission_fault() {
-        use crate::network_policy::{DecisionToml, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{DecisionToml, NetworkPolicy, NetworkPolicyDecider};
         let _home = crate::test_support::SealedHome::new();
         let _policy = crate::plugins::activation::TestPolicyGuard::extension_host(false);
         let Some(node) = super::super::tests::node_for_tests("github_private_core_fault") else {
@@ -1591,7 +1601,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let _repo = crate::test_support::EnvVarGuard::set("GH_REPO", "owner/name");
         let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-            runtime: crate::config::ExtensionHostRuntime::Node,
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(temp.path().join("host")),
             ..Default::default()
@@ -1606,7 +1616,7 @@ mod tests {
             ));
         context
             .features
-            .enable(crate::features::Feature::GithubHost);
+            .enable(codewhale_runtime::features::Feature::GithubHost);
         let error = manager
             .execute_github(
                 crate::tools::github::host::Request::Comment {
@@ -1640,7 +1650,7 @@ mod tests {
         };
         let root = tempfile::tempdir().unwrap();
         let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-            runtime: crate::config::ExtensionHostRuntime::Node,
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(root.path().join("host")),
             ..ExtensionHostOptions::default()
@@ -1662,8 +1672,8 @@ mod tests {
             }),
             None,
         );
-        let mut flags = crate::features::Features::with_defaults();
-        flags.enable(crate::features::Feature::OcrHost);
+        let mut flags = codewhale_runtime::features::Features::with_defaults();
+        flags.enable(codewhale_runtime::features::Feature::OcrHost);
         let cancel = CancellationToken::new();
         let context = ToolContext::new(root.path())
             .with_features(flags)
@@ -1712,7 +1722,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-            runtime: crate::config::ExtensionHostRuntime::Node,
+            runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(root.path().join("host")),
             ..ExtensionHostOptions::default()

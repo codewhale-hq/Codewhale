@@ -159,8 +159,8 @@ fn truncate_preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::{App, QueuedMessage, TuiOptions};
+    use codewhale_runtime::config::Config;
     use tempfile::TempDir;
 
     fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {

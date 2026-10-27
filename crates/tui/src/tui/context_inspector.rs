@@ -150,7 +150,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         out,
         "{}: {}",
         tr(locale, MessageId::CtxInspWorkspace),
-        crate::utils::display_path(&app.workspace)
+        codewhale_util::utils::display_path(&app.workspace)
     );
     if let Some(session_id) = app.current_session_id.as_deref() {
         let _ = writeln!(
@@ -802,7 +802,7 @@ impl ContextInspectorView {
         self.max = max;
         self.percent = percent;
         self.model = app.model_display_label();
-        self.workspace = crate::utils::display_path(&app.workspace);
+        self.workspace = codewhale_util::utils::display_path(&app.workspace);
         self.threshold = app.auto_compact_threshold_percent;
         self.locale = app.ui_locale;
         let max_f = f64::from(max.max(1));
@@ -1026,8 +1026,8 @@ impl ModalView for ContextInspectorView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use codewhale_models::Role;
+    use codewhale_runtime::config::Config;
 
     #[test]
     fn short_tool_id_never_panics_on_multibyte() {
@@ -1063,7 +1063,7 @@ mod tests {
         // Pin the route identity: App::new consults the developer's real
         // saved settings, so on a machine with customized provider/model
         // the context-window assertions computed against a different route.
-        app.api_provider = crate::config::ProviderKind::Deepseek;
+        app.api_provider = codewhale_config::ProviderKind::Deepseek;
         app.auto_model = false;
         app.last_effective_model = None;
         app.active_route_limits = None;

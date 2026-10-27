@@ -7,7 +7,7 @@
 //! session that triggered compaction under-reported
 //! cost by however many tokens those background calls consumed.
 //!
-//! Mirrors the [`crate::retry_status`] pattern: background callers
+//! Mirrors the [`codewhale_runtime::retry_status`] pattern: background callers
 //! call [`crate::cost_status::report_effective_route`] after each
 //! `client.create_message`, the TUI
 //! render loop calls [`drain`] every frame, and any drained amount
@@ -32,14 +32,15 @@
 //! below is a separate route/usage copy (never another money counter), and the
 //! shared test reset clears both stores.
 
+use codewhale_runtime::safe_label::{safe_receipt_field, sanitize_persisted_route_label};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
 
-use crate::config::ProviderKind;
 use crate::pricing::{CostEstimate, TurnCostAudit};
 use crate::route_billing::BillingPresentation;
+use codewhale_config::ProviderKind;
 use codewhale_models::Usage;
 
 /// Everything a drained background accrual needs to be explained.
@@ -249,7 +250,7 @@ impl EffectiveRouteEnvelope {
 
     #[cfg(test)]
     pub fn capture(
-        config: Option<&crate::config::Config>,
+        config: Option<&codewhale_runtime::config::Config>,
         provider: ProviderKind,
         provider_identity: impl Into<String>,
         model: impl Into<String>,
@@ -269,8 +270,8 @@ impl EffectiveRouteEnvelope {
 
     #[must_use]
     pub fn from_admitted(
-        config: Option<&crate::config::Config>,
-        identity: &crate::config::ProviderIdentity,
+        config: Option<&codewhale_runtime::config::Config>,
+        identity: &codewhale_runtime::config::ProviderIdentity,
         model: impl Into<String>,
         base_url: Option<&str>,
         dispatched_at: DateTime<Utc>,
@@ -288,7 +289,10 @@ impl EffectiveRouteEnvelope {
     }
 
     fn from_facts(
-        admission: Option<(&crate::config::Config, &crate::config::ProviderIdentity)>,
+        admission: Option<(
+            &codewhale_runtime::config::Config,
+            &codewhale_runtime::config::ProviderIdentity,
+        )>,
         facts: (ProviderKind, &str),
         model: impl Into<String>,
         base_url: Option<&str>,
@@ -1281,7 +1285,7 @@ struct RuntimeUsageSinkEntry {
 pub(crate) fn decision_receipt_fixture(source_id: &str) -> RuntimeDecisionReceipt {
     let mut route = EffectiveRouteEnvelope::capture(
         None,
-        crate::config::ProviderKind::Custom,
+        codewhale_config::ProviderKind::Custom,
         "typesafe",
         "jev-latest",
         Some("https://api.typesafe.ai/v1"),
@@ -2105,166 +2109,6 @@ pub fn route_receipt(
     )
 }
 
-const MAX_RECEIPT_FIELD_CHARS: usize = 96;
-
-fn safe_receipt_field(raw: &str) -> String {
-    let sanitized = sanitize_persisted_route_label(raw);
-    let mut out = String::with_capacity(raw.len().min(MAX_RECEIPT_FIELD_CHARS));
-    let mut previous_separator = false;
-    for ch in sanitized.chars() {
-        if out.chars().count() >= MAX_RECEIPT_FIELD_CHARS {
-            break;
-        }
-        let safe = if ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':' | '+') {
-            ch
-        } else {
-            '_'
-        };
-        let separator = safe == '_';
-        if separator && previous_separator {
-            continue;
-        }
-        out.push(safe);
-        previous_separator = separator;
-    }
-    if out.is_empty() { "-".to_string() } else { out }
-}
-
-pub(crate) fn sanitize_persisted_route_label(raw: &str) -> String {
-    const MAX_PERSISTED_ROUTE_LABEL_CHARS: usize = 256;
-    let value = raw.trim();
-    let lower = value.to_ascii_lowercase();
-
-    if value.is_empty() {
-        return "-".to_string();
-    }
-
-    // URLs are not route labels. Endpoints have a dedicated, validated hash
-    // field; persisting a URL here risks leaking userinfo, query credentials,
-    // or fragments through a custom provider/model name.
-    if value.contains("://") {
-        return "redacted-url".to_string();
-    }
-
-    let authorization_value = ["bearer ", "basic ", "digest ", "token ", "apikey "]
-        .iter()
-        .any(|scheme| lower.starts_with(scheme))
-        || lower.contains("authorization:")
-        || lower.contains("proxy-authorization:");
-    if authorization_value {
-        return "redacted-credential".to_string();
-    }
-
-    // Reject credential assignments regardless of common casing or separator:
-    // FOO_API_KEY=..., access-token:..., password = ....
-    for (index, ch) in value.char_indices() {
-        if !matches!(ch, '=' | ':') {
-            continue;
-        }
-        let name = lower[..index]
-            .trim()
-            .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '{' | '[' | ','));
-        let name = name.rsplit([' ', ',', ';']).next().unwrap_or(name);
-        let normalized = name.replace('-', "_");
-        if normalized.ends_with("api_key")
-            || normalized.ends_with("token")
-            || normalized.ends_with("secret")
-            || normalized.ends_with("password")
-            || normalized.ends_with("passwd")
-        {
-            return "redacted-credential".to_string();
-        }
-    }
-
-    // Common credential token prefixes. These are intentionally checked at
-    // word boundaries so model ids containing an incidental "sk" survive.
-    let credential_prefix = lower
-        .split(|ch: char| ch.is_whitespace() || matches!(ch, '=' | ':' | ',' | ';' | '"' | '\''))
-        .filter(|part| !part.is_empty())
-        .any(|part| {
-            [
-                "sk-",
-                "sk_",
-                "rk-",
-                "pk-",
-                "ghp_",
-                "gho_",
-                "ghu_",
-                "ghs_",
-                "github_pat_",
-                "hf_",
-                "glpat-",
-                "xoxb-",
-                "xoxp-",
-                "xoxa-",
-                "akia",
-                "aiza",
-                "eyj",
-            ]
-            .iter()
-            .any(|prefix| part.starts_with(prefix))
-        });
-    if credential_prefix {
-        return "redacted-credential".to_string();
-    }
-
-    let windows_absolute = value.as_bytes().get(1) == Some(&b':')
-        && value
-            .as_bytes()
-            .get(2)
-            .is_some_and(|separator| matches!(separator, b'/' | b'\\'));
-    let contains_local_root = [
-        "/users/",
-        "/volumes/",
-        "/home/",
-        "/private/",
-        "\\users\\",
-        "file://",
-        "/.ssh/",
-        "\\.ssh\\",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-    let looks_like_relative_path = value.contains('\\')
-        || lower.starts_with(".ssh/")
-        || lower.starts_with(".ssh\\")
-        || lower.split('/').any(|segment| {
-            matches!(
-                segment,
-                "." | ".."
-                    | ".ssh"
-                    | ".config"
-                    | "secrets"
-                    | "secret"
-                    | "credentials"
-                    | "credential"
-                    | "relative"
-                    | "workspace"
-                    | "tmp"
-            )
-        });
-    if std::path::Path::new(value).is_absolute()
-        || windows_absolute
-        || value.starts_with("~/")
-        || value.starts_with("./")
-        || value.starts_with("../")
-        || contains_local_root
-        || looks_like_relative_path
-    {
-        return "redacted-local-path".to_string();
-    }
-    let bounded: String = value
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(MAX_PERSISTED_ROUTE_LABEL_CHARS)
-        .collect();
-    if bounded.is_empty() {
-        "-".to_string()
-    } else {
-        bounded
-    }
-}
-
 /// Validate and canonicalize an endpoint before producing the cryptographic
 /// fingerprint persisted in a receipt. Secret-bearing/malformed URLs receive
 /// no fingerprint at all; userinfo, query strings, and fragments are never fed
@@ -2978,7 +2822,11 @@ pub(crate) fn test_scope() -> TestCostScope {
 mod tests {
     use super::*;
 
-    fn configured_fixture_receipt() -> (crate::config::Config, EffectiveRouteEnvelope, Usage) {
+    fn configured_fixture_receipt() -> (
+        codewhale_runtime::config::Config,
+        EffectiveRouteEnvelope,
+        Usage,
+    ) {
         let config = toml::from_str(include_str!(
             "../../config/tests/fixtures/custom_models.toml"
         ))
@@ -3095,7 +2943,10 @@ mod tests {
 
     /// An OpenRouter config on the official endpoint with one
     /// `[[custom_models]]` row; `extra` adds fields such as `cost`.
-    fn openrouter_declared_config(extra: &str, vendor: Option<&str>) -> crate::config::Config {
+    fn openrouter_declared_config(
+        extra: &str,
+        vendor: Option<&str>,
+    ) -> codewhale_runtime::config::Config {
         let vendor = vendor.map_or_else(String::new, |vendor| format!("vendor = \"{vendor}\"\n"));
         toml::from_str(&format!(
             "provider = \"openrouter\"\ntelemetry = false\n\n\
@@ -3103,13 +2954,13 @@ mod tests {
              base_url = \"{base}\"\nid = \"{DECLARED_OPENROUTER_MODEL}\"\n{extra}\n\n\
              [providers.openrouter]\nbase_url = \"{base}\"\n\
              api_key = \"fixture-not-a-provider-credential\"\n{vendor}",
-            base = crate::config::DEFAULT_OPENROUTER_BASE_URL,
+            base = codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
         ))
         .expect("declared OpenRouter config")
     }
 
     fn declared_openrouter_client(
-        config: &crate::config::Config,
+        config: &codewhale_runtime::config::Config,
     ) -> crate::client::CodewhaleClient {
         let route = crate::route_runtime::resolve_runtime_route(
             config,
@@ -3136,8 +2987,10 @@ mod tests {
         let _live = crate::provider_lake::lock_live_snapshot();
         crate::provider_lake::clear_live_snapshot();
 
-        let fingerprint = endpoint_fingerprint(crate::config::DEFAULT_OPENROUTER_BASE_URL)
-            .expect("official endpoint");
+        let fingerprint = endpoint_fingerprint(
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
+        )
+        .expect("official endpoint");
         let now = u64::try_from(Utc::now().timestamp()).expect("timestamp");
         let rateless = declared_openrouter_client(&openrouter_declared_config("", None));
         let declared = declared_openrouter_client(&openrouter_declared_config(
@@ -3212,7 +3065,7 @@ mod tests {
                 ProviderKind::Openrouter,
                 "openrouter",
                 DECLARED_OPENROUTER_MODEL,
-                Some(crate::config::DEFAULT_OPENROUTER_BASE_URL),
+                Some(codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL),
                 Utc::now(),
             )
         };
@@ -3551,7 +3404,7 @@ mod tests {
                 ProviderKind::Openrouter.as_str(),
                 "synthetic-openrouter-frozen-price",
                 codewhale_config::catalog::base_url_fingerprint(
-                    crate::config::DEFAULT_OPENROUTER_BASE_URL,
+                    codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
                 ),
                 crate::pricing::AGGREGATOR_BILLING_SURFACE,
                 RouteBillingMode::Metered,
@@ -3677,7 +3530,7 @@ mod tests {
                 ProviderKind::Openrouter.as_str(),
                 "synthetic-openrouter-legacy",
                 &codewhale_config::catalog::base_url_fingerprint(
-                    crate::config::DEFAULT_OPENROUTER_BASE_URL,
+                    codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
                 ),
                 Some(crate::pricing::AGGREGATOR_BILLING_SURFACE),
                 RouteBillingMode::Metered,
@@ -3736,7 +3589,7 @@ mod tests {
         let fetched_at = u64::try_from(dispatched_at.timestamp()).expect("timestamp");
         let model = "qwen/qwen3.8-flash";
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
-            crate::config::DEFAULT_OPENROUTER_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
         );
         let route = provider_live_usage_envelope(
             ProviderKind::Openrouter,
@@ -3803,7 +3656,7 @@ mod tests {
                 ProviderKind::Openrouter.as_str(),
                 "synthetic-openrouter-future",
                 codewhale_config::catalog::base_url_fingerprint(
-                    crate::config::DEFAULT_OPENROUTER_BASE_URL,
+                    codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
                 ),
                 crate::pricing::AGGREGATOR_BILLING_SURFACE,
                 RouteBillingMode::Metered,
@@ -4081,12 +3934,13 @@ mod tests {
     }
 
     fn deepseek() -> BackgroundRoute<'static> {
-        BackgroundRoute::new(ProviderKind::Deepseek, "deepseek-v4-flash")
-            .with_base_url(Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL))
+        BackgroundRoute::new(ProviderKind::Deepseek, "deepseek-v4-flash").with_base_url(Some(
+            codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
+        ))
     }
 
     fn deepseek_envelope() -> EffectiveRouteEnvelope {
-        let config = crate::config::Config::default();
+        let config = codewhale_runtime::config::Config::default();
         let identity = config
             .active_provider_identity()
             .expect("captured DeepSeek identity");
@@ -4094,7 +3948,7 @@ mod tests {
             Some(&config),
             &identity,
             "deepseek-v4-flash",
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL),
             Utc::now(),
         )
     }
@@ -4365,9 +4219,12 @@ mod tests {
 
     #[test]
     fn openrouter_vendor_pin_survives_envelope_and_child_metadata_persistence() {
-        let mut config = crate::config::Config {
-            provider: Some("openrouter".to_string()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         config
             .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Openrouter))
@@ -5040,8 +4897,9 @@ mod tests {
         );
         report(
             scope_token(),
-            &BackgroundRoute::new(ProviderKind::Moonshot, "kimi-for-coding")
-                .with_base_url(Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL)),
+            &BackgroundRoute::new(ProviderKind::Moonshot, "kimi-for-coding").with_base_url(Some(
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            )),
             &small_usage(),
         );
         let drained = drain();

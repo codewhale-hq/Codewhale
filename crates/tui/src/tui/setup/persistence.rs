@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::config::Config;
 use crate::tui::app::App;
+use codewhale_runtime::config::Config;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SetupPersistenceFacts {

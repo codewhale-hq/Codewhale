@@ -22,8 +22,9 @@ use serde_json::{Value, json};
 use codewhale_config::AppMode;
 
 use super::golden::{self, Failures, Sandbox};
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HooksConfig};
+use crate::hooks::{HookContext, HookExecutor};
 use crate::tools::spec::{ToolError, ToolResult};
+use codewhale_config::hooks::{HookEvent, HooksConfig};
 
 const FAMILY: &str = "hooks";
 

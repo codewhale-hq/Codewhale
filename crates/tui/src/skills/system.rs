@@ -41,7 +41,7 @@ use sha2::{Digest, Sha256};
 /// person; the exact generation-16 body allows a safe upgrade.
 /// Generation 18 recognizes previously shipped bodies by SHA-256 as well as by
 /// retained bytes, so an untouched copy from any earlier generation upgrades.
-const BUNDLED_SKILL_VERSION: &str = "18";
+const BUNDLED_SKILL_VERSION: &str = "19";
 
 // ── system & extension (meta) ───────────────────────────────────────────────
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");

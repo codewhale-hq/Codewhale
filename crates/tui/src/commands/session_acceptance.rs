@@ -7,13 +7,13 @@ use cucumber::{World as _, given, then, when, writer::Stats as _};
 use tempfile::TempDir;
 
 use crate::commands::{self, CommandResult};
-use crate::config::Config;
 use crate::session_manager::{SavedSession, SessionManager, create_saved_session_with_id_and_mode};
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::app::{App, AppAction, TuiOptions};
 use crate::tui::history::HistoryCell;
 use crate::tui::views::ModalKind;
 use codewhale_models::{ContentBlock, Message, Role};
+use codewhale_runtime::config::Config;
 
 const FEATURE_NAME: &str = "Session command workflows";
 const FEATURE_PATH: &str = concat!(

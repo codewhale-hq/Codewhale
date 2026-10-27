@@ -111,6 +111,18 @@ test('the published DSH plugin runs unmodified and returns its payload', async (
   assert.match(output.structured.python, /payload[\\/][a-z0-9]+-[a-z0-9]+[\\/]dependencies[\\/]python/)
   assert.equal(output.content[0].type, 'text')
   assert.deepEqual(JSON.parse(output.content[0].text), output.structured)
+  for (const [name, definition, expected] of [
+    ['invalid-output', "{ schema: { type: 'string' }, render: () => [{ type: 'text', text: 'invalid' }] }", /returned invalid output/],
+    ['unsupported-content', "{ schema: { type: 'number' }, render: () => [{ type: 'image', source: 'hidden' }] }", /unsupported content block/],
+    ['malformed-render', "{ schema: { type: 'number' }, render: () => 'hidden' }", /must return an array/],
+  ]) {
+    const plugin = tempPlugin(`export const inject = ['tools']; export function apply(ctx) { ctx.tools.register({ name: '${name}', parameters: { type: 'object' }, output: ${definition}, execute: () => 7 }) }`)
+    t.after(() => plugin.cleanup())
+    const activated = await activate(host, name, plugin.entry)
+    assert.equal(activated.result.status, 'ok', activated.result.diagnostic)
+    const tool = host.registry.find(row => row.op === 'register' && row.spec.name === name)
+    await assert.rejects(host.call('tool/call', { handle: tool.handle, call_id: name, input: {}, deadline_ms: 5000 }), expected)
+  }
 })
 
 test('providing `approval` fails activation and rolls back every registration', async (t) => {
@@ -162,6 +174,20 @@ test('injecting a service the host does not provide fails with its name', async 
   const { result } = await activate(host, 'needs-secrets', plugin.entry)
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `secrets`/)
+  const provided = tempPlugin("export const inject = ['shellHooks', 'sessions']; export function apply(ctx) { if (!ctx.shellHooks || typeof ctx.sessions.flush !== 'function') throw new Error('missing provided service') }\n")
+  t.after(() => provided.cleanup())
+  const available = await activate(host, 'needs-shell-hooks', provided.entry)
+  assert.equal(available.result.status, 'ok', available.result.diagnostic)
+  for (const service of ['llm', 'systemPrompt', 'agents', 'subagents', 'userQuestions']) {
+    const pure = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
+export const inject = [${JSON.stringify(service)}]
+export function apply() { createUserMessage({ content: [], source: { kind: 'fixture' } }) }
+`)
+    t.after(pure.cleanup)
+    const refused = (await activate(host, `pure-needs-${service}`, pure.entry)).result
+    assert.equal(refused.status, 'failed')
+    assert.ok(refused.diagnostic.includes('requires `' + service + '`'), refused.diagnostic)
+  }
 })
 
 test('an unsupported DSH peer fails the import loudly', async (t) => {
@@ -171,6 +197,18 @@ test('an unsupported DSH peer fails the import loudly', async (t) => {
   const { result } = await activate(host, 'needs-agent', plugin.entry)
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
+  for (const specifier of ['@deepseek-ai/dsh-llm/typert', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types', '@deepseek-ai/dsh-system-prompt/src/index.js']) {
+    const subpath = tempPlugin(`import '${specifier}'\nexport function apply() {}\n`)
+    t.after(subpath.cleanup)
+    const packageName = specifier.split('/').slice(0, 2).join('/')
+    const root = join(subpath.dir, 'node_modules', packageName)
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: packageName, type: 'module', exports: { '.': './index.js', './*': './index.js' } }))
+    writeFileSync(join(root, 'index.js'), "throw new Error('foreign runtime loaded')\n")
+    const refused = (await activate(host, 'pure-subpath-' + specifier.replaceAll('/', '-'), subpath.entry)).result
+    assert.equal(refused.status, 'failed')
+    assert.match(refused.diagnostic, /requires `@deepseek-ai\/dsh-/)
+  }
 })
 
 test('a DSH peer or a second Cordis shipped in node_modules is refused, not loaded', async (t) => {
@@ -532,6 +570,63 @@ test('commands register as commands, run, and report each kind of answer', async
   // A throwing handler is an execution failure, not a host fault.
   await assert.rejects(runCommand(host, 'ext-throw'), (error) => error.code === -32000 && /boom/.test(error.message))
   assert.deepEqual(host.faulted, [])
+  const plugin = tempPlugin(`export const inject = ['commands']
+let saved
+const message = (text) => ({ id: 'message-id', role: 'user', content: [{ type: 'text', text }], source: { kind: 'fixture-review' } })
+export function apply(ctx) {
+  ctx.commands.register({ name: 'followup', description: 'Capture one followup.', handler(invocation) {
+    const agent = invocation.agent
+    saved = agent
+    const input = message(invocation.args)
+    agent.followup(input)
+    input.content[0].text = 'mutated'
+    return { kind: 'success', text: JSON.stringify({ id: agent.id, frozen: Object.isFrozen(agent), invocation: Object.isFrozen(invocation) }) }
+  } })
+  ctx.commands.register({ name: 'enumerate-invocation', description: 'Inspect ordinary fields.', handler(invocation) {
+    return JSON.stringify({ keys: Object.keys(invocation), copy: { ...invocation } })
+  } })
+  ctx.commands.register({ name: 'late-followup', description: 'Probe closed followup.', handler() {
+    try { saved.followup(message('late')); return 'unexpected' } catch (error) { return error.message }
+  } })
+  ctx.commands.register({ name: 'invalid-followup', description: 'Refuse unsupported followups.', handler(invocation) {
+    const agent = invocation.agent
+    const value = message('first')
+    if (invocation.args === 'image') value.content = [{ type: 'image', attachment: {} }]
+    if (invocation.args === 'blocks') value.content.push({ type: 'text', text: 'second' })
+    if (invocation.args === 'empty') value.content[0].text = ' '
+    if (invocation.args === 'oversized') value.content[0].text = '界'.repeat(50000)
+    if (invocation.args === 'source') value.source.extra = true
+    if (invocation.args === 'role') value.role = 'assistant'
+    if (invocation.args === 'accessor') Object.defineProperty(value, 'id', { enumerable: true, get() { return 'id' } })
+    saved = agent
+    agent.followup(value)
+    if (invocation.args === 'twice') { try { agent.followup(message('second')) } catch {} }
+    if (invocation.args === 'conflict') return { kind: 'submit', prompt: 'other' }
+    if (invocation.args === 'throw') throw new Error('handler failed')
+    if (invocation.args === 'error') return { kind: 'error', text: 'handler rejected' }
+    return { kind: 'success' }
+  } })
+}
+`)
+  t.after(plugin.cleanup)
+  assert.equal((await activate(host, 'followup-fixture', plugin.entry)).result.status, 'ok')
+  const capture = (name, raw_input, identity = { session_id: 'review-session' }) => host.call('command/run', {
+    handle: commandNamed(host, name).handle, command_id: 'capture', raw_input, deadline_ms: 5000, ...identity,
+  })
+  const enumerated = JSON.parse((await runCommand(host, 'enumerate-invocation')).text)
+  assert.equal(enumerated.keys.includes('agent'), false)
+  assert.equal(enumerated.copy.commandId, 'c-enumerate-invocation')
+  assert.deepEqual(await capture('followup', 'review exactly'), { kind: 'submit', prompt: 'review exactly', text: JSON.stringify({ id: 'review-session', frozen: true, invocation: true }) })
+  assert.deepEqual(await capture('followup', 'child request', { session_id: 'review-session', agent_id: 'child-agent' }), { kind: 'submit', prompt: 'child request', text: JSON.stringify({ id: 'child-agent', frozen: true, invocation: true }) })
+  assert.match((await runCommand(host, 'late-followup')).text, /after command settlement/)
+  await assert.rejects(capture('followup', 'no session', {}), /authoritative caller session/)
+  for (const reason of ['image', 'blocks', 'empty', 'oversized', 'source', 'role', 'accessor', 'twice', 'conflict', 'throw']) {
+    await assert.rejects(capture('invalid-followup', reason), /followup|handler failed/)
+    assert.match((await runCommand(host, 'late-followup')).text, /after command settlement|requires|exactly|non-empty|conflicts/)
+  }
+  assert.deepEqual(await capture('invalid-followup', 'error'), { kind: 'error', text: 'handler rejected' })
+  assert.match((await runCommand(host, 'late-followup')).text, /after command settlement/)
+  assert.deepEqual(host.faulted, [])
 })
 
 test('cancel aborts a running command', async (t) => {
@@ -548,6 +643,27 @@ test('cancel aborts a running command', async (t) => {
   setTimeout(() => host.cancel(id), 50)
   await assert.rejects(promise, (error) => error.code === -32800)
   assert.ok(performance.now() - cancelledAt < 500, 'cancel resolves well inside the 500 ms grace')
+  const plugin = tempPlugin(`export const inject = ['commands']
+let saved
+const message = { id: 'pending-id', role: 'user', content: [{ type: 'text', text: 'must not submit' }], source: { kind: 'pending-fixture' } }
+export function apply(ctx) {
+  ctx.commands.register({ name: 'pending-followup', description: 'Wait after capturing.', handler({ agent, signal }) {
+    saved = agent
+    agent.followup(message)
+    return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ kind: 'success', text: 'aborted handler returned success' }), { once: true }))
+  } })
+  ctx.commands.register({ name: 'cancelled-followup', description: 'Inspect cancellation.', handler() {
+    try { saved.followup(message); return 'unexpected' } catch (error) { return error.message }
+  } })
+}
+`)
+  t.after(plugin.cleanup)
+  assert.equal((await activate(host, 'pending-followup-fixture', plugin.entry)).result.status, 'ok')
+  const pending = host.request('command/run', { handle: commandNamed(host, 'pending-followup').handle, command_id: 'pending', raw_input: '', deadline_ms: 5000, session_id: 'session' })
+  setTimeout(() => host.cancel(pending.id), 30)
+  await assert.rejects(pending.promise, error => error.code === -32800)
+  assert.match((await runCommand(host, 'cancelled-followup')).text, /after command settlement or cancellation/)
+  assert.deepEqual(host.faulted, [])
 })
 
 test('a refused command registration fails activation, and an unknown handle is not live', async (t) => {
@@ -651,24 +767,71 @@ test('a DSH-style command plugin registers through the compatible `commands` shi
   const host = await startHost()
   t.after(() => host.stop())
   const plugin = tempPlugin(`import { CommandDefinitionId, CommandId } from '@deepseek-ai/dsh-commands/brand'
+import assert from 'node:assert/strict'
+import * as llm from '@deepseek-ai/dsh-llm'
+import * as session from '@deepseek-ai/dsh-session'
+import * as prompt from '@deepseek-ai/dsh-system-prompt'
 export const name = 'dsh-style'
 export const inject = ['commands']
 export function apply(ctx) {
+  assert.deepEqual(Object.keys(llm), ['createUserMessage'])
+  assert.deepEqual(Object.keys(session), ['SessionId'])
+  assert.deepEqual(Object.keys(prompt), ['PERSONA_PREFIX_SECTION'])
+  assert.equal(prompt.PERSONA_PREFIX_SECTION, 'deployment:persona-prefix')
+  for (const value of ['', 'session', 7, null, { arbitrary: true }]) assert.equal(session.SessionId(value), value)
+  const input = { id: 'forged', role: 'assistant', content: [{ type: 'text', text: 'original' }], source: { kind: 'fixture-review' }, extra: { values: [1] } }
+  const message = llm.createUserMessage(input)
+  assert.equal(message.role, 'user')
+  assert.match(message.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  assert.notEqual(message.id, llm.createUserMessage(input).id)
+  for (const value of [message, message.content, message.content[0], message.source, message.extra, message.extra.values]) assert.equal(Object.isFrozen(value), true)
+  assert.equal(Object.isFrozen(input), false)
+  input.content[0].text = 'changed'
+  input.extra.values.push(2)
+  assert.equal(message.content[0].text, 'original')
+  assert.deepEqual(message.extra.values, [1])
+  assert.throws(() => { message.source.kind = 'changed' }, TypeError)
+  const cyclic = { content: [], source: { kind: 'fixture-review' } }
+  cyclic.extra = cyclic
+  const cycle = llm.createUserMessage(cyclic)
+  assert.equal(cycle.extra.extra, cycle.extra)
+  assert.notEqual(cycle.extra, cyclic)
+  assert.equal(Object.isFrozen(cycle.extra), true)
+  assert.equal(llm.createUserMessage(null).role, 'user')
+  assert.equal(llm.createUserMessage({ extra: 7n }).extra, 7n)
+  let reads = 0
+  const accessor = llm.createUserMessage({ get content() { reads++; return [] }, source: { kind: 'fixture-review' } })
+  assert.equal(reads, 1)
+  assert.deepEqual(accessor.content, [])
+  assert.throws(() => llm.createUserMessage({ content: [() => {}] }), { name: 'DataCloneError' })
   ctx.commands.register({
     definitionId: CommandDefinitionId('dsh-style/echo'),
     name: 'dsh-echo',
     description: 'Echo, DSH style.',
     input: { hint: '<text>' },
     recordInput: false,
-    handler: ({ rawInput }) => ({ kind: 'success', text: CommandId(rawInput.trim()) }),
+    handler: (invocation) => {
+      if (invocation.args === 'review') {
+        invocation.agent.followup(llm.createUserMessage({ content: [{ type: 'text', text: 'review request' }], source: { kind: 'fixture-review' } }))
+        return { kind: 'success', text: 'submitted' }
+      }
+      return { kind: 'success', text: CommandId(invocation.rawInput.trim()) }
+    },
   })
 }
 `)
   t.after(plugin.cleanup)
+  for (const name of ['dsh-llm', 'dsh-session', 'dsh-system-prompt']) {
+    const root = join(plugin.dir, 'node_modules', '@deepseek-ai', name)
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${name}`, type: 'module', main: 'index.js' }))
+    writeFileSync(join(root, 'index.js'), "throw new Error('foreign runtime loaded')\n")
+  }
   const { result } = await activate(host, 'dsh-style', plugin.entry)
   assert.deepEqual(result, { status: 'ok', tools: [], commands: ['dsh-echo'] })
   assert.deepEqual(commandNamed(host, 'dsh-echo').spec, { name: 'dsh-echo', description: 'Echo, DSH style.', argument_hint: '<text>' })
   assert.deepEqual(await runCommand(host, 'dsh-echo', 'hi there'), { kind: 'success', text: 'hi there' })
+  assert.deepEqual(await host.call('command/run', { handle: commandNamed(host, 'dsh-echo').handle, command_id: 'pure-review', raw_input: 'review', deadline_ms: 5000, session_id: 'pure-session' }), { kind: 'submit', prompt: 'review request', text: 'submitted' })
 
   // Only the brand helpers are provided; the rest of the package still fails loudly.
   const whole = tempPlugin("import '@deepseek-ai/dsh-commands'\nexport function apply() {}\n")
@@ -991,24 +1154,43 @@ test('several core calls can be in flight at once, each answered to its own requ
 })
 
 test('storage survives owner reload, refuses disposed owner access, and call identity is per invocation', async (t) => {
-  const host = await startHost()
+  let checkpointResult = true
+  const host = await startHost({ checkpoint: () => typeof checkpointResult === 'function' ? checkpointResult() : checkpointResult })
   t.after(() => host.stop())
   const plugin = tempPlugin(`
-export const inject = ['tools', 'commands', 'storage']
+export const inject = ['tools', 'commands', 'storage', 'sessions']
 let savedStorage
+let savedAgent
+let savedSessions
 export async function apply(ctx, config) {
-  if (config.capture) savedStorage = ctx.storage
+  if (config.capture) { savedStorage = ctx.storage; savedSessions = ctx.sessions }
   const identity = (exec) => ({
     frozen: Object.isFrozen(exec),
     sessionId: exec.sessionId ?? null,
     agentId: exec.agentId ?? null,
     originTurnId: exec.originTurnId ?? null,
   })
+  const agentIdentity = (agent) => agent === undefined ? null : ({
+    id: agent.id,
+    cwd: agent.session.header.cwd,
+    frozen: [agent, agent.session, agent.session.header].every(Object.isFrozen),
+    keys: [Object.keys(agent).sort(), Object.keys(agent.session), Object.keys(agent.session.header)],
+    mutationRejected: !Reflect.set(agent, 'id', 'forged') && !Reflect.set(agent.session.header, 'cwd', '/forged'),
+  })
   ctx.tools.register({ name: config.tool, description: 'Read owner-local state.', parameters: { type: 'object' },
     async execute(input, exec) {
+      if (input.flush) {
+        try {
+          const target = input.flush === 'forged' ? { header: { cwd: exec.workspace } } : input.flush === 'retained' ? savedAgent?.session : exec.agent?.session
+          const service = input.flush === 'foreign-owner' ? savedSessions : ctx.sessions
+          return { flushed: input.many ? await Promise.all([service.flush(target), service.flush(target)]) : await service.flush(target) }
+        } catch (error) { return { flushError: error.code } }
+      }
+      if (input.captureAgent) savedAgent = exec.agent
+      if (input.readSavedAgent) return { previous: agentIdentity(savedAgent), current: agentIdentity(exec.agent) }
       if (input.saved) { try { await savedStorage.get('state'); return { accessed: true } } catch (error) { return { error: error.code } } }
       if ('set' in input) await ctx.storage.set('state', input.set)
-      return { value: (await ctx.storage.get('state')) ?? null, ...identity(exec) }
+      return { value: (await ctx.storage.get('state')) ?? null, ...identity(exec), agent: agentIdentity(exec.agent) }
     },
   })
   ctx.commands.register({ name: config.command, description: 'Inspect invocation identity.',
@@ -1026,18 +1208,69 @@ export async function apply(ctx, config) {
   assert.equal(first.result.status, 'ok')
   const handle = (name) => host.registry.findLast((entry) => entry.op === 'register' && entry.spec.name === name).handle
   const tool = (name, input = {}, extra = {}) => host.call('tool/call', { handle: handle(name), call_id: 'state-call', input, deadline_ms: 5000, ...extra })
-  const identity = { session_id: 'session-one', agent_id: 'agent-one', origin_turn_id: 'turn-one' }
-  assert.deepEqual((await tool('first_state', { set: { count: 1 } }, identity)).structured,
-    { value: { count: 1 }, frozen: true, sessionId: 'session-one', agentId: 'agent-one', originTurnId: 'turn-one' })
+  const identity = { session_id: 'session-one', agent_id: 'agent-one', origin_turn_id: 'turn-one', workspace: '/workspace/one' }
+  const projection = (id, cwd) => ({ id, cwd, frozen: true, keys: [['id', 'session'], ['header'], ['cwd']], mutationRejected: true })
+  assert.deepEqual((await tool('first_state', { set: { count: 1 }, captureAgent: true }, identity)).structured,
+    { value: { count: 1 }, frozen: true, sessionId: 'session-one', agentId: 'agent-one', originTurnId: 'turn-one', agent: projection('agent-one', '/workspace/one') })
   assert.deepEqual((await tool('first_state')).structured,
-    { value: { count: 1 }, frozen: true, sessionId: null, agentId: null, originTurnId: null })
+    { value: { count: 1 }, frozen: true, sessionId: null, agentId: null, originTurnId: null, agent: null })
+  const rootIdentity = { session_id: 'session-two', origin_turn_id: 'turn-two', workspace: '/workspace/two' }
+  assert.deepEqual((await tool('first_state', { readSavedAgent: true }, rootIdentity)).structured,
+    { previous: projection('agent-one', '/workspace/one'), current: projection('session-two', '/workspace/two') })
+  assert.equal((await tool('first_state', {}, { session_id: 'session-only' })).structured.agent, null)
+  assert.equal((await tool('first_state', {}, { workspace: '/workspace/only' })).structured.agent, null)
+  assert.equal((await tool('first_state', {}, { ...identity, session_id: '' })).structured.agent, null)
+  assert.equal((await tool('first_state', {}, { ...identity, workspace: '' })).structured.agent, null)
+  const checkpointIdentity = { ...rootIdentity, checkpoint_ticket: 'exact-checkpoint-ticket' }
+  assert.deepEqual((await tool('first_state', { flush: 'current' }, rootIdentity)).structured, { flushError: ErrorCode.NotAvailable })
+  assert.deepEqual((await tool('first_state', { flush: 'forged' }, checkpointIdentity)).structured, { flushError: ErrorCode.NotAvailable })
+  assert.deepEqual((await tool('first_state', { flush: 'retained' }, checkpointIdentity)).structured, { flushError: ErrorCode.NotAvailable })
+  assert.equal(host.checkpoints.length, 0)
+  assert.deepEqual((await tool('first_state', { flush: 'current' }, checkpointIdentity)).structured, { flushed: true })
+  assert.deepEqual(host.checkpoints[0], { id: host.checkpoints[0].id, owner: first.ref, ticket: 'exact-checkpoint-ticket' })
+  checkpointResult = false
+  assert.deepEqual((await tool('first_state', { flush: 'current' }, checkpointIdentity)).structured, { flushed: false })
+  checkpointResult = 'not-a-receipt'
+  assert.deepEqual((await tool('first_state', { flush: 'current' }, checkpointIdentity)).structured, { flushError: ErrorCode.Internal })
+  checkpointResult = { error: { code: ErrorCode.Refused, message: 'checkpoint refused' } }
+  assert.deepEqual((await tool('first_state', { flush: 'current' }, checkpointIdentity)).structured, { flushError: ErrorCode.Refused })
+  let inFlight = 0
+  let peak = 0
+  checkpointResult = async () => {
+    inFlight++
+    peak = Math.max(peak, inFlight)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    inFlight--
+    return true
+  }
+  assert.deepEqual((await tool('first_state', { flush: 'current', many: true }, checkpointIdentity)).structured, { flushed: [true, true] })
+  assert.equal(peak, 1, 'one invocation serializes its checkpoint requests')
+  let releaseCheckpoint
+  checkpointResult = new Promise(resolve => { releaseCheckpoint = resolve })
+  const pendingCheckpoint = host.request('tool/call', {
+    handle: handle('first_state'), call_id: 'cancel-checkpoint', input: { flush: 'current' }, deadline_ms: 5000,
+    ...rootIdentity, checkpoint_ticket: 'cancel-checkpoint-ticket',
+  })
+  await host.waitFor(message => message.method === 'session/checkpoint' && message.params.ticket === 'cancel-checkpoint-ticket')
+  const checkpointRequest = host.checkpoints.find(request => request.ticket === 'cancel-checkpoint-ticket')
+  const cancelledCheckpoint = host.waitFor(message => message.method === '$/cancel' && message.params.id === checkpointRequest.id)
+  host.cancel(pendingCheckpoint.id)
+  await assert.rejects(pendingCheckpoint.promise, error => error.code === ErrorCode.Cancelled)
+  await cancelledCheckpoint
+  releaseCheckpoint(true)
+  checkpointResult = true
+  assert.deepEqual(await host.call('host/ping', {}), {})
+  assert.equal(host.coreCalls.length, 0, 'read-only projections do not grant core calls')
   const command = await host.call('command/run', { handle: handle('first-state'), command_id: 'state-command', raw_input: '', deadline_ms: 5000, ...identity })
   assert.deepEqual(JSON.parse(command.text), { frozen: true, sessionId: 'session-one', agentId: 'agent-one', originTurnId: 'turn-one' })
   await host.call('ext/deactivate', { owner: first.ref })
   const other = await activate(host, 'other-state-owner', plugin.entry, { config: { tool: 'other_state', command: 'other-state' }, data_dir: otherDir })
   assert.equal(other.result.status, 'ok')
+  assert.deepEqual((await tool('other_state', { flush: 'foreign-owner' }, checkpointIdentity)).structured, { flushError: ErrorCode.NotAvailable })
   assert.deepEqual((await tool('other_state', { saved: true })).structured, { error: 'not_available' })
   assert.equal((await tool('other_state')).structured.value, null, 'another owner directory has separate state')
+  assert.deepEqual((await tool('other_state', { readSavedAgent: true }, rootIdentity)).structured,
+    { previous: projection('agent-one', '/workspace/one'), current: projection('session-two', '/workspace/two') }, 'a retained projection stays inert after owner disposal')
   const reloaded = await activate(host, 'reloaded-state-owner', plugin.entry, { config: { ...firstConfig, capture: false }, data_dir: firstDir })
   assert.equal(reloaded.result.status, 'ok')
   assert.deepEqual((await tool('first_state')).structured.value, { count: 1 }, 'the assigned owner directory preserves state on reload')

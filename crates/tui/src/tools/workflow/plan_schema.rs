@@ -77,7 +77,7 @@ pub(super) fn structured_plan_schema() -> Value {
                 "type": "array",
                 "minItems": 1,
                 "items": child.clone(),
-                "description": "At least one child. Phases run in order and receive prior-phase results; missing required results block downstream dispatch."
+                "description": "At least one child. Phases run in order and receive prior-phase results; missing required results skip dependent steps while independent work continues."
             }
         },
         "required": ["children"],
@@ -145,16 +145,6 @@ pub(super) fn structured_plan_schema() -> Value {
                 "enum": ["read_only", "writes", "elevated"],
                 "description": "Plan risk and default child mode. Defaults to read_only; writes/elevated remain subject to approval and caller policy."
             },
-            "max_children": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional maximum total declared children across all phases."
-            },
-            "token_budget": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional Workflow token budget, also applied to child admission. Usage is reconciled at completion; active parallel children can exceed the shared hint."
-            },
             "phases": {
                 "type": "array",
                 "items": phase,
@@ -179,7 +169,7 @@ pub(super) fn structured_plan_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::structured_plan_schema;
-    use crate::tools::schema_sanitize::{sanitize, sanitize_for_strict};
+    use codewhale_models::schema_sanitize::{sanitize, sanitize_for_strict};
     use serde_json::{Value, json};
 
     fn property_names(schema: &Value) -> Vec<&str> {
@@ -232,15 +222,7 @@ mod tests {
 
         assert_eq!(
             property_names(&schema),
-            [
-                "children",
-                "gates",
-                "goal",
-                "max_children",
-                "phases",
-                "risk",
-                "token_budget"
-            ]
+            ["children", "gates", "goal", "phases", "risk"]
         );
         let phase = &schema["properties"]["phases"]["items"];
         assert_eq!(
@@ -300,7 +282,7 @@ mod tests {
             }
         }
         for (object, names) in [
-            (&schema, &["risk", "max_children", "token_budget"][..]),
+            (&schema, &["risk"][..]),
             (phase, &["id", "title", "parallel"][..]),
             (
                 child,
@@ -322,8 +304,6 @@ mod tests {
         let plan = json!({
             "goal": "Inspect the release receipts",
             "risk": null,
-            "max_children": null,
-            "token_budget": null,
             "phases": [{
                 "id": null,
                 "title": null,

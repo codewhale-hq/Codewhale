@@ -5,7 +5,6 @@
 mod acceptance;
 mod advisor;
 mod agent;
-mod anchor;
 mod clear;
 mod constitution;
 mod copy;
@@ -18,16 +17,13 @@ mod effort;
 mod exit;
 mod feedback;
 pub(in crate::commands) mod fleet;
-mod help;
 mod hf;
-mod home;
 mod hooks;
-mod hotbar;
 mod lane;
-mod links;
 mod model;
 mod modeldb;
 mod models;
+pub(in crate::commands) mod navigation;
 mod pin;
 mod profile;
 mod provider;
@@ -37,13 +33,8 @@ pub(in crate::commands) mod router;
 mod setup;
 mod stash;
 mod subagents;
-mod transcript;
-mod translate;
-mod turn;
 pub mod util;
-pub mod voice;
 mod workflow;
-mod workspace;
 
 pub(crate) use self::core::public_site_locale_segment;
 pub(in crate::commands) use self::core::reset_conversation_state;
@@ -57,18 +48,12 @@ pub struct CoreCommands;
 impl CommandGroup for CoreCommands {
     fn commands(&self) -> &'static [Box<dyn Command>] {
         cached_command_list!(vec![
-            Box::new(FunctionCommand::new(
-                anchor::AnchorCmd::info(),
-                anchor::AnchorCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<0>(),
             Box::new(FunctionCommand::new(
                 advisor::AdvisorCmd::info(),
                 advisor::AdvisorCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                help::HelpCmd::info(),
-                help::HelpCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<1>(),
             Box::new(FunctionCommand::new(
                 clear::ClearCmd::info(),
                 clear::ClearCmd::execute,
@@ -137,10 +122,7 @@ impl CommandGroup for CoreCommands {
                 workflow::AutoCmd::info(),
                 workflow::AutoCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                hotbar::HotbarCmd::info(),
-                hotbar::HotbarCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<2>(),
             Box::new(FunctionCommand::new(
                 setup::SetupCmd::info(),
                 setup::SetupCmd::execute,
@@ -153,35 +135,17 @@ impl CommandGroup for CoreCommands {
                 agent::AgentCmd::info(),
                 agent::AgentCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                links::LinksCmd::info(),
-                links::LinksCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                transcript::TranscriptCmd::info(),
-                transcript::TranscriptCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                turn::TurnCmd::info(),
-                turn::TurnCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<3>(),
+            crate::commands::core_navigation_host::registration::<4>(),
+            crate::commands::core_navigation_host::registration::<5>(),
             Box::new(FunctionCommand::new(
                 feedback::FeedbackCmd::info(),
                 feedback::FeedbackCmd::execute,
             )),
             Box::new(FunctionCommand::new(hf::HfCmd::info(), hf::HfCmd::execute)),
-            Box::new(FunctionCommand::new(
-                home::HomeCmd::info(),
-                home::HomeCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                home::OverviewCmd::info(),
-                home::OverviewCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                workspace::WorkspaceCmd::info(),
-                workspace::WorkspaceCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<6>(),
+            crate::commands::core_navigation_host::registration::<7>(),
+            crate::commands::core_navigation_host::registration::<8>(),
             Box::new(FunctionCommand::new(
                 profile::ProfileCmd::info(),
                 profile::ProfileCmd::execute,
@@ -190,23 +154,11 @@ impl CommandGroup for CoreCommands {
                 rlm::RlmCmd::info(),
                 rlm::RlmCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                translate::TranslateCmd::info(),
-                translate::TranslateCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                voice::VoiceCmd::info(),
-                voice::VoiceCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<9>(),
+            crate::commands::core_navigation_host::registration::<10>(),
             Box::new(FunctionCommand::new(&effort::EFFORT_INFO, effort::effort,)),
-            Box::new(FunctionCommand::new(
-                voice::VoiceSendCmd::info(),
-                voice::VoiceSendCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                voice::VoiceControlCmd::info(),
-                voice::VoiceControlCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<11>(),
+            crate::commands::core_navigation_host::registration::<12>(),
             Box::new(FunctionCommand::new(
                 pin::PinCmd::info(),
                 pin::PinCmd::execute

@@ -39,9 +39,6 @@ impl HttpSession {
             failure: Mutex::new(None),
         }
     }
-    /// The same best-effort preflight as the Rust default. It runs in the
-    /// Rust connection factory, before the SDK initialize deadline begins.
-    /// A slow GET therefore cannot consume a healthy handshake's whole budget.
     pub(super) async fn preflight(&self, session: &Session, shared: &ManagerShared) -> Result<()> {
         if self.legacy() {
             return Ok(());
@@ -272,8 +269,46 @@ async fn fetch(
     } else {
         bail!("MCP HTTP URL has no Rust selector");
     };
+    let modern = params.frame.as_ref().is_some_and(|frame| {
+        frame["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]
+            == crate::mcp::MCP_MODERN_PROTOCOL_VERSION
+    });
+    if modern {
+        anyhow::ensure!(
+            params.headers.mcp_session_id.is_none(),
+            "modern MCP has no session header"
+        );
+        let frame = params.frame.as_ref().context("modern MCP frame absent")?;
+        anyhow::ensure!(
+            params.headers.mcp_protocol_version.as_deref()
+                == Some(crate::mcp::MCP_MODERN_PROTOCOL_VERSION),
+            "MCP envelope/header version mismatch"
+        );
+        let method = frame["method"].as_str().context("MCP method absent")?;
+        let expected_name = match method {
+            "tools/call" | "prompts/get" => frame["params"]["name"].as_str(),
+            "resources/read" => frame["params"]["uri"].as_str(),
+            _ => None,
+        }
+        .map(mcp_name_header);
+        anyhow::ensure!(
+            params.headers.mcp_method.as_deref() == frame.get("id").map(|_| method)
+                && params.headers.mcp_name == expected_name,
+            "MCP body/header target mismatch"
+        );
+    } else {
+        anyhow::ensure!(
+            params.headers.mcp_method.is_none()
+                && params.headers.mcp_name.is_none()
+                && params.headers.mcp_protocol_version.as_deref()
+                    != Some(crate::mcp::MCP_MODERN_PROTOCOL_VERSION),
+            "legacy MCP cannot claim modern target headers"
+        );
+    }
     let headers = [
         ("accept", params.headers.accept.as_deref()),
+        ("mcp-method", params.headers.mcp_method.as_deref()),
+        ("mcp-name", params.headers.mcp_name.as_deref()),
         ("content-type", params.headers.content_type.as_deref()),
         ("mcp-session-id", params.headers.mcp_session_id.as_deref()),
         (
@@ -298,6 +333,7 @@ async fn fetch(
         bail!("MCP server session ID not observed");
     }
     if let Some(value) = params.headers.mcp_protocol_version.as_deref()
+        && value != crate::mcp::MCP_MODERN_PROTOCOL_VERSION
         && !crate::mcp::MCP_CLIENT_ACCEPTED_PROTOCOL_VERSIONS.contains(&value)
     {
         bail!("MCP protocol header refused");
@@ -323,9 +359,16 @@ async fn fetch(
             let (frame, expires) =
                 broker.authorize_frame(shared, generation, session, write, cx, "net/fetch")?;
             deadline = expires;
+            if frame["method"] == "initialize" && !http.legacy() {
+                http.preflight(session, shared).await?;
+            }
             http.client.post(&url).body(serde_json::to_vec(&frame)?)
         }
         "GET" => {
+            anyhow::ensure!(
+                !session.modern(),
+                "modern MCP channel has no subscription grant"
+            );
             if params.frame.is_some()
                 || params.ticket.is_some()
                 || params.operation_id.is_some()
@@ -352,6 +395,7 @@ async fn fetch(
     }
     if params.method == "POST"
         && !http.legacy()
+        && !modern
         && let Some(sid) = http
             .server_session
             .lock()
@@ -364,7 +408,13 @@ async fn fetch(
         request,
         params.method == "POST",
         params.method == "GET",
-        params.method == "POST" && !http.legacy(),
+        params.method == "POST"
+            && !http.legacy()
+            && (!modern
+                || params
+                    .frame
+                    .as_ref()
+                    .is_some_and(|frame| frame["method"] == "server/discover")),
         || {
             session.validate(shared, generation, &params.owner)?;
             if cx.cancel.is_cancelled() || Instant::now() >= deadline {
@@ -373,10 +423,11 @@ async fn fetch(
             Ok(())
         },
         |response| {
-            if let Some(sid) = response
-                .headers()
-                .get("mcp-session-id")
-                .and_then(|v| v.to_str().ok())
+            if !modern
+                && let Some(sid) = response
+                    .headers()
+                    .get("mcp-session-id")
+                    .and_then(|v| v.to_str().ok())
             {
                 if sid.len() > 8192 {
                     bail!("MCP response framing header exceeds bound");
@@ -405,6 +456,9 @@ async fn fetch(
     let status = response.status().as_u16();
     let mut headers = HashMap::new();
     for name in ["content-type", "mcp-session-id"] {
+        if modern && name == "mcp-session-id" {
+            continue;
+        }
         if let Some(value) = response
             .headers()
             .get(name)
@@ -421,6 +475,7 @@ async fn fetch(
     }
     if params.method == "POST"
         && !http.legacy()
+        && !modern
         && !headers.contains_key("mcp-session-id")
         && let Some(sid) = http
             .server_session
@@ -472,7 +527,9 @@ async fn fetch(
             "status={} body={safe_excerpt}",
             reqwest::StatusCode::from_u16(status)?
         );
-        let stale = if http.legacy() {
+        let stale = if modern {
+            false
+        } else if http.legacy() {
             crate::mcp::wire::is_mcp_stale_session_body(&excerpt)
         } else {
             had_session
@@ -481,6 +538,17 @@ async fn fetch(
                     &excerpt,
                 )
         };
+        if modern
+            && params
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame["method"] == "server/discover")
+            && matches!(status, 404 | 405 | 406 | 415)
+        {
+            session.legacy_allowed.store(true, Ordering::SeqCst);
+            guard.armed = false;
+            return Ok(json!({"status":status,"headers":headers,"legacy_handshake":true}));
+        }
         if stale {
             let detail = if http.legacy() {
                 format!(
@@ -494,7 +562,11 @@ async fn fetch(
                 )
             };
             *http.failure.lock().expect("MCP HTTP failure lock") = Some(HttpFailure::Stale(detail));
-        } else if !http.legacy()
+        } else if !modern
+            && !http.legacy()
+            && original
+                .as_ref()
+                .is_some_and(|operation| operation.target["method"] == "initialize")
             && is_streamable_http_incompatible_status(reqwest::StatusCode::from_u16(status)?)
         {
             let operation = original.context("transport refusal has no semantic operation")?;
@@ -571,7 +643,10 @@ fn renegotiate(
     let ttl = deadline
         .checked_duration_since(Instant::now())
         .context("MCP negotiation expired")?;
-    if ttl.is_zero() || http.legacy.swap(true, Ordering::SeqCst) {
+    if operation.target["method"] != "initialize"
+        || ttl.is_zero()
+        || http.legacy.swap(true, Ordering::SeqCst)
+    {
         bail!("MCP negotiation unavailable");
     }
     let operation_id = operation.target["operation_id"]
@@ -624,6 +699,22 @@ fn renegotiate(
     })
 }
 
+fn mcp_name_header(value: &str) -> String {
+    if value.is_empty()
+        || value.trim() != value
+        || (value.starts_with("=?base64?") && value.ends_with("?="))
+        || value
+            .bytes()
+            .any(|byte| byte != b'\t' && !(0x20..=0x7e).contains(&byte))
+    {
+        format!(
+            "=?base64?{}?=",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, value.as_bytes())
+        )
+    } else {
+        value.to_string()
+    }
+}
 async fn read(session: &Session, http: &HttpSession, body: &mut Body) -> Result<(Vec<u8>, bool)> {
     loop {
         if body.offset < body.ready.len() {

@@ -2,8 +2,8 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::native_memory::{MemoryHit, NativeMemoryStore};
 use async_trait::async_trait;
+use codewhale_runtime::native_memory::{MemoryHit, NativeMemoryStore};
 use serde_json::{Value, json};
 fn store(context: &ToolContext) -> Result<NativeMemoryStore, ToolError> {
     context

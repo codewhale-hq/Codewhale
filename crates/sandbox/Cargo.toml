@@ -1,0 +1,47 @@
+[package]
+name = "codewhale-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale command sandbox preparation and platform enforcement"
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["codewhale-runtime/test-support"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+codewhale-app-server = { path = "../app-server", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+dirs.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support", "test-thread-scoped-state"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+url = "2"
+
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+wait-timeout = "0.2"
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+portable-pty = "0.9"

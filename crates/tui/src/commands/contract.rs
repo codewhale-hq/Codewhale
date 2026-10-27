@@ -14,7 +14,7 @@
 //!
 //! ## Authoritative host-proxy design (D1)
 //!
-//! `CommandContexts` has twenty-five independently optional facet slots, all
+//! `CommandContexts` has independently optional facet slots, all
 //! constructed here. The diagnostics adapter joins the host bundle in FEAT-029. Important behavior (mode transitions, model
 //! invalidation, cost accounting, skill refresh) is authoritative on `App`. The adapters therefore share a
 //! synchronous TUI-owned host proxy. Each trait call borrows `App` only for the
@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 mod config_main;
+mod core_navigation;
+use core_navigation::{NavigationAdapter, VoiceInputAdapter};
 pub(in crate::commands) mod config_policy;
 #[cfg(test)]
 mod config_policy_baseline;
@@ -89,12 +91,12 @@ use codewhale_execpolicy::ApprovalMode;
 
 use crate::commands::groups::plugins::plugin_network_policy;
 
-use crate::dependencies::ExternalTool as _;
-use crate::network_policy::NetworkPolicy;
-use crate::pricing::CostCurrency;
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
+use codewhale_config::pricing::CostCurrency;
+use codewhale_dependencies::ExternalTool as _;
 use codewhale_localization::{MessageId, tr};
+use codewhale_net::network_policy::NetworkPolicy;
 
 // ---------------------------------------------------------------------------
 // Pending frontier projection (D4)
@@ -206,6 +208,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_help_description" => MessageId::CmdHelpDescription,
         "cmd_hf_description" => MessageId::CmdHfDescription,
         "cmd_home_description" => MessageId::CmdHomeDescription,
+        "cmd_overview_description" => MessageId::CmdOverviewDescription,
         "cmd_hooks_description" => MessageId::CmdHooksDescription,
         "cmd_import_claude_description" => MessageId::CmdImportClaudeDescription,
         "cmd_inline_description" => MessageId::CmdInlineDescription,
@@ -270,6 +273,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_tree_description" => MessageId::CmdTreeDescription,
         "cmd_trust_description" => MessageId::CmdTrustDescription,
         "cmd_turn_inspect_description" => MessageId::CmdTurnInspectDescription,
+        "kb_live_transcript" => MessageId::KbLiveTranscript,
         "cmd_undo_description" => MessageId::CmdUndoDescription,
         "cmd_update_description" => MessageId::CmdUpdateDescription,
         "cmd_verbose_description" => MessageId::CmdVerboseDescription,
@@ -295,7 +299,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
 /// return owned values. Command handlers never receive or name `App`.
 struct CommandHost<'a> {
     app: RefCell<&'a mut App>,
-    config: Option<&'a crate::config::Config>,
+    config: Option<&'a codewhale_runtime::config::Config>,
 }
 
 type SharedCommandHost<'a> = Rc<CommandHost<'a>>;
@@ -425,7 +429,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             if let Ok(mut session) = manager.load_session(&session_id) {
                 session.ensure_journal();
                 if let Some(journal) = session.journal.as_ref() {
-                    let mut rendered = crate::session_tree::render_tree(journal);
+                    let mut rendered = codewhale_runtime::session_tree::render_tree(journal);
                     match manager.load_journal_archive(&session_id) {
                         Ok(archived) if !archived.is_empty() => {
                             rendered.push_str(&format!(
@@ -528,7 +532,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                     Ok(j) => j,
                     Err(e) => return Err(format!("Failed to serialize session: {e}")),
                 };
-                match crate::utils::write_atomic(&save_path, json.as_bytes()) {
+                match codewhale_util::utils::write_atomic(&save_path, json.as_bytes()) {
                     Ok(()) => {
                         crate::tui::ui::install_offline_queue_transition(
                             &mut app,
@@ -653,13 +657,13 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         };
         source_session.ensure_journal();
         let journal = source_session.journal.clone().unwrap_or_else(|| {
-            crate::session_tree::SessionJournal::from_messages(
+            codewhale_runtime::session_tree::SessionJournal::from_messages(
                 source_session.messages.clone(),
                 source_session.metadata.spawn_depth,
             )
         });
         let forked_journal = journal.fork_from(None).unwrap_or_else(|_| {
-            crate::session_tree::SessionJournal::with_spawn_depth(
+            codewhale_runtime::session_tree::SessionJournal::with_spawn_depth(
                 source_session.metadata.spawn_depth.saturating_add(1),
             )
         });
@@ -916,7 +920,7 @@ fn hosted_work_url(repo: &str, branch: &str) -> String {
 }
 
 fn read_git_value(workspace: &Path, args: &[&str]) -> Option<String> {
-    let mut command = crate::dependencies::Git::command()?;
+    let mut command = codewhale_dependencies::Git::command()?;
     let output = command.arg("-C").arg(workspace).args(args).output().ok()?;
     if !output.status.success()
         || output.stdout.is_empty()
@@ -937,7 +941,7 @@ fn valid_branch_name(branch: &str) -> bool {
     if branch.is_empty() || branch.len() > MAX_GIT_VALUE_BYTES {
         return false;
     }
-    let Some(mut command) = crate::dependencies::Git::command() else {
+    let Some(mut command) = codewhale_dependencies::Git::command() else {
         return false;
     };
     command
@@ -1155,7 +1159,9 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
                 })
             }
             Err(e) => {
-                if let Ok(container) = crate::session_tree::SessionImportContainer::from_json(raw) {
+                if let Ok(container) =
+                    codewhale_runtime::session_tree::SessionImportContainer::from_json(raw)
+                {
                     let mut app = self.host.app.borrow_mut();
                     let receipt = import_session_container(&mut app, container)?;
                     Ok(ResumeSource::Imported(receipt))
@@ -1305,7 +1311,7 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
         };
         // Synchronous single attempt through the authoritative URL-opening
         // helper; never retried and never deferred to an external-URL action.
-        let launched = crate::utils::open_url(&url).is_ok();
+        let launched = codewhale_runtime::browser::open_url(&url).is_ok();
         map_browser_open_result(url, launched)
     }
 
@@ -1500,7 +1506,9 @@ fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt
             ));
         }
     };
-    if let Ok(container) = crate::session_tree::SessionImportContainer::from_json(&content) {
+    if let Ok(container) =
+        codewhale_runtime::session_tree::SessionImportContainer::from_json(&content)
+    {
         return import_session_container(app, container);
     }
     if let Ok(foreign) = serde_json::from_str::<crate::session_manager::SavedSession>(&content) {
@@ -1517,7 +1525,7 @@ fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt
 /// select it in a fresh picker, and return the portable receipt.
 fn import_session_container(
     app: &mut App,
-    container: crate::session_tree::SessionImportContainer,
+    container: codewhale_runtime::session_tree::SessionImportContainer,
 ) -> Result<ResumeImportReceipt, String> {
     let manager = match crate::session_manager::SessionManager::default_location() {
         Ok(m) => m,
@@ -1861,7 +1869,7 @@ fn flatten_history_lines(lines: Vec<ratatui::text::Line<'static>>) -> String {
 /// Read the workspace snapshot repository read-only and project its state
 /// (D8): only an existing repo is opened, never created.
 fn project_restore_points(workspace: &Path) -> RestorePointProjection {
-    match crate::snapshot::SnapshotRepo::open_existing(workspace) {
+    match codewhale_snapshot::SnapshotRepo::open_existing(workspace) {
         Ok(None) => RestorePointProjection::None,
         Err(err) => RestorePointProjection::Unreadable {
             reason: err.to_string(),
@@ -1877,7 +1885,7 @@ fn project_restore_points(workspace: &Path) -> RestorePointProjection {
     }
 }
 
-fn project_restore_snapshot(snapshot: &crate::snapshot::Snapshot) -> RestoreSnapshot {
+fn project_restore_snapshot(snapshot: &codewhale_snapshot::Snapshot) -> RestoreSnapshot {
     let parsed = crate::core::turn::parse_snapshot_label(&snapshot.label);
     RestoreSnapshot {
         id: snapshot.id.as_str().to_string(),
@@ -2171,7 +2179,7 @@ impl CommandSkillsContext for SkillsAdapter<'_> {
     }
 }
 
-/// Workspace path and bounded serialized work-state snapshot.
+/// Workspace observations and confined anchor operations.
 pub(crate) struct WorkspaceAdapter<'a> {
     host: SharedCommandHost<'a>,
 }
@@ -2179,6 +2187,43 @@ pub(crate) struct WorkspaceAdapter<'a> {
 impl CommandWorkspaceContext for WorkspaceAdapter<'_> {
     fn workspace(&self) -> PathBuf {
         self.host.app.borrow().workspace.clone()
+    }
+
+    fn effective_home_dir(&self) -> Option<PathBuf> {
+        codewhale_paths::user_home()
+    }
+
+    fn inspect_workspace_target(
+        &self,
+        candidate: &Path,
+    ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+        use codewhale_command_contract::navigation::WorkspaceTarget;
+        if !candidate.exists() {
+            WorkspaceTarget::Missing
+        } else if !candidate.is_dir() {
+            WorkspaceTarget::NotDirectory
+        } else {
+            WorkspaceTarget::Directory {
+                canonical_or_candidate: candidate
+                    .canonicalize()
+                    .unwrap_or_else(|_| candidate.to_path_buf()),
+            }
+        }
+    }
+
+    fn read_anchor_document(&self) -> Result<Option<String>, String> {
+        core_navigation::read_anchor_document(&self.workspace())
+    }
+
+    fn append_anchor_bytes(
+        &mut self,
+        parts: &[&[u8]],
+    ) -> Result<PathBuf, codewhale_command_contract::navigation::AnchorWriteError> {
+        core_navigation::append_anchor_bytes(&self.workspace(), parts)
+    }
+
+    fn replace_anchor_document(&mut self, bytes: &[u8]) -> Result<(), String> {
+        core_navigation::replace_anchor_document(&self.workspace(), bytes)
     }
 
     fn work_state_snapshot(&self) -> Result<Option<String>, String> {
@@ -2222,6 +2267,7 @@ impl CommandPresentationContext for PresentationAdapter<'_> {
             .or_else(|| diagnostics_messages::resolve(key))
             .or_else(|| config_policy_messages::resolve(key))
             .or_else(|| config_messages::resolve(key))
+            .or_else(|| core_navigation::resolve_message(key))
         else {
             return Err("unknown translation key".to_string());
         };
@@ -2257,6 +2303,9 @@ pub(crate) fn key_to_session_message_id(key: &str) -> Option<MessageId> {
         "cmd_remote_env_unavailable" => MessageId::CmdRemoteEnvUnavailable,
         "cmd_remote_env_source_custody_policy" => MessageId::CmdRemoteEnvSourceCustodyPolicy,
         "cmd_remote_env_browser_label" => MessageId::CmdRemoteEnvBrowserLabel,
+        "cmd_color_set" => MessageId::CmdColorSet,
+        "cmd_color_reset" => MessageId::CmdColorReset,
+        "cmd_color_unknown" => MessageId::CmdColorUnknown,
         _ => return None,
     })
 }
@@ -2471,13 +2520,15 @@ pub(crate) struct MemoryAdapter<'a> {
 
 /// Derive the authoritative native-memory store from the resolved user-memory
 /// file path, mirroring the pre-migration `/memory` handler exactly.
-fn native_store_from_memory_path(memory_path: &Path) -> crate::native_memory::NativeMemoryStore {
-    crate::native_memory::NativeMemoryStore::from_memory_anchor(memory_path)
+fn native_store_from_memory_path(
+    memory_path: &Path,
+) -> codewhale_runtime::native_memory::NativeMemoryStore {
+    codewhale_runtime::native_memory::NativeMemoryStore::from_memory_anchor(memory_path)
 }
 
 /// Convert a TUI-owned native hit into the portable contract hit. Only the
 /// semantic fields the handler consumes for rendering cross the boundary (D2).
-fn portable_hit(hit: crate::native_memory::MemoryHit) -> MemoryHit {
+fn portable_hit(hit: codewhale_runtime::native_memory::MemoryHit) -> MemoryHit {
     MemoryHit {
         source: hit.source,
         line_start: hit.line_start,
@@ -2513,7 +2564,7 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
     }
 
     fn workspace_id(&self, workspace: &Path) -> Result<String, String> {
-        match crate::native_memory::NativeMemoryStore::workspace_id(workspace) {
+        match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(workspace) {
             Ok(Some(id)) => Ok(id),
             Ok(None) => {
                 Err("workspace memory requires a git repository with an origin".to_string())
@@ -2544,9 +2595,11 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
         let app = self.host.app.borrow();
         let store = native_store_from_memory_path(&app.memory_path);
         let (scope, workspace_id) = match target {
-            MemoryRememberTarget::Global => (crate::native_memory::MemoryScope::Global, None),
+            MemoryRememberTarget::Global => {
+                (codewhale_runtime::native_memory::MemoryScope::Global, None)
+            }
             MemoryRememberTarget::Workspace { workspace_id } => (
-                crate::native_memory::MemoryScope::Workspace,
+                codewhale_runtime::native_memory::MemoryScope::Workspace,
                 Some(workspace_id),
             ),
         };
@@ -2609,9 +2662,10 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
         let store = native_store_from_memory_path(&app.memory_path);
         let result = match scope {
             MemoryDeleteScope::All => store.delete_all(None, None),
-            MemoryDeleteScope::Global => {
-                store.delete_all(Some(crate::native_memory::MemoryScope::Global), None)
-            }
+            MemoryDeleteScope::Global => store.delete_all(
+                Some(codewhale_runtime::native_memory::MemoryScope::Global),
+                None,
+            ),
         };
         result.map(|()| MemoryDelete).map_err(|err| err.to_string())
     }
@@ -2619,10 +2673,10 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
     fn delete_workspace(&self, workspace: &Path) -> Result<MemoryDelete, String> {
         let app = self.host.app.borrow();
         let store = native_store_from_memory_path(&app.memory_path);
-        match crate::native_memory::NativeMemoryStore::workspace_id(workspace) {
+        match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(workspace) {
             Ok(Some(id)) => store
                 .delete_all(
-                    Some(crate::native_memory::MemoryScope::Workspace),
+                    Some(codewhale_runtime::native_memory::MemoryScope::Workspace),
                     Some(&id),
                 )
                 .map(|()| MemoryDelete)
@@ -2750,30 +2804,36 @@ where
 /// network-gated install rather than a silent crash. Mirrors
 /// `groups/skills/skills.rs::installer_settings`.
 fn installer_settings() -> (NetworkPolicy, u64, String) {
-    let cfg = crate::config::Config::load(None, None).unwrap_or_default();
+    let cfg = crate::plugins::providers::load_config(None, None).unwrap_or_default();
     let network = cfg
         .network
         .clone()
-        .map(|policy| policy.into_runtime())
+        .map(codewhale_net::network_policy::NetworkPolicy::from)
         .unwrap_or_default();
     let skills_cfg = cfg.skills.as_ref();
     let max_size = skills_cfg
         .and_then(|s| s.max_install_size_bytes)
-        .unwrap_or(crate::skills::install::DEFAULT_MAX_SIZE_BYTES);
+        .unwrap_or(codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES);
     let registry_url = skills_cfg
         .and_then(|s| s.registry_url.clone())
-        .unwrap_or_else(|| crate::skills::install::DEFAULT_REGISTRY_URL.to_string());
+        .unwrap_or_else(|| codewhale_skill_install::install::DEFAULT_REGISTRY_URL.to_string());
     (network, max_size, registry_url)
 }
 
 /// Resolve the cache destination before loading settings or entering the network bridge.
 fn sync_registry_to_cache(cache_dir: Option<PathBuf>) -> Result<SkillSyncOutcome, String> {
-    use crate::skills::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
+    use codewhale_skill_install::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
     let cache_dir =
         cache_dir.ok_or_else(|| "global skill mutations require a home directory".to_string())?;
     let (network, max_size, registry_url) = installer_settings();
     let result = run_async(async move {
-        crate::skills::install::sync_registry(&network, &registry_url, &cache_dir, max_size).await
+        codewhale_skill_install::install::sync_registry(
+            &network,
+            &registry_url,
+            &cache_dir,
+            max_size,
+        )
+        .await
     });
     match result {
         Ok(SyncResult::RegistryDenied(host)) => Ok(SkillSyncOutcome::RegistryDenied(host)),
@@ -2958,7 +3018,7 @@ fn portable_scope(
 
 /// Map a curated registry document to portable entries.
 fn portable_registry_entries(
-    doc: &crate::skills::install::RegistryDocument,
+    doc: &codewhale_skill_install::install::RegistryDocument,
 ) -> Vec<RemoteSkillEntry> {
     doc.skills
         .iter()
@@ -3075,14 +3135,14 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         spec: &str,
     ) -> Result<SkillMutationReceipt, String> {
         use crate::skills::mutation::{MutationContext, SkillMutationRequest};
-        let source = match crate::skills::install::InstallSource::parse(spec) {
+        let source = match codewhale_skill_install::install::InstallSource::parse(spec) {
             Ok(source) => source,
             Err(err) => return Err(format!("Invalid install source: {err}")),
         };
         let target =
             portable_scope(scope).unwrap_or(crate::skills::mutation::SkillTargetScope::Global);
         let workspace = self.host.app.borrow().workspace.clone();
-        let home = crate::config::effective_home_dir();
+        let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
         let outcome = run_async(async move {
             let ctx = MutationContext {
@@ -3112,7 +3172,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     ) -> Result<SkillMutationReceipt, String> {
         use crate::skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
-        let home = crate::config::effective_home_dir();
+        let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
         let owned_name = name.to_string();
         let scope = portable_scope(scope);
@@ -3148,7 +3208,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     ) -> Result<SkillMutationReceipt, String> {
         use crate::skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
-        let home = crate::config::effective_home_dir();
+        let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
         let ctx = MutationContext {
             workspace: &workspace,
@@ -3178,7 +3238,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     ) -> Result<SkillMutationReceipt, String> {
         use crate::skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
-        let home = crate::config::effective_home_dir();
+        let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
         let ctx = MutationContext {
             workspace: &workspace,
@@ -3204,18 +3264,18 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn fetch_remote_registry(&mut self) -> Result<RemoteRegistryOutcome, String> {
         let (network, _max_size, registry_url) = installer_settings();
         let registry = run_async(async move {
-            crate::skills::install::fetch_registry(&network, &registry_url).await
+            codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
         match registry {
-            Ok(crate::skills::install::RegistryFetchResult::Loaded(doc)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Loaded(doc)) => {
                 Ok(RemoteRegistryOutcome::Loaded {
                     entries: portable_registry_entries(&doc),
                 })
             }
-            Ok(crate::skills::install::RegistryFetchResult::NeedsApproval(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::NeedsApproval(host)) => {
                 Ok(RemoteRegistryOutcome::NeedsApproval(host))
             }
-            Ok(crate::skills::install::RegistryFetchResult::Denied(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Denied(host)) => {
                 Ok(RemoteRegistryOutcome::Denied(host))
             }
             Err(err) => Err(format_registry_error("Failed to fetch registry", &err)),
@@ -3225,10 +3285,10 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn recommend_skills(&mut self, task: &str) -> Result<Vec<SkillRecommendation>, String> {
         let (network, _max_size, registry_url) = installer_settings();
         let registry = run_async(async move {
-            crate::skills::install::fetch_registry(&network, &registry_url).await
+            codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
         match registry {
-            Ok(crate::skills::install::RegistryFetchResult::Loaded(doc)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Loaded(doc)) => {
                 let recommendations =
                     crate::skills::recommend::recommend_remote_skills(task, &doc, 3);
                 Ok(recommendations
@@ -3240,10 +3300,10 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                     })
                     .collect())
             }
-            Ok(crate::skills::install::RegistryFetchResult::NeedsApproval(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::NeedsApproval(host)) => {
                 Err(needs_approval_message(&host))
             }
-            Ok(crate::skills::install::RegistryFetchResult::Denied(host)) => {
+            Ok(codewhale_skill_install::install::RegistryFetchResult::Denied(host)) => {
                 Err(network_denied_message(&host))
             }
             Err(err) => Err(format_registry_error("Failed to fetch registry", &err)),
@@ -3251,7 +3311,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn sync_registry(&mut self) -> Result<SkillSyncOutcome, String> {
-        sync_registry_to_cache(crate::skills::install::default_cache_skills_dir())
+        sync_registry_to_cache(codewhale_skill_install::install::default_cache_skills_dir())
     }
 
     fn run_review(&mut self) -> Result<ReviewOutcome, String> {
@@ -3305,7 +3365,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
 
     fn snapshot_list(&mut self, limit: usize) -> Result<Vec<SnapshotEntry>, String> {
         let workspace = self.host.app.borrow().workspace.clone();
-        let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+        let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
             Ok(repo) => repo,
             Err(err) => {
                 return Err(format!(
@@ -3337,7 +3397,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         let workspace = self.host.app.borrow().workspace.clone();
         let id = id.to_owned();
         let restore = move || {
-            let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+            let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
                 Ok(repo) => repo,
                 Err(err) => {
                     return Err(format!(
@@ -3346,7 +3406,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                     ));
                 }
             };
-            let id = crate::snapshot::SnapshotId::parse(&id)
+            let id = codewhale_snapshot::SnapshotId::parse(&id)
                 .map_err(|err| format!("Restore failed: {err}"))?;
             repo.restore(&id)
                 .map_err(|err| format!("Restore failed: {err}"))
@@ -3724,7 +3784,9 @@ fn scan_managed_plugins_portable(
                 error
             )
         })?;
-        if crate::plugins::metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+            || !metadata.is_file()
+        {
             return Err(format!(
                 "Kimi manifest must be a regular file at {}",
                 canonical_path.display()
@@ -3761,7 +3823,7 @@ fn scan_managed_plugins_portable(
 
     let home = match home_override {
         Some(home) => home.to_path_buf(),
-        None => crate::config::effective_home_dir().ok_or_else(|| {
+        None => codewhale_paths::user_home().ok_or_else(|| {
             tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiHomeMissing,
@@ -3791,7 +3853,7 @@ fn scan_managed_plugins_portable(
             .replace("{error}", &error_text));
         }
     };
-    if crate::plugins::metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
         let root_text = escape_review_text(&configured_root.display().to_string());
         return Err(tr(
             codewhale_localization::Locale::En,
@@ -3859,7 +3921,7 @@ fn scan_managed_plugins_portable(
                 continue;
             }
         };
-        if crate::plugins::metadata_is_link_or_reparse(&metadata) {
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
             let path_text = escape_review_path(&path);
             rejected.push(
                 tr(
@@ -4570,12 +4632,13 @@ impl CommandPluginContext for PluginAdapter<'_> {
     ) -> Result<codewhale_command_contract::facets::PluginSuggestionDismissals, String> {
         // Stored lowercase by the CTA, but a hand-edited settings file may not
         // be; fold here so the list matches what suggestions actually skip.
-        let persisted: std::collections::BTreeSet<String> = crate::settings::Settings::load()
-            .map_err(|err| format!("could not read saved plugin dismissals: {err}"))?
-            .dismissed_plugin_suggestions
-            .iter()
-            .map(|name| name.to_ascii_lowercase())
-            .collect();
+        let persisted: std::collections::BTreeSet<String> =
+            codewhale_runtime::settings::Settings::load()
+                .map_err(|err| format!("could not read saved plugin dismissals: {err}"))?
+                .dismissed_plugin_suggestions
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect();
         let app = self.host.app.borrow();
         let session = app
             .plugin_cta
@@ -4596,7 +4659,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let matches =
             |candidate: &String| name.is_none_or(|target| candidate.eq_ignore_ascii_case(target));
         let mut cleared = std::collections::BTreeSet::new();
-        crate::settings::Settings::transact_opt(|settings| {
+        codewhale_runtime::settings::Settings::transact_opt(|settings| {
             let before = settings.dismissed_plugin_suggestions.len();
             settings.dismissed_plugin_suggestions.retain(|candidate| {
                 let reset = matches(candidate);
@@ -4667,6 +4730,8 @@ pub(crate) struct CommandContextBundle<'a> {
     trust: TrustAdapter<'a>,
     login: LoginAdapter<'a>,
     work_surface: WorkSurfaceAdapter<'a>,
+    navigation: NavigationAdapter<'a>,
+    voice_input: VoiceInputAdapter<'a>,
 }
 
 impl<'a> CommandContextBundle<'a> {
@@ -4763,6 +4828,12 @@ impl<'a> CommandContextBundle<'a> {
         if capabilities.contains(CommandCapabilities::WORK_SURFACE) {
             contexts = contexts.with_work_surface(&mut self.work_surface);
         }
+        if capabilities.contains(CommandCapabilities::NAVIGATION) {
+            contexts = contexts.with_navigation(&mut self.navigation);
+        }
+        if capabilities.contains(CommandCapabilities::VOICE_INPUT) {
+            contexts = contexts.with_voice_input(&mut self.voice_input);
+        }
         contexts
     }
 
@@ -4798,7 +4869,9 @@ impl<'a> CommandContextBundle<'a> {
             .union(CommandCapabilities::PET)
             .union(CommandCapabilities::TRUST)
             .union(CommandCapabilities::LOGIN)
-            .union(CommandCapabilities::WORK_SURFACE);
+            .union(CommandCapabilities::WORK_SURFACE)
+            .union(CommandCapabilities::NAVIGATION)
+            .union(CommandCapabilities::VOICE_INPUT);
         self.contexts(all_test_capabilities).into_parts()
     }
 }
@@ -4813,7 +4886,7 @@ impl App {
 
     pub(crate) fn command_contexts_with_config<'a>(
         &'a mut self,
-        config: Option<&'a crate::config::Config>,
+        config: Option<&'a codewhale_runtime::config::Config>,
     ) -> CommandContextBundle<'a> {
         let host = Rc::new(CommandHost {
             app: RefCell::new(self),
@@ -4849,7 +4922,9 @@ impl App {
             pet: PetAdapter { host: host.clone() },
             trust: TrustAdapter { host: host.clone() },
             login: LoginAdapter { host: host.clone() },
-            work_surface: WorkSurfaceAdapter { host },
+            work_surface: WorkSurfaceAdapter { host: host.clone() },
+            navigation: NavigationAdapter { host: host.clone() },
+            voice_input: VoiceInputAdapter { host },
         }
     }
 }
@@ -4985,6 +5060,7 @@ mod tests {
             display: "q".to_string(),
             skill_instruction: None,
             skill_provenance: None,
+            extension_command: None,
             history_echoed: false,
         });
         {
@@ -5010,7 +5086,7 @@ mod tests {
     fn model_adapter_delegates_selection_and_route_invalidation_to_app() {
         let mut app = test_app();
         app.last_effective_model = Some("stale-model".to_string());
-        let config = crate::config::Config::default();
+        let config = codewhale_runtime::config::Config::default();
         {
             let mut bundle = app.command_contexts_with_config(Some(&config));
             let mut parts = bundle.parts();
@@ -5029,10 +5105,10 @@ mod tests {
 
     #[test]
     fn model_adapter_admits_cross_provider_and_case_distinct_custom_routes_from_borrowed_config() {
-        use crate::config::{Config, ProviderConfig, ProvidersConfig};
-        let config = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(ProvidersConfig {
+        use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+        let config = {
+            let __cw_config_init_0_0 = Some("openai".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 custom: [
                     ("CustomA".to_string(), "http://127.0.0.1:4111/v1"),
                     ("customa".to_string(), "http://127.0.0.1:4222/v1"),
@@ -5050,8 +5126,11 @@ mod tests {
                 })
                 .collect(),
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let mut app = test_app();
         app.set_provider_identity_record(config.active_provider_identity().unwrap());
@@ -5225,7 +5304,8 @@ mod tests {
             .provider()
             .display_name()
             .to_string();
-        let expected_support = crate::config::provider_has_balance_api(harness.app.api_provider);
+        let expected_support =
+            codewhale_runtime::config::provider_has_balance_api(harness.app.api_provider);
         let mut bundle = harness.app.command_contexts();
         let mut parts = bundle
             .contexts(CommandCapabilities::DEBUG_DIAGNOSTICS)
@@ -5281,7 +5361,7 @@ mod tests {
             recorded_at: std::time::Instant::now(),
         });
         let expected_total =
-            app.displayed_session_cost_for_currency(crate::pricing::CostCurrency::Usd);
+            app.displayed_session_cost_for_currency(codewhale_config::pricing::CostCurrency::Usd);
         let mut bundle = app.command_contexts();
         let mut parts = bundle
             .contexts(CommandCapabilities::DEBUG_DIAGNOSTICS)
@@ -6466,7 +6546,7 @@ mod tests {
             let _home = scoped_home(&tmp);
             let skills_dir = tmp.path().join("skills");
             let file = tmp.path().join("a.txt");
-            let repo = crate::snapshot::SnapshotRepo::open_or_init(tmp.path()).unwrap();
+            let repo = codewhale_snapshot::SnapshotRepo::open_or_init(tmp.path()).unwrap();
             std::fs::write(&file, b"v1").unwrap();
             repo.snapshot("pre-turn:1").unwrap();
             std::fs::write(&file, b"v2").unwrap();
@@ -6817,7 +6897,7 @@ mod tests {
 
     fn lifecycle_test_app(tmpdir: &TempDir) -> App {
         let options = crate::tui::test_support::test_tui_options(tmpdir.path());
-        App::new(options, &crate::config::Config::default())
+        App::new(options, &codewhale_runtime::config::Config::default())
     }
 
     /// Point CODEWHALE_HOME at `tmp/home` with a pre-created sessions directory so
@@ -6952,7 +7032,7 @@ mod tests {
         app.add_message(HistoryCell::System {
             content: "another conversation".to_string(),
         });
-        let config = crate::config::Config::default();
+        let config = codewhale_runtime::config::Config::default();
         {
             let mut bundle = app.command_contexts_with_config(Some(&config));
             let mut parts = bundle.parts();
@@ -7634,8 +7714,8 @@ mod tests {
 
         // This window is on a non-default route; the import must bind to it.
         app.set_provider_identity_record(
-            crate::config::Config::default()
-                .resolve_provider_identity(crate::config::ProviderKind::Openai.as_str())
+            codewhale_runtime::config::Config::default()
+                .resolve_provider_identity(codewhale_config::ProviderKind::Openai.as_str())
                 .expect("captured fixture provider"),
         );
         let receipt = {

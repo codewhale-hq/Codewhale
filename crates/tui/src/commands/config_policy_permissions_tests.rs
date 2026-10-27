@@ -14,7 +14,7 @@ mod tests {
     use super::*;
 
     fn test_app(config_path: std::path::PathBuf, workspace: std::path::PathBuf) -> App {
-        let config = crate::config::Config::default();
+        let config = codewhale_runtime::config::Config::default();
         let mut app = App::new(
             TuiOptions {
                 workspace,

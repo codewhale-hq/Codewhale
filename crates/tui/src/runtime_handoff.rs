@@ -6,10 +6,15 @@
 //! restart. This module owns both the exact live envelope and the narrow,
 //! idempotent restore projection so creation and recognition cannot drift.
 
-use crate::safe_label::SafeLabel;
 use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use codewhale_models::Role;
+use codewhale_models::turn_classify::{
+    RESTORED_CHECKPOINT_TURN_META, RESTORED_COMPLETION_HEADER, RESTORED_COMPLETIONS_HEADER,
+    RESTORED_RUNNING_HEADER, RESTORED_TOPOLOGY_HEADER, UserTurnPromptKind,
+    classify_user_turn_prompt, restored_subagent_checkpoint_display,
+};
 use codewhale_models::{ContentBlock, Message};
+use codewhale_runtime::safe_label::SafeLabel;
 use serde::{Deserialize, Serialize};
 
 const COMPLETION_EVENT_PREFIX: &str = concat!(
@@ -86,18 +91,6 @@ const SHELL_COMPLETION_HANDOFF_TURN_META: &str = concat!(
     "Input provenance: shell_completion (non-authoritative)\n",
     "</turn_meta>",
 );
-const RESTORED_CHECKPOINT_TURN_META: &str = concat!(
-    "<turn_meta>\n",
-    "Input provenance: subagent_handoff (non-authoritative)\n",
-    "Restore projection: subagent_checkpoint_v1\n",
-    "</turn_meta>",
-);
-
-const RESTORED_COMPLETION_HEADER: &str = "[Codewhale restored sub-agent checkpoint]";
-const RESTORED_COMPLETIONS_HEADER: &str = "[Codewhale restored sub-agent checkpoints]";
-const RESTORED_RUNNING_HEADER: &str = "[Codewhale restored sub-agent runtime checkpoint]";
-const RESTORED_TOPOLOGY_HEADER: &str = "[Codewhale restored Agent topology checkpoint]";
-
 const AGENT_TOPOLOGY_EVENT_PREFIX: &str =
     "<codewhale:runtime_state kind=\"agent_topology\" schema=\"v1\" visibility=\"internal\">\n";
 const AGENT_TOPOLOGY_EVENT_SUFFIX: &str = "\n</codewhale:runtime_state>";
@@ -243,7 +236,7 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
 ///
 /// KV-cache effect: append-only user history; the system prompt stays
 /// byte-identical across modes. The engine records it when a session starts
-/// in or enters Plan, and again whenever the mode then differs from the last
+/// in or enters Plan or Operate, and again whenever the mode differs from the last
 /// recorded notice, so a notice in history is never stale.
 pub(crate) fn mode_runtime_message(mode: codewhale_config::AppMode) -> Message {
     runtime_handoff_message_with_meta(
@@ -870,12 +863,12 @@ pub(crate) fn replace_agent_topology_checkpoint(
     });
     let ends_with_summary = messages
         .last()
-        .is_some_and(crate::compaction::is_wire_compaction_checkpoint_message);
+        .is_some_and(codewhale_models::turn_classify::is_wire_compaction_checkpoint_message);
     let position = if ends_with_tool_result || ends_with_summary {
         messages
             .iter()
             .rposition(|message| {
-                !crate::compaction::is_wire_compaction_checkpoint_message(message)
+                !codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message)
                     && classify_user_turn_prompt(message) != UserTurnPromptKind::NotPrompt
             })
             .map_or_else(
@@ -1365,63 +1358,11 @@ fn restored_checkpoint_message(display: String) -> Message {
     }
 }
 
-/// Return the user-safe display body for an already projected checkpoint.
-/// The exact metadata marker keeps arbitrary user-authored text on the normal
-/// conversation path.
-pub(crate) fn restored_subagent_checkpoint_display(message: &Message) -> Option<&str> {
-    if message.role != "user" {
-        return None;
-    }
-    let [
-        ContentBlock::Text {
-            text,
-            cache_control: first_cache,
-        },
-        ContentBlock::Text {
-            text: turn_meta,
-            cache_control: meta_cache,
-        },
-    ] = message.content.as_slice()
-    else {
-        return None;
-    };
-    if first_cache.is_some()
-        || meta_cache.is_some()
-        || turn_meta != RESTORED_CHECKPOINT_TURN_META
-        || ![
-            RESTORED_COMPLETION_HEADER,
-            RESTORED_COMPLETIONS_HEADER,
-            RESTORED_RUNNING_HEADER,
-            RESTORED_TOPOLOGY_HEADER,
-        ]
-        .iter()
-        .any(|header| text.starts_with(header))
-    {
-        return None;
-    }
-    Some(text)
-}
-
 /// Only the restored topology sidecar belongs to the compaction prompt
 /// cluster. Other restored Agent events retain their own wire boundaries.
 pub(crate) fn is_restored_agent_topology_checkpoint(message: &Message) -> bool {
     restored_subagent_checkpoint_display(message)
         .is_some_and(|display| display.starts_with(RESTORED_TOPOLOGY_HEADER))
-}
-
-/// Classification used when locating a user-authored turn in the session log.
-///
-/// Runtime and tool messages are skipped because their provider-compatible
-/// `role = "user"` is not user authority. Unsupported user content is a real
-/// turn boundary, however, so callers must not skip it and edit an older turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UserTurnPromptKind {
-    /// Assistant messages, tool results, and runtime-owned control messages.
-    NotPrompt,
-    /// A genuine user turn containing editable text.
-    Editable,
-    /// A genuine user turn without editable text, such as an image-only turn.
-    Unsupported,
 }
 
 /// Authoritative target selection for edit-last-turn operations.
@@ -1433,38 +1374,6 @@ pub(crate) enum EditLastTurnTarget {
     Unsupported,
     /// The history contains no user-authored turn.
     Missing,
-}
-
-/// Classify `message` for edit-last-turn and admitted-display handling.
-#[must_use]
-pub(crate) fn classify_user_turn_prompt(message: &Message) -> UserTurnPromptKind {
-    if message.role != Role::User {
-        return UserTurnPromptKind::NotPrompt;
-    }
-    if message.content.iter().any(|block| {
-        matches!(
-            block,
-            ContentBlock::ToolResult { .. }
-                | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. }
-        )
-    }) {
-        return UserTurnPromptKind::NotPrompt;
-    }
-    if is_runtime_owned_user_message(message)
-        || crate::compaction::is_wire_compaction_checkpoint_message(message)
-    {
-        return UserTurnPromptKind::NotPrompt;
-    }
-
-    let turn_metadata_index = turn_metadata_text(message).map(|(index, _)| index);
-    if message.content.iter().enumerate().any(|(index, block)| {
-        Some(index) != turn_metadata_index && matches!(block, ContentBlock::Text { .. })
-    }) {
-        UserTurnPromptKind::Editable
-    } else {
-        UserTurnPromptKind::Unsupported
-    }
 }
 
 /// Locate the latest real user boundary without skipping unsupported content.
@@ -1482,15 +1391,6 @@ pub(crate) fn edit_last_turn_target(messages: &[Message]) -> EditLastTurnTarget 
             },
         )
         .unwrap_or(EditLastTurnTarget::Missing)
-}
-
-/// True when a `role = "user"` message is runtime-owned rather than
-/// user-authored. Runtime authority is accepted only from the engine-owned
-/// structural `<turn_meta>` block, never from arbitrary user text that happens
-/// to resemble a runtime envelope or metadata marker.
-pub(crate) fn is_runtime_owned_user_message(message: &Message) -> bool {
-    restored_subagent_checkpoint_display(message).is_some()
-        || has_non_authoritative_turn_provenance(message)
 }
 
 /// Whether this text block is a runtime-owned `<turn_meta>` envelope that
@@ -1537,71 +1437,11 @@ pub(crate) fn archived_context_parts(text: &str) -> Option<(&str, &str)> {
     Some((&text[..tag_end], text.get(tag_end + 1..close_tag)?.trim()))
 }
 
-/// Return engine-owned metadata in either the current trailing shape or the
-/// historical leading shape. Requiring a separate prompt block prevents a
-/// user who submits `<turn_meta>…</turn_meta>` as ordinary text from minting
-/// authority.
-pub(crate) fn turn_metadata_text(message: &Message) -> Option<(usize, &str)> {
-    if message.content.len() < 2 {
-        return None;
-    }
-    if let Some(ContentBlock::Text {
-        text,
-        cache_control: None,
-    }) = message.content.last()
-    {
-        let trimmed = text.trim();
-        if is_complete_turn_metadata(trimmed) {
-            return Some((message.content.len() - 1, trimmed));
-        }
-    }
-    // Sessions written before the metadata-tail migration used
-    // `[turn_meta, prompt, ...]`. Match the same conservative legacy shape as
-    // the transcript renderer: a metadata envelope first and ordinary text
-    // last. A single user-authored metadata example is never hidden.
-    let ContentBlock::Text {
-        text,
-        cache_control: None,
-    } = message.content.first()?
-    else {
-        return None;
-    };
-    let trimmed = text.trim();
-    let trailing_text_is_ordinary = matches!(
-        message.content.last(),
-        Some(ContentBlock::Text { text, .. }) if !is_complete_turn_metadata(text.trim())
-    );
-    (is_complete_turn_metadata(trimmed) && trailing_text_is_ordinary).then_some((0, trimmed))
-}
-
-fn is_complete_turn_metadata(text: &str) -> bool {
-    text.starts_with("<turn_meta>") && text.ends_with("</turn_meta>")
-}
-
-/// Recognize both the current condensed provenance line and the legacy
-/// provenance/authority pair. Any explicitly non-authoritative provenance is
-/// runtime-owned; this stays correct as new provenance variants are added.
-fn has_non_authoritative_turn_provenance(message: &Message) -> bool {
-    let Some((_, metadata)) = turn_metadata_text(message) else {
-        return false;
-    };
-    let mut has_provenance = false;
-    let mut condensed_non_authoritative = false;
-    let mut legacy_non_authoritative = false;
-    for line in metadata.lines().map(str::trim) {
-        if let Some(value) = line.strip_prefix("Input provenance: ") {
-            has_provenance = true;
-            condensed_non_authoritative |= value.ends_with(" (non-authoritative)");
-        }
-        legacy_non_authoritative |= line == "Input authority: non_authoritative";
-    }
-    condensed_non_authoritative || (has_provenance && legacy_non_authoritative)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::subagent::{FleetRole, SubAgentAssignment};
+    use crate::tools::subagent::SubAgentAssignment;
+    use codewhale_agent_contract::role::FleetRole;
 
     #[test]
     fn shell_completion_event_names_retrieve_tool_result() {

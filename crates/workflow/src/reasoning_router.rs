@@ -43,8 +43,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::fleet_exact::{FrozenRoute, PermissionCeiling, ReasoningTier, RouterMember};
+use crate::fleet_exact::{FrozenRoute, ReasoningTier, RouterMember};
 use crate::named_fleet::FleetSearchRoot;
+use codewhale_protocol::fleet::PermissionCeiling;
 
 /// Directory (under each search root) that holds saved Router profiles.
 pub const REASONING_ROUTER_DIR: &str = "routers";

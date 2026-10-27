@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::continual_harness::{HarnessEntryKind, HarnessRefinement, overview, refine, remove};
+use codewhale_runtime::continual_harness::{
+    HarnessEntryKind, HarnessRefinement, overview, refine, remove,
+};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,

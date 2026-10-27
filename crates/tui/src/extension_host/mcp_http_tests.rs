@@ -3,14 +3,16 @@
 use super::*;
 use crate::extension_host::TestManagerGuard;
 use crate::extension_host::tests::{FixturePlugins, node_for_tests};
-use crate::mcp::{McpBackend, McpConfig, McpPool};
+use crate::mcp::{McpConfig, McpPool};
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_config::McpBackend;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Clone, Copy)]
 enum Mode {
     Json,
+    Modern,
     PostSse,
     Legacy,
     RequirePreflight,
@@ -171,7 +173,7 @@ async fn peer(mode: Mode) -> Peer {
                     .await;
                     return;
                 }
-                if matches!(mode, Mode::RequirePreflight) {
+                if matches!(mode, Mode::RequirePreflight) && frame["method"] != "server/discover" {
                     assert!(
                         head.to_ascii_lowercase()
                             .contains("mcp-session-id: observed-fixture-session"),
@@ -206,7 +208,23 @@ async fn peer(mode: Mode) -> Peer {
                     reply(&mut socket, "202 Accepted", "text/plain", b"", false).await;
                     return;
                 }
-                let result = match method {
+                if method == "server/discover" {
+                    let response = if matches!(mode, Mode::Modern) {
+                        json!({"jsonrpc":"2.0","id":frame["id"],"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}})
+                    } else {
+                        json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Method not found"}})
+                    };
+                    reply(
+                        &mut socket,
+                        "200 OK",
+                        "application/json",
+                        response.to_string().as_bytes(),
+                        matches!(mode, Mode::Modern),
+                    )
+                    .await;
+                    return;
+                }
+                let mut result = match method {
                     "initialize" => {
                         json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fetch-fixture","version":"1"}})
                     }
@@ -218,6 +236,13 @@ async fn peer(mode: Mode) -> Peer {
                     }
                     _ => panic!("unexpected fixture method {method}"),
                 };
+                if matches!(mode, Mode::Modern) {
+                    result["resultType"] = json!("complete");
+                    if method == "tools/list" {
+                        result["ttlMs"] = json!(0);
+                        result["cacheScope"] = json!("private");
+                    }
+                }
                 let frame = json!({"jsonrpc":"2.0","id":frame["id"],"result":result});
                 if legacy {
                     channel
@@ -321,7 +346,11 @@ async fn real_mode(mode: Mode, name: &str) {
                 .iter()
                 .filter(|frame| frame["method"] == method)
                 .count(),
-            if method == "initialize" && matches!(mode, Mode::Negotiate) {
+            if matches!(mode, Mode::Modern)
+                && matches!(method, "initialize" | "notifications/initialized")
+            {
+                0
+            } else if method == "initialize" && matches!(mode, Mode::Negotiate) {
                 2
             } else {
                 1
@@ -339,6 +368,9 @@ async fn real_mode(mode: Mode, name: &str) {
         ("tools/list", "2"),
         ("tools/call", "3"),
     ] {
+        if matches!(mode, Mode::Modern) && method == "initialize" {
+            continue;
+        }
         assert_eq!(
             frames
                 .iter()
@@ -348,7 +380,37 @@ async fn real_mode(mode: Mode, name: &str) {
             "the original Rust facade ID must reach the real peer"
         );
     }
-    if !matches!(mode, Mode::Legacy | Mode::Negotiate) {
+    if matches!(mode, Mode::Modern) {
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "server/discover")
+                .count(),
+            1
+        );
+        let headers = peer.headers.lock().unwrap();
+        assert_eq!(headers.len(), frames.len());
+        for (frame, head) in frames.iter().zip(headers.iter()) {
+            assert_eq!(frame["params"]["_meta"], modern_metadata());
+            let head = head.to_ascii_lowercase();
+            assert!(head.starts_with("post "));
+            assert!(!head.contains("mcp-session-id:"));
+            assert!(
+                head.lines()
+                    .any(|line| line == "mcp-protocol-version: 2026-07-28")
+            );
+            assert!(
+                head.lines().any(
+                    |line| line == format!("mcp-method: {}", frame["method"].as_str().unwrap())
+                )
+            );
+            assert_eq!(
+                head.contains("mcp-name: echo"),
+                frame["method"] == "tools/call"
+            );
+        }
+        assert_eq!(result["resultType"], "complete");
+    } else if !matches!(mode, Mode::Legacy | Mode::Negotiate) {
         assert!(peer.headers.lock().unwrap().iter().any(|head| {
             head.to_ascii_lowercase()
                 .contains("mcp-session-id: observed-fixture-session")
@@ -381,6 +443,7 @@ async fn real_mode(mode: Mode, name: &str) {
 #[tokio::test(flavor = "current_thread")]
 async fn host_http_json_uses_real_sdk_guarded_client_and_exact_string_ids() {
     real_mode(Mode::Json, "host_http_json").await;
+    real_mode(Mode::Modern, "host_http_modern").await;
 }
 #[tokio::test(flavor = "current_thread")]
 async fn host_http_sse_body_uses_real_sdk_and_shared_bounded_parser() {

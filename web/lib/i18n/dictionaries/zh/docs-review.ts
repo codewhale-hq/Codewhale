@@ -142,5 +142,5 @@ codewhale sessions export <id>     # full archive: messages, tool calls, results
     },
   ],
   sourceNote:
-    "来源文档：docs/RECEIPTS.md、docs/CONFIGURATION.md（[snapshots]）、crates/tui/src/snapshot/mod.rs · 修改时同步更新 docs-map.ts。",
+    "来源文档：docs/RECEIPTS.md、docs/CONFIGURATION.md（[snapshots]）、crates/snapshot/src/lib.rs · 修改时同步更新 docs-map.ts。",
 };

@@ -52,7 +52,7 @@ fn archived_context_attr(tag: &str, name: &str) -> Option<String> {
 pub(super) fn render_archived_context(
     cell: &HistoryCell,
     width: u16,
-    _low_motion: bool,
+    palette_mode: palette::PaletteMode,
 ) -> Vec<Line<'static>> {
     let HistoryCell::ArchivedContext {
         level,
@@ -124,8 +124,17 @@ pub(super) fn render_archived_context(
         )));
     }
 
-    let rendered = crate::tui::markdown_render::render_markdown(&body, content_width, body_style);
-    for (idx, line) in rendered.into_iter().enumerate() {
+    let rendered = crate::tui::markdown_render::render_markdown_tagged_with_palette(
+        &body,
+        content_width,
+        body_style,
+        palette_mode,
+    );
+    for (idx, line) in rendered
+        .into_iter()
+        .map(|rendered| rendered.line)
+        .enumerate()
+    {
         if idx == 0 {
             let mut spans = vec![Span::styled(
                 TRANSCRIPT_RAIL.to_string(),

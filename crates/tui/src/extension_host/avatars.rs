@@ -1,18 +1,17 @@
 //! Declarative art registered through the existing reviewed Native owner.
 //! No script, lifecycle event, input handler, URL, or filesystem authority is
 //! delivered to clients. Named actions are clips on the caller's existing clock.
-use super::{
-    ManagerShared,
-    protocol::{EntryRef, OwnerRef, RegisterParams, RegisterResult},
-    supervisor::HostRequestContext,
-    tier::HostTier,
-};
+use super::ManagerShared;
+use super::protocol::{RegisterParams, RegisterResult};
+use super::supervisor::HostRequestContext;
+use super::tier::HostTier;
 use crate::plugins::{
     activation::PluginActivationCapability,
     manifest::{PluginManifest, ValidatedManifest},
-    types::PluginAuthority,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use codewhale_config::PluginAuthority;
+use codewhale_config::{EntryRef, OwnerRef};
 use codewhale_ratatui::avatar::{MAX_PACK_BYTES, MAX_PNG_BYTES, Pack, RegisteredPack};
 use sha2::{Digest, Sha256};
 use std::{
@@ -42,10 +41,10 @@ fn reviewed_bytes(
         .get(relative)
         .ok_or("avatar file is outside reviewed inventory")?;
     let path = review.canonical_root.join(relative);
-    crate::fleet::files::reject_linked_path(&review.canonical_root, &path)
+    codewhale_util::files::reject_linked_path(&review.canonical_root, &path)
         .map_err(|e| e.to_string())?;
-    let file =
-        crate::fs_confined::open_read(&review.canonical_root, &path).map_err(|e| e.to_string())?;
+    let file = codewhale_util::fs_confined::open_read(&review.canonical_root, &path)
+        .map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("avatar asset is not a regular file".into());
     }

@@ -27,11 +27,29 @@ mg = importlib.util.module_from_spec(_spec)
 sys.modules["module_graph"] = mg
 _spec.loader.exec_module(mg)
 
+_cl_spec = importlib.util.spec_from_file_location("count_lines", Path(__file__).with_name("count_lines.py"))
+cl = importlib.util.module_from_spec(_cl_spec)
+_cl_spec.loader.exec_module(cl)
+
 ROOT = mg.ROOT_ITEMS
 
 
-def analyse() -> dict:
-    tui, runtime, refs = mg.load_graph()
+def strict_lines(src_dirs: list[Path]) -> collections.Counter:
+    strict: collections.Counter = collections.Counter()
+    for src in src_dirs:
+        crate_dir = src.parent
+        if not crate_dir.is_dir():
+            continue
+        _, res = cl.classify_crate(str(crate_dir))
+        for path, (prod, _test, _other) in res.items():
+            rel = Path(path).relative_to(src) if Path(path).is_relative_to(src) else None
+            if rel is not None:
+                strict[mg.top_module(rel.as_posix())] += prod
+    return strict
+
+
+def analyse(tui_src: Path = mg.TUI_SRC, runtime_src: Path = mg.RUNTIME_SRC, non_test: bool = False) -> dict:
+    tui, runtime, refs = mg.load_graph(tui_src, runtime_src)
     resident = set(runtime.modules)
     modules = (tui.modules | runtime.modules) | {ROOT}
     prod_lines: collections.Counter = collections.Counter()
@@ -42,6 +60,7 @@ def analyse() -> dict:
             module = mg.top_module(rel)
             bucket = test_lines if mg.file_is_test(rel, exact, prefixes, crate.production_files) else prod_lines
             bucket[module] += src.count("\n") + 1
+    strict = strict_lines([tui_src, runtime_src]) if non_test else None
     out: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     inbound: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     for ref in refs:
@@ -76,6 +95,7 @@ def analyse() -> dict:
                 "resident": m in resident,
                 "prod_lines": prod_lines[m],
                 "test_lines": test_lines[m],
+                **({"strict_lines": strict[m]} if strict is not None else {}),
                 "out": len(out[m]),
                 "in": len(inbound[m]),
                 "scc": len(comp_members[c]),
@@ -163,17 +183,20 @@ def strongly_connected(graph: dict[str, set[str]]) -> dict[str, int]:
 def render(result: dict, only: str | None) -> str:
     rows = [r for r in result["rows"] if not only or r["module"] == only]
     rows.sort(key=lambda r: (r["ui"], r["wave"], -r["prod_lines"]))
+    has_strict = any("strict_lines" in r for r in rows)
+    strict_head = f"{'strict':>9}" if has_strict else ""
     lines = [
         f"largest strongly connected components: {result['scc_sizes']}",
         f"largest SCC ({len(result['largest_scc'])} modules): {', '.join(result['largest_scc'])}",
         "",
-        f"{'module':<26}{'wave':>5}{'prod':>9}{'test':>9}{'out':>5}{'in':>5}{'scc':>5} {'root':>5}  blockers (module:refs)",
+        f"{'module':<26}{'wave':>5}{'prod':>9}{strict_head}{'test':>9}{'out':>5}{'in':>5}{'scc':>5} {'root':>5}  blockers (module:refs)",
     ]
     for r in rows:
         tag = "UI " if r["ui"] else ("rt " if r["resident"] else "   ")
         blockers = ", ".join(f"{d}:{n}" for d, n in r["blockers"][:5])
+        strict_cell = f"{r.get('strict_lines', 0):>9}" if has_strict else ""
         lines.append(
-            f"{tag}{r['module']:<23}{r['wave']:>5}{r['prod_lines']:>9}{r['test_lines']:>9}"
+            f"{tag}{r['module']:<23}{r['wave']:>5}{r['prod_lines']:>9}{strict_cell}{r['test_lines']:>9}"
             f"{r['out']:>5}{r['in']:>5}{r['scc']:>5} {r['to_root']:>5}  {blockers}"
         )
     free = [r for r in result["rows"] if not r["ui"] and r["wave"] == 0 and not r["resident"] and r["to_root"] == 0]
@@ -186,8 +209,11 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--module")
     parser.add_argument("--scc-edges", type=int, metavar="N", help="print the N heaviest edges inside the largest cycle")
+    parser.add_argument("--non-test", action="store_true", help="add a strict production column (inline cfg(test) code excluded)")
+    parser.add_argument("--tui-src", type=Path, default=mg.TUI_SRC, help="source directory of the crate being split")
+    parser.add_argument("--runtime-src", type=Path, default=mg.RUNTIME_SRC, help="source directory of the destination crate")
     args = parser.parse_args()
-    result = analyse()
+    result = analyse(args.tui_src, args.runtime_src, args.non_test)
     if args.scc_edges:
         print(scc_edges(result, args.scc_edges, 5))
         return 0

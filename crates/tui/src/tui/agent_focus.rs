@@ -104,11 +104,11 @@ pub(crate) fn resolve_agent_transcript_messages(
     app: &App,
     agent_id: &str,
 ) -> (Vec<Message>, usize) {
-    if let Ok(messages) =
-        crate::tools::subagent::load_subagent_transcript_artifact(&app.workspace, agent_id)
-        && !messages.is_empty()
+    if let Ok(display) =
+        crate::tools::subagent::load_subagent_transcript_display_artifact(&app.workspace, agent_id)
+        && display.conversation_count > 0
     {
-        return (messages, 0);
+        return (display.messages, 0);
     }
     use crate::tools::handle::{HandleValue, VarHandle};
     let lookup = VarHandle {
@@ -816,8 +816,8 @@ pub(crate) fn render_focus(app: &mut App, area: Rect, buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use serde_json::json;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -1019,7 +1019,7 @@ mod tests {
                 fork_context: false,
                 workspace: None,
                 git_branch: None,
-                agent_type: crate::tools::subagent::FleetRole::Scout,
+                agent_type: codewhale_agent_contract::role::FleetRole::Scout,
                 assignment: crate::tools::subagent::SubAgentAssignment {
                     native_preset: None,
                     objective: "look around".to_string(),
@@ -1097,7 +1097,7 @@ mod tests {
             fork_context: false,
             workspace: None,
             git_branch: None,
-            agent_type: crate::tools::subagent::FleetRole::Scout,
+            agent_type: codewhale_agent_contract::role::FleetRole::Scout,
             assignment: crate::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "audit the docs".to_string(),
@@ -1439,8 +1439,8 @@ mod transcript_legacy;
 #[cfg(test)]
 mod mounted_transcript_acceptance {
     use super::*;
-    use crate::config::Config;
     use codewhale_localization::Locale;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn fixture(locale: Locale, offset: Option<usize>) -> App {

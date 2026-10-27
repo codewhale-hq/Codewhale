@@ -140,12 +140,17 @@ fn parse_auto(id: &str, body: &str) -> super::types::MarketplaceCatalog {
 
 #[test]
 fn native_catalog_keeps_identity_without_fetching_artwork_or_granting_trust() {
-    let manifest: Value =
-        serde_json::from_str(include_str!("../../../plugins/computer-use/plugin.json")).unwrap();
-    let icon = manifest["extensions"]["net.codewhale"]["icon"]
+    let snapshot: Value =
+        serde_json::from_str(include_str!("../../../assets/first-party-marketplace.json")).unwrap();
+    let icon = snapshot["catalog"]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "computer-use")
+        .unwrap()["icon"]
         .as_str()
         .unwrap();
-    let mut entry = serde_json::json!({"name":"computer-use","source":"github:Hmbown/codewhale-cu-plugin","display_name":"Computer Use","author":"Codewhale","icon":icon,"platforms":["macos","windows","linux"]});
+    let mut entry = serde_json::json!({"name":"computer-use","source":"github:codewhale-hq/codewhale-cu-plugin","display_name":"Computer Use","author":"Codewhale","icon":icon,"platforms":["macos","windows","linux"]});
     let catalog = parse(
         "identity",
         MarketplaceFormat::Codewhale,

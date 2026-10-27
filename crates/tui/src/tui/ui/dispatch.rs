@@ -45,12 +45,16 @@ pub(crate) fn dispatch_hotbar_slot(
     action.dispatch(app, config).map(Some)
 }
 
-pub(crate) fn queued_ui_to_session(msg: &QueuedMessage) -> QueuedSessionMessage {
-    QueuedSessionMessage {
+pub(crate) fn queued_ui_to_session(msg: &QueuedMessage) -> Result<QueuedSessionMessage> {
+    anyhow::ensure!(
+        msg.extension_command.is_none(),
+        "Extension command prompts cannot be persisted as user input"
+    );
+    Ok(QueuedSessionMessage {
         display: msg.display.clone(),
         skill_instruction: msg.skill_instruction.clone(),
         skill_provenance: msg.skill_provenance.clone(),
-    }
+    })
 }
 
 pub(crate) fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
@@ -58,6 +62,7 @@ pub(crate) fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
         display: msg.display,
         skill_instruction: msg.skill_instruction,
         skill_provenance: msg.skill_provenance,
+        extension_command: None,
         // Persistence does not carry this flag; restore may re-echo or rely on
         // pending preview. Live Queue path sets true after painting.
         history_echoed: false,
@@ -79,15 +84,19 @@ pub(crate) fn echo_queued_user_turn(app: &mut App, message: &mut QueuedMessage) 
     app.scroll_to_bottom();
 }
 
-/// Paint the transcript cell for a submitted user turn, reusing the cell that
-/// queue-time echo already painted when there is one. Exactly one
-/// `HistoryCell::User` must represent a message across queue -> steer ->
-/// dispatch; returns that cell's index.
+/// Paint command input as an attributed receipt and composer input as a user
+/// turn, reusing its queue-time echo. Return the displayed cell's index.
 pub(crate) fn paint_user_turn_cell(
     app: &mut App,
     message: &QueuedMessage,
     content: String,
 ) -> usize {
+    if let Some((command, _)) = message.extension_command.as_ref() {
+        app.add_message(HistoryCell::System {
+            content: format!("{} command input:\n{content}", command.origin),
+        });
+        return app.history.len().saturating_sub(1);
+    }
     if message.history_echoed
         && let Some(idx) = echoed_user_turn_cell(app, &message.display)
     {
@@ -351,12 +360,37 @@ pub(crate) async fn send_taken_queued_message_now(
     Ok(())
 }
 
+pub(crate) fn validate_extension_command_context(app: &App, message: &QueuedMessage) -> Result<()> {
+    let Some((command, session_id)) = message.extension_command.as_ref() else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        app.current_session_id.as_deref() == Some(session_id.as_str())
+            && app.workspace == command.workspace,
+        "Extension command belongs to a different session or workspace"
+    );
+    anyhow::ensure!(
+        !app.offline_mode
+            && app.agent_focus.is_none()
+            && !app.paused
+            && app.paused_goal_objective.is_none()
+            && !app.remote_control.runtime_chat_blocks_local_dispatch(),
+        "Extension command prompts require the active root session online and unpaused"
+    );
+    crate::extension_host::command::validate_selected_registration(command, session_id)
+        .map_err(anyhow::Error::msg)
+}
+
 pub(crate) fn queued_message_content_for_app(
     app: &App,
     message: &QueuedMessage,
     cwd: Option<PathBuf>,
     git_cache: &mut crate::tui::git_mention::GitMentionCache,
 ) -> Result<String> {
+    if message.extension_command.is_some() {
+        validate_extension_command_context(app, message)?;
+        return Ok(message.display.clone());
+    }
     if let Some(provenance) = message.skill_provenance.as_ref() {
         provenance
             .verify_for(&app.workspace, Some(app.extension_plugin_view().as_ref()))
@@ -438,12 +472,29 @@ pub(crate) async fn dispatch_user_message_with_recovery(
     mut message: QueuedMessage,
     recovery: DispatchRecovery,
 ) -> Result<()> {
+    if message.extension_command.is_some() {
+        let admitted = validate_extension_command_context(app, &message).and_then(|()| {
+            anyhow::ensure!(
+                !app.is_loading
+                    && !app.dispatch_in_flight
+                    && !app.suppress_stream_events_until_turn_complete,
+                "Extension command prompts require an idle session"
+            );
+            Ok(())
+        });
+        if let Err(error) = admitted {
+            app.restore_unsent_message(message);
+            app.status_message = Some(error.to_string());
+            return Err(error);
+        }
+    }
     if app.redaction_gate {
         recover_unstarted_external_message(app, message, recovery, INITIAL_PROMPT_DEFERRED_STATUS);
         return Ok(());
     }
     let stop_words = config.stop_words();
-    if is_stop_word(&message.display, &stop_words).is_some() {
+    if message.extension_command.is_none() && is_stop_word(&message.display, &stop_words).is_some()
+    {
         engine_handle.cancel();
         app.stopped_turn = true;
         app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".to_string());
@@ -457,12 +508,13 @@ pub(crate) async fn dispatch_user_message_with_recovery(
     // Fast-path skip when no hooks configured.
     if app
         .hooks
-        .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
+        .has_hooks_for_event(codewhale_config::hooks::HookEvent::MessageSubmit)
     {
         let context = app.base_hook_context().with_message(&message.display);
-        let strict_gates = app
-            .hooks
-            .matched_strict_gate_labels(crate::hooks::HookEvent::MessageSubmit, &context);
+        let strict_gates = app.hooks.matched_strict_gate_labels(
+            codewhale_config::hooks::HookEvent::MessageSubmit,
+            &context,
+        );
         let hooks = app.hooks.clone();
         let original_text = message.display.clone();
 
@@ -573,7 +625,19 @@ pub(crate) fn prepare_user_dispatch(
     // Plan paused-command changes without touching App or the engine pause
     // gate. Route selection can await and client preflight can fail; neither
     // may resume or discard a paused command unless a turn is ready to send.
-    let paused_dispatch = plan_paused_command_message(app, &message.display);
+    let extension_command = message.extension_command.is_some();
+    if extension_command {
+        validate_extension_command_context(app, &message)?;
+        anyhow::ensure!(
+            !app.is_loading && !app.suppress_stream_events_until_turn_complete,
+            "Extension command prompts require an idle session"
+        );
+    }
+    let paused_dispatch = if extension_command {
+        PausedCommandDispatch::None
+    } else {
+        plan_paused_command_message(app, &message.display)
+    };
 
     let cwd = std::env::current_dir().ok();
     // One cache for this submit: the references pass and the payload pass
@@ -586,13 +650,17 @@ pub(crate) fn prepare_user_dispatch(
         app.mention_walk_depth,
         app.workspace_follow_symlinks,
     );
-    let references = crate::tui::file_mention::context_references_from_input_cached(
-        &message.display,
-        &app.workspace,
-        cwd.clone(),
-        &mut git_cache,
-        completion_index,
-    );
+    let references = if extension_command {
+        Vec::new()
+    } else {
+        crate::tui::file_mention::context_references_from_input_cached(
+            &message.display,
+            &app.workspace,
+            cwd.clone(),
+            &mut git_cache,
+            completion_index,
+        )
+    };
     let mut content = queued_message_content_for_app(app, &message, cwd, &mut git_cache)?;
     if let Some(note) = paused_dispatch.note() {
         content.push_str(note);
@@ -636,15 +704,21 @@ pub(crate) fn prepare_user_dispatch(
     // the async dispatch completion (which can lag by a route plan). The
     // failure path restores the pre-send timestamp from the snapshot.
     app.last_send_at = Some(Instant::now());
-    app.push_api_message(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: content.clone(),
-            cache_control: None,
-        }],
-    });
+    if !extension_command {
+        app.push_api_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: content.clone(),
+                cache_control: None,
+            }],
+        });
+    }
 
-    let goal_objective = paused_dispatch.goal_objective(app);
+    let goal_objective = if extension_command {
+        app.goal.objective.clone()
+    } else {
+        paused_dispatch.goal_objective(app)
+    };
     let allowed_tools = allowed_tools_for_message(app.active_allowed_tools.clone(), &message);
 
     Ok(UserDispatchPrepare {
@@ -670,7 +744,11 @@ pub(crate) fn prepare_user_dispatch(
         allowed_tools,
         hook_executor: app.runtime_services.hook_executor.clone(),
         verbosity: app.verbosity.clone(),
-        provenance: UserInputProvenance::ExternalUser,
+        provenance: if extension_command {
+            UserInputProvenance::Runtime
+        } else {
+            UserInputProvenance::ExternalUser
+        },
         auto_router_context,
         should_auto_resolve,
         auto_compact_user_configured: app.auto_compact_user_configured,
@@ -786,8 +864,8 @@ where
     match outcome {
         Ok(Ok(apply)) => apply,
         Ok(Err(panic)) => {
-            let detail = crate::utils::panic_message(&*panic);
-            crate::utils::record_caught_panic("user-dispatch", &detail);
+            let detail = codewhale_util::utils::panic_message(&*panic);
+            codewhale_util::utils::record_caught_panic("user-dispatch", &detail);
             build_dispatch_error_closure(
                 fallback,
                 recovery,
@@ -795,8 +873,8 @@ where
             )
         }
         Err(_elapsed) => {
-            crate::core::engine::turn_heartbeat::report_stall(
-                &crate::core::engine::turn_heartbeat::StallReport {
+            codewhale_runtime::stall_report::report_stall(
+                &codewhale_runtime::stall_report::StallReport {
                     source: "ui",
                     phase: "while dispatching the message (route planning / engine admission)"
                         .to_string(),
@@ -847,6 +925,20 @@ pub(crate) async fn spawned_dispatch_inner(
     recovery: DispatchRecovery,
     engine_handle: EngineHandle,
 ) -> crate::tui::app::DispatchApplyFn {
+    if let Some((command, session_id)) = prepare.message.extension_command.as_ref()
+        && let Err(error) =
+            crate::extension_host::command::validate_reference(command, session_id).await
+    {
+        return build_dispatch_error_closure(prepare, recovery, error);
+    }
+    if !prepare.auto_model {
+        crate::provider_lake::refresh_unverified_local_context(
+            &prepare.route_config,
+            &prepare.app_route_identity,
+            &prepare.app_model,
+        )
+        .await;
+    }
     // Bound in its own statement: the planner borrows `prepare`, and the error
     // arm moves it into the failure closure.
     let plan_result = plan_turn_route(TurnRoutePlanRequest {
@@ -976,6 +1068,13 @@ pub(crate) async fn spawned_dispatch_inner(
                 config,
             );
         }
+        if let Err(error) = validate_extension_command_context(app, &prepare.message) {
+            return build_dispatch_error_closure(prepare, recovery, error.to_string())(
+                app,
+                &engine_handle,
+                config,
+            );
+        }
         build_dispatch_success_closure(prepare, outcome)(app, &engine_handle, config)?;
         // Existing Engine admission binds cancellation controls and the Op in
         // one FIFO. No await separates the UI checkpoint from this handoff.
@@ -1000,7 +1099,11 @@ pub(crate) fn build_dispatch_success_closure(
             app.runtime_turn_status = None;
             // last_send_at was already anchored in the sync prepare phase so
             // the tail-flash starts together with the visible user cell.
-            app.last_submitted_prompt = Some(prepare.message.display.clone());
+            app.last_submitted_prompt = prepare
+                .message
+                .extension_command
+                .is_none()
+                .then(|| prepare.message.display.clone());
             app.unanswered_submission = Some(crate::tui::app::UnansweredSubmission {
                 message: prepare.message.clone(),
                 history_cell: prepare.history_cell,
@@ -1013,8 +1116,8 @@ pub(crate) fn build_dispatch_success_closure(
                 config,
                 app.goal.objective.as_deref(),
             ));
-            // History and api_messages were already appended in the sync prepare
-            // phase; record references now that the turn is accepted.
+            // Composer API messages and input cells were prepared synchronously;
+            // command messages arrive from Core. Record accepted references now.
             app.record_context_references(
                 prepare.history_cell,
                 prepare.message_index,
@@ -1231,6 +1334,10 @@ pub(crate) async fn steer_user_message(
     engine_handle: &EngineHandle,
     mut message: QueuedMessage,
 ) -> Result<bool> {
+    anyhow::ensure!(
+        message.extension_command.is_none(),
+        "Extension command prompts cannot steer an active turn"
+    );
     let stop_words = config.stop_words();
     if is_stop_word(&message.display, &stop_words).is_some() {
         engine_handle.cancel();
@@ -1244,12 +1351,13 @@ pub(crate) async fn steer_user_message(
     // before pause state, history, references, or engine input are touched.
     if app
         .hooks
-        .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
+        .has_hooks_for_event(codewhale_config::hooks::HookEvent::MessageSubmit)
     {
         let context = app.base_hook_context().with_message(&message.display);
-        let strict_gates = app
-            .hooks
-            .matched_strict_gate_labels(crate::hooks::HookEvent::MessageSubmit, &context);
+        let strict_gates = app.hooks.matched_strict_gate_labels(
+            codewhale_config::hooks::HookEvent::MessageSubmit,
+            &context,
+        );
         let hooks = app.hooks.clone();
         let original_text = message.display.clone();
         let outcome = match tokio::task::spawn_blocking(move || {
@@ -1498,6 +1606,10 @@ pub(crate) async fn dispatch_composer_message(
     recovery: DispatchRecovery,
     action: ComposerSubmitAction,
 ) -> Result<()> {
+    if message.extension_command.is_some() {
+        return dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery)
+            .await;
+    }
     // The ordinary web mirror does not block local prompts. Isolated Runtime
     // Chat is different: it owns a provider-backed native turn that is not
     // reflected by the interactive engine's `is_loading` bit. Preserve the

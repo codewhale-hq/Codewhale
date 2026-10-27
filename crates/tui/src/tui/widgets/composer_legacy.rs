@@ -293,6 +293,8 @@ impl Renderable for ComposerWidget<'_> {
                 input_content_width,
                 input_rows_budget,
             );
+        let clipped =
+            wrap_input_lines_for_mouse(input_text, input_content_width).len() > input_rows_budget;
         if has_panel {
             let hint_line = if self.app.is_history_search_active() {
                 Some(Line::from(vec![
@@ -325,7 +327,13 @@ impl Renderable for ComposerWidget<'_> {
                     Style::default().fg(self.app.ui_theme.text_hint),
                 )))
             } else if !input_text.trim().is_empty() {
-                composer_submit_hint(self.app).map(|hint| {
+                composer_submit_hint(
+                    self.app,
+                    clipped
+                        && !self.app.is_history_search_active()
+                        && self.slash_menu_entries.is_empty(),
+                )
+                .map(|hint| {
                     Line::from(vec![Span::styled(
                         format!(" {} ", hint.text),
                         Style::default().fg(hint.color),
@@ -390,7 +398,12 @@ impl Renderable for ComposerWidget<'_> {
                 .border_style(Style::default().fg(self.app.ui_theme.border))
                 .style(background);
             if !input_text.trim().is_empty()
-                && let Some(hint) = composer_submit_hint(self.app)
+                && let Some(hint) = composer_submit_hint(
+                    self.app,
+                    clipped
+                        && !self.app.is_history_search_active()
+                        && self.slash_menu_entries.is_empty(),
+                )
             {
                 block = block.title(Line::from(Span::styled(
                     format!(" {} ", hint.text),
@@ -769,7 +782,7 @@ impl Renderable for ComposerWidget<'_> {
         composer_height(
             self.app.composer_display_input(),
             width,
-            self.max_height.min(self.max_height_cap()),
+            self.max_height,
             self.active_menu_reserved_rows(),
             self.app.composer_density,
             self.wants_enclosed_panel(),

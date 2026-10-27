@@ -18,7 +18,7 @@ pub(crate) fn complete_trust_directory_onboarding(
     // reported a `DEEPSEEK_SESSION_ID`, and it has to keep meaning the same
     // session afterwards.
     app.hooks = app.hooks.rebind(
-        crate::hooks::HooksConfig::load_with_project_and_plugins(
+        crate::hooks::config::load_with_project_and_plugins(
             config.hooks_config(),
             &app.workspace,
             Some(app.plugin_registry.as_ref()),
@@ -184,18 +184,18 @@ fn balance_api_for(provider: ProviderKind) -> Option<BalanceApi> {
 
 /// Fetch remaining credit for the active prepaid provider.
 ///
-/// Returns `None` on any error (network, auth, parse) — callers treat that
+/// Returns the reason on any error (network, auth, parse) — callers treat that
 /// as "balance unknown" and keep the previous value.
 pub(crate) async fn fetch_provider_balance(
     provider: ProviderKind,
     api_key: &str,
     base_url: &str,
-) -> Option<crate::pricing::BalanceInfo> {
+) -> Result<crate::pricing::BalanceInfo, String> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
-        return None;
+        return Err("no API key".to_string());
     }
-    match balance_api_for(provider)? {
+    match balance_api_for(provider).ok_or_else(|| "balance is not supported".to_string())? {
         BalanceApi::DeepSeekUserBalance => fetch_deepseek_user_balance(api_key, base_url).await,
         BalanceApi::OpenRouterCredits => fetch_openrouter_credits(api_key, base_url).await,
         BalanceApi::SiliconFlowUserInfo => {
@@ -207,10 +207,18 @@ pub(crate) async fn fetch_provider_balance(
 async fn fetch_deepseek_user_balance(
     api_key: &str,
     base_url: &str,
-) -> Option<crate::pricing::BalanceInfo> {
-    let url = format!("{}/user/balance", base_url.trim_end_matches('/'));
+) -> Result<crate::pricing::BalanceInfo, String> {
+    let origin = base_url.trim_end_matches('/');
+    let origin = origin
+        .strip_suffix("/beta")
+        .or_else(|| origin.strip_suffix("/v1"))
+        .unwrap_or(origin);
+    let url = format!("{origin}/user/balance");
     let body: crate::pricing::BalanceResponse = balance_get_json(api_key, &url).await?;
-    body.balance_infos.into_iter().next()
+    body.balance_infos
+        .into_iter()
+        .next()
+        .ok_or_else(|| "the response listed no balance".to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -231,11 +239,11 @@ fn openrouter_remaining_credits(total_credits: f64, total_usage: f64) -> f64 {
 async fn fetch_openrouter_credits(
     api_key: &str,
     base_url: &str,
-) -> Option<crate::pricing::BalanceInfo> {
+) -> Result<crate::pricing::BalanceInfo, String> {
     let url = format!("{}/credits", base_url.trim_end_matches('/'));
     let body: OpenRouterCreditsResponse = balance_get_json(api_key, &url).await?;
     let remaining = openrouter_remaining_credits(body.data.total_credits, body.data.total_usage);
-    Some(crate::pricing::BalanceInfo {
+    Ok(crate::pricing::BalanceInfo {
         currency: "USD".to_string(),
         total_balance: format!("{remaining:.2}"),
         topped_up_balance: format!("{:.2}", body.data.total_credits),
@@ -262,22 +270,25 @@ async fn fetch_siliconflow_user_info(
     api_key: &str,
     base_url: &str,
     provider: ProviderKind,
-) -> Option<crate::pricing::BalanceInfo> {
+) -> Result<crate::pricing::BalanceInfo, String> {
     let url = format!("{}/user/info", base_url.trim_end_matches('/'));
     let body: SiliconFlowUserInfo = balance_get_json(api_key, &url).await?;
-    let data = body.data?;
+    let data = body
+        .data
+        .ok_or_else(|| "the response carried no account data".to_string())?;
     let total = data
         .total_balance
         .as_deref()
         .or(data.balance.as_deref())
         .map(str::trim)
-        .filter(|value| !value.is_empty())?;
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "the response carried no balance".to_string())?;
     let currency = if provider == ProviderKind::SiliconflowCN {
         "CNY"
     } else {
         "USD"
     };
-    Some(crate::pricing::BalanceInfo {
+    Ok(crate::pricing::BalanceInfo {
         currency: currency.to_string(),
         total_balance: total.to_string(),
         topped_up_balance: data.charge_balance.unwrap_or_default(),
@@ -285,28 +296,43 @@ async fn fetch_siliconflow_user_info(
     })
 }
 
-async fn balance_get_json<T: serde::de::DeserializeOwned>(api_key: &str, url: &str) -> Option<T> {
+async fn balance_get_json<T: serde::de::DeserializeOwned>(
+    api_key: &str,
+    url: &str,
+) -> Result<T, String> {
     let client = &*BALANCE_CLIENT;
     let response = client
         .get(url)
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
-        .ok()?;
-    if !response.status().is_success() {
+        .map_err(|error| {
+            if error.is_timeout() {
+                "request timed out".to_string()
+            } else if error.is_connect() {
+                "could not connect to the balance service".to_string()
+            } else {
+                "request failed".to_string()
+            }
+        })?;
+    let status = response.status();
+    if !status.is_success() {
         tracing::debug!(
             "balance API returned {}: {}",
-            response.status().as_u16(),
+            status.as_u16(),
             response.text().await.unwrap_or_default()
         );
-        return None;
+        return Err(format!("HTTP {status}"));
     }
-    response.json().await.ok()
+    response
+        .json()
+        .await
+        .map_err(|_| "the response was not readable".to_string())
 }
 
 pub(crate) fn should_fetch_provider_balance(app: &App) -> bool {
     app.status_items.contains(&StatusItem::Balance)
-        && crate::config::provider_has_balance_api(app.api_provider)
+        && codewhale_runtime::config::provider_has_balance_api(app.api_provider)
 }
 
 /// The balance cell for this route. A reading belongs to the route that
@@ -341,7 +367,7 @@ pub(crate) fn balance_cell_for_route(
 /// `force` skips the status-item gate (used by `/balance`). Providers without
 /// a known endpoint clear the parked chip so a previous route cannot linger.
 pub(crate) fn schedule_balance_fetch(app: &mut App, api_key: &str, base_url: &str, force: bool) {
-    if !crate::config::provider_has_balance_api(app.api_provider) {
+    if !codewhale_runtime::config::provider_has_balance_api(app.api_provider) {
         // A fresh cell, not a cleared one: a fetch still in flight for the
         // previous route holds the old cell and cannot repaint the chip.
         app.balance_cell = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -367,7 +393,7 @@ pub(crate) fn schedule_balance_fetch(app: &mut App, api_key: &str, base_url: &st
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
     tokio::spawn(async move {
-        if let Some(info) = fetch_provider_balance(provider, &api_key, &base_url).await
+        if let Ok(info) = fetch_provider_balance(provider, &api_key, &base_url).await
             && let Ok(mut guard) = cell.lock()
         {
             *guard = Some(info);
@@ -601,7 +627,7 @@ pub(crate) fn reasoning_effort_receipt_for_route(
     .unwrap_or(EffectiveReasoningEffort::Tier(tier))
 }
 
-pub(crate) async fn sync_mode_update(app: &App, engine_handle: &EngineHandle) {
+pub(crate) async fn sync_mode_update(app: &mut App, engine_handle: &EngineHandle) {
     // #6150: non-blocking send on the input path. ChangeMode is safe to drop
     // on a full channel — `try_send` still publishes the live authority
     // snapshot, which the drain applies before the next queued op.
@@ -613,6 +639,17 @@ pub(crate) async fn sync_mode_update(app: &App, engine_handle: &EngineHandle) {
         approval_mode: app.approval_mode,
         configured_sandbox_mode: app.configured_sandbox_mode.clone(),
     });
+    if app.is_loading {
+        app.push_status_toast(
+            format!(
+                "{} · {} — applies at the agent's next step in this turn",
+                crate::tui::app::AppModeUi::display_name_localized(app.mode, app.ui_locale),
+                app.effective_permission_label(),
+            ),
+            StatusToastLevel::Info,
+            Some(6_000),
+        );
+    }
 }
 
 /// Apply a `/provider` switch by resolving a complete route candidate before
@@ -623,7 +660,7 @@ pub(crate) async fn switch_provider(
     app: &mut App,
     engine_handle: &mut EngineHandle,
     config: &mut Config,
-    identity: crate::config::ProviderIdentity,
+    identity: codewhale_runtime::config::ProviderIdentity,
     model_override: Option<String>,
 ) -> bool {
     if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
@@ -668,6 +705,7 @@ pub(crate) async fn switch_provider(
         config.default_text_model = None;
     }
 
+    crate::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
     let resolved_route =
         match resolve_runtime_route_for_identity(config, &identity, model_override.as_deref()) {
             Ok(route) => route,
@@ -677,7 +715,7 @@ pub(crate) async fn switch_provider(
                 // no key or local runtime, hand off to /provider already focused
                 // on that provider's key prompt instead of dead-ending with an
                 // error the user has to translate into an action.
-                if !crate::config::has_api_key_for(config, &identity)
+                if !crate::provider_readiness::has_api_key_for(config, &identity)
                     && app.view_stack.top_kind() != Some(ModalKind::ProviderPicker)
                 {
                     let runtime_status = query_provider_runtime_status(engine_handle).await;
@@ -758,14 +796,14 @@ pub(crate) async fn switch_provider(
     // picker with Esc first; otherwise the stale flag keeps the info line on
     // "model not connected" and keeps local-Ollama adoption armed against the
     // provider the user just chose. An auth-failure rollback restores it.
-    app.onboarding_needs_api_key = !crate::config::has_api_key(config);
+    app.onboarding_needs_api_key = !crate::provider_readiness::has_api_key(config);
     if !app.onboarding_needs_api_key {
         app.onboarding_missing_key_recovery = false;
     }
     app.billing_presentation = crate::route_billing::for_route(config, &target_identity_record);
     app.max_subagents = config
         .max_subagents_for_provider(&target_identity_record)
-        .clamp(1, crate::config::MAX_SUBAGENTS);
+        .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
     app.provider_chain = (target_identity_record.key.as_str() == target.as_str()
         && target != ProviderKind::Antigravity)
         .then(|| codewhale_config::ProviderChain::new(target, &config.fallback_providers))
@@ -878,7 +916,7 @@ pub(crate) fn sync_config_provider_from_app(config: &mut Config, app: &App) {
 pub(crate) fn provider_picker_model_override(
     app: &App,
     config: &Config,
-    identity: &crate::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
 ) -> Option<String> {
     config.verify_provider_identity(identity).ok()?;
     (app.admitted_provider_identity().ok() == Some(identity)).then(|| app.model.clone())
@@ -1129,7 +1167,7 @@ pub(crate) fn picker_provider_identity(
     config: &Config,
     provider: ProviderKind,
     provider_id: Option<&str>,
-) -> Result<crate::config::ProviderIdentity, String> {
+) -> Result<codewhale_runtime::config::ProviderIdentity, String> {
     let identity = match provider_id {
         Some(provider_id) => config
             .resolve_persisted_provider_identity(Some(provider.as_str()), Some(provider_id))?,

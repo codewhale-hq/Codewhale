@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shlex::try_join;
 
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -391,7 +391,7 @@ impl ToolSpec for RunVerifiersTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        crate::core::engine::tool_catalog::enforce_tool_denial(context, self.name(), &input)?;
+        crate::tools::execution_envelope::enforce_tool_denial(context, self.name(), &input)?;
         let input: RunVerifiersInput = serde_json::from_value(input)
             .map_err(|err| ToolError::invalid_input(err.to_string()))?;
         // `cwd` scopes the whole call — project detection, gate roots, and
@@ -1011,8 +1011,8 @@ fn python_module_gate<const N: usize>(
 }
 
 fn python_command_parts() -> Option<(String, Vec<String>)> {
-    let spec = crate::dependencies::Python::resolve()?;
-    Some(crate::dependencies::split_interpreter_spec(&spec))
+    let spec = codewhale_dependencies::Python::resolve()?;
+    Some(codewhale_dependencies::split_interpreter_spec(&spec))
 }
 
 const PYTHON_SYNTAX_SCRIPT: &str = r#"
@@ -1241,7 +1241,7 @@ async fn run_gate(gate: VerifierGate, session_id: &str) -> GateResult {
     cmd.process_group(0);
     // Gates run workspace code: start from the sanitized child environment
     // and layer only the gate's own declared variables on top.
-    crate::child_env::apply_to_tokio_command(
+    codewhale_runtime::child_env::apply_to_tokio_command(
         &mut cmd,
         gate.env
             .iter()
@@ -1770,7 +1770,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_verifiers_executes_custom_direct_command() {
-        if !crate::dependencies::RustC::available() {
+        if !codewhale_dependencies::RustC::available() {
             return;
         }
         let tmp = tempdir().expect("tempdir");
@@ -1783,7 +1783,7 @@ mod tests {
                     "commands": [
                         {
                             "name": "rustc-version",
-                            "program": crate::dependencies::RustC::resolve().expect("rustc"),
+                            "program": codewhale_dependencies::RustC::resolve().expect("rustc"),
                             "args": ["--version"]
                         }
                     ]
@@ -1818,7 +1818,7 @@ mod tests {
             .expect("execute partial verifier");
         assert_verdict(&partial, "partial");
 
-        if !crate::dependencies::RustC::available() {
+        if !codewhale_dependencies::RustC::available() {
             return;
         }
 
@@ -1829,7 +1829,7 @@ mod tests {
                     "commands": [
                         {
                             "name": "rustc-version",
-                            "program": crate::dependencies::RustC::resolve().expect("rustc"),
+                            "program": codewhale_dependencies::RustC::resolve().expect("rustc"),
                             "args": ["--version"]
                         }
                     ]
@@ -1847,7 +1847,7 @@ mod tests {
                     "commands": [
                         {
                             "name": "rustc-bad-flag",
-                            "program": crate::dependencies::RustC::resolve().expect("rustc"),
+                            "program": codewhale_dependencies::RustC::resolve().expect("rustc"),
                             "args": ["--definitely-not-a-rustc-flag"]
                         }
                     ]

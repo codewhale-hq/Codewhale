@@ -1,6 +1,6 @@
 //! Acceptance of the adopted mounted composer against its frozen painter.
 use super::*;
-use crate::config::Config;
+use codewhale_runtime::config::Config;
 use std::path::PathBuf;
 
 fn app() -> App {

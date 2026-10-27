@@ -7,8 +7,8 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-use super::files::WorkspaceFile;
-pub(crate) use super::files::path_is_confined;
+use codewhale_util::files::WorkspaceFile;
+pub(crate) use codewhale_util::files::path_is_confined;
 
 use anyhow::{Context, Result, ensure};
 use codewhale_protocol::fleet::FleetArtifactRef;
@@ -86,7 +86,10 @@ pub(crate) fn read_verified(
         "Fleet artifact size changed while being read"
     );
     ensure!(
-        format!("sha256:{}", crate::hashing::hex_bytes(hasher.finalize())) == checksum,
+        format!(
+            "sha256:{}",
+            codewhale_runtime::hashing::hex_bytes(hasher.finalize())
+        ) == checksum,
         "Fleet artifact checksum does not match the recorded receipt"
     );
     Ok((preview, size))
@@ -101,7 +104,10 @@ mod tests {
         FleetArtifactRef {
             kind: FleetArtifactKind::Receipt,
             path: path.into(),
-            checksum: Some(format!("sha256:{}", crate::hashing::sha256_hex(bytes))),
+            checksum: Some(format!(
+                "sha256:{}",
+                codewhale_runtime::hashing::sha256_hex(bytes)
+            )),
             mime_type: None,
             size_bytes: Some(bytes.len() as u64),
         }

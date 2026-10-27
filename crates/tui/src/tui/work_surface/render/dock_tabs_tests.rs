@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::Config;
+use codewhale_runtime::config::Config;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 use std::path::PathBuf;
 

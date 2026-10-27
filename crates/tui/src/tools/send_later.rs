@@ -99,7 +99,7 @@ impl ToolSpec for SendLaterTool {
         if self.read_only {
             "Inspect pending one-shot delayed continuations. Actions: \"list\" (newest triggers), \"read\" (one trigger by trigger_id)."
         } else {
-            "Schedule a one-shot delayed message into the current workspace. \
+            "Schedule a one-shot delayed message. By default it arrives as a new turn in this thread. \
 Actions: \"schedule\" (create a pending trigger; requires approval), \
 \"list\" (recent triggers), \"read\" (one trigger by trigger_id), \
 \"cancel\" (cancel a pending trigger before it fires; requires approval). \
@@ -147,6 +147,13 @@ Returns trigger_id and resolved fire_at."
                 json!({
                     "type": "string",
                     "description": "Optional working directory for the fired task; defaults to the current workspace. (action=schedule)"
+                }),
+            );
+            properties.insert(
+                "thread_id".to_string(),
+                json!({
+                    "type": "string",
+                    "description": "Thread the message is delivered into as a new turn. Defaults to the calling thread, so the reminder comes back to this conversation; \"current\" names it explicitly and \"\" starts a new background task thread instead. (action=schedule)"
                 }),
             );
             properties.insert(
@@ -300,7 +307,14 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
 
     let parent_trigger_id = optional_str(input, "parent_trigger_id")?.map(String::from);
 
+    let destination_thread_id = crate::tools::automation::destination_thread(
+        input,
+        context,
+        context.runtime.active_thread_id.clone(),
+    )?;
+
     let req = CreateDelayedTriggerRequest {
+        destination_thread_id,
         fire_at,
         message: message.to_string(),
         workspace,
@@ -325,6 +339,7 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
             "trigger_id": record.trigger_id,
             "fire_at": record.fire_at.to_rfc3339(),
             "status": "pending",
+            "thread_id": record.destination_thread_id,
         }))
         .unwrap_or_default(),
     ))
@@ -357,6 +372,7 @@ async fn execute_list(input: &Value, context: &ToolContext) -> Result<ToolResult
                 "message_preview": r.message.chars().take(120).collect::<String>(),
                 "workspace": r.workspace,
                 "parent_trigger_id": r.parent_trigger_id,
+                "destination_thread_id": r.destination_thread_id,
                 "task_id": r.task_id,
                 "error": r.error,
             })
@@ -395,6 +411,7 @@ async fn execute_read(input: &Value, context: &ToolContext) -> Result<ToolResult
             "message": record.message,
             "workspace": record.workspace,
             "parent_trigger_id": record.parent_trigger_id,
+            "destination_thread_id": record.destination_thread_id,
             "task_id": record.task_id,
             "thread_id": record.thread_id,
             "error": record.error,
@@ -883,6 +900,7 @@ mod tests {
         let manager = AutomationManager::open_for_test(tmp.path().to_path_buf()).unwrap();
         let mut legacy = manager
             .create_trigger(crate::automation_manager::CreateDelayedTriggerRequest {
+                destination_thread_id: None,
                 fire_at: chrono::Utc::now() + Duration::hours(1),
                 message: "ownerless legacy continuation".to_string(),
                 workspace: None,
@@ -961,6 +979,7 @@ mod tests {
 
         // Create a trigger with fire_at one hour from now — not due yet.
         let req = crate::automation_manager::CreateDelayedTriggerRequest {
+            destination_thread_id: None,
             fire_at: chrono::Utc::now() + Duration::hours(1),
             message: "Not due yet.".to_string(),
             workspace: None,

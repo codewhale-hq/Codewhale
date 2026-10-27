@@ -3,8 +3,6 @@
 use codewhale_models::{ContentBlock, Message, Role, Usage};
 use std::time::Duration;
 
-pub(crate) const MAX_RLM_ITERATIONS: u32 = 25;
-pub(crate) const MAX_CONSECUTIVE_NO_CODE: u32 = 3;
 pub(crate) const STDOUT_METADATA_PREVIEW_LEN: usize = 800;
 const PROMPT_PREVIEW_LEN: usize = 500;
 
@@ -546,19 +544,25 @@ mod tests {
         }
     }
 
-    /// #6511: an exhausted loop used to return `answer: String::new()` and
-    /// drop the middle of its history after 20 messages.
     #[tokio::test]
-    async fn exhausted_loop_returns_last_response_and_keeps_whole_history() {
+    async fn recursive_work_continues_past_twenty_five_rounds_and_keeps_history() {
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
-        for round in 0..MAX_RLM_ITERATIONS {
-            mock.push_message_response(text_response(&format!(
-                "```repl\nprint('round {round}')\n```"
-            )));
+        let rounds = 26;
+        let preparation_rounds = 4;
+        for _ in 0..preparation_rounds {
+            mock.push_message_response(text_response("I will inspect the computation next."));
         }
+        for round in 0..rounds {
+            let code = if round < 4 {
+                format!("```repl\nx = {round}\n```")
+            } else {
+                format!("```repl\nprint('round {round}')\n```")
+            };
+            mock.push_message_response(text_response(&code));
+        }
+        mock.push_message_response(text_response("FINAL('complete')"));
         let client: Arc<dyn Replies> = mock.clone();
         let (tx, mut rx) = mpsc::channel(1024);
-
         let result = run_fixture(
             client,
             "root-model".to_string(),
@@ -569,34 +573,27 @@ mod tests {
             0,
         )
         .await;
-
-        assert_eq!(result.termination, RlmTermination::Exhausted);
-        assert_eq!(result.iterations, MAX_RLM_ITERATIONS);
-        let last_round = MAX_RLM_ITERATIONS - 1;
-        assert!(
-            result.answer.contains(&format!("round {last_round}")),
-            "exhaustion must surface the last root response, got {:?}",
-            result.answer
-        );
-        assert!(
-            result
-                .error
-                .as_deref()
-                .is_some_and(|e| e.contains("exhausted")),
+        assert_eq!(
+            result.termination,
+            RlmTermination::Final,
             "{:?}",
             result.error
         );
-
+        assert_eq!(result.iterations, rounds + preparation_rounds + 1);
+        assert_eq!(result.answer, "complete");
+        assert!(result.error.is_none(), "{:?}", result.error);
         let requests = mock.captured_requests();
-        assert_eq!(requests.len(), MAX_RLM_ITERATIONS as usize);
-        // Initial metadata plus (code, result) per completed round: nothing
-        // from the middle is dropped.
-        let last = requests.last().expect("last root request");
+        assert_eq!(requests.len(), (rounds + preparation_rounds + 1) as usize);
         assert_eq!(
-            last.messages.len(),
-            1 + 2 * (MAX_RLM_ITERATIONS as usize - 1)
+            requests
+                .last()
+                .expect("last request")
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::Assistant)
+                .count(),
+            (rounds + preparation_rounds) as usize
         );
-
         let mut statuses = Vec::new();
         while let Ok(event) = rx.try_recv() {
             if let Event::Status { message } = event {
@@ -606,8 +603,8 @@ mod tests {
         assert!(
             statuses
                 .iter()
-                .any(|line| line.contains("RLM finished: Exhausted")),
-            "the loop must log how it ended: {statuses:#?}"
+                .any(|line| line.contains("RLM finished: Final")),
+            "{statuses:#?}"
         );
     }
 
@@ -646,8 +643,8 @@ mod tests {
     #[tokio::test]
     async fn wall_clock_deadline_interrupts_pending_work_and_keeps_partial_result() {
         let _home = crate::test_support::SealedHome::new();
-        use crate::dependencies::ExternalTool as _;
-        assert!(crate::dependencies::Python::resolve().is_some());
+        use codewhale_dependencies::ExternalTool as _;
+        assert!(codewhale_dependencies::Python::resolve().is_some());
         for pending_model in [true, false] {
             let partial = if pending_model {
                 "```repl\nprint(_os.environ['RLM_CONTEXT_FILE'])\n```"
@@ -669,7 +666,7 @@ mod tests {
                 mode: crate::core::engine::rlm_host::RlmMode::Recursive { depth_remaining: 0 },
                 max_tokens: None,
                 task_instructions: None,
-                deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                deadline: Some(tokio::time::Instant::now() + Duration::from_secs(5)),
                 gate: Some(crate::tools::codemode::NestedCallGate::admitting_for_test()),
                 events: Some(tx),
                 usage: usage.clone(),
@@ -782,7 +779,7 @@ mod tests {
                     mode: crate::core::engine::rlm_host::RlmMode::Completion,
                     max_tokens: None,
                     task_instructions: None,
-                    deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                    deadline: Some(tokio::time::Instant::now() + Duration::from_secs(1)),
                     gate: None,
                     events: Some(tx.clone()),
                     usage: usage.clone(),

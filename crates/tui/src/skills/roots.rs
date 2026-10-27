@@ -294,8 +294,9 @@ impl SkillRootCatalog {
             }
             if root.scope == SkillScope::Project
                 && path_is_existing_dir(&root.path)
-                && !*workspace_trusted
-                    .get_or_insert_with(|| crate::config::is_workspace_trusted(workspace))
+                && !*workspace_trusted.get_or_insert_with(|| {
+                    codewhale_runtime::config::is_workspace_trusted(workspace)
+                })
             {
                 continue;
             }
@@ -400,7 +401,7 @@ pub fn untrusted_project_skill_dirs(
         })
         .map(|root| root.path.clone())
         .collect();
-    if present.is_empty() || crate::config::is_workspace_trusted(workspace) {
+    if present.is_empty() || codewhale_runtime::config::is_workspace_trusted(workspace) {
         return Vec::new();
     }
     present
@@ -420,7 +421,7 @@ pub fn skills_dir_allowed_by_workspace_trust(
 ) -> bool {
     classify_configured_skills_dir(workspace, home_dir, skills_dir).2 != SkillScope::Project
         || home_dir.is_some_and(|home| paths_refer_to_same_dir(home, workspace))
-        || crate::config::is_workspace_trusted(workspace)
+        || codewhale_runtime::config::is_workspace_trusted(workspace)
 }
 
 /// Resolve candidate skill directories for runtime discovery (existing paths

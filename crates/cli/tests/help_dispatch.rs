@@ -28,7 +28,7 @@ fn passthrough_help_leaves_configuration_and_legacy_credentials_untouched() {
             .expect("seed synthetic legacy credential");
         let legacy_bytes = fs::read(&legacy).expect("read legacy fixture");
 
-        for subcommand in ["exec", "init", "setup", "mcp", "review", "rc"] {
+        for subcommand in ["exec", "init", "setup", "mcp", "review", "rc", "uninstall"] {
             for flag in ["--help", "-h"] {
                 let output = Command::new(env!("CARGO_BIN_EXE_codewhale"))
                     .env_clear()

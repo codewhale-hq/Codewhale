@@ -207,17 +207,17 @@ fn parse_codewhale_entry(
     let install_plan = match PluginInstallSource::parse(source) {
         Ok(parsed) => {
             let source_kind = match &parsed {
-                PluginInstallSource::Remote(crate::skills::install::InstallSource::GitHubRepo(
-                    _,
-                )) => "GitHub repository".to_string(),
-                PluginInstallSource::Remote(crate::skills::install::InstallSource::DirectUrl(
-                    _,
-                )) => "Tarball URL".to_string(),
+                PluginInstallSource::Remote(
+                    codewhale_skill_install::install::InstallSource::GitHubRepo(_),
+                ) => "GitHub repository".to_string(),
+                PluginInstallSource::Remote(
+                    codewhale_skill_install::install::InstallSource::DirectUrl(_),
+                ) => "Tarball URL".to_string(),
                 PluginInstallSource::LocalPath { .. } => "Local directory".to_string(),
                 PluginInstallSource::Dsh(_) => "DeepSeek Harness bundle package".to_string(),
-                PluginInstallSource::Remote(crate::skills::install::InstallSource::Registry(_)) => {
-                    "Registry".to_string()
-                }
+                PluginInstallSource::Remote(
+                    codewhale_skill_install::install::InstallSource::Registry(_),
+                ) => "Registry".to_string(),
             };
             MarketplaceInstallPlan::Supported {
                 spec: source.to_string(),
@@ -371,9 +371,9 @@ fn normalize_native_source(spec: &str) -> MarketplaceSourceSpec {
         Ok(PluginInstallSource::LocalPath(path) | PluginInstallSource::Dsh(path)) => {
             MarketplaceSourceSpec::LocalPath { path }
         }
-        Ok(PluginInstallSource::Remote(crate::skills::install::InstallSource::GitHubRepo(
-            repo,
-        ))) => {
+        Ok(PluginInstallSource::Remote(
+            codewhale_skill_install::install::InstallSource::GitHubRepo(repo),
+        )) => {
             let (owner, name) = repo.split_once('/').unwrap_or((&repo, ""));
             MarketplaceSourceSpec::GitHub {
                 owner: owner.to_string(),
@@ -382,9 +382,9 @@ fn normalize_native_source(spec: &str) -> MarketplaceSourceSpec {
                 sha: None,
             }
         }
-        Ok(PluginInstallSource::Remote(crate::skills::install::InstallSource::DirectUrl(url))) => {
-            MarketplaceSourceSpec::ArchiveUrl { url, sha256: None }
-        }
+        Ok(PluginInstallSource::Remote(
+            codewhale_skill_install::install::InstallSource::DirectUrl(url),
+        )) => MarketplaceSourceSpec::ArchiveUrl { url, sha256: None },
         Ok(other) => MarketplaceSourceSpec::Invalid {
             reason: format!("registry source {other:?} is not a marketplace install"),
         },

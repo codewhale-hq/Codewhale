@@ -24,10 +24,10 @@ use codewhale_lane::control::operations_for_domain;
 use codewhale_lane::{ControlDomain, ControlOperation, ControlSurface};
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::config::Config;
 use crate::fleet::control::execute_fleet_control;
 use crate::tui::app::{App, AppAction};
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_runtime::config::Config;
 
 use super::CommandResult;
 
@@ -108,7 +108,7 @@ fn fleet_models_text(app: &App) -> String {
             .replace("{count}", &models.len().to_string()),
     ];
     for member in &models {
-        let provider = crate::config::ProviderKind::parse(&member.provider);
+        let provider = codewhale_config::ProviderKind::parse(&member.provider);
         let facts = provider
             .and_then(|p| crate::provider_lake::catalog_offering_for_model(p, &member.model))
             .map(|row| {
@@ -164,7 +164,7 @@ fn provider_id_is_configured(app: &App, config: &Config, provider_id: &str) -> b
     let Ok(identity) = config.resolve_provider_selection_identity(provider_id) else {
         return false;
     };
-    crate::config::provider_is_configured_for_active(config, &identity, active)
+    crate::provider_readiness::provider_is_configured_for_active(config, &identity, active)
 }
 
 /// The localized reason `provider` may not enter the team, or `None` when
@@ -190,7 +190,7 @@ pub(crate) fn fleet_catalog_rejection(
     provider: &str,
     model: &str,
 ) -> Option<String> {
-    let known = crate::config::ProviderKind::parse(provider)?;
+    let known = codewhale_config::ProviderKind::parse(provider)?;
     let served = crate::provider_lake::all_catalog_models_for_provider(known);
     (!served.is_empty() && !served.iter().any(|id| id.eq_ignore_ascii_case(model))).then(|| {
         tr(locale, MessageId::FleetAddModelNotServed)
@@ -299,8 +299,8 @@ impl RegisterCommand for FleetCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn test_app() -> App {
@@ -424,7 +424,7 @@ mod tests {
         assert!(fleet_provider_rejection(&app, &live, "openrouter").is_some());
         // An in-session credential change is visible without restarting.
         live.provider_config_for_mut(
-            &live.test_identity_for_kind(crate::config::ProviderKind::Openrouter),
+            &live.test_identity_for_kind(codewhale_config::ProviderKind::Openrouter),
         )
         .unwrap()
         .api_key = Some("test-key".to_string());

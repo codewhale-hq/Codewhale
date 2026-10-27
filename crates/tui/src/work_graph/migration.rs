@@ -1,8 +1,8 @@
 //! Deterministic import of the pre-Work-Graph Plan and To-do session state.
 
-use crate::hashing::sha256_hex;
 use crate::tools::plan::{PlanSnapshot, PlanState, StepStatus};
 use crate::tools::todo::{TodoList, TodoListSnapshot, TodoStatus};
+use codewhale_runtime::hashing::sha256_hex;
 
 use super::{
     ChangeCtx, CompatPlanMetadata, CompatProjectionState, CompatTodoBinding, EdgeKind, NodeKind,

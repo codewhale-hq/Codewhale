@@ -11,9 +11,9 @@
 //! - **Local state can never defeat the policy.** Enforcement lives in the
 //!   registry's `apply_state` choke point, so a plugin enabled before the
 //!   policy arrived, or an `enabled: true` bit hand-edited into `state.json`,
-//!   comes back disabled — there is no window in which a forbidden plugin is
-//!   active. `PluginRegistry::enable` re-reads the document so a policy that
-//!   lands after discovery still refuses.
+//!   comes back disabled. Execution boundaries re-read the trusted policy
+//!   source, and the existing MCP watcher cancels newly forbidden work on its
+//!   next poll. `PluginRegistry::enable` also re-reads the document.
 //! - **A malformed policy fails closed.** An unreadable, unparseable, or
 //!   wrong-schema document refuses every enablement with a clear error; it
 //!   never silently degrades to "allow everything".
@@ -21,30 +21,14 @@
 //! The document is resolved to a single source: `managed-policy.json` next to
 //! the plugin `state.json`, overridable by `CODEWHALE_MANAGED_POLICY_PATH` for
 //! testing. The override is read from the pre-dotenv [`HostEnvironment`]
-//! snapshot so a workspace dotenv file cannot redirect organization governance.
+//! snapshot and frozen to an absolute source before dotenv, so a workspace
+//! dotenv file or later working-directory change cannot redirect governance.
 //!
 //! This is deliberately a different concept from
 //! [`PluginActivationPolicy`](super::activation::PluginActivationPolicy), which
 //! describes which capability *kinds* this build will ever activate. The managed
 //! policy describes which plugin *identities* this machine may enable.
 //!
-//! # Known limitations
-//!
-//! The "no window in which a forbidden plugin is active" guarantee above is
-//! scoped to *in-process activation*: every live capability surface (MCP
-//! servers, Skills, agents, hooks, commands) reaches the plugin through
-//! [`LoadedPlugin::active`](super::types::LoadedPlugin::active), which reads
-//! the `enabled` bit that `apply_state` has already gated. This policy is
-//! **not** consulted by
-//! [`verify_plugin_state_authority`](super::registry::verify_plugin_state_authority),
-//! the execution-boundary revocation probe, which re-reads the persisted
-//! `state.json` `enabled` bit directly and never sees the in-memory registry.
-//! A [`PluginAuthority`](super::types::PluginAuthority) minted before the
-//! policy arrived and then *persisted* — today only the offline-queue
-//! `skill_provenance` receipt, which survives a restart — therefore
-//! revalidates against `state.json` alone. Closing that path means enforcing
-//! the policy at the authority boundary too, which this slice does not do.
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
@@ -53,7 +37,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::context::HostEnvironment;
-use super::types::PluginId;
+use codewhale_config::PluginId;
 
 /// Schema version of the managed policy document, versioned exactly like
 /// `PluginStateFile`: a required `schema_version` field that must match.
@@ -100,22 +84,29 @@ pub(crate) enum ManagedPolicyOutcome {
 }
 
 /// Resolve the single policy source: the env override when set to a non-empty
-/// value, otherwise `managed-policy.json` next to the plugin state file.
+/// value, otherwise `managed-policy.json` next to the plugin state file,
+/// frozen as an absolute path while trusted discovery inputs are captured.
 pub(crate) fn resolve_managed_policy_path(
     state_path: &Path,
     host_environment: Option<&HostEnvironment>,
-) -> PathBuf {
-    let override_path = host_environment
-        .and_then(|environment| environment.var(MANAGED_POLICY_PATH_ENV).ok())
-        .filter(|value| !value.trim().is_empty());
-    if let Some(path) = override_path {
-        return PathBuf::from(path);
-    }
-    state_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .join(MANAGED_POLICY_FILE_NAME)
+) -> Result<PathBuf, String> {
+    let override_path =
+        match host_environment.map(|environment| environment.var(MANAGED_POLICY_PATH_ENV)) {
+            Some(Ok(value)) if !value.trim().is_empty() => Some(value),
+            Some(Err(std::env::VarError::NotUnicode(_))) => {
+                return Err("Managed plugin policy override is not valid Unicode".to_string());
+            }
+            _ => None,
+        };
+    let path = override_path.map(PathBuf::from).unwrap_or_else(|| {
+        state_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join(MANAGED_POLICY_FILE_NAME)
+    });
+    std::path::absolute(&path)
+        .map_err(|error| format!("Managed plugin policy source could not be resolved: {error}"))
 }
 
 /// Load the policy document. A missing file is [`ManagedPolicyOutcome::Absent`]

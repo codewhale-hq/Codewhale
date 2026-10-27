@@ -14,7 +14,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
-use crate::dependencies::ExternalTool;
+use codewhale_dependencies::ExternalTool;
 
 const DEFAULT_LOG_MAX_COUNT: u64 = 20;
 const MAX_LOG_MAX_COUNT: u64 = 200;
@@ -216,7 +216,7 @@ impl ToolSpec for GitShowTool {
         let unified = optional_u64(&input, "unified", DEFAULT_UNIFIED)?.min(MAX_UNIFIED);
 
         let mut args = vec!["show".to_string(), "--no-color".to_string()];
-        args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+        args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
         if patch {
             args.push(format!("--unified={unified}"));
         } else {
@@ -899,7 +899,7 @@ async fn run_git_command_async(
 /// Run git under a hard deadline. `Ok(None)` means the deadline passed and the
 /// child was killed, so a timed-out fetch never lingers.
 ///
-/// git runs contained ([`crate::process_tree::contained_output`]) and the whole
+/// git runs contained ([`codewhale_runtime::process_tree::contained_output`]) and the whole
 /// tree is killed at the deadline or when the call is cancelled: git hands the
 /// network to a transport child (`git-remote-http`, `ssh`) that survives a
 /// SIGKILL to git alone and would otherwise keep the stalled connection open
@@ -909,13 +909,18 @@ async fn run_git_command_bounded(
     args: &[String],
     timeout: std::time::Duration,
 ) -> Result<Option<Output>, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Git::tokio_command() else {
+    let Some(mut cmd) = codewhale_dependencies::Git::tokio_command() else {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
         ));
     };
     cmd.args(args).current_dir(working_dir);
-    match tokio::time::timeout(timeout, crate::process_tree::contained_output(&mut cmd)).await {
+    match tokio::time::timeout(
+        timeout,
+        codewhale_runtime::process_tree::contained_output(&mut cmd),
+    )
+    .await
+    {
         Ok(Ok(output)) => Ok(Some(output)),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Err(ToolError::not_available(
             "git is not installed or not in PATH",
@@ -948,11 +953,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codewhale_dependencies::Git::available()
     }
 
     fn run_git(root: &Path, args: &[&str]) {
-        let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+        let status = codewhale_dependencies::Git::status(args, root).expect("git should spawn");
         assert!(status.success(), "git {args:?} failed");
     }
 
@@ -1284,14 +1289,14 @@ mod tests {
         assert!(result.success, "{}", result.content);
 
         // #6561 D03-01: remote-tracking refs only, so no local tag appeared.
-        let tags = crate::dependencies::Git::output(&["tag", "--list"], work.path())
+        let tags = codewhale_dependencies::Git::output(&["tag", "--list"], work.path())
             .expect("git should spawn");
         assert!(tags.status.success());
         assert_eq!(String::from_utf8_lossy(&tags.stdout).trim(), "");
 
         // The refs arrived, but nothing was checked out: the work tree has no
         // file.txt and no local branch moved.
-        let refs = crate::dependencies::Git::output(&["branch", "-r"], work.path())
+        let refs = codewhale_dependencies::Git::output(&["branch", "-r"], work.path())
             .expect("git should spawn");
         assert!(refs.status.success());
         let refs = String::from_utf8_lossy(&refs.stdout);
@@ -1467,7 +1472,7 @@ mod tests {
     }
 
     fn current_branch(root: &Path) -> String {
-        let output = crate::dependencies::Git::output(&["branch", "--show-current"], root)
+        let output = codewhale_dependencies::Git::output(&["branch", "--show-current"], root)
             .expect("git should spawn");
         assert!(output.status.success());
         String::from_utf8_lossy(&output.stdout).trim().to_string()
@@ -1489,9 +1494,13 @@ mod tests {
             "hang".to_string(),
         ];
         let run = run_git_command_bounded(tmp.path(), &args, std::time::Duration::from_secs(600));
-        let grandchild = crate::process_tree::drop_once_pid_written(run, &pid_file).await;
+        let grandchild =
+            codewhale_runtime::process_tree::drop_once_pid_written(run, &pid_file).await;
         assert!(
-            crate::process_tree::wait_for_pid_exit(grandchild, std::time::Duration::from_secs(5)),
+            codewhale_runtime::process_tree::wait_for_pid_exit(
+                grandchild,
+                std::time::Duration::from_secs(5)
+            ),
             "a process git started outlived the cancelled call"
         );
     }

@@ -203,7 +203,7 @@ fn clear_notes_command(workspace: &Path, notes_path: &Path) -> CommandResult {
 }
 
 fn append_note(workspace: &Path, notes_path: &Path, note_content: &str) -> Result<(), String> {
-    let mut file = match crate::fs_confined::open_append(workspace, notes_path) {
+    let mut file = match codewhale_util::fs_confined::open_append(workspace, notes_path) {
         Ok(f) => f,
         Err(e) => {
             return Err(format!("Failed to open notes file: {e}"));
@@ -219,7 +219,7 @@ fn append_note(workspace: &Path, notes_path: &Path, note_content: &str) -> Resul
 }
 
 pub(crate) fn read_notes(workspace: &Path, notes_path: &Path) -> Result<Vec<String>, String> {
-    match crate::fs_confined::read_to_string(workspace, notes_path) {
+    match codewhale_util::fs_confined::read_to_string(workspace, notes_path) {
         Ok(content) => Ok(parse_notes(&content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("Failed to read notes file: {e}")),
@@ -232,7 +232,7 @@ fn write_notes(workspace: &Path, notes_path: &Path, notes: &[String]) -> Result<
         .map(|note| format!("---\n{}", note.trim()))
         .collect::<Vec<_>>()
         .join("\n\n");
-    crate::fs_confined::write(workspace, notes_path, content.as_bytes())
+    codewhale_util::fs_confined::write(workspace, notes_path, content.as_bytes())
         .map_err(|e| format!("Failed to write notes file: {e}"))
 }
 
@@ -345,6 +345,28 @@ mod tests {
     }
 
     impl CommandWorkspaceContext for FakeWorkspace {
+        fn effective_home_dir(&self) -> Option<std::path::PathBuf> {
+            unreachable!("navigation is not used by note")
+        }
+        fn inspect_workspace_target(
+            &self,
+            _: &std::path::Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("navigation is not used by note")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            unreachable!("anchors are not used by note")
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _: &[&[u8]],
+        ) -> Result<std::path::PathBuf, codewhale_command_contract::navigation::AnchorWriteError>
+        {
+            unreachable!("anchors are not used by note")
+        }
+        fn replace_anchor_document(&mut self, _: &[u8]) -> Result<(), String> {
+            unreachable!("anchors are not used by note")
+        }
         fn workspace(&self) -> PathBuf {
             self.path.clone()
         }

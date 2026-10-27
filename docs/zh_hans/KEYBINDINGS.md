@@ -78,7 +78,7 @@
 
 直接在输入框中粘贴时，HTML 剪贴板内容里的标题、列表、链接、表格和代码会被保留。纯文本保持原样，配置字段则始终粘贴为纯文本。没有转发图形显示的 SSH 会话使用终端的文本粘贴。复制整条回答时会保留其原始 Markdown，不含终端折行或装饰性边线；如何渲染由目标应用决定。默认情况下，对话记录中拖选的内容也以同样方式复制：Markdown 源码，整个单元之间用空行连接（见下文“对话记录”一节）；设置 `tui.selection_copy_markdown = false` 则恢复为复制渲染后的文本。HTML 为空或过大时会退回纯文本。
 
-设置 `composer_multiline_mode = true` 即可交换可移植的 `Enter` 与 `Shift-Enter` 行为：`Enter` 插入换行，`Shift-Enter` 发送。`Alt-Enter`、`Ctrl-J` 以及受支持的 `Ctrl-Enter` / `Cmd-Enter` 行为保持不变。
+设置 `composer_multiline_mode = true` 后，`Enter` 插入换行，`Alt-Enter` 发送。终端能够区分 `Shift-Enter` 时，它也会发送；传统终端可能将它报告为普通 `Enter`。`Ctrl-J` 始终插入换行，受支持的 `Ctrl-Enter` / `Cmd-Enter` 行为保持不变。关闭多行模式时，`Alt-Enter` 和受支持的 `Shift-Enter` 插入换行。
 
 ### 选择语义
 

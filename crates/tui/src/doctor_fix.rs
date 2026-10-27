@@ -69,13 +69,13 @@ impl DoctorFixPlan {
                 DoctorFixAction::DeleteStaleTempFile { path } => {
                     format!(
                         "delete stale temp file {}",
-                        crate::utils::display_path(path)
+                        codewhale_util::utils::display_path(path)
                     )
                 }
                 #[cfg(unix)]
                 DoctorFixAction::TightenSecretPermissions { path, from_mode } => format!(
                     "restrict {} to 0600 (currently {:o})",
-                    crate::utils::display_path(path),
+                    codewhale_util::utils::display_path(path),
                     from_mode & 0o7777
                 ),
                 DoctorFixAction::DisableMcpServer {
@@ -83,12 +83,12 @@ impl DoctorFixPlan {
                     server,
                 } => format!(
                     "disable broken MCP server entry '{server}' in {}",
-                    crate::utils::display_path(config_path)
+                    codewhale_util::utils::display_path(config_path)
                 ),
                 DoctorFixAction::ScaffoldDirectory { path } => {
                     format!(
                         "create missing directory {}",
-                        crate::utils::display_path(path)
+                        codewhale_util::utils::display_path(path)
                     )
                 }
             })
@@ -151,7 +151,7 @@ fn secret_files_needing_tightening() -> Vec<(PathBuf, u32)> {
 
 /// MCP entries whose structural check reports `Error`, by config file.
 fn broken_mcp_entries(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     workspace: &Path,
     plugins: &crate::plugins::PluginRegistry,
 ) -> Vec<(PathBuf, Vec<String>)> {
@@ -182,7 +182,7 @@ fn broken_mcp_entries(
 }
 
 /// User-global discovery directories the product expects to exist.
-fn missing_user_directories(config: &crate::config::Config) -> Vec<PathBuf> {
+fn missing_user_directories(config: &codewhale_runtime::config::Config) -> Vec<PathBuf> {
     let candidates = [
         config.skills_dir(),
         crate::default_tools_dir(),
@@ -198,7 +198,7 @@ fn missing_user_directories(config: &crate::config::Config) -> Vec<PathBuf> {
 
 /// Compute the repair plan. Pure: reads state, mutates nothing.
 pub(crate) fn plan_fixes(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     workspace: &Path,
     plugins: &crate::plugins::PluginRegistry,
 ) -> DoctorFixPlan {
@@ -384,7 +384,7 @@ mod tests {
     }
 
     impl ScratchHome {
-        fn new() -> (Self, crate::config::Config) {
+        fn new() -> (Self, codewhale_runtime::config::Config) {
             let lock = crate::test_support::lock_test_env();
             let dir = tempfile::tempdir().expect("home tempdir");
             let env = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
@@ -394,7 +394,7 @@ mod tests {
                     _env: env,
                     _lock: lock,
                 },
-                crate::config::Config::default(),
+                codewhale_runtime::config::Config::default(),
             )
         }
 

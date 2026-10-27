@@ -102,12 +102,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## DeepSeek Harness utility packages (`dsh-util-values`, `dsh-tools`) — MIT
+## DeepSeek Harness utility packages (`dsh-util-values`, `dsh-tools`, message compatibility) — MIT
 
 The same bundle contains `@deepseek-ai/dsh-util-values` 0.1.7-alpha.2, and
 `crates/tui/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
-excerpts of `@deepseek-ai/dsh-tools` 0.1.7-alpha.2 (`lib/index.js`, lines 8-888
-and 2528-2558), under the same licence text.
+excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.2 (`lib/index.js`), under the
+same licence text. `crates/tui/extension-host/src/dsh/dsh-message-compat.js`
+contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.2,
+`@deepseek-ai/dsh-llm` 0.2.1-rc.2, `@deepseek-ai/dsh-session` 0.2.1-rc.2,
+`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.2 and
+`@deepseek-ai/dsh-util-crypto` 0.2.1-rc.2, under the same licence text.
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness>
 (`dsh-util-values` is published from `packages/util/values`)
@@ -148,7 +152,7 @@ carry the upstream licensing-transition statement and full Apache-2.0 text
 reproduced below. The other packages are labeled MIT. Their exact distributed
 notices are preserved.
 
-### `@modelcontextprotocol/client` 2.3.1
+### `@modelcontextprotocol/client` 2.4.0
 
 ```text
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.
@@ -369,7 +373,7 @@ CC-BY-4.0. See https://creativecommons.org/licenses/by/4.0/legalcode for
 the full license text.
 ```
 
-### `@modelcontextprotocol/core` 2.3.1
+### `@modelcontextprotocol/core` 2.4.0
 
 ```text
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.
@@ -695,7 +699,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### `zod` 4.6.5
+### `zod` 4.6.7
 
 ```text
 MIT License

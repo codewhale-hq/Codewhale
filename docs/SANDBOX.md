@@ -21,10 +21,10 @@ run before execution reaches this boundary.
 | No OS wrapper | Windows | Current implementation | `none` |
 | OpenSandbox-compatible service | Any supported host | `sandbox_backend = "opensandbox"` | External execution path |
 
-The repository contains a seccomp implementation module plus a future Windows
-helper contract. They are not wired into child-command launch, so Codewhale
-does not advertise them as active sandboxes. Source-only sandbox code is not
-evidence that a command was restricted.
+The repository also contains a future Windows helper contract. It is not
+wired into child-command launch, so Codewhale does not advertise it as an
+active sandbox. Source-only sandbox code is not evidence that a command was
+restricted.
 
 ## macOS: Seatbelt
 
@@ -237,9 +237,9 @@ Denial attribution is intentionally conservative:
 
 ## Implementation references
 
-- `crates/tui/src/sandbox/mod.rs` — truthful selection and public capability markers
-- `crates/tui/src/sandbox/seatbelt.rs` — macOS wrapper and availability probe
-- `crates/tui/src/sandbox/bwrap.rs` — Linux wrapper and functional availability probe
-- `crates/tui/src/sandbox/process_hardening.rs` — Linux parent-process hardening
-- `crates/tui/src/sandbox/backend.rs` — external backend selection
+- `crates/sandbox/src/lib.rs` — truthful selection and public capability markers
+- `crates/sandbox/src/seatbelt.rs` — macOS wrapper and availability probe
+- `crates/sandbox/src/bwrap.rs` — Linux wrapper and functional availability probe
+- `crates/sandbox/src/process_hardening.rs` — Linux parent-process hardening
+- `crates/sandbox/src/backend.rs` — external backend selection
 - `crates/tui/src/tools/diagnostics.rs` — machine-readable diagnostics

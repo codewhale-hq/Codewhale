@@ -1033,7 +1033,12 @@ fn windows_auto_review_node_image_kill_is_denied_before_any_shell_effect() {
                     assert!(results[0].0.contains("do not work around"), "{results:?}");
                     canned::simple_text_turn("Use an owned server PID instead.")
                 });
-                let config = Config { allow_shell: Some(true), ..Config::default() };
+                let config = {
+                    let __cw_config_init_0_0 = Some(true);
+                    let mut __cw_config_init_0_value: Config = Config::default();
+                    __cw_config_init_0_value.allow_shell = __cw_config_init_0_0;
+                    __cw_config_init_0_value
+                };
                 let (engine, handle) = Engine::new_with_model_client(
                     deterministic_engine_config(&workspace), &config, mock.clone(),
                 );
@@ -1347,9 +1352,7 @@ async fn operate_conversation_reaches_provider_when_workers_are_disabled() {
         .mount(&server)
         .await;
 
-    let api_config = Config {
-        ..Config::default()
-    }
+    let api_config = Config::default()
     .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let engine_config = EngineConfig {
         workspace: workspace.path().to_path_buf(),
@@ -1378,7 +1381,10 @@ async fn operate_conversation_reaches_provider_when_workers_are_disabled() {
         match event {
             Event::RouteDispatched { route, .. } => {
                 assert_eq!(route.provider, ProviderKind::Deepseek);
-                assert_eq!(route.model, crate::config::DEFAULT_TEXT_MODEL);
+                assert_eq!(
+                    route.model,
+                    codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL
+                );
                 assert!(!route.auto_model);
                 saw_operate_route = true;
             }

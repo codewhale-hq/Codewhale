@@ -15,13 +15,13 @@ file extension — covering languages absent from the built-in `Language` enum
 
 ### 1. PHP built-in support
 
-- `Language::Php` variant added to the enum in `crates/tui/src/lsp/registry.rs`
+- `Language::Php` variant added to the enum in `crates/lsp/src/registry.rs`
 - `.php` files are detected and routed to `intelephense --stdio` by default
 - User can override via `[lsp.servers].php`
 
 ### 2. Custom LSP server extension
 
-New struct `CustomLspDef` (defined in `crates/tui/src/lsp/mod.rs` and mirrored
+New struct `CustomLspDef` (defined in `crates/lsp/src/lib.rs` and mirrored
 in `crates/config/src/lib.rs`):
 
 ```rust
@@ -118,9 +118,9 @@ cargo clippy -p codewhale-tui --lib
 
 | File | Change |
 |------|--------|
-| `crates/tui/src/lsp/registry.rs` | +Php variant, detection, server mapping, tests |
-| `crates/tui/src/lsp/mod.rs` | +CustomLspDef, LspConfig.custom, LspManager custom fallback |
-| `crates/tui/src/lsp/client.rs` | spawn accepts &str language_id |
+| `crates/lsp/src/registry.rs` | +Php variant, detection, server mapping, tests |
+| `crates/lsp/src/lib.rs` | +CustomLspDef, LspConfig.custom, LspManager custom fallback |
+| `crates/lsp/src/client.rs` | spawn accepts &str language_id |
 | `crates/tui/src/config.rs` | LspConfigToml.custom + into_runtime |
 | `crates/config/src/lib.rs` | LspConfigToml.custom + CustomLspDef |
 | `config.example.toml` | PHP docs + custom extension examples |

@@ -17,8 +17,8 @@ use crate::commands::debug_diagnostics_test_support::{
     DiagnosticsHarness, SealedHome, assert_fixture, normalize_cache_ages,
 };
 use crate::commands::{CommandResult, execute};
-use crate::config::ProviderKind;
 use crate::tui::app::{AppAction, TurnCacheRecord};
+use codewhale_config::ProviderKind;
 use codewhale_models::{ContentBlock, Message, Role, SystemPrompt};
 
 fn render(result: &CommandResult) -> String {
@@ -43,7 +43,7 @@ fn render(result: &CommandResult) -> String {
 fn balance_branch_pair_matches_baseline() {
     let mut harness = DiagnosticsHarness::new();
     harness.app.set_provider_identity_record(
-        crate::config::Config::default()
+        codewhale_runtime::config::Config::default()
             .resolve_provider_identity(ProviderKind::Deepseek.as_str())
             .expect("captured fixture provider"),
     );
@@ -54,7 +54,7 @@ fn balance_branch_pair_matches_baseline() {
 
     let mut harness = DiagnosticsHarness::new();
     harness.app.set_provider_identity_record(
-        crate::config::Config::default()
+        codewhale_runtime::config::Config::default()
             .resolve_provider_identity(ProviderKind::Ollama.as_str())
             .expect("captured fixture provider"),
     );

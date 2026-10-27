@@ -301,7 +301,7 @@ impl ExtensionsSnapshot {
     pub fn from_app(app: &App) -> Self {
         let mut snapshot = Self {
             mcp_generation: app.mcp_snapshot_generation,
-            mcp_initializing: app.mcp_initializing,
+            mcp_initializing: app.mcp_boot_initializing(),
             ..Self::default()
         };
         snapshot.tabs[ExtensionsTab::Hooks.index()] = hooks_model(app, app.ui_locale);
@@ -339,6 +339,17 @@ impl ExtensionsSnapshot {
             app.plugin_registry.as_ref(),
         )
         .ok();
+        let computer_use = self.tabs[ExtensionsTab::Marketplace.index()]
+            .groups
+            .iter()
+            .find(|group| group.id == "codewhale")
+            .and_then(|group| {
+                group
+                    .items
+                    .iter()
+                    .find(|item| item.id == "codewhale:computer-use")
+            })
+            .cloned();
         let Some(group) = self.tabs[ExtensionsTab::Marketplace.index()]
             .groups
             .iter_mut()
@@ -357,25 +368,16 @@ impl ExtensionsSnapshot {
         }
 
         for item in &mut group.items {
-            // The first-party row is not an MCP recommendation: the plugin is
-            // already in the binary, so the row asks the registry what it
-            // wants — trust it, enable it, or open it — through the same
-            // ladder the Plugins tab uses.
             if item.id == "codewhale-computer-use" {
-                item.action = match app
-                    .plugin_registry
-                    .list()
-                    .into_iter()
-                    .find(|plugin| plugin.name() == "computer-use")
-                {
-                    Some(plugin) => {
-                        item.state = plugin_row_state(app.ui_locale, plugin);
-                        Some(plugin_row_action(app.ui_locale, plugin))
-                    }
-                    None => Some(ExtensionAction::Status {
+                if let Some(catalog_item) = &computer_use {
+                    item.state = catalog_item.state.clone();
+                    item.tone = catalog_item.tone;
+                    item.action = catalog_item.action.clone();
+                } else {
+                    item.action = Some(ExtensionAction::Status {
                         label: tr(app.ui_locale, MessageId::PickerActionUnavailable).into_owned(),
-                    }),
-                };
+                    });
+                }
                 continue;
             }
             let recommendation = match item.id.as_str() {
@@ -452,7 +454,7 @@ fn reviewed_product_catalog(locale: Locale) -> Vec<PluginProduct> {
             )
             .into_owned(),
             publisher: "Codewhale".into(),
-            source_reference: "crates/tui/plugins/computer-use".into(),
+            source_reference: "https://github.com/codewhale-hq/codewhale-cu-plugin".into(),
             components: vec![
                 PluginProductComponent {
                     kind: PluginProductComponentKind::Mcp,
@@ -561,7 +563,7 @@ fn hooks_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                 tr(locale, MessageId::ExtensionsStateWarning)
             }
             .into_owned(),
-            detail: problem.summary(),
+            detail: crate::hooks::config::problem_summary(problem),
             action: Some(ExtensionAction::Command {
                 label: tr(locale, MessageId::ExtensionsActionEdit).into_owned(),
                 command: "/hooks edit".into(),
@@ -1135,7 +1137,7 @@ fn marketplace_model(app: &App, locale: Locale) -> ExtensionsTabModel {
 fn skills_model(app: &App, locale: Locale) -> ExtensionsTabModel {
     use crate::skills::audit::{ParserState, SkillAuditMode, scan_with_configured};
 
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     let audit = scan_with_configured(
         &app.workspace,
         home.as_deref(),
@@ -2604,7 +2606,7 @@ mod tests {
             .registry_for_workspace(root.path());
         let mut app = App::new_with_plugin_registry(
             crate::tui::test_support::test_tui_options(root.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             registry,
         );
         app.mcp_config_path = root.path().join("mcp.json");
@@ -2733,7 +2735,7 @@ mod tests {
             .registry_for_workspace(root.path());
         let app = App::new_with_plugin_registry(
             crate::tui::test_support::test_tui_options(root.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             registry,
         );
         let model = mcp_model(&app, Locale::En);
@@ -2854,20 +2856,33 @@ mod tests {
         assert!(mcp_row_is_mutable(None, "anything"));
     }
 
-    /// The founder's report, as a test: `computer-use` ships disabled and
+    /// The founder's report, as a test: `computer-use` is installed disabled and
     /// never reviewed, and the panel said `disabled` while offering no way
     /// to enable it — "computer use is disabled but i can't enable it. tf?".
     /// The row must now say what stands in the way and carry the switch.
     #[test]
-    fn the_shipped_bundle_says_what_it_needs_and_carries_a_switch() {
+    fn an_installed_bundle_says_what_it_needs_and_carries_a_switch() {
         let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let plugin_dir = root.path().join("plugins/computer-use");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            root.path().join("plugins"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"computer-use","version":"1.0.0","description":"Locally installed fixture"}"#,
+        )
+        .unwrap();
         let registry = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(root.path());
         let app = App::new_with_plugin_registry(
             crate::tui::test_support::test_tui_options(root.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             registry,
         );
         let plugin = app.plugin_registry.get("computer-use").unwrap();
@@ -2879,7 +2894,7 @@ mod tests {
             .iter()
             .flat_map(|group| group.items.iter())
             .find(|row| row.label == "computer-use")
-            .expect("built-in row");
+            .expect("installed row");
 
         // Both halves of the truth, in words a person uses for a switch.
         assert_eq!(row.state, "off · needs review", "state: {}", row.state);
@@ -2918,18 +2933,31 @@ mod tests {
         let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let plugin_dir = root.path().join("plugins/computer-use");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            root.path().join("plugins"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"computer-use","version":"1.0.0","description":"Locally installed fixture"}"#,
+        )
+        .unwrap();
         let registry = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(root.path());
         let app = App::new_with_plugin_registry(
             crate::tui::test_support::test_tui_options(root.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             registry,
         );
         let mut view = ExtensionsView::new(&app, ExtensionsTab::Plugins);
         assert_eq!(
             view.selected_item().map(|item| item.label.as_str()),
             Some("computer-use"),
-            "the Plugins tab opens on the built-in row"
+            "the Plugins tab opens on the installed row"
         );
         let action = view.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(
@@ -2943,15 +2971,28 @@ mod tests {
     }
 
     #[test]
-    fn marketplace_shipped_bundle_uses_local_metadata_and_review_action() {
+    fn marketplace_installed_bundle_uses_local_metadata_and_review_action() {
         let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let plugin_dir = root.path().join("plugins/computer-use");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            root.path().join("plugins"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"computer-use","version":"1.0.0","description":"Locally installed fixture"}"#,
+        )
+        .unwrap();
         let registry = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(root.path());
         let app = App::new_with_plugin_registry(
             crate::tui::test_support::test_tui_options(root.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             registry,
         );
         let model = marketplace_model(&app, Locale::En);
@@ -2965,27 +3006,24 @@ mod tests {
             .iter()
             .find(|row| row.label == "computer-use")
             .unwrap();
-        let builtin = app.plugin_registry.get("computer-use").unwrap();
+        let installed = app.plugin_registry.get("computer-use").unwrap();
         assert_eq!(
             row.description,
-            builtin
+            installed
                 .manifest
                 .plugin
                 .description
                 .clone()
                 .unwrap_or_default()
         );
-        assert_eq!(
-            row.state,
-            tr(Locale::En, MessageId::ExtensionsStateFirstParty)
-        );
+        assert_eq!(row.state, plugin_row_state(Locale::En, installed));
         // The exact-content review stacks on the panel so the confirmed
         // digest lands on a row that then re-reads its trust state.
         assert!(
             matches!(&row.action, Some(ExtensionAction::Command { command, disposition: RowActionDisposition::InPlace, .. }) if command == "/plugin trust computer-use")
         );
-        assert!(!builtin.trusted());
-        assert!(!builtin.enabled);
+        assert!(!installed.trusted());
+        assert!(!installed.enabled);
         assert!(
             group.items.iter().any(|row| matches!(
                 &row.action,

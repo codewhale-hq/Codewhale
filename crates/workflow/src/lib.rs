@@ -36,9 +36,8 @@ pub use elevation::{
 };
 pub use fleet_exact::{
     EXACT_FLEET_SCHEMA_KIND, EXACT_FLEET_SCHEMA_REVISION, ExactFleet, ExactFleetError, ExactMember,
-    FrozenRoute, LEGACY_FLEET_SCHEMA_KIND, PermissionCeiling, ROLE_ALIASES, ROUTER_PUBLIC_ID,
-    ROUTER_PUBLIC_ROLE, ReasoningTier, RequestedReasoning, RouterMember, ShellCeiling,
-    canonical_member_key, canonical_role_key,
+    FrozenRoute, LEGACY_FLEET_SCHEMA_KIND, ROLE_ALIASES, ROUTER_PUBLIC_ID, ROUTER_PUBLIC_ROLE,
+    ReasoningTier, RequestedReasoning, RouterMember, canonical_member_key, canonical_role_key,
 };
 pub use fleet_preflight::{
     CredentialReadiness, EndpointIdentity, PreflightError, PreflightedRoute, RoutePreflight,
@@ -86,9 +85,9 @@ pub use role_resolve::{
 };
 
 /// Default hard ceiling on total agents a Fleet-shaped Workflow plan may launch.
-/// Matches the imperative VM lifetime cap (1_000 agents per run).
-pub const DEFAULT_FLEET_WORKFLOW_MAX_AGENTS: usize = 1000;
-pub const DEFAULT_FLEET_WORKFLOW_MAX_DEPTH: usize = 5;
+/// Zero leaves the total number of agents uncapped.
+pub const DEFAULT_FLEET_WORKFLOW_MAX_AGENTS: usize = 0;
+pub const DEFAULT_FLEET_WORKFLOW_MAX_DEPTH: usize = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowConfig {
@@ -146,13 +145,13 @@ impl WorkflowSpec {
         validate_workflow_nodes(&self.nodes)
             .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
         let shape = estimate_fleet_shape(&self.nodes)?;
-        if shape.total_agents > limits.max_total_agents {
+        if limits.max_total_agents > 0 && shape.total_agents > limits.max_total_agents {
             return Err(WorkflowFleetLimitError::TooManyAgents {
                 total_agents: shape.total_agents,
                 max_total_agents: limits.max_total_agents,
             });
         }
-        if shape.max_depth > limits.max_depth {
+        if limits.max_depth > 0 && shape.max_depth > limits.max_depth {
             return Err(WorkflowFleetLimitError::RecursionTooDeep {
                 depth: shape.max_depth,
                 max_depth: limits.max_depth,
@@ -1721,6 +1720,8 @@ impl ParetoFrontier {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum WorkflowExecutionError {
+    #[error("workflow must contain at least one node")]
+    EmptyWorkflow,
     #[error("{kind} node id must not be empty")]
     EmptyNodeId { kind: &'static str },
     #[error("leaf `{leaf}` prompt must not be empty")]
@@ -1884,6 +1885,9 @@ fn node_id(node: &WorkflowNode) -> String {
 pub(crate) fn validate_workflow_nodes(
     nodes: &[WorkflowNode],
 ) -> Result<(), WorkflowExecutionError> {
+    if nodes.is_empty() {
+        return Err(WorkflowExecutionError::EmptyWorkflow);
+    }
     let mut seen = BTreeSet::new();
     validate_workflow_nodes_inner(nodes, &mut seen)?;
     validate_workflow_references(nodes, &seen)
@@ -2860,7 +2864,7 @@ mod tests {
 
     #[test]
     fn fleet_validation_accepts_one_thousand_agents_and_variable_models() {
-        let nodes = (0..DEFAULT_FLEET_WORKFLOW_MAX_AGENTS)
+        let nodes = (0..1001)
             .map(|index| {
                 let mut leaf = match leaf_node(&format!("agent-{index}")) {
                     WorkflowNode::Leaf(leaf) => leaf,
@@ -2886,36 +2890,39 @@ mod tests {
 
         let shape = workflow
             .validate_for_fleet()
-            .expect("one thousand agents should fit the Fleet Workflow limit");
+            .expect("total work is uncapped by default");
 
-        assert_eq!(shape.total_agents, DEFAULT_FLEET_WORKFLOW_MAX_AGENTS);
+        assert_eq!(shape.total_agents, 1001);
         assert_eq!(shape.max_depth, 1);
     }
 
     #[test]
-    fn fleet_validation_rejects_more_than_one_thousand_agents() {
-        let nodes = (0..=DEFAULT_FLEET_WORKFLOW_MAX_AGENTS)
+    fn fleet_validation_honors_an_explicit_total_agent_limit() {
+        let nodes = (0..=1000)
             .map(|index| leaf_node(&format!("agent-{index}")))
             .collect();
         let workflow = workflow_spec(nodes);
 
         let err = workflow
-            .validate_for_fleet()
+            .validate_for_fleet_with_limits(WorkflowFleetLimits {
+                max_total_agents: 1000,
+                ..Default::default()
+            })
             .expect_err("agent population should be bounded before Fleet launch");
 
         assert_eq!(
             err,
             WorkflowFleetLimitError::TooManyAgents {
-                total_agents: DEFAULT_FLEET_WORKFLOW_MAX_AGENTS + 1,
-                max_total_agents: DEFAULT_FLEET_WORKFLOW_MAX_AGENTS,
+                total_agents: 1001,
+                max_total_agents: 1000,
             }
         );
     }
 
     #[test]
-    fn fleet_validation_rejects_depth_beyond_five() {
+    fn fleet_validation_honors_only_explicit_depth_limits() {
         let mut node = leaf_node("deep-leaf");
-        for depth in (0..DEFAULT_FLEET_WORKFLOW_MAX_DEPTH).rev() {
+        for depth in (0..8).rev() {
             node = WorkflowNode::BranchSet(BranchSpec {
                 id: format!("ring-{depth}"),
                 description: None,
@@ -2928,15 +2935,19 @@ mod tests {
         }
         let workflow = workflow_spec(vec![node]);
 
+        assert_eq!(workflow.validate_for_fleet().unwrap().max_depth, 9);
         let err = workflow
-            .validate_for_fleet()
-            .expect_err("sixth agent ring should be rejected");
+            .validate_for_fleet_with_limits(WorkflowFleetLimits {
+                max_depth: 8,
+                ..Default::default()
+            })
+            .expect_err("the explicit owner depth should be enforced");
 
         assert_eq!(
             err,
             WorkflowFleetLimitError::RecursionTooDeep {
-                depth: DEFAULT_FLEET_WORKFLOW_MAX_DEPTH + 1,
-                max_depth: DEFAULT_FLEET_WORKFLOW_MAX_DEPTH,
+                depth: 9,
+                max_depth: 8,
             }
         );
     }

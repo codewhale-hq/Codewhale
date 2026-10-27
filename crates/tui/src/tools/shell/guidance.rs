@@ -1,6 +1,6 @@
 //! Model-facing command syntax follows the same dispatcher as execution.
 
-use crate::shell_dispatcher::{ShellKind, global_dispatcher};
+use codewhale_sandbox::shell_dispatcher::{ShellKind, global_dispatcher};
 use std::sync::OnceLock;
 
 const POWERSHELL_GUIDANCE: &str = "Use PowerShell syntax. Bash is a legacy tool name, not a Bash interpreter. \

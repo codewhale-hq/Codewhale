@@ -314,7 +314,7 @@ mod endpoint_tests {
         // Building a reqwest client needs the process-wide rustls provider;
         // production installs it at startup, and this test must not depend
         // on another test in the same process having done so first.
-        crate::tls::ensure_rustls_crypto_provider();
+        codewhale_release::tls::ensure_rustls_crypto_provider();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tx.send(SseInbound::Message(br#"{"jsonrpc":"2.0"}"#.to_vec()))
             .await
@@ -379,7 +379,7 @@ mod endpoint_tests {
     }
 
     async fn connect_with_read_timeout(url: String, read_timeout: Duration) -> SseTransport {
-        crate::tls::ensure_rustls_crypto_provider();
+        codewhale_release::tls::ensure_rustls_crypto_provider();
         let client = McpHttpClient::new(
             &url,
             false,

@@ -354,7 +354,7 @@ Appended **synchronously** by the panic hook, because a `session_end` may never 
 { "event": "panic", "site": "crates/tui/src/lib.rs:1582:5" }
 ```
 
-`site` comes from `panic_info.location()` (`crates/tui/src/lib.rs:1597-1600`) or `Location::caller()` (`crates/tui/src/utils.rs:523`). **Allowlist reduction, not optional:** emit verbatim only if `file()` starts with `crates/`; otherwise emit the literal `"<dep>"`. Must match `^crates/[A-Za-z0-9_/.-]+\.rs:\d+:\d+$` or `^<dep>$`. There is no `--remap-path-prefix` in this repo (no `.cargo/config.toml`; `Cargo.toml:69-74` sets only `lto`/`strip`/`codegen-units`), so a panic inside a registry dependency yields `/Users/<builder>/.cargo/registry/src/…/ratatui-0.29.0/src/…` — the **build machine's username**, shipped from every user's binary.
+`site` comes from `panic_info.location()` (`crates/tui/src/lib.rs:1597-1600`) or `Location::caller()` (`crates/util/src/utils.rs:523`). **Allowlist reduction, not optional:** emit verbatim only if `file()` starts with `crates/`; otherwise emit the literal `"<dep>"`. Must match `^crates/[A-Za-z0-9_/.-]+\.rs:\d+:\d+$` or `^<dep>$`. There is no `--remap-path-prefix` in this repo (no `.cargo/config.toml`; `Cargo.toml:69-74` sets only `lto`/`strip`/`codegen-units`), so a panic inside a registry dependency yields `/Users/<builder>/.cargo/registry/src/…/ratatui-0.29.0/src/…` — the **build machine's username**, shipped from every user's binary.
 
 **The panic message is never sent.** The hook at `crates/tui/src/lib.rs:1590-1596` builds `msg` from the payload; telemetry must not read it. A slicing panic embeds the entire string being sliced, and this tree slices user and model text in dozens of places.
 

@@ -421,7 +421,7 @@ done
     const toolDoc = text("docs/TOOL_SURFACE.md");
     const toolsPage = text("web/app/[locale]/docs/tools/page.tsx") + text("web/lib/content/tools.ts");
     const registry = text("crates/tui/src/tools/registry.rs");
-    const limits = text("crates/tui/src/config/subagent_limits.rs");
+    const limits = text("crates/runtime/src/config/subagent_limits.rs");
     const roadmap = text("web/app/[locale]/roadmap/page.tsx");
 
     const catalog = text("crates/tui/src/core/engine/tool_catalog.rs");

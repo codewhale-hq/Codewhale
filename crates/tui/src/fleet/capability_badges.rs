@@ -16,9 +16,9 @@
 use codewhale_config::catalog::CatalogSource;
 use codewhale_config::route::{CapabilityState, RouteCapabilities, RouteLimits};
 
-use crate::config::ProviderKind;
-use crate::utils::format_context_window;
+use codewhale_config::ProviderKind;
 use codewhale_config::catalog::reviewed::IntrinsicModel;
+use codewhale_util::utils::format_context_window;
 
 /// Resolved capability badges for one Fleet route.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +154,7 @@ mod tests {
         let badges = resolve_route_capability_badges(Some("deepseek"), "deepseek-v4-pro")
             .expect("bundled catalog knows deepseek-v4-pro");
         assert!(
-            badges.badges.contains(&"1M ctx".to_string()),
+            badges.badges.contains(&"1.05M ctx".to_string()),
             "missing context badge: {:?}",
             badges.badges
         );

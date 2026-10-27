@@ -71,7 +71,8 @@ pub struct ApprovalKey(pub String);
 /// invocations of the same tool with different parameters.
 #[must_use]
 pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> ApprovalKey {
-    let tool_name = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let tool_name =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     let fingerprint = match tool_name {
         "apply_patch" | "write_file" | "edit_file" | "fim_edit" => {
             format!("file:{tool_name}:{}", hash_json_value(input))
@@ -105,7 +106,8 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
 /// by flags. Denials must keep using the exact [`build_approval_key`].
 #[must_use]
 pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -> ApprovalKey {
-    let tool_name = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let tool_name =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     let fingerprint = match tool_name {
         "apply_patch" => {
             let paths_hash = hash_patch_paths(input);
@@ -714,7 +716,7 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(input) else {
+    let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(input) else {
         return format!("unparsed_{}", hash_json_value(input));
     };
 

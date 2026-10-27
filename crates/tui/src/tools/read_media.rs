@@ -10,7 +10,7 @@
 //! longest-edge halving) until the payload fits the budget. Results carry a
 //! delivery note stating exactly how the image was delivered (untouched /
 //! downsampled / crop / full) with zoom guidance, and the pre-compression
-//! original is persisted in the content-addressed [`crate::media_originals`]
+//! original is persisted in the content-addressed [`codewhale_runtime::media_originals`]
 //! store so a later crop read can pull the full-resolution source. When no
 //! ladder result fits the budget the tool fails closed — nothing is sent —
 //! with the exact conversion command to retry with.
@@ -330,7 +330,7 @@ pub(crate) async fn execute_read_media(
                 .media_originals_dir
                 .as_deref()
                 .and_then(|dir| {
-                    crate::media_originals::resolve_stored_original(
+                    codewhale_runtime::media_originals::resolve_stored_original(
                         path_str,
                         &context.workspace,
                         dir,
@@ -701,7 +701,7 @@ fn process_media_file(
     let degraded = detail_resized || outcome.resized || outcome.quality_reduced;
     let original_path = if degraded && !crop_applied {
         originals_dir.and_then(|dir| {
-            crate::media_originals::persist_original_image(&raw_bytes, mime_type, &dir)
+            codewhale_runtime::media_originals::persist_original_image(&raw_bytes, mime_type, &dir)
         })
     } else {
         None

@@ -11,7 +11,7 @@ use codewhale_config::ToolAskRule;
 use codewhale_execpolicy::PermissionAction;
 use serde_json::Value;
 
-use crate::tools::canonical_action::canonical_action_alias;
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 
 /// Human-readable preview of rules an approval action would append.
 ///
@@ -204,7 +204,7 @@ fn build_file_write_ask_rules(
 
 #[must_use]
 fn build_apply_patch_ask_rules(params: &Value, workspace: &Path) -> Vec<ToolAskRule> {
-    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(params) else {
+    let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(params) else {
         return Vec::new();
     };
     let workspace = workspace.to_string_lossy();

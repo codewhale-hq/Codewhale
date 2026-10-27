@@ -15,7 +15,7 @@ use crate::core::ops::TurnSpec;
 /// Omission leaves model steps uncapped. Clap rejects `--max-turns 0`;
 /// explicit positive values retain the documented finite range.
 pub(crate) fn exec_max_steps(max_turns: Option<u32>) -> u32 {
-    crate::core::engine::turn_budget::resolve_max_model_steps(max_turns)
+    codewhale_runtime::turn_budget::resolve_max_model_steps(max_turns)
 }
 
 /// Model-step ceiling for a plain (zero-tool) `exec` run without
@@ -36,7 +36,7 @@ pub(crate) const ONE_SHOT_DEFAULT_MAX_STEPS: u32 = 8;
 /// stays unconditional: there is no channel on which a one-shot CLI run
 /// could answer, so advertising the tool cannot work.
 pub(crate) fn exec_disallowed_tools(disallowed_tools: Option<Vec<String>>) -> Option<Vec<String>> {
-    use crate::core::engine::tool_catalog::REQUEST_USER_INPUT_NAME;
+    use codewhale_tools::names::REQUEST_USER_INPUT_NAME;
     let mut disallowed = disallowed_tools.unwrap_or_default();
     if !disallowed
         .iter()
@@ -287,6 +287,103 @@ pub(crate) fn exec_automation_services(
 /// tool-call markup that the engine stripped from the visible output.
 pub(crate) const ONE_SHOT_TOOL_CALL_NOTICE: &str = "codewhale exec: the model tried to call a tool, but this run offers none, so the tool call was removed from the answer. Re-run with --auto (or --allowed-tools) to let it use tools.";
 
+async fn persist_exec_checkpoint(
+    request: Arc<crate::core::events::SessionCheckpointRequest>,
+    manager: Option<Arc<SessionManager>>,
+    session_id: &str,
+    workspace: &Path,
+    turn_id: Option<&str>,
+    engine: &crate::core::engine::EngineHandle,
+    deadline: Instant,
+) {
+    use crate::core::events::{
+        SessionCheckpointProjection, SessionCheckpointReceipt, SessionCheckpointRequest,
+    };
+
+    if turn_id != Some(request.caller.turn_id.as_str()) {
+        request.fail("exec session checkpoint does not match its active turn");
+        return;
+    }
+    if let Err(error) = request.validate_prefix(session_id, workspace, &request.snapshot.messages) {
+        request.fail(error);
+        return;
+    }
+    let turn_cancel = engine.captured_turn_cancel();
+    if turn_cancel.is_cancelled() {
+        request.fail("exec session checkpoint cancelled before persistence");
+        return;
+    }
+    if Instant::now() >= deadline {
+        request.fail("exec session checkpoint deadline expired before persistence");
+        engine.cancel_with_reason(crate::core::engine::CancelReason::External);
+        return;
+    }
+    let Some(manager) = manager else {
+        request.no_backend();
+        return;
+    };
+    let write_request = Arc::clone(&request);
+    let mut writer = tokio::task::spawn_blocking(move || -> Result<SessionCheckpointReceipt> {
+        let snapshot = &write_request.snapshot;
+        let id = persist_exec_session(
+            &snapshot.messages,
+            &snapshot.model,
+            PersistedProviderRoute {
+                kind: &snapshot.model_provider,
+                id: snapshot.model_provider_id.as_deref(),
+            },
+            &snapshot.workspace,
+            &snapshot.system_prompt,
+            Some(&snapshot.session_id),
+            snapshot.total_tokens,
+            None,
+            manager.as_ref(),
+            &[],
+            Some(write_request.as_ref()),
+        )?;
+        let persisted = manager
+            .load_session_snapshot(&id)
+            .context("could not read back exec session checkpoint")?;
+        write_request
+            .validate_prefix(
+                &persisted.metadata.id,
+                &persisted.metadata.workspace,
+                &persisted.messages,
+            )
+            .map_err(anyhow::Error::msg)?;
+        Ok(SessionCheckpointReceipt {
+            persisted_sha256: SessionCheckpointRequest::prefix_hash(&persisted.messages)
+                .map_err(anyhow::Error::msg)?,
+            messages_len: persisted.messages.len(),
+            projection: SessionCheckpointProjection::Exact,
+        })
+    });
+    let result = tokio::select! {
+        biased;
+        () = request.withdraw.cancelled() => {
+            request.fail("exec session checkpoint was withdrawn; its write may have completed");
+            writer.await
+        }
+        () = turn_cancel.cancelled() => {
+            request.fail("exec session checkpoint was cancelled; its write may have completed");
+            request.withdraw.cancel();
+            writer.await
+        }
+        () = tokio::time::sleep_until(deadline.into()) => {
+            request.fail("exec session checkpoint deadline expired; its write may have completed");
+            request.withdraw.cancel();
+            engine.cancel_with_reason(crate::core::engine::CancelReason::External);
+            writer.await
+        }
+        result = &mut writer => result,
+    };
+    match result {
+        Ok(Ok(receipt)) => request.succeed(receipt),
+        Ok(Err(error)) => request.fail(format!("exec session checkpoint failed: {error:#}")),
+        Err(error) => request.fail(format!("exec session checkpoint writer failed: {error}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_exec_agent(
     config: &Config,
@@ -333,7 +430,7 @@ pub(crate) async fn run_exec_agent(
     // and explicit `always` are truthful outside the interactive TUI. With no
     // focus-reporting channel, fail closed to focused; only explicit `always`
     // may authorize a headless desktop notification.
-    let terminal = crate::host_terminal::host();
+    let terminal = codewhale_runtime::host_terminal::host();
     terminal.set_terminal_focused(true);
     terminal.apply_notification_settings(&config.notifications_config());
 
@@ -376,6 +473,40 @@ pub(crate) async fn run_exec_agent(
         _ => anyhow::bail!("incomplete Fleet session capture destination"),
     };
 
+    let exec_session_id = fleet_capture
+        .as_ref()
+        .map(|(id, _)| id.clone())
+        .or_else(|| {
+            resume_session
+                .as_ref()
+                .map(|saved| saved.metadata.id.clone())
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let exec_session_workspace = resume_session
+        .as_ref()
+        .map(|saved| saved.metadata.workspace.clone())
+        .unwrap_or_else(|| workspace.clone());
+    let mut should_persist_session = !one_shot
+        || resume_session.is_some()
+        || fleet_capture.is_some()
+        || output_format == ExecOutputFormat::StreamJson;
+    let mut exec_session_manager = fleet_capture.map(|(_, manager)| Arc::new(manager));
+    let mut open_exec_session_manager = || -> Result<Arc<SessionManager>> {
+        if exec_session_manager.is_none() {
+            exec_session_manager = Some(Arc::new(
+                SessionManager::default_location().context("could not open exec session store")?,
+            ));
+        }
+        Ok(Arc::clone(
+            exec_session_manager
+                .as_ref()
+                .expect("opened exec session store"),
+        ))
+    };
+    if should_persist_session {
+        open_exec_session_manager()?;
+    }
+
     let route = resolve_cli_exec_route(config, model, prompt, force_configured_route).await?;
     let execution_config = config_for_cli_route(config, &route)?;
     crate::provider_lake::refresh_account_catalog_before_first_request(&execution_config).await;
@@ -404,7 +535,10 @@ pub(crate) async fn run_exec_agent(
     }
     .to_string();
     let exec_started = Instant::now();
-    let prompt_sha256 = format!("sha256:{}", crate::hashing::sha256_hex(prompt.as_bytes()));
+    let prompt_sha256 = format!(
+        "sha256:{}",
+        codewhale_runtime::hashing::sha256_hex(prompt.as_bytes())
+    );
     let binary_sha256 = current_binary_sha256();
     let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
     // The Full Access posture travels in the op's auto_approve/approval_mode
@@ -431,7 +565,7 @@ pub(crate) async fn run_exec_agent(
     let trust_mode = auto_approve
         && matches!(
             turn_sandbox_policy,
-            crate::sandbox::SandboxPolicy::DangerFullAccess
+            codewhale_sandbox::SandboxPolicy::DangerFullAccess
         );
     let active_route_limits =
         crate::route_budget::known_route_limits(validated_route.candidate.limits());
@@ -461,16 +595,17 @@ pub(crate) async fn run_exec_agent(
         cli_reasoning_effort_value_for_prompt(&execution_config, &effective_model, effort)
     });
 
-    let settings = crate::settings::Settings::load().unwrap_or_default();
-    let auto_compact_enabled = if crate::settings::Settings::auto_compact_explicitly_configured() {
-        settings.auto_compact
-    } else {
-        crate::route_budget::auto_compact_default_for_route(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-        )
-    };
+    let settings = codewhale_runtime::settings::Settings::load().unwrap_or_default();
+    let auto_compact_enabled =
+        if codewhale_runtime::settings::Settings::auto_compact_explicitly_configured() {
+            settings.auto_compact
+        } else {
+            crate::route_budget::auto_compact_default_for_route(
+                effective_provider,
+                &effective_model,
+                active_route_limits,
+            )
+        };
     let compaction = CompactionConfig {
         enabled: auto_compact_enabled,
         model: effective_model.clone(),
@@ -497,7 +632,7 @@ pub(crate) async fn run_exec_agent(
             execution_config
                 .lsp
                 .clone()
-                .map(crate::config::LspConfigToml::into_runtime)
+                .map(codewhale_lsp::LspConfig::from)
         })
         .flatten();
     let mut engine_features = execution_config.features();
@@ -507,8 +642,10 @@ pub(crate) async fn run_exec_agent(
         outer_network_access,
         outer_shell_authority,
     );
-    if crate::core::allowlist_is_native_file_and_shell_only(allowed_tools.as_deref()) {
-        engine_features.disable(crate::features::Feature::Mcp);
+    if crate::core::engine::tool_catalog::allowlist_is_native_file_and_shell_only(
+        allowed_tools.as_deref(),
+    ) {
+        engine_features.disable(codewhale_runtime::features::Feature::Mcp);
     }
     let engine_plugin_registry = if fleet_authority_active {
         std::sync::Arc::new(crate::plugins::PluginRegistry::empty(&workspace))
@@ -524,7 +661,7 @@ pub(crate) async fn run_exec_agent(
     // tool runtime services. Fleet workers never opt in: the narrowed
     // authority envelope does not carry the operator's hook set into a child.
     let exec_hook_executor = (exec_hooks_enabled && !fleet_authority_active).then(|| {
-        let hooks_config = crate::hooks::HooksConfig::load_with_project_and_plugins(
+        let hooks_config = crate::hooks::config::load_with_project_and_plugins(
             execution_config.hooks_config(),
             &workspace,
             Some(engine_plugin_registry.as_ref()),
@@ -551,7 +688,7 @@ pub(crate) async fn run_exec_agent(
         shell_manager: Some(exec_shell_manager.clone()),
         persist_services_enabled,
         automations: exec_automations,
-        media_originals_dir: crate::media_originals::default_store_dir(),
+        media_originals_dir: codewhale_runtime::media_originals::default_store_dir(),
         hook_executor: exec_hook_executor.clone(),
         ..crate::tools::spec::RuntimeToolServices::default()
     };
@@ -560,14 +697,8 @@ pub(crate) async fn run_exec_agent(
         model: effective_model.clone(),
         active_route_limits,
         workspace: workspace.clone(),
-        session_id: fleet_capture
-            .as_ref()
-            .map(|(id, _)| id.clone())
-            .or_else(|| {
-                resume_session
-                    .as_ref()
-                    .map(|saved| saved.metadata.id.clone())
-            }),
+        session_id: Some(exec_session_id.clone()),
+        session_checkpoint_backend: Some(crate::core::events::SessionCheckpointProjection::Exact),
         subagent_state_root: None,
         plugin_registry: Some(std::sync::Arc::clone(&engine_plugin_registry)),
         allow_shell: exec_allow_shell,
@@ -607,7 +738,9 @@ pub(crate) async fn run_exec_agent(
         subagents_enabled: !fleet_authority_active
             && execution_config.subagents_enabled_for_provider(&effective_identity),
         features: engine_features,
-        auto_review_policy: execution_config.auto_review_policy(),
+        auto_review_policy: crate::core::authority::auto_review::AutoReviewPolicy::from_config(
+            &execution_config,
+        ),
         compaction: compaction.clone(),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
@@ -650,11 +783,11 @@ pub(crate) async fn run_exec_agent(
             execution_config.subagent_heartbeat_timeout_secs_for_provider(&effective_identity),
         ),
         prefer_bwrap: execution_config.prefers_bwrap(),
-        bwrap_extensions: crate::sandbox::BwrapMountExtensions {
+        bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
             read_only_roots: execution_config.bwrap_ro_roots.clone(),
             device_roots: execution_config.bwrap_dev_roots.clone(),
         },
-        read_denylist: execution_config.read_denylist(),
+        read_denylist: codewhale_sandbox::read_guard::ReadDenylist::from_config(&execution_config),
         memory_enabled: execution_config.memory_enabled(),
         memory_path: execution_config.memory_path(),
         speech_output_dir: execution_config.speech_output_dir(),
@@ -667,6 +800,7 @@ pub(crate) async fn run_exec_agent(
         goal_continuation_delay_seconds: execution_config.goal_continuation_delay_seconds(),
         goal_enforce_token_budget: execution_config.goal_enforce_token_budget(),
         reasoning_only_max_reprompts: execution_config.reasoning_only_max_reprompts(),
+        reasoning_only_on_output_limit: execution_config.reasoning_only_on_output_limit(),
         reasoning_only_reprompt_message: Some(
             execution_config
                 .reasoning_only_reprompt_message()
@@ -680,9 +814,7 @@ pub(crate) async fn run_exec_agent(
             .tag()
             .to_string(),
         workshop: {
-            crate::tools::large_output_router::WorkshopConfig::install_active(
-                config.workshop.as_ref(),
-            );
+            crate::tools::large_output_router::install_active_workshop(config.workshop.as_ref());
             config.workshop.clone()
         },
         search_provider: execution_config.search_provider(),
@@ -700,7 +832,9 @@ pub(crate) async fn run_exec_agent(
         } else {
             execution_config.tools_always_load()
         },
-        user_input_limits: execution_config.user_input_limits(),
+        user_input_limits: crate::tools::user_input::UserInputLimits::from_config(
+            &execution_config,
+        ),
         user_input_timeout: execution_config.user_input_timeout(),
         goal_max_steps: None,
         tools: if fleet_authority_active {
@@ -726,13 +860,12 @@ pub(crate) async fn run_exec_agent(
     // is never silent. Uses the enforcement pinned by `Engine::new`.
     let sandbox_enforcement = engine_handle.sandbox_enforcement;
     let sandbox_posture = turn_sandbox_policy.posture_label_with_enforcement(sandbox_enforcement);
-    if sandbox_enforcement == crate::sandbox::policy::SandboxEnforcement::Unavailable
+    if sandbox_enforcement == codewhale_sandbox::policy::SandboxEnforcement::Unavailable
         && turn_sandbox_policy.should_sandbox()
     {
         eprintln!("warning: {sandbox_posture} — shell commands will run unrestricted");
     }
 
-    let resuming_session = resume_session.is_some();
     let mut loaded_session_id = None;
     if let Some(saved) = resume_session {
         let saved_id = saved.metadata.id.clone();
@@ -783,8 +916,7 @@ pub(crate) async fn run_exec_agent(
             )
         })
         .unwrap_or_else(codewhale_hooks::LifecycleOutbox::disabled);
-    // Wall clock for the outbox `turn_end` duration. `exec` never receives
-    // a TurnStarted engine event, so the start is marked at the same
+    // Wall clock for the outbox `turn_end` duration starts at the same
     // `Op::SendMessage` boundary where `turn_start` is emitted below.
     let exec_turn_started_at = Instant::now();
 
@@ -819,9 +951,8 @@ pub(crate) async fn run_exec_agent(
         }))
         .await?;
 
-    // Lifecycle outbox: the clean headless turn-start boundary. `exec` has
-    // no TurnStarted engine event; the message submission above is exactly
-    // where the engine begins the turn. No-op when the feature is disabled.
+    // Lifecycle outbox: the headless submission boundary, before the Engine
+    // reports TurnStarted. No-op when the feature is disabled.
     lifecycle_outbox.emit(codewhale_hooks::LifecycleEvent {
         event: "turn_start".to_string(),
         kind: "turn.started".to_string(),
@@ -852,8 +983,8 @@ pub(crate) async fn run_exec_agent(
     let mut last_error_category = None;
     let mut reported_sandbox_contract = false;
 
-    let mut should_persist_session =
-        !one_shot || resuming_session || output_format == ExecOutputFormat::StreamJson;
+    let mut active_turn_id = None;
+    let mut image_request_receipts = Vec::new();
     let mut latest_session_id = loaded_session_id;
     let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
     let mut latest_system_prompt: Option<SystemPrompt> = None;
@@ -881,6 +1012,9 @@ pub(crate) async fn run_exec_agent(
         };
 
         match event {
+            Event::TurnStarted { turn_id, .. } => {
+                active_turn_id = Some(turn_id);
+            }
             Event::MessageDelta { content, .. } => {
                 summary.output.push_str(&content);
                 if output_format == ExecOutputFormat::StreamJson {
@@ -1137,7 +1271,7 @@ pub(crate) async fn run_exec_agent(
                 ..
             } => {
                 if can_elevate_sandbox {
-                    let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
+                    let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;
                     let _ = engine_handle
                         .retry_tool_with_policy_by(
                             tool_id,
@@ -1195,6 +1329,23 @@ pub(crate) async fn run_exec_agent(
                     })?;
                 } else if !json_output {
                     eprintln!("error: {}", envelope.message);
+                }
+            }
+            Event::ProviderRequestReceipt { receipt } => {
+                if receipt
+                    .get("wire_observations")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|observations| {
+                        observations
+                            .iter()
+                            .any(|observation| observation.get("image_projection").is_some())
+                    })
+                {
+                    should_persist_session = true;
+                    image_request_receipts.push(receipt.clone());
+                }
+                if output_format == ExecOutputFormat::StreamJson {
+                    emit_exec_stream_event(&ExecStreamEvent::ProviderRequestReceipt { receipt })?;
                 }
             }
             Event::TurnUsage {
@@ -1306,29 +1457,34 @@ pub(crate) async fn run_exec_agent(
                         last_error_category.map(|category| category.to_string());
                 }
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
-                    match persist_exec_session(
-                        &latest_messages,
-                        &latest_model,
-                        PersistedProviderRoute {
-                            kind: effective_identity.persisted_kind(),
-                            id: effective_identity.persisted_id(),
-                        },
-                        &latest_workspace,
-                        &latest_system_prompt,
-                        latest_session_id.as_deref(),
-                        u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
-                        (terminal_status == crate::core::events::TurnOutcomeStatus::Failed)
-                            .then_some(summary.error.as_deref().unwrap_or_else(|| {
-                                crate::core::termination::classify_turn_termination(
-                                    terminal_status,
-                                    last_error_category,
-                                    tool_error_seen,
-                                    approval_required,
-                                )
-                                .as_str()
-                            })),
-                        fleet_capture.as_ref().map(|(_, manager)| manager),
-                    ) {
+                    let saved = open_exec_session_manager().and_then(|manager| {
+                        persist_exec_session(
+                            &latest_messages,
+                            &latest_model,
+                            PersistedProviderRoute {
+                                kind: effective_identity.persisted_kind(),
+                                id: effective_identity.persisted_id(),
+                            },
+                            &latest_workspace,
+                            &latest_system_prompt,
+                            latest_session_id.as_deref(),
+                            u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
+                            (terminal_status == crate::core::events::TurnOutcomeStatus::Failed)
+                                .then_some(summary.error.as_deref().unwrap_or_else(|| {
+                                    crate::core::termination::classify_turn_termination(
+                                        terminal_status,
+                                        last_error_category,
+                                        tool_error_seen,
+                                        approval_required,
+                                    )
+                                    .as_str()
+                                })),
+                            manager.as_ref(),
+                            &image_request_receipts,
+                            None,
+                        )
+                    });
+                    match saved {
                         Ok(id) => {
                             if output_format == ExecOutputFormat::Text && !json_output {
                                 eprintln!("{}", exec_saved_session_line(&id));
@@ -1461,7 +1617,10 @@ pub(crate) async fn run_exec_agent(
                             prompt_sha256: prompt_sha256.clone(),
                             tool_catalog_sha256: tool_catalog.as_ref().and_then(|catalog| {
                                 serde_json::to_vec(catalog).ok().map(|bytes| {
-                                    format!("sha256:{}", crate::hashing::sha256_hex(&bytes))
+                                    format!(
+                                        "sha256:{}",
+                                        codewhale_runtime::hashing::sha256_hex(&bytes)
+                                    )
                                 })
                             }),
                             input_analysis: exec_stream_input_analysis(
@@ -1504,9 +1663,50 @@ pub(crate) async fn run_exec_agent(
                 session_id,
                 messages,
                 system_prompt,
+                instruction_assembly: _,
                 model,
                 workspace,
+                checkpoint,
             } => {
+                if let Some(checkpoint) = checkpoint {
+                    if session_id != exec_session_id
+                        || workspace != exec_session_workspace
+                        || active_turn_id.as_deref() != Some(checkpoint.caller.turn_id.as_str())
+                        || model != checkpoint.snapshot.model
+                        || system_prompt != checkpoint.snapshot.system_prompt
+                    {
+                        checkpoint
+                            .fail("exec checkpoint event does not match its captured root turn");
+                        continue;
+                    }
+                    if let Err(error) =
+                        checkpoint.validate_prefix(&session_id, &workspace, &messages)
+                    {
+                        checkpoint.fail(error);
+                        continue;
+                    }
+                    let manager = if should_persist_session {
+                        open_exec_session_manager().map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    match manager {
+                        Ok(manager) => {
+                            persist_exec_checkpoint(
+                                checkpoint,
+                                manager,
+                                &exec_session_id,
+                                &exec_session_workspace,
+                                active_turn_id.as_deref(),
+                                &engine_handle,
+                                exec_deadline,
+                            )
+                            .await
+                        }
+                        Err(error) => checkpoint
+                            .fail(format!("could not open exec checkpoint store: {error:#}")),
+                    }
+                }
                 latest_session_id = Some(session_id);
                 latest_messages = messages;
                 latest_system_prompt = system_prompt;
@@ -1638,7 +1838,9 @@ pub(crate) async fn run_exec_agent(
 }
 
 fn exec_retry_status(message: &str) -> Option<ExecStreamEvent> {
-    crate::core::events::is_retry_status_receipt(message).then(|| ExecStreamEvent::Status {
+    (crate::core::events::is_retry_status_receipt(message)
+        || crate::core::events::is_request_image_status_receipt(message))
+    .then(|| ExecStreamEvent::Status {
         message: message.to_string(),
     })
 }
@@ -1664,10 +1866,10 @@ mod tests {
     use super::{ExecAgentEvents, exec_automation_services, exec_disallowed_tools};
 
     use crate::core::engine::mock_engine_handle;
-    use crate::core::engine::tool_catalog::REQUEST_USER_INPUT_NAME;
     use crate::core::events::{Event, TurnOutcomeStatus};
     use crate::core::ops::{Op, SubAgentSettlement};
     use codewhale_models::Usage;
+    use codewhale_tools::names::REQUEST_USER_INPUT_NAME;
     use std::time::{Duration, Instant};
 
     fn completed_parent(input_tokens: u32) -> Event {
@@ -1792,6 +1994,211 @@ mod tests {
         assert!(
             engine.rx_op.try_recv().is_err(),
             "the event reader does not send early Shutdown"
+        );
+
+        use crate::core::events::{
+            SessionCheckpointCaller, SessionCheckpointProjection, SessionCheckpointRequest,
+        };
+        use crate::core::ops::SessionSnapshot;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::session_manager::SessionManager::new(tmp.path().join("fleet-capture")).unwrap(),
+        );
+        let workspace = tmp.path().join("workspace");
+        let messages: Vec<codewhale_models::Message> = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":[{"type":"text","text":"review the changes"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"provider-call","execution_id":"exec-call","name":"review","input":{}}]}
+        ])).unwrap();
+        let snapshot = Arc::new(SessionSnapshot {
+            session_id: "exec-checkpoint".into(),
+            messages: messages.clone(),
+            total_tokens: 23,
+            model: "review-model".into(),
+            model_provider: "custom".into(),
+            model_provider_id: Some("review-route".into()),
+            workspace: workspace.clone(),
+            system_prompt: None,
+            instruction_assembly: None,
+            mode: "exec".into(),
+        });
+        let caller = SessionCheckpointCaller {
+            session_id: snapshot.session_id.clone(),
+            agent_id: None,
+            turn_id: "exec-turn".into(),
+            call_id: "exec-call".into(),
+            workspace: workspace.clone(),
+        };
+        let checkpoint = |caller: SessionCheckpointCaller, snapshot: Arc<SessionSnapshot>| {
+            let (reply, receive) = tokio::sync::oneshot::channel();
+            let hash = SessionCheckpointRequest::prefix_hash(&snapshot.messages).unwrap();
+            (
+                SessionCheckpointRequest::new(
+                    caller,
+                    snapshot,
+                    hash,
+                    SessionCheckpointProjection::Exact,
+                    CancellationToken::new(),
+                    reply,
+                ),
+                receive,
+            )
+        };
+        let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
+        super::persist_exec_checkpoint(
+            Arc::clone(&request),
+            Some(Arc::clone(&manager)),
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert!(receive.await.unwrap().unwrap());
+        let persisted = manager.load_session_snapshot(&snapshot.session_id).unwrap();
+        assert_eq!(persisted.messages, messages);
+        assert_eq!(persisted.metadata.total_tokens, 23);
+        assert_eq!(
+            persisted.metadata.model_provider_id.as_deref(),
+            Some("review-route")
+        );
+        assert_eq!(persisted.metadata.workspace, workspace);
+        assert_eq!(persisted.metadata.mode.as_deref(), Some("exec"));
+
+        let mut completed = messages.clone();
+        completed.push(serde_json::from_value(serde_json::json!({
+            "role":"user","content":[{"type":"tool_result","tool_use_id":"provider-call","execution_id":"exec-call","content":"review complete"}]
+        })).unwrap());
+        crate::persist_exec_session(
+            &completed,
+            &snapshot.model,
+            crate::PersistedProviderRoute {
+                kind: "custom",
+                id: Some("review-route"),
+            },
+            &workspace,
+            &None,
+            Some(&snapshot.session_id),
+            42,
+            None,
+            manager.as_ref(),
+            &[],
+            None,
+        )
+        .unwrap();
+        super::persist_exec_checkpoint(
+            request,
+            Some(Arc::clone(&manager)),
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(
+            manager
+                .load_session_snapshot(&snapshot.session_id)
+                .unwrap()
+                .messages,
+            completed
+        );
+
+        for mismatch in ["session", "workspace", "child", "turn"] {
+            let mut foreign = caller.clone();
+            match mismatch {
+                "session" => foreign.session_id = "foreign-session".into(),
+                "workspace" => foreign.workspace = tmp.path().join("foreign-workspace"),
+                "child" => foreign.agent_id = Some("child-agent".into()),
+                "turn" => foreign.turn_id = "foreign-turn".into(),
+                _ => unreachable!(),
+            }
+            let (request, receive) = checkpoint(foreign, Arc::clone(&snapshot));
+            super::persist_exec_checkpoint(
+                request,
+                Some(Arc::clone(&manager)),
+                &snapshot.session_id,
+                &workspace,
+                Some("exec-turn"),
+                &engine.handle,
+                Instant::now() + Duration::from_secs(3),
+            )
+            .await;
+            assert!(receive.await.unwrap().is_err(), "{mismatch}");
+        }
+        assert_eq!(
+            manager
+                .load_session_snapshot(&snapshot.session_id)
+                .unwrap()
+                .messages,
+            completed
+        );
+        assert!(!manager.sessions_dir().join("foreign-session.json").exists());
+
+        let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
+        request.withdraw.cancel();
+        super::persist_exec_checkpoint(
+            request,
+            Some(Arc::clone(&manager)),
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert!(receive.await.unwrap().is_err());
+        let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
+        super::persist_exec_checkpoint(
+            request,
+            None,
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert!(!receive.await.unwrap().unwrap());
+
+        let failed_store = Arc::new(
+            crate::session_manager::SessionManager::new(tmp.path().join("failed-store")).unwrap(),
+        );
+        std::fs::create_dir(failed_store.sessions_dir().join("exec-checkpoint.json")).unwrap();
+        let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
+        super::persist_exec_checkpoint(
+            request,
+            Some(failed_store),
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert!(receive.await.unwrap().is_err());
+        let (request, receive) = checkpoint(caller, Arc::clone(&snapshot));
+        super::persist_exec_checkpoint(
+            request,
+            Some(Arc::clone(&manager)),
+            &snapshot.session_id,
+            &workspace,
+            Some("exec-turn"),
+            &engine.handle,
+            Instant::now(),
+        )
+        .await;
+        assert!(receive.await.unwrap().is_err());
+        assert!(engine.handle.is_cancelled());
+        assert_eq!(
+            manager
+                .load_session_snapshot(&snapshot.session_id)
+                .unwrap()
+                .messages,
+            completed
         );
     }
 
@@ -1994,8 +2401,10 @@ mod tests {
             "Retry recovery: transport request recovered after 1 retries",
             "Retry exhaustion: stream-resume stopped after 2 retries; stream interrupted",
             "Retry stopped: transparent stream completion was not observed",
+            "Image request budget: omitted 4 older image-bearing blocks; retained 12 newest blocks.",
+            "HTTP 413 recovery: retrying once without image attachments.",
         ] {
-            let event = super::exec_retry_status(message).expect("retry-only projection");
+            let event = super::exec_retry_status(message).expect("request receipt projection");
             let value = crate::exec_stream_value(&event).unwrap();
             assert_eq!(value["type"], "status");
             assert_eq!(value["message"], message);

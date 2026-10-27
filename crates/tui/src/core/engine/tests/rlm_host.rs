@@ -269,14 +269,10 @@ impl BridgeFixture {
         }
     }
     fn bridge(&self) -> RlmBridge<'_> {
-        let mut bridge = RlmBridge::with_usage_accumulator(
-            &self.caller,
-            self.depth,
-            Duration::from_secs(600),
-            self.usage.clone(),
-        )
-        .with_deadline(self.deadline)
-        .with_gate(self.gate.clone());
+        let mut bridge =
+            RlmBridge::with_usage_accumulator(&self.caller, self.depth, self.usage.clone())
+                .with_deadline(self.deadline)
+                .with_gate(self.gate.clone());
         if let Some(events) = &self.events {
             bridge = bridge.with_events(events.clone());
         }
@@ -304,17 +300,17 @@ impl BridgeFixture {
         &self,
         prompt: String,
         model: Option<String>,
-    ) -> crate::repl::runtime::SingleResp {
+    ) -> codewhale_repl::runtime::SingleResp {
         self.bridge().dispatch_rlm(prompt, model).await
     }
 }
-impl crate::repl::runtime::RpcDispatcher for BridgeFixture {
+impl codewhale_repl::runtime::RpcDispatcher for BridgeFixture {
     fn dispatch<'a>(
         &'a self,
-        request: crate::repl::runtime::RpcRequest,
-    ) -> Pin<Box<dyn Future<Output = crate::repl::runtime::RpcResponse> + Send + 'a>> {
+        request: codewhale_repl::runtime::RpcRequest,
+    ) -> Pin<Box<dyn Future<Output = codewhale_repl::runtime::RpcResponse> + Send + 'a>> {
         Box::pin(async move {
-            crate::repl::runtime::RpcDispatcher::dispatch(&self.bridge(), request).await
+            codewhale_repl::runtime::RpcDispatcher::dispatch(&self.bridge(), request).await
         })
     }
 }
@@ -341,7 +337,7 @@ pub(crate) async fn run_admitted_fixture(
             },
             max_tokens: None,
             task_instructions: task,
-            deadline,
+            deadline: Some(deadline),
             gate,
             events: Some(events),
             usage,
@@ -471,7 +467,7 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             at: chrono::DateTime<chrono::Utc>,
         ) -> crate::cost_status::EffectiveRouteEnvelope {
             crate::cost_status::EffectiveRouteEnvelope::capture_observed(
-                crate::config::ProviderKind::Custom,
+                codewhale_config::ProviderKind::Custom,
                 "rlm-fixture",
                 model,
                 Some("http://127.0.0.1:9/v1"),
@@ -497,7 +493,7 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             mode: RlmMode::Completion,
             max_tokens: None,
             task_instructions: None,
-            deadline: tokio::time::Instant::now() + Duration::from_millis(100),
+            deadline: Some(tokio::time::Instant::now() + Duration::from_millis(100)),
             gate: None,
             events: None,
             usage: usage.clone(),
@@ -593,7 +589,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         mode: RlmMode::Recursive { depth_remaining: 0 },
         max_tokens: None,
         task_instructions: None,
-        deadline: tokio::time::Instant::now() + Duration::from_secs(60),
+        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
         gate: Some(crate::tools::codemode::NestedCallGate::admitting_for_test()),
         events: Some(tx.clone()),
         usage: usage.clone(),
@@ -674,7 +670,7 @@ async fn nested_host_never_claims_or_overwrites_parent_posture_revision() {
             mode: RlmMode::Completion,
             max_tokens: None,
             task_instructions: None,
-            deadline: tokio::time::Instant::now() + Duration::from_secs(60),
+            deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
             gate: None,
             events: None,
             usage: RlmUsageAccumulator::new(),
@@ -742,7 +738,7 @@ async fn repeated_real_core_preparation_failures_have_bounded_receipts_without_p
         mode: RlmMode::Completion,
         max_tokens: None,
         task_instructions: None,
-        deadline: tokio::time::Instant::now() + Duration::from_secs(60),
+        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
         gate: None,
         events: None,
         usage: usage.clone(),
@@ -789,7 +785,7 @@ async fn actual_expired_python_startup_releases_the_staged_context() {
             mode: RlmMode::Recursive { depth_remaining: 0 },
             max_tokens: None,
             task_instructions: None,
-            deadline: tokio::time::Instant::now(),
+            deadline: Some(tokio::time::Instant::now()),
             gate: Some(crate::tools::codemode::NestedCallGate::admitting_for_test()),
             events: None,
             usage: RlmUsageAccumulator::new(),

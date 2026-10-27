@@ -34,19 +34,19 @@ function extractFunction(source, name) {
   assert.fail(`${name} body should close`);
 }
 
-test("prompt command starts a tracked background turn instead of blocking update dispatch", async () => {
+test("prompt command persists admission before starting background recovery", async () => {
   const source = await readBridgeSource();
   const handleCommand = extractFunction(source, "handleCommand");
   const promptCase = handleCommand.slice(handleCommand.indexOf('case "prompt":'));
 
   assert.match(source, /const activeTurnTasks = new Map\(\);/);
-  assert.match(promptCase, /startPromptTurn\(chatId, action\.prompt, identity\);/);
+  assert.match(promptCase, /await startPromptTurn\(chatId, action\.prompt, identity\);/);
   assert.doesNotMatch(promptCase, /await\s+runPrompt\(/);
 
   const starter = extractFunction(source, "startPromptTurn");
   assert.ok(
-    starter.indexOf("activeTurnTasks.set(chatId") < starter.indexOf("void runPrompt"),
-    "turn registry entry must be installed before runPrompt can await"
+    starter.indexOf("await threadStore.recordMessage") < starter.lastIndexOf("startTrackedTurnStream(chatId)"),
+    "prompt and inbound receipt must be durable before admission starts"
   );
 });
 
@@ -107,7 +107,7 @@ test("callback replay is ignored before modal dispatch", async () => {
   assert.match(replayHelper, /return threadStore\.recordMessage\(`callback:\$\{update\.update_id\}`\);/);
   assert.ok(
     resumeCase.indexOf("await threadStore.takeAction(action.token, owner);") <
-      resumeCase.indexOf("await resumeThread(chatId, stored.threadId);"),
+      resumeCase.indexOf("await resumeThread(chatId, stored.threadId, identity);"),
     "resume callback actions should be consumed before dispatch"
   );
 });
@@ -117,13 +117,15 @@ test("reattached streams are detached and shutdown preserves active turn state",
   const reattach = extractFunction(source, "reattachActiveTurns");
   const runPrompt = extractFunction(source, "runPrompt");
 
-  assert.match(reattach, /startTrackedTurnStream\(chatId, state\.threadId, turnId, sinceSeq\);/);
+  assert.match(reattach, /startTrackedTurnStream\(chatId\);/);
   assert.doesNotMatch(reattach, /await\s+streamTurnEvents\(/);
   assert.match(source, /async function clearActiveTurn\(chatId\)/);
-  assert.match(runPrompt, /if \(!stopping\) {\s*await clearActiveTurn\(chatId\);\s*}/);
+  assert.match(runPrompt, /if \(state\.turnTerminal \|\| await streamTurnEvents/);
+  assert.match(runPrompt, /await clearActiveTurn\(chatId\);/);
 
   const trackedStream = extractFunction(source, "startTrackedTurnStream");
-  assert.match(trackedStream, /if \(!stopping\) {\s*await clearActiveTurn\(chatId\);\s*}/);
+  assert.doesNotMatch(trackedStream, /clearActiveTurn/);
+  assert.match(trackedStream, /while \(!stopping && !controller\.signal\.aborted\)/);
 });
 
 test("turn update sends retry without ending the stream", async () => {
@@ -151,7 +153,7 @@ test("turn streams keep Telegram typing visible and pause while waiting for appr
   assert.match(streamTurnEvents, /const typingTimer = setInterval\(\(\) => {\s*void tickTyping\(\);/);
   assert.match(streamTurnEvents, /void tickTyping\(\);/);
   assert.match(streamTurnEvents, /const stopTypingEvent =/);
-  assert.match(streamTurnEvents, /if \(typingPaused && record\.event !== "approval\.required" && !stopTypingEvent\)/);
+  assert.match(streamTurnEvents, /if \(typingPaused && !\["approval\.required", "user_input\.required"\]\.includes\(record\.event\) && !stopTypingEvent\)/);
   assert.match(streamTurnEvents, /typingPaused = true;/);
   assert.match(streamTurnEvents, /clearInterval\(typingTimer\);/);
   assert.match(sendTypingAction, /telegramApi\(\s*"sendChatAction"/);
@@ -169,13 +171,13 @@ test("turn streams debounce last-seq writes and flush before exit", async () => 
   assert.match(source, /const LAST_SEQ_FLUSH_INTERVAL_MS = 2000;/);
   assert.doesNotMatch(
     streamWithoutFlushHelper,
-    /await threadStore\.patchChat\(chatId, \{ lastSeq: latestSeq \}\);/
+    /await threadStore\.patchChat\(chatId, \{ lastSeq: latestSeq, responseText, turnTerminal \}\);/
   );
   assert.match(streamTurnEvents, /await flushLastSeq\(false\);/);
   assert.match(streamTurnEvents, /await flushLastSeq\(true\);/);
   assert.match(flushLastSeq, /if \(latestSeq <= flushedSeq\) return;/);
   assert.match(flushLastSeq, /Date\.now\(\) - lastSeqFlushAt < LAST_SEQ_FLUSH_INTERVAL_MS/);
-  assert.match(flushLastSeq, /await threadStore\.patchChat\(chatId, \{ lastSeq: latestSeq \}\);/);
+  assert.match(flushLastSeq, /await threadStore\.patchChat\(chatId, \{ lastSeq: latestSeq, responseText, turnTerminal \}\);/);
   assert.match(flushLastSeq, /flushedSeq = latestSeq;/);
 });
 

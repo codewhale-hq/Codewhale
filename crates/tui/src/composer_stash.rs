@@ -70,7 +70,7 @@ pub struct StashedDraft {
 }
 
 fn default_stash_path() -> Option<PathBuf> {
-    crate::config::effective_home_dir().map(|home| {
+    codewhale_paths::user_home().map(|home| {
         let primary = home.join(".codewhale").join(STASH_FILE_NAME);
         let legacy = home.join(".deepseek").join(STASH_FILE_NAME);
         if primary.exists() || !legacy.exists() {
@@ -340,7 +340,7 @@ fn clear_stash_at(path: &Path) -> io::Result<usize> {
     if count == 0 && fs::metadata(path)?.len() == 0 {
         return Ok(0);
     }
-    crate::utils::write_atomic(path, b"")?;
+    codewhale_util::utils::write_atomic(path, b"")?;
     Ok(count)
 }
 
@@ -368,7 +368,7 @@ fn write_stash_to(path: &Path, entries: &[StashedDraft]) {
             }
         }
     }
-    if let Err(err) = crate::utils::write_atomic(path, payload.as_bytes()) {
+    if let Err(err) = codewhale_util::utils::write_atomic(path, payload.as_bytes()) {
         tracing::warn!(
             "Failed to persist composer stash at {}: {err}",
             path.display()

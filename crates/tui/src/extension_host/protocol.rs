@@ -39,6 +39,7 @@
 //! to show or submit it. The authority lint in `protocol/tests.rs` keeps
 //! [`METHODS`] that way.
 
+use codewhale_config::{EntryRef, OwnerRef};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -170,6 +171,7 @@ pub const METHODS: &[MethodSpec] = &[
     row(Direction::HostToCore, "registry/register", true),
     row(Direction::HostToCore, "registry/unregister", true),
     row(Direction::HostToCore, "core/call", true),
+    row(Direction::HostToCore, "session/checkpoint", true),
     MethodSpec {
         tiers: &[HostTier::Builtin],
         ..row(Direction::HostToCore, "proc/launch", true)
@@ -344,19 +346,6 @@ fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, 
 // ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
-
-/// Identity of one activation. `generation` bumps on every (re)activation;
-/// `owner_token` is 128+ random bits minted by the core and handed over only
-/// in `ext/activate`. It catches bugs and stale fibers; it is not a boundary
-/// against a malicious plugin in the same process (see the design, §4.4).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct OwnerRef {
-    pub plugin_id: String,
-    pub generation: u64,
-    pub owner_token: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -540,6 +529,14 @@ pub struct CoreCallParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct SessionCheckpointParams {
+    pub owner: OwnerRef,
+    pub ticket: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct FaultedParams {
     pub owner: OwnerRef,
     pub error: String,
@@ -617,6 +614,8 @@ pub struct McpOpenParams {
     pub session_id: String,
     pub launch_ticket: String,
     pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover_grant: Option<McpOperationGrant>,
     pub initialize_grant: McpOperationGrant,
     pub initialized_grant: McpOperationGrant,
     pub client_version: String,
@@ -685,6 +684,10 @@ pub struct McpHttpHeaders {
     pub mcp_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -717,6 +720,7 @@ pub enum HostRequest {
     Register(RegisterParams),
     Unregister(UnregisterParams),
     CoreCall(CoreCallParams),
+    SessionCheckpoint(SessionCheckpointParams),
     ExecutionRedeem(ExecutionRedeemParams),
     ProcClose(ProcSessionParams),
     NetStart(ProcLaunchParams),
@@ -737,6 +741,7 @@ impl HostRequest {
             Self::Register(params) => &params.owner.plugin_id,
             Self::Unregister(params) => &params.owner.plugin_id,
             Self::CoreCall(params) => &params.owner.plugin_id,
+            Self::SessionCheckpoint(params) => &params.owner.plugin_id,
             Self::ExecutionRedeem(params) => &params.owner.plugin_id,
             Self::ProcClose(params) => &params.owner.plugin_id,
             Self::NetClose(params) => &params.owner.plugin_id,
@@ -854,6 +859,10 @@ pub fn parse_host_message(value: Value, tier: HostTier) -> Result<HostMessage, P
             id,
             request: HostRequest::Unregister(params(&method, p)?),
         },
+        ("session/checkpoint", Some(id)) => HostMessage::Request {
+            id,
+            request: HostRequest::SessionCheckpoint(params(&method, p)?),
+        },
         ("core/call", Some(id)) => HostMessage::Request {
             id,
             request: HostRequest::CoreCall(params(&method, p)?),
@@ -956,6 +965,9 @@ impl HostMessage {
                 }
                 HostRequest::ExecutionRedeem(p) => request_value(*id, "exec/redeem", to_value(p)),
                 HostRequest::CoreCall(p) => request_value(*id, "core/call", to_value(p)),
+                HostRequest::SessionCheckpoint(p) => {
+                    request_value(*id, "session/checkpoint", to_value(p))
+                }
                 HostRequest::ProcClose(p) => request_value(*id, "proc/close", to_value(p)),
                 HostRequest::NetStart(p) => request_value(*id, "net/start", to_value(p)),
                 HostRequest::NetFetch(p) => request_value(*id, "net/fetch", to_value(p)),
@@ -997,13 +1009,6 @@ pub struct HostLimits {
 pub struct InitializeParams {
     pub protocol: u32,
     pub limits: HostLimits,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct EntryRef {
-    pub path: String,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1061,6 +1066,8 @@ pub struct ToolCallParams {
     /// then has no way to ask the core for anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_ticket: Option<String>,
     /// Per-invocation identity; never cached at activation or by the host root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

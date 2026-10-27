@@ -4,7 +4,7 @@ const REPRESENTATIVE_HANDOFF_RELAY: &str = "REPRESENTATIVE_HANDOFF_RELAY";
 fn ordinary_engine_default_does_not_install_a_step_budget() {
     assert_eq!(
         DEFAULT_MODEL_STEPS,
-        crate::core::engine::turn_budget::DEFAULT_MAX_MODEL_STEPS
+        codewhale_runtime::turn_budget::DEFAULT_MAX_MODEL_STEPS
     );
     assert_eq!(EngineConfig::default().max_steps, DEFAULT_MODEL_STEPS);
     let mut turn = TurnContext::new(EngineConfig::default().max_steps);
@@ -60,7 +60,7 @@ fn agent_tool_contexts_follow_the_published_posture() {
     assert!(!before.auto_approve);
     assert_ne!(
         before.elevated_sandbox_policy,
-        Some(crate::sandbox::SandboxPolicy::DangerFullAccess)
+        Some(codewhale_sandbox::SandboxPolicy::DangerFullAccess)
     );
     handle.publish_turn_authority(
         AppMode::Agent,
@@ -76,7 +76,7 @@ fn agent_tool_contexts_follow_the_published_posture() {
     assert_eq!(after.approval_mode, ApprovalMode::Bypass);
     assert_eq!(
         after.elevated_sandbox_policy,
-        Some(crate::sandbox::SandboxPolicy::DangerFullAccess)
+        Some(codewhale_sandbox::SandboxPolicy::DangerFullAccess)
     );
     // Narrowing reaches it too: Plan drops shell and makes the sandbox read-only.
     handle.publish_turn_authority(
@@ -89,10 +89,13 @@ fn agent_tool_contexts_follow_the_published_posture() {
     );
     after.refresh_live_posture();
     assert!(!after.auto_approve);
-    assert_eq!(after.shell_policy, crate::worker_profile::ShellPolicy::None);
+    assert_eq!(
+        after.shell_policy,
+        codewhale_agent_contract::worker_profile::ShellPolicy::None
+    );
     assert_eq!(
         after.elevated_sandbox_policy,
-        Some(crate::sandbox::SandboxPolicy::read_only())
+        Some(codewhale_sandbox::SandboxPolicy::read_only())
     );
 }
 
@@ -188,21 +191,24 @@ fn custom_route_endpoint_change_forgets_the_previous_bill() {
     let mut custom = HashMap::new();
     custom.insert(
         "lm-studio".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("lm-studio".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_0_0 = Some("lm-studio".to_string());
+        let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     };
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &config);
     let install = |engine: &mut Engine, config: &Config| {
@@ -299,22 +305,25 @@ fn route_switch_forgets_the_previous_routes_input_bill() {
     ] {
         custom.insert(
             name.to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some(base_url.to_string()),
                 model: Some(model.to_string()),
                 api_key: Some("local-test-key".to_string()),
-                ..crate::config::ProviderConfig::default()
+                ..codewhale_runtime::config::ProviderConfig::default()
             },
         );
     }
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_1_0 = Some("custom-a".to_string());
+        let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_1_value: Config = Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
     };
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &config);
     let route_a = || {
@@ -355,22 +364,25 @@ fn custom_route_identity_change_rebuilds_client_for_new_named_endpoint() {
     ] {
         custom.insert(
             name.to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some(base_url.to_string()),
                 model: Some(model.to_string()),
                 api_key: Some("local-test-key".to_string()),
-                ..crate::config::ProviderConfig::default()
+                ..codewhale_runtime::config::ProviderConfig::default()
             },
         );
     }
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_2_0 = Some("custom-a".to_string());
+        let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_2_value: Config = Config::default();
+        __cw_config_init_2_value.provider = __cw_config_init_2_0;
+        __cw_config_init_2_value.providers = __cw_config_init_2_1;
+        __cw_config_init_2_value
     };
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &config);
     assert_eq!(
@@ -413,21 +425,24 @@ fn custom_route_config_reload_rebuilds_client_when_identity_is_unchanged() {
     let mut custom = HashMap::new();
     custom.insert(
         "lm-studio".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("old-local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("lm-studio".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_3_0 = Some("lm-studio".to_string());
+        let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_3_value: Config = Config::default();
+        __cw_config_init_3_value.provider = __cw_config_init_3_0;
+        __cw_config_init_3_value.providers = __cw_config_init_3_1;
+        __cw_config_init_3_value
     };
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &config);
 
@@ -469,21 +484,24 @@ fn failed_same_identity_route_preflight_leaves_old_client_untouched() {
     let mut custom = HashMap::new();
     custom.insert(
         "lm-studio".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("old-local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("lm-studio".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_4_0 = Some("lm-studio".to_string());
+        let __cw_config_init_4_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_4_value: Config = Config::default();
+        __cw_config_init_4_value.provider = __cw_config_init_4_0;
+        __cw_config_init_4_value.providers = __cw_config_init_4_1;
+        __cw_config_init_4_value
     };
     let (engine, _handle) = Engine::new(EngineConfig::default(), &config);
     assert!(engine.codewhale_client.is_some());
@@ -543,27 +561,30 @@ async fn exact_turn_snapshot_restores_custom_endpoint_and_turn_receipt_after_bui
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some(custom_base_url.clone()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
-            openai: crate::config::ProviderConfig {
+    let config = {
+        let __cw_config_init_5_0 = Some("custom-a".to_string());
+        let __cw_config_init_5_1 = Some(codewhale_runtime::config::ProvidersConfig {
+            openai: codewhale_runtime::config::ProviderConfig {
                 base_url: Some("http://127.0.0.1:18182/v1".to_string()),
                 model: Some("gpt-5.5".to_string()),
                 api_key: Some("builtin-test-key".to_string()),
-                ..crate::config::ProviderConfig::default()
+                ..codewhale_runtime::config::ProviderConfig::default()
             },
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_5_value: Config = Config::default();
+        __cw_config_init_5_value.provider = __cw_config_init_5_0;
+        __cw_config_init_5_value.providers = __cw_config_init_5_1;
+        __cw_config_init_5_value
     };
     let engine_config = EngineConfig {
         max_steps: 1,
@@ -739,12 +760,12 @@ async fn main_turn_dispatch_freezes_declared_custom_model_rate() {
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some(custom_base_url.clone()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
     let declared: codewhale_config::catalog::configured::ConfiguredModel =
@@ -753,14 +774,18 @@ async fn main_turn_dispatch_freezes_declared_custom_model_rate() {
              id = \"local-model\"\ncost = {{ input = 1.0, output = 2.0 }}\n"
         ))
         .expect("declared model row");
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_6_0 = Some("custom-a".to_string());
+        let __cw_config_init_6_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        custom_models: Some(vec![declared]),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let __cw_config_init_6_2 = Some(vec![declared]);
+        let mut __cw_config_init_6_value: Config = Config::default();
+        __cw_config_init_6_value.provider = __cw_config_init_6_0;
+        __cw_config_init_6_value.providers = __cw_config_init_6_1;
+        __cw_config_init_6_value.custom_models = __cw_config_init_6_2;
+        __cw_config_init_6_value
     };
     let engine_config = EngineConfig {
         max_steps: 1,
@@ -1059,21 +1084,24 @@ async fn goal_continuation_preserves_goal_and_resolves_updated_authoritative_rou
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some(first_base_url.clone()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_7_0 = Some("custom-a".to_string());
+        let __cw_config_init_7_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_7_value: Config = Config::default();
+        __cw_config_init_7_value.provider = __cw_config_init_7_0;
+        __cw_config_init_7_value.providers = __cw_config_init_7_1;
+        __cw_config_init_7_value
     };
     let engine_config = EngineConfig {
         max_steps: 1,

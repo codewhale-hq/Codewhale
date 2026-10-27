@@ -33,29 +33,31 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codewhale_protocol::fleet::PermissionCeiling;
 #[cfg(test)]
-use codewhale_workflow::ShellCeiling;
+use codewhale_protocol::fleet::ShellCeiling;
 use codewhale_workflow::{
     CapturedReasoningRouter, CredentialReadiness, EffectiveReasoning, EndpointIdentity,
     FleetDocument, FleetRouterRef, FleetSearchRoot, FleetSnapshot, FleetSnapshotMember,
-    FleetTaskReceipt, NamedFleetError, PermissionCeiling, PreflightError, PreflightedRoute,
-    ProviderReasoningControl, QualifiedFleetId, ReasoningCapability, ReasoningRouterProfile,
-    ReasoningTier, ResolvedReasoning, RoutePreflight, RouterAvailability, RouterCallInput,
-    RouterCallPlan, RouterIdentity, RoutingDisclosure, bounded_routing_payload,
-    captured_legacy_inline_router, parse_router_decision, resolve_exact_member_reasoning,
-    router_call_plan, router_system_prompt, router_user_message,
+    FleetTaskReceipt, NamedFleetError, PreflightError, PreflightedRoute, ProviderReasoningControl,
+    QualifiedFleetId, ReasoningCapability, ReasoningRouterProfile, ReasoningTier,
+    ResolvedReasoning, RoutePreflight, RouterAvailability, RouterCallInput, RouterCallPlan,
+    RouterIdentity, RoutingDisclosure, bounded_routing_payload, captured_legacy_inline_router,
+    parse_router_decision, resolve_exact_member_reasoning, router_call_plan, router_system_prompt,
+    router_user_message,
 };
 
-use super::role::{ChildAuthority, public_role_label};
+use crate::llm_client::LlmClient;
+use crate::reasoning_preference::ReasoningEffort;
+use codewhale_agent_contract::role::{ChildAuthority, public_role_label};
 #[cfg(test)]
-use super::role::{
+use codewhale_agent_contract::role::{
     NETWORK_DENIAL_SENTINEL, NETWORK_TOOL_DENYLIST, RAW_SHELL_SENTINEL, is_posture_denial,
     session_shell_ceiling,
 };
-use crate::config::{Config, ProviderKind};
-use crate::llm_client::LlmClient;
-use crate::reasoning_preference::ReasoningEffort;
+use codewhale_config::ProviderKind;
 use codewhale_models::Role;
+use codewhale_runtime::config::Config;
 
 /// Where exact Fleet definitions and Reasoning Router profiles are looked up,
 /// labelled so an identity can be qualified (`workspace/glm-pair`) instead of
@@ -372,7 +374,7 @@ pub(crate) fn reasoning_capability_for_route(
     let body_for = |effort: ReasoningEffort| -> String {
         let mut body = serde_json::json!({});
         let value = effort.api_value_for_route(provider, base_url, wire_model);
-        crate::client::apply_reasoning_effort(&mut body, value, provider);
+        crate::client::reasoning_effort::apply_reasoning_effort(&mut body, value, provider);
         // `reasoning_split` is a transport concern the client sets for every
         // tier; it carries no reasoning depth, so it must not make tiers look
         // distinct or make a no-control route look controllable.
@@ -511,21 +513,22 @@ pub(crate) fn preflight_route(
 
     // The canonical wire model, resolved once. The receipt and the child spawn
     // both read this value, so they cannot disagree about what actually ran.
-    let wire_model = crate::config::requested_model_for_provider(identity.provider, model.trim())
-        .ok_or_else(|| PreflightError::ModelUnresolved {
-        member: member_id.to_string(),
-        provider: identity.key.to_string(),
-        model: model.to_string(),
-        detail: "not a known model for this provider".to_string(),
-    })?;
-    crate::config::validate_route(identity.provider, &wire_model).map_err(|detail| {
-        PreflightError::ModelUnresolved {
+    let wire_model =
+        codewhale_runtime::config::requested_model_for_provider(identity.provider, model.trim())
+            .ok_or_else(|| PreflightError::ModelUnresolved {
+                member: member_id.to_string(),
+                provider: identity.key.to_string(),
+                model: model.to_string(),
+                detail: "not a known model for this provider".to_string(),
+            })?;
+    codewhale_runtime::config::validate_route(identity.provider, &wire_model).map_err(
+        |detail| PreflightError::ModelUnresolved {
             member: member_id.to_string(),
             provider: identity.key.to_string(),
             model: wire_model.clone(),
             detail,
-        }
-    })?;
+        },
+    )?;
 
     let mut scoped = config.clone();
     scoped
@@ -541,26 +544,28 @@ pub(crate) fn preflight_route(
     // design, and that is a valid, first-class state — not a downgrade and
     // not a missing credential. Ollama Cloud is hosted and falls through to
     // the ordinary credential checks.
-    let credential =
-        if crate::config::provider_route_is_keyless_self_hosted(identity.provider, &base_url) {
-            CredentialReadiness::KeylessLocal
-        } else if crate::config::has_api_key_for(&scoped, &identity) {
-            CredentialReadiness::Configured
-        } else {
-            // The discriminant only. `Missing { detail }` names the provider table
-            // key, which for a custom route is the customer's own string.
-            codewhale_telemetry::session_counters()
-                .bump_error(codewhale_telemetry::ErrorCounter::AuthPreflightFailed);
-            CredentialReadiness::Missing {
-                detail: format!("no credential configured for `{}`", identity.key),
-            }
-        };
+    let credential = if codewhale_runtime::config::provider_route_is_keyless_self_hosted(
+        identity.provider,
+        &base_url,
+    ) {
+        CredentialReadiness::KeylessLocal
+    } else if crate::provider_readiness::has_api_key_for(&scoped, &identity) {
+        CredentialReadiness::Configured
+    } else {
+        // The discriminant only. `Missing { detail }` names the provider table
+        // key, which for a custom route is the customer's own string.
+        codewhale_telemetry::session_counters()
+            .bump_error(codewhale_telemetry::ErrorCounter::AuthPreflightFailed);
+        CredentialReadiness::Missing {
+            detail: format!("no credential configured for `{}`", identity.key),
+        }
+    };
 
     Ok(PreflightedRoute {
         member_id: member_id.to_string(),
         provider_id: identity.key.to_string(),
         provider_config_id: identity
-            .migrated_legacy_ollama_cloud_route
+            .migrated_legacy_ollama_cloud_route()
             .then(|| provider.trim().to_string()),
         provider_kind: if identity.provider == ProviderKind::OllamaCloud {
             identity.provider.as_str().to_string()
@@ -1795,7 +1800,10 @@ mod shell_ceiling_tests {
         );
         assert_eq!(planner_parent_shell_off.posture_role, "planner");
         assert_eq!(
-            session_shell_ceiling(crate::worker_profile::ShellPolicy::Full, false),
+            session_shell_ceiling(
+                codewhale_agent_contract::worker_profile::ShellPolicy::Full,
+                false
+            ),
             ShellCeiling::None
         );
     }
@@ -1920,7 +1928,7 @@ permissions = "read_only"
             write: true,
             network_tool: true,
             shell: ShellCeiling::Full,
-            delegation_depth: codewhale_config::DEFAULT_SPAWN_DEPTH,
+            delegation_depth: codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH,
             tools: true,
         }
     }
@@ -2729,8 +2737,8 @@ permissions = "read_only"
     fn glm_routes_report_an_enabled_disabled_provider_control() {
         let capability = reasoning_capability_for_route(
             ProviderKind::Zai,
-            crate::config::DEFAULT_ZAI_BASE_URL,
-            crate::config::ZAI_GLM_5_2_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
         );
 
         assert_eq!(
@@ -2754,7 +2762,7 @@ permissions = "read_only"
     fn a_route_that_varies_its_wire_value_reports_distinct_tiers() {
         let capability = reasoning_capability_for_route(
             ProviderKind::Deepseek,
-            crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
             "deepseek-v4-pro",
         );
         assert_eq!(capability.control, ProviderReasoningControl::Tiers);
@@ -2769,7 +2777,7 @@ permissions = "read_only"
     fn a_deepseek_route_reports_low_as_low_and_medium_as_high() {
         let capability = reasoning_capability_for_route(
             ProviderKind::Deepseek,
-            crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
             "deepseek-v4-pro",
         );
 
@@ -2822,7 +2830,7 @@ permissions = "read_only"
     fn a_route_that_collapses_low_onto_high_says_so_instead_of_reporting_low() {
         let capability = reasoning_capability_for_route(
             ProviderKind::Siliconflow,
-            crate::config::DEFAULT_SILICONFLOW_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_SILICONFLOW_BASE_URL,
             "deepseek-ai/DeepSeek-V4-Pro",
         );
 
@@ -2850,22 +2858,27 @@ permissions = "read_only"
     fn preflight_freezes_provider_model_endpoint_and_local_readiness() {
         let _env_lock = crate::test_support::lock_test_env();
         let _key = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_0_0 = Some("zai".to_string());
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
 
         let route = preflight_route(
             "implementer",
             "zai",
-            crate::config::ZAI_GLM_5_2_MODEL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
             &config,
         )
         .expect("preflight");
 
         assert_eq!(route.member_id, "implementer");
         assert_eq!(route.provider_kind, "zai");
-        assert_eq!(route.wire_model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(
+            route.wire_model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
         assert!(!route.endpoint.host.is_empty());
         assert!(!route.endpoint.host.contains('/'));
         assert_eq!(route.credential, CredentialReadiness::Configured);
@@ -2879,9 +2892,11 @@ permissions = "read_only"
     #[test]
     fn a_keyless_local_provider_preflights_as_ready() {
         let _env_lock = crate::test_support::lock_test_env();
-        let config = Config {
-            provider: Some("ollama".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_1_0 = Some("ollama".to_string());
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value
         };
 
         let Ok(route) = preflight_route("worker", "ollama", "qwen3", &config) else {
@@ -2909,21 +2924,24 @@ permissions = "read_only"
             .set("ollama", "legacy-cloud-key")
             .expect("seed released Ollama Cloud slot");
 
-        let cloud = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                ollama: crate::config::ProviderConfig {
+        let cloud = {
+            let __cw_config_init_2_0 = Some("deepseek".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                ollama: codewhale_runtime::config::ProviderConfig {
                     base_url: Some(codewhale_config::provider::OLLAMA_CLOUD_BASE_URL.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
         let cloud_route = preflight_route(
             "cloud-worker",
             "ollama",
-            crate::config::DEFAULT_OLLAMA_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_MODEL,
             &cloud,
         )
         .expect("official Cloud route");
@@ -2934,21 +2952,24 @@ permissions = "read_only"
         assert!(!cloud_route.endpoint.local);
         cloud_route.require_ready().expect("Cloud env key is ready");
 
-        let custom_remote = Config {
-            provider: Some("ollama".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                ollama: crate::config::ProviderConfig {
+        let custom_remote = {
+            let __cw_config_init_3_0 = Some("ollama".to_string());
+            let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                ollama: codewhale_runtime::config::ProviderConfig {
                     base_url: Some("https://ollama-gateway.example.test/v1".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
         let custom_route = preflight_route(
             "custom-worker",
             "ollama",
-            crate::config::DEFAULT_OLLAMA_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_MODEL,
             &custom_remote,
         )
         .expect("custom route still resolves structurally");
@@ -2972,17 +2993,23 @@ permissions = "read_only"
             .set("ollama", "legacy-cloud-fleet-key")
             .expect("seed released Ollama Cloud slot");
 
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                ollama: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_4_0 = Some("deepseek".to_string());
+            let __cw_config_init_4_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                ollama: codewhale_runtime::config::ProviderConfig {
                     base_url: Some(codewhale_config::provider::OLLAMA_CLOUD_BASE_URL.to_string()),
-                    model: Some(crate::config::DEFAULT_OLLAMA_CLOUD_MODEL.to_string()),
+                    model: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_MODEL
+                            .to_string(),
+                    ),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_4_value: Config = Default::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value.providers = __cw_config_init_4_1;
+            __cw_config_init_4_value
         };
         let document = FleetDocument::parse(&format!(
             r#"
@@ -2997,7 +3024,7 @@ model = "{}"
 reasoning = "medium"
 permissions = "read_only"
 "#,
-            crate::config::DEFAULT_OLLAMA_CLOUD_MODEL
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_MODEL
         ))
         .expect("legacy Cloud Fleet parses");
 
@@ -3036,7 +3063,7 @@ provider = "ollama"
 model = "{}"
 call_reasoning = "low"
 "#,
-            crate::config::DEFAULT_OLLAMA_CLOUD_MODEL
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_MODEL
         ))
         .expect("legacy Cloud router profile parses");
         let captured =
@@ -3069,7 +3096,7 @@ call_reasoning = "low"
             assert_eq!(
                 route_reasoning_setting(
                     ProviderKind::Deepseek,
-                    crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+                    codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
                     "deepseek-v4-pro",
                     tier,
                 ),
@@ -3367,10 +3394,13 @@ mod saved_fleet_tests {
     }
 
     fn zai_session() -> Config {
-        Config {
-            provider: Some("zai".to_string()),
-            reasoning_effort: Some("high".to_string()),
-            ..Default::default()
+        {
+            let __cw_config_init_5_0 = Some("zai".to_string());
+            let __cw_config_init_5_1 = Some("high".to_string());
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value.reasoning_effort = __cw_config_init_5_1;
+            __cw_config_init_5_value
         }
     }
 
@@ -3378,8 +3408,8 @@ mod saved_fleet_tests {
         PermissionCeiling {
             write: true,
             network_tool: true,
-            shell: codewhale_workflow::ShellCeiling::Full,
-            delegation_depth: codewhale_config::DEFAULT_SPAWN_DEPTH,
+            shell: codewhale_protocol::fleet::ShellCeiling::Full,
+            delegation_depth: codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH,
             tools: true,
         }
     }
@@ -3394,7 +3424,13 @@ mod saved_fleet_tests {
         let saved = fleet(
             "My fleet",
             vec![
-                member("builder", Some(("zai", crate::config::ZAI_GLM_5_2_MODEL))),
+                member(
+                    "builder",
+                    Some((
+                        "zai",
+                        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+                    )),
+                ),
                 member("reviewer", None),
             ],
         );
@@ -3410,7 +3446,10 @@ mod saved_fleet_tests {
         let builder = exact.member("builder").expect("builder");
         assert_eq!(
             (builder.provider.as_str(), builder.model.as_str()),
-            ("zai", crate::config::ZAI_GLM_5_2_MODEL)
+            (
+                "zai",
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+            )
         );
         // No pin and no operator: the member inherits the live session route
         // and tier, resolved now rather than left open.
@@ -3436,7 +3475,7 @@ mod saved_fleet_tests {
         let mut saved = fleet("reviewers", vec![member("auditor", None)]);
         saved.operator = Some(FleetOperator {
             provider: "zai".to_string(),
-            model: crate::config::ZAI_GLM_5_2_MODEL.to_string(),
+            model: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string(),
             reasoning: Some("low".to_string()),
         });
         let path = save_fleet(&saved, FleetScope::Workspace, ws.path()).expect("save");
@@ -3446,7 +3485,10 @@ mod saved_fleet_tests {
         let (document, id) = load_fleet_document("reviewers", ws.path(), None).expect("loads");
         assert_eq!(id.origin, "folder");
         let auditor = document.exact().unwrap().member("auditor").unwrap();
-        assert_eq!(auditor.model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(
+            auditor.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
         assert_eq!(auditor.reasoning.as_str(), "low");
     }
 
@@ -3503,7 +3545,10 @@ mod saved_fleet_tests {
         let home = tempfile::tempdir().expect("home");
         let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let ws = tempfile::tempdir().expect("workspace");
-        let pin = Some(("zai", crate::config::ZAI_GLM_5_2_MODEL));
+        let pin = Some((
+            "zai",
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+        ));
         let mut ultra = member("ultra", pin);
         ultra.reasoning = Some("ultra".to_string());
         let mut minimal = member("minimal", pin);
@@ -3513,7 +3558,7 @@ mod saved_fleet_tests {
         let mut saved = fleet("tiers", vec![ultra, minimal, blank]);
         saved.operator = Some(FleetOperator {
             provider: "zai".to_string(),
-            model: crate::config::ZAI_GLM_5_2_MODEL.to_string(),
+            model: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string(),
             reasoning: Some("xhigh".to_string()),
         });
         save_fleet(&saved, FleetScope::Workspace, ws.path()).expect("save");
@@ -3547,7 +3592,13 @@ mod saved_fleet_tests {
         let home = tempfile::tempdir().expect("home");
         let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let ws = tempfile::tempdir().expect("workspace");
-        let mut coach = member("coach", Some(("zai", crate::config::ZAI_GLM_5_2_MODEL)));
+        let mut coach = member(
+            "coach",
+            Some((
+                "zai",
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+            )),
+        );
         coach.instructions = Some("Always cite sources.".to_string());
         save_fleet(
             &fleet("coached", vec![coach]),
@@ -3577,7 +3628,13 @@ mod saved_fleet_tests {
         let mut saved = fleet(
             "release",
             vec![
-                member("builder", Some(("zai", crate::config::ZAI_GLM_5_2_MODEL))),
+                member(
+                    "builder",
+                    Some((
+                        "zai",
+                        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+                    )),
+                ),
                 member("reviewer", None),
             ],
         );
@@ -3602,7 +3659,10 @@ mod saved_fleet_tests {
         let builder = workflow
             .bind_member(Some("builder"), None, session_ceiling())
             .expect("bind builder");
-        assert_eq!(builder.route.wire_model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(
+            builder.route.wire_model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
 
         let reviewer = workflow
             .bind_member(Some("reviewer"), None, session_ceiling())
@@ -3617,7 +3677,7 @@ mod saved_fleet_tests {
         assert_eq!(reviewer.route.frozen().model, reviewer.route.wire_model);
         assert_eq!(
             reviewer.route.wire_model,
-            crate::config::requested_model_for_provider(
+            codewhale_runtime::config::requested_model_for_provider(
                 config.active_provider_identity().unwrap().provider,
                 &config.default_model()
             )

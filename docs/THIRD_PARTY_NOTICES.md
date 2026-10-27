@@ -16,7 +16,7 @@ the licence obligation travels with the code rather than with a package.
 - **Project:** pi-mono (<https://github.com/earendil-works/pi-mono>)
 - **Author:** Mario Zechner
 - **Licence:** MIT
-- **Used in:** `crates/tui/src/credentials/` and
+- **Used in:** `crates/runtime/src/credentials/` and
   `crates/tui/src/config/credential_resolve.rs`
 - **What was taken:** the design of `packages/ai/src/auth/` — one type-tagged
   credential per provider, `modify` as the only serialized write path, a single

@@ -168,11 +168,25 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 # "muse", or "all". Env: CODEWHALE_PROJECT_INSTRUCTION_IMPORTS (comma-separated).
 # project_instruction_imports = ["claude"]
 #
-# Everything that reaches the model as standing project instruction authority —
-# the repository-root -> workspace AGENTS.md chain, the global fallback layer,
-# .codewhale/rules/*.md, and any imported foreign files — shares one 48 KiB
-# aggregate budget. Instructions claim it first and are trimmed from the
-# broadest scope inward, so the nearest-scope file is the last thing dropped.
+# Standing instructions are budgeted per scope, in estimated tokens, and every
+# trim or skip is reported to the model and in /context.
+# `global` covers ~/.codewhale/AGENTS.md (or ~/.agents/AGENTS.md), the global
+# instructions.md fallbacks, ~/.claude/CLAUDE.md (last resort, claude_fallback
+# only) and the `instructions = [...]` array. `project` covers the
+# repository-root -> workspace AGENTS.md chain, co-read foreign files, and
+# .codewhale/rules/*.md. A scope is capped at the smaller of its absolute token
+# budget and its share of the usable window (context window minus the output
+# reservation and a 10% safety reserve). Each file keeps at most its first
+# 100 KiB. User config only: a cloned repository cannot change it.
+# [instruction_budget]
+# global_budget_tokens = 100000    # positive; absolute cap for the global scope
+# project_budget_tokens = 100000   # positive; absolute cap for the project scope
+# global_budget_percent = 25       # 1..=100, share of the usable window
+# project_budget_percent = 25      # 1..=100, share of the usable window
+# static_prefix_guard_percent = 80 # 1..=100; guard must leave >=10 points
+# file_max_bytes = 8388608         # 1..=8388608; larger files are skipped
+# policy = "trim"                  # trim | refuse
+# claude_fallback = false          # opt in: AGENTS.md wins; else CLAUDE.md
 # prompt_suggestion = true  # opt-in: show ghost-text follow-up question in composer after each turn
 
 # Optional tab/window title shown as `[title] …` in front of the terminal
@@ -525,9 +539,8 @@ show_whats_new = true
 #   max_depth = 0   # opt out completely — the agent never spawns sub-agents
 #   max_depth = 1   # the agent may spawn sub-agents, but those may not spawn more
 #   max_depth = 2   # one more level of nesting, etc.
-# Unset defaults to 3; any value is clamped to the hard ceiling (8). The depth
-# limit is enforced in code, not requested of the model — a sub-agent past the
-# limit cannot be spawned regardless of what the model decides.
+# Omit to leave delegation depth uncapped. Explicit owner limits are enforced
+# by the runtime and cannot be widened by descendants.
 # max_depth = 3
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -661,7 +674,7 @@ base_url = "https://api.deepseek.com/beta"
 [providers.orcarouter]
 # api_key = "YOUR_ORCAROUTER_API_KEY"
 # base_url = "https://api.orcarouter.ai/v1"
-# model = "deepseek/deepseek-v4-pro"
+# model = "deepseek/deepseek-v4.1-flash-1017"   # built-in default for this provider
 # Namespaced wire models pass through verbatim (deepseek/deepseek-v4-pro,
 # deepseek/deepseek-v4-flash); OrcaRouter's own auto-routing model is
 # selectable as "orcarouter/auto".
@@ -968,7 +981,7 @@ base_url = "https://api.deepseek.com/beta"
 #   OPENAI_CODEX_ACCOUNT_ID / CODEX_ACCOUNT_ID, OPENAI_CODEX_AUTH_FILE, CODEX_HOME
 [providers.openai_codex]
 # base_url = "https://chatgpt.com/backend-api"
-# model = "gpt-5.6"
+# model = "gpt-6.1-sol"
 # The CLI writes this table after informed consent; do not copy it between
 # providers or machines. Absence means disabled.
 # [providers.openai_codex.external_credentials]
@@ -981,13 +994,13 @@ base_url = "https://api.deepseek.com/beta"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Anthropic Provider (native Messages API)
 # Talks to https://api.anthropic.com/v1/messages with x-api-key auth — not an
-# OpenAI-compatible route. Models: claude-opus-4-8, claude-sonnet-4-6 (default),
-# claude-haiku-4-5. Env vars: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL,
+# OpenAI-compatible route. Models: claude-opus-5-5, claude-sonnet-5-5 (default),
+# claude-haiku-5-5. Env vars: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL,
 # ANTHROPIC_MODEL.
 [providers.anthropic]
 # api_key = "sk-ant-..."
 # base_url = "https://api.anthropic.com"
-# model = "claude-sonnet-4-6"
+# model = "claude-sonnet-5-5"
 
 # OpenModel Provider (Anthropic-compatible Messages API)
 # Talks to https://api.openmodel.ai/v1/messages with Bearer auth. OpenModel
@@ -1268,20 +1281,18 @@ code_mode = true # execute_tools composes MCP/plugin/native calls; false defers 
                         # a prompt under Full Access, under Bypass, or with a
                         # matching session grant, which is bound to the
                         # plugin's reviewed build (an update asks again).
-                        # Sandbox: on macOS the host runs under Seatbelt, and
-                        # on Linux under bubblewrap (/usr/bin/bwrap) when a
-                        # launch-time probe shows it works. Either way: no
-                        # direct network, no reads of ~/.codewhale secrets/
-                        # credentials/config/sessions, and writes only to its
-                        # data dir and temp dirs (plus, on macOS, the Darwin
-                        # user cache, ~/.cargo/registry, ~/.cargo/git and the
-                        # npm cache, which every Seatbelt-sandboxed command
-                        # gets). If bwrap is missing or cannot start (for
-                        # example blocked unprivileged user namespaces), the
-                        # host runs UNSANDBOXED with your user permissions and
-                        # /plugin, `codewhale doctor` and the start diagnostic
-                        # say so with bwrap's own error. On Windows it always
-                        # runs with your user permissions.
+                        # Native code requires a verified OS sandbox: Seatbelt
+                        # on macOS, bubblewrap on Linux, and LPAC/Job on Windows.
+                        # An unavailable Native sandbox refuses activation.
+                        # Unix reads are limited to the selected runtime and
+                        # libraries, canonical host bundle, captured Core-managed
+                        # plugin stores and Native data. Writes stay in Native
+                        # data and private scratch; repository reads and direct
+                        # network are denied. Native plugins share one trusted
+                        # cohort, not separate per-plugin OS sandboxes.
+                        # On macOS a detached child can outlive process-group
+                        # cancellation while retaining the sandbox restrictions.
+                        # Builtin host policy is separate and diagnosed separately.
                         # Toggling this changes the plugin activation policy,
                         # so every plugin must be re-reviewed afterwards.
 
@@ -1742,15 +1753,15 @@ base_url = "https://integrate.api.nvidia.com/v1"
 # auto_start_read_only = true
 # # Require an approval card before write/shell/network/high-budget launches.
 # require_approval_for_writes = true
-# # Hard ceiling on agents in one Workflow run (matches VM lifetime cap).
-# max_children = 1000
+# # Optional owner-selected total child limit. Zero leaves work uncapped.
+# max_children = 0
 # # Maximum concurrently live agents inside one run (others wait for a slot).
 # max_concurrent = 16
-# # Maximum structural nesting depth accepted for Workflow IR (default 5).
+# # Optional structural Workflow depth limit; zero leaves it uncapped.
 # # This is separate from Runtime child delegation below.
-# max_depth = 5
-# # Default shared token budget for a Workflow run and its children.
-# default_token_budget = 120000
+# max_depth = 0
+# # Legacy token hint retained in receipts; not metered or enforced.
+# default_token_budget = 0
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Agent Fleet roster, role registry, and execution requests (#3165, #3167)
@@ -1773,7 +1784,7 @@ base_url = "https://integrate.api.nvidia.com/v1"
 # # Runtime child-agent depth for fleet workers. Shares ONE recursion axis with
 # # standalone sub-agents (a fleet worker IS a headless sub-agent). This is an
 # # execution request, not Fleet member identity. 0 blocks child agents (the
-# # root worker still runs); 3 is the default and 8 is the opt-in hard ceiling.
+# # root worker still runs); omit to leave depth uncapped.
 # max_spawn_depth = 3
 # # Extra system prompt injected into every headless worker
 # append_system_prompt = "Never modify .git/config or change remotes."

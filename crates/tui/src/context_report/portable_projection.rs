@@ -4,9 +4,9 @@
 use codewhale_command_contract::facets::*;
 
 pub(crate) fn source_map(report: crate::context_report::PromptSourceMap) -> DebugPromptSourceMap {
-    use crate::context_budget::PressureLevel;
     use crate::context_report::{ActivationReason as A, CountingConfidence as C, SourceKind as S};
     use crate::route_runtime::ContextWindowSource;
+    use codewhale_runtime::context_budget::PressureLevel;
     let pressure_label = report
         .budget_used_percent
         .map(|percent| PressureLevel::from_usage_percent(percent).label())

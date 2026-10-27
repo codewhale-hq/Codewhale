@@ -8478,9 +8478,9 @@ fn workflow_config_defaults_match_product_surface() {
     assert!(defaults.automatic);
     assert!(defaults.auto_start_read_only);
     assert!(defaults.require_approval_for_writes);
-    assert_eq!(defaults.max_children, 1000);
+    assert_eq!(defaults.max_children, 0);
     assert_eq!(defaults.max_concurrent, 16);
-    assert_eq!(defaults.max_depth, 5);
+    assert_eq!(defaults.max_depth, 0);
     // 0 = no shared cap; budgets are opt-in, matching the parent turn loop's
     // advisory policy (#6189).
     assert_eq!(defaults.default_token_budget, 0);
@@ -8523,7 +8523,7 @@ default_token_budget = 50000
     assert!(workflow.auto_start_read_only);
     assert!(workflow.require_approval_for_writes);
     assert_eq!(workflow.max_concurrent, 16);
-    assert_eq!(workflow.max_depth, 5);
+    assert_eq!(workflow.max_depth, 0);
 
     let serialized = toml::to_string_pretty(&workflow).expect("workflow serializes");
     let round_tripped: WorkflowConfigToml =
@@ -8534,14 +8534,12 @@ default_token_budget = 50000
 #[test]
 fn fleet_exec_config_default_matches_subagent_depth() {
     // Fleet workers and standalone sub-agents share one recursion axis:
-    // the fleet default equals DEFAULT_SPAWN_DEPTH (3) and affords >=3
-    // nested delegation levels out of the box.
+    // the fleet default equals DEFAULT_SPAWN_DEPTH without a nesting cap.
     assert_eq!(
         FleetExecConfig::default().max_spawn_depth,
-        DEFAULT_SPAWN_DEPTH
+        codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
     );
-    assert_eq!(FleetExecConfig::default().max_spawn_depth, 3);
-    const { assert!(DEFAULT_SPAWN_DEPTH <= MAX_SPAWN_DEPTH_CEILING) };
+    assert_eq!(FleetExecConfig::default().max_spawn_depth, u32::MAX);
 }
 
 #[test]

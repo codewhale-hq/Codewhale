@@ -1,5 +1,5 @@
+import { createHash } from "node:crypto";
 import {
-  activeTurnBlock,
   activeTurnKeyboard,
   approvalKeyboard,
   callbackAction,
@@ -28,6 +28,9 @@ import {
   telegramSendRetryDelayMs
 } from "./lib.mjs";
 import {
+  admitTurn,
+  questionText,
+  parseQuestionAnswers,
   createRuntimeClient,
   readJsonSafe,
   readSse,
@@ -76,7 +79,9 @@ const config = {
   turnTimeoutMs: Number(envFirst(process.env, "CODEWHALE_TURN_TIMEOUT_MS", "DEEPSEEK_TURN_TIMEOUT_MS") || 900000)
 };
 
-const { runtimeJson, authHeaders } = createRuntimeClient(config);
+const { runtimeJson, authHeaders } = createRuntimeClient({ ...config, runtimeRequestTimeoutMs: 15000 });
+const botAccountId = config.botToken.split(":")[0];
+let runtimeCapabilities = {};
 
 const threadStore = await ThreadStore.open(config.threadMapPath);
 const activeTurnTasks = new Map();
@@ -101,6 +106,11 @@ if (!config.allowlist.length && !config.allowUnlisted) {
   console.log("No allowlist configured. Incoming chats will receive their IDs and be refused.");
 }
 
+try {
+  runtimeCapabilities = (await runtimeJson("/v1/runtime/info"))?.capabilities || {};
+} catch {
+  console.warn("Engine recovery capabilities unavailable; uncertain admissions will remain retained.");
+}
 await configureBotCommands().catch((error) => {
   console.error("failed to configure Telegram bot command menu", error);
 });
@@ -117,6 +127,7 @@ async function configureBotCommands() {
       { command: "threads", description: "List recent runtime threads" },
       { command: "new", description: "Create a new thread" },
       { command: "interrupt", description: "Interrupt the active turn" },
+      { command: "answer", description: "Answer the current agent question" },
       { command: "compact", description: "Compact the current thread" },
       { command: "help", description: "Show command help" }
     ]
@@ -185,9 +196,6 @@ async function handleIncomingUpdate(update) {
   if (!identity.chatId || !identity.messageId) return;
   if (identity.isBot) return;
 
-  const messageKey = `${identity.chatId}:${identity.messageId}`;
-  if (await threadStore.recordMessage(messageKey)) return;
-
   if (!identity.text) {
     await sendText(identity.chatId, "Only text messages are supported in this first bridge.");
     return;
@@ -214,8 +222,17 @@ async function handleIncomingUpdate(update) {
   }
 
   const command = parseCommand(scoped.text);
+  const messageKey = JSON.stringify([botAccountId, identity.chatId, identity.messageId]);
+  if (["prompt", "answer"].includes(commandAction(command).kind)) {
+    const state = await threadStore.getChat(identity.chatId);
+    if (state?.pendingAdmission?.messageKey === messageKey || state?.activeMessageKey === messageKey) {
+      await threadStore.save();
+      startTrackedTurnStream(identity.chatId);
+      return;
+    }
+  } else if (await threadStore.recordMessage(messageKey)) return;
   await rememberAuthorizedIdentity(identity);
-  await handleCommand(identity.chatId, command, identity);
+  await handleCommand(identity.chatId, command, { ...identity, messageKey });
 }
 
 async function rememberAuthorizedIdentity({ chatId, chatType, userId, username, isBot }) {
@@ -231,6 +248,13 @@ async function isReplayCallbackUpdate(update) {
 
 async function handleCommand(chatId, command, identity) {
   const action = commandAction(command);
+  if (["new_thread", "resume", "compact"].includes(action.kind)) {
+    const state = await threadStore.getChat(chatId);
+    if (state?.pendingAdmission || state?.activeTurnId || state?.pendingReply) {
+      await sendText(chatId, "This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
+      return;
+    }
+  }
   switch (action.kind) {
     case "help":
       await sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
@@ -239,10 +263,10 @@ async function handleCommand(chatId, command, identity) {
       await sendMenu(chatId);
       return;
     case "status":
-      await sendStatus(chatId);
+      await sendStatus(chatId, identity);
       return;
     case "threads":
-      await sendThreads(chatId);
+      await sendThreads(chatId, identity);
       return;
     case "new_thread": {
       const state = await ensureThread(chatId, { forceNew: true });
@@ -250,10 +274,10 @@ async function handleCommand(chatId, command, identity) {
       return;
     }
     case "resume":
-      await resumeThread(chatId, action.threadId);
+      await resumeThread(chatId, action.threadId, identity);
       return;
     case "interrupt":
-      await interruptActiveTurn(chatId);
+      await interruptActiveTurn(chatId, identity);
       return;
     case "compact":
       await compactThread(chatId);
@@ -264,8 +288,12 @@ async function handleCommand(chatId, command, identity) {
     case "set_model":
       await setChatModel(chatId, action.modelName);
       return;
+    case "answer":
+      await answerQuestion(chatId, action.text, identity);
+      await threadStore.recordMessage(identity.messageKey);
+      return;
     case "prompt":
-      startPromptTurn(chatId, action.prompt, identity);
+      await startPromptTurn(chatId, action.prompt, identity);
       return;
     default:
       await sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
@@ -311,15 +339,22 @@ async function handleCallbackQuery(query) {
 }
 
 async function handleModalAction(chatId, action, query = null, identity = null) {
+  if (["new_thread", "compact"].includes(action.kind)) {
+    const state = await threadStore.getChat(chatId);
+    if (state?.pendingAdmission || state?.activeTurnId || state?.pendingReply) {
+      await sendText(chatId, "This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
+      return;
+    }
+  }
   switch (action.kind) {
     case "help":
       await sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
       return;
     case "status":
-      await sendStatus(chatId);
+      await sendStatus(chatId, identity);
       return;
     case "threads":
-      await sendThreads(chatId);
+      await sendThreads(chatId, identity);
       return;
     case "new_thread": {
       const state = await ensureThread(chatId, { forceNew: true });
@@ -327,7 +362,7 @@ async function handleModalAction(chatId, action, query = null, identity = null) 
       return;
     }
     case "interrupt":
-      await interruptActiveTurn(chatId);
+      await interruptActiveTurn(chatId, identity);
       return;
     case "compact":
       await compactThread(chatId);
@@ -355,7 +390,7 @@ async function handleStoredAction(chatId, action, query = null, identity = null)
 
   if (stored.kind === "resume") {
     await threadStore.takeAction(action.token, owner);
-    await resumeThread(chatId, stored.threadId);
+    await resumeThread(chatId, stored.threadId, identity);
     return;
   }
 
@@ -396,14 +431,17 @@ async function sendMenu(chatId) {
   );
 }
 
-async function ensureThread(chatId, { forceNew = false } = {}) {
+async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
   const existing = await threadStore.getChat(chatId);
+  if (forceNew && (existing?.pendingAdmission || existing?.activeTurnId)) {
+    throw new Error("This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
+  }
   if (existing?.threadId && !forceNew) return existing;
 
   const effectiveModel = existing?.model || config.model;
   const thread = await runtimeJson("/v1/threads", {
     method: "POST",
-    body: {
+    body: threadRequest || {
       model: effectiveModel,
       workspace: config.workspace,
       mode: config.mode,
@@ -417,7 +455,7 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
   });
 
   const state = {
-    ...preservedChatStateFields(existing),
+    ...preservedChatStateFields(existing, ["model", "authorizedIdentity", "pendingAdmission", "pendingReply"]),
     threadId: thread.id,
     lastSeq: 0,
     activeTurnId: null,
@@ -427,63 +465,101 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
   return state;
 }
 
-function startPromptTurn(chatId, prompt, identity) {
-  if (activeTurnTasks.has(chatId)) {
-    void sendText(chatId, "Thread already has an active turn. Wait for it to finish or send /interrupt.", {
+async function startPromptTurn(chatId, prompt, identity) {
+  const current = await threadStore.getChat(chatId);
+  if (current?.pendingQuestion) {
+    await answerQuestion(chatId, prompt, identity);
+    await threadStore.recordMessage(identity.messageKey);
+    return;
+  }
+  if (current?.pendingReply) {
+    await sendText(chatId, "The previous reply is retained because delivery was not confirmed. Its initiating human can retrieve it with /status before starting another turn.");
+    return;
+  }
+  if (activeTurnTasks.has(chatId) || current?.pendingAdmission || current?.activeTurnId) {
+    startTrackedTurnStream(chatId);
+    await sendText(chatId, "This chat has a pending turn. Use /status or /interrupt.", {
       replyMarkup: activeTurnKeyboard()
-    }).catch((error) => {
-      console.error("failed to report active Telegram bridge turn", error);
     });
     return;
   }
-
-  const controller = new AbortController();
-  const task = { controller };
-  activeTurnTasks.set(chatId, task);
-  void runPrompt(chatId, prompt, { signal: controller.signal, actorId: turnActor(identity) })
-    .catch((error) => {
-      console.error("failed to run Telegram bridge prompt", error);
-    })
-    .finally(() => {
-      if (activeTurnTasks.get(chatId) === task) {
-        activeTurnTasks.delete(chatId);
-      }
-    });
+  if (!prompt.trim()) return sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
+  const actorId = turnActor(identity);
+  if (!actorId || !identity.messageKey) throw new ApprovalOwnershipError("turn needs its initiating human and message");
+  const request = {
+    prompt, input_summary: prompt.slice(0, 200), model: current?.model || config.model,
+    mode: config.mode, allow_shell: config.allowShell, trust_mode: config.trustMode,
+    auto_approve: config.autoApprove
+  };
+  const operationKey = supportsAdmissionRecovery()
+    ? createHash("sha256").update(identity.messageKey).digest("hex") : null;
+  if (operationKey) request.operation_key = operationKey;
+  const replay = await threadStore.recordMessage(identity.messageKey, chatId, { pendingAdmission: {
+    botAccountId, runtimeUrl: config.runtimeUrl, actorId, identity: {
+      chatId, chatType: identity.chatType, userId: identity.userId,
+      username: identity.username, isBot: identity.isBot
+    }, messageKey: identity.messageKey, request, operationKey,
+    threadId: current?.threadId || null, submitted: false, sinceSeq: null,
+    threadRequest: {
+      model: request.model, workspace: config.workspace, mode: request.mode,
+      allow_shell: request.allow_shell, trust_mode: request.trust_mode,
+      auto_approve: request.auto_approve, archived: false,
+      system_prompt: "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+    }
+  } });
+  if (!replay) startTrackedTurnStream(chatId);
 }
 
 function abortActiveTurnStreams() {
-  for (const task of activeTurnTasks.values()) {
-    task.controller?.abort();
-  }
+  for (const task of activeTurnTasks.values()) task.controller?.abort();
 }
 
 async function clearActiveTurn(chatId) {
   await threadStore.patchChat(chatId, {
-    activeTurnId: null,
-    updatedAt: new Date().toISOString()
-  }).catch((error) => {
-    console.error("failed to clear Telegram bridge active turn", error);
+    activeTurnId: null, activeMessageKey: null, activeIdentity: null, activeBotAccountId: null, activeRuntimeUrl: null,
+    responseText: "", turnTerminal: false, pendingQuestion: null, updatedAt: new Date().toISOString()
   });
 }
 
-function startTrackedTurnStream(chatId, threadId, turnId, sinceSeq) {
-  if (activeTurnTasks.has(chatId)) return false;
+function recoveryAllowed(chatId, state) {
+  const pending = state?.pendingAdmission;
+  const identity = pending?.identity || state?.activeIdentity || state?.authorizedIdentity;
+  const accountId = pending?.botAccountId || state?.activeBotAccountId;
+  const runtimeUrl = pending?.runtimeUrl || state?.activeRuntimeUrl;
+  return (!runtimeUrl || runtimeUrl === config.runtimeUrl) && (!accountId || accountId === botAccountId) && identity && identity.chatId === chatId && !identity.isBot &&
+    ["private", "group", "supergroup"].includes(identity.chatType) &&
+    (!isGroupChat(identity.chatType) || config.allowGroups) &&
+    isAllowed(identity, config.allowlist, config.allowUnlisted);
+}
 
+function supportsAdmissionRecovery() {
+  return runtimeCapabilities.turn_operation_idempotency === true && runtimeCapabilities.turn_operation_lookup === true;
+}
+
+function startTrackedTurnStream(chatId) {
+  if (stopping || activeTurnTasks.has(chatId)) return false;
   const controller = new AbortController();
   const task = { controller };
   activeTurnTasks.set(chatId, task);
-  void streamTurnEvents(chatId, threadId, turnId, sinceSeq, { signal: controller.signal })
-    .catch((error) => {
-      console.error("failed to stream Telegram bridge turn", error);
-    })
-    .finally(async () => {
-      if (activeTurnTasks.get(chatId) === task) {
-        activeTurnTasks.delete(chatId);
+  void (async () => {
+    while (!stopping && !controller.signal.aborted) {
+      const state = await threadStore.getChat(chatId);
+      if (!recoveryAllowed(chatId, state)) return;
+      if (!state?.pendingAdmission && !state?.activeTurnId) return;
+      try {
+        if (await runPrompt(chatId, { signal: controller.signal })) return;
+        const pending = (await threadStore.getChat(chatId))?.pendingAdmission;
+        if (pending?.submitted && (!pending.operationKey || !supportsAdmissionRecovery())) return;
+      } catch (error) {
+        console.error("Telegram turn recovery deferred; original request retained", error);
       }
-      if (!stopping) {
-        await clearActiveTurn(chatId);
-      }
-    });
+      if (!stopping && !controller.signal.aborted) await delay(2000);
+    }
+  })().catch((error) => {
+    console.error("Telegram recovery stopped; persisted state retained", error);
+  }).finally(() => {
+    if (activeTurnTasks.get(chatId) === task) activeTurnTasks.delete(chatId);
+  });
   return true;
 }
 
@@ -491,103 +567,48 @@ function turnActor(identity) {
   return identity?.userId && !identity.isBot ? `telegram-user:${identity.userId}` : "";
 }
 
-async function runPrompt(chatId, prompt, options = {}) {
-  if (!prompt.trim()) {
-    await sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
-    return;
-  }
-  if (!options.actorId) throw new ApprovalOwnershipError("turn needs its initiating human");
-  const state = await ensureThread(chatId);
-  const effectiveModel = state?.model || config.model;
-  const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
-  const activeBlock = activeTurnBlock(detail, state);
-  if (activeBlock) {
-    await threadStore.patchChat(chatId, {
-      activeTurnId: activeBlock.turnId,
+async function runPrompt(chatId, options = {}) {
+  let state = await threadStore.getChat(chatId);
+  if (!recoveryAllowed(chatId, state)) return true;
+  let pending = state?.pendingAdmission;
+  if (pending) {
+    const admission = await admitTurn({
+      runtimeJson, pending, capabilities: runtimeCapabilities,
+      persistPending: (value) => threadStore.patchChat(chatId, { pendingAdmission: value }),
+      ensureThread: async (threadRequest) => (await ensureThread(chatId, { threadRequest })).threadId
+    });
+    pending = admission.pending;
+    const turn = admission.turn;
+    if (!turn) {
+      if (admission.blocked && !pending.submitted) {
+        await threadStore.patchChat(chatId, { pendingAdmission: null });
+        await sendText(chatId, "Thread already has an active turn. Wait for it to finish or send /interrupt.", { replyMarkup: activeTurnKeyboard() });
+        return true;
+      }
+      return admission.uncertain === true;
+    }
+    await threadStore.recordTurnOrigin(chatId, pending.threadId, turn.id, pending.actorId);
+    state = await threadStore.patchChat(chatId, {
+      pendingAdmission: null, activeTurnId: turn.id, activeMessageKey: pending.messageKey,
+      activeIdentity: pending.identity, activeBotAccountId: pending.botAccountId,
+      activeRuntimeUrl: pending.runtimeUrl,
+      lastSeq: pending.sinceSeq, responseText: "", turnTerminal: false,
       updatedAt: new Date().toISOString()
     });
-    await sendText(chatId, activeBlock.message, { replyMarkup: activeTurnKeyboard() });
-    return;
+    await sendTurnText(chatId, `Started turn ${turn.id}`, { replyMarkup: activeTurnKeyboard() });
   }
-  if (state.activeTurnId) {
-    await threadStore.patchChat(chatId, { activeTurnId: null });
+  if (!state?.activeTurnId) return true;
+  if (state.turnTerminal || await streamTurnEvents(chatId, state.threadId, state.activeTurnId, Number(state.lastSeq || 0), options)) {
+    await clearActiveTurn(chatId);
+    return true;
   }
-  const sinceSeq = Number(detail.latest_seq || state.lastSeq || 0);
-
-  const turnResponse = await runtimeJson(
-    `/v1/threads/${encodeURIComponent(state.threadId)}/turns`,
-    {
-      method: "POST",
-      body: {
-        prompt,
-        input_summary: prompt.slice(0, 200),
-        model: effectiveModel,
-        mode: config.mode,
-        allow_shell: config.allowShell,
-        trust_mode: config.trustMode,
-        auto_approve: config.autoApprove
-      }
-    }
-  );
-
-  const turnId = turnResponse.turn?.id;
-  // A turn the Runtime accepted keeps streaming even when its origin cannot be
-  // recorded; its approvals then fail closed and are decided from the TUI.
-  if (turnId && options.actorId) {
-    await threadStore.recordTurnOrigin(chatId, state.threadId, turnId, options.actorId);
-  }
-  await threadStore.patchChat(chatId, {
-    activeTurnId: turnId || null,
-    lastSeq: sinceSeq,
-    updatedAt: new Date().toISOString()
-  });
-  await sendTurnText(chatId, `Started turn ${turnId || "(unknown)"}`, {
-    replyMarkup: activeTurnKeyboard()
-  });
-
-  try {
-    await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq, options);
-  } finally {
-    if (!stopping) {
-      await clearActiveTurn(chatId);
-    }
-  }
+  return false;
 }
 
 async function reattachActiveTurns() {
   for (const [chatId, state] of threadStore.listChats()) {
-    if (!state?.threadId || !state.activeTurnId) continue;
-    const identity = state.authorizedIdentity;
-    // Legacy state has no verified sender provenance. Never recover delivery
-    // under a previous allowlist or group policy, even to report completion.
-    if (!identity || identity.chatId !== chatId || identity.isBot ||
-        !["private", "group", "supergroup"].includes(identity.chatType) ||
-        (isGroupChat(identity.chatType) && !config.allowGroups) ||
-        !isAllowed(identity, config.allowlist, config.allowUnlisted)) continue;
-
-    const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
-    const runningTurn = latestRunningTurn(detail);
-    if (!runningTurn) {
-      await threadStore.patchChat(chatId, {
-        activeTurnId: null,
-        lastSeq: Number(detail.latest_seq || state.lastSeq || 0),
-        updatedAt: new Date().toISOString()
-      });
-      await sendText(chatId, `Bridge restarted. No active turn remains for ${state.threadId}.`);
-      continue;
-    }
-
-    const turnId = runningTurn.id || state.activeTurnId;
-    const sinceSeq = Number(state.lastSeq || 0);
-    await threadStore.patchChat(chatId, {
-      activeTurnId: turnId,
-      updatedAt: new Date().toISOString()
-    });
-    await sendTurnText(
-      chatId,
-      `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
-    );
-    startTrackedTurnStream(chatId, state.threadId, turnId, sinceSeq);
+    if ((!state?.pendingAdmission && !state?.activeTurnId) || !recoveryAllowed(chatId, state)) continue;
+    startTrackedTurnStream(chatId);
   }
 }
 
@@ -604,7 +625,8 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
   } else {
     options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   }
-  let responseText = "";
+  let responseText = (await threadStore.getChat(chatId))?.responseText || "";
+  let turnTerminal = false;
   let latestSeq = sinceSeq;
   let flushedSeq = sinceSeq;
   let lastSeqFlushAt = 0;
@@ -615,7 +637,7 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
   async function flushLastSeq(force = false) {
     if (latestSeq <= flushedSeq) return;
     if (!force && Date.now() - lastSeqFlushAt < LAST_SEQ_FLUSH_INTERVAL_MS) return;
-    await threadStore.patchChat(chatId, { lastSeq: latestSeq });
+    await threadStore.patchChat(chatId, { lastSeq: latestSeq, responseText, turnTerminal });
     flushedSeq = latestSeq;
     lastSeqFlushAt = Date.now();
   }
@@ -654,7 +676,6 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       if (!event.data) continue;
       const record = JSON.parse(event.data);
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await flushLastSeq(false);
 
       if (turnId && record.turn_id && record.turn_id !== turnId) continue;
       const lifecycleStatus =
@@ -664,7 +685,7 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       const stopTypingEvent =
         record.event === "turn.completed" ||
         ["failed", "canceled", "interrupted"].includes(lifecycleStatus);
-      if (typingPaused && record.event !== "approval.required" && !stopTypingEvent) {
+      if (typingPaused && !["approval.required", "user_input.required"].includes(record.event) && !stopTypingEvent) {
         typingPaused = false;
         void tickTyping();
       }
@@ -676,6 +697,22 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
           await sendTurnText(chatId, responseText.slice(0, config.maxReplyChars));
           responseText = responseText.slice(config.maxReplyChars);
           sentProgressAt = now;
+        }
+      }
+
+      if (record.event === "user_input.required") {
+        typingPaused = true;
+        const input = record.payload || {};
+        const inputId = input.input_id || input.id;
+        if (inputId && input.request) {
+          await threadStore.patchChat(chatId, { pendingQuestion: { inputId, request: input.request, turnId } });
+          await sendTurnText(chatId, `${questionText(input.request)}\nUse /answer followed by your response.`, { replyMarkup: activeTurnKeyboard() });
+        }
+      }
+      if (["user_input.answered", "user_input.canceled"].includes(record.event)) {
+        const state = await threadStore.getChat(chatId);
+        if (state?.pendingQuestion?.inputId === (record.payload?.input_id || record.payload?.id)) {
+          await threadStore.patchChat(chatId, { pendingQuestion: null });
         }
       }
 
@@ -732,28 +769,31 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
         const error = turn.error ? `\n${turn.error}` : "";
         if (status !== "completed") {
           await sendTurnText(chatId, `Turn ${status}.${error}`.trim(), {
-            replyMarkup: controlKeyboard()
+            replyMarkup: controlKeyboard(), retain: true
           });
         } else {
           await sendTurnText(chatId, responseText.trim() || "Turn completed.", {
-            replyMarkup: controlKeyboard()
+            replyMarkup: controlKeyboard(), retain: true
           });
         }
-        return;
+        turnTerminal = true;
+        return true;
       }
 
       if (record.event === "turn.lifecycle") {
         if (["failed", "canceled", "interrupted"].includes(lifecycleStatus)) {
           typingPaused = true;
-          await sendTurnText(chatId, `Turn ${lifecycleStatus}.`, { replyMarkup: controlKeyboard() });
-          return;
+          await sendTurnText(chatId, `Turn ${lifecycleStatus}.`, { replyMarkup: controlKeyboard(), retain: true });
+          turnTerminal = true;
+          return true;
         }
       }
+      await flushLastSeq(false);
     }
   } catch (error) {
     if (error.name === "AbortError") {
       if (timedOut) {
-        await sendTurnText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+        await sendTurnText(chatId, "Observation timed out; the bridge will reconnect to the same turn.");
       } else if (!stopping) {
         await sendTurnText(chatId, "Turn stream aborted.");
       }
@@ -768,7 +808,47 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
   }
 }
 
-async function sendStatus(chatId) {
+async function answerQuestion(chatId, text, identity) {
+  const state = await threadStore.getChat(chatId);
+  if (!state?.threadId || !state.activeTurnId || !recoveryAllowed(chatId, state) ||
+      threadStore.turnOrigin(chatId, state.threadId, state.activeTurnId)?.actorId !== turnActor(identity)) {
+    await sendText(chatId, "Only the recorded initiating human can answer this turn's question.");
+    return;
+  }
+  const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
+  const inputs = (detail.pending_user_inputs || []).filter((input) => input.turn_id === state.activeTurnId);
+  const input = state.pendingQuestion
+    ? inputs.find((candidate) => (candidate.id || candidate.input_id) === state.pendingQuestion.inputId)
+    : inputs.length === 1 ? inputs[0] : null;
+  const inputId = input?.id || input?.input_id;
+  if (!inputId) {
+    await threadStore.patchChat(chatId, { pendingQuestion: null });
+    await sendText(chatId, "No matching question is waiting in this turn.");
+    return;
+  }
+  const answers = parseQuestionAnswers(input.request, text);
+  if (!answers) {
+    await sendText(chatId, questionText(input.request));
+    return;
+  }
+  await runtimeJson(`/v1/user-input/${encodeURIComponent(state.threadId)}/${encodeURIComponent(inputId)}`, {
+    method: "POST", body: { answers }
+  });
+  if ((await threadStore.getChat(chatId))?.pendingQuestion?.inputId === inputId) {
+    await threadStore.patchChat(chatId, { pendingQuestion: null });
+  }
+  await sendText(chatId, "Answer sent.");
+}
+
+async function sendStatus(chatId, identity) {
+  const state = await threadStore.getChat(chatId);
+  const reply = state?.pendingReply;
+  if (reply && recoveryAllowed(chatId, { pendingAdmission: reply }) && reply.actorId === turnActor(identity)) {
+    await sendText(chatId, `Retained reply (the earlier delivery may have succeeded):\n\n${reply.text}`, { replyMarkup: controlKeyboard() });
+    if ((await threadStore.getChat(chatId))?.pendingReply?.key === reply.key) {
+      await threadStore.patchChat(chatId, { pendingReply: null });
+    }
+  }
   const [health, runtimeInfo, workspace] = await Promise.all([
     runtimeJson("/health", { auth: false }),
     runtimeJson("/v1/runtime/info"),
@@ -784,7 +864,11 @@ async function sendStatus(chatId) {
       `workspace=${workspace.workspace}`,
       `git_repo=${workspace.git_repo}`,
       workspace.branch ? `branch=${workspace.branch}` : "",
-      `staged=${workspace.staged} unstaged=${workspace.unstaged} untracked=${workspace.untracked}`
+      `staged=${workspace.staged} unstaged=${workspace.unstaged} untracked=${workspace.untracked}`,
+      state?.pendingAdmission ? "The original prompt is retained while Engine admission is reconciled." : "",
+      state?.pendingAdmission?.submitted && !state.pendingAdmission.operationKey ? "This Engine cannot reconcile the uncertain admission; inspect the Runtime before repeating the prompt." : "",
+      state?.activeTurnId ? `turn=${state.activeTurnId}` : "",
+      state?.pendingQuestion ? questionText(state.pendingQuestion.request) : ""
     ]
       .filter(Boolean)
       .join("\n"),
@@ -792,8 +876,11 @@ async function sendStatus(chatId) {
   );
 }
 
-async function sendThreads(chatId) {
-  const threads = await runtimeJson("/v1/threads/summary?limit=8&include_archived=true");
+async function sendThreads(chatId, identity) {
+  const state = await threadStore.getChat(chatId);
+  const threads = isGroupChat(identity?.chatType)
+    ? state?.threadId ? [{ id: state.threadId }] : []
+    : await runtimeJson("/v1/threads/summary?limit=8&include_archived=true");
   if (!threads.length) {
     await sendText(chatId, "No runtime threads yet.", { replyMarkup: controlKeyboard() });
     return;
@@ -818,14 +905,23 @@ async function sendThreads(chatId) {
   );
 }
 
-async function resumeThread(chatId, args) {
+async function resumeThread(chatId, args, identity) {
+  const existing = await threadStore.getChat(chatId);
+  if (existing?.pendingAdmission || existing?.activeTurnId || existing?.pendingReply) {
+    await sendText(chatId, "This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
+    return;
+  }
   const threadId = args.trim();
   if (!threadId) {
     await sendText(chatId, "Usage: /resume <thread_id>");
     return;
   }
+  if (isGroupChat(identity?.chatType) && (threadId !== existing?.threadId ||
+      !(existing?.turnOrigins || []).some((origin) => origin.threadId === threadId && origin.actorId === turnActor(identity)))) {
+    await sendText(chatId, "Group chats can only resume their own thread through a recorded initiating human.");
+    return;
+  }
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
-  const existing = await threadStore.getChat(chatId);
   await threadStore.setChat(chatId, {
     ...preservedChatStateFields(existing),
     threadId,
@@ -836,8 +932,17 @@ async function resumeThread(chatId, args) {
   await sendText(chatId, `Resumed thread ${threadId}`, { replyMarkup: controlKeyboard() });
 }
 
-async function interruptActiveTurn(chatId) {
+async function interruptActiveTurn(chatId, identity) {
   const state = await threadStore.getChat(chatId);
+  if (state?.pendingAdmission) {
+    if (state.pendingAdmission.actorId !== turnActor(identity)) {
+      await sendText(chatId, "Only the initiating human can control this pending turn.");
+      return;
+    }
+    startTrackedTurnStream(chatId);
+    await sendText(chatId, "The original prompt's admission is still being reconciled. Use /status, then /interrupt once its turn is known.");
+    return;
+  }
   if (!state?.threadId) {
     await sendText(chatId, "No runtime thread recorded for this chat.");
     return;
@@ -847,6 +952,10 @@ async function interruptActiveTurn(chatId) {
   const turnId = state.activeTurnId || runningTurn?.id;
   if (!turnId) {
     await sendText(chatId, "No active turn recorded for this chat.");
+    return;
+  }
+  if (threadStore.turnOrigin(chatId, state.threadId, turnId)?.actorId !== turnActor(identity)) {
+    await sendText(chatId, "Only the recorded initiating human can interrupt this turn here. Use the Runtime for an unbound turn.");
     return;
   }
   await runtimeJson(
@@ -959,8 +1068,21 @@ async function sendTypingAction(chatId) {
 }
 
 async function sendTurnText(chatId, text, options = {}) {
+  let reply;
+  if (options.retain) {
+    const state = await threadStore.getChat(chatId);
+    reply = {
+      key: createHash("sha256").update(JSON.stringify([state.threadId, state.activeTurnId, text])).digest("hex"),
+      text, identity: state.activeIdentity, actorId: turnActor(state.activeIdentity),
+      botAccountId: state.activeBotAccountId, runtimeUrl: state.activeRuntimeUrl
+    };
+    await threadStore.patchChat(chatId, { pendingReply: reply, turnTerminal: true });
+  }
   try {
     await sendText(chatId, text, options);
+    if (reply && (await threadStore.getChat(chatId))?.pendingReply?.key === reply.key) {
+      await threadStore.patchChat(chatId, { pendingReply: null });
+    }
   } catch (error) {
     console.error("failed to send Telegram turn update", error);
   }
@@ -1002,7 +1124,7 @@ async function telegramApiOnce(method, body = {}, options = {}) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    signal: options.signal
+    signal: options.signal || AbortSignal.timeout(method === "getUpdates" ? (config.pollTimeoutSeconds + 15) * 1000 : 15000)
   });
   const payload = await readJsonSafe(response);
   if (!response.ok || payload?.ok === false) {

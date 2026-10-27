@@ -21,13 +21,21 @@ and the web and MCP calls it made.
 
 [Website](https://codewhale.net) · [Documentation](docs/README.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
-[简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Tiếng Việt](README.vi.md) · [Bahasa Indonesia](README.id.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [Русский](README.ru.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [繁體中文](README.zh-TW.md) · [हिन्दी](README.hi.md) · [Türkçe](README.tr.md) · [Italiano](README.it.md) · [Polski](README.pl.md) · [العربية](README.ar.md) · [Català](README.ca.md)
+[简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja-JP.md) · [Tiếng Việt](docs/i18n/README.vi.md) · [Bahasa Indonesia](docs/i18n/README.id.md) · [한국어](docs/i18n/README.ko-KR.md) · [Español](docs/i18n/README.es-419.md) · [Português](docs/i18n/README.pt-BR.md) · [Русский](docs/i18n/README.ru.md) · [Українська](docs/i18n/README.uk.md) · [Français](docs/i18n/README.fr.md) · [Deutsch](docs/i18n/README.de.md) · [繁體中文](docs/i18n/README.zh-TW.md) · [हिन्दी](docs/i18n/README.hi.md) · [Türkçe](docs/i18n/README.tr.md) · [Italiano](docs/i18n/README.it.md) · [Polski](docs/i18n/README.pl.md) · [العربية](docs/i18n/README.ar.md) · [Català](docs/i18n/README.ca.md)
 
 <img src="web/public/codewhale-tui-0102-demo.png" alt="A Codewhale terminal session" width="760">
 
 <sub>A 0.10.2 development build with a scripted test model, in Full Access inside a throwaway workspace. The edit, three tests and a sub-agent review ran for real.</sub>
 
 </div>
+
+<p align="center">
+  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
+    <img src="web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter — +30% DeepSeek v4.1 Flash usage" width="760">
+  </a>
+</p>
+
+[View the Codewhale × OrcaRouter offer](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67). Codewhale earns a referral fee from OrcaRouter.
 
 ## Install
 
@@ -80,7 +88,7 @@ Fix the failing tests and explain what changed.
 Read-only commands run straight away. For any other shell command Codewhale
 asks first: `y` runs it once, `a` allows commands like it for the rest of the
 conversation, `n` refuses. `/undo` takes back your last request and its file
-changes (in 0.10.1, run `/trust on` first). `/help` lists commands and keys.
+changes. `/help` lists commands and keys.
 
 For scripts and CI, `codewhale exec` runs one task without the interface. By
 default, `--auto` uses Full Access: tools run without asking, shell commands
@@ -143,8 +151,8 @@ ChatGPT plan instead of an API key (experimental). See
 
 `/receipts`, or `codewhale receipts --last` after you quit, lists the files
 changed, commands run, web and MCP calls, agents started, approvals and who
-gave them, and failures. `/undo` takes back your last request; in 0.10.1 it
-needs `/trust on` for files and steps back one tool call at a time. `/restore`
+gave them, and failures. `/undo` takes back your last request and the files it
+changed, in one step and without trust mode. `/restore`
 rolls the whole workspace back to an earlier snapshot; because that overwrites
 later edits, it needs `/trust on` or Full Access. See [Receipts](docs/RECEIPTS.md).
 
@@ -183,10 +191,10 @@ Connect [MCP servers](docs/MCP.md), add [skills](docs/SKILLS.md) and
 [plugins](docs/PLUGINS.md), and run [hooks](docs/HOOKS.md) on session and tool
 events. Code mode (experimental, on by default) lets the model write one
 `execute_tools` program that calls several MCP and plugin tools; each call
-still meets your approval rules and keeps its receipt. The bundled Computer
+still meets your approval rules and keeps its receipt. The independently installed Computer
 Use plugin (experimental, macOS only) can observe
 and operate other apps. It stays off until you review its access and enable it
-([guide](crates/tui/plugins/computer-use/README.md)).
+([guide](https://github.com/codewhale-hq/codewhale-cu-plugin)).
 
 ## Ways to run it
 

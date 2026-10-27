@@ -23,8 +23,7 @@ export default workflow({
               "prompt": "Inspect targeted tests and identify missing verification.",
               "agent_type": "verifier",
               "mode": "read_only",
-              "file_scope": ["crates", "tests"],
-              "budget": { "max_steps": 4, "timeout_secs": 300 }
+              "file_scope": ["crates", "tests"]
             }
           },
           {

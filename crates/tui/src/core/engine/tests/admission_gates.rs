@@ -423,7 +423,7 @@ fn oversized_tool_errors_are_bounded_before_fanout() {
                     assert!(published.contains("FIRST"), "the head survives");
                     assert!(published.contains("LAST"), "the tail survives");
                     assert!(
-                        published.contains(crate::tools::truncate::SPILLOVER_RECOVERY_HINT),
+                        published.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT),
                         "the omitted range stays recoverable"
                     );
                 }

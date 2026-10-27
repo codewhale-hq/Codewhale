@@ -12,6 +12,7 @@ use crate::tools::user_input::{
 };
 use crate::tui::menu_style;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
 fn modal_block(title: &str) -> Block<'static> {
@@ -28,6 +29,13 @@ fn modal_block(title: &str) -> Block<'static> {
 
 fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
     render_modal_surface(area, popup_area, buf);
+}
+
+fn hint_label(locale: Locale, id: MessageId) -> Span<'static> {
+    Span::styled(
+        format!(" {}", tr(locale, id)),
+        Style::default().fg(palette::TEXT_MUTED),
+    )
 }
 
 fn push_option_lines(
@@ -73,6 +81,7 @@ enum InputMode {
 pub struct UserInputView {
     tool_id: String,
     request: UserInputRequest,
+    locale: Locale,
     question_index: usize,
     selected: usize,
     mode: InputMode,
@@ -91,10 +100,11 @@ pub struct UserInputView {
 }
 
 impl UserInputView {
-    pub fn new(tool_id: impl Into<String>, request: UserInputRequest) -> Self {
+    pub fn new(tool_id: impl Into<String>, request: UserInputRequest, locale: Locale) -> Self {
         Self {
             tool_id: tool_id.into(),
             request,
+            locale,
             question_index: 0,
             selected: 0,
             mode: InputMode::Selecting,
@@ -446,6 +456,7 @@ impl ModalView for UserInputView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let question = self.current_question();
+        let locale = self.locale;
         let total = self.request.questions.len();
         let header = format!(
             " {} ({}/{}) ",
@@ -456,7 +467,7 @@ impl ModalView for UserInputView {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            tr(locale, MessageId::UserInputActionRequired),
             Style::default().fg(palette::WHALE_ACTION).bold(),
         )]));
         lines.push(Line::from(vec![
@@ -465,7 +476,12 @@ impl ModalView for UserInputView {
                 Style::default().fg(palette::TEXT_PRIMARY).bold(),
             ),
             Span::styled(
-                format!("  Question {} of {}", self.question_index + 1, total),
+                format!(
+                    "  {}",
+                    tr(locale, MessageId::UserInputQuestionProgress)
+                        .replace("{current}", &(self.question_index + 1).to_string())
+                        .replace("{total}", &total.to_string())
+                ),
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]));
@@ -497,8 +513,8 @@ impl ModalView for UserInputView {
                 &mut lines,
                 self.selected == other_index,
                 other_number,
-                "Other".to_string(),
-                "Type a custom response".to_string(),
+                tr(locale, MessageId::UserInputOtherLabel).into_owned(),
+                tr(locale, MessageId::UserInputOtherDescription).into_owned(),
                 false,
             );
         }
@@ -512,8 +528,9 @@ impl ModalView for UserInputView {
                 &mut lines,
                 self.selected == confirm_index,
                 confirm_number,
-                "Confirm selection".to_string(),
-                format!("Submit {} selected", self.multi_pending.len()),
+                tr(locale, MessageId::UserInputConfirmLabel).into_owned(),
+                tr(locale, MessageId::UserInputConfirmDescription)
+                    .replace("{count}", &self.multi_pending.len().to_string()),
                 false,
             );
         }
@@ -522,13 +539,13 @@ impl ModalView for UserInputView {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled(
-                    "> Custom response:",
+                    format!("> {}", tr(locale, MessageId::UserInputCustomPrompt)),
                     Style::default().fg(palette::TEXT_PRIMARY).bold(),
                 ),
                 Span::raw(" "),
                 Span::styled(
                     if self.other_input.is_empty() {
-                        "(type your response)".to_string()
+                        tr(locale, MessageId::UserInputCustomPlaceholder).into_owned()
                     } else {
                         self.other_input.clone()
                     },
@@ -541,17 +558,17 @@ impl ModalView for UserInputView {
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
                 Span::styled("Enter", Style::default().fg(palette::WHALE_ACTION).bold()),
-                Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
+                hint_label(locale, MessageId::UserInputHintSubmit),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::WHALE_ACTION).bold()),
-                Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+                hint_label(locale, MessageId::UserInputHintBack),
             ]));
         } else {
             let opt_count = self.option_count();
             let quick_pick_label = if opt_count <= 9 {
                 format!("1-{opt_count}")
             } else {
-                "digit".to_string()
+                tr(locale, MessageId::UserInputHintDigit).into_owned()
             };
             if self.is_multi_select() {
                 lines.push(Line::from(vec![
@@ -559,19 +576,19 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_ACTION).bold(),
                     ),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintMove),
                     Span::raw("  "),
                     Span::styled("Space", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" toggle", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintToggle),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" select/confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintSelectConfirm),
                     Span::raw("  "),
                     Span::styled("←/h", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintBack),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintCancel),
                 ]));
             } else {
                 lines.push(Line::from(vec![
@@ -579,19 +596,19 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_ACTION).bold(),
                     ),
-                    Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintQuickPick),
                     Span::raw("  "),
                     Span::styled("↑/↓", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintMove),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintConfirm),
                     Span::raw("  "),
                     Span::styled("←/h", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintBack),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_ACTION).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    hint_label(locale, MessageId::UserInputHintCancel),
                 ]));
             }
         }
@@ -740,6 +757,7 @@ mod tests {
                     multi_select: false,
                 }],
             },
+            Locale::En,
         )
     }
 
@@ -949,6 +967,7 @@ mod tests {
                     },
                 ],
             },
+            Locale::En,
         )
     }
 

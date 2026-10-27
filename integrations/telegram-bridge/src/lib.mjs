@@ -84,10 +84,13 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
 }
 
 export function parseCommand(text) {
+  const answer = String(text || "").trim().match(/^\/answer(?:@\w+)?(?:\s+([\s\S]*))?$/i);
+  if (answer) return { name: "answer", args: (answer[1] || "").trim() };
   return coreParseCommand(text, { stripBotMention: true });
 }
 
 export function commandAction(command) {
+  if (command.name === "answer") return { kind: "answer", text: command.args };
   return coreCommandAction(command, { allowMenu: true, allowStart: true });
 }
 
@@ -404,29 +407,7 @@ export function telegramSendRetryDelayMs(error, attempt = 0) {
     }
     return 3000;
   }
-  if (isTransientTelegramSendError(error) && attempt < 2) {
-    return attempt === 0 ? 1000 : 2000;
-  }
   return null;
-}
-
-function isTransientTelegramSendError(error) {
-  if (!error || error.errorCode) return false;
-  const name = String(error.name || "");
-  if (name === "AbortError" || name === "TimeoutError") return false;
-  if (error instanceof TypeError) return true;
-
-  const code = String(error.code || error.cause?.code || "");
-  if (["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ETIMEDOUT"].includes(code)) {
-    return true;
-  }
-
-  const message = String(error.message || "").toLowerCase();
-  return (
-    message.includes("fetch failed") ||
-    message.includes("network") ||
-    message.includes("socket hang up")
-  );
 }
 
 export function looksLikePollingConflict(error) {
@@ -578,6 +559,7 @@ export function helpText() {
     "/compact - compact the current thread",
     "/allow <approval_id> [remember] - approve a pending tool call",
     "/deny <approval_id> - deny a pending tool call",
+    "/answer <response> - answer the current agent question",
     "",
     "Anything else is sent as a CodeWhale prompt."
   ].join("\n");

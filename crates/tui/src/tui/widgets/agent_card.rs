@@ -18,12 +18,12 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::fleet::role::public_role_label;
 use crate::todo_snapshot::{TodoCardProjection, card_omission_line, card_todo_projection};
 use crate::tools::subagent::MailboxMessage;
 use crate::tools::todo::TodoListSnapshot;
 use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph};
+use codewhale_agent_contract::role::public_role_label;
 use codewhale_palette as palette;
 use unicode_width::UnicodeWidthStr;
 
@@ -978,8 +978,10 @@ mod tests {
     #[test]
     fn fanout_started_claims_seeded_pending_slot_without_growing_grid() {
         let mut card = FanoutCard::new("fanout").with_workers(["task:a", "task:b"]);
-        let started =
-            MailboxMessage::started("agent_live", crate::tools::subagent::FleetRole::Worker);
+        let started = MailboxMessage::started(
+            "agent_live",
+            codewhale_agent_contract::role::FleetRole::Worker,
+        );
 
         assert!(apply_to_fanout(&mut card, &started));
 
@@ -999,7 +1001,8 @@ mod tests {
     #[test]
     fn fanout_apply_transitions_worker_through_lifecycle() {
         let mut card = FanoutCard::new("fanout").with_workers(["w_1"]);
-        let started = MailboxMessage::started("w_1", crate::tools::subagent::FleetRole::Worker);
+        let started =
+            MailboxMessage::started("w_1", codewhale_agent_contract::role::FleetRole::Worker);
         apply_to_fanout(&mut card, &started);
         assert_eq!(card.workers[0].status, AgentLifecycle::Running);
 
@@ -1044,7 +1047,10 @@ mod tests {
         let mut card = DelegateCard::new("agent_int", "general");
         apply_to_delegate(
             &mut card,
-            &MailboxMessage::started("agent_int", crate::tools::subagent::FleetRole::Worker),
+            &MailboxMessage::started(
+                "agent_int",
+                codewhale_agent_contract::role::FleetRole::Worker,
+            ),
         );
         assert_eq!(card.status, AgentLifecycle::Running);
 
@@ -1067,11 +1073,11 @@ mod tests {
         let mut card = FanoutCard::new("fanout").with_workers(["w_1", "w_2"]);
         apply_to_fanout(
             &mut card,
-            &MailboxMessage::started("w_1", crate::tools::subagent::FleetRole::Worker),
+            &MailboxMessage::started("w_1", codewhale_agent_contract::role::FleetRole::Worker),
         );
         apply_to_fanout(
             &mut card,
-            &MailboxMessage::started("w_2", crate::tools::subagent::FleetRole::Worker),
+            &MailboxMessage::started("w_2", codewhale_agent_contract::role::FleetRole::Worker),
         );
 
         let msg = MailboxMessage::Interrupted {
@@ -1164,7 +1170,10 @@ mod tests {
         let mut card = DelegateCard::new("agent_child", "implementer");
         apply_to_delegate(
             &mut card,
-            &MailboxMessage::started("agent_child", crate::tools::subagent::FleetRole::Worker),
+            &MailboxMessage::started(
+                "agent_child",
+                codewhale_agent_contract::role::FleetRole::Worker,
+            ),
         );
         assert!(apply_to_delegate(
             &mut card,
@@ -1445,7 +1454,7 @@ mod tests {
     /// the card or its fanout slot, and must not move a settled count.
     #[test]
     fn late_envelopes_never_reopen_a_settled_agent() {
-        let role = || crate::tools::subagent::FleetRole::Worker;
+        let role = || codewhale_agent_contract::role::FleetRole::Worker;
         let mut card = DelegateCard::new("agent_late", "general");
         apply_to_delegate(&mut card, &MailboxMessage::started("agent_late", role()));
         assert!(apply_to_delegate(

@@ -156,9 +156,7 @@ fn toggle_tool_run_expand(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
     let original_idx = app.original_cell_index_for_rendered(rendered_idx);
-    if app.tool_run_start_for_history_index(original_idx) != Some(original_idx)
-        || app.expanded_tool_runs.contains(&original_idx)
-    {
+    if app.tool_run_start_for_history_index(original_idx) != Some(original_idx) {
         return false;
     }
     app.toggle_tool_run_expansion_at(original_idx)
@@ -366,7 +364,7 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
                 let action =
                     app.decide_composer_submit(crate::tui::app::ComposerSubmitChord::Enter);
                 if !matches!(action, crate::tui::app::ComposerSubmitAction::Noop)
-                    && (app.composer_enter_would_submit()
+                    && (app.composer_enter_would_submit(true)
                         || matches!(action, crate::tui::app::ComposerSubmitAction::SendQueuedNow))
                 {
                     app.pending_composer_submit = Some(crate::tui::app::ComposerSubmitChord::Enter);
@@ -1008,15 +1006,15 @@ pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option
     // failed/stale append must fall back to the explicit omission banner. With
     // no process-local handle (for example after restart), the validated
     // artifact remains the durable source of truth.
-    if let Ok(messages) =
-        crate::tools::subagent::load_subagent_transcript_artifact(&app.workspace, agent_id)
+    if let Ok(display) =
+        crate::tools::subagent::load_subagent_transcript_display_artifact(&app.workspace, agent_id)
     {
         let matches_resident_count = payload.as_ref().is_none_or(|resident| {
             resident
                 .get("message_count")
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|count| usize::try_from(count).ok())
-                == Some(messages.len())
+                == Some(display.conversation_count)
                 && resident
                     .get("complete_transcript_artifact")
                     .and_then(|artifact| artifact.get("complete"))
@@ -1024,7 +1022,7 @@ pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option
                     .unwrap_or(true)
         });
         if matches_resident_count {
-            let text = agent_messages_text(&messages);
+            let text = agent_messages_text(&display.messages);
             if !text.trim().is_empty() {
                 return Some(text);
             }
@@ -1403,9 +1401,9 @@ pub(crate) fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<Co
             )
             .with_glyph("⎘"),
         );
-        // Offered only when a `path:line` on the clicked line (or, failing
-        // that, in the cell) resolves to a file inside the workspace. Model
-        // output is not trusted to name files outside it.
+        // Offered only when a `path:line` or bare file path on the clicked
+        // line (or, failing that, in the cell) resolves to a file inside the
+        // workspace. Model output is not trusted to name files outside it.
         if let Some((path, line)) = context_menu_file_reference(app, mouse, cell_index) {
             let shown = path
                 .strip_prefix(&app.workspace)
@@ -1668,7 +1666,8 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
 }
 
 /// The workspace file a right-click on a transcript cell points at: the first
-/// `path:line` on the clicked line, else the first in the cell. Both must be
+/// `path:line` on the clicked line, else a bare path there at line 1, else
+/// the same search over the cell. All must be
 /// regular files inside the workspace, reached without links
 /// (`history::workspace_file`); `open_file_in_editor` checks again.
 fn context_menu_file_reference(
@@ -1683,10 +1682,10 @@ fn context_menu_file_reference(
             .get(point.line_index)
             .map(line_to_plain)
     });
-    if let Some(found) = clicked_line
-        .as_deref()
-        .and_then(|line| crate::tui::history::file_line_reference(line, &app.workspace))
-    {
+    if let Some(found) = clicked_line.as_deref().and_then(|line| {
+        crate::tui::history::file_line_reference(line, &app.workspace)
+            .or_else(|| crate::tui::history::bare_file_reference(line, &app.workspace))
+    }) {
         return Some(found);
     }
     let width = app
@@ -2042,11 +2041,13 @@ fn clear_active_selection(app: &mut App) -> bool {
 /// Branches taken by the Ctrl+C key handler. The order encodes priority and is
 /// the unit-tested contract for #1337 / #1367: a transcript selection always
 /// wins (so users learn that Ctrl+C copies when there's something to copy);
-/// otherwise an active turn is interrupted; otherwise the quit-arm flow runs.
+/// otherwise an active turn is interrupted; otherwise a non-empty composer is
+/// cleared recoverably; otherwise the quit-arm flow runs.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CtrlCDisposition {
     CopySelection,
     CancelTurn,
+    ClearInput,
     ConfirmExit,
     ArmExit,
 }
@@ -2060,6 +2061,8 @@ pub(crate) fn ctrl_c_disposition(app: &App) -> CtrlCDisposition {
         || app.goal_continuation_waiting
     {
         CtrlCDisposition::CancelTurn
+    } else if !app.input.is_empty() {
+        CtrlCDisposition::ClearInput
     } else if app.quit_is_armed() {
         CtrlCDisposition::ConfirmExit
     } else {
@@ -2372,7 +2375,6 @@ mod tests {
         agent_transcript_text, build_context_menu_entries, handle_composer_mouse,
         handle_mouse_event, sidebar_click_action,
     };
-    use crate::config::Config;
     use crate::tui::app::{
         App, SidebarHoverRow, SidebarHoverSection, SidebarRowAction, TuiOptions,
     };
@@ -2383,6 +2385,7 @@ mod tests {
     use crate::tui::views::{ContextMenuAction, ModalKind, ViewEvent};
     use codewhale_models::Role;
     use codewhale_models::{ContentBlock, Message};
+    use codewhale_runtime::config::Config;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };

@@ -1238,13 +1238,19 @@ mod tests {
 
     #[test]
     fn test_parse_basic_csi_u_encoded_key_code_special_keys() {
-        assert_eq!(
-            parse_csi_u_encoded_key_code(b"\x1B[13u").unwrap(),
-            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
-                KeyCode::Enter,
-                KeyModifiers::empty()
-            )))),
-        );
+        for (sequence, modifiers) in [
+            (&b"\x1B[13u"[..], KeyModifiers::empty()),
+            (&b"\x1B[13;2u"[..], KeyModifiers::SHIFT),
+            (&b"\x1B[13;3u"[..], KeyModifiers::ALT),
+        ] {
+            assert_eq!(
+                parse_csi_u_encoded_key_code(sequence).unwrap(),
+                Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    modifiers
+                )))),
+            );
+        }
         assert_eq!(
             parse_csi_u_encoded_key_code(b"\x1B[27u").unwrap(),
             Some(InternalEvent::Event(Event::Key(KeyEvent::new(

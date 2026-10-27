@@ -33,7 +33,8 @@ use codewhale_config::persistence::atomic_write_json;
 use codewhale_config::pricing::{Currency, OfferingPricing, PricingProvenance};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ProviderKind};
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::Config;
 
 const CACHE_SCHEMA_VERSION: u32 = 2;
 const CACHE_FILE: &str = "provider-catalogs.json";
@@ -321,7 +322,10 @@ impl ProviderLivePricingQuote {
             }
             None => payload,
         };
-        Some(format!("sha256:{}", crate::hashing::sha256_hex(payload)))
+        Some(format!(
+            "sha256:{}",
+            codewhale_runtime::hashing::sha256_hex(payload)
+        ))
     }
 
     fn from_pricing(
@@ -334,9 +338,10 @@ impl ProviderLivePricingQuote {
     ) -> Option<Self> {
         let provider_identity = provider_identity.trim();
         let wire_model = wire_model.trim();
-        if crate::cost_status::sanitize_persisted_route_label(provider_identity)
+        if codewhale_runtime::safe_label::sanitize_persisted_route_label(provider_identity)
             != provider_identity
-            || crate::cost_status::sanitize_persisted_route_label(wire_model) != wire_model
+            || codewhale_runtime::safe_label::sanitize_persisted_route_label(wire_model)
+                != wire_model
         {
             return None;
         }
@@ -404,9 +409,10 @@ impl ProviderLivePricingQuote {
         let provider_identity = provider_identity.trim();
         let wire_model = wire_model.trim();
         if self.provider != provider
-            || crate::cost_status::sanitize_persisted_route_label(&self.provider_identity)
-                != self.provider_identity
-            || crate::cost_status::sanitize_persisted_route_label(&self.wire_model)
+            || codewhale_runtime::safe_label::sanitize_persisted_route_label(
+                &self.provider_identity,
+            ) != self.provider_identity
+            || codewhale_runtime::safe_label::sanitize_persisted_route_label(&self.wire_model)
                 != self.wire_model
             || self.endpoint_fingerprint.len() != 64
             || !self
@@ -669,6 +675,22 @@ pub(crate) fn provider_owns_live_catalog(provider: ProviderKind, base_url: &str)
         || codewhale_config::provider_preserves_custom_base_url_model(provider, base_url)
 }
 
+/// Whether a persisted `/models` partition is current evidence for its route.
+///
+/// A route that owns its own roster (a relay, a private endpoint) is
+/// authoritative even when the fetch is old: nothing else describes it. For an
+/// official endpoint the partition competes with the catalog snapshot, and an
+/// old or failed fetch is not evidence about what is served today, so it must
+/// not shadow a fresher roster.
+pub(crate) fn cached_roster_is_authoritative(
+    kind: ProviderKind,
+    base_url: &str,
+    entry: &codewhale_config::catalog::CachedProviderCatalog,
+) -> bool {
+    provider_owns_live_catalog(kind, base_url)
+        || entry.is_fresh(codewhale_config::catalog::now_unix())
+}
+
 /// Whether a catalog scope holds an account-scoped roster that must never be
 /// shared across credentials (#6289).
 ///
@@ -685,7 +707,7 @@ fn is_account_scoped_scope(provider: &str, fingerprint: &str) -> bool {
 
 pub(crate) fn route_is_account_scoped(
     config: &Config,
-    identity: &crate::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
 ) -> bool {
     is_account_scoped_scope(
         &storage_provider(
@@ -815,20 +837,61 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
     if cache.entries.len() > MAX_CACHE_SCOPES || cached_row_count(&cache) > MAX_CACHE_ROWS {
         return None;
     }
-    if !cache.entries.iter().all(|(key, entry)| {
-        let Some((kind, identity)) = entry.provider.split_once(':') else { return false; };
-        ProviderKind::parse(kind).is_some_and(|parsed| parsed.as_str() == kind)
+    let scopes_before = cache.entries.len();
+    cache.entries.retain(|key, entry| {
+        let Some((kind, identity)) = entry.provider.split_once(':') else {
+            return false;
+        };
+        let scope_valid = ProviderKind::parse_config_identity(kind)
+            .is_some_and(|parsed| parsed.as_str() == kind)
             && !identity.is_empty()
-            && key == &ProviderCatalogCache::cache_key(&entry.provider, &entry.base_url_fingerprint)
-            && entry.offerings.iter().all(|row| {
-                row.provider == identity
-                    && crate::provider_lake::valid_catalog_model_id(&row.wire_model_id)
-                    && provider_cost_source_allowed(row)
-                    && matches!(&row.source, codewhale_config::catalog::CatalogSource::Live {
-                        base_url_fingerprint, fetched_at
-                    } if base_url_fingerprint == &entry.base_url_fingerprint && *fetched_at == entry.fetched_at)
-            })
-    }) { return None; }
+            && key
+                == &ProviderCatalogCache::cache_key(&entry.provider, &entry.base_url_fingerprint);
+        if !scope_valid {
+            tracing::debug!(
+                target: "provider_catalog",
+                scope = %entry.provider,
+                "dropping invalid provider catalog scope"
+            );
+            return false;
+        }
+        let entry_fingerprint = entry.base_url_fingerprint.clone();
+        let entry_fetched_at = entry.fetched_at;
+        let rows_before = entry.offerings.len();
+        entry.offerings.retain(|row| {
+            row.provider == identity
+                && codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.wire_model_id)
+                && provider_cost_source_allowed(row)
+                && matches!(&row.source, codewhale_config::catalog::CatalogSource::Live {
+                    base_url_fingerprint, fetched_at
+                } if base_url_fingerprint == &entry_fingerprint && *fetched_at == entry_fetched_at)
+        });
+        if entry.offerings.len() != rows_before {
+            tracing::warn!(
+                target: "provider_catalog",
+                scope = %entry.provider,
+                rejected = rows_before - entry.offerings.len(),
+                kept = entry.offerings.len(),
+                "dropped unusable rows from a cached provider catalog"
+            );
+        }
+        if rows_before > 0 && entry.offerings.is_empty() {
+            tracing::debug!(
+                target: "provider_catalog",
+                scope = %entry.provider,
+                "dropping provider catalog scope whose every row was unusable"
+            );
+            return false;
+        }
+        true
+    });
+    if cache.entries.len() != scopes_before {
+        tracing::debug!(
+            target: "provider_catalog",
+            dropped = scopes_before - cache.entries.len(),
+            "provider catalog cache loaded with invalid scopes dropped"
+        );
+    }
     // Older builds could durably cache account-scoped rosters. Scrub
     // those entries on every load so upgrading cannot attach one workspace's
     // catalog to a different credential.
@@ -1260,7 +1323,8 @@ pub fn maybe_load_persisted_cache_for_config(config: &Config) -> usize {
     };
     let provider = identity.provider;
     let provider_identity = canonical_provider_scope(identity.key.as_str());
-    let fingerprint = base_url_fingerprint(&config.base_url_for_route(&identity));
+    let base_url = config.base_url_for_route(&identity);
+    let fingerprint = base_url_fingerprint(&base_url);
     if route_is_account_scoped(config, &identity) {
         forget_account_scoped_provider(provider, &provider_identity);
         return 0;
@@ -1285,7 +1349,18 @@ pub fn maybe_load_persisted_cache_for_config(config: &Config) -> usize {
     CACHE
         .read()
         .map(|guard| {
-            publish_exact_scope_for_identity(&guard, provider, &provider_identity, &fingerprint)
+            if provider_owns_live_catalog(provider, &base_url) {
+                publish_exact_scope_for_identity(&guard, provider, &provider_identity, &fingerprint)
+            } else {
+                // Models.dev owns this provider's roster, so a persisted /models
+                // partition can only shadow fresher snapshot rows (#6396).
+                crate::provider_lake::replace_provider_live_snapshot_for_identity(
+                    provider,
+                    &provider_identity,
+                    CatalogSnapshot::default(),
+                );
+                0
+            }
         })
         .unwrap_or(0)
 }
@@ -1473,7 +1548,9 @@ fn reviewed_provider_live_scope(
         ProviderKind::Openrouter => {
             provider_identity == ProviderKind::Openrouter.as_str()
                 && endpoint_fingerprint
-                    == base_url_fingerprint(crate::config::DEFAULT_OPENROUTER_BASE_URL)
+                    == base_url_fingerprint(
+                        codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
+                    )
         }
         ProviderKind::Custom => {
             endpoint_fingerprint
@@ -1895,11 +1972,22 @@ fn record_success_for_identity(
 ) -> CatalogStatus {
     let provider = canonical_provider_scope(&delta.provider);
     delta.provider = storage_provider(kind, &provider);
-    if delta.offerings.iter().any(|row| {
-        row.provider != provider
-            || !crate::provider_lake::valid_catalog_model_id(&row.wire_model_id)
-            || !provider_cost_source_allowed(row)
-    }) {
+    let submitted = delta.offerings.len();
+    delta.offerings.retain(|row| {
+        row.provider == provider
+            && codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.wire_model_id)
+            && provider_cost_source_allowed(row)
+    });
+    if delta.offerings.len() < submitted {
+        tracing::warn!(
+            target: "provider_catalog",
+            scope = %provider,
+            rejected = submitted - delta.offerings.len(),
+            kept = delta.offerings.len(),
+            "dropping unusable rows from a provider catalog refresh"
+        );
+    }
+    if submitted > 0 && delta.offerings.is_empty() {
         return record_failure_for_identity(
             kind,
             &provider,
@@ -1965,9 +2053,10 @@ pub(crate) fn reset_cache_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ProviderConfig, ProviderKind, ProvidersConfig};
     use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_config::ProviderKind;
     use codewhale_config::catalog::{CatalogOffering, CatalogSource};
+    use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
 
     fn delta(provider: &str, fingerprint: &str, ids: &[&str]) -> ProviderCatalogDelta {
         delta_at(provider, fingerprint, ids, now_unix())
@@ -2095,13 +2184,17 @@ mod tests {
                 ..ProviderConfig::default()
             },
         );
-        let config = Config {
-            provider: Some(codewhale_config::catalog::BASETEN_PROVIDER_ID.to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 =
+                Some(codewhale_config::catalog::BASETEN_PROVIDER_ID.to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 custom,
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         assert_eq!(maybe_load_persisted_cache_for_config(&config), 0);
         assert!(matches!(
@@ -2471,7 +2564,7 @@ mod tests {
         );
         assert_eq!(
             crate::provider_lake::all_catalog_models_for_provider_identity(
-                crate::config::ProviderKind::Custom,
+                codewhale_config::ProviderKind::Custom,
                 Some("baseten"),
             ),
             vec!["old-endpoint-model".to_string()]
@@ -2482,7 +2575,7 @@ mod tests {
             0
         );
         let after_switch = crate::provider_lake::all_catalog_models_for_provider_identity(
-            crate::config::ProviderKind::Custom,
+            codewhale_config::ProviderKind::Custom,
             Some("baseten"),
         );
         assert!(
@@ -2503,16 +2596,19 @@ mod tests {
             *cache = ProviderCatalogCache::new();
         }
 
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("openrouter".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     base_url: Some("https://synthetic.openrouter.invalid/api/v1".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let identity = config.active_provider_identity().unwrap();
         let provider = identity.key.as_str();
@@ -2926,7 +3022,7 @@ mod tests {
         crate::provider_lake::clear_live_snapshot();
         let now = chrono::Utc::now();
         let at = now.timestamp() as u64;
-        let base = crate::config::DEFAULT_OPENAI_BASE_URL;
+        let base = codewhale_config::descriptors::defaults::DEFAULT_OPENAI_BASE_URL;
         install_cloud_quote_fixture("quote-frozen", ProviderKind::Openai, 91, 1.0, at);
         let route = crate::cost_status::EffectiveRouteEnvelope::capture(
             None,
@@ -3008,7 +3104,7 @@ mod tests {
         reset_cache_for_test();
         crate::provider_lake::clear_live_snapshot();
         let at = now_unix();
-        let base = crate::config::DEFAULT_OPENAI_BASE_URL;
+        let base = codewhale_config::descriptors::defaults::DEFAULT_OPENAI_BASE_URL;
         install_cloud_quote_fixture("quote-binding", ProviderKind::Openai, 93, 1.0, at);
         let quote = fresh_dispatch_pricing_quote_at(
             ProviderKind::Openai,
@@ -3167,7 +3263,8 @@ mod tests {
             forged.cache.entries.values_mut().next().unwrap().offerings[0].cost_source =
                 Some(source);
             fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
-            assert!(load_from_disk_unlocked(&path).is_none());
+            let loaded = load_from_disk_unlocked(&path).expect("valid scopes still load");
+            assert!(loaded.entries.is_empty(), "forged scope must be dropped");
         }
     }
 

@@ -4,7 +4,7 @@
 //! it onto the three visual weights the approval views render.
 
 use crate::core::authority::RiskLevel;
-use crate::tools::canonical_action::canonical_action_alias;
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use serde_json::Value;
 
 // Tool categorization is runtime policy (the extension host and auto-review

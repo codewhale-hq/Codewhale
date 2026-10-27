@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod image_window;
+pub mod reasoning_effort_tier;
+pub mod schema_canonicalize;
+pub mod schema_sanitize;
+pub mod tool_projection;
+pub mod turn_classify;
+
 /// Context window used only for legacy DeepSeek model IDs that do not name a
 /// newer V4 alias and do not carry an explicit `*k` suffix.
 pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
@@ -484,7 +491,6 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Streaming event types for SSE responses.
@@ -522,7 +528,6 @@ pub enum StreamEvent {
     Error { error: serde_json::Value },
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Content block types used in streaming starts.
@@ -590,7 +595,6 @@ pub enum Delta {
     ReasoningStateDelta { state: OpaqueReasoningState },
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 /// Delta payload for message-level updates.
 pub struct MessageDelta {

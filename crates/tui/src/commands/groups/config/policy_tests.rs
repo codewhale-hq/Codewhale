@@ -146,6 +146,7 @@ fn status_view() -> ConfigStatusView {
         cache_miss_tokens: 0,
         cost: 0.00001,
         currency: CommandCurrency::Usd,
+        cost_label: None,
         metrics: StatusMetrics::default(),
         ascii_safe: false,
         tool_outputs: StatusToolOutputs::default(),

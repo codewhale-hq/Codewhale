@@ -21,7 +21,7 @@ use super::core_call::{
     EXT_AUTO_ELIGIBLE, MAX_CALLS_PER_INVOCATION, OriginApproval, origin_approval, refusal,
     wire_from_response,
 };
-use super::protocol::{ContentBlockWire, CoreCallParams, OwnerRef, RpcErrorWire, error_code};
+use super::protocol::{ContentBlockWire, CoreCallParams, RpcErrorWire, error_code};
 use super::supervisor::HostRequestContext;
 use super::tests::{FixturePlugins, fake_authority, node_for_tests};
 use super::tier::HostTier;
@@ -33,6 +33,7 @@ use crate::tools::codemode::{
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codewhale_config::OwnerRef;
 
 // ---------------------------------------------------------------------------
 // A stand-in for the turn loop's gate
@@ -54,6 +55,15 @@ struct Server {
 fn serve(mut requests: mpsc::Receiver<NestedCallRequest>, server: Arc<Server>) {
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
+            let request = match request {
+                NestedCallRequest::Tool(request) => request,
+                NestedCallRequest::Checkpoint { reply, .. } => {
+                    let _ = reply.send(Err(ToolError::not_available(
+                        "fixture has no session checkpoint backend",
+                    )));
+                    continue;
+                }
+            };
             if request.is_stale() {
                 server.stale.fetch_add(1, Ordering::SeqCst);
                 continue;
@@ -210,7 +220,7 @@ async fn started(
 ) -> (FixturePlugins, Arc<ExtensionHostManager>, HostAttachment) {
     let fixture = FixturePlugins::new(&["core-call"]).await;
     let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-        runtime: crate::config::ExtensionHostRuntime::Node,
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
         node_override: Some(node),
         root: Some(fixture.root.clone()),
         supervision: SupervisionOptions {
@@ -785,18 +795,271 @@ async fn a_spoofed_ticket_is_refused_whoever_presents_it_and_a_burst_ends_the_ho
 
 #[tokio::test]
 async fn a_ticket_for_a_revoked_owner_is_refused_even_if_it_was_never_revoked() {
-    let f = fixture(true);
+    let mut f = fixture(true);
+    let incomplete = f.begin(7, &f.owner);
+    assert!(incomplete.checkpoint_ticket().is_none());
+    drop(incomplete);
+    f.context = f
+        .context
+        .clone()
+        .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
+            "checkpoint-session".into(),
+            "fixture-model".into(),
+            f.context.workspace.clone(),
+            None,
+            Arc::new(Vec::new()),
+        ))
+        .with_origin_turn_id("checkpoint-turn");
     let guard = f.begin(7, &f.owner);
+    let checkpoint_ticket = guard.checkpoint_ticket().unwrap().to_string();
+    let (cx, _violations, _cancel) = HostRequestContext::for_test(2);
+    let unavailable = f
+        .manager
+        .shared
+        .core_calls
+        .serve_checkpoint(
+            &f.manager.shared,
+            HostTier::Plugin,
+            7,
+            super::protocol::SessionCheckpointParams {
+                owner: f.owner.clone(),
+                ticket: checkpoint_ticket.clone(),
+            },
+            cx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unavailable.code, error_code::NOT_AVAILABLE);
+    assert!(
+        unavailable
+            .message
+            .contains("fixture has no session checkpoint backend")
+    );
+    let (wrong_method, _) = f
+        .serve(HostTier::Plugin, 7, &f.owner, &checkpoint_ticket)
+        .await;
+    assert!(refused(&wrong_method));
+    for (tier, generation, owner, ticket) in [
+        (
+            HostTier::Plugin,
+            7,
+            f.owner.clone(),
+            guard.ticket().to_string(),
+        ),
+        (
+            HostTier::Plugin,
+            7,
+            f.other.clone(),
+            checkpoint_ticket.clone(),
+        ),
+        (
+            HostTier::Builtin,
+            7,
+            f.owner.clone(),
+            checkpoint_ticket.clone(),
+        ),
+        (
+            HostTier::Plugin,
+            8,
+            f.owner.clone(),
+            checkpoint_ticket.clone(),
+        ),
+    ] {
+        let (cx, _violations, _cancel) = HostRequestContext::for_test(3);
+        let result = f
+            .manager
+            .shared
+            .core_calls
+            .serve_checkpoint(
+                &f.manager.shared,
+                tier,
+                generation,
+                super::protocol::SessionCheckpointParams { owner, ticket },
+                cx,
+            )
+            .await;
+        assert!(refused(&result), "{result:?}");
+    }
+    let (caller, specs) = f.gate.extension().unwrap();
+    let caller = caller.clone();
+    let specs = specs.to_vec();
+    let (tx, _events) = mpsc::channel(1);
+    let (gate, mut requests) = NestedCallGate::new(None, tx, Duration::from_secs(60));
+    f.gate = gate.for_extension(caller, specs);
+    let pending = f.begin(7, &f.owner);
+    let (cx, _violations, cancel) = HostRequestContext::for_test(4);
+    let checkpoint = f.manager.shared.core_calls.serve_checkpoint(
+        &f.manager.shared,
+        HostTier::Plugin,
+        7,
+        super::protocol::SessionCheckpointParams {
+            owner: f.owner.clone(),
+            ticket: pending.checkpoint_ticket().unwrap().to_string(),
+        },
+        cx,
+    );
+    tokio::pin!(checkpoint);
+    let request = tokio::select! {
+        result = &mut checkpoint => panic!("checkpoint unexpectedly settled: {result:?}"),
+        request = requests.recv() => request.unwrap(),
+    };
+    cancel.cancel();
+    assert_eq!(checkpoint.await.unwrap_err().code, error_code::CANCELLED);
+    let NestedCallRequest::Checkpoint {
+        caller,
+        withdraw,
+        reply,
+    } = request
+    else {
+        panic!("expected typed checkpoint")
+    };
+    assert_eq!(caller.session_id, "checkpoint-session");
+    assert_eq!(caller.turn_id, "checkpoint-turn");
+    assert!(withdraw.is_cancelled());
+    assert!(reply.is_closed());
+    drop(pending);
+    let mut child_context = f.context.clone();
+    child_context.execution.owner_agent_id = Some("child".into());
+    let child = f
+        .manager
+        .shared
+        .core_calls
+        .begin(
+            HostTier::Plugin,
+            7,
+            &f.owner,
+            "child-call",
+            &f.caller(),
+            &child_context,
+            &f.gate,
+        )
+        .unwrap();
+    assert!(child.checkpoint_ticket().is_none());
+    drop(child);
     // The owner is replaced by a new activation: its token changes, so the
     // old one the host still holds no longer names the current owner.
     let ticket = guard.ticket().to_string();
     f.manager.shared.registry.lock().unwrap().revoke_owner("a");
     let (result, _) = f.serve(HostTier::Plugin, 7, &f.owner, &ticket).await;
     assert!(refused(&result), "{result:?}");
+    let (cx, _violations, _cancel) = HostRequestContext::for_test(5);
+    assert!(refused(
+        &f.manager
+            .shared
+            .core_calls
+            .serve_checkpoint(
+                &f.manager.shared,
+                HostTier::Plugin,
+                7,
+                super::protocol::SessionCheckpointParams {
+                    owner: f.owner.clone(),
+                    ticket: checkpoint_ticket
+                },
+                cx,
+            )
+            .await
+    ));
+    drop(guard);
+    assert_eq!(f.manager.shared.core_calls.live_tickets(), 0);
 }
 
 #[test]
 fn the_wire_result_is_the_tools_text_and_json_and_says_when_it_was_cut() {
+    use crate::core::events::{
+        SessionCheckpointCaller, SessionCheckpointProjection, SessionCheckpointReceipt,
+        SessionCheckpointRequest,
+    };
+    let snapshot = Arc::new(crate::core::ops::SessionSnapshot {
+        session_id: "session".into(),
+        messages: Vec::new(),
+        total_tokens: 0,
+        model: "fixture".into(),
+        model_provider: "fixture".into(),
+        model_provider_id: None,
+        workspace: "/workspace".into(),
+        system_prompt: None,
+        instruction_assembly: None,
+        mode: "agent".into(),
+    });
+    let hash = SessionCheckpointRequest::prefix_hash(&snapshot.messages).unwrap();
+    let make = |projection| {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        (
+            SessionCheckpointRequest::new(
+                SessionCheckpointCaller {
+                    session_id: "session".into(),
+                    agent_id: None,
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    workspace: "/workspace".into(),
+                },
+                snapshot.clone(),
+                hash.clone(),
+                projection,
+                tokio_util::sync::CancellationToken::new(),
+                reply,
+            ),
+            receiver,
+        )
+    };
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    request
+        .validate_prefix("session", Path::new("/workspace"), &snapshot.messages)
+        .unwrap();
+    assert!(
+        request
+            .validate_prefix("other", Path::new("/workspace"), &snapshot.messages)
+            .is_err()
+    );
+    request.succeed(SessionCheckpointReceipt {
+        persisted_sha256: hash.clone(),
+        messages_len: 0,
+        projection: SessionCheckpointProjection::Exact,
+    });
+    assert!(answer.try_recv().unwrap().unwrap());
+    assert!(request.is_stale());
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    request.succeed(SessionCheckpointReceipt {
+        persisted_sha256: "0".repeat(64),
+        messages_len: 0,
+        projection: SessionCheckpointProjection::Exact,
+    });
+    assert!(answer.try_recv().unwrap().is_err());
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    request.succeed(SessionCheckpointReceipt {
+        persisted_sha256: "0".repeat(64),
+        messages_len: 0,
+        projection: SessionCheckpointProjection::RuntimeReceiptRedacted,
+    });
+    assert!(answer.try_recv().unwrap().is_err());
+    let (request, mut answer) = make(SessionCheckpointProjection::RuntimeReceiptRedacted);
+    request.succeed(SessionCheckpointReceipt {
+        persisted_sha256: "0".repeat(64),
+        messages_len: 0,
+        projection: SessionCheckpointProjection::RuntimeReceiptRedacted,
+    });
+    assert!(answer.try_recv().unwrap().unwrap());
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    request.withdraw.cancel();
+    request.succeed(SessionCheckpointReceipt {
+        persisted_sha256: hash.clone(),
+        messages_len: 0,
+        projection: SessionCheckpointProjection::Exact,
+    });
+    assert!(answer.try_recv().unwrap().is_err());
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    request.no_backend();
+    assert!(!answer.try_recv().unwrap().unwrap());
+    let (request, mut answer) = make(SessionCheckpointProjection::Exact);
+    drop(request);
+    assert!(
+        answer
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("did not acknowledge")
+    );
     let text = |wire: &super::protocol::ToolResultWire| match &wire.content[..] {
         [ContentBlockWire::Text { text }] => text.clone(),
         other => panic!("{other:?}"),

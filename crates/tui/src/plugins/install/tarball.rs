@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 
-use crate::skills::install::is_safe_path;
+use codewhale_skill_install::install::is_safe_path;
 
 use super::PluginInstallError;
 use super::stage::{StagedPlugin, fresh_staging_dir, validate_staged};

@@ -26,13 +26,13 @@ for(const platform of ['telegram','feishu']) {
     await writer.setChat('chat',{threadId:'thread',activeTurnId:'turn',lastSeq:7,authorizedIdentity:identity,replyToMessageId:'original'});
     const threadStore=await ThreadStore.open(file,{messageLimit:200});
     const calls={runtime:[],sent:[],stream:[],commands:[]};
-    const context=vm.createContext({...lib,threadStore,config:{allowlist:['operator'],allowGroups:false,allowUnlisted:false,requirePrefixInGroup:false,groupPrefix:'/cw',...policy},
+    const context=vm.createContext({...lib,threadStore,botAccountId:'fixture-bot',config:{allowlist:['operator'],allowGroups:false,allowUnlisted:false,requirePrefixInGroup:false,groupPrefix:'/cw',...policy},
       runtimeJson:async route=>{calls.runtime.push(route);return {turns:[{id:'turn',status:'in_progress'}]};},
       sendText:async(...args)=>calls.sent.push(args),sendTurnText:async(...args)=>calls.sent.push(args),
       streamTurnEvents:async(...args)=>calls.stream.push(args),startTrackedTurnStream:(...args)=>calls.stream.push(args),
       handleCommand:async(...args)=>calls.commands.push(args),answerCallback:async()=>{},callbackAction:()=>({kind:'status'}),handleModalAction:async(...args)=>calls.commands.push(args),
     });
-    const names=platform==='telegram'?['reattachActiveTurns','handleIncomingUpdate','handleCallbackQuery','rememberAuthorizedIdentity']:['reattachActiveTurns','handleIncomingMessage'];
+    const names=platform==='telegram'?['recoveryAllowed','reattachActiveTurns','handleIncomingUpdate','handleCallbackQuery','rememberAuthorizedIdentity']:['reattachActiveTurns','handleIncomingMessage'];
     for(const name of names) {
       if(name==='rememberAuthorizedIdentity' && !source.includes('function rememberAuthorizedIdentity(')) continue;
       vm.runInContext(extract(source,name),context);
@@ -55,7 +55,7 @@ for(const platform of ['telegram','feishu']) {
     for(const policy of [{allowlist:['operator']},{allowlist:['chat']},{allowUnlisted:true},{allowGroups:true}]) {
       const identity=policy.allowGroups?{...baseIdentity,chatType:'group'}:baseIdentity;
       const f=await fixture(t,identity,policy);await f.context.reattachActiveTurns();
-      assert.deepEqual(f.calls.runtime,['/v1/threads/thread']);assert.equal(f.calls.sent.length,1);assert.equal(f.calls.stream.length,1);
+      assert.deepEqual(f.calls.runtime,platform==='telegram'?[]:['/v1/threads/thread']);assert.equal(f.calls.sent.length,platform==='telegram'?0:1);assert.equal(f.calls.stream.length,1);
     }
   });
   function incoming(userId,chatType=direct) {

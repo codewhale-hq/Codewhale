@@ -183,7 +183,7 @@ casually it reads as taking the work even when credit is preserved.
   KV-cache effect: frozen prefix vs. append-only history. Never splice a
   volatile fact into the prefix; append it as a user-role message.
 - These active modules are repeatedly misidentified as dead; verify consumers
-  before removal: `runtime/src/context_budget.rs`, `tui/src/model_registry.rs`,
+  before removal: `runtime/src/context_budget.rs`,
   `runtime/src/prompt_zones.rs`, `tui/src/tools/remember.rs`, and
   `config/src/route/`. Native memory lives in `runtime/src/native_memory.rs`;
   `tools/remember.rs` is its capture path.

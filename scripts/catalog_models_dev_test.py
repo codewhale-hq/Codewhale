@@ -210,7 +210,12 @@ class SeedGeneratorTests(unittest.TestCase):
         self.out = self.dir / "seed.json"
         self.upstream = self.dir / "upstream.json"
         self.corrections = self.dir / "corrections.json"
+        self.descriptors = self.dir / "provider_descriptors.json"
         self.spec.write_text(SPEC_FIXTURE, encoding="utf-8")
+        self.descriptors.write_text(
+            json.dumps({"providers": [{"id": "moonshot", "catalog_id": "moonshotai", "default_model": "kimi-k3"}]}),
+            encoding="utf-8",
+        )
         self.upstream.write_text(json.dumps(UPSTREAM_FIXTURE), encoding="utf-8")
         self.corrections.write_text(
             json.dumps(
@@ -234,13 +239,15 @@ class SeedGeneratorTests(unittest.TestCase):
     def lock_cmd(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return run_script(
             "seed", "lock", "--spec", str(self.spec), "--lock", str(self.lock),
-            "--corrections", str(self.corrections), *extra, env=self.env(),
+            "--corrections", str(self.corrections), "--descriptors", str(self.descriptors), *extra,
+            env=self.env(),
         )
 
     def render_cmd(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return run_script(
             "seed", "render", "--spec", str(self.spec), "--lock", str(self.lock),
-            "--out", str(self.out), "--corrections", str(self.corrections), *extra,
+            "--out", str(self.out), "--corrections", str(self.corrections),
+            "--descriptors", str(self.descriptors), *extra,
         )
 
     def test_dry_run_writes_nothing(self) -> None:

@@ -13,10 +13,8 @@
 //! and `Date`/`Math.random` are overridden to throw so recorded runs stay
 //! deterministic for replay.
 
-use std::cell::Cell;
 use std::env;
 use std::future::Future;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -33,10 +31,7 @@ use crate::schema::{
     ReplyDecodeError, SCHEMA_REPAIR_MAX_ATTEMPTS, carried_raw, compile_schema, decode_reply,
     repair_prompt,
 };
-use crate::{
-    CODEMODE_MAX_TOOL_CALLS, PARALLEL_MAX_ITEMS, ToolCallRequest, ToolInvoker,
-    WORKFLOW_LIFETIME_CAP, normalize_profile,
-};
+use crate::{PARALLEL_MAX_ITEMS, ToolCallRequest, ToolInvoker, normalize_profile};
 
 const DEFAULT_VM_MEMORY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 const MIN_VM_MEMORY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -680,10 +675,9 @@ async fn tools_call_host(
     call_json: String,
     invoker: Arc<dyn ToolInvoker>,
     cancel: CancelHandle,
-    invoked: Rc<Cell<u64>>,
     host_runtime: Handle,
 ) -> String {
-    let outcome = tools_call_host_inner(call_json, invoker, cancel, invoked, host_runtime).await;
+    let outcome = tools_call_host_inner(call_json, invoker, cancel, host_runtime).await;
     let envelope = match outcome {
         Ok(result) => serde_json::json!({ "result": result }),
         Err(TaskError { kind, message }) => {
@@ -697,7 +691,6 @@ async fn tools_call_host_inner(
     call_json: String,
     invoker: Arc<dyn ToolInvoker>,
     cancel: CancelHandle,
-    invoked: Rc<Cell<u64>>,
     host_runtime: Handle,
 ) -> Result<serde_json::Value, TaskError> {
     let admission = |message: String| TaskError::new(TaskErrorKind::Admission, message);
@@ -716,18 +709,12 @@ async fn tools_call_host_inner(
             "tools.call(): `input` must be a JSON object".to_string(),
         ));
     }
-    if invoked.get() >= CODEMODE_MAX_TOOL_CALLS {
-        return Err(admission(format!(
-            "tools.call(): per-run tool-call cap ({CODEMODE_MAX_TOOL_CALLS}) reached"
-        )));
-    }
     if cancel.is_cancelled() {
         return Err(TaskError::new(
             TaskErrorKind::Cancelled,
             "tools.call(): run cancelled".to_string(),
         ));
     }
-    invoked.set(invoked.get() + 1);
     let response = call_on_host(
         &host_runtime,
         &cancel,
@@ -763,11 +750,6 @@ fn install_host(
         .map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))?;
     globals.set("args", args_value).map_err(init_err)?;
 
-    // Per-run lifetime counter (design §4.3): counts spawn *attempts*, and the
-    // check + increment happen with no await in between so a parallel burst
-    // cannot slip past the cap on the single-threaded VM.
-    let spawned = Rc::new(Cell::new(0u64));
-
     let task_driver = driver.clone();
     let task_cancel = cancel.clone();
     let task_runtime = host_runtime.clone();
@@ -777,18 +759,13 @@ fn install_host(
             Func::from(Async(move |opts_json: String| {
                 let driver = task_driver.clone();
                 let cancel = task_cancel.clone();
-                let spawned = spawned.clone();
                 let host_runtime = task_runtime.clone();
-                async move { task_host(opts_json, driver, cancel, spawned, host_runtime).await }
+                async move { task_host(opts_json, driver, cancel, host_runtime).await }
             })),
         )
         .map_err(init_err)?;
 
-    // Code-mode runs only: per-run tool-call counter. Same single-threaded
-    // check+increment discipline as `spawned` above — no await between the
-    // cap check and the increment, so a burst cannot slip past it.
     if let Some(invoker) = invoker {
-        let invoked = Rc::new(Cell::new(0u64));
         let call_invoker = invoker.clone();
         let call_cancel = cancel.clone();
         globals
@@ -797,11 +774,8 @@ fn install_host(
                 Func::from(Async(move |call_json: String| {
                     let invoker = call_invoker.clone();
                     let cancel = call_cancel.clone();
-                    let invoked = invoked.clone();
                     let host_runtime = host_runtime.clone();
-                    async move {
-                        tools_call_host(call_json, invoker, cancel, invoked, host_runtime).await
-                    }
+                    async move { tools_call_host(call_json, invoker, cancel, host_runtime).await }
                 })),
             )
             .map_err(init_err)?;
@@ -882,7 +856,13 @@ fn install_host(
     globals
         .set(
             "__workflow_budget_spent",
-            Func::from(move || -> f64 { spent_driver.budget().spent as f64 }),
+            Func::from(move || -> f64 {
+                if spent_driver.budget_is_metered() {
+                    spent_driver.budget().spent as f64
+                } else {
+                    f64::NAN
+                }
+            }),
         )
         .map_err(init_err)?;
 
@@ -890,6 +870,9 @@ fn install_host(
         .set(
             "__workflow_budget_remaining",
             Func::from(move || -> f64 {
+                if !driver.budget_is_metered() {
+                    return f64::NAN;
+                }
                 match driver.budget().remaining() {
                     Some(remaining) => remaining as f64,
                     None => f64::INFINITY,
@@ -914,10 +897,9 @@ async fn task_host(
     opts_json: String,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
-    spawned: Rc<Cell<u64>>,
     host_runtime: Handle,
 ) -> String {
-    let outcome = task_host_inner(opts_json, driver, cancel, spawned, host_runtime).await;
+    let outcome = task_host_inner(opts_json, driver, cancel, host_runtime).await;
     let envelope = match outcome {
         Ok(value) => serde_json::json!({ "value": value }),
         Err(TaskError { kind, message }) => {
@@ -986,14 +968,12 @@ fn fail_schema(
 
 /// Build the repair request for `next_attempt` (#5583): the same child
 /// identity, budget fields, and schema as the original, with a repair prompt
-/// carrying the original task, the schema, the failed reply, and why it
-/// failed, plus the wall clock the first attempt did not spend.
+/// carrying the original task, the schema, the failed reply, and why it failed.
 fn repair_request(
     original: &TaskRequest,
     next_attempt: u32,
     error: &ReplyDecodeError,
     failed_raw: &str,
-    wall_time_secs: Option<u64>,
 ) -> TaskRequest {
     let mut request = original.clone();
     let schema = original
@@ -1006,7 +986,6 @@ fn repair_request(
         "[schema repair {next_attempt}] {}",
         repair_prompt(&original.description, schema, failed_raw, error)
     );
-    request.wall_time_secs = wall_time_secs;
     // Label and phase stay inherited so progress surfaces group the repair
     // with its task.
     request
@@ -1028,7 +1007,6 @@ async fn task_host_inner(
     opts_json: String,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
-    spawned: Rc<Cell<u64>>,
     host_runtime: Handle,
 ) -> Result<serde_json::Value, TaskError> {
     let admission = |message: String| TaskError::new(TaskErrorKind::Admission, message);
@@ -1044,20 +1022,10 @@ async fn task_host_inner(
         .transpose()
         .map_err(|message| admission(reject_task(&driver, &opts_json, message)))?;
 
-    // Lifetime backstop (design §4.3) — checked and bumped before any await.
-    if spawned.get() >= WORKFLOW_LIFETIME_CAP {
-        return Err(admission(reject_task(
-            &driver,
-            &opts_json,
-            format!(
-                "task(): Workflow lifetime agent cap ({WORKFLOW_LIFETIME_CAP}) reached for this run"
-            ),
-        )));
-    }
     // Fast-fail budget gate. The authoritative reservation lives in the
     // driver (design §5.3); this only stops obviously-doomed spawns early.
     let snapshot = driver.budget();
-    if snapshot.exhausted() {
+    if driver.budget_is_metered() && snapshot.exhausted() {
         return Err(TaskError::new(
             TaskErrorKind::Budget,
             reject_task(
@@ -1080,15 +1048,10 @@ async fn task_host_inner(
     // repair; `Some(0)` disables it. The first attempt is attempt 1, so the
     // task is schema-terminal once `attempt` reaches this ceiling.
     let last_attempt = 1 + request.schema_repair_attempts.unwrap_or(1);
-    // The wall clock is shared across attempts: a repair inherits the time
-    // the first attempt did not spend, not a fresh budget.
-    let started = std::time::Instant::now();
-    let mut wall_time_secs_left = request.wall_time_secs;
     let mut current = request.clone();
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        spawned.set(spawned.get() + 1);
         // Admission can wait (a saturated concurrency gate, a routing call),
         // so it races the run's cancel exactly as the completion does below
         // and as `tools.call()` does: a cancel that only closed the driver's
@@ -1168,21 +1131,8 @@ async fn task_host_inner(
             raw: raw.clone(),
             raw_truncated,
         });
-        if spawned.get() >= WORKFLOW_LIFETIME_CAP {
-            return Err(schema_task(fail_schema(
-                &driver,
-                task_id,
-                attempt,
-                &error,
-                raw,
-                raw_truncated,
-                Some(format!(
-                    "workflow lifetime agent cap ({WORKFLOW_LIFETIME_CAP}) reached"
-                )),
-            )));
-        }
         let snapshot = driver.budget();
-        if snapshot.exhausted() {
+        if driver.budget_is_metered() && snapshot.exhausted() {
             return Err(schema_task(fail_schema(
                 &driver,
                 task_id,
@@ -1196,22 +1146,7 @@ async fn task_host_inner(
         if cancel.is_cancelled() {
             return Err(cancelled_task());
         }
-        if let Some(wall) = wall_time_secs_left {
-            let remaining = wall.saturating_sub(started.elapsed().as_secs());
-            if remaining == 0 {
-                return Err(schema_task(fail_schema(
-                    &driver,
-                    task_id,
-                    attempt,
-                    &error,
-                    raw,
-                    raw_truncated,
-                    Some("no wall-time left from wallTimeSecs".to_string()),
-                )));
-            }
-            wall_time_secs_left = Some(remaining);
-        }
-        current = repair_request(&request, attempt + 1, &error, &raw, wall_time_secs_left);
+        current = repair_request(&request, attempt + 1, &error, &raw);
     }
 }
 
@@ -1887,8 +1822,9 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   const total = hostBudgetTotal();
   globalThis.budget = Object.freeze({
     total: Number.isNaN(total) ? null : total,
-    spent: () => hostBudgetSpent(),
-    remaining: () => hostBudgetRemaining(),
+    metered: !Number.isNaN(hostBudgetSpent()),
+    spent: () => { const value = hostBudgetSpent(); return Number.isNaN(value) ? null : value; },
+    remaining: () => { const value = hostBudgetRemaining(); return Number.isNaN(value) ? null : value; },
   });
 
   for (const name of [

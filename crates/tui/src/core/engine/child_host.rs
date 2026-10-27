@@ -13,12 +13,12 @@ pub(super) struct ChildHostState {
     pub system_prompt: SystemPrompt,
     job: Option<Arc<crate::tools::subagent::engine::ChildJob>>,
     handle: Option<EngineHandle>,
-    pub(super) report: Option<crate::tools::subagent::budget_handback::ReportAdmission>,
     route_runtime: crate::tools::subagent::SubAgentRuntime,
     pub(super) fork_cache_checked: bool,
     pub(super) fork_trial_first_response_logged: bool,
-    pub(super) fork_cache_inherited:
-        Option<crate::prompt_zones::LiveHeaderSnapshot<crate::route_receipt::TurnRouteReceipt>>,
+    pub(super) fork_cache_inherited: Option<
+        codewhale_runtime::prompt_zones::LiveHeaderSnapshot<crate::route_receipt::TurnRouteReceipt>,
+    >,
     pub(super) fork_cache_prefix: Vec<String>,
     replacements_tried: usize,
     pin_fallback_used: bool,
@@ -45,7 +45,6 @@ impl From<ChildHostSetup> for ChildHostState {
             system_prompt: setup.system_prompt,
             job: None,
             handle: None,
-            report: None,
         }
     }
 }
@@ -192,15 +191,6 @@ impl Engine {
             .as_ref()
             .map(|state| state.route_runtime.client.wire_format())
     }
-    pub(super) fn child_report(&self) -> bool {
-        self.child_host
-            .as_ref()
-            .is_some_and(|state| state.report.is_some())
-    }
-
-    /// Executes a queued assignment or its single bounded reporting turn.
-    /// Both go through handle_send_message -> run_turn, the same Session and
-    /// Core approval inbox. The next report is reserved on the existing FIFO.
     pub(super) async fn handle_child_send_message(
         &mut self,
         spec: TurnSpec,
@@ -213,38 +203,22 @@ impl Engine {
             .as_mut()
             .expect("captured child")
             .request_stop_reason = None;
-        let reporting = self.child_report();
         let replay_content = spec.content.clone();
         let replay_scope = spec.allowed_tools.clone();
-        let deadline = if reporting {
-            self.child_host
-                .as_ref()
-                .and_then(|state| state.report.as_ref())
-                .map(|report| report.deadline)
-        } else {
-            job.work_deadline
-        };
+        let deadline = job.deadline;
         let admitted = self
             .admitted_turn_control
             .as_ref()
             .map(|control| control.cancel.clone());
-        // This is the exact queued turn token, never the parent's or a later
-        // report's token. Dropping the timer aborts it after settlement.
         let timer = deadline.zip(admitted).map(|(deadline, cancel)| {
             let job = job.clone();
             turn_heartbeat::AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep_until(deadline.into()).await;
-                if !reporting {
-                    job.stop_for_budget("child wall-time work budget exhausted");
-                }
+                job.stop_for_budget("child wall-time work budget exhausted");
                 cancel.cancel();
             }))
         });
         let outcome = Box::pin(self.handle_send_message(spec)).await;
-        // Capture expiry at the actual Core outcome. Later checkpoint/ledger
-        // contention cannot relabel an already-settled provider refusal.
-        let report_deadline_expired =
-            reporting && deadline.is_some_and(|deadline| Instant::now() >= deadline);
         drop(timer);
         job.project(
             &self.session.messages,
@@ -334,101 +308,9 @@ impl Engine {
             })
             .filter(|text| !text.trim().is_empty());
         if let Some(cause) = job.budget_reason() {
-            if !reporting {
-                match crate::tools::subagent::budget_handback::admit_report(
-                    &job,
-                    &self.session.messages,
-                    &cause,
-                    self.model_client
-                        .as_ref()
-                        .expect("installed selected client")
-                        .effective_max_output_tokens(&self.session.model),
-                )
-                .await
-                {
-                    Ok(report) => {
-                        let content = report
-                            .messages
-                            .iter()
-                            .flat_map(|message| &message.content)
-                            .filter_map(|block| match block {
-                                ContentBlock::Text { text, .. } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let mut spec = self.child_turn_spec(content, Some(Vec::new()))?;
-                        spec.allow_shell = false;
-                        spec.max_output_tokens = std::num::NonZeroU32::new(report.output_tokens);
-                        self.config.max_steps = 1;
-                        let state = self.child_host.as_mut().expect("captured child");
-                        state.report = Some(report);
-                        // A fresh queued scope cannot erase parent cancellation:
-                        // it is rechecked by the transport and every dispatch.
-                        state
-                            .handle
-                            .as_ref()
-                            .expect("same Core handle")
-                            .send(Op::SendMessage(spec))
-                            .await?;
-                        return Ok(None);
-                    }
-                    Err(reason) => {
-                        let partial =
-                            crate::tools::subagent::budget_handback::fallback_partial_text(
-                                &self.session.messages,
-                            );
-                        return job
-                            .finish(
-                                &self.session.messages,
-                                job.steps(),
-                                SubAgentStatus::BudgetExhausted,
-                                Some(format!("{partial}\n\n{reason}")),
-                                Some(&cause),
-                            )
-                            .await
-                            .map(Some);
-                    }
-                }
-            }
-            let report = if status == TurnOutcomeStatus::Completed && error.is_none() {
-                text
-            } else {
-                None
-            };
-            let mut partial = report.unwrap_or_else(|| {
-                crate::tools::subagent::budget_handback::fallback_partial_text(
-                    &self.session.messages,
-                )
-            });
-            let mut receipt = if status == TurnOutcomeStatus::Completed && error.is_none() {
-                "Host budget hand-back receipt: one completed bounded report; assignment remains incomplete.".to_string()
-            } else if report_deadline_expired {
-                "Host budget hand-back receipt: report deadline expired; recorded work is preserved.".to_string()
-            } else {
-                format!(
-                    "Host budget hand-back receipt: provider call failed or report did not finish: {}. Recorded work is preserved.",
-                    error.as_deref().unwrap_or("Core report interrupted")
-                )
-            };
-            if job
-                .authority
-                .runtime
-                .manager
-                .read()
-                .await
-                .get_worker_record(&job.authority.owner_agent_id)
-                .is_some_and(|record| record.has_unreported_usage)
-            {
-                receipt.push_str(" Measured usage is only a subtotal, not a zero-cost report; unreported provider usage remains unknown.");
-            }
-            partial.push_str(&format!("\n\n{receipt}"));
-            // Record the host's actual outcome alongside this same canonical
-            // Session, before finish saves/projects the result checkpoint.
-            self.add_session_message(
-                self.runtime_text_message_with_turn_metadata(receipt, UserInputProvenance::Runtime),
-            )
-            .await;
+            let partial = crate::tools::subagent::budget_handback::fallback_partial_text(
+                &self.session.messages,
+            );
             return job
                 .finish(
                     &self.session.messages,
@@ -514,7 +396,7 @@ impl Engine {
         let Some(job) = self.child_job() else {
             return Ok(false);
         };
-        if self.child_report() || !job.can_replace_first_request() {
+        if !job.can_replace_first_request() {
             return Ok(false);
         }
         let state = self.child_host.as_mut().expect("captured child");
@@ -842,7 +724,7 @@ impl Engine {
                 .is_ok();
         surface.catalog.retain(|tool| {
             surface.registry.contains(&tool.name)
-                || (discoverable && tool_catalog::is_tool_search_tool(&tool.name))
+                || (discoverable && codewhale_tools::names::is_tool_search_tool(&tool.name))
                 || (code_mode && tool.name == tool_catalog::EXECUTE_TOOLS_TOOL_NAME)
         });
         surface

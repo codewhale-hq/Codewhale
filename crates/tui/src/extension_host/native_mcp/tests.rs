@@ -6,8 +6,9 @@ use crate::extension_host::protocol::RegisterSpecWire;
 use crate::extension_host::registry::OwnerRegistry;
 use crate::extension_host::tests::{FixturePlugins, fake_authority, node_for_tests};
 use crate::extension_host::{ExtensionHostManager, HostAttachment, TestManagerGuard};
-use crate::mcp::{McpBackend, McpPool};
+use crate::mcp::McpPool;
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_config::McpBackend;
 use serde_json::json;
 use std::path::Path;
 use std::time::Duration;
@@ -31,7 +32,7 @@ fn selected(fixture: &FixturePlugins, tag: &str) -> Arc<PluginRegistry> {
                 content_hash: source.authority.content_hash,
                 entry: EntryRef {
                     path: source.path.to_string_lossy().into(),
-                    sha256: crate::hashing::sha256_hex(&bytes),
+                    sha256: codewhale_runtime::hashing::sha256_hex(&bytes),
                 },
             })
             .unwrap(),

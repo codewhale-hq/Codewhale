@@ -257,7 +257,7 @@ fn ensure_native_skill_file_present(skill: &Skill) -> Result<(), ToolError> {
         skill.name,
         skill.path.display()
     );
-    crate::logging::warn(&message);
+    codewhale_runtime::logging::warn(&message);
     Err(ToolError::execution_failed(message))
 }
 
@@ -472,11 +472,13 @@ mod tests {
             plugin_id: "workspace/1/demo".to_string(),
             plugin_name: "demo".to_string(),
             native_registration: None,
-            authority: Box::new(crate::plugins::types::PluginAuthority {
-                plugin_id: crate::plugins::types::PluginId("workspace/1/demo".to_string()),
+            authority: Box::new(codewhale_config::PluginAuthority {
+                plugin_id: codewhale_config::PluginId("workspace/1/demo".to_string()),
                 plugin_name: "demo".to_string(),
                 workspace: tmp.path().to_path_buf(),
                 state_path: tmp.path().join("state.json"),
+                managed_policy_path: Some(tmp.path().join("managed-policy.json")),
+                managed_policy_source: Some(tmp.path().join("managed-policy.json")),
                 source_manifest: tmp.path().join("plugin.toml"),
                 staged_manifest: tmp.path().join("staged/plugin.toml"),
                 content_hash: "0".repeat(64),
@@ -507,11 +509,13 @@ mod tests {
                 plugin_id: "workspace/123/demo".to_string(),
                 plugin_name: "demo".to_string(),
                 native_registration: None,
-                authority: Box::new(crate::plugins::types::PluginAuthority {
-                    plugin_id: crate::plugins::types::PluginId("workspace/123/demo".to_string()),
+                authority: Box::new(codewhale_config::PluginAuthority {
+                    plugin_id: codewhale_config::PluginId("workspace/123/demo".to_string()),
                     plugin_name: "demo".to_string(),
                     workspace: tmp.path().to_path_buf(),
                     state_path: tmp.path().join("state.json"),
+                    managed_policy_path: Some(tmp.path().join("managed-policy.json")),
+                    managed_policy_source: Some(tmp.path().join("managed-policy.json")),
                     source_manifest: tmp.path().join("plugin.toml"),
                     staged_manifest: tmp.path().join("staged/plugin.toml"),
                     content_hash: "0".repeat(64),
@@ -792,7 +796,7 @@ mod tests {
         );
 
         // Keep this test independent of the process-native home directory:
-        // `crate::config::effective_home_dir()` cannot be redirected reliably after process start
+        // `codewhale_paths::user_home()` cannot be redirected reliably after process start
         // on Windows. The injected-home discovery test in `skills::tests`
         // separately proves that ~/.codewhale/skills enters the default catalog.
         let context = ToolContext::new(&workspace).with_skills_config(
@@ -886,8 +890,8 @@ mod tests {
             .await
             .unwrap();
         assert!(listing.content.contains("model"));
-        assert!(!listing.content.contains("explicit"));
-        assert!(!listing.content.contains("disabled"));
+        assert!(!listing.content.contains("  - explicit"));
+        assert!(!listing.content.contains("  - disabled"));
         let query = tool
             .execute(json!({"query":"explicit"}), &context)
             .await

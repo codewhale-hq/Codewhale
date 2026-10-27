@@ -24,7 +24,6 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::config::Config;
 use crate::fleet::store::{
     FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets, migrate_legacy_roster,
     selected_fleet, set_selected,
@@ -36,6 +35,7 @@ use crate::tui::views::{
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::Config;
 
 /// Rows one PageUp/PageDown travels. Pages clamp at the ends per the shared
 /// vocabulary instead of wrapping (#6290).
@@ -632,9 +632,9 @@ fn legacy_profile_file_count(workspace: &std::path::Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::fleet::store::{FleetFile, save_fleet};
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_runtime::config::Config;
     use std::sync::OnceLock;
 
     fn sealed_home() -> &'static std::path::Path {

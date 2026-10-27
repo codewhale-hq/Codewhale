@@ -108,7 +108,7 @@ fn legacy_auto_approve_bit_folds_into_the_context_posture() {
         "a context with no authority runs under Ask"
     );
 
-    let yolo = ToolContext::with_auto_approve(".", false, "notes.md", "mcp.json", true);
+    let yolo = ToolContext::with_auto_approve(".", false, "notes.md", true);
     assert!(yolo.auto_approve);
     assert_eq!(
         yolo.approval_mode,
@@ -427,11 +427,10 @@ fn process_tool_authority_inherits_into_all_context_constructors() {
         })
         .expect("install process authority once in isolated child");
         let notes = tmp.path().join("notes.md");
-        let mcp = tmp.path().join("mcp.json");
         let contexts = [
             ToolContext::new(tmp.path().to_path_buf()),
-            ToolContext::with_options(tmp.path().to_path_buf(), false, notes.clone(), mcp.clone()),
-            ToolContext::with_auto_approve(tmp.path().to_path_buf(), false, notes, mcp, true),
+            ToolContext::with_options(tmp.path().to_path_buf(), false, notes.clone()),
+            ToolContext::with_auto_approve(tmp.path().to_path_buf(), false, notes, true),
         ];
         for context in contexts {
             let authority = context
@@ -640,7 +639,7 @@ fn test_resolve_home_path_unknown_home_fails_explicitly_without_cwd_guessing() {
 fn test_tool_context_resolve_path_home_prefix_inside_workspace() {
     // The fixture lives inside the home, so the home must be the test's own.
     let _sealed = crate::test_support::SealedHome::new();
-    let real_home = crate::config::effective_home_dir().expect("test home must be available");
+    let real_home = codewhale_paths::user_home().expect("test home must be available");
     let home_temp = tempfile::Builder::new()
         .prefix("cw_spec_test_home_")
         .tempdir_in(&real_home)
@@ -681,7 +680,7 @@ fn test_tool_context_resolve_path_home_prefix_restricted_refusal() {
 fn test_tool_context_resolve_path_home_prefix_trusted_external_path() {
     // The fixture lives inside the home, so the home must be the test's own.
     let _sealed = crate::test_support::SealedHome::new();
-    let real_home = crate::config::effective_home_dir().expect("test home must be available");
+    let real_home = codewhale_paths::user_home().expect("test home must be available");
     let trusted_dir = tempfile::Builder::new()
         .prefix("cw_spec_trusted_home_")
         .tempdir_in(&real_home)
@@ -756,14 +755,14 @@ fn delegated_shell_is_refused_outright_when_the_session_lacks_it() {
 
     // Leaving the flag out would fall back to the host default, which may
     // allow shell: a session without full shell must store an explicit "no".
-    ctx.shell_policy = crate::worker_profile::ShellPolicy::None;
+    ctx.shell_policy = codewhale_agent_contract::worker_profile::ShellPolicy::None;
     assert_eq!(ctx.cap_delegated_authority(None, None, None).0, Some(false));
     assert_eq!(
         ctx.cap_delegated_authority(Some(true), None, None).0,
         Some(false)
     );
 
-    ctx.shell_policy = crate::worker_profile::ShellPolicy::Full;
+    ctx.shell_policy = codewhale_agent_contract::worker_profile::ShellPolicy::Full;
     assert_eq!(ctx.cap_delegated_authority(None, None, None).0, None);
     assert_eq!(
         ctx.cap_delegated_authority(Some(true), None, None).0,

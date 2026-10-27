@@ -187,6 +187,7 @@ pub struct ConfigStatusView {
     pub cache_miss_tokens: u32,
     pub cost: f64,
     pub currency: CommandCurrency,
+    pub cost_label: Option<String>,
     pub metrics: StatusMetrics,
     pub ascii_safe: bool,
     pub tool_outputs: StatusToolOutputs,

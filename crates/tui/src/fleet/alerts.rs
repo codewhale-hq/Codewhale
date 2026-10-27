@@ -168,54 +168,6 @@ impl FleetAlertEvent {
         })
     }
 
-    pub fn restart_exhausted(
-        run_id: FleetRunId,
-        worker_id: impl Into<String>,
-        task_id: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::RestartExhausted,
-            run_id,
-            worker_id: Some(worker_id.into()),
-            task_id: Some(task_id.into()),
-            status: "failed".to_string(),
-            reason: reason.into(),
-        }
-    }
-
-    pub fn needs_human(
-        run_id: FleetRunId,
-        worker_id: Option<String>,
-        task_id: Option<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::NeedsHuman,
-            run_id,
-            worker_id,
-            task_id,
-            status: "needs_human".to_string(),
-            reason: reason.into(),
-        }
-    }
-
-    pub fn budget_exceeded(
-        run_id: FleetRunId,
-        worker_id: Option<String>,
-        task_id: Option<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::BudgetExceeded,
-            run_id,
-            worker_id,
-            task_id,
-            status: "budget_exceeded".to_string(),
-            reason: reason.into(),
-        }
-    }
-
     pub fn verifier_failed(receipt: &FleetReceipt) -> Option<Self> {
         if receipt.failure_kind != Some(FleetTaskFailureKind::Verifier) {
             return None;
@@ -335,7 +287,7 @@ fn send_alert<R>(
 where
     R: FleetAlertSecretResolver,
 {
-    let client = crate::tls::reqwest_blocking_client_builder()
+    let client = codewhale_release::tls::reqwest_blocking_client_builder()
         .timeout(Duration::from_secs(DEFAULT_ALERT_TIMEOUT_SECONDS))
         .build()
         .context("building Fleet alert HTTP client")?;

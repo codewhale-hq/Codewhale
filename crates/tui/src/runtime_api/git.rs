@@ -52,7 +52,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::dependencies::{ExternalTool as _, Git};
+use codewhale_dependencies::{ExternalTool as _, Git};
 
 use super::workspace::{
     FILE_SERVE_MAX_BYTES, canonical_workspace, collect_workspace_status, content_revision,
@@ -113,7 +113,7 @@ async fn git_read(workspace: &FsPath, args: &[&str]) -> Result<GitRun, ApiError>
     let mut command = tokio::process::Command::from(command);
     command.args(args);
     finish_git(
-        crate::process_tree::contained_output(&mut command),
+        codewhale_runtime::process_tree::contained_output(&mut command),
         GIT_READ_TIMEOUT,
     )
     .await
@@ -121,7 +121,7 @@ async fn git_read(workspace: &FsPath, args: &[&str]) -> Result<GitRun, ApiError>
 
 /// Write path for operator-driven mutations. Non-interactive by contract:
 /// [`Git::tokio_command`] carries the shared no-prompt environment
-/// ([`crate::dependencies::apply_git_noninteractive_env`]) so a credential or
+/// ([`codewhale_dependencies::apply_git_noninteractive_env`]) so a credential or
 /// key prompt can never hang the request. Hooks and filters run exactly as they do for the user's own
 /// `git` — a Review-sheet commit is the user's commit.
 async fn git_write(workspace: &FsPath, args: Vec<String>) -> Result<GitRun, ApiError> {
@@ -131,7 +131,7 @@ async fn git_write(workspace: &FsPath, args: Vec<String>) -> Result<GitRun, ApiE
     // Contained: hooks and filters run here, and a timeout or a dropped
     // request must end them too, not only the `git` process itself.
     finish_git(
-        crate::process_tree::contained_output(&mut command),
+        codewhale_runtime::process_tree::contained_output(&mut command),
         GIT_WRITE_TIMEOUT,
     )
     .await
@@ -250,6 +250,9 @@ pub(super) struct GitStatusDetailResponse {
     files: Vec<GitFileEntry>,
     branches: Vec<String>,
     remotes: Vec<String>,
+    remote_repositories: Vec<Value>,
+    branch_preconditions: bool,
+    diff_options: bool,
 }
 
 pub(super) async fn git_status_detail(
@@ -281,6 +284,9 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
         files: Vec::new(),
         branches: Vec::new(),
         remotes: Vec::new(),
+        remote_repositories: Vec::new(),
+        branch_preconditions: true,
+        diff_options: true,
     };
     if !status.git_repo {
         return Ok(detail);
@@ -308,6 +314,44 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
             .collect();
     }
     detail.head_oid = head_oid(workspace).ok().flatten();
+    for name in &detail.remotes {
+        if let Ok(remote) = run_git_sync(workspace, &["remote", "get-url", "--", name]) {
+            let remote = remote.trim();
+            let path = remote
+                .strip_prefix("git@github.com:")
+                .map(str::to_string)
+                .or_else(|| {
+                    url::Url::parse(remote)
+                        .ok()
+                        .filter(|url| {
+                            matches!(url.scheme(), "https" | "ssh")
+                                && url.host_str() == Some("github.com")
+                                && url.query().is_none()
+                                && url.fragment().is_none()
+                        })
+                        .map(|url| url.path().trim_start_matches('/').to_string())
+                });
+            if let Some(path) = path {
+                let repo = path.trim_end_matches('/').trim_end_matches(".git");
+                let parts: Vec<_> = repo.split('/').collect();
+                if parts.len() == 2
+                    && parts.iter().all(|part| {
+                        !part.is_empty()
+                            && part.len() <= 100
+                            && *part != "."
+                            && *part != ".."
+                            && part
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+                    })
+                {
+                    detail
+                        .remote_repositories
+                        .push(json!({"name": name, "provider": "github", "repo": repo}));
+                }
+            }
+        }
+    }
     if let Ok(frame) = RepoFrame::read(workspace)
         && let Ok((rows, complete)) = status_rows(workspace, &frame)
     {
@@ -1074,6 +1118,49 @@ async fn diff_base(workspace: &FsPath) -> Result<String, ApiError> {
     })
 }
 
+async fn selected_diff_base(
+    workspace: &FsPath,
+    selected: Option<&str>,
+) -> Result<String, ApiError> {
+    let Some(selected) = selected.filter(|value| !value.is_empty()) else {
+        return diff_base(workspace).await;
+    };
+    if selected.len() > 256 || selected.starts_with('-') || selected.chars().any(char::is_control) {
+        return Err(ApiError::bad_request(
+            "Choose a valid base branch or commit",
+        ));
+    }
+    let reference = format!("{selected}^{{commit}}");
+    let found = git_read(
+        workspace,
+        &["rev-parse", "--verify", "--end-of-options", &reference],
+    )
+    .await?;
+    if !found.status_success
+        || !matches!(found.stdout.trim().len(), 40 | 64)
+        || !found
+            .stdout
+            .trim()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(ApiError::bad_request(
+            "The base branch or commit is unavailable in this workspace",
+        ));
+    }
+    Ok(found.stdout.trim().to_string())
+}
+
+fn diff_context(value: Option<usize>) -> Result<String, ApiError> {
+    let value = value.unwrap_or(3);
+    if value > 10_000 {
+        return Err(ApiError::bad_request(
+            "Diff context must be at most 10000 lines",
+        ));
+    }
+    Ok(format!("--unified={value}"))
+}
+
 /// Byte-bounded cut at a char boundary; reports whether bytes were dropped.
 fn bounded_patch(text: &str, limit: usize) -> (String, bool) {
     if text.len() <= limit {
@@ -1091,6 +1178,9 @@ fn bounded_patch(text: &str, limit: usize) -> (String, bool) {
 pub(super) struct GitDiffQuery {
     /// Workspace-relative file; may name a deleted file (the diff survives).
     path: String,
+    base: Option<String>,
+    context: Option<usize>,
+    ignore_whitespace: Option<bool>,
 }
 
 /// `GET /v1/diff?path=` — one file's unified diff against HEAD (or the empty
@@ -1104,9 +1194,15 @@ pub(super) async fn git_diff(
     let path = relative_request_path(&query.path, false)?;
     let workspace = canonical_workspace(&state.workspace)?;
     require_repo(&workspace)?;
-    let base = diff_base(&workspace).await?;
+    let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
+    let context = diff_context(query.context)?;
     let path_arg = path.to_string_lossy().into_owned();
-    let run = git_read(&workspace, &file_diff_args(&base, &path_arg)).await?;
+    let mut args = file_diff_args(&base, &path_arg);
+    args.insert(3, &context);
+    if query.ignore_whitespace == Some(true) {
+        args.insert(3, "--ignore-all-space");
+    }
+    let run = git_read(&workspace, &args).await?;
     if !run.status_success {
         return Err(ApiError::internal(format!(
             "git diff failed: {}",
@@ -1160,6 +1256,9 @@ fn file_diff_args<'a>(base: &'a str, path: &'a str) -> Vec<&'a str> {
 pub(super) struct WorkspaceDiffQuery {
     /// Byte cap on the returned patch (default 256 KiB, max 4 MiB).
     limit: Option<usize>,
+    base: Option<String>,
+    context: Option<usize>,
+    ignore_whitespace: Option<bool>,
 }
 
 /// `GET /v1/workspace/diff?limit=` — the whole tree's diff against HEAD plus
@@ -1177,10 +1276,14 @@ pub(super) async fn workspace_diff(
     }
     let workspace = canonical_workspace(&state.workspace)?;
     require_repo(&workspace)?;
-    let base = diff_base(&workspace).await?;
+    let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
+    let context = diff_context(query.context)?;
 
     let mut numstat_args = vec!["diff", "--numstat"];
     numstat_args.extend(Git::REVIEW_DIFF_ARGS);
+    if query.ignore_whitespace == Some(true) {
+        numstat_args.push("--ignore-all-space");
+    }
     numstat_args.push(&base);
     let numstat = git_read(&workspace, &numstat_args).await?;
     if !numstat.status_success {
@@ -1208,6 +1311,10 @@ pub(super) async fn workspace_diff(
 
     let mut diff_args = vec!["diff", "--no-color"];
     diff_args.extend(Git::REVIEW_DIFF_ARGS);
+    diff_args.push(&context);
+    if query.ignore_whitespace == Some(true) {
+        diff_args.push("--ignore-all-space");
+    }
     diff_args.push(&base);
     let run = git_read(&workspace, &diff_args).await?;
     if !run.status_success {
@@ -1337,6 +1444,8 @@ pub(super) struct GitBranchRequest {
     /// Create and switch (`git switch -c`); default is switch to existing.
     #[serde(default)]
     create: bool,
+    #[serde(default)]
+    expect: Option<GitExpect>,
 }
 
 #[derive(Deserialize)]
@@ -1936,11 +2045,24 @@ pub(super) async fn git_branch(
     if name.is_empty() || name.len() > MAX_BRANCH_NAME_BYTES {
         return Err(ApiError::bad_request("name is required").into());
     }
+    let expect = validate_expect(request.expect, ExpectTarget::Commit)?;
+    let _admission = state.runtime_threads.session_checkpoint_guard().await;
     // Switching rewrites the worktree and index, so it shares the lock with
     // stage/discard/commit.
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
     let workspace = canonical_workspace(&state.workspace)?;
     require_repo(&workspace)?;
+    state
+        .runtime_threads
+        .reject_active_turns_in_workspace(&workspace)
+        .await
+        .map_err(|error| ApiError::conflict(error.to_string()))?;
+    if !expect.is_empty() {
+        let root = workspace.clone();
+        tokio::task::spawn_blocking(move || check_preconditions(&root, &expect))
+            .await
+            .map_err(|_| ApiError::internal("git precondition check failed"))???;
+    }
     // `check-ref-format --branch` is the ref authority — it rejects option
     // lookalikes, `..`, `@{`, control bytes, and every other unsafe name.
     let check = git_write(
@@ -2709,11 +2831,13 @@ mod tests {
             "alias.hang=!sleep 300 & echo $! > hang.pid; wait".to_string(),
             "hang".to_string(),
         ];
-        let grandchild =
-            crate::process_tree::drop_once_pid_written(git_write(tmp.path(), args), &pid_file)
-                .await;
+        let grandchild = codewhale_runtime::process_tree::drop_once_pid_written(
+            git_write(tmp.path(), args),
+            &pid_file,
+        )
+        .await;
         assert!(
-            crate::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
+            codewhale_runtime::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
             "a process git started outlived the dropped request"
         );
     }

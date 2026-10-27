@@ -478,6 +478,12 @@ pub enum EventMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
     },
+    ProviderRequestReceipt {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        receipt: Value,
+    },
+
     /// Usage for one model call within the turn.
     TurnUsage {
         #[serde(
@@ -746,6 +752,8 @@ pub enum EventMsg {
         messages: Vec<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instruction_assembly: Option<Value>,
         model: String,
         workspace: PathBuf,
     },
@@ -897,6 +905,7 @@ impl EventMsg {
             Self::WorkspaceSnapshotTaken { .. } => "workspace_snapshot_taken",
             Self::RouteDispatched { .. } => "route_dispatched",
             Self::TurnComplete { .. } => "turn_complete",
+            Self::ProviderRequestReceipt { .. } => "provider_request_receipt",
             Self::TurnUsage { .. } => "turn_usage",
             Self::RoutedTurnUsage { .. } => "routed_turn_usage",
             Self::GoalUpdated { .. } => "goal_updated",
@@ -957,6 +966,7 @@ impl EventMsg {
             | Self::WorkspaceSnapshotTaken { thread_id, .. }
             | Self::RouteDispatched { thread_id, .. }
             | Self::TurnComplete { thread_id, .. }
+            | Self::ProviderRequestReceipt { thread_id, .. }
             | Self::TurnUsage { thread_id, .. }
             | Self::RoutedTurnUsage { thread_id, .. }
             | Self::GoalUpdated { thread_id, .. }
@@ -1017,6 +1027,7 @@ impl EventMsg {
             | Self::WorkspaceSnapshotTaken { session_id, .. }
             | Self::RouteDispatched { session_id, .. }
             | Self::TurnComplete { session_id, .. }
+            | Self::ProviderRequestReceipt { session_id, .. }
             | Self::TurnUsage { session_id, .. }
             | Self::RoutedTurnUsage { session_id, .. }
             | Self::GoalUpdated { session_id, .. }
@@ -1487,6 +1498,7 @@ mod tests {
                 engine_session_id: "sess".into(),
                 messages: vec![json!({"role": "user", "content": []})],
                 system_prompt: Some(json!("sys")),
+                instruction_assembly: None,
                 model: "m".into(),
                 workspace: PathBuf::from("/ws"),
             },

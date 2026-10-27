@@ -13,7 +13,7 @@
 //!
 //! Every mechanism is fed a [`NotificationPayload`] — a typed, bounded,
 //! redaction-aware value — rather than a free-form `String` (#4834). See
-//! [`crate::notify::payload`] for the per-kind disclosure
+//! [`codewhale_notify::payload`] for the per-kind disclosure
 //! policy.
 //!
 //! Delivery is governed by one [`NotificationGate`] (#5041):
@@ -27,13 +27,13 @@ use std::sync::atomic::{AtomicU8, AtomicU64};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::notify::delivery::notify_with_sinks;
+use codewhale_notify::delivery::notify_with_sinks;
 #[cfg(test)]
-use crate::notify::delivery::resolve_method;
+use codewhale_notify::delivery::resolve_method;
 #[cfg(test)]
-use crate::notify::payload::NotificationKind;
-pub use crate::notify::payload::NotificationPayload;
-use crate::notify::{
+use codewhale_notify::payload::NotificationKind;
+pub use codewhale_notify::payload::NotificationPayload;
+use codewhale_notify::{
     AttentionCondition, DeliveryOutcome, Method, NotificationGate, attention_delivery_allowed_at,
     settings_projection,
 };
@@ -147,7 +147,7 @@ pub fn notify_done_to<W: Write>(
     gate: NotificationGate,
     sink: &mut W,
 ) -> DeliveryOutcome {
-    let mut policy = crate::notify::sound_policy::EventSoundPolicy::default();
+    let mut policy = codewhale_notify::sound_policy::EventSoundPolicy::default();
     notify_with_sinks(
         method,
         in_tmux,
@@ -157,8 +157,14 @@ pub fn notify_done_to<W: Write>(
         gate,
         true,
         sink,
-        &mut |kind, bell| policy.decide(crate::notify::sound_policy::event_for_kind(kind), 0, bell),
-        &mut crate::notify::audio::emit_terminal,
+        &mut |kind, bell| {
+            policy.decide(
+                codewhale_notify::sound_policy::event_for_kind(kind),
+                0,
+                bell,
+            )
+        },
+        &mut codewhale_notify::audio::emit_terminal,
         &mut |_| DeliveryOutcome::UnsupportedTransport,
     )
 }
@@ -168,7 +174,7 @@ pub fn notify_done_to<W: Write>(
 /// With `method = Auto`, selects the best protocol for the current terminal
 /// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or macOS). Unknown terminals
 /// remain unsupported; explicit method Off suppresses audio and banners.
-/// See [`crate::notify::delivery::resolve_method`] for the canonical resolution table. Pass
+/// See [`codewhale_notify::delivery::resolve_method`] for the canonical resolution table. Pass
 /// `in_tmux = true` (i.e. `$TMUX` is non-empty at runtime) to wrap OSC
 /// sequences in a DCS passthrough.
 pub fn notify_done(
@@ -189,28 +195,28 @@ pub fn notify_done(
         attention_delivery_allowed(),
         &mut io::stdout(),
         &mut |kind, bell| {
-            let now_ms = crate::notify::sound_policy::epoch_millis_now();
-            let decision = crate::notify::sound_policy::decide(kind, now_ms, bell);
+            let now_ms = codewhale_notify::sound_policy::epoch_millis_now();
+            let decision = codewhale_notify::sound_policy::decide(kind, now_ms, bell);
             if matches!(
                 decision,
-                crate::notify::sound_policy::SoundDecision::Play(_)
+                codewhale_notify::sound_policy::SoundDecision::Play(_)
             ) {
                 reserved.set(Some((kind, now_ms)));
             }
             decision
         },
         &mut |cue, sink| {
-            let outcome = crate::notify::audio::dispatch(cue, sink);
+            let outcome = codewhale_notify::audio::dispatch(cue, sink);
             // A cue that never played must not spend the category's repeat
             // window: the next notification may try again (U06-m3).
             if matches!(
                 outcome,
-                crate::notify::audio::AudioOutcome::Busy
-                    | crate::notify::audio::AudioOutcome::Unsupported
-                    | crate::notify::audio::AudioOutcome::Failed
+                codewhale_notify::audio::AudioOutcome::Busy
+                    | codewhale_notify::audio::AudioOutcome::Unsupported
+                    | codewhale_notify::audio::AudioOutcome::Failed
             ) && let Some((kind, reserved_ms)) = reserved.take()
             {
-                crate::notify::sound_policy::release(kind, reserved_ms);
+                codewhale_notify::sound_policy::release(kind, reserved_ms);
             }
             outcome
         },
@@ -736,20 +742,20 @@ use crate::tui::app::App;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 
-pub fn settings(config: &crate::config::Config) -> Option<(Method, Duration, bool)> {
+pub fn settings(config: &codewhale_runtime::config::Config) -> Option<(Method, Duration, bool)> {
     apply_settings(&config.notifications_config())
 }
 
 /// Install the process-wide method, gate, sound policy and attention
 /// condition from `[notifications]`; returns the resolved projection.
 pub(crate) fn apply_settings(
-    notif: &crate::config::NotificationsConfig,
+    notif: &codewhale_config::notifications::NotificationsConfig,
 ) -> Option<(Method, Duration, bool)> {
     // Install the category/quiet gate (#5041) so `notify_done` honors
     // `[notifications].quiet` and `[notifications.events]`.
     install_notification_gate(NotificationGate::from_config(notif));
-    crate::notify::sound_policy::reconfigure(
-        crate::notify::sound_policy::EventSoundPolicy::from_config(notif),
+    codewhale_notify::sound_policy::reconfigure(
+        codewhale_notify::sound_policy::EventSoundPolicy::from_config(notif),
     );
     let projection = settings_projection(notif);
     let method = projection.map_or(Method::Off, |(method, _, _)| method);
@@ -757,15 +763,15 @@ pub(crate) fn apply_settings(
 
     let condition = notif
         .condition
-        .unwrap_or(crate::config::NotificationCondition::Unfocused);
+        .unwrap_or(codewhale_config::notifications::NotificationCondition::Unfocused);
     match condition {
-        crate::config::NotificationCondition::Always => {
+        codewhale_config::notifications::NotificationCondition::Always => {
             install_attention_condition(AttentionCondition::Always);
         }
-        crate::config::NotificationCondition::Unfocused => {
+        codewhale_config::notifications::NotificationCondition::Unfocused => {
             install_attention_condition(AttentionCondition::Unfocused);
         }
-        crate::config::NotificationCondition::Never => {
+        codewhale_config::notifications::NotificationCondition::Never => {
             install_attention_condition(AttentionCondition::Never);
         }
     }
@@ -926,7 +932,7 @@ pub fn text_summary(text: &str) -> Option<String> {
 mod tests {
 
     use super::*;
-    use crate::notify::DEFAULT_UNFOCUSED_GRACE;
+    use codewhale_notify::DEFAULT_UNFOCUSED_GRACE;
 
     /// Moved from `tools::notify`: the `notify` tool's emission chain, where
     /// the installed method decides suppression before any sink write.
@@ -968,7 +974,7 @@ mod tests {
         let previous_condition = current_attention_condition();
         // `condition = "always"` so the attention policy (checked first) lets
         // the call reach the method check whatever the test runner's focus.
-        let off: crate::config::Config = toml::from_str(
+        let off: codewhale_runtime::config::Config = toml::from_str(
             r#"
             [notifications]
             method = "off"
@@ -1357,7 +1363,7 @@ mod tests {
     fn settings_installs_gate_from_config() {
         let _lock = env_lock();
         let _gate_restore = NotificationGateRestore::capture();
-        let config: crate::config::Config = toml::from_str(
+        let config: codewhale_runtime::config::Config = toml::from_str(
             r#"
             [notifications]
             quiet = true
@@ -1398,7 +1404,7 @@ mod tests {
     fn settings_installs_configured_method_from_config() {
         let _lock = env_lock();
         let _method_restore = ConfiguredMethodRestore::capture();
-        let off: crate::config::Config = toml::from_str(
+        let off: codewhale_runtime::config::Config = toml::from_str(
             r#"
             [notifications]
             method = "off"
@@ -1408,7 +1414,7 @@ mod tests {
         let _ = settings(&off);
         assert_eq!(configured_method(), Method::Off);
 
-        let osc9: crate::config::Config = toml::from_str(
+        let osc9: codewhale_runtime::config::Config = toml::from_str(
             r#"
             [notifications]
             method = "osc9"
@@ -1468,7 +1474,7 @@ mod tests {
         for &locale in Locale::shipped_complete() {
             let mut app = App::new(
                 crate::tui::test_support::test_tui_options(std::path::PathBuf::from(".")),
-                &crate::config::Config::default(),
+                &codewhale_runtime::config::Config::default(),
             );
             app.ui_locale = locale;
             let tool = "failed";
@@ -1682,7 +1688,7 @@ mod tests {
         assert!(body.ends_with("..."));
         assert_eq!(
             body.chars().count(),
-            crate::notify::payload::PREVIEW_MAX_CHARS
+            codewhale_notify::payload::PREVIEW_MAX_CHARS
         );
     }
 
@@ -2280,9 +2286,11 @@ mod tideline_tests;
 #[cfg(test)]
 mod unified_audio_tests {
     use super::*;
-    use crate::config::{CompletionSound, NotificationConfigUpdate, NotificationsConfig};
-    use crate::notify::audio::AudioOutcome;
-    use crate::notify::sound_policy::{self, EventSoundPolicy, SoundCue, SoundDecision};
+    use codewhale_config::notifications::{
+        CompletionSound, NotificationConfigUpdate, NotificationsConfig,
+    };
+    use codewhale_notify::audio::AudioOutcome;
+    use codewhale_notify::sound_policy::{self, EventSoundPolicy, SoundCue, SoundDecision};
 
     fn payloads() -> [NotificationPayload; 6] {
         [

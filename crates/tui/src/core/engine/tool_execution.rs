@@ -586,7 +586,11 @@ impl Engine {
             .as_ref()
             .or_else(|| registry.map(|registry| registry.context()))
         {
-            super::tool_catalog::enforce_tool_denial(context, &tool_name, &tool_input)?;
+            crate::tools::execution_envelope::enforce_tool_denial(
+                context,
+                &tool_name,
+                &tool_input,
+            )?;
         }
 
         let tool_authority = context_override

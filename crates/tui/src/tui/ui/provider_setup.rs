@@ -51,7 +51,7 @@ impl ProviderKeyVerifier for LiveProviderKeyVerifier {
 /// endpoint; account-scoped endpoints are re-fenced by
 /// `begin_refresh_for_identity`.
 pub(crate) fn publish_verified_roster(
-    identity: &crate::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     base_url: &str,
     roster: Option<codewhale_config::catalog::ProviderCatalogDelta>,
 ) {
@@ -115,7 +115,7 @@ impl RuntimePresetFileSnapshot {
 
     fn restore(&self) -> Result<()> {
         match &self.contents {
-            Some(contents) => crate::utils::write_atomic(&self.path, contents)
+            Some(contents) => codewhale_util::utils::write_atomic(&self.path, contents)
                 .with_context(|| format!("failed to restore {}", self.path.display())),
             None => match std::fs::remove_file(&self.path) {
                 Ok(()) => Ok(()),

@@ -2,7 +2,7 @@
 
 > 阅读简体中文版：[zh_hans/RUNTIME_API.md](zh_hans/RUNTIME_API.md)。
 
-`codewhale app-server` exposes the [Codewhale Engine](ARCHITECTURE.md) through
+`codewhale app-server --http` exposes the [Codewhale Engine](ARCHITECTURE.md) through
 its canonical local Runtime API and control plane.
 Local SDKs, mobile/remote-control clients, and editor integrations talk to it
 instead of screen-scraping terminal output. It serves the full HTTP/SSE runtime
@@ -13,7 +13,9 @@ such as Zed.
 
 `codewhale serve --http` / `serve --mobile` remain as **compatibility aliases**
 for `codewhale app-server --http` / `--mobile`; both launch the identical
-server. New integrations should target `app-server`.
+server. Desktop, web, SDK and custom integrations should target
+`app-server --http`. Bare `app-server`, `--stdio` and `--socket` select smaller
+compatibility interfaces, not the full Engine API.
 
 `codewhale exec` is the separate one-shot headless worker path (stream-json,
 fleet worker subprocess, CI primitive). It is not part of this API, but it
@@ -53,9 +55,9 @@ For the read-only record of what a thread or turn did, see
 | `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser |
 | `codewhale app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
-| `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Local SDK / control probe (no listener) |
+| `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Compatibility controls and explicit tool-free turns; no full Engine event or approval/input channel. |
 | `codewhale app-server --socket [--socket-path P]` | JSON-RPC 2.0 over a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
-| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Legacy in-process app-server (`/healthz`, `/thread`, `/app`, `/prompt`); background jobs are `GET /v1/jobs` on the Runtime API; `/prompt` and `/thread` messages execute real turns via the runtime bridge. There is no direct `/tool` route: tools run only inside Engine turns, under the Engine's tool catalog and approval posture. This legacy server does not surface approvals: its bridge forwards only text deltas and the turn's completion, and it has no decision route, so an approval-gated call waits unanswered. Drive approval-gated work through the Runtime API (`/v1/threads/*` events and `POST /v1/approvals/{approval_id}`) |
+| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`. Turn requests require explicit `allowed_tools: []`; interactive execution fails before a turn starts. Use `app-server --http` for tools, approvals, clarification, goal execution, steering and the full event journal. |
 | `codewhale serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
 
 `app-server --http` and `--mobile` launch the same mature runtime API server
@@ -123,7 +125,7 @@ prompt/tool prefix.
 
 ### Workspace files and session artifacts
 
-Native clients (the GPUI desktop's Files and Preview modules) browse and edit
+Native clients browse and edit
 the server's configured workspace through three authenticated routes. They
 read and write the workspace directly; there is no second file store, cache
 or index, and no path override: the workspace root is the only root.
@@ -378,6 +380,19 @@ response because an older tolerant reader may ignore an unknown request field.
 `capabilities.turn_operation_lookup: true` separately advertises the read-only
 operation lookup below; clients must require it before relying on GET-based
 recovery of a lost turn response.
+
+`capabilities.thread_create_idempotency: true` separately advertises
+`POST /v1/threads` with `operation_key` (or `operationKey`). Keys use the same
+validation as turn operation keys and are scoped to the Runtime store owner.
+Exact retries return the original thread, including after response loss or
+restart; a different effective request with the same key returns HTTP 409.
+The fingerprint includes the resolved model/provider, workspace, reasoning,
+permission and shell policy, tool allowlist, archival state, prompt/task fields,
+dynamic tools and environments. Creation defaults are resolved before comparison.
+Operation records retain only fingerprints and reserved identity, never the raw
+key. Missing committed thread data is an error, never permission to create a
+replacement. Clients must require this capability before relying on creation
+replay, because an older reader may silently ignore an unknown request field.
 The response also includes a token-free account receipt:
 
 ```json
@@ -424,16 +439,10 @@ local integration clients can rely on it not changing silently.
 
 ### Daemon socket: `codewhale app-server --socket`
 
-The desktop shell (DESKTOP-APP-BRIEF §2) attaches to a long-lived daemon over
-a unix domain socket. The wire is the `--stdio` transport verbatim — the same
+The socket transport exposes compatibility controls on a long-lived daemon.
+The wire is the `--stdio` transport verbatim — the same
 newline-delimited JSON-RPC 2.0 methods, dispatched by the same code — with one
 handshake in front of it.
-
-> Note (2026-09-14): the Tauri desktop shell named above is retiring under the
-> 2026-09-14 product-client transition, and the DESKTOP-APP-BRIEF reference is
-> a dangling pointer (that brief does not exist in this repo). The GPUI client
-> in the private `codehwhale-gpui` repo is the successor daemon consumer over
-> this HTTP runtime API; the socket protocol described here is unchanged.
 
 **Endpoint.** `--socket-path` if given; else `$CODEWHALE_HOME/run/daemon.sock`
 when `CODEWHALE_HOME` is set (an explicit home is an isolation boundary); else
@@ -482,6 +491,36 @@ left running. The owner's `shutdown` stops the listener, closes every
 connection, and removes the socket file. Journal replay from a client's
 last-seen `seq` is not part of this transport yet.
 
+### Compatibility execution limits
+
+The compatibility HTTP, stdio and socket interfaces advertise
+`interactive_execution: false`, `goal_execution: false`, `tool_free_turns: true` and
+`full_api_entrypoint: "codewhale app-server --http"`. Clients must require
+`tool_free_turns: true` before relying on an empty allowlist: older compatibility
+servers may ignore the field. Every `thread/message`,
+`thread/request` message, `prompt/run`, `prompt/request` and HTTP `/prompt` or
+`/thread` message requires an explicit `allowed_tools: []`. Omitted, null or
+nonempty lists fail with `interactive_execution_unsupported` before creating a
+Runtime thread or starting a turn. Malformed lists fail parameter decoding.
+JSON-RPC reports `-32602` with `data.error: "interactive_execution_unsupported"`;
+HTTP reports 400 with `error.code: "invalid_request"`, `error.jsonrpc_code: -32602`
+and the same detail in `error.data`. Compatibility `thread/goal/set` and
+`ThreadRequest::GoalSet` also refuse before changing the goal: setting an active
+goal starts background Engine work. Reading and clearing existing goals remain
+available; starting goals uses the full Runtime HTTP API. The known method
+remains dispatchable so older clients get this actionable refusal. For example:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"thread/message","params":{"thread_id":"thr_...","input":"Summarize this conversation","allowed_tools":[]}}
+```
+
+The bridge sends the same empty allowlist to the canonical Runtime for each
+admitted turn, so a tool-enabled thread cannot widen it. It forwards assistant
+text and terminal status. Unexpected approval or clarification requests fail
+and interrupt the exact owned turn; they cannot wait silently. This deliberately
+narrows the old compatibility behavior. Tool-enabled clients must migrate to
+the authenticated `/v1/*` API and SSE rather than enabling Full Access.
+
 ### Interrupting a turn
 
 `thread/message` streams until the turn reaches a terminal state, which can
@@ -512,6 +551,7 @@ same bridge `thread/message` uses. There is no local fallback: nothing else
 in the app-server can produce model output, so a prompt either runs or fails.
 
 - `params.prompt` is required and must be non-empty (`-32602` otherwise).
+- `params.allowed_tools` must be `[]`; interactive turns use `app-server --http`.
 - `params.thread_id` is optional. With one, the prompt runs on that thread and
   its history. Without one, the runtime gets a fresh thread for that single
   turn; the mapping is dropped when the turn ends, so a one-shot prompt is not
@@ -638,16 +678,23 @@ When a headless turn calls `request_user_input`, the runtime emits a
 POST /v1/user-input/{thread_id}/{request_id}
 ```
 
-The app-server control transport cannot accept that reply.
+The compatibility control transport cannot accept that reply.
 `app/request` with `SubmitUserInput` returns `ok: false` and
-`error: "user_input_reply_unsupported"`. This is a property of the transport,
-not an omission: while a turn is streaming, the stdio loop executes only
-`thread/interrupt` and queues everything else, so an answer sent there would
-wait on the very turn that is waiting for it.
+`error: "user_input_reply_unsupported"`. Compatibility turns require an empty
+tool catalog and refuse interactive execution at admission, so this limitation
+cannot leave a supported turn waiting for an answer. The fixed catalog and
+response limitation are Codewhale implementation choices.
 
 ## SDK contract
 
-The app-server exists so an external SDK can answer — without scraping TUI
+The `@codewhale/runtime-sdk` package currently supplies Fleet helpers and
+read-only thread event streaming. It does not wrap thread creation, turn
+start/steer/interrupt, approval decisions, clarification answers or model
+discovery. Use authenticated raw HTTP for these operations; the package guide
+provides the [request recipe](../npm/runtime-sdk/README.md#full-engine-api).
+The hosted Responses SDK is a separate contract.
+
+The full `app-server --http` API exists so an external SDK can answer — without scraping TUI
 output — *what route ran, which provider/model/reasoning/permission profile was
 effective, what events happened, how many tokens were used, and how the run
 finished.* The durable Thread/Turn/Item data model already carries most of
@@ -665,7 +712,7 @@ this; the table maps each integration need to where a local client reads it.
 
 For one-shot/headless automation, prefer `codewhale exec` with explicit
 `--provider <id> --model <id>` so a failure identifies the exact provider/model
-pair. Use `app-server` when a local integration needs to start, resume, steer,
+pair. Use `app-server --http` when a local integration needs to start, resume, steer,
 or interrupt turns, list models/capabilities, follow the event stream, or read
 usage. Both paths share the same runtime, so route-effective model resolution
 and the event vocabulary match.
@@ -716,6 +763,16 @@ Full histories, tool pairs, signatures, media and partial-effect receipts are
 saved under the same checkpoint guard and session write lease used by HTTP.
 ACP display text may be shortened; the saved history is the full Core snapshot.
 
+Codewhale 0.10.2 implements a partial ACP v1 adapter. Both `session/new`
+and `session/load` reject a nonempty client-supplied `mcpServers` list with
+`-32602` before creating, resuming or returning a cached session. The field may
+be omitted or `[]`; null and other non-array values are invalid. No supplied
+command is executed during this validation. [ACP v1 requires stdio MCP support](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers);
+`mcpCapabilities.http: false` and `sse: false` only describe optional transports
+and do not establish full conformance. Use the full Runtime API and its existing
+MCP management for those integrations. The restricted tool catalog below is a
+Codewhale host profile, not an ACP protocol restriction.
+
 The trusted local ACP profile narrows Core to file/search/git/patch and admitted
 foreground shell tools. Shell requires both editor terminal support and operator
 `allow_shell`; a requested external sandbox that is unavailable removes shell.
@@ -727,6 +784,15 @@ remains read-only under Full Access. Full Access and the ordinary approval
 posture are server-owned read-only options; the editor cannot widen them.
 `approval_policy = "never"` is not an ACP posture, so the server refuses to
 start with it instead of serving it as Ask.
+
+Full Access is `yolo`. Start it with `codewhale serve --acp --full-access`
+(the flag may also come before `serve`; `--yolo` is an alias) or set
+`yolo = true` in config. A configured `sandbox_mode = "danger-full-access"` does
+not turn it on: that value can only narrow the sandbox the permission picks, so
+under Ask or Auto-Review it changes nothing, and `ask` is not a config key. At
+startup the server writes one line to stderr naming the permission and sandbox it
+will run with, so an editor's agent log shows which posture a launch command
+produced.
 
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
@@ -872,6 +938,23 @@ codewhale serve --mobile [...] [--insecure]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
+
+A Unix supervisor may pass a listening TCP socket as descriptor 3 and set
+`CODEWHALE_RUNTIME_LISTEN_FD=3` for `serve --http` or `app-server --http`.
+The Engine captures ownership before config discovery or child execution,
+sets close-on-exec, and validates TCP/listening state, disabled port sharing,
+and the exact numeric loopback host and nonzero port requested on the CLI.
+Insecure unauthenticated mode is refused. Malformed, closed, non-listening,
+wrong-address or already-consumed descriptors fail startup; only an absent
+marker permits an ordinary bind. An inherited listener cannot attach to a live
+Runtime owner, while the existing authenticated dead-owner recovery remains.
+
+The supervisor must retain its socket across normal Engine restarts and pass
+only the intended descriptor to the Engine. The Engine drops its descriptor on
+exit and never shuts down the supervisor's shared socket. Permanent shutdown
+must stop both the service and any socket-activation unit; stopping just the
+service can allow incoming traffic to reactivate it. This descriptor contract
+does not itself validate a supervisor's systemd PID or descriptor-count metadata.
 
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
@@ -1781,6 +1864,46 @@ Create and update requests accept an optional `model`. When present, each
 scheduled or manually triggered run uses that model; omitting it keeps the
 runtime's default task model.
 
+Create and update requests also accept an optional `destination_thread_id`.
+When set, each run is delivered into that existing thread as a new turn
+instead of starting a new task thread; the turn item carries
+`{"input_provenance":"scheduled","task_id":...}` metadata, and the turn uses
+the thread's own model and permission posture. If the thread is busy the run
+waits for its current turn to finish (bounded by the task wall-time budget).
+A destination that no longer exists or is archived fails the run with a
+receipt naming the thread; it is never rerouted to a new thread. An empty
+string on `PATCH` clears the destination. Create and update return `404` for
+an unknown thread and `409` for an archived one.
+
+**Delayed triggers** (one-shot messages; the HTTP face of `send_later`)
+- `GET /v1/triggers?thread_id=&status=&limit=50` — newest first; `thread_id`
+  filters by destination thread, `status` is one of `pending`,
+  `dispatching`, `fired`, `canceled`, `failed`
+- `POST /v1/triggers` — `{"message", "fire_at" | "delay_minutes",
+  "thread_id"?, "workspace"?, "owner_session_id"?}`; exactly one of `fire_at`
+  (RFC 3339, in the future) or `delay_minutes` (>= 1). `owner_session_id`
+  defaults to `thread_id` and is required without one. Returns `201` with the
+  `DelayedTriggerRecord`; honours `Idempotency-Key` like `POST
+  /v1/automations`
+- `GET /v1/triggers/{id}`
+- `DELETE /v1/triggers/{id}` — cancels a pending trigger; `409` once it has
+  been admitted
+
+A trigger with `destination_thread_id` fires into that thread exactly as an
+automation run does above. `send_later` called from inside a Runtime thread
+defaults its destination to that thread, so the reminder comes back to the
+same conversation; `thread_id: ""` keeps the old new-task-thread behaviour.
+The `automation` tool accepts the same `thread_id`. From a tool, `thread_id`
+can name only the calling thread (`"current"` or its id); targeting another
+thread is a Runtime API operation.
+
+When an automation or trigger names a destination thread, the Engine
+publishes typed events on that thread's stream: `automation.created`,
+`automation.updated` (`automation_id`, `name`, `rrule`, `status`,
+`next_run_at`), `trigger.scheduled`, `trigger.canceled` and `trigger.fired`
+(`trigger_id`, `message`, `fire_at`, `status`, `task_id`). They are
+notifications for captions, not model input.
+
 **Automation mutation preconditions.** `GET /v1/runtime/info` advertises
 `capabilities.automation_mutation_preconditions: true`; require it before
 relying on the behavior below (older Engines ignore both inputs).
@@ -1917,9 +2040,9 @@ tokens but `0.0` cost. Added in v0.8.10 (#564).
 }
 ```
 
-### Native client routes (GPUI desktop)
+### Native client routes
 
-These families serve the GPUI desktop client over the same bearer-token
+These families serve native clients over the same bearer-token
 transport. They reuse the runtime's existing authorities — the engine's shell
 manager, the durable thread store, the workspace confinement layer, the
 config's credential plumbing — and add no second runtime, session store,
@@ -2425,11 +2548,12 @@ Runtime's provider or model defaults.
 { "key": "sk-…" }
 
 // response
-{ "provider": "openai-codex", "stored": true, "backend": "keychain",
+{ "provider": "openai", "stored": true, "backend": "keychain",
   "credentialState": "configured", "configPath": "/…/config.toml" }
 ```
 
-Stores a provider API key through the same transactional write as
+The optional `scope` field accepts `"durable"` (the default) or `"session"`.
+Durable scope stores a provider API key through the same transactional write as
 `codewhale auth set --provider <id> --api-key-stdin`: the secret store under
 the provider write lock, plus the `[providers.<id>] auth_mode` metadata
 marker persisted to the config document and mirrored into the live runtime
@@ -2438,14 +2562,71 @@ names which secret backend holds the key and `configPath` which config
 document carries the marker (the user-global file when the ambient config
 is workspace-scoped).
 
+For a key held only in the running Engine's memory, send:
+
+```json
+// request
+{ "key": "sk-…", "scope": "session" }
+
+// response
+{ "provider": "openai", "stored": false, "scope": "session",
+  "backend": "memory", "credentialState": "configured" }
+```
+
+A session key matches only the exact provider identity; it never falls back to
+a sibling sharing a durable slot, such as `deepseek` and `deepseek-anthropic`.
+It is bound to the full resolved endpoint it was set for. An accepted config
+reload removes incompatible bindings; rejected reloads leave the live overlay
+unchanged. Lookups through older config snapshots cannot remove newer keys. It never applies to `auth_mode = "none"` or remote
+custom endpoints, and session writes to those routes are refused. Within those
+limits it overrides other credential sources, except a route bound to a
+required Codewhale account owner retains that requirement without fallback.
+It is never serialized or written to the secret store or config document, and
+does not change the live provider settings. It survives config reloads within
+the Engine process while the endpoint remains the same, but does not persist
+across an Engine restart. Running turns retain the key they started with;
+clearing the overlay takes effect from the next turn. The response omits
+`configPath` because no config document is saved.
+Request bodies reject unknown fields, so an older Engine that does not support
+`scope` rejects a session request instead of silently storing its key.
+
+Set `CODEWHALE_RUNTIME_KEY_SCOPE=session` before HTTP startup to require
+session-only provider keys. A durable request, including one that omits
+`scope`, returns `409`. The policy is fixed for the process and preserved
+through reloads. An unset or empty variable preserves normal behavior; any
+other value refuses server startup. Strict mode does not use stored, environment,
+subscription OAuth or configured alternate-auth headers as a fallback. Explicit
+keyless routes remain keyless. Required Codewhale account ownership remains a
+separate restriction and cannot be overridden with a session key.
+
+`GET /v1/runtime/info` advertises `capabilities.session_provider_keys: true`
+only in this strict mode, where both set and clear are memory-only. Browser
+sign-in is unavailable in this mode. Ordinary subagents share the in-process
+credential context, but external Fleet workers resolve their own credentials
+and have no session-key handoff. Strict mode therefore refuses Fleet creation,
+activation, restart and launch, including restored leases, and advertises its
+Fleet create/start/local-target capabilities as false. It never forwards a
+provider key through a worker command line, environment or config file.
+Other configuration and MCP routes may still write their non-key settings to
+disk; this is a provider credential policy, not a read-only filesystem.
+
+Memory-only custody is not a vault: anyone with root access on the machine can
+read a running Engine's memory. The key is not zeroized or locked against swap,
+and this route does not protect it from a snapshot that captures process
+memory. Existing process hardening disables core dumps on Linux when its
+hardening calls succeed; failures log a warning, and that hardening is a no-op
+on other platforms.
+
 The key is never returned — there is no read route for credential material,
 and neither the key nor its length appears in the response, errors, or
 logs; the response carries only the readiness projection
 (`credentialState`). An unknown provider id, the `deepseek-cn` legacy
-alias, an empty key, a key over 4 KiB, or one containing control characters
-is `400`. `credentialState: "local"` after a successful write is honest
-output for a keyless local route: the key is stored, but the route
-classifies as not needing one.
+alias, a key that is empty after normalization, or a normalized key over 4 KiB
+is `400`. Both scopes remove whitespace, control and invisible characters with
+the shared key normalizer before validation; `openai-codex` refuses API-key writes.
+`credentialState: "local"` after a successful durable write is honest output for
+a keyless local route: the key is
+accepted, but the route classifies as not needing one.
 
 ### `DELETE /v1/providers/{id}/key` — clear a Codewhale-owned credential
 
@@ -2454,12 +2635,30 @@ classifies as not needing one.
 { "provider": "openai", "cleared": true, "credentialState": "missing" }
 ```
 
-Clears the credential through the same shared owner as
+Removes any session key for the exact provider identity before attempting a
+durable clear, even when the durable operation subsequently fails. Unless
+`CODEWHALE_RUNTIME_KEY_SCOPE=session`, it also clears the durable credential
+through the same shared owner as
 `codewhale auth clear`: the config document is snapshotted and restored if
 its save fails, the secret store is only touched once that save has landed,
 and the cleared markers are mirrored into the live runtime config so
 `GET /v1/providers` reports `missing` on the next read rather than after a
 restart.
+
+Under `CODEWHALE_RUNTIME_KEY_SCOPE=session`, DELETE removes only the memory
+overlay and does not touch the durable secret store or config document:
+
+```json
+// response under session-only policy
+{ "provider": "openai", "cleared": true, "scope": "session", "backend": "memory" }
+```
+
+This response omits `credentialState` and does not probe or clear a durable
+store. After removal, subsequent turns cannot fall back to stored or environment
+keys. A running parent turn and children using its already-materialized client
+retain their credential until they finish; clearing memory is not provider-side
+revocation. This mode validates canonical provider identity but does not apply
+durable ownership checks to removing the Engine's own session key.
 
 Clearing an already-clear route returns `cleared: true` — a client retrying
 a revoke must not be told something went wrong. If the config entry is
@@ -2469,23 +2668,30 @@ would be a lie about a security action.
 
 ### Credential ownership: `credentialSource` and `credentialWritable`
 
-Both credential verbs refuse a route whose credential Codewhale does not
-own, and `GET /v1/providers` carries the same classification so a client can
-disable its control *before* submitting instead of failing late:
+Durable PUT and the durable portion of DELETE refuse a route whose credential
+Codewhale does not own, independently of any session key. `GET /v1/providers`
+classifies that underlying durable owner so a client can disable its durable
+credential control *before* submitting instead of failing late:
 
 | `credentialSource` | `credentialWritable` | Meaning |
 | --- | --- | --- |
-| `secret_store` | `true` | Codewhale's own durable backend. The only writable source. |
-| `config` | `false` | A literal key in a config file, which still wins at request time. |
+| `secret_store` | `true` | A Codewhale-owned durable credential slot. |
+| `account_session` | `false` | Codewhale account model access owns the credential; disconnect through account sign-out. |
+| `config` | `false` | A literal key in a config file, which wins at request time when no session key is present. |
 | `external_auth` | `false` | An active external consent (OAuth) owns the credential. |
 | `none` | `false` | The route sends no credential, or has no credential slot. |
 
 When `credentialWritable` is `false`, `credentialWritableReason` carries
-user-facing copy naming the owner, and both `PUT` and `DELETE` answer `409`
-with that same reason. The classification is structural: it reads declared
-auth mode, consent state and the *kind* of any configured `api_key` value,
-and never resolves a secret, an environment value, or an auth command. It is
-a class and never a value, a path, or an environment variable name.
+user-facing copy naming the owner. Durable PUT and the durable portion of
+DELETE answer `409` with that same reason. DELETE still removes the memory
+overlay regardless of the durable credential owner. An existing session key
+can be updated with session scope without changing that owner, subject to the
+endpoint and auth-mode restrictions above. The ownership classification is
+based on declared auth mode, consent state and the *kind* of any configured
+`api_key` value. When account model access is bound, it also resolves the
+credential source with the session overlay excluded to determine whether the
+account owns the route. The result is a class and never a value, a path, or an
+environment variable name.
 
 ### `POST /v1/providers/orcarouter/connect` — browser sign-in without a terminal
 
@@ -2507,7 +2713,9 @@ mirrors the credential markers into the live config the way
 `POST /v1/providers/{id}/switch` for that.
 
 The callback listens on the Engine's own computer, so a client offers this
-route only for an Engine on the same computer as the browser. A new `POST`
+route only for an Engine on the same computer as the browser and outside
+session-only key policy. Strict mode refuses before binding a callback or
+starting authorization. A new `POST`
 cancels the previous attempt, and only the current attempt can be read.
 Refusals: `400` for an id other than `orcarouter`, `409` when the route's
 credential is not writable (the same reason `credentialWritableReason`
@@ -2524,19 +2732,21 @@ otherwise and on Engines without the route.
 `status` is `waiting`, `connected`, `declined` (the user refused in the
 browser), `expired` (no callback in time), `cancelled` or `failed`. `failed`
 carries a `reason`: `authorization_error` (the browser came back with another
-error), `callback_failed`, `not_writable` (the route's credential stopped being
-writable before the exchange; no key was created), `exchange_failed`,
+error), `callback_failed`, `not_writable` (the route's endpoint or credential authority changed before
+local activation), `exchange_failed`,
 `scope_refused` or `key_not_saved`. After `scope_refused` or `key_not_saved`,
 OrcaRouter created a key that Codewhale did not keep; the user should revoke
 it under Authorized Apps in OrcaRouter. `exchange_failed` can follow a key
 OrcaRouter created before the response was lost.
 
-`DELETE` cancels an attempt that is still waiting for the browser. Once the
-exchange has started a key may already exist, so the attempt runs on and
-reports `connected`, or `failed` with `key_not_saved`; `DELETE` then answers
-with the current status. An unknown or superseded `attemptId` is `404`. Only
-the `POST` response carries the consent URL; no status, error or log line
-carries it, the key, the code or the verifier.
+`DELETE` cancels a pending attempt, including an exchange in progress, and
+prevents its later local activation. It does not revoke a key already created
+by OrcaRouter; revoke that key under Authorized Apps. If local activation
+completed first, cancellation returns the terminal status instead. Clearing
+or replacing the provider key also cancels its pending connect attempt. These
+mutations retain their serialization if the HTTP client disconnects. An unknown
+or superseded `attemptId` is `404`. Only the `POST` response carries the consent
+URL; no status, error or log line carries it, the key, the code or the verifier.
 
 ### `POST /v1/providers/{id}/switch`
 
@@ -2741,13 +2951,40 @@ A client that treats `200` as "the model saw it" is therefore wrong in the third
 case: read the item's status, or wait for the event.
 
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
-`turn.lifecycle`, `turn.steered`, `turn.steer_dropped`, `turn.interrupt_requested`,
+`turn.lifecycle`, `turn.usage`, `turn.steered`, `turn.steer_dropped`,
+`turn.interrupt_requested`,
 `turn.completed`, `turn.artifacts`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
 `approval.timeout`, `user_input.required`, `user_input.answered`,
 `user_input.canceled`, `tool_call.requested`, `tool_call.resolved`,
 `tool_call.timeout`, `tool_call.canceled`, `sandbox.denied`,
-`turn.workspace_snapshot`, `runtime.store_failure`.
+`turn.workspace_snapshot`, `turn.provider_request`, `runtime.store_failure`.
+
+`turn.usage` is one model call's receipt, emitted when a parent model call
+reports usage — not once per turn. Its `payload` carries the call's `usage`,
+its `duration_ms` / `first_token_ms` / `request_ms` timings, the
+`maxOutputTokens` allowance, `billed_prompt_tokens` (the prompt size the
+provider billed: the last itemised request's input when retries were reported,
+else the call's own input count), and `cost` — that call priced on the route it
+was dispatched on, as `{usd, cny, usd_priced, cny_priced}`.
+
+`cost` is `null` when the route cannot price every token class the call used; a
+client must not read that as a free call. A currency whose `*_priced` flag is
+false is unpriced. These receipts cover the parent model calls; child and
+compaction usage arrive through other paths. Summed per-call prices are
+therefore partial estimates, not the complete turn bill.
+
+`turn.completed` carries the turn's authoritative cumulative token usage in
+`payload.turn.usage`, including routed work. It replaces the running token
+counts; it does not supply an authoritative last-turn cost. The thread totals
+at `GET /v1/threads/{id}/usage` remain the accounting record. The mobile page
+keeps the observed priced-call estimate after completion, marks it as a
+partial estimate, and resets its figure when a new turn starts. Replayed
+journal sequences are counted once. `billed_prompt_tokens` is available to
+API clients; the mobile header shows token usage and partial cost.
+
+`turn.provider_request` carries diagnostic request observations, not additional
+billing usage. See [per-request cache receipts](CACHE.md#per-request-receipts).
 
 `runtime.store_failure` is the runtime reporting a fault in the operator's own
 on-disk state: a thread, turn, or item record under the session's runtime
@@ -2931,6 +3168,32 @@ Verification:
 ```bash
 npm test --workspace @codewhale/runtime-sdk
 ```
+
+## Thread Fleet members
+
+`thread_fleet_members` in runtime capabilities enables
+`POST /v1/threads/{id}/members`. The body is
+`{operation_key, member_id, display_name, prompt, fleet}`, where `fleet` is a
+complete Fleet v2 document (the same shape as a saved `fleets/*.toml`, as JSON)
+and `member_id` names one of its members with an exact `provider` and `model`.
+The thread's Engine starts that member as an ordinary child of the session,
+through the same spawn path as the `agent` tool: the member's provider and
+model are bound exactly and never fall back to the session route, its
+instructions join the child's task prompt as its Fleet profile, and the child
+keeps the session's permissions and spawn limits. The document is used for this
+start only; it is not saved and does not change the selected Fleet.
+
+The response is `200 {thread_id, member_id, agent_id, state: "started"}`, or
+`202 {state: "queued"}` when the thread is mid-turn: host requests are handled
+between turns. Repeating the same `operation_key` with the same body returns
+the original `agent_id` once started; a different body under the same key is
+refused. The child appears in `/v1/agent-runs` with `owner_session_id` set to the
+thread and its `member_id` as `session_name` (a display name may hold spaces or
+non-ASCII text, which session names refuse); `agent.spawned`,
+`agent.progress` and `agent.completed` arrive on the thread's event stream.
+Stop it with `POST /v1/agent-runs/{id}/cancel`, which also stops its
+descendants. A second start for a member whose child is still running is
+refused by the existing session-name rule; follow up with that child instead.
 
 ## Agent Run Receipts
 

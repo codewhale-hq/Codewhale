@@ -6,8 +6,6 @@ use std::time::Instant;
 use codewhale_localization::{Locale, MessageId, tr};
 use ratatui::layout::Rect;
 
-use crate::settings::InlineDiffMode;
-use crate::tools::canonical_action::canonical_action_alias;
 use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use crate::tui::app::{
     AgentCurrentActivityStatus, AgentProgressMeta, App, SidebarRowAction, TaskPanelEntry,
@@ -22,6 +20,8 @@ use crate::work_graph::{
     AcceptanceRequirement, EdgeKind, EvidenceKind, EvidenceKindTag, NodeKind, NodeState,
     OperationBinding, OwnerState, Provenance, WorkGraphSnapshot, WorkNode,
 };
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
+use codewhale_runtime::settings::InlineDiffMode;
 
 /// Persisted Ocean work-surface placement. Bottom is deliberately absent: the
 /// composer and phase footer own the shell's lower edge. `Off` hides the rail
@@ -313,8 +313,8 @@ impl WorkSourceState {
 pub(super) const RECENT_ONLY_TTL_MS: u64 = 4_000;
 /// Settled file/search/write receipt lifetime in the live strip (#4690).
 pub(super) const ACTIVITY_RECEIPT_TTL_MS: u64 = 3_000;
-pub(super) const TOP_HEIGHT_MIN: u16 = crate::settings::WORK_SURFACE_TOP_HEIGHT_MIN;
-pub(super) const TOP_HEIGHT_MAX: u16 = crate::settings::WORK_SURFACE_TOP_HEIGHT_MAX;
+pub(super) const TOP_HEIGHT_MIN: u16 = codewhale_runtime::settings::WORK_SURFACE_TOP_HEIGHT_MIN;
+pub(super) const TOP_HEIGHT_MAX: u16 = codewhale_runtime::settings::WORK_SURFACE_TOP_HEIGHT_MAX;
 pub(super) const SIDE_WIDTH_MIN: u16 = 26;
 pub(super) const SIDE_WIDTH_MAX: u16 = 80;
 
@@ -2530,7 +2530,7 @@ fn activity_target<'a>(
     kind: FileActivityKind,
 ) -> Option<std::borrow::Cow<'a, str>> {
     if tool_name == "apply_patch"
-        && let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(input)
+        && let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(input)
     {
         let targets = preflight
             .touched_files
@@ -3213,8 +3213,8 @@ fn section_list(out: &mut String, title: &str, items: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tools::spec::ToolResult;
+    use codewhale_runtime::config::Config;
 
     /// #6565: a fact is dropped from a dock row only when the detail names
     /// that exact fact, never a longer one that contains it.
@@ -3283,7 +3283,7 @@ mod tests {
             fork_context: false,
             workspace: None,
             git_branch: None,
-            agent_type: crate::tools::subagent::FleetRole::Worker,
+            agent_type: codewhale_agent_contract::role::FleetRole::Worker,
             assignment: crate::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "sweep the lane".to_string(),
@@ -4332,7 +4332,7 @@ mod tests {
     #[test]
     fn work_mutation_rows_keep_labels_privacy_and_all_inline_modes() {
         let (label, detail, full) = mutation_activity_body(InlineDiffMode::Full);
-        assert_eq!(label, "Wrote 1 files");
+        assert_eq!(label, "Wrote 1 file");
         assert_eq!(detail, "Updated <external file> · +1 -1");
         assert!(full.contains("-old"), "{full}");
         assert!(full.contains("+new"), "{full}");
@@ -4533,7 +4533,7 @@ mod tests {
             .iter()
             .find(|row| row.id.0 == "activity:aggregate")
             .expect("aggregate activity");
-        assert!(activity_row.label.contains("Read 1 files"));
+        assert!(activity_row.label.contains("Read 1 file ·"));
         assert!(activity_row.label.contains("Searched 2 patterns"));
         assert!(!activity_row.label.contains("super_secret_pattern_xyz"));
         assert!(!activity_row.detail.contains("super_secret_pattern_xyz"));

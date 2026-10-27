@@ -6,11 +6,13 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 
 use super::ManagerShared;
-use super::protocol::{OwnerRef, RegisterParams, RegisterResult};
+use super::protocol::{RegisterParams, RegisterResult};
 use super::supervisor::HostRequestContext;
 use super::tier::HostTier;
 use crate::plugins::activation::PluginActivationCapability;
-use crate::plugins::types::{PluginAuthority, PluginSkillSnapshot};
+use crate::plugins::types::PluginSkillSnapshot;
+use codewhale_config::OwnerRef;
+use codewhale_config::PluginAuthority;
 
 pub const MAX_ROOTS_PER_OWNER: usize = 8;
 pub const MAX_ROOTS_PER_HOST: usize = 64;
@@ -31,14 +33,14 @@ pub struct NativeSkillRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<super::composition_scope::SelectionRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<super::protocol::EntryRef>,
+    pub scope: Option<codewhale_config::EntryRef>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SkillRootRegistration {
     pub handle: u64,
     pub owner: OwnerRef,
-    pub scope: Option<super::protocol::EntryRef>,
+    pub scope: Option<codewhale_config::EntryRef>,
     pub host_generation: u64,
     pub content_hash: String,
     pub path: String,
@@ -274,9 +276,9 @@ pub(crate) fn roots_for_plugins(
     if !super::activation::extension_host_policy_enabled() {
         return Vec::new();
     }
-    let Some(state_path) = plugins.state_path() else {
+    if plugins.state_path().is_none() {
         return Vec::new();
-    };
+    }
     let manager = super::manager();
     let roots = manager
         .shared
@@ -293,8 +295,7 @@ pub(crate) fn roots_for_plugins(
             {
                 return None;
             }
-            let authority =
-                plugin.authority(state_path.to_path_buf(), plugins.workspace().to_path_buf())?;
+            let authority = plugins.authority_for(plugin.id.as_str())?;
             let selected = plugins.caller_selection();
             if root.scope.is_some()
                 && !selected.is_some_and(|selection| {
@@ -635,6 +636,19 @@ mod tests {
         let legacy = serde_json::to_string(&authority).unwrap();
         let parsed: SkillProvenance = serde_json::from_str(&legacy).unwrap();
         assert_eq!(serde_json::to_string(&parsed).unwrap(), legacy);
+        assert!(parsed.authority().managed_policy_source.is_none());
+        let mut old_receipt = serde_json::to_value(&authority).unwrap();
+        old_receipt
+            .as_object_mut()
+            .unwrap()
+            .remove("managed_policy_path");
+        let old_receipt: SkillProvenance = serde_json::from_value(old_receipt).unwrap();
+        assert!(old_receipt.authority().managed_policy_path.is_none());
+        assert!(
+            crate::plugins::registry::verify_plugin_state_authority(old_receipt.authority())
+                .unwrap_err()
+                .contains("managed policy source")
+        );
         let provenance = SkillProvenance::NativeRoot(crate::skills::NativeSkillProvenance {
             authority: authority.clone(),
             registration: NativeSkillRef {

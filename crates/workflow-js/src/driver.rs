@@ -85,14 +85,13 @@ pub struct TaskRequest {
     /// A script that could write it could also clear it.
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
-    /// Per-call spawn-depth override (driver clamps to its ceiling).
+    /// Legacy model input; the runtime replaces it with trusted Fleet/parent depth.
     pub max_depth: Option<u32>,
-    /// Explicit token budget: forks an isolated pool on the driver side.
-    /// Omit it so the child inherits (and debits) the shared run pool.
+    /// Legacy token hint; the production driver does not enforce a token pool.
     pub token_budget: Option<u64>,
-    /// Maximum model turns for this child (driver clamps to its ceiling).
+    /// Legacy model input, ignored by the shared production spawn seam.
     pub max_steps: Option<u32>,
-    /// Hard wall-clock limit for this child in seconds.
+    /// Legacy model input, ignored by the shared production spawn seam.
     pub wall_time_secs: Option<u64>,
     /// JSON schema the reply must satisfy; validated in the VM after the
     /// driver returns the raw text (see [`crate`] docs for decode rules).
@@ -283,6 +282,10 @@ pub trait WorkflowDriver: Send + Sync {
 
     /// Current snapshot of the run's shared token pool.
     fn budget(&self) -> BudgetSnapshot;
+
+    fn budget_is_metered(&self) -> bool {
+        true
+    }
 
     /// Receive a script progress event (ordered, synchronous).
     fn progress(&self, event: ProgressEvent);

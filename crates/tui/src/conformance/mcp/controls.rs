@@ -29,7 +29,7 @@ fn mutated(name: &str, mutate: impl FnOnce(&mut Value)) -> Result<(), String> {
     mutate(&mut case);
     let mut errors = Vec::new();
     for (dispatch, factory) in super::DISPATCHES {
-        match run_case(name, &case, *factory, CALL_DEADLINE, true) {
+        match run_case(name, &case, dispatch, *factory, CALL_DEADLINE, true) {
             Ok(()) => return Ok(()), // one implementation missed the mutation
             Err(error) => errors.push(format!("{dispatch}: {error}")),
         }
@@ -44,7 +44,7 @@ fn mutated_via(
 ) -> Result<(), String> {
     let mut case = golden::read_case(FAMILY, name);
     mutate(&mut case);
-    run_case(name, &case, factory, CALL_DEADLINE, true)
+    run_case(name, &case, "mcp_pool", factory, CALL_DEADLINE, true)
 }
 
 fn set(case: &mut Value, pointer: &str, value: Value) {
@@ -331,6 +331,16 @@ fn no_committed_golden_carries_a_case_secret() {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         assert_no_secret(secret, &text).unwrap_or_else(|error| panic!("{name}: {error}"));
+        if case["record_requests"].is_string() {
+            for (dispatch, _) in super::DISPATCHES {
+                let path = golden::family_dir(FAMILY)
+                    .join(format!("{name}.{dispatch}.transport.golden.json"));
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+                assert_no_secret(secret, &text)
+                    .unwrap_or_else(|error| panic!("{name} via {dispatch}: {error}"));
+            }
+        }
         scanned += 1;
     }
     assert!(scanned >= 2, "expected the auth cases to declare secrets");

@@ -236,7 +236,7 @@ pub fn write_receipt(
         "execution_authority": "existing_runtime_policy",
         "decision": decision,
     }))?;
-    let checksum = crate::hashing::sha256_hex(&bytes);
+    let checksum = codewhale_runtime::hashing::sha256_hex(&bytes);
     super::task_spec::write_fleet_artifact_ref(
         workspace,
         run_id,

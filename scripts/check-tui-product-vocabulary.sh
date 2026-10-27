@@ -33,7 +33,7 @@ fi
 if grep -En \
   'YOLO mode is deprecated|/mode yolo|Bypass permissions|agent · yolo|Plan → Act → Multitask' \
   crates/tui/src/tui/app.rs \
-  crates/tui/src/config.rs \
+  crates/runtime/src/config.rs \
   crates/tui/src/commands/groups/config/config.rs \
   crates/tui/src/commands/groups/skills/restore.rs \
   crates/tui/src/prompts/text.rs; then

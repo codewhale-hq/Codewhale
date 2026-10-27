@@ -73,34 +73,57 @@ impl EventSource for UnixInternalEventSource {
         let timeout = PollTimeout::new(timeout);
 
         loop {
-            if let Err(e) = self.poll.poll(&mut self.events, timeout.leftover()) {
+            let tty_ready = self.tty_fd.read_ready()?;
+            let wait = if tty_ready {
+                Some(Duration::ZERO)
+            } else {
+                timeout.leftover()
+            };
+            if let Err(e) = self.poll.poll(&mut self.events, wait) {
                 // Mio will throw an interrupted error in case of cursor position retrieval. We need to retry until it succeeds.
                 // Previous versions of Mio (< 0.7) would automatically retry the poll call if it was interrupted (if EINTR was returned).
                 // https://docs.rs/mio/0.7.0/mio/struct.Poll.html#notes
                 if e.kind() == io::ErrorKind::Interrupted {
+                    if timeout.elapsed() {
+                        return Ok(None);
+                    }
                     continue;
                 } else {
                     return Err(e);
                 }
             };
 
-            if self.events.is_empty() {
+            if self.events.is_empty() && !tty_ready {
                 // No readiness events = timeout
                 return Ok(None);
             }
 
-            for token in self.events.iter().map(|x| x.token()) {
+            let include_tty =
+                tty_ready && !self.events.iter().any(|event| event.token() == TTY_TOKEN);
+            for token in self
+                .events
+                .iter()
+                .map(|event| event.token())
+                .chain(include_tty.then_some(TTY_TOKEN))
+            {
                 match token {
                     TTY_TOKEN => {
                         loop {
+                            if !self.tty_fd.read_ready()? {
+                                break;
+                            }
                             match self.tty_fd.read(&mut self.tty_buffer) {
+                                Ok(0) => {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::UnexpectedEof,
+                                        "terminal input source closed",
+                                    ));
+                                }
                                 Ok(read_count) => {
-                                    if read_count > 0 {
-                                        self.parser.advance(
-                                            &self.tty_buffer[..read_count],
-                                            read_count == TTY_BUFFER_SIZE,
-                                        );
-                                    }
+                                    self.parser.advance(
+                                        &self.tty_buffer[..read_count],
+                                        read_count == TTY_BUFFER_SIZE,
+                                    );
                                 }
                                 Err(e) => {
                                     // No more data to read at the moment. We will receive another event
@@ -109,13 +132,21 @@ impl EventSource for UnixInternalEventSource {
                                     }
                                     // once more data is available to read.
                                     else if e.kind() == io::ErrorKind::Interrupted {
+                                        if timeout.elapsed() {
+                                            return Ok(None);
+                                        }
                                         continue;
+                                    } else {
+                                        return Err(e);
                                     }
                                 }
                             };
 
                             if let Some(event) = self.parser.next() {
                                 return Ok(Some(event));
+                            }
+                            if timeout.elapsed() {
+                                return Ok(None);
                             }
                         }
                     }

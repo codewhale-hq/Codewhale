@@ -1,0 +1,34 @@
+[package]
+name = "codewhale-snapshot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale pre/post-turn workspace snapshots in a side git repo"
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["codewhale-runtime/test-support"]
+
+[dependencies]
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
+fd-lock = "4.0.4"
+ignore = "0.4"
+serde.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+wait-timeout = "0.2"
+
+[dev-dependencies]
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

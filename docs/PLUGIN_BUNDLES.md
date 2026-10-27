@@ -31,31 +31,16 @@ v0.9.8), `plugin.toml` (the legacy Codewhale format, still fully readable), or
 A bundle that publishes multiple formats is read through `plugin.json` first,
 then `kimi.plugin.json`, then the legacy `plugin.toml`, then
 `.claude-plugin/plugin.json`.
-Computer Use ships as a built-in bundle; it still requires review and
-enablement before activation. The internal precedence order is
-built-in, user, then workspace; the first bundle with a given name wins. This
-prevents a repository from shadowing an explicitly installed user bundle.
-Symbolic-link roots, manifests, component paths, and nested component files
-fail closed.
+Computer Use installs from the first-party catalog as a normal user plugin.
+It updates independently of the Engine and requires review and enablement.
+The native Mac helper is installed separately for permission setup and the
+computer-control indicator. See the [Computer Use guide](https://github.com/codewhale-hq/codewhale-cu-plugin).
 
-The embedded Computer Use files are materialized under
-`$CODEWHALE_HOME/builtin-plugins/snapshots/computer-use-<bundle-digest>/computer-use`.
-Each process captures only its own embedded digest's discovery root. Concurrent
-builds therefore keep separate, complete source trees; publishers never delete
-or replace an existing snapshot. Reuse checks every embedded byte, directory
-entry, file type, executable flag, and the stamp. A partial or altered snapshot
-is rejected without repair. Interrupted private staging directories are not
-discovered or reused.
-
-The existing path-bound plugin identity and trust rules apply: identical embedded
-bytes at the same home reuse the same identity; changed bytes require a fresh
-review and enablement. Moving from the older mutable
-`builtin-plugins/computer-use` layout also requires one fresh review. Legacy
-bundles and receipts remain intact for running older binaries; no trust is
-migrated. Diagnostics do not create a missing Codewhale home.
-The selected home may itself be a symlink: its resolved directory is pinned
-before creating any built-in paths. Links in the owned built-in cache paths
-still fail closed.
+User plugins take precedence over workspace plugins. Symbolic-link roots,
+manifests, component paths, and nested component files fail closed.
+Historical built-in snapshots and receipts remain untouched for older binaries;
+the current Engine neither creates nor discovers a built-in Computer Use copy.
+Install and review the catalog plugin once when upgrading from that layout.
 
 New user and workspace bundles are always untrusted and disabled. Discovery is
 read-only and does not inspect any other application's extension or credential

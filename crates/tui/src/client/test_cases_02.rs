@@ -1,19 +1,19 @@
 
     async fn assert_zai_request_truth(streaming: bool) {
         for base_url in [
-            crate::config::DEFAULT_ZAI_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
             "https://api.z.ai/api/paas/v4",
         ] {
             let (high_path, high) = capture_zai_chat_request(
                 base_url,
-                crate::config::ZAI_GLM_5_2_MODEL,
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
                 Some("high"),
                 streaming,
             )
             .await;
             let (max_path, max) = capture_zai_chat_request(
                 base_url,
-                crate::config::ZAI_GLM_5_2_MODEL,
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
                 Some("max"),
                 streaming,
             )
@@ -28,7 +28,7 @@
                     json!({"type": "enabled", "clear_thinking": false}),
                     "{base_url}: {body}"
                 );
-                assert_eq!(body["model"], crate::config::ZAI_GLM_5_2_MODEL);
+                assert_eq!(body["model"], codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
             }
             let mut high_without_effort = high.clone();
             let mut max_without_effort = max.clone();
@@ -43,8 +43,8 @@
             assert_eq!(high_without_effort, max_without_effort);
 
             for model in [
-                crate::config::ZAI_GLM_5_1_MODEL,
-                crate::config::ZAI_GLM_5_TURBO_MODEL,
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_1_MODEL,
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL,
             ] {
                 for requested in ["high", "max"] {
                     let (_, toggle_only) =
@@ -69,7 +69,7 @@
 
         let (_, gateway) = capture_zai_chat_request(
             "https://gateway.example/v1",
-            crate::config::ZAI_GLM_5_2_MODEL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
             Some("max"),
             streaming,
         )
@@ -79,7 +79,7 @@
 
         let (_, gateway_turbo) = capture_zai_chat_request(
             "https://gateway.example/v1",
-            crate::config::ZAI_GLM_5_TURBO_MODEL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL,
             Some("max"),
             streaming,
         )
@@ -93,7 +93,7 @@
 
     async fn assert_minimax_request_truth(streaming: bool) {
         for base_url in [
-            crate::config::DEFAULT_MINIMAX_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_BASE_URL,
             "https://api.minimaxi.com/v1",
         ] {
             for (effort, expected_thinking) in [
@@ -103,7 +103,7 @@
             ] {
                 let (_, body) = capture_minimax_chat_request(
                     base_url,
-                    crate::config::DEFAULT_MINIMAX_MODEL,
+                    codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_MODEL,
                     Some(effort),
                     streaming,
                 )
@@ -125,10 +125,10 @@
         }
 
         for (base_url, model) in [
-            (crate::config::DEFAULT_MINIMAX_BASE_URL, "MiniMax-M2"),
+            (codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_BASE_URL, "MiniMax-M2"),
             (
                 "https://gateway.example/v1",
-                crate::config::DEFAULT_MINIMAX_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_MODEL,
             ),
         ] {
             for effort in ["off", "high", "max"] {
@@ -157,8 +157,8 @@
     async fn assert_k3_request_json_route_boundaries(streaming: bool) {
         for (requested, expected) in [("off", "low"), ("high", "high"), ("max", "max")] {
             let body = capture_moonshot_chat_request(
-                crate::config::DEFAULT_MOONSHOT_BASE_URL,
-                crate::config::MOONSHOT_KIMI_K3_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL,
+                codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL,
                 Some(requested),
                 streaming,
             )
@@ -180,8 +180,8 @@
             ("max", Some(json!({"type": "enabled", "effort": "max"}))),
         ] {
             let membership = capture_moonshot_chat_request(
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-                crate::config::KIMI_CODE_K3_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
                 Some(requested),
                 streaming,
             )
@@ -204,8 +204,8 @@
         }
 
         let provider_default = capture_moonshot_chat_request(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             None,
             streaming,
         )
@@ -218,7 +218,7 @@
 
         let neighbor = capture_moonshot_chat_request(
             "https://proxy.example/v1",
-            crate::config::MOONSHOT_KIMI_K3_MODEL,
+            codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL,
             Some("max"),
             streaming,
         )
@@ -240,7 +240,7 @@
     }
 
     async fn assert_kimi_code_raw_off_replays_tool_history(streaming: bool) {
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("off"), streaming);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("off"), streaming);
         request.messages = vec![
             Message {
                 role: Role::Assistant,
@@ -274,8 +274,8 @@
         ];
 
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -301,12 +301,12 @@
     }
 
     async fn assert_kimi_code_apply_patch_schema_is_mfjs_compatible(streaming: bool) {
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), streaming);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), streaming);
         request.tools = Some(vec![apply_patch_request_tool()]);
 
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -334,7 +334,7 @@
     // body and the request still sends, so one bad MCP server cannot sink
     // every Moonshot-routed turn.
     async fn assert_kimi_code_invalid_root_ref_drops_only_that_tool(streaming: bool) {
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), streaming);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), streaming);
         let mut tool = test_tool("private_schema_tool");
         tool.input_schema = json!({
             "$ref": "#/$defs/private-root-name-3158",
@@ -344,8 +344,8 @@
         request.tool_choice = Some(json!("auto"));
 
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -364,7 +364,7 @@
     }
 
     async fn assert_kimi_code_untyped_default_drops_only_that_tool(streaming: bool) {
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), streaming);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), streaming);
         let mut tool = test_tool("private_default_tool");
         tool.input_schema = json!({
             "type": "object",
@@ -377,8 +377,8 @@
         request.tools = Some(vec![tool]);
 
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -408,11 +408,11 @@
         );
         assert_eq!(tool.input_schema["properties"]["mode"]["const"], "fast");
 
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), true);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), true);
         request.tools = Some(vec![tool]);
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -435,7 +435,7 @@
             parameters["properties"]["query"].get("nullable").is_none(),
             "{parameters}"
         );
-        crate::tools::schema_sanitize::validate_mfjs_parameters(parameters).unwrap();
+        codewhale_models::schema_sanitize::validate_mfjs_parameters(parameters).unwrap();
     }
 
     async fn assert_kimi_code_captures_exact_general_child_catalog() {
@@ -452,7 +452,7 @@
             // owning session can create a goal or change its
             // completion state, so those never ride the child surface.
             .filter(|name| !matches!(*name, "create_goal" | "update_goal"))
-            .chain([crate::core::engine::tool_catalog::TOOL_SEARCH_NAME])
+            .chain([codewhale_tools::names::TOOL_SEARCH_NAME])
             .map(str::to_string)
             .collect();
         assert_eq!(source_names, expected_names);
@@ -463,15 +463,15 @@
         // production errors remain fixed and non-secret.
         for tool in &tools {
             let mut parameters = tool.input_schema.clone();
-            crate::tools::schema_sanitize::sanitize_for_kimi_parameters(&mut parameters)
+            codewhale_models::schema_sanitize::sanitize_for_kimi_parameters(&mut parameters)
                 .unwrap_or_else(|error| panic!("General child tool {}: {error}", tool.name));
         }
 
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), false);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), false);
         request.tools = Some(tools);
         let body = capture_moonshot_chat_request_body(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             request,
         )
         .await;
@@ -504,7 +504,7 @@
                     tool["function"]["name"]
                 );
             }
-            crate::tools::schema_sanitize::validate_mfjs_parameters(parameters).unwrap();
+            codewhale_models::schema_sanitize::validate_mfjs_parameters(parameters).unwrap();
         }
     }
 
@@ -547,12 +547,12 @@
 
     #[tokio::test]
     async fn kimi_code_compaction_shape_omits_sampling_parameters_on_wire() {
-        for model in crate::config::KIMI_CODE_MEMBERSHIP_MODELS {
+        for model in codewhale_runtime::config::KIMI_CODE_MEMBERSHIP_MODELS {
             let mut request = k3_request_fixture(model, None, /*stream*/ false);
             request.temperature = Some(0.3);
             request.top_p = Some(0.8);
             let body = capture_moonshot_chat_request_body(
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
                 model,
                 request,
             )
@@ -571,43 +571,43 @@
     #[tokio::test]
     async fn selected_moonshot_k3_model_is_the_model_on_the_wire() {
         let platform = capture_moonshot_chat_request(
-            crate::config::DEFAULT_MOONSHOT_BASE_URL,
-            crate::config::MOONSHOT_KIMI_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL,
             Some("high"),
             false,
         )
         .await;
         assert_eq!(
             platform["model"],
-            json!(crate::config::MOONSHOT_KIMI_K3_MODEL),
+            json!(codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL),
             "the direct platform route must send the id the user named: {platform}"
         );
         assert_ne!(
             platform["model"],
-            json!(crate::config::DEFAULT_MOONSHOT_MODEL),
+            json!(codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_MODEL),
             "an explicit selection is never replaced by the provider default: {platform}"
         );
         assert_ne!(
             platform["model"],
-            json!(crate::config::KIMI_CODE_K3_MODEL),
+            json!(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL),
             "the coding-plan id must not leak onto the platform route: {platform}"
         );
 
         let membership = capture_moonshot_chat_request(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             Some("high"),
             false,
         )
         .await;
         assert_eq!(
             membership["model"],
-            json!(crate::config::KIMI_CODE_K3_MODEL),
+            json!(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL),
             "the Kimi Code membership route must send bare `k3`: {membership}"
         );
         assert_ne!(
             membership["model"],
-            json!(crate::config::MOONSHOT_KIMI_K3_MODEL),
+            json!(codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL),
             "the platform id must not leak onto the coding-plan route: {membership}"
         );
     }
@@ -674,7 +674,7 @@
     async fn moonshot_drops_only_incompatible_tool() {
         for streaming in [false, true] {
             let mut request =
-                k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), streaming);
+                k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), streaming);
             let good = test_tool("compatible_lookup");
             let mut bad = test_tool("mcp_pattern_tool");
             bad.input_schema = json!({
@@ -687,8 +687,8 @@
             request.tool_choice = Some(json!("auto"));
 
             let body = capture_moonshot_chat_request_body(
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-                crate::config::KIMI_CODE_K3_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
                 request,
             )
             .await;
@@ -718,12 +718,12 @@
         for streaming in [false, true] {
             let server = MockServer::start().await;
             let client = moonshot_request_boundary_client(
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-                crate::config::KIMI_CODE_K3_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
                 server.uri(),
             );
             let mut request =
-                k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), streaming);
+                k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), streaming);
             let good = test_tool("compatible_lookup");
             let mut bad = test_tool("mcp_pattern_tool");
             bad.input_schema = json!({
@@ -787,11 +787,11 @@
             .mount(&server)
             .await;
         let client = moonshot_request_boundary_client(
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
             server.uri(),
         );
-        let mut request = k3_request_fixture(crate::config::KIMI_CODE_K3_MODEL, Some("low"), true);
+        let mut request = k3_request_fixture(codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL, Some("low"), true);
         let good = test_tool("compatible_lookup");
         let mut bad = test_tool("mcp_pattern_tool");
         bad.input_schema = json!({
@@ -853,16 +853,19 @@
     #[test]
     fn auth_and_unknown_model_errors_name_route_host_and_key_source() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     api_key: Some("or-rejected-key-1234567890".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let client = CodewhaleClient::new(&config).expect("openrouter client");
         let auth = client
@@ -889,16 +892,19 @@
     #[test]
     fn subscription_quota_errors_name_account_and_switch_command() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("openrouter".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     api_key: Some("or-quota-key-1234567890".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let mut client = CodewhaleClient::new(&config).expect("openrouter client");
         assert_eq!(client.subscription_limit_guidance, None);
@@ -908,8 +914,8 @@
         assert!(matches!(plain, LlmError::QuotaExhausted(_)), "{plain:?}");
         assert!(!plain.to_string().contains("codewhale auth"), "{plain}");
 
-        client.subscription_limit_guidance = Some(crate::oauth::usage_limit_guidance(
-            crate::oauth::OAuthProvider::Chatgpt,
+        client.subscription_limit_guidance = Some(codewhale_runtime::oauth::usage_limit_guidance(
+            codewhale_runtime::oauth::OAuthProvider::Chatgpt,
             Some("a@example.com (plus)"),
         ));
         let guided = client
@@ -945,20 +951,23 @@
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let _key = crate::test_support::EnvVarGuard::remove("XAI_API_KEY");
         let _base = crate::test_support::EnvVarGuard::remove("XAI_BASE_URL");
-        let config = Config {
-            provider: Some("xai".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("xai".to_string());
+            let __cw_config_init_2_1 = Some(ProvidersConfig {
                 xai: ProviderConfig {
                     api_key: Some("xai-fallback-key-1234567890".to_string()),
                     auth_mode: Some("oauth".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
         let client = CodewhaleClient::new(&config).expect("xai client");
-        assert_ne!(client.api_key_source, crate::config::XAI_OAUTH_KEY_SOURCE);
+        assert_ne!(client.api_key_source, codewhale_runtime::config::XAI_OAUTH_KEY_SOURCE);
         assert_eq!(client.subscription_limit_guidance, None);
         let body =
             r#"{"error":{"code":"credit_balance_exhausted","message":"credit balance exhausted"}}"#;
@@ -999,9 +1008,9 @@
         )
         .unwrap();
         let _auth_path = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &path);
-        let mut config = Config {
-            provider: Some(ProviderKind::OpenaiCodex.as_str().to_string()),
-            providers: Some(ProvidersConfig {
+        let mut config = {
+            let __cw_config_init_3_0 = Some(ProviderKind::OpenaiCodex.as_str().to_string());
+            let __cw_config_init_3_1 = Some(ProvidersConfig {
                 openai_codex: ProviderConfig {
                     external_credentials: Some(
                         codewhale_config::ExternalCredentialConsentToml::read_only(
@@ -1013,8 +1022,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
         assert!(
             CodewhaleClient::new(&config).is_err(),
@@ -1024,9 +1036,9 @@
         std::fs::write(&config_path, "").unwrap();
         // Stored verified-grant fixture; OAuth signature validation has its
         // own signed-token boundary tests.
-        crate::oauth::activate_login(
-            crate::oauth::pending_login_with_id_token_for_test(
-                crate::oauth::OAuthProvider::Chatgpt,
+        codewhale_runtime::oauth::activate_login(
+            codewhale_runtime::oauth::pending_login_with_id_token_for_test(
+                codewhale_runtime::oauth::OAuthProvider::Chatgpt,
                 "own-verified-access",
                 "own-verified-refresh",
                 Some(&test_id_token("owned@example.com")),
@@ -1069,13 +1081,15 @@
         let _base = crate::test_support::EnvVarGuard::remove("XAI_BASE_URL");
         let config_path = root.join("config.toml");
         std::fs::write(&config_path, "").expect("empty config");
-        let mut config = Config {
-            provider: Some("xai".to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_4_0 = Some("xai".to_string());
+            let mut __cw_config_init_4_value: Config = Config::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value
         };
-        crate::oauth::activate_login(
-            crate::oauth::pending_login_with_id_token_for_test(
-                crate::oauth::OAuthProvider::Xai,
+        codewhale_runtime::oauth::activate_login(
+            codewhale_runtime::oauth::pending_login_with_id_token_for_test(
+                codewhale_runtime::oauth::OAuthProvider::Xai,
                 "xai-oauth-access",
                 "xai-oauth-refresh",
                 Some(&test_id_token("grok@example.com")),
@@ -1086,7 +1100,7 @@
         .expect("xAI login");
         let client = CodewhaleClient::new(&config).expect("xai client");
         assert_eq!(client.api_key, "xai-oauth-access");
-        assert_eq!(client.api_key_source, crate::config::XAI_OAUTH_KEY_SOURCE);
+        assert_eq!(client.api_key_source, codewhale_runtime::config::XAI_OAUTH_KEY_SOURCE);
         let guidance = client
             .subscription_limit_guidance
             .as_deref()
@@ -1097,12 +1111,12 @@
         );
         assert!(!guidance.contains("xai-oauth-"), "{guidance}");
         assert_eq!(
-            crate::config::resolve_credential_source(
+            codewhale_runtime::config::resolve_credential_source(
                 &config,
                 &(config).test_identity_for_kind(ProviderKind::Xai)
             )
             .source,
-            crate::credentials::CredentialSource::OAuth {
+            codewhale_runtime::credentials::CredentialSource::OAuth {
                 flow: "xAI".to_string(),
                 account: Some("grok@example.com".to_string()),
             }
@@ -1126,8 +1140,8 @@
         let token = crate::test_support::future_test_jwt("grok-cli");
         let scope = format!(
             "{}::{}",
-            crate::oauth::XAI_OIDC_ISSUER,
-            crate::oauth::GROK_OIDC_CLIENT_ID
+            codewhale_runtime::oauth::XAI_OIDC_ISSUER,
+            codewhale_runtime::oauth::GROK_OIDC_CLIENT_ID
         );
         std::fs::write(
             &path,
@@ -1136,8 +1150,8 @@
                     "key": token.clone(),
                     "expires_at": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
                     "id_token": test_id_token("grok-cli@example.com"),
-                    "oidc_issuer": crate::oauth::XAI_OIDC_ISSUER,
-                    "oidc_client_id": crate::oauth::GROK_OIDC_CLIENT_ID,
+                    "oidc_issuer": codewhale_runtime::oauth::XAI_OIDC_ISSUER,
+                    "oidc_client_id": codewhale_runtime::oauth::GROK_OIDC_CLIENT_ID,
                     "auth_mode": "oidc",
                 }
             }))
@@ -1145,9 +1159,9 @@
         )
         .expect("write fixture");
         let _auth_path = crate::test_support::EnvVarGuard::set("GROK_AUTH_PATH", &path);
-        let config = Config {
-            provider: Some(ProviderKind::Xai.as_str().to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_5_0 = Some(ProviderKind::Xai.as_str().to_string());
+            let __cw_config_init_5_1 = Some(ProvidersConfig {
                 xai: ProviderConfig {
                     auth_mode: Some("oauth".to_string()),
                     external_credentials: Some(
@@ -1160,12 +1174,15 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_5_value: Config = Config::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value.providers = __cw_config_init_5_1;
+            __cw_config_init_5_value
         };
         let client = CodewhaleClient::new(&config).expect("xai client");
         assert_eq!(client.api_key, token);
-        assert_eq!(client.api_key_source, crate::config::XAI_OAUTH_KEY_SOURCE);
+        assert_eq!(client.api_key_source, codewhale_runtime::config::XAI_OAUTH_KEY_SOURCE);
         let guidance = client
             .subscription_limit_guidance
             .as_deref()
@@ -1188,12 +1205,14 @@
         let token = crate::test_support::future_test_jwt("process-token");
         let _access = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", &token);
         let _legacy_access = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let mut config = Config {
-            provider: Some(ProviderKind::OpenaiCodex.as_str().to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_6_0 = Some(ProviderKind::OpenaiCodex.as_str().to_string());
+            let mut __cw_config_init_6_value: Config = Config::default();
+            __cw_config_init_6_value.provider = __cw_config_init_6_0;
+            __cw_config_init_6_value
         };
         assert!(CodewhaleClient::new(&config).is_err());
-        let own = crate::oauth::install_test_chatgpt_registration(&mut config).unwrap();
+        let own = codewhale_runtime::oauth::install_test_chatgpt_registration(&mut config).unwrap();
         let client = CodewhaleClient::new(&config).expect("official ChatGPT client");
         assert_eq!(client.api_key, own);
         assert_ne!(client.api_key, token);
@@ -1202,9 +1221,9 @@
 
     fn concentrate_client(server: &MockServer, model: &str) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = Config {
-            provider: Some("concentrate".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_7_0 = Some("concentrate".to_string());
+            let __cw_config_init_7_1 = Some(ProvidersConfig {
                 concentrate: ProviderConfig {
                     api_key: Some("concentrate-test-key".to_string()),
                     base_url: Some(format!("{}/v1", server.uri())),
@@ -1212,8 +1231,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_7_value: Config = Config::default();
+            __cw_config_init_7_value.provider = __cw_config_init_7_0;
+            __cw_config_init_7_value.providers = __cw_config_init_7_1;
+            __cw_config_init_7_value
         };
         CodewhaleClient::new(&config).expect("Concentrate client should resolve its route")
     }
@@ -1477,9 +1499,9 @@
     /// exercises the same "declared origin" path: the key must follow the
     /// route to whatever origin the operator pointed it at.
     fn codewhale_client(server: &MockServer, model: &str) -> CodewhaleClient {
-        let config = Config {
-            provider: Some("codewhale".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_8_0 = Some("codewhale".to_string());
+            let __cw_config_init_8_1 = Some(ProvidersConfig {
                 codewhale: ProviderConfig {
                     api_key: Some("cwc_key_test_value".to_string()),
                     base_url: Some(server.uri()),
@@ -1487,8 +1509,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_8_value: Config = Config::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value.providers = __cw_config_init_8_1;
+            __cw_config_init_8_value
         };
         CodewhaleClient::new(&config).expect("Codewhale client should resolve its model route")
     }

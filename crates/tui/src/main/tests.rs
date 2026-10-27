@@ -5,10 +5,10 @@ use tempfile::TempDir;
 
 #[test]
 fn doctor_api_key_rows_never_name_the_retired_antigravity_slot() {
-    let rows: Vec<crate::config::ProviderKind> = doctor_api_key_providers().collect();
-    assert!(!rows.contains(&crate::config::ProviderKind::Antigravity));
-    assert!(rows.contains(&crate::config::ProviderKind::Deepseek));
-    assert!(rows.contains(&crate::config::ProviderKind::Google));
+    let rows: Vec<codewhale_config::ProviderKind> = doctor_api_key_providers().collect();
+    assert!(!rows.contains(&codewhale_config::ProviderKind::Antigravity));
+    assert!(rows.contains(&codewhale_config::ProviderKind::Deepseek));
+    assert!(rows.contains(&codewhale_config::ProviderKind::Google));
     assert!(
         rows.iter()
             .all(|provider| provider.as_str() != "antigravity")
@@ -286,13 +286,15 @@ fn doctor_mcp_reports_redact_url_argv_and_env_values() {
 #[test]
 fn doctor_provider_json_redacts_every_credential_url_to_its_authority() {
     for row in codewhale_config::descriptors::provider_compatibility() {
-        if row.kind == crate::config::ProviderKind::Antigravity {
+        if row.kind == codewhale_config::ProviderKind::Antigravity {
             continue;
         }
         let provider = row.id;
-        let config = Config {
-            provider: Some(provider.to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_0_0 = Some(provider.to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let report = doctor_provider_model_report_json(&config);
         for field in ["credential_url", "credential_docs_url"] {
@@ -301,7 +303,7 @@ fn doctor_provider_json_redacts_every_credential_url_to_its_authority() {
             };
             assert_eq!(
                 value,
-                crate::doctor::structural_url_authority(value),
+                codewhale_config::structural_url_authority(value),
                 "{provider:?} {field} must be authority-only"
             );
             assert!(
@@ -327,17 +329,14 @@ fn doctor_provider_url_reports_omit_secret_capable_components() {
         "https://{}:{}@provider.example.invalid:9443/{}/v1?{}={}#{}",
         sentinels[0], sentinels[1], sentinels[2], sentinels[3], sentinels[4], sentinels[5]
     );
-    let config = Config {
-        ..Config::default()
-    }
-    .with_legacy_root(None, Some(base_url));
+    let config = Config::default().with_legacy_root(None, Some(base_url));
     let target = doctor_api_target(&config);
     let human = format!(
         "base_url: {}",
-        crate::doctor::structural_url_authority(&target.base_url)
+        codewhale_config::structural_url_authority(&target.base_url)
     );
     let json = serde_json::json!({
-        "base_url": crate::doctor::structural_url_authority(&target.base_url),
+        "base_url": codewhale_config::structural_url_authority(&target.base_url),
         "route": doctor_route_report(&config),
     })
     .to_string();
@@ -402,12 +401,12 @@ fn explicit_doctor_api_probes_may_load_workspace_dotenv_credentials() {
 #[test]
 fn hosted_provider_does_not_probe_without_explicit_opt_in() {
     assert!(!doctor_should_probe_api(
-        crate::config::ProviderKind::Deepseek,
+        codewhale_config::ProviderKind::Deepseek,
         "https://api.deepseek.com/beta",
         crate::doctor::DoctorProbeRequest::default(),
     ));
     assert!(doctor_should_probe_api(
-        crate::config::ProviderKind::Deepseek,
+        codewhale_config::ProviderKind::Deepseek,
         "https://api.deepseek.com/beta",
         crate::doctor::DoctorProbeRequest {
             probe_api: true,
@@ -421,9 +420,11 @@ fn resolve_api_key_source_does_not_clone_openai_codex_env_tokens() {
     let sentinel = "OPENAI-CODEX-ACCESS-TOKEN-SENTINEL";
     let _token = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", sentinel);
     let _legacy_token = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        ..Config::default()
+    let config = {
+        let __cw_config_init_2_0 = Some("openai-codex".to_string());
+        let mut __cw_config_init_2_value: Config = Config::default();
+        __cw_config_init_2_value.provider = __cw_config_init_2_0;
+        __cw_config_init_2_value
     };
 
     let source = resolve_api_key_source(&config);
@@ -522,10 +523,8 @@ fn resolve_api_key_source_does_not_probe_system_keyring() {
 
 #[test]
 fn credential_diagnostic_distinguishes_literal_from_empty_config_keys() {
-    let literal = Config {
-        ..Config::default()
-    }
-    .with_legacy_root(Some("TEST-LITERAL-CONFIG-KEY".to_string()), None);
+    let literal =
+        Config::default().with_legacy_root(Some("TEST-LITERAL-CONFIG-KEY".to_string()), None);
     assert_eq!(
         resolve_credential_diagnostic(&literal),
         CredentialDiagnostic::new(
@@ -535,12 +534,15 @@ fn credential_diagnostic_distinguishes_literal_from_empty_config_keys() {
     );
     assert!(doctor_has_credentials_or_local_runtime(&literal));
 
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openai.api_key = Some("  ".to_string());
-    let empty = Config {
-        provider: Some("openai".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    let empty = {
+        let __cw_config_init_4_0 = Some("openai".to_string());
+        let __cw_config_init_4_1 = Some(providers);
+        let mut __cw_config_init_4_value: Config = Config::default();
+        __cw_config_init_4_value.provider = __cw_config_init_4_0;
+        __cw_config_init_4_value.providers = __cw_config_init_4_1;
+        __cw_config_init_4_value
     };
     assert_eq!(
         resolve_credential_diagnostic(&empty),
@@ -551,10 +553,7 @@ fn credential_diagnostic_distinguishes_literal_from_empty_config_keys() {
     );
     assert!(!doctor_has_credentials_or_local_runtime(&empty));
 
-    let empty_root = Config {
-        ..Config::default()
-    }
-    .with_legacy_root(Some(String::new()), None);
+    let empty_root = Config::default().with_legacy_root(Some(String::new()), None);
     assert_eq!(
         resolve_credential_diagnostic(&empty_root).source,
         ApiKeySource::SecretStoreUnprobed
@@ -569,10 +568,10 @@ fn credential_diagnostic_treats_sentinel_as_unprobed_store_not_config() {
     let codewhale_home = temp.path().join("codewhale-home");
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
     let _backend = crate::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
-    let config = Config {
-        ..Config::default()
-    }
-    .with_legacy_root(Some(crate::config::API_KEYRING_SENTINEL.to_string()), None);
+    let config = Config::default().with_legacy_root(
+        Some(codewhale_config::API_KEYRING_SENTINEL.to_string()),
+        None,
+    );
 
     assert_eq!(
         resolve_credential_diagnostic(&config),
@@ -584,13 +583,16 @@ fn credential_diagnostic_treats_sentinel_as_unprobed_store_not_config() {
     assert!(!doctor_has_credentials_or_local_runtime(&config));
     assert!(!codewhale_home.join("secrets/secrets.json").exists());
 
-    for sentinel in [crate::config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
-        let mut providers = crate::config::ProvidersConfig::default();
+    for sentinel in [codewhale_config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
         providers.openai.api_key = Some(sentinel.to_string());
-        let official = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        let official = {
+            let __cw_config_init_7_0 = Some("openai".to_string());
+            let __cw_config_init_7_1 = Some(providers);
+            let mut __cw_config_init_7_value: Config = Config::default();
+            __cw_config_init_7_value.provider = __cw_config_init_7_0;
+            __cw_config_init_7_value.providers = __cw_config_init_7_1;
+            __cw_config_init_7_value
         };
         assert_eq!(
             resolve_credential_diagnostic(&official),
@@ -611,11 +613,11 @@ fn unavailable_sentinel_routes_stay_distinct_from_unknown_and_unprobed() {
     let _home =
         crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", temp.path().join("codewhale-home"));
 
-    for sentinel in [crate::config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
+    for sentinel in [codewhale_config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
         let mut custom = std::collections::HashMap::new();
         custom.insert(
             "sentinel-route".to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some("https://gateway.example.test/v1".to_string()),
                 model: Some("test-model".to_string()),
@@ -623,13 +625,16 @@ fn unavailable_sentinel_routes_stay_distinct_from_unknown_and_unprobed() {
                 ..Default::default()
             },
         );
-        let named_custom = Config {
-            provider: Some("sentinel-route".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let named_custom = {
+            let __cw_config_init_8_0 = Some("sentinel-route".to_string());
+            let __cw_config_init_8_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_8_value: Config = Config::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value.providers = __cw_config_init_8_1;
+            __cw_config_init_8_value
         };
         assert_eq!(
             resolve_credential_diagnostic(&named_custom),
@@ -658,13 +663,16 @@ fn unavailable_sentinel_routes_stay_distinct_from_unknown_and_unprobed() {
         );
     }
 
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openrouter.base_url = Some("https://gateway.example.test/v1".to_string());
-    providers.openrouter.api_key = Some(crate::config::API_KEYRING_SENTINEL.to_string());
-    let custom_endpoint = Config {
-        provider: Some("openrouter".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    providers.openrouter.api_key = Some(codewhale_config::API_KEYRING_SENTINEL.to_string());
+    let custom_endpoint = {
+        let __cw_config_init_9_0 = Some("openrouter".to_string());
+        let __cw_config_init_9_1 = Some(providers);
+        let mut __cw_config_init_9_value: Config = Config::default();
+        __cw_config_init_9_value.provider = __cw_config_init_9_0;
+        __cw_config_init_9_value.providers = __cw_config_init_9_1;
+        __cw_config_init_9_value
     };
     assert_eq!(
         resolve_credential_diagnostic(&custom_endpoint),
@@ -677,7 +685,7 @@ fn unavailable_sentinel_routes_stay_distinct_from_unknown_and_unprobed() {
     let mut custom = std::collections::HashMap::new();
     custom.insert(
         "empty-route".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("https://empty.example.test/v1".to_string()),
             model: Some("test-model".to_string()),
@@ -685,13 +693,16 @@ fn unavailable_sentinel_routes_stay_distinct_from_unknown_and_unprobed() {
             ..Default::default()
         },
     );
-    let empty_custom = Config {
-        provider: Some("empty-route".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let empty_custom = {
+        let __cw_config_init_10_0 = Some("empty-route".to_string());
+        let __cw_config_init_10_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
             ..Default::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_10_value: Config = Config::default();
+        __cw_config_init_10_value.provider = __cw_config_init_10_0;
+        __cw_config_init_10_value.providers = __cw_config_init_10_1;
+        __cw_config_init_10_value
     };
     assert_eq!(
         resolve_credential_diagnostic(&empty_custom),
@@ -716,13 +727,13 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
     let _xiaomi_key = crate::test_support::EnvVarGuard::remove("XIAOMI_API_KEY");
     let _mimo_key_alias = crate::test_support::EnvVarGuard::remove("MIMO_API_KEY");
 
-    for sentinel in [crate::config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
-        let named_custom = Config {
-            provider: Some("sentinel-route".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+    for sentinel in [codewhale_config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
+        let named_custom = {
+            let __cw_config_init_11_0 = Some("sentinel-route".to_string());
+            let __cw_config_init_11_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "sentinel-route".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         base_url: Some("https://gateway.example.test/v1".to_string()),
                         model: Some("sentinel-model".to_string()),
@@ -731,19 +742,22 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_11_value: Config = Default::default();
+            __cw_config_init_11_value.provider = __cw_config_init_11_0;
+            __cw_config_init_11_value.providers = __cw_config_init_11_1;
+            __cw_config_init_11_value
         };
         assert_eq!(
             crate::provider_readiness::credential_state_for_provider(
                 &named_custom,
-                &(named_custom).test_identity_for_kind(crate::config::ProviderKind::Custom),
+                &(named_custom).test_identity_for_kind(codewhale_config::ProviderKind::Custom),
             ),
             crate::provider_readiness::CredentialState::MissingKey
         );
         let readiness = crate::provider_readiness::resolve_for_model(
             &named_custom,
-            &(named_custom).test_identity_for_kind(crate::config::ProviderKind::Custom),
+            &(named_custom).test_identity_for_kind(codewhale_config::ProviderKind::Custom),
             "sentinel-model",
             &crate::provider_readiness::ProviderReadinessSnapshot::default(),
         );
@@ -757,38 +771,43 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
                 .unwrap()
                 .candidates
                 .iter()
-                .all(|candidate| candidate.provider != crate::config::ProviderKind::Custom)
+                .all(|candidate| candidate.provider != codewhale_config::ProviderKind::Custom)
         );
 
-        let xai = Config {
-            provider: Some("xai".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                xai: crate::config::ProviderConfig {
+        let xai = {
+            let __cw_config_init_12_0 = Some("xai".to_string());
+            let __cw_config_init_12_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                xai: codewhale_runtime::config::ProviderConfig {
                     api_key: Some(sentinel.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_12_value: Config = Default::default();
+            __cw_config_init_12_value.provider = __cw_config_init_12_0;
+            __cw_config_init_12_value.providers = __cw_config_init_12_1;
+            __cw_config_init_12_value
         };
         assert_eq!(
             crate::provider_readiness::credential_state_for_provider(
                 &xai,
-                &(xai).test_identity_for_kind(crate::config::ProviderKind::Xai),
+                &(xai).test_identity_for_kind(codewhale_config::ProviderKind::Xai),
             ),
             crate::provider_readiness::CredentialState::MissingKey
         );
 
-        let mut xiaomi_providers = crate::config::ProvidersConfig::default();
+        let mut xiaomi_providers = codewhale_runtime::config::ProvidersConfig::default();
         xiaomi_providers.xiaomi_mimo.api_key = Some(sentinel.to_string());
-        let xiaomi = Config {
-            providers: Some(xiaomi_providers),
-            ..Default::default()
+        let xiaomi = {
+            let __cw_config_init_13_0 = Some(xiaomi_providers);
+            let mut __cw_config_init_13_value: Config = Default::default();
+            __cw_config_init_13_value.providers = __cw_config_init_13_0;
+            __cw_config_init_13_value
         };
         assert_eq!(
             crate::route_billing::for_route(
                 &xiaomi,
-                &(xiaomi).test_identity_for_kind(crate::config::ProviderKind::XiaomiMimo)
+                &(xiaomi).test_identity_for_kind(codewhale_config::ProviderKind::XiaomiMimo)
             ),
             crate::route_billing::BillingPresentation::Subscription("MiMo token plan")
         );
@@ -797,14 +816,17 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
 
 #[test]
 fn sentinel_diagnostic_yields_to_route_bound_env_or_auth_declaration() {
-    for sentinel in [crate::config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
-        let mut providers = crate::config::ProvidersConfig::default();
+    for sentinel in [codewhale_config::API_KEYRING_SENTINEL, "  __KEYRING__  "] {
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
         providers.openai.api_key = Some(sentinel.to_string());
         providers.openai.api_key_env = Some("OFFICIAL_SENTINEL_ROUTE_KEY".to_string());
-        let official = Config {
-            provider: Some("openai".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        let official = {
+            let __cw_config_init_14_0 = Some("openai".to_string());
+            let __cw_config_init_14_1 = Some(providers);
+            let mut __cw_config_init_14_value: Config = Config::default();
+            __cw_config_init_14_value.provider = __cw_config_init_14_0;
+            __cw_config_init_14_value.providers = __cw_config_init_14_1;
+            __cw_config_init_14_value
         };
         assert_eq!(
             resolve_credential_diagnostic(&official),
@@ -814,7 +836,7 @@ fn sentinel_diagnostic_yields_to_route_bound_env_or_auth_declaration() {
         let mut custom = std::collections::HashMap::new();
         custom.insert(
             "sentinel-route".to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some("https://gateway.example.test/v1".to_string()),
                 model: Some("test-model".to_string()),
@@ -823,13 +845,16 @@ fn sentinel_diagnostic_yields_to_route_bound_env_or_auth_declaration() {
                 ..Default::default()
             },
         );
-        let named_custom = Config {
-            provider: Some("sentinel-route".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let named_custom = {
+            let __cw_config_init_15_0 = Some("sentinel-route".to_string());
+            let __cw_config_init_15_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_15_value: Config = Config::default();
+            __cw_config_init_15_value.provider = __cw_config_init_15_0;
+            __cw_config_init_15_value.providers = __cw_config_init_15_1;
+            __cw_config_init_15_value
         };
         assert_eq!(
             resolve_credential_diagnostic(&named_custom),
@@ -839,7 +864,7 @@ fn sentinel_diagnostic_yields_to_route_bound_env_or_auth_declaration() {
         let mut external = std::collections::HashMap::new();
         external.insert(
             "external-sentinel-route".to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some("https://external.example.test/v1".to_string()),
                 model: Some("test-model".to_string()),
@@ -853,13 +878,16 @@ fn sentinel_diagnostic_yields_to_route_bound_env_or_auth_declaration() {
                 ..Default::default()
             },
         );
-        let named_external = Config {
-            provider: Some("external-sentinel-route".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let named_external = {
+            let __cw_config_init_16_0 = Some("external-sentinel-route".to_string());
+            let __cw_config_init_16_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: external,
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_16_value: Config = Config::default();
+            __cw_config_init_16_value.provider = __cw_config_init_16_0;
+            __cw_config_init_16_value.providers = __cw_config_init_16_1;
+            __cw_config_init_16_value
         };
         assert_eq!(
             resolve_credential_diagnostic(&named_external),
@@ -882,12 +910,15 @@ fn credential_declarations_do_not_certify_setup_or_fleet_readiness() {
     let _declared_value =
         crate::test_support::EnvVarGuard::set("TEST_DECLARED_API_KEY", "MUST-NOT-BE-READ");
 
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openai.api_key_env = Some("TEST_DECLARED_API_KEY".to_string());
-    let env_config = Config {
-        provider: Some("openai".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    let env_config = {
+        let __cw_config_init_17_0 = Some("openai".to_string());
+        let __cw_config_init_17_1 = Some(providers);
+        let mut __cw_config_init_17_value: Config = Config::default();
+        __cw_config_init_17_value.provider = __cw_config_init_17_0;
+        __cw_config_init_17_value.providers = __cw_config_init_17_1;
+        __cw_config_init_17_value
     };
     let env_diagnostic = resolve_credential_diagnostic(&env_config);
     assert_eq!(env_diagnostic.source, ApiKeySource::EnvDeclared);
@@ -904,17 +935,20 @@ fn credential_declarations_do_not_certify_setup_or_fleet_readiness() {
     assert_eq!(env_setup["operate_fleet"]["ready"], false);
     assert!(!env_setup.to_string().contains("MUST-NOT-BE-READ"));
 
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openai.auth = Some(codewhale_config::ProviderAuthSourceToml {
         source: codewhale_config::AuthSourceKind::Command,
         command: vec!["MUST-NOT-RUN".to_string()],
         timeout_ms: None,
         secret_id: None,
     });
-    let external_config = Config {
-        provider: Some("openai".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    let external_config = {
+        let __cw_config_init_18_0 = Some("openai".to_string());
+        let __cw_config_init_18_1 = Some(providers);
+        let mut __cw_config_init_18_value: Config = Config::default();
+        __cw_config_init_18_value.provider = __cw_config_init_18_0;
+        __cw_config_init_18_value.providers = __cw_config_init_18_1;
+        __cw_config_init_18_value
     };
     let external_diagnostic = resolve_credential_diagnostic(&external_config);
     assert_eq!(
@@ -929,12 +963,15 @@ fn credential_declarations_do_not_certify_setup_or_fleet_readiness() {
 
 #[test]
 fn credential_diagnostic_certifies_only_no_auth_and_local_runtime_without_keys() {
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openrouter.auth_mode = Some("none".to_string());
-    let no_auth = Config {
-        provider: Some("openrouter".to_string()),
-        providers: Some(providers),
-        ..Config::default()
+    let no_auth = {
+        let __cw_config_init_19_0 = Some("openrouter".to_string());
+        let __cw_config_init_19_1 = Some(providers);
+        let mut __cw_config_init_19_value: Config = Config::default();
+        __cw_config_init_19_value.provider = __cw_config_init_19_0;
+        __cw_config_init_19_value.providers = __cw_config_init_19_1;
+        __cw_config_init_19_value
     };
     assert_eq!(
         resolve_credential_diagnostic(&no_auth),
@@ -942,9 +979,11 @@ fn credential_diagnostic_certifies_only_no_auth_and_local_runtime_without_keys()
     );
     assert!(doctor_has_credentials_or_local_runtime(&no_auth));
 
-    let local = Config {
-        provider: Some("ollama".to_string()),
-        ..Config::default()
+    let local = {
+        let __cw_config_init_20_0 = Some("ollama".to_string());
+        let mut __cw_config_init_20_value: Config = Config::default();
+        __cw_config_init_20_value.provider = __cw_config_init_20_0;
+        __cw_config_init_20_value
     };
     assert_eq!(
         resolve_credential_diagnostic(&local),

@@ -76,15 +76,15 @@ fn enforced_readonly_refuses_an_unenforced_or_writable_prepared_environment() {
 
 struct RefusingExternalBackend;
 #[async_trait]
-impl crate::sandbox::backend::SandboxBackend for RefusingExternalBackend {
-    fn kind(&self) -> crate::sandbox::backend::SandboxKind {
-        crate::sandbox::backend::SandboxKind::Unsupported
+impl codewhale_sandbox::backend::SandboxBackend for RefusingExternalBackend {
+    fn kind(&self) -> codewhale_sandbox::backend::SandboxKind {
+        codewhale_sandbox::backend::SandboxKind::Unsupported
     }
     async fn exec(
         &self,
         _command: &str,
         _env: &HashMap<String, String>,
-    ) -> Result<crate::sandbox::backend::SandboxOutput> {
+    ) -> Result<codewhale_sandbox::backend::SandboxOutput> {
         panic!("enforced read-only must never reach an unattested external executor")
     }
 }

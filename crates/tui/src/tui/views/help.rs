@@ -168,7 +168,7 @@ impl HelpView {
         skills: &[(String, String)],
     ) -> Self {
         commands::user_registry::with_registry_for_workspace(Some(workspace), |registry| {
-            Self::new_with_registry(locale, HelpOrdering::CommandsFirst, registry, skills)
+            Self::new_with_registry(locale, HelpOrdering::CommandsFirst, registry, skills, false)
         })
     }
 
@@ -183,12 +183,13 @@ impl HelpView {
                 },
                 registry,
                 &app.cached_skills,
+                app.composer_multiline_mode,
             )
         })
     }
     fn new_with_ordering(locale: Locale, ordering: HelpOrdering) -> Self {
         let registry = commands::user_registry::UserCommandRegistry::new();
-        Self::new_with_registry(locale, ordering, &registry, &[])
+        Self::new_with_registry(locale, ordering, &registry, &[], false)
     }
 
     fn new_with_registry(
@@ -196,8 +197,9 @@ impl HelpView {
         ordering: HelpOrdering,
         registry: &commands::user_registry::UserCommandRegistry,
         skills: &[(String, String)],
+        multiline_mode: bool,
     ) -> Self {
-        let entries = build_entries(locale, registry, skills);
+        let entries = build_entries(locale, registry, skills, multiline_mode);
         let mut view = Self {
             locale,
             ordering,
@@ -493,6 +495,7 @@ fn build_entries(
     locale: Locale,
     registry: &commands::user_registry::UserCommandRegistry,
     skills: &[(String, String)],
+    multiline_mode: bool,
 ) -> Vec<HelpEntry> {
     let mut entries = Vec::new();
 
@@ -605,10 +608,14 @@ fn build_entries(
     for binding in KEYBINDINGS {
         // macOS renders Alt chords with the Option glyph (`⌥V`), never
         // `Alt`/`Cmd` (TUI-DOG-002 acceptance).
-        let mut label = crate::tui::shell_key_routing::display_chord(binding.chord).into_owned();
-        // The newline row is the one chord whose availability depends on the
-        // terminal rather than the platform, so it is answered here instead
-        // of listing a key that may do nothing.
+        let chord = match (multiline_mode, binding.description_id) {
+            (true, MessageId::KbInsertNewline) => "Enter / Ctrl+J",
+            (true, MessageId::KbSendDraft) => "Alt+Enter / Shift+Enter (enhanced terminals)",
+            _ => binding.chord,
+        };
+        let mut label = crate::tui::shell_key_routing::display_chord(chord).into_owned();
+        // Shift+Enter depends on the startup capability receipt; Help never
+        // reads the terminal while the input pump owns it.
         if label.contains("Shift+Enter")
             && !crate::tui::composer_ui::terminal_can_report_shift_enter()
         {
@@ -1384,6 +1391,23 @@ mod tests {
         let shortcuts = HelpView::new_with_ordering(Locale::En, HelpOrdering::KeybindingsFirst);
         assert_eq!(shortcuts.ordering, HelpOrdering::KeybindingsFirst);
         assert_eq!(first_filtered_section(&shortcuts), HelpSection::Keybinding);
+        let registry = commands::user_registry::UserCommandRegistry::new();
+        let multiline = HelpView::new_with_registry(
+            Locale::En,
+            HelpOrdering::KeybindingsFirst,
+            &registry,
+            &[],
+            true,
+        );
+        assert!(multiline.entries.iter().any(|entry| {
+            entry.label == "Enter / Ctrl+J"
+                && entry.description == tr(Locale::En, MessageId::KbInsertNewline)
+        }));
+        assert!(multiline.entries.iter().any(|entry| {
+            !entry.label.contains("Shift+Enter")
+                && entry.description == tr(Locale::En, MessageId::KbSendDraft)
+                && entry.label == crate::tui::shell_key_routing::display_chord("Alt+Enter")
+        }));
     }
 
     #[test]
@@ -1469,7 +1493,7 @@ mod tests {
             "help".to_string(),
             "---\ndescription: Custom help workflow\n---\ncustom help".to_string(),
         )]);
-        let entries = build_entries(Locale::En, &registry, &[]);
+        let entries = build_entries(Locale::En, &registry, &[], false);
 
         // The built-in row is suppressed so the name is not advertised twice.
         assert!(
@@ -2229,7 +2253,7 @@ mod tests {
     #[test]
     fn localized_help_keybinding_descriptions_use_zh_hans() {
         let registry = commands::user_registry::UserCommandRegistry::new();
-        let entries = build_entries(Locale::ZhHans, &registry, &[]);
+        let entries = build_entries(Locale::ZhHans, &registry, &[], false);
         let kb_entries: Vec<_> = entries
             .iter()
             .filter(|e| e.section == HelpSection::Keybinding)

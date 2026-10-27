@@ -1,5 +1,3 @@
-
-
 #[tokio::test]
 async fn queued_failed_turn_cancels_older_goal_continuation_without_third_call() {
     let objective = "stop after the intervening failure";
@@ -1168,6 +1166,44 @@ async fn unsaturated_goal_control_runs_before_ready_idle_child_completion() {
         panic!("normal child fairness did not resume after schedule consumption");
     };
     assert_eq!(child.agent_id, "agent_ready_without_backpressure");
+
+    engine.config.goal_state.lock().expect("goal").replace(
+        "finish the existing goal",
+        None,
+        Some("same-goal".to_string()),
+    );
+    engine
+        .handle_set_goal_status(GoalStatus::Active, false, Some("unused-new-id".to_string()))
+        .await;
+    let scheduled_id = engine
+        .scheduled_goal_continuation
+        .as_ref()
+        .expect("idle kick")
+        .id;
+    engine
+        .handle_set_goal_status(GoalStatus::Active, false, None)
+        .await;
+    assert_eq!(
+        engine.scheduled_goal_continuation.as_ref().unwrap().id,
+        scheduled_id
+    );
+    assert_eq!(
+        engine
+            .config
+            .goal_state
+            .lock()
+            .unwrap()
+            .snapshot()
+            .goal_id
+            .as_deref(),
+        Some("same-goal")
+    );
+    engine.cancel_scheduled_goal_continuation(true).await;
+    engine.cancel_token.cancel();
+    engine
+        .handle_set_goal_status(GoalStatus::Active, false, None)
+        .await;
+    assert!(!engine.has_scheduled_goal_continuation());
 }
 
 #[tokio::test]
@@ -1215,7 +1251,10 @@ async fn cross_turn_token_budget_exhaustion_does_not_pause_goal() {
             content: "start budgeted goal".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: Some("finish within budget".to_string()),

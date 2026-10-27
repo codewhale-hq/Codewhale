@@ -62,7 +62,7 @@ v0.8.44 的迁移，同时把所有新写入导向 `~/.codewhale/`。
 | `crates/tui/src/session_manager.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/skill_state.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/tui/src/tools/skill.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
-| `crates/tui/src/snapshot/mod.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
+| `crates/snapshot/src/lib.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/workspace_discovery.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 
 ## 后续工作（独立的非文档改动 —— 不在 #3068 范围内）

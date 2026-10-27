@@ -1,0 +1,33 @@
+name: Publish Codewhale review
+description: Validate and publish a completed Codewhale findings artifact in a separate job without model credentials.
+inputs:
+  findings:
+    description: Path to findings.json from this workflow run and attempt.
+    required: true
+  github-token:
+    description: GitHub token with contents read and pull-requests write.
+    default: ${{ github.token }}
+  pr-number:
+    description: PR number for workflow_dispatch; pull_request events use the event snapshot.
+  reviewer-login:
+    description: Exact GitHub login used by github-token; only this author's Codewhale markers deduplicate reviews.
+    default: github-actions[bot]
+outputs:
+  outcome:
+    description: published, already_published, superseded, not_eligible, configuration_missing, failed, or publication_uncertain.
+    value: ${{ steps.publish.outputs.outcome }}
+  receipt:
+    description: Absolute path to the sanitized JSON publication receipt.
+    value: ${{ steps.publish.outputs.receipt }}
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      env:
+        CW_ACTION_PATH: ${{ github.action_path }}
+        CW_FINDINGS: ${{ inputs.findings }}
+        CW_PR_NUMBER: ${{ inputs.pr-number }}
+        CW_REVIEWER_LOGIN: ${{ inputs.reviewer-login }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: node "$CW_ACTION_PATH/../publish.mjs"

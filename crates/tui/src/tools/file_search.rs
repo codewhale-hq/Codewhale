@@ -11,11 +11,12 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::file::{PATH_ALIASES, SEARCH_NAME_ALIASES, SEARCH_NAME_PARAMS, apply_param_aliases};
+use super::file::{SEARCH_NAME_ALIASES, SEARCH_NAME_PARAMS};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64, required_str,
 };
+use codewhale_tools::param_alias::{PATH_ALIASES, apply_param_aliases};
 
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -366,7 +367,7 @@ fn search_files(
             // Sandbox read deny-list (S1). A walk rooted above a denied tree
             // must not enumerate its names. Reject directories before descent;
             // the explicit root refusal remains at the guard above.
-            if let Err(denial) = crate::sandbox::read_guard::active().check(entry.path()) {
+            if let Err(denial) = codewhale_sandbox::read_guard::active().check(entry.path()) {
                 tracing::debug!(
                     target: "codewhale::sandbox::read_guard",
                     requested = %denial.requested.display(),

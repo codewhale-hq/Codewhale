@@ -10,10 +10,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::settings::InlineDiffMode;
 use crate::tools::spec::ToolResult;
 use crate::tui::diff_render;
 use codewhale_palette as palette;
+use codewhale_runtime::settings::InlineDiffMode;
 
 use super::details_affordance_line;
 

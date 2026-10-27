@@ -11,12 +11,12 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::canonical_action::required_action;
 use super::git::{GitCommitPlanTool, GitDiffTool, GitStatusTool};
 use super::git_history::{GitBlameTool, GitFetchTool, GitLogTool, GitMergeTreeTool, GitShowTool};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codewhale_tools::required_action;
 
 pub struct GitTool {
     name: &'static str,

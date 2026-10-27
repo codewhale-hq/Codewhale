@@ -114,8 +114,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::settings::Settings;
 use codewhale_config::AppMode;
+use codewhale_runtime::settings::Settings;
 
 /// One user selection's worth of startup-default writes.
 ///
@@ -374,7 +374,7 @@ impl StartupDefaultsWriter {
         };
         self.lock_queue().push_back(update);
         let writer = self.clone();
-        crate::utils::spawn_blocking_supervised("startup-defaults-persist", move || {
+        codewhale_util::utils::spawn_blocking_supervised("startup-defaults-persist", move || {
             #[cfg(test)]
             let _scope = ticket.enter();
             writer.drain_pending();
@@ -1084,7 +1084,7 @@ mod tests {
         let ticket = crate::test_support::env_scope_ticket();
 
         let mut handle = None;
-        crate::settings::with_settings_transaction(|transaction| {
+        codewhale_runtime::settings::with_settings_transaction(|transaction| {
             let mut direct = transaction.load().expect("load inside the transaction");
             // A field with a non-default value, so the final assertion cannot
             // pass by accident: `max_input_history` defaults to 100.

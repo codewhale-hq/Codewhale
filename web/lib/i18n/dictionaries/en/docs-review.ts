@@ -4,7 +4,7 @@ import type { DocsReviewDict } from "../types";
  * English reference dictionary for `app/[locale]/docs/review/page.tsx`
  * ("Review what changed"). Checked against the slash-command registry
  * (`/diff`, `/restore`, `/undo`, `/review`, `/export`), the workspace
- * snapshot module (crates/tui/src/snapshot/mod.rs), `ReviewArgs` in
+ * snapshot module (crates/snapshot/src/lib.rs), `ReviewArgs` in
  * crates/tui/src/lib.rs, and docs/RECEIPTS.md.
  */
 export const docsReview: DocsReviewDict = {
@@ -152,5 +152,5 @@ codewhale sessions export <id>     # full archive: messages, tool calls, results
     },
   ],
   sourceNote:
-    "Source documents: docs/RECEIPTS.md, docs/CONFIGURATION.md ([snapshots]), crates/tui/src/snapshot/mod.rs · Update docs-map.ts when changing.",
+    "Source documents: docs/RECEIPTS.md, docs/CONFIGURATION.md ([snapshots]), crates/snapshot/src/lib.rs · Update docs-map.ts when changing.",
 };

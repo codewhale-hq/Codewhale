@@ -12,8 +12,9 @@ use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
 
 use crate::client::{CodewhaleClient, SpeechSynthesisRequest};
-use crate::config::{ProviderKind, normalize_model_name_for_provider};
-use crate::network_policy::{Decision, host_from_url};
+use codewhale_config::ProviderKind;
+use codewhale_net::network_policy::{Decision, host_from_url};
+use codewhale_runtime::config::normalize_model_name_for_provider;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -330,7 +331,7 @@ pub(crate) async fn prepare_speech_format(
 ) -> Result<String, ToolError> {
     if context
         .features
-        .enabled(crate::features::Feature::SpeechHost)
+        .enabled(codewhale_runtime::features::Feature::SpeechHost)
     {
         let metadata = speech_projection(
             crate::extension_host::StockOperation::SpeechFormat,
@@ -396,7 +397,7 @@ pub(crate) async fn prepare_speech_options(
         .is_some_and(|value| value.starts_with("data:audio/"));
     if context
         .features
-        .enabled(crate::features::Feature::SpeechHost)
+        .enabled(codewhale_runtime::features::Feature::SpeechHost)
     {
         let metadata = speech_projection(
             crate::extension_host::StockOperation::SpeechOptions,

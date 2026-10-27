@@ -141,7 +141,7 @@ pub(crate) fn resolve(namespace: &str, ref_id: &str) -> Option<WebCitation> {
 
 fn ref_id_for(namespace: &str, url: &str) -> String {
     let identity = format!("{namespace}\0{url}");
-    let digest = crate::hashing::sha256_hex(identity.as_bytes());
+    let digest = codewhale_runtime::hashing::sha256_hex(identity.as_bytes());
     format!("web_{}", &digest[..16])
 }
 

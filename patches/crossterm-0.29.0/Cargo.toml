@@ -59,6 +59,7 @@ event-stream = [
     "events",
 ]
 events = [
+    "filedescriptor",
     "dep:mio",
     "dep:signal-hook",
     "dep:signal-hook-mio",

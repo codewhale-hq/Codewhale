@@ -4,22 +4,30 @@
 //! engine session maintenance code. Keeping them here prevents the top-level
 //! engine module from accumulating unrelated context-policy details.
 
-use crate::config::ProviderKind;
-use crate::context_budget::ContextBudget;
 #[cfg(test)]
 pub(super) use crate::route_budget::effective_max_output_tokens;
+#[cfg(test)]
 pub(super) use crate::route_budget::effective_max_output_tokens_for_route;
 use crate::tools::spec::ToolResult;
+use codewhale_config::ProviderKind;
 use codewhale_config::route::RouteLimits;
 use codewhale_models::SystemPrompt;
+use codewhale_runtime::context_budget::ContextBudget;
 use serde_json::Value;
+
+pub(super) struct ObservedContextUpdate {
+    pub(super) current_text: String,
+    pub(super) message: Option<String>,
+    pub(super) notice: Option<String>,
+}
+
 /// Allow a few emergency recovery attempts before failing the turn.
 pub(super) const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
 /// Max chars to keep from metadata-provided output summaries.
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 
 #[cfg(test)]
-pub(super) use crate::compaction::COMPACTION_SUMMARY_MARKER;
+pub(super) use codewhale_models::turn_classify::COMPACTION_SUMMARY_MARKER;
 
 /// What the model sees of one tool result (#6508).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -853,7 +861,7 @@ pub(super) fn context_does_not_fit_message(
             format!("Choose {what}.")
         }
     };
-    if local_ollama && crate::local_ollama::looks_like_non_chat_tag(model) {
+    if local_ollama && crate::client::ollama_catalog::looks_like_non_chat_tag(model) {
         return format!("{model} can't chat. {}", pick("a chat model"));
     }
     let larger = if local_ollama {

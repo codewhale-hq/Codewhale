@@ -178,9 +178,15 @@ impl ToolSpec for FimEditTool {
         // `prefix_end`/`suffix_start` as byte offsets into the written file,
         // and reformatting would move them. The syntax gate applies; the
         // formatting normalization does not.
-        crate::utils::write_atomic_workspace(&resolved, new_content.as_bytes()).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to write {}: {}", resolved.display(), e))
-        })?;
+        codewhale_util::utils::write_atomic_workspace(&resolved, new_content.as_bytes()).map_err(
+            |e| {
+                ToolError::execution_failed(format!(
+                    "Failed to write {}: {}",
+                    resolved.display(),
+                    e
+                ))
+            },
+        )?;
         context.note_file_read(&resolved);
 
         let result = FimEditResult {

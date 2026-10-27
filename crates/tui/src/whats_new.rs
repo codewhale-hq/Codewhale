@@ -117,10 +117,14 @@ pub(crate) fn take_after_update(locale: Locale, show: bool) -> Option<WhatsNewNo
 pub fn plain_cli_notice(update_table: Option<&toml::Value>) -> Option<String> {
     let show = update_table
         .cloned()
-        .and_then(|table| table.try_into::<crate::config::UpdateConfig>().ok())
+        .and_then(|table| {
+            table
+                .try_into::<codewhale_runtime::config::UpdateConfig>()
+                .ok()
+        })
         .unwrap_or_default()
         .show_whats_new;
-    let settings = crate::settings::Settings::load_read_only().unwrap_or_default();
+    let settings = codewhale_runtime::settings::Settings::load_read_only().unwrap_or_default();
     let locale = codewhale_localization::resolve_locale(&settings.locale);
     take_after_update(locale, show).map(|notice| notice.plain_text())
 }

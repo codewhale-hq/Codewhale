@@ -197,7 +197,8 @@
     "compile": "tsc -p ./",
     "check": "npm run compile",
     "test": "npm run compile && node --test out/test/*.test.js",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "audit:dependencies": "node scripts/audit-dependencies.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.27",

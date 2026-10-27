@@ -15,11 +15,12 @@ use super::SharedCommandHost;
 use crate::client::{
     CacheWarmupKey, PromptInspection, PromptLayerStability, inspect_prompt_for_request,
 };
-use crate::config::provider_has_balance_api;
 use crate::context_report::project_source_map as source_map;
-use crate::pricing::{CostCurrency, token_usage_for_pricing};
+use crate::pricing::token_usage_for_pricing;
 use crate::tool_inspection::project_snapshot as tool_snapshot;
 use crate::tui::app::App;
+use codewhale_config::pricing::CostCurrency;
+use codewhale_runtime::config::provider_has_balance_api;
 
 pub(super) struct DebugDiagnosticsAdapter<'a> {
     pub(super) host: SharedCommandHost<'a>,

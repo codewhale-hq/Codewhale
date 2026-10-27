@@ -22,9 +22,9 @@ pub(super) fn write_run_report_artifact(workspace: &Path, record: &WorkflowRunRe
     // report's own name) is refused instead of redirecting the write out of
     // the workspace, and missing parents are created without following links.
     if let Err(err) =
-        crate::fs_confined::write(workspace, &path, render_run_report(record).as_bytes())
+        codewhale_util::fs_confined::write(workspace, &path, render_run_report(record).as_bytes())
     {
-        crate::logging::warn(format!(
+        codewhale_runtime::logging::warn(format!(
             "workflow report {} not written: {err}",
             path.display()
         ));
@@ -97,10 +97,10 @@ pub(super) fn write_schema_raw_artifact(
     ));
     // Confined write: no link below the workspace is followed, and the missing
     // `.codewhale/reports` parents are created without following one.
-    match crate::fs_confined::write(workspace, &path, raw.as_bytes()) {
+    match codewhale_util::fs_confined::write(workspace, &path, raw.as_bytes()) {
         Ok(()) => Some(path.display().to_string()),
         Err(err) => {
-            crate::logging::warn(format!(
+            codewhale_runtime::logging::warn(format!(
                 "workflow schema artifact {} not written: {err}",
                 path.display()
             ));

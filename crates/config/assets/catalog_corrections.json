@@ -428,11 +428,14 @@
         "context_window": 200000,
         "max_output": 64000,
         "modalities": [
-          "text"
+          "text",
+          "image"
         ],
-        "supported_parameters": [],
-        "reasoning": false,
-        "source": "preserved reviewed bundled model facts; see source_receipts",
+        "supported_parameters": [
+          "reasoning"
+        ],
+        "reasoning": true,
+        "source": "official vendor model docs, verified 2026-10-22; see source_receipts",
         "family": "Anthropic"
       },
       "claude-opus-4-8": {
@@ -4601,7 +4604,8 @@
       "https://www.alibabacloud.com/en/notice/alibaba_cloud_model_studio_model_upgrade_notice_81a?_p_lc=1": "verified 2026-10-17: qwen3.8-max-preview retired 2026-08-05 and its requests route to qwen3.8-max",
       "https://api.deepinfra.com/models/list": "verified 2026-10-20: deepseek-ai/DeepSeek-V4.1-Flash-1017, deepseek-ai/DeepSeek-V4.1-Flash, deepseek-ai/DeepSeek-V4-Pro-0813 and deepseek-ai/DeepSeek-V4-Flash-0731 are listed and not deprecated, each with max_tokens 1048576 and the tools tag; both V4.1 Flash ids are tagged multimodal and reasoning, V4-Flash-0731 reasoning; V4-Pro-0813 carries can-disable-reasoning beside a non-reasoning tag, while its model page documents low, high and max reasoning effort and the Models.dev deepseek/deepseek-v4-pro-0813 row marks reasoning, so reasoning is recorded; the V4-Pro and V4-Flash previews are still listed; no separate output limit is published, so none is recorded",
       "https://modelscope.cn/api/v1/models/deepseek-ai/DeepSeek-V4-Pro-0813": "verified 2026-10-20: the ModelScope card describes DeepSeek-V4-Pro-0813 as the official release of DeepSeek-V4-Pro on the preview model structure, whose card lists a 1M context length; no separate ModelScope API-Inference context limit is published there",
-      "https://modelscope.cn/api/v1/models/deepseek-ai/DeepSeek-V4.1-Flash": "verified 2026-10-20: the ModelScope card states contexts of up to one million tokens and a recommended 1M context_window; no separate ModelScope API-Inference context limit is published there"
+      "https://modelscope.cn/api/v1/models/deepseek-ai/DeepSeek-V4.1-Flash": "verified 2026-10-20: the ModelScope card states contexts of up to one million tokens and a recommended 1M context_window; no separate ModelScope API-Inference context limit is published there",
+      "https://platform.claude.com/docs/en/models/haiku-4-5/overview": "verified 2026-10-22: claude-haiku-4-5 supports manual extended thinking and image input, with 200K context and 64K output; no adaptive-thinking or default-effort support inferred"
     },
     "transports": [
       {

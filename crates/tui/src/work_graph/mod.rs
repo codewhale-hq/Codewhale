@@ -49,8 +49,8 @@ pub use model::{
     ACTIVITY_CAP, AcceptanceRequirement, BoundedSet, BoundedVec, CompatPlanMetadata,
     CompatProjectionState, CompatTodoBinding, EdgeKind, EvidenceKind, EvidenceKindTag, EvidenceRef,
     EvidenceRefError, HISTORY_CAP, IdempotencyKey, NodeKind, NodeState, OperationBinding,
-    Provenance, ReasoningEffortTier, SCHEMA_VERSION, SEEN_KEYS_CAP, Ts, WorkActivityEvent,
-    WorkEdge, WorkGraphSnapshot, WorkNode, external_identity_is_well_formed,
+    Provenance, SCHEMA_VERSION, SEEN_KEYS_CAP, Ts, WorkActivityEvent, WorkEdge, WorkGraphSnapshot,
+    WorkNode, external_identity_is_well_formed,
 };
 pub(crate) use model::{ENDED_OPERATION_CAP, constrained_effective_reasoning_for_route};
 pub use reducer::apply;

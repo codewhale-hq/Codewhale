@@ -3,7 +3,7 @@
 //! All plugin install / update / uninstall writes go through this module.
 //! Discovery stays read-only: this controller is the only writer of the user
 //! plugins root, and every request is gated by the per-domain
-//! [`crate::network_policy::NetworkPolicy`] before any network or disk
+//! [`codewhale_net::network_policy::NetworkPolicy`] before any network or disk
 //! mutation happens. Trust and enablement are *not* mutations of this module —
 //! they remain the registry's hash-bound receipt flow (`PluginRegistry::trust`
 //! / `enable`), which installed bits must pass through like any other bundle.
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use crate::network_policy::NetworkPolicy;
+use codewhale_net::network_policy::NetworkPolicy;
 
 use super::install::{self, PluginInstallOutcome, PluginInstallSource, PluginUpdateResult};
 use super::registry::PluginRegistry;
@@ -97,7 +97,7 @@ pub async fn execute(
 
 pub async fn install_from_cli(
     source: String,
-    config: crate::config::Config,
+    config: codewhale_runtime::config::Config,
     mut registry: PluginRegistry,
 ) -> Result<()> {
     let runtime = tokio::runtime::Handle::current();
@@ -106,7 +106,7 @@ pub async fn install_from_cli(
         let _scope = crate::plugins::activation::PolicyScope::propagate(policy);
         let network = config
             .network
-            .map(|network| network.into_runtime())
+            .map(codewhale_net::network_policy::NetworkPolicy::from)
             .unwrap_or_default();
         let source = PluginInstallSource::parse(&source)?;
         runtime.block_on(execute(

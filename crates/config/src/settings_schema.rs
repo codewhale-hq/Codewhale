@@ -328,6 +328,26 @@ const COST_CURRENCY: &[SettingOption] = &[
 /// and the command cannot drift. Labels stay empty: an undeclared label means
 /// "show the raw value", and a capitalized literal would also have to be
 /// localized in every shipped locale to satisfy the schema message-key check.
+/// Canonical setting value for a reasoning-effort spelling, accepting the
+/// documented aliases. Unknown values are refused with the full vocabulary.
+pub fn canonical_reasoning_effort(value: &str) -> Result<&'static str, String> {
+    let trimmed = value.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "off" | "disabled" | "none" | "false" => Ok("off"),
+        "minimal" => Ok("minimal"),
+        "low" | "minimum" | "light" => Ok("low"),
+        "medium" | "mid" => Ok("medium"),
+        "high" => Ok("high"),
+        "xhigh" => Ok("xhigh"),
+        "auto" | "automatic" => Ok("auto"),
+        "ultra" | "ultracode" => Ok("ultra"),
+        "max" | "maximum" => Ok("max"),
+        _ => Err(format!(
+            "Unrecognized reasoning effort {trimmed:?}. Expected one of: auto, off, minimal, low, medium, high, xhigh, ultra, or max."
+        )),
+    }
+}
+
 const REASONING_EFFORT: &[SettingOption] = &[
     SettingOption::new("auto", "", ""),
     SettingOption::new("off", "", ""),

@@ -32,6 +32,8 @@ Do not delegate tiny one-step tasks, ambiguous product decisions, destructive op
 
 Use `agent` for a focused child run. Launch independent children together so they can run in parallel.
 
+Give each child a concrete outcome and acceptance criteria. Let it continue until the work is complete or it needs input. Do not invent time, turn or token budgets, or tell it to stop early because a percentage of a budget has elapsed. The runtime carries any limits explicitly configured by the owner.
+
 Prefer provider-neutral `model_strength` over hardcoded model ids. Children inherit the active model by default (`model_strength: "same"`), including `type: "explore"`, so pass `model_strength: "faster"` explicitly to get the cheaper same-family sibling for read-only exploration:
 
 ```json
@@ -95,5 +97,5 @@ Fix the settings bug.
 Strong prompt:
 
 ```text
-Own only crates/tui/src/settings.rs and its tests. Preserve existing config key names. Add a regression test showing that provider-specific API key changes do not restart provider onboarding. Return the changed paths and test command output.
+Own only crates/tui/src/settings.rs and its tests. Preserve existing config key names. Verify with the existing checks that provider-specific API key changes do not restart provider onboarding. Return the changed paths and test command output.
 ```

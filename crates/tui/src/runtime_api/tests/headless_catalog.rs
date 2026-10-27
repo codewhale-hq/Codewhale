@@ -15,7 +15,7 @@ struct CatalogReset;
 impl Drop for CatalogReset {
     fn drop(&mut self) {
         cold_process();
-        crate::tools::large_output_router::WorkshopConfig::install_active(None);
+        crate::tools::large_output_router::install_active_workshop(None);
     }
 }
 
@@ -60,9 +60,11 @@ fn persist_catalog(kind: ProviderKind, identity: &str, endpoint: &str, images: b
 }
 
 fn config_for(identity: &str, endpoint: &str) -> Config {
-    let mut config = Config {
-        provider: Some(identity.into()),
-        ..Default::default()
+    let mut config = {
+        let __cw_config_init_0_0 = Some(identity.into());
+        let mut __cw_config_init_0_value: Config = Default::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value
     };
     let route = if identity == "openrouter" {
         &mut config

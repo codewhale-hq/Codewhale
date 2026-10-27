@@ -230,10 +230,10 @@ impl WorkspaceDriveLease {
         let canonical = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
-        let project = crate::snapshot::paths::strip_worktree_suffix(&canonical);
+        let project = codewhale_snapshot::paths::strip_worktree_suffix(&canonical);
         Ok(base
-            .join(crate::snapshot::paths::stable_hex(&project))
-            .join(crate::snapshot::paths::stable_hex(&canonical))
+            .join(codewhale_snapshot::paths::stable_hex(&project))
+            .join(codewhale_snapshot::paths::stable_hex(&canonical))
             .with_extension("lease"))
     }
 
@@ -293,7 +293,7 @@ impl WorkspaceDriveLease {
         #[cfg(not(any(unix, windows)))]
         let contention: Option<std::io::Error> = None;
         if let Some(error) = contention {
-            if !is_contention(&error) {
+            if !codewhale_util::lock::is_contention(&error) {
                 return Err(error).context("Failed to lock workspace lease");
             }
             return Ok(None);
@@ -409,13 +409,6 @@ impl Drop for WorkspaceDriveLease {
             }
         }
     }
-}
-
-/// Whether a lock error means "held by someone else". The two raw codes cover
-/// the platforms whose `WouldBlock` mapping is not enough; kept in step with
-/// `RuntimeProcessOwnerLock::is_contention`, the store lock this mirrors.
-fn is_contention(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::WouldBlock || matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 #[cfg(all(test, unix))]

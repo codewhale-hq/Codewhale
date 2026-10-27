@@ -157,7 +157,7 @@ def scan_ts(path: Path):
 
 # --- Rust string literals -------------------------------------------------
 
-RUST_ROOT = ROOT / "crates" / "tui" / "src"
+RUST_ROOTS = [ROOT / "crates" / name / "src" for name in ("tui", "runtime")]
 
 # Calls whose string arguments are developer text: logs, panics, assertions.
 RUST_INTERNAL_CALLEE = re.compile(
@@ -210,7 +210,7 @@ RUST_MODEL_MARKER = "<codewhale:"
 # entry honest: an ordinary English word, not a retired product term.
 RUST_ALLOW: dict[str, dict[str, set[str]]] = {
     # "roster" is a provider's model list here, not a Fleet.
-    "crates/tui/src/config.rs": {"Model '{trimmed}' is not in OpenCode Go": {"roster"}},
+    "crates/runtime/src/config.rs": {"Model '{trimmed}' is not in OpenCode Go": {"roster"}},
     "crates/tui/src/lib.rs": {"pinned id `{model}` is absent from": {"roster"}},
     "crates/tui/src/tui/model_picker.rs": {"custom · OAuth roster": {"roster"}},
     # A tool name in an error, not the retired Bash label.
@@ -244,7 +244,7 @@ def is_rust_test_file(path: Path) -> bool:
         name == "tests.rs"
         or name.endswith("_tests.rs")
         or name.startswith("test_")
-        or "tests" in path.relative_to(RUST_ROOT).parts[:-1]
+        or "tests" in path.relative_to(ROOT).parts[:-1]
     )
 
 
@@ -370,7 +370,7 @@ def main() -> int:
                 if path.name.endswith(".test.ts"):
                     continue
                 found.extend(scan_ts(path))
-    for path in sorted(RUST_ROOT.rglob("*.rs")):
+    for path in sorted(path for root in RUST_ROOTS for path in root.rglob("*.rs")):
         if is_rust_test_file(path):
             continue
         found.extend(scan_rust(path))

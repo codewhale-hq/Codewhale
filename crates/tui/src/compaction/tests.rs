@@ -359,7 +359,7 @@ fn compact_prompt_appends_operator_instructions_before_focus() {
 /// than failing the compaction pass that keeps the session alive.
 #[test]
 fn operator_instructions_are_truncated_at_the_cap() {
-    let max = crate::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
+    let max = codewhale_runtime::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
     let long = "é".repeat(max + 500);
     let section = operator_instructions_section(Some(&long)).expect("section is present");
 

@@ -74,17 +74,25 @@ pub struct PluginDiscoveryContext {
     state_path: PathBuf,
     builtin_plugin_dirs: Arc<[PathBuf]>,
     host_environment: Arc<HostEnvironment>,
+    managed_policy_path: Result<PathBuf, String>,
 }
 
 impl PluginDiscoveryContext {
     #[must_use]
     pub fn capture_pre_dotenv() -> Arc<Self> {
         let user_plugins_dir = super::discovery::default_user_plugins_dir();
+        let state_path = user_plugins_dir.join("state.json");
+        let host_environment = Arc::new(HostEnvironment::capture());
+        let managed_policy_path = super::managed_policy::resolve_managed_policy_path(
+            &state_path,
+            Some(host_environment.as_ref()),
+        );
         Arc::new(Self {
-            state_path: user_plugins_dir.join("state.json"),
+            state_path,
             user_plugins_dir,
-            builtin_plugin_dirs: super::builtin::materialized_dirs().into(),
-            host_environment: Arc::new(HostEnvironment::capture()),
+            builtin_plugin_dirs: Vec::new().into(),
+            host_environment,
+            managed_policy_path,
         })
     }
 
@@ -94,12 +102,21 @@ impl PluginDiscoveryContext {
         config: &DiscoveryConfig,
         host_environment: HostEnvironment,
     ) -> Arc<Self> {
+        let managed_policy_path = super::managed_policy::resolve_managed_policy_path(
+            &config.state_path,
+            Some(&host_environment),
+        );
         Arc::new(Self {
             user_plugins_dir: config.user_plugins_dir.clone(),
             state_path: config.state_path.clone(),
             builtin_plugin_dirs: config.builtin_plugin_dirs.clone().into(),
             host_environment: Arc::new(host_environment),
+            managed_policy_path,
         })
+    }
+
+    pub(super) fn managed_policy_source(&self) -> Result<PathBuf, String> {
+        self.managed_policy_path.clone()
     }
 
     #[must_use]

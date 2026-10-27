@@ -24,10 +24,7 @@ use codewhale_config::catalog::{CatalogSource, CatalogStatus};
 use codewhale_config::model_reference::ModelReferenceCard;
 use codewhale_config::pricing::OfferingPricing;
 
-use crate::codex_model_cache::{
-    self, CodexModelCacheFreshness, CodexModelMetadata, CodexModelRoster,
-};
-use crate::config::{Config, DEEPSEEK_ALIAS_REPLACEMENT, ProviderKind};
+use crate::codex_model_cache::{self};
 use crate::model_profile::{
     CapabilityOverride, SupportState, resolved_capability_profile_for_route_with_overrides,
     resolved_capability_profile_with_overrides,
@@ -35,17 +32,24 @@ use crate::model_profile::{
 use crate::models_dev_live::{self, ModelsDevFreshness};
 use crate::provider_lake::{catalog_offering_for_model_identity, configured_providers};
 use crate::reasoning_preference::ReasoningEffort;
-use crate::settings::PinnedModel;
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::menu_style;
+use crate::tui::provider_picker::ProviderOffer;
 use crate::tui::views::fleet_detail::{FleetRouteSelection, FleetRouteTarget};
 use crate::tui::views::{
     ActionHint, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface,
 };
-use crate::utils::format_context_window;
+use codewhale_config::ProviderKind;
+use codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::codex_model_roster::{
+    CodexModelCacheFreshness, CodexModelMetadata, CodexModelRoster,
+};
+use codewhale_runtime::config::Config;
+use codewhale_runtime::settings::PinnedModel;
+use codewhale_util::utils::format_context_window;
 
 /// Thinking-effort rows shown for DeepSeek-style providers, in the order
 /// DeepSeek behaviorally distinguishes them.
@@ -214,7 +218,7 @@ pub struct ModelPickerView {
     previous_model: String,
     initial_provider: ProviderKind,
     initial_provider_identity: String,
-    initial_identity: Option<crate::config::ProviderIdentity>,
+    initial_identity: Option<codewhale_runtime::config::ProviderIdentity>,
     /// Raw preference before the picker opened. An absent explicit preference
     /// is represented by Auto so applying a visible fixed-route tier is still
     /// recognized as an intentional picker choice.
@@ -224,6 +228,7 @@ pub struct ModelPickerView {
     selected_effort_request: ReasoningEffort,
     active_accepts_custom_model_ids: bool,
     query: String,
+    provider_filter: Option<String>,
     /// Working selection (separate from the initial values so we can offer a
     /// clean Esc-to-cancel without mutating App state).
     selected_model_idx: usize,
@@ -243,12 +248,12 @@ pub struct ModelPickerView {
     /// alongside `initial_provider`'s own rows without requiring the user to
     /// type a search query first. Uses the same definition as the
     /// `/provider` manager's default view
-    /// (`crate::config::provider_is_configured_for_active`): active
+    /// (`crate::provider_readiness::provider_is_configured_for_active`): active
     /// provider, working credentials/OAuth, or an explicit
     /// `[providers.<name>]` entry. Self-hosted providers (Ollama/Sglang/
     /// Vllm) don't qualify just because routing to them doesn't require a
     /// key.
-    configured_providers: Vec<crate::config::ProviderIdentity>,
+    configured_providers: Vec<codewhale_runtime::config::ProviderIdentity>,
     row_hitboxes: RefCell<Vec<(Rect, Pane, usize)>>,
     last_mouse_selected: Option<(Pane, usize)>,
     hovered_row: Option<(Pane, usize)>,
@@ -261,6 +266,7 @@ pub struct ModelPickerView {
     sort: Option<ModelSort>,
     column_hitboxes: RefCell<Vec<(Rect, ModelSortColumn)>>,
     pane_hitboxes: RefCell<Vec<(Rect, Pane)>>,
+    offer: ProviderOffer,
     catalog_action_hitbox: RefCell<Option<Rect>>,
     catalog_action_hovered: bool,
     purpose: ModelPickerPurpose,
@@ -288,11 +294,12 @@ struct ModelSort {
 
 struct ModelPickerProjection {
     query: String,
+    provider_filter: Option<String>,
     view: ModelListView,
     sort: Option<ModelSort>,
     indices: Vec<usize>,
     rows: Vec<PaneRow>,
-    custom: Option<(String, crate::config::ProviderIdentity)>,
+    custom: Option<(String, codewhale_runtime::config::ProviderIdentity)>,
 }
 
 struct VisibleModelRows<'a> {
@@ -326,7 +333,7 @@ struct ModelPickerRow {
     /// Concrete persistence identity. `Custom` alone cannot identify a named
     /// custom route, so pins must carry this exact key when present.
     provider_identity: Option<String>,
-    admitted_identity: Option<crate::config::ProviderIdentity>,
+    admitted_identity: Option<codewhale_runtime::config::ProviderIdentity>,
     hint: String,
     metadata: EffectivePickerMetadata,
     selectable: bool,
@@ -351,19 +358,20 @@ enum DefaultSection {
     Pinned,
     Recent,
     ProviderDefault,
+    Roster,
 }
 
 /// Most rows the default view's recent section shows.
 const RECENT_ROW_LIMIT: usize = 8;
 
-/// Most rows one custom relay's own roster contributes to the default view.
+/// Most rows the current route's roster, or one custom relay's roster,
+/// contributes to the default view.
 ///
-/// A relay has no bundled snapshot to browse: its roster exists only in the
-/// listing that route itself answered. Hiding all of it but the configured
-/// default is what made `/model` show one row for a route the provider panel
-/// had just listed a dozen for. The bound keeps a gateway fronting a thousand
-/// models from taking the view over.
-const CUSTOM_ROSTER_ROWS_IN_DEFAULT_VIEW: usize = 20;
+/// Hiding all of a route's roster but the configured default is what made
+/// `/model` show one row for a route the provider panel had just listed a
+/// dozen for. The bound keeps a gateway fronting a thousand models from taking
+/// the view over.
+const ROUTE_ROSTER_ROWS_IN_DEFAULT_VIEW: usize = 20;
 
 /// A fresh live roster for the row's exact route omits its id. Only a fresh
 /// roster may say so: a stale one lags the provider (and would condemn ids it
@@ -394,7 +402,17 @@ struct EffectivePickerMetadata {
     reasoning_unknown: bool,
     vision: SupportState,
     pricing: PickerPricing,
+    price_basis: Option<PriceBasis>,
+    wire_model_id: Option<String>,
+    canonical_model: Option<String>,
     source: Option<CatalogSource>,
+    model_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PriceBasis {
+    short: &'static str,
+    detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -653,6 +671,7 @@ impl ModelPickerView {
             selected_effort_request,
             active_accepts_custom_model_ids: app.accepts_custom_model_ids(),
             query: String::new(),
+            provider_filter: None,
             selected_model_idx,
             selected_effort_idx,
             focus: Pane::Model,
@@ -671,6 +690,7 @@ impl ModelPickerView {
             sort: None,
             column_hitboxes: RefCell::new(Vec::new()),
             pane_hitboxes: RefCell::new(Vec::new()),
+            offer: ProviderOffer::default(),
             catalog_action_hitbox: RefCell::new(None),
             catalog_action_hovered: false,
             purpose: ModelPickerPurpose::Session,
@@ -730,24 +750,30 @@ impl ModelPickerView {
 
     fn ensure_projection(&self) {
         if self.projection.borrow().as_ref().is_some_and(|cached| {
-            cached.query == self.query && cached.view == self.view && cached.sort == self.sort
+            cached.query == self.query
+                && cached.provider_filter == self.provider_filter
+                && cached.view == self.view
+                && cached.sort == self.sort
         }) {
             return;
         }
         let query = self.query.trim();
-        let mut indices: Vec<usize> = self
-            .model_rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| {
-                let visible = if query.is_empty() {
-                    model_row_visible_in_view(row, self.view)
-                } else {
-                    model_row_matches_query(row, query, self.initial_provider)
-                };
-                visible.then_some(index)
-            })
-            .collect();
+        let mut indices: Vec<usize> =
+            self.model_rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    let visible = if query.is_empty() {
+                        model_row_visible_in_view(row, self.effective_view())
+                    } else {
+                        model_row_matches_query(row, query, self.initial_provider)
+                    };
+                    let provider_matches = self.provider_filter.as_deref().is_none_or(|filter| {
+                        row_provider_filter_key(row).as_deref() == Some(filter)
+                    });
+                    (visible && provider_matches).then_some(index)
+                })
+                .collect();
         if let Some(sort) = self.sort {
             sort_model_indices(&mut indices, &self.model_rows, sort);
         } else if query.is_empty() {
@@ -799,23 +825,14 @@ impl ModelPickerView {
         // defaults), so family headers would split it; only the catalog groups.
         let grouped =
             self.sort.is_none() && query.is_empty() && self.view == ModelListView::Catalog;
+        let provider_groups = self
+            .sort
+            .is_some_and(|sort| sort.column == ModelSortColumn::Provider);
         let mut rows: Vec<_> = visible
             .iter()
             .map(|row| (row, pin_for_row(&self.pinned_models, row)))
-            .map(|(row, pin)| PaneRow {
-                primary: if self.purpose != ModelPickerPurpose::Session
-                    && row.id == "auto"
-                    && row.provider.is_none()
-                {
-                    tr(self.locale, MessageId::FleetRouteInherited).into_owned()
-                } else {
-                    row.metadata
-                        .display_name
-                        .as_ref()
-                        .map(|label| format!("{label} ({})", row.id))
-                        .unwrap_or_else(|| row.id.clone())
-                },
-                route: row
+            .map(|(row, pin)| {
+                let route = row
                     .provider
                     .map(|provider| {
                         route_labels
@@ -823,55 +840,75 @@ impl ModelPickerView {
                             .cloned()
                             .unwrap_or_else(|| row_provider_label(row).to_string())
                     })
-                    .unwrap_or_default(),
-                meta: if row.provider.is_none() {
-                    vec![row.hint.clone()]
-                } else {
-                    // A pin or Fleet membership leads the chips so a squeezed
-                    // row never sheds it: without it ⇧P / ⇧F changed nothing
-                    // the person could see (#6500). A not-listed notice still
-                    // leads when there is no pin.
-                    let mut chips = model_row_meta_chips(row);
-                    if let Some(not_listed) = &row.not_listed {
-                        chips.insert(
-                            0,
-                            tr(self.locale, MessageId::ModelPickerNotListed)
-                                .replace("{provider}", &not_listed.provider)
-                                .replace("{date}", &not_listed.checked),
-                        );
-                    }
-                    if let Some(pin) = pin {
-                        chips.insert(
-                            0,
-                            pin.label.clone().unwrap_or_else(|| {
-                                tr(self.locale, MessageId::ModelPickerPinnedChip).into_owned()
-                            }),
-                        );
-                    }
-                    chips
-                },
+                    .unwrap_or_default();
                 // Pinned rows sort above every group, so they draw no family
                 // header: otherwise the family's header repeats where its
                 // unpinned rows begin.
-                family: (grouped && pin.is_none())
-                    .then(|| {
-                        row.provider.and_then(|provider| {
-                            catalog_family_for_identity(
-                                provider,
-                                row.provider_identity.as_deref(),
-                                &row.id,
-                            )
+                let group = if provider_groups {
+                    Some(route.clone())
+                } else {
+                    (grouped && pin.is_none())
+                        .then(|| {
+                            row.provider.and_then(|provider| {
+                                catalog_family_for_identity(
+                                    provider,
+                                    row.provider_identity.as_deref(),
+                                    &row.id,
+                                )
+                            })
                         })
-                    })
-                    .flatten(),
-                active: row.id == self.initial_model
-                    && model_row_matches_route(
-                        row,
-                        self.initial_provider,
-                        &self.initial_provider_identity,
-                    ),
-                locked: !row.selectable,
-                dim: row.not_listed.is_some(),
+                        .flatten()
+                };
+                PaneRow {
+                    primary: if self.purpose != ModelPickerPurpose::Session
+                        && row.id == "auto"
+                        && row.provider.is_none()
+                    {
+                        tr(self.locale, MessageId::FleetRouteInherited).into_owned()
+                    } else {
+                        row.metadata
+                            .display_name
+                            .as_ref()
+                            .map(|label| format!("{label} ({})", row.id))
+                            .unwrap_or_else(|| row.id.clone())
+                    },
+                    route,
+                    meta: if row.provider.is_none() {
+                        vec![row.hint.clone()]
+                    } else {
+                        // A pin or Fleet membership leads the chips so a squeezed
+                        // row never sheds it: without it ⇧P / ⇧F changed nothing
+                        // the person could see (#6500). A not-listed notice still
+                        // leads when there is no pin.
+                        let mut chips = model_row_meta_chips(row);
+                        if let Some(not_listed) = &row.not_listed {
+                            chips.insert(
+                                0,
+                                tr(self.locale, MessageId::ModelPickerNotListed)
+                                    .replace("{provider}", &not_listed.provider)
+                                    .replace("{date}", &not_listed.checked),
+                            );
+                        }
+                        if let Some(pin) = pin {
+                            chips.insert(
+                                0,
+                                pin.label.clone().unwrap_or_else(|| {
+                                    tr(self.locale, MessageId::ModelPickerPinnedChip).into_owned()
+                                }),
+                            );
+                        }
+                        chips
+                    },
+                    group,
+                    active: row.id == self.initial_model
+                        && model_row_matches_route(
+                            row,
+                            self.initial_provider,
+                            &self.initial_provider_identity,
+                        ),
+                    locked: !row.selectable,
+                    dim: row.not_listed.is_some(),
+                }
             })
             .collect();
         let custom = self.custom_model_row_for_visible(&visible);
@@ -896,6 +933,7 @@ impl ModelPickerView {
         }
         *self.projection.borrow_mut() = Some(ModelPickerProjection {
             query: self.query.clone(),
+            provider_filter: self.provider_filter.clone(),
             view: self.view,
             sort: self.sort,
             indices,
@@ -1008,7 +1046,7 @@ impl ModelPickerView {
             .map(|identity| identity.key.to_string())
     }
 
-    fn resolved_admitted_identity(&self) -> Option<crate::config::ProviderIdentity> {
+    fn resolved_admitted_identity(&self) -> Option<codewhale_runtime::config::ProviderIdentity> {
         let rows = self.visible_model_rows();
         let identity = if let Some(row) = rows.get(self.selected_model_idx) {
             row.admitted_identity.clone()
@@ -1080,7 +1118,7 @@ impl ModelPickerView {
         .unwrap_or_else(|_| self.route_config.base_url_for_route(&identity))
     }
 
-    fn custom_model_row(&self) -> Option<(String, crate::config::ProviderIdentity)> {
+    fn custom_model_row(&self) -> Option<(String, codewhale_runtime::config::ProviderIdentity)> {
         self.ensure_projection();
         self.projection.borrow().as_ref().unwrap().custom.clone()
     }
@@ -1088,7 +1126,7 @@ impl ModelPickerView {
     fn custom_model_row_for_visible(
         &self,
         visible_rows: &[&ModelPickerRow],
-    ) -> Option<(String, crate::config::ProviderIdentity)> {
+    ) -> Option<(String, codewhale_runtime::config::ProviderIdentity)> {
         let query = self.query.trim();
         if query.is_empty() {
             return self
@@ -1126,7 +1164,7 @@ impl ModelPickerView {
     fn provider_qualified_custom_query(
         &self,
         query: &str,
-    ) -> Option<(crate::config::ProviderIdentity, String)> {
+    ) -> Option<(codewhale_runtime::config::ProviderIdentity, String)> {
         for (provider_key, model) in provider_query_splits(query) {
             let Ok(provider) = self.route_config.legacy_selection_identity(provider_key) else {
                 continue;
@@ -1148,7 +1186,7 @@ impl ModelPickerView {
 
     fn provider_accepts_custom_model(
         &self,
-        identity: &crate::config::ProviderIdentity,
+        identity: &codewhale_runtime::config::ProviderIdentity,
         model: &str,
     ) -> bool {
         (Some(identity) == self.initial_identity.as_ref() && self.active_accepts_custom_model_ids)
@@ -1156,7 +1194,11 @@ impl ModelPickerView {
                 && self
                     .route_config
                     .model_ids_pass_through_for_provider(identity))
-            || crate::config::normalize_model_name_for_provider(identity.provider, model).is_some()
+            || codewhale_runtime::config::normalize_model_name_for_provider(
+                identity.provider,
+                model,
+            )
+            .is_some()
     }
 
     fn clamp_model_selection(&mut self) {
@@ -1449,6 +1491,53 @@ impl ModelPickerView {
         self.set_sort(next);
     }
 
+    fn effective_view(&self) -> ModelListView {
+        if self.view == ModelListView::Configured
+            && self
+                .sort
+                .is_some_and(|sort| sort.column == ModelSortColumn::Provider)
+        {
+            ModelListView::Catalog
+        } else {
+            self.view
+        }
+    }
+
+    fn cycle_provider_filter(&mut self) {
+        let choices = self.provider_filter_choices();
+        let next = match self.provider_filter.as_deref() {
+            None => choices.first().cloned(),
+            Some(current) => choices
+                .iter()
+                .position(|key| key == current)
+                .and_then(|index| choices.get(index + 1).cloned()),
+        };
+        self.set_provider_filter(next);
+    }
+
+    fn provider_filter_choices(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .model_rows
+            .iter()
+            .filter(|row| model_row_visible_in_view(row, self.effective_view()))
+            .filter_map(row_provider_filter_key)
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys.sort_by_cached_key(|key| (provider_filter_label(key).to_lowercase(), key.clone()));
+        keys
+    }
+
+    fn set_provider_filter(&mut self, next: Option<String>) {
+        if self.provider_filter == next {
+            return;
+        }
+        self.provider_filter = next;
+        self.selected_model_idx = 0;
+        self.clamp_model_selection();
+        self.select_effort_for_current_model();
+    }
+
     fn render_sort_columns(&self, area: Rect, buf: &mut Buffer, columns: ModelRowColumns) {
         let label = |name: &str, column| match self.sort.filter(|sort| sort.column == column) {
             Some(sort) => format!("{name} {}", if sort.descending { "↓" } else { "↑" }),
@@ -1626,17 +1715,16 @@ impl ModelPickerView {
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
             };
-            // Provider → family → model grouping: a dim family header is
-            // drawn when the catalog states a family and it differs from the
-            // previous visible row's (families sort contiguously). Unknown
-            // families draw nothing.
-            if family_header_before(rows, idx) && pane_height > 1 {
+            // Provider → group → model grouping: a dim group header is drawn
+            // when the row states one and it differs from the previous visible
+            // row's (groups sort contiguously). Unknown groups draw nothing.
+            if group_header_before(rows, idx) && pane_height > 1 {
                 lines.push(Line::from(Span::styled(
-                    format!("  ─ {}", row.family.as_deref().unwrap_or_default()),
+                    format!("  ─ {}", row.group.as_deref().unwrap_or_default()),
                     Style::default().fg(palette::TEXT_DIM),
                 )));
             }
-            // The hitbox points at the row's own line (after any family
+            // The hitbox points at the row's own line (after any group
             // header), so mouse/scan targets and keyboard targets agree.
             let row_y = inner.y.saturating_add(lines.len() as u16);
             self.row_hitboxes.borrow_mut().push((
@@ -1674,7 +1762,7 @@ impl ModelPickerView {
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         }
-        // Family headers can push the visible rows past the viewport; clip
+        // Group headers can push the visible rows past the viewport; clip
         // to the area so rendering never indexes the buffer out of bounds
         // (ratatui-core 0.1.0 panics instead of clipping).
         if lines.len() > usize::from(inner.height) {
@@ -1684,12 +1772,13 @@ impl ModelPickerView {
     }
 }
 
-fn family_header_before(rows: &[PaneRow], index: usize) -> bool {
+fn group_header_before(rows: &[PaneRow], index: usize) -> bool {
     let row = &rows[index];
-    row.family.as_deref().is_some_and(|family| {
-        rows.get(index.wrapping_sub(1)).is_none_or(|previous| {
-            previous.family.as_deref() != Some(family) || previous.route != row.route
-        })
+    row.group.as_deref().is_some_and(|group| {
+        !group.trim().is_empty()
+            && rows.get(index.wrapping_sub(1)).is_none_or(|previous| {
+                previous.group.as_deref() != Some(group) || previous.route != row.route
+            })
     })
 }
 
@@ -1698,7 +1787,7 @@ fn pane_row_window(selected: usize, rows: &[PaneRow], height: usize) -> (usize, 
         return (0, 0);
     }
     let selected = selected.min(rows.len() - 1);
-    let cost = |index| 1 + usize::from(height > 1 && family_header_before(rows, index));
+    let cost = |index| 1 + usize::from(height > 1 && group_header_before(rows, index));
     // Keep the selection near the middle, counting actual painted lines.
     let mut start = selected;
     let mut above = 0;
@@ -1769,9 +1858,9 @@ struct PaneRow {
     /// Metadata as separable units. Kept as a list so a squeezed column sheds
     /// whole facts instead of rendering half a word.
     meta: Vec<String>,
-    /// Catalog model family (e.g. `deepseek`, `glm`) for section headers.
-    /// None = the catalog did not state a family (no header is drawn).
-    family: Option<String>,
+    /// Section header text for this row (catalog family, or the provider when
+    /// sorted by provider). None = no header is drawn.
+    group: Option<String>,
     /// The route this session is already on.
     active: bool,
     locked: bool,
@@ -1790,7 +1879,7 @@ impl PaneRow {
             } else {
                 vec![meta]
             },
-            family: None,
+            group: None,
             active: false,
             locked: false,
             dim: false,
@@ -2365,28 +2454,44 @@ fn assign_default_sections(
             row.default_rank = Some((DefaultSection::ProviderDefault, usize::MAX));
         }
     }
-    // A custom relay's roster is the reason the route was configured, and the
-    // default view used to hide every one of its rows but the provider default
-    // -- the panel listed the route's dozen models and `/model` showed one.
-    // Surface the route's own live rows, bounded per route so a large gateway
-    // cannot take the view over.
+    // The current route's roster and a custom relay's roster are what the
+    // user came to choose from, and the default view used to hide every row
+    // but the provider default -- the panel listed a dozen models and `/model`
+    // showed one. Surface each such route's own rows, bounded per route so a
+    // large gateway cannot take the view over: newest first for a built-in
+    // provider, the relay's own listing order for a custom relay.
+    let current_identity = current.map(|(identity, _)| identity);
+    let mut roster: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.default_rank.is_none()
+                && row.not_listed.is_none()
+                && !model_is_non_language(row)
+                && row_provider_identity(row).is_some_and(|identity| {
+                    current_identity == Some(identity)
+                        || (row.provider == Some(ProviderKind::Custom)
+                            && matches!(row.metadata.source, Some(CatalogSource::Live { .. })))
+                })
+        })
+        .map(|(index, _)| index)
+        .collect();
+    roster.sort_by_cached_key(|&index| {
+        let row = &rows[index];
+        (row.provider != Some(ProviderKind::Custom))
+            .then(|| std::cmp::Reverse(model_version_key(&row.id)))
+    });
     let mut shown_per_route: BTreeMap<String, usize> = BTreeMap::new();
-    for row in rows.iter_mut() {
-        if row.default_rank.is_some()
-            || row.provider != Some(ProviderKind::Custom)
-            || !matches!(row.metadata.source, Some(CatalogSource::Live { .. }))
-        {
-            continue;
-        }
-        let Some(identity) = row_provider_identity(row).map(str::to_string) else {
+    for index in roster {
+        let Some(identity) = row_provider_identity(&rows[index]).map(str::to_string) else {
             continue;
         };
         let shown = shown_per_route.entry(identity).or_default();
-        if *shown >= CUSTOM_ROSTER_ROWS_IN_DEFAULT_VIEW {
+        if *shown >= ROUTE_ROSTER_ROWS_IN_DEFAULT_VIEW {
             continue;
         }
         *shown += 1;
-        row.default_rank = Some((DefaultSection::ProviderDefault, usize::MAX));
+        rows[index].default_rank = Some((DefaultSection::Roster, usize::MAX));
     }
 }
 
@@ -2410,7 +2515,7 @@ fn push_inactive_route_rows(
     rows: &mut Vec<ModelPickerRow>,
     app: &App,
     config: &Config,
-    admitted: &crate::config::ProviderIdentity,
+    admitted: &codewhale_runtime::config::ProviderIdentity,
     codex_roster: &CodexModelRoster,
 ) {
     if config.verify_provider_identity(admitted).is_err() {
@@ -2460,7 +2565,7 @@ fn route_provider_config<'a>(
     config: &'a Config,
     provider: ProviderKind,
     key: &str,
-) -> Option<&'a crate::config::ProviderConfig> {
+) -> Option<&'a codewhale_runtime::config::ProviderConfig> {
     let identity = config.legacy_selection_identity(key).ok()?;
     (identity.provider == provider).then_some(())?;
     config.provider_config_for(&identity)
@@ -2468,7 +2573,7 @@ fn route_provider_config<'a>(
 
 fn push_provider_model_rows(
     rows: &mut Vec<ModelPickerRow>,
-    admitted: &crate::config::ProviderIdentity,
+    admitted: &codewhale_runtime::config::ProviderIdentity,
     mut model_ids: Vec<String>,
     active_provider: ProviderKind,
     config: &Config,
@@ -2483,7 +2588,7 @@ fn push_provider_model_rows(
     let base_url = config.base_url_for_route(admitted);
     let fresh_roster = fresh_roster_listing(provider, &identity, &base_url);
     for declaration in config.custom_models.as_deref().unwrap_or_default() {
-        if crate::provider_lake::configured_model_for_route(
+        if codewhale_runtime::config::configured_model_for_route(
             config,
             provider,
             &identity,
@@ -2947,10 +3052,17 @@ fn model_row_matches_query(
         return true;
     }
     let normalized_query = normalize_picker_search_text(&query);
+    let compact = |text: &str| {
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+    };
+    let compact_query = compact(&query);
     let matches = |candidate: &str| {
         let candidate = candidate.to_ascii_lowercase();
         candidate.contains(&query)
             || normalize_picker_search_text(&candidate).contains(&normalized_query)
+            || (!compact_query.is_empty() && compact(&candidate).contains(&compact_query))
     };
     let provider_matches = row.provider.is_some_and(|provider| {
         row.provider_identity.as_deref().is_some_and(matches)
@@ -3109,7 +3221,10 @@ fn model_row_meta_chips(row: &ModelPickerRow) -> Vec<String> {
                 .map(|value| format!("{} out", format_context_window(u64::from(value))))
                 .unwrap_or_else(|| "output unknown".into()),
             match &row.metadata.pricing {
-                PickerPricing::Known(price) => format!("estimate {price}"),
+                PickerPricing::Known(price) => match row.metadata.price_basis.as_ref() {
+                    Some(basis) => format!("estimate {price} ({})", basis.short),
+                    None => format!("estimate {price}"),
+                },
                 _ => "price unknown".into(),
             },
             if row.metadata.reasoning_unknown {
@@ -3153,6 +3268,11 @@ fn model_row_meta_chips(row: &ModelPickerRow) -> Vec<String> {
     );
     if let PickerPricing::Status(status) = row.metadata.pricing {
         chips.push(format!("price {status}"));
+    } else if let (PickerPricing::Known(_), Some(basis)) =
+        (&row.metadata.pricing, row.metadata.price_basis.as_ref())
+        && basis.short != "live"
+    {
+        chips.push(format!("price {}", basis.short));
     }
     // #5239/#5441: an unverified window still drives budgets, but the chip
     // must not lend it a verified reading. Honesty rides as its own chip
@@ -3219,6 +3339,7 @@ fn fit_meta_chips(chips: &[String], width: usize) -> String {
 fn model_row_visible_in_view(row: &ModelPickerRow, view: ModelListView) -> bool {
     match view {
         ModelListView::Configured => model_row_visible_by_default(row),
+        ModelListView::Catalog if model_is_non_language(row) => false,
         ModelListView::Catalog => true,
         ModelListView::New
         | ModelListView::Coding
@@ -3226,9 +3347,18 @@ fn model_row_visible_in_view(row: &ModelPickerRow, view: ModelListView) -> bool 
         | ModelListView::LongContext => {
             // Discoverability views browse the full lake but hide the synthetic
             // `auto` row — it is not a catalog offering.
-            row.provider.is_some() || row.id != "auto"
+            (row.provider.is_some() || row.id != "auto") && !model_is_non_language(row)
         }
     }
+}
+
+fn model_is_non_language(row: &ModelPickerRow) -> bool {
+    matches!(
+        row.metadata.model_type.as_deref(),
+        Some(
+            "image" | "embedding" | "video" | "speech" | "transcription" | "reranking" | "realtime"
+        )
+    )
 }
 
 /// Whether a model row shows up without the user typing a search query:
@@ -3440,6 +3570,16 @@ fn row_provider_label(row: &ModelPickerRow) -> &str {
         .map_or(key, |metadata| metadata.label)
 }
 
+fn row_provider_filter_key(row: &ModelPickerRow) -> Option<String> {
+    row.provider?;
+    row_provider_identity(row).map(str::to_string)
+}
+
+fn provider_filter_label(key: &str) -> String {
+    codewhale_config::descriptors::compatibility_for_id(key)
+        .map_or_else(|| key.to_string(), |metadata| metadata.label.to_string())
+}
+
 fn row_provider_identity(row: &ModelPickerRow) -> Option<&str> {
     row.provider_identity.as_deref().or_else(|| {
         row.provider
@@ -3585,7 +3725,11 @@ fn effective_picker_metadata_with_codex(
                 .as_ref()
                 .is_none_or(|meta| meta.reasoning.is_none()),
             declared_input_price: None,
+            price_basis: None,
+            wire_model_id: None,
+            canonical_model: None,
             source: None,
+            model_type: None,
         };
     };
 
@@ -3598,9 +3742,10 @@ fn effective_picker_metadata_with_codex(
         .and_then(|windows| windows.get(id).copied())
         .or_else(|| config.context_window_for_provider_config(admitted));
     let base_url = config.base_url_for_route(admitted);
-    if let Some(declared) =
-        crate::provider_lake::configured_model_for_route(config, provider, identity, &base_url, id)
-    {
+    if let Some(declared) = codewhale_runtime::config::configured_model_for_route(
+        config, provider, identity, &base_url, id,
+    ) {
+        let (wire_model_id, canonical_model) = picker_offering_identity(offering.as_ref(), id);
         return EffectivePickerMetadata {
             display_name: declared.display_name.clone(),
             declared_input_price: declared
@@ -3630,6 +3775,9 @@ fn effective_picker_metadata_with_codex(
                 .map_or(PickerPricing::Unknown, |card| {
                     PickerPricing::Known(card.price_label())
                 }),
+            price_basis: picker_price_basis(card.as_ref().and_then(|card| card.pricing.as_ref())),
+            wire_model_id,
+            canonical_model,
             source: Some(CatalogSource::ConfigOverride),
             ..EffectivePickerMetadata::default()
         };
@@ -3667,7 +3815,9 @@ fn effective_picker_metadata_with_codex(
         .map(|tokens| tokens.min(u64::from(u32::MAX)) as u32);
     let preserves_unknown_limits = offering.is_some()
         || (provider == ProviderKind::Together
-            && id.eq_ignore_ascii_case(crate::config::TOGETHER_INKLING_MODEL));
+            && id.eq_ignore_ascii_case(
+                codewhale_config::catalog::reviewed::constants::TOGETHER_INKLING_MODEL,
+            ));
     let context_window = if context_override.is_some() {
         profile.context_window
     } else if provider == ProviderKind::OpenaiCodex {
@@ -3738,6 +3888,14 @@ fn effective_picker_metadata_with_codex(
     } else {
         PickerPricing::Unknown
     };
+    let price_basis = picker_price_basis(card.as_ref().and_then(|card| card.pricing.as_ref()))
+        .or_else(|| {
+            matches!(pricing, PickerPricing::Known(_)).then(|| PriceBasis {
+                short: "cached",
+                detail: "bundled estimate, no fetch clock".to_string(),
+            })
+        });
+    let (wire_model_id, canonical_model) = picker_offering_identity(offering.as_ref(), id);
 
     // Honesty rungs (#5239, #5440, #5441). A window that reached the picker
     // only through the legacy provider fallback — no offering, no catalog
@@ -3780,8 +3938,76 @@ fn effective_picker_metadata_with_codex(
                 })
         },
         declared_input_price: None,
+        price_basis,
+        wire_model_id,
+        canonical_model,
         source: card.map(|card| card.source),
+        model_type: offering
+            .as_ref()
+            .and_then(|offering| offering.model_type.clone()),
     }
+}
+
+fn picker_price_basis(pricing: Option<&OfferingPricing>) -> Option<PriceBasis> {
+    let pricing = pricing?;
+    let now = codewhale_config::catalog::now_unix();
+    let (short, noun) = match pricing.status_label_at(now) {
+        "live_estimate" => ("live", "live estimate"),
+        "bundled_estimate" => ("cached", "cached estimate"),
+        "documented_estimate" => ("documented", "documented estimate"),
+        "operator_estimate" => ("operator", "operator estimate"),
+        "verified_cloud_estimate" => ("cloud", "verified cloud estimate"),
+        "stale" => ("stale", "stale estimate"),
+        "unverified" => ("unverified", "unverified estimate"),
+        _ => return None,
+    };
+    let clock = match pricing.expires_at {
+        Some(expires_at) if expires_at > now => {
+            format!("expires in {}", format_price_span(expires_at - now))
+        }
+        _ => match pricing.fetched_at.or(pricing.effective_at) {
+            Some(fetched_at) => format!(
+                "fetched {} ago",
+                format_price_span(now.saturating_sub(fetched_at))
+            ),
+            None => "no fetch clock".to_string(),
+        },
+    };
+    Some(PriceBasis {
+        short,
+        detail: format!("{noun}, {clock}"),
+    })
+}
+
+fn format_price_span(secs: u64) -> String {
+    let minutes = secs / 60;
+    if minutes == 0 {
+        "under a minute".to_string()
+    } else if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 24 * 60 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{}d", minutes / (24 * 60))
+    }
+}
+
+fn picker_offering_identity(
+    offering: Option<&codewhale_config::catalog::CatalogOffering>,
+    id: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(offering) = offering else {
+        return (None, None);
+    };
+    let differs = |value: &str| !value.eq_ignore_ascii_case(id);
+    (
+        differs(&offering.wire_model_id).then(|| offering.wire_model_id.clone()),
+        offering
+            .canonical_model
+            .as_deref()
+            .filter(|canonical| differs(canonical))
+            .map(str::to_string),
+    )
 }
 
 fn render_picker_model_hint(
@@ -3876,9 +4102,23 @@ fn render_picker_model_hint(
 
     match &metadata.pricing {
         PickerPricing::Unavailable => {}
-        PickerPricing::Known(label) => parts.push(label.clone()),
-        PickerPricing::Status(status) => parts.push(format!("price {status}")),
+        PickerPricing::Known(label) => match metadata.price_basis.as_ref() {
+            Some(basis) => parts.push(format!("{label} · {}", basis.detail)),
+            None => parts.push(label.clone()),
+        },
+        PickerPricing::Status(status) => parts.push(
+            metadata
+                .price_basis
+                .as_ref()
+                .map_or_else(|| format!("price {status}"), |basis| basis.detail.clone()),
+        ),
         PickerPricing::Unknown => parts.push("price unknown".to_string()),
+    }
+    if let Some(wire) = metadata.wire_model_id.as_deref() {
+        parts.push(format!("wire {wire}"));
+    }
+    if let Some(canonical) = metadata.canonical_model.as_deref() {
+        parts.push(format!("canonical {canonical}"));
     }
     let provider_live_source = matches!(metadata.source.as_ref(), Some(CatalogSource::Live { .. }));
     match metadata.source.as_ref() {
@@ -4031,6 +4271,9 @@ impl ModalView for ModelPickerView {
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         self.last_mouse_selected = None;
         self.hovered_row = None;
+        if let Some(action) = ProviderOffer::key_action(self.locale, &key) {
+            return action;
+        }
         self.notice = None;
         // Movement keys come from the shared vocabulary (#6290); the match
         // below owns only the picker's own verbs. The live filter means the
@@ -4049,6 +4292,10 @@ impl ModalView for ModelPickerView {
             // restore it (#4109 picker memory).
             KeyCode::Esc if !self.query.is_empty() => {
                 self.update_query(String::new());
+                ViewAction::None
+            }
+            KeyCode::Esc if self.provider_filter.is_some() => {
+                self.set_provider_filter(None);
                 ViewAction::None
             }
             KeyCode::Esc if self.purpose != ModelPickerPurpose::Session => {
@@ -4097,16 +4344,16 @@ impl ModalView for ModelPickerView {
             {
                 self.explain_unselectable_selection()
             }
-            // ⇧P / ⇧F act on the highlighted row, searching or not: a search
-            // is how a model is found, and the verbs used to become query
-            // text the moment one was typed (#6500). The filter ignores case,
-            // so only a custom id being typed (no catalog row highlighted)
-            // still receives the capital letter. Some terminals report the
+            // ⇧P / ⇧F act on the highlighted row while no search is typed;
+            // while searching they are query text, so `Step-5-Preview` types
+            // its `P` instead of pinning a row. Ctrl+P / Ctrl+F act on the
+            // highlighted row either way, so a model found by search can still
+            // be pinned or added to Fleet (#6500). Some terminals report the
             // chord as lowercase + SHIFT, hence `eq_ignore_ascii_case`.
             KeyCode::Char(ch)
-                if key.modifiers == KeyModifiers::SHIFT
-                    && ch.eq_ignore_ascii_case(&'p')
-                    && (self.query.is_empty() || self.highlighted_route().is_some()) =>
+                if ch.eq_ignore_ascii_case(&'p')
+                    && ((key.modifiers == KeyModifiers::SHIFT && self.query.is_empty())
+                        || key.modifiers == KeyModifiers::CONTROL) =>
             {
                 let Some((provider, provider_id, model)) = self.highlighted_route() else {
                     return ViewAction::None;
@@ -4118,10 +4365,10 @@ impl ModalView for ModelPickerView {
                 })
             }
             KeyCode::Char(ch)
-                if key.modifiers == KeyModifiers::SHIFT
-                    && ch.eq_ignore_ascii_case(&'f')
+                if ch.eq_ignore_ascii_case(&'f')
                     && self.purpose == ModelPickerPurpose::Session
-                    && (self.query.is_empty() || self.highlighted_route().is_some()) =>
+                    && ((key.modifiers == KeyModifiers::SHIFT && self.query.is_empty())
+                        || key.modifiers == KeyModifiers::CONTROL) =>
             {
                 let Some((provider, provider_id, model)) = self.highlighted_route() else {
                     return ViewAction::None;
@@ -4142,6 +4389,14 @@ impl ModalView for ModelPickerView {
             // name such as `anthropic` or `azure`.
             KeyCode::Char('A') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
                 self.toggle_view();
+                ViewAction::None
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::SHIFT
+                    && self.query.is_empty()
+                    && ch.eq_ignore_ascii_case(&'t') =>
+            {
+                self.cycle_provider_filter();
                 ViewAction::None
             }
             KeyCode::Char(ch)
@@ -4173,6 +4428,11 @@ impl ModalView for ModelPickerView {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        if let Some(action) = self.offer.mouse_action(self.locale, mouse) {
+            self.last_mouse_selected = None;
+            self.hovered_row = None;
+            return action;
+        }
         let over_catalog = self
             .catalog_action_hitbox
             .borrow()
@@ -4282,11 +4542,13 @@ impl ModalView for ModelPickerView {
 
 impl ModelPickerView {
     fn render_route(&self, area: Rect, buf: &mut Buffer) {
+        self.offer.clear();
         self.row_hitboxes.borrow_mut().clear();
         self.column_hitboxes.borrow_mut().clear();
         self.pane_hitboxes.borrow_mut().clear();
         *self.catalog_action_hitbox.borrow_mut() = None;
-        let view_action: std::borrow::Cow<'static, str> = match self.view {
+        let view = self.effective_view();
+        let view_action: std::borrow::Cow<'static, str> = match view {
             // The default view is a short list; say how much sits behind it.
             ModelListView::Configured => format!(
                 "{} ({})",
@@ -4304,9 +4566,12 @@ impl ModelPickerView {
             .as_ref()
             .map(|(role, _)| format!("Model · {role}"))
             .unwrap_or_else(|| {
-                tr(self.locale, MessageId::RouteSurfaceTitle)
-                    .replace("{view}", self.view.title_label())
+                tr(self.locale, MessageId::RouteSurfaceTitle).replace("{view}", view.title_label())
             });
+        let title = match self.provider_filter.as_deref() {
+            Some(key) => format!("{title} · {}", provider_filter_label(key)),
+            None => title,
+        };
         // The catalog is a visible action on the existing title rail, with
         // no extra row taken from short terminals. Keep the shortcut too.
         let action_label = crate::tui::ui_text::semantic_truncate(
@@ -4360,6 +4625,17 @@ impl ModelPickerView {
         ];
         if !searching {
             footer_hints.push(ActionHint::new("⇧A", view_action));
+            footer_hints.push(ActionHint::new(
+                "⇧T",
+                match self.provider_filter.as_deref() {
+                    Some(filter) => format!(
+                        "{}: {}",
+                        tr(self.locale, MessageId::RouteProviderLabel),
+                        provider_filter_label(filter)
+                    ),
+                    None => tr(self.locale, MessageId::RouteProviderLabel).into_owned(),
+                },
+            ));
         }
         if inner.height >= 16 {
             footer_hints.push(ActionHint::new(
@@ -4383,17 +4659,23 @@ impl ModelPickerView {
         }
         // Keep compact route modals focused on the core browse/apply actions;
         // wider shells have room to disclose the pin action too.
-        // ⇧P / ⇧F act only on a highlighted catalog route; without one
-        // (typing a custom id) they are query text, so they are not offered.
+        // Pin and Fleet act only on a highlighted catalog route. While a
+        // search is typed the shifted letters are query text, so the Ctrl
+        // chords are advertised instead.
         if inner.width >= 72 && inner.height >= 16 && self.highlighted_route().is_some() {
+            let (fleet_key, pin_key) = if searching {
+                ("Ctrl+F", "Ctrl+P")
+            } else {
+                ("⇧F", "⇧P")
+            };
             if self.purpose == ModelPickerPurpose::Session {
                 footer_hints.push(ActionHint::new(
-                    "⇧F",
+                    fleet_key,
                     tr(self.locale, MessageId::PickerActionFleet),
                 ));
             }
             footer_hints.push(ActionHint::new(
-                "⇧P",
+                pin_key,
                 tr(self.locale, MessageId::PickerActionPin),
             ));
         }
@@ -4402,6 +4684,7 @@ impl ModelPickerView {
             tr(self.locale, MessageId::PickerActionCancel),
         ));
         let content = render_modal_footer(inner, buf, &footer_hints);
+        let content = self.offer.render(self.locale, content, buf);
 
         let shell = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
@@ -4483,7 +4766,7 @@ impl ModelPickerView {
         let projection = self.projection.borrow();
         let model_rows = &projection.as_ref().unwrap().rows;
         let model_title = if self.query.trim().is_empty() {
-            format!("Model · {}", self.view.title_label())
+            format!("Model · {}", self.effective_view().title_label())
         } else {
             format!("Model: {}", self.query.trim())
         };
@@ -4648,12 +4931,15 @@ fn route_picker_efforts(
     // Exact-route overrides still win over catalog metadata: Kimi Code K3 and
     // OpenAI Codex have wire dialects the generic Models.dev shape does not
     // fully describe.
-    if crate::config::is_exact_kimi_code_k3_route(provider, base_url, wire_model) {
+    if codewhale_runtime::config::is_exact_kimi_code_k3_route(provider, base_url, wire_model) {
         return KIMI_CODE_K3_PICKER_EFFORTS.to_vec();
     }
     if provider == ProviderKind::OpenaiCodex {
-        // The official account list publishes IDs and display labels, not
-        // effort tiers. Keep the existing wire-compatible route ladder.
+        // Per-account tier metadata is reachable only through
+        // `codex_model_cache::model_roster_for(config)`: the roster snapshot is
+        // keyed by the signed-in registration, so this signature-only helper
+        // cannot read it and keeps the conservative wire ladder. The roster
+        // does carry tiers when the account publishes them (#6396).
         return CODEX_PICKER_EFFORTS.to_vec();
     }
     if let Some(offering) = ReasoningEffort::offering_for_reasoning(provider, base_url, wire_model)
@@ -4661,7 +4947,15 @@ fn route_picker_efforts(
     {
         return catalog_efforts;
     }
-    if matches!(provider, crate::config::ProviderKind::Deepseek) {
+    // A route that states the model has no reasoning gets no tier rows (#6396).
+    // An unstated fact keeps the provider ladder: a tier is a wire dialect, and
+    // unknown support is not the same claim as no support.
+    if ReasoningEffort::offering_for_reasoning(provider, base_url, wire_model)
+        .is_some_and(|offering| offering.reasoning == Some(false))
+    {
+        return vec![ReasoningEffort::Auto];
+    }
+    if matches!(provider, codewhale_config::ProviderKind::Deepseek) {
         return DEEPSEEK_PICKER_EFFORTS.to_vec();
     }
     DEFAULT_PICKER_EFFORTS.to_vec()
@@ -4810,7 +5104,7 @@ mod tests {
             distinct_effective_efforts(
                 vec![Auto, Off, Minimal, Low, Medium, High, XHigh, Ultra, Max],
                 ProviderKind::Deepseek,
-                crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
                 "deepseek-v4.1-flash",
             ),
             vec![Auto, Off, Low, High, Max]
@@ -4820,7 +5114,7 @@ mod tests {
             distinct_effective_efforts(
                 vec![Auto, Medium, High, Max],
                 ProviderKind::Deepseek,
-                crate::config::DEFAULT_DEEPSEEK_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
                 "deepseek-v4.1-flash",
             ),
             vec![Auto, High, Max]
@@ -5043,6 +5337,7 @@ mod tests {
             selected_effort_request: ReasoningEffort::Auto,
             active_accepts_custom_model_ids: false,
             query: String::new(),
+            provider_filter: None,
             selected_model_idx: 0,
             selected_effort_idx: 0,
             focus: Pane::Model,
@@ -5061,6 +5356,7 @@ mod tests {
             sort: None,
             column_hitboxes: RefCell::new(Vec::new()),
             pane_hitboxes: RefCell::new(Vec::new()),
+            offer: ProviderOffer::default(),
             catalog_action_hitbox: RefCell::new(None),
             catalog_action_hovered: false,
             purpose: ModelPickerPurpose::Session,
@@ -5852,7 +6148,7 @@ mod tests {
             .map(|index| PaneRow {
                 primary: format!("model-{index}"),
                 route: format!("provider-{index}"),
-                family: Some(format!("family-{index}")),
+                group: Some(format!("family-{index}")),
                 ..PaneRow::default()
             })
             .collect();
@@ -5864,7 +6160,7 @@ mod tests {
                     "{start}..{end} omits {selected} at height {height}"
                 );
                 let lines: usize = (start..end)
-                    .map(|index| 1 + usize::from(height > 1 && family_header_before(&rows, index)))
+                    .map(|index| 1 + usize::from(height > 1 && group_header_before(&rows, index)))
                     .sum();
                 assert!(lines <= height);
             }
@@ -5974,9 +6270,11 @@ mod tests {
         crate::provider_catalog_live::reset_cache_for_test();
         crate::provider_lake::clear_live_snapshot();
 
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let base_url = config.base_url_for_route(
             &config
@@ -5993,7 +6291,7 @@ mod tests {
         let model = provider_catalog_model_ids(
             ProviderKind::Openrouter,
             ProviderKind::Openrouter.as_str(),
-            crate::config::DEFAULT_OPENROUTER_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
         )
         .into_iter()
         .next()
@@ -6145,7 +6443,8 @@ model = "deepseek/deepseek-v4-flash"
                 .unwrap(),
         );
         app.model = "z-ai/glm-5.3".to_string();
-        app.active_route_base_url = crate::config::DEFAULT_OPENROUTER_BASE_URL.to_string();
+        app.active_route_base_url =
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL.to_string();
         (config, app, home, workspace)
     }
 
@@ -6181,7 +6480,7 @@ model = "deepseek/deepseek-v4-flash"
             },
             ..Default::default()
         };
-        let roster: Vec<_> = (0..CUSTOM_ROSTER_ROWS_IN_DEFAULT_VIEW + 5)
+        let roster: Vec<_> = (0..ROUTE_ROSTER_ROWS_IN_DEFAULT_VIEW + 5)
             .map(|index| offering(&format!("relay-{index}")))
             .collect();
         crate::provider_catalog_live::record_success_if_current(
@@ -6209,7 +6508,7 @@ model = "deepseek/deepseek-v4-flash"
             .collect();
         assert_eq!(
             visible.len(),
-            CUSTOM_ROSTER_ROWS_IN_DEFAULT_VIEW,
+            ROUTE_ROSTER_ROWS_IN_DEFAULT_VIEW,
             "the relay's own roster shows in the default view, bounded per route: {visible:?}"
         );
         assert!(
@@ -6374,7 +6673,7 @@ model = "deepseek/deepseek-v4-flash"
     /// use of models no config names, and a Fleet pin on a provider with no
     /// configured model.
     fn founder_shaped_app(home: &std::path::Path, workspace: &std::path::Path) -> (Config, App) {
-        let settings_path = crate::settings::Settings::path().expect("settings path");
+        let settings_path = codewhale_runtime::settings::Settings::path().expect("settings path");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         std::fs::write(
             &settings_path,
@@ -6530,10 +6829,12 @@ api_key = "fixture-xai-key"
                         "at most one default per provider: {rows:#?}"
                     );
                 }
-                // The active provider's roster stays one search away.
                 assert!(
-                    !rows.iter().any(|(_, id, _)| id == "deepseek-v4-pro"),
-                    "{rows:#?}"
+                    rows.iter()
+                        .any(|(identity, id, section)| identity == "deepseek"
+                            && id == "deepseek-v4-pro"
+                            && *section == Some(DefaultSection::Roster)),
+                    "the active provider's roster is listed: {rows:#?}"
                 );
 
                 picker.update_query("GLM-5.2".to_string());

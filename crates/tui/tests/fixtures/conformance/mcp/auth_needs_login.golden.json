@@ -1,15 +1,4 @@
 {
-  "requests_summary": {
-    "authorization_shapes": [
-      null
-    ],
-    "rpcs": [
-      "initialize"
-    ],
-    "statuses": [
-      401
-    ]
-  },
   "server_received": [],
   "steps": [
     {

@@ -6,17 +6,20 @@
 
 pub(super) fn orcarouter_client_for(server: &MockServer) -> CodewhaleClient {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    CodewhaleClient::new(&Config {
-        provider: Some("orcarouter".to_string()),
-        providers: Some(ProvidersConfig {
+    CodewhaleClient::new(&{
+        let __cw_config_init_0_0 = Some("orcarouter".to_string());
+        let __cw_config_init_0_1 = Some(ProvidersConfig {
             orcarouter: ProviderConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: Some(server.uri()),
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     })
     .expect("orcarouter client")
 }
@@ -195,16 +198,19 @@ fn live_orcarouter_client() -> Option<CodewhaleClient> {
         return None;
     }
     let _ = rustls::crypto::ring::default_provider().install_default();
-    CodewhaleClient::new(&Config {
-        provider: Some("orcarouter".to_string()),
-        providers: Some(ProvidersConfig {
+    CodewhaleClient::new(&{
+        let __cw_config_init_1_0 = Some("orcarouter".to_string());
+        let __cw_config_init_1_1 = Some(ProvidersConfig {
             orcarouter: ProviderConfig {
                 api_key: Some(key),
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
-        }),
-        ..Config::default()
+        });
+        let mut __cw_config_init_1_value: Config = Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
     })
     .ok()
 }

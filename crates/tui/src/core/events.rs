@@ -3,18 +3,29 @@
 //! These events flow from the engine to the TUI via a channel,
 //! enabling non-blocking, real-time updates.
 
-use std::{path::PathBuf, sync::Arc};
+use sha2::{Digest, Sha256};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::config::ProviderKind;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{AgentWorkerStatus, CoordinationDetailProjection, SubAgentResult};
 use crate::tools::user_input::UserInputRequest;
+use codewhale_config::ProviderKind;
 use codewhale_models::{Message, SystemPrompt, Tool, Usage};
+
+/// Status receipt carried by the one request a reasoning-only / empty-stop
+/// nudge rides (C02-04). The nudge itself never joins the session.
+pub(crate) const REQUEST_NUDGE_RECEIPT_PREFIX: &str =
+    "Continuing — this retry carries a request-scoped nudge (not saved to the conversation): ";
 
 /// Provider correlation retained only for model-history reconstruction.
 /// Event ids remain host execution ids; this is not approval authority.
@@ -196,6 +207,163 @@ impl AgentProgressEventMeta {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionCheckpointCaller {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) turn_id: String,
+    pub(crate) call_id: String,
+    pub(crate) workspace: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCheckpointProjection {
+    Exact,
+    RuntimeReceiptRedacted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionCheckpointReceipt {
+    pub(crate) persisted_sha256: String,
+    pub(crate) messages_len: usize,
+    pub(crate) projection: SessionCheckpointProjection,
+}
+
+#[derive(Debug)]
+pub struct SessionCheckpointRequest {
+    pub(crate) checkpoint_id: String,
+    pub(crate) caller: SessionCheckpointCaller,
+    pub(crate) prefix_sha256: String,
+    pub(crate) snapshot: Arc<crate::core::ops::SessionSnapshot>,
+    pub(crate) withdraw: CancellationToken,
+    projection: SessionCheckpointProjection,
+    reply: Mutex<Option<oneshot::Sender<Result<bool, ToolError>>>>,
+}
+
+impl SessionCheckpointRequest {
+    pub(crate) fn new(
+        caller: SessionCheckpointCaller,
+        snapshot: Arc<crate::core::ops::SessionSnapshot>,
+        prefix_sha256: String,
+        projection: SessionCheckpointProjection,
+        withdraw: CancellationToken,
+        reply: oneshot::Sender<Result<bool, ToolError>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            checkpoint_id: uuid::Uuid::new_v4().to_string(),
+            caller,
+            prefix_sha256,
+            snapshot,
+            withdraw,
+            projection,
+            reply: Mutex::new(Some(reply)),
+        })
+    }
+
+    pub(crate) fn prefix_hash(messages: &[Message]) -> Result<String, String> {
+        serde_json::to_vec(messages)
+            .map(|bytes| {
+                Sha256::digest(bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            })
+            .map_err(|error| format!("session checkpoint could not encode its prefix: {error}"))
+    }
+
+    pub(crate) fn validate_prefix(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+        messages: &[Message],
+    ) -> Result<(), String> {
+        if self.is_stale() {
+            return Err("session checkpoint was withdrawn".into());
+        }
+        if self.caller.agent_id.is_some()
+            || session_id != self.caller.session_id
+            || session_id != self.snapshot.session_id
+            || workspace != self.caller.workspace
+            || workspace != self.snapshot.workspace
+            || messages.len() != self.snapshot.messages.len()
+            || Self::prefix_hash(messages)? != self.prefix_sha256
+        {
+            return Err("session checkpoint does not match its captured owner and prefix".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_stale(&self) -> bool {
+        self.withdraw.is_cancelled()
+            || self
+                .reply
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_none_or(oneshot::Sender::is_closed)
+    }
+
+    fn finish(&self, result: Result<bool, ToolError>) {
+        let result = if self.withdraw.is_cancelled() {
+            Err(ToolError::cancelled("session checkpoint was withdrawn"))
+        } else {
+            result
+        };
+        if let Some(reply) = self
+            .reply
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = reply.send(result);
+        }
+    }
+
+    pub(crate) fn succeed(&self, receipt: SessionCheckpointReceipt) {
+        let valid_hash = receipt.persisted_sha256.len() == 64
+            && receipt
+                .persisted_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        let allowed = match receipt.projection {
+            SessionCheckpointProjection::Exact => receipt.persisted_sha256 == self.prefix_sha256,
+            SessionCheckpointProjection::RuntimeReceiptRedacted => {
+                self.projection == SessionCheckpointProjection::RuntimeReceiptRedacted
+            }
+        };
+        if !valid_hash || !allowed || receipt.messages_len != self.snapshot.messages.len() {
+            self.fail(
+                "session checkpoint persistence receipt does not match its captured projection",
+            );
+            return;
+        }
+        self.finish(Ok(true));
+    }
+
+    pub(crate) fn fail(&self, reason: impl Into<String>) {
+        self.finish(Err(ToolError::not_available(reason.into())));
+    }
+
+    pub(crate) fn no_backend(&self) {
+        self.finish(Ok(false));
+    }
+}
+
+impl Drop for SessionCheckpointRequest {
+    fn drop(&mut self) {
+        if let Some(reply) = self
+            .reply
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = reply.send(Err(ToolError::not_available(
+                "owning host did not acknowledge the session checkpoint",
+            )));
+        }
+    }
+}
+
 /// Events emitted by the engine to update the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -223,25 +391,42 @@ pub enum Event {
     /// its notice. The disabled state also remains visible in `/status` (#5930).
     /// `reason` is the single localized line rendered from the gate, so every
     /// surface states the workspace, the limit, and the recovery exactly once.
-    SnapshotsDisabled { workspace: String, reason: String },
+    SnapshotsDisabled {
+        workspace: String,
+        reason: String,
+    },
     // === Streaming Events ===
     /// A new message block has started
-    MessageStarted { index: usize },
+    MessageStarted {
+        index: usize,
+    },
 
     /// Incremental text content delta
-    MessageDelta { index: usize, content: String },
+    MessageDelta {
+        index: usize,
+        content: String,
+    },
 
     /// Message block completed
-    MessageComplete { index: usize },
+    MessageComplete {
+        index: usize,
+    },
 
     /// Thinking block started
-    ThinkingStarted { index: usize },
+    ThinkingStarted {
+        index: usize,
+    },
 
     /// Incremental thinking content delta
-    ThinkingDelta { index: usize, content: String },
+    ThinkingDelta {
+        index: usize,
+        content: String,
+    },
 
     /// Thinking block completed
-    ThinkingComplete { index: usize },
+    ThinkingComplete {
+        index: usize,
+    },
 
     // === Tool Events ===
     /// Tool call initiated
@@ -260,7 +445,9 @@ pub enum Event {
     ToolCallHeartbeat,
 
     /// Optional actual dispatch observation for a narrowed protocol host.
-    ToolExecutionStarted { id: String },
+    ToolExecutionStarted {
+        id: String,
+    },
     /// Canonical rich result after existing output/media preservation.
     ToolResultContent {
         id: String,
@@ -320,17 +507,20 @@ pub enum Event {
     /// (`pre_turn`), before one file-modifying tool call (`tool`), after that
     /// call (`post_tool`, recording hosts only), or after the turn
     /// (`post_turn`). A host that records these on its turn records owns
-    /// exactly those restore points (see `crate::snapshot::WorkspaceSnapshotRef`).
+    /// exactly those restore points (see `codewhale_snapshot::WorkspaceSnapshotRef`).
     /// With `EngineConfig::record_restore_points` every receipt of a turn
     /// arrives before its `TurnComplete`.
     WorkspaceSnapshotTaken {
-        snapshot: crate::snapshot::WorkspaceSnapshotRef,
+        snapshot: codewhale_snapshot::WorkspaceSnapshotRef,
     },
 
     /// Immutable billing route captured at CodeWhale's pre-permit application
     /// dispatch boundary, after request preparation. This is admission-time
     /// evidence, not proof of network delivery or provider invoice-time rates.
-    RouteDispatched { turn_id: String, route: TurnRoute },
+    RouteDispatched {
+        turn_id: String,
+        route: TurnRoute,
+    },
 
     /// The turn is complete (no more tool calls)
     TurnComplete {
@@ -361,6 +551,10 @@ pub enum Event {
         tool_catalog: Option<Vec<Tool>>,
         /// API base URL used by this turn's client.
         base_url: Option<String>,
+    },
+
+    ProviderRequestReceipt {
+        receipt: serde_json::Value,
     },
 
     /// A single model call (turn-step) within the turn completed and the
@@ -404,17 +598,23 @@ pub enum Event {
 
     /// Runtime goal state changed inside the engine, usually from model-visible
     /// `create_goal` or `update_goal` tool calls.
-    GoalUpdated { snapshot: GoalSnapshot },
+    GoalUpdated {
+        snapshot: GoalSnapshot,
+    },
 
     /// The interactive engine is in the configured quiet period before one
     /// already-authorized goal continuation. This is lifecycle state, not a
     /// status string: Esc/Ctrl+C can cancel it without pretending a provider
     /// turn is still in flight.
-    GoalContinuationWaiting { delay_seconds: u64 },
+    GoalContinuationWaiting {
+        delay_seconds: u64,
+    },
 
     /// The between-turn quiet period ended. `interrupted` distinguishes a
     /// user/external cancel from normal expiry or a goal status control.
-    GoalContinuationWaitEnded { interrupted: bool },
+    GoalContinuationWaitEnded {
+        interrupted: bool,
+    },
 
     /// Context compaction started.
     CompactionStarted {
@@ -475,7 +675,9 @@ pub enum Event {
     },
 
     /// Context purge failed.
-    PurgeFailed { message: String },
+    PurgeFailed {
+        message: String,
+    },
 
     /// Context compaction failed.
     CompactionFailed {
@@ -594,7 +796,9 @@ pub enum Event {
     },
 
     /// Status message for UI display
-    Status { message: String },
+    Status {
+        message: String,
+    },
 
     /// Session-owned MCP + plugin boot progress.
     ///
@@ -620,7 +824,9 @@ pub enum Event {
     /// prompt; it never carries runtime/system additions. There is no error
     /// variant: a manifest that cannot describe something says so in a typed
     /// unavailable section instead.
-    RequestManifestReady { rendered: String },
+    RequestManifestReady {
+        rendered: String,
+    },
 
     /// Pause terminal input events (for interactive subprocesses).
     PauseEvents {
@@ -656,7 +862,9 @@ pub enum Event {
 
     /// The engine no longer waits for this approval. Every decision surface
     /// must retire the request by identity without sending a user decision.
-    ApprovalWithdrawn { id: String },
+    ApprovalWithdrawn {
+        id: String,
+    },
 
     /// Request user input for a tool call
     UserInputRequired {
@@ -672,11 +880,13 @@ pub enum Event {
     /// text block, and that assistant message still has to be persisted for
     /// later `reasoning_content` replay.
     SessionUpdated {
+        checkpoint: Option<Arc<SessionCheckpointRequest>>,
         session_id: String,
         /// Shared history snapshot (#6214 T2): the engine hands out an `Arc`
         /// instead of deep-copying the transcript per event.
         messages: Arc<Vec<Message>>,
         system_prompt: Option<SystemPrompt>,
+        instruction_assembly: Option<Arc<crate::project_context::InstructionAssembly>>,
         model: String,
         workspace: PathBuf,
     },
@@ -784,43 +994,6 @@ pub enum Event {
     },
 }
 
-const TOOL_PROJECTION_WARNING_MAX_NAMES: usize = 8;
-const TOOL_PROJECTION_WARNING_MAX_NAME_CHARS: usize = 64;
-
-/// Return a privacy-safe, display-bounded sample of omitted wire tool names.
-///
-/// MCP catalogs may contain thousands of tools and their names are supplied by
-/// external servers. Keep the exact count separately, but never let one route
-/// diagnostic flood a transcript, toast, or runtime record.
-#[must_use]
-pub fn bounded_tool_projection_warning_names(omitted_tool_names: &[String]) -> Vec<String> {
-    omitted_tool_names
-        .iter()
-        .take(TOOL_PROJECTION_WARNING_MAX_NAMES)
-        .map(|name| {
-            let cleaned: String = name
-                .chars()
-                .filter(|c| !c.is_control() && !codewhale_sanitize::sanitize::is_bidi_control(*c))
-                .collect();
-            let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-            let collapsed = if collapsed.is_empty() {
-                "<unnamed>".to_string()
-            } else {
-                collapsed
-            };
-            if collapsed.chars().count() <= TOOL_PROJECTION_WARNING_MAX_NAME_CHARS {
-                return collapsed;
-            }
-            let mut out: String = collapsed
-                .chars()
-                .take(TOOL_PROJECTION_WARNING_MAX_NAME_CHARS - 1)
-                .collect();
-            out.push('…');
-            out
-        })
-        .collect()
-}
-
 /// Render the already-bounded name sample, marking an incomplete sample with
 /// a language-neutral ellipsis. The exact total remains available in typed
 /// runtime metadata.
@@ -916,6 +1089,11 @@ pub fn is_retry_status_receipt(message: &str) -> bool {
     ]
     .iter()
     .any(|prefix| message.starts_with(prefix))
+}
+
+#[must_use]
+pub fn is_request_image_status_receipt(message: &str) -> bool {
+    message.starts_with("Image request budget: ") || message.starts_with("HTTP 413 recovery: ")
 }
 
 /// Classify an engine status line for durable clients. Unknown lines stay
@@ -1039,6 +1217,10 @@ pub fn bounded_gate_reason(reason: &str) -> String {
 #[cfg(test)]
 mod tool_projection_warning_tests {
     use super::*;
+    use codewhale_models::tool_projection::{
+        TOOL_PROJECTION_WARNING_MAX_NAME_CHARS, TOOL_PROJECTION_WARNING_MAX_NAMES,
+        bounded_tool_projection_warning_names,
+    };
 
     #[test]
     fn projection_warning_names_are_count_and_length_bounded() {

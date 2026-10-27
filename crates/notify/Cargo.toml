@@ -1,0 +1,29 @@
+[package]
+name = "codewhale-notify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Codewhale notification policy and local audio dispatch"
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+test-thread-scoped-state = ["test-support"]
+
+[dependencies]
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+regex = "1.11"
+tempfile.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs.workspace = true
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Diagnostics_Debug", "Win32_UI_WindowsAndMessaging"] }

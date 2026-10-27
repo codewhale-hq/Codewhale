@@ -1000,9 +1000,9 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
-fn allow_all_network() -> crate::network_policy::NetworkPolicy {
-    crate::network_policy::NetworkPolicy {
-        default: crate::network_policy::DecisionToml::Allow,
+fn allow_all_network() -> codewhale_net::network_policy::NetworkPolicy {
+    codewhale_net::network_policy::NetworkPolicy {
+        default: codewhale_net::network_policy::DecisionToml::Allow,
         ..Default::default()
     }
 }
@@ -1095,7 +1095,7 @@ fn dsh_packages_import_through_the_reviewed_install_and_update_flow() {
         config
             .user_plugins_dir
             .join("docs-dsh")
-            .join(super::install::INSTALLED_FROM_MARKER),
+            .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
     )
     .unwrap();
     assert!(marker.contains("dsh:"), "{marker}");
@@ -1177,7 +1177,7 @@ fn installed_bundles_land_disabled_and_untrusted_then_follow_the_trust_flow() {
         config
             .user_plugins_dir
             .join("demo")
-            .join(super::install::INSTALLED_FROM_MARKER)
+            .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER)
             .exists()
     );
 
@@ -1327,7 +1327,7 @@ fn mutation_update_accepts_unchanged_local_installs_and_refuses_foreign_scopes()
     let before = [
         installed.join("plugin.toml"),
         installed.join("skills/hello/SKILL.md"),
-        installed.join(super::install::INSTALLED_FROM_MARKER),
+        installed.join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
     ]
     .map(|path| {
         let bytes = fs::read(&path).unwrap();
@@ -1856,7 +1856,27 @@ fn plugin_enabled_before_policy_arrived_does_not_survive_rediscovery() {
     registry.enable("demo").unwrap();
     assert!(registry.is_active("demo"));
 
+    let authority = registry.authority_for("demo").unwrap();
+    assert!(super::registry::verify_plugin_state_authority(&authority).is_ok());
+    let serialized = serde_json::to_value(&authority).unwrap();
+    assert!(serialized.get("managed_policy_source").is_none());
+    let unbound: codewhale_config::PluginAuthority = serde_json::from_value(serialized).unwrap();
+    assert!(unbound.managed_policy_source.is_none());
+    assert!(super::registry::verify_plugin_state_authority(&unbound).is_err());
+
     write_policy(&policy_path(&config), &restrictive_policy());
+    assert!(
+        super::registry::verify_plugin_state_authority(&authority)
+            .unwrap_err()
+            .contains("managed plugin policy")
+    );
+    let mut redirected = authority.clone();
+    redirected.managed_policy_path = Some(tmp.path().join("absent-policy.json"));
+    assert!(
+        super::registry::verify_plugin_state_authority(&redirected)
+            .unwrap_err()
+            .contains("trusted managed policy source")
+    );
 
     let reloaded = discover_with_config(&config);
     assert!(
@@ -2006,4 +2026,17 @@ fn managed_policy_path_env_override_is_honored() {
         "override policy must refuse with the named reason: {error}"
     );
     assert!(!registry.is_enabled("demo"));
+    let relative = PathBuf::from("relative-managed-policy.json");
+    let launch_directory = std::env::current_dir().unwrap();
+    let environment = super::context::HostEnvironment::from_entries([(
+        std::ffi::OsString::from(MANAGED_POLICY_PATH_ENV),
+        relative.as_os_str().to_os_string(),
+    )]);
+    let context =
+        super::context::PluginDiscoveryContext::from_config_and_environment(&config, environment);
+    assert_eq!(
+        context.managed_policy_source().unwrap(),
+        launch_directory.join(relative)
+    );
+    assert!(context.managed_policy_source().unwrap().is_absolute());
 }

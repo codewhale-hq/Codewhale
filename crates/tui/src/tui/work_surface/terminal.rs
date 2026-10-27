@@ -38,6 +38,8 @@ pub(super) struct TerminalDock {
     #[cfg(all(unix, not(target_env = "ohos")))]
     sessions: Vec<TerminalSessionInfo>,
     #[cfg(all(unix, not(target_env = "ohos")))]
+    commands: Vec<crate::tools::shell::ShellJobSnapshot>,
+    #[cfg(all(unix, not(target_env = "ohos")))]
     selected: Option<String>,
     #[cfg(all(unix, not(target_env = "ohos")))]
     output: Vec<u8>,
@@ -79,13 +81,16 @@ struct Worker {
 #[cfg(all(unix, not(target_env = "ohos")))]
 #[derive(Debug)]
 enum Request {
-    Refresh(Option<String>),
-    Create(crate::sandbox::SandboxPolicy),
+    Refresh {
+        selected: Option<String>,
+        session: String,
+    },
+    Create(codewhale_sandbox::SandboxPolicy),
     Input {
         name: String,
         id: String,
         bytes: Vec<u8>,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_sandbox::SandboxPolicy,
     },
     Resize {
         name: String,
@@ -102,6 +107,7 @@ enum Reply {
         requested: Option<String>,
         sessions: Vec<TerminalSessionInfo>,
         output: Option<terminal_session::OutputChunk>,
+        commands: Vec<crate::tools::shell::ShellJobSnapshot>,
     },
     Created(String),
     InputWritten(String),
@@ -121,17 +127,25 @@ impl Worker {
             .spawn(move || {
                 while let Ok(request) = incoming.recv() {
                     let reply = match request {
-                        Request::Refresh(requested) => match terminal_session::inspect_workspace(
-                            &workspace,
-                            requested.as_deref(),
-                        ) {
-                            Ok((sessions, output)) => Reply::Snapshot {
-                                requested,
-                                sessions,
-                                output,
-                            },
-                            Err(error) => Reply::Error(error),
-                        },
+                        Request::Refresh { selected, session } => {
+                            let pty = selected
+                                .as_deref()
+                                .filter(|id| command_job_id(id).is_none());
+                            match terminal_session::inspect_workspace(&workspace, pty) {
+                                Ok((sessions, output)) => Reply::Snapshot {
+                                    requested: selected,
+                                    sessions,
+                                    output,
+                                    commands: shell_manager
+                                        .lock()
+                                        .map(|mut manager| {
+                                            dock_commands(manager.list_jobs_for_session(&session))
+                                        })
+                                        .unwrap_or_default(),
+                                },
+                                Err(error) => Reply::Error(error),
+                            }
+                        }
                         Request::Create(policy) => {
                             let name =
                                 format!("user-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -197,7 +211,58 @@ impl Worker {
 }
 
 #[cfg(all(unix, not(target_env = "ohos")))]
-fn policy(app: &App) -> crate::sandbox::SandboxPolicy {
+const COMMAND_TAB_PREFIX: &str = "cmd:";
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+const FINISHED_COMMAND_TABS: usize = 5;
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn command_job_id(tab: &str) -> Option<&str> {
+    tab.strip_prefix(COMMAND_TAB_PREFIX)
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn command_tab_id(job: &crate::tools::shell::ShellJobSnapshot) -> String {
+    format!("{COMMAND_TAB_PREFIX}{}", job.id)
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn dock_commands(
+    jobs: Vec<crate::tools::shell::ShellJobSnapshot>,
+) -> Vec<crate::tools::shell::ShellJobSnapshot> {
+    use crate::tools::shell::ShellStatus;
+    let (mut running, mut finished): (Vec<_>, Vec<_>) = jobs
+        .into_iter()
+        .partition(|job| job.status == ShellStatus::Running);
+    finished.sort_by_key(|job| std::cmp::Reverse(job.finished_at));
+    finished.truncate(FINISHED_COMMAND_TABS);
+    running.extend(finished);
+    running
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn command_output(job: &crate::tools::shell::ShellJobSnapshot) -> Vec<u8> {
+    let mut output = job.stdout_tail.clone();
+    if !job.stderr_tail.is_empty() {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&job.stderr_tail);
+    }
+    output.into_bytes()
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn tab_ids(dock: &TerminalDock) -> Vec<String> {
+    dock.sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .chain(dock.commands.iter().map(command_tab_id))
+        .collect()
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn policy(app: &App) -> codewhale_sandbox::SandboxPolicy {
     crate::core::authority::sandbox_policy_for_turn(
         app.mode,
         app.approval_mode,
@@ -214,6 +279,7 @@ pub(crate) fn poll(app: &mut App) {
         let visible = app.work_surface.panel == RailPanel::Terminal
             && !app.work_surface.dismissed
             && app.work_surface.explicit_view;
+        let session_id = app.current_session_id.clone().unwrap_or_default();
         let dock = &mut app.work_surface.terminal;
         if dock.workspace != app.workspace {
             *dock = TerminalDock {
@@ -249,6 +315,7 @@ pub(crate) fn poll(app: &mut App) {
                         requested,
                         sessions,
                         output,
+                        commands,
                     } => {
                         tracing::trace!(
                             target: "codewhale::terminal_dock",
@@ -264,22 +331,36 @@ pub(crate) fn poll(app: &mut App) {
                             continue;
                         }
                         if dock.selected.is_none() {
-                            dock.selected = sessions.first().map(|session| session.id.clone());
+                            dock.selected = sessions
+                                .first()
+                                .map(|session| session.id.clone())
+                                .or_else(|| commands.first().map(command_tab_id));
                         }
+                        let selected_command = dock
+                            .selected
+                            .as_deref()
+                            .and_then(command_job_id)
+                            .and_then(|id| commands.iter().find(|job| job.id == id));
                         dock.lost = dock.selected.is_some()
+                            && selected_command.is_none()
                             && !sessions
                                 .iter()
                                 .any(|session| Some(&session.id) == dock.selected.as_ref());
-                        let (bytes, dropped) = output
-                            .map(|chunk| (chunk.bytes, chunk.offset))
-                            .unwrap_or_default();
+                        let (bytes, dropped) = match selected_command {
+                            Some(job) => (command_output(job), 0),
+                            None => output
+                                .map(|chunk| (chunk.bytes, chunk.offset))
+                                .unwrap_or_default(),
+                        };
                         if dock.sessions != sessions
+                            || dock.commands != commands
                             || dock.output != bytes
                             || dock.dropped != dropped
                         {
                             app.needs_redraw = true;
                         }
                         dock.sessions = sessions;
+                        dock.commands = commands;
                         dock.output = bytes;
                         dock.dropped = dropped;
                     }
@@ -312,10 +393,10 @@ pub(crate) fn poll(app: &mut App) {
                     .last_poll
                     .is_none_or(|last| last.elapsed() >= Duration::from_millis(100))
             {
-                match worker
-                    .requests
-                    .try_send(Request::Refresh(dock.selected.clone()))
-                {
+                match worker.requests.try_send(Request::Refresh {
+                    selected: dock.selected.clone(),
+                    session: session_id.clone(),
+                }) {
                     Ok(()) => {
                         dock.refreshing = true;
                         dock.last_poll = Some(Instant::now());
@@ -399,19 +480,19 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             Some(ShellBindingId::TerminalNext | ShellBindingId::TerminalPrevious)
         ) {
             let dock = &mut app.work_surface.terminal;
-            if !dock.sessions.is_empty() {
-                let current = dock
-                    .sessions
+            let tabs = tab_ids(dock);
+            if !tabs.is_empty() {
+                let current = tabs
                     .iter()
-                    .position(|session| Some(&session.id) == dock.selected.as_ref());
+                    .position(|id| Some(id) == dock.selected.as_ref());
                 let index = match (current, action) {
                     (Some(index), Some(ShellBindingId::TerminalPrevious)) => {
-                        (index + dock.sessions.len() - 1) % dock.sessions.len()
+                        (index + tabs.len() - 1) % tabs.len()
                     }
-                    (Some(index), _) => (index + 1) % dock.sessions.len(),
+                    (Some(index), _) => (index + 1) % tabs.len(),
                     (None, _) => 0,
                 };
-                dock.selected = Some(dock.sessions[index].id.clone());
+                dock.selected = Some(tabs[index].clone());
                 dock.output.clear();
                 dock.error = None;
                 dock.size = None;
@@ -442,6 +523,9 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 #[cfg(all(unix, not(target_env = "ohos")))]
 fn input(app: &mut App, bytes: Vec<u8>) {
     let dock = &app.work_surface.terminal;
+    if dock.selected.as_deref().and_then(command_job_id).is_some() {
+        return;
+    }
     if let Some(session) = dock
         .sessions
         .iter()
@@ -553,7 +637,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             lines.push(Line::styled(app.tr(MessageId::TerminalDockStarting), muted));
         } else if dock.lost {
             lines.push(Line::styled(app.tr(MessageId::TerminalDockLost), muted));
-        } else if dock.sessions.is_empty() {
+        } else if dock.sessions.is_empty() && dock.commands.is_empty() {
             lines.push(Line::styled(
                 app.tr(MessageId::TerminalDockEmpty)
                     .replace("{new}", binding(ShellBindingId::TerminalNew).footer_chord),
@@ -608,6 +692,46 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
                 session_tabs.push((
                     session.id.clone(),
+                    Rect::new(column, area.y.saturating_add(lines.len() as u16), width, 1),
+                ));
+                column = column.saturating_add(width);
+                spans.push(ratatui::text::Span::styled(
+                    text,
+                    if selected && app.work_surface.focused {
+                        style.bg(app.ui_theme.selection_bg)
+                    } else {
+                        style
+                    },
+                ));
+            }
+            for job in &dock.commands {
+                let id = command_tab_id(job);
+                let selected = Some(&id) == dock.selected.as_ref();
+                let status = match job.exit_code {
+                    Some(code) if job.status != crate::tools::shell::ShellStatus::Running => app
+                        .tr(MessageId::TerminalDockExited)
+                        .replace("{code}", &code.to_string()),
+                    _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
+                };
+                let command: String = job.command.chars().take(32).collect();
+                let ellipsis = if job.command.chars().count() > 32 {
+                    "…"
+                } else {
+                    ""
+                };
+                let text = format!(
+                    "{}$ {command}{ellipsis} ({status} · {}s)  ",
+                    if selected { "› " } else { "" },
+                    job.elapsed_ms / 1000
+                );
+                let width = unicode_width::UnicodeWidthStr::width(text.as_str())
+                    .min(usize::from(area.right().saturating_sub(column)))
+                    as u16;
+                if width == 0 {
+                    break;
+                }
+                session_tabs.push((
+                    id,
                     Rect::new(column, area.y.saturating_add(lines.len() as u16), width, 1),
                 ));
                 column = column.saturating_add(width);

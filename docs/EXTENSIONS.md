@@ -60,32 +60,32 @@ runtime = "node"   # default: Node only
 # runtime = "auto" # Bun >= 1.4.0 if one is found and starts, otherwise Node
 # bun = "~/.bun/bin/bun"          # the only Bun tried when set
 # node = "/opt/homebrew/bin/node" # the only Node tried when set
-# mcp_backend = "host" # experimental SDK backend; default is "rust"
+# mcp_backend = "rust" # temporary opt-out; default is "host"
 ```
 
-`mcp_backend = "host"` selects the pinned MCP SDK independently of
-`[features] extension_host`. That feature controls optional Native extensions;
-selecting Host MCP does not activate them. The SDK for existing stdio, HTTP and legacy SSE server connections in a separate
-builtin host process. Rust retains process/network authority, credential
-resolution, catalog admission, tool approval and cancellation. HTTP/SSE uses
-Rust's guarded HTTP client; the SDK receives opaque session selectors and
-exact operation grants. Request IDs remain the Rust client's strings through
-an adapter bound to each grant. Explicit Host selection never falls back to
-Rust or replays an uncertain operation. The default remains `"rust"` while
-recorded transport parity is qualified. The Host path uses the same Rust
-GET session preflight and bounded reactive OAuth refresh as the default
-backend. An explicit incompatible HTTP response can negotiate the real SDK
-SSE transport only with a fresh exact Rust operation grant; a stale-session
-refusal remains a typed Rust recovery decision. Credentials, configured URLs,
-OAuth browser/login operations and Computer Use decision keys stay in Rust.
-Both backends run against the same recorded MCP goldens. Passing that suite
-and the actual broker acceptance tests is required before any default cutover.
-The default also requires the platform isolation and measured Phase 3 gates
-in Ops CURRENT_DECISIONS §26. The native Rust protocol adapters remain for one
-release after the accepted default flip, then retire. Rust retains the catalog,
-session, permission and credential authority. Missing or unsupported Node uses
-the existing doctor runtime diagnostic; selected Host failures never choose
-Rust automatically.
+The default `mcp_backend = "host"` uses the pinned MCP SDK independently of
+`[features] extension_host`, which controls optional Native extensions. Existing
+stdio and HTTP servers use modern discovery when supported; explicitly configured
+legacy SSE servers use their legacy handshake. Rust retains process and network
+authority, credential resolution, catalog admission, tool approval and cancellation.
+The SDK receives opaque session selectors and exact operation grants. Modern
+requests carry Rust-approved protocol metadata and headers without a session id.
+
+A typed discovery refusal can admit a legacy handshake. Only an explicit HTTP
+transport refusal during that handshake can admit legacy SSE with a fresh exact
+Rust grant. Legacy HTTP retains its GET preflight and bounded OAuth refresh;
+modern HTTP does not inherit those session or resend behaviors. Incomplete result
+flows are reported without automatically repeating the operation. Credentials,
+configured URLs, OAuth browser/login operations and Computer Use decision keys
+stay in Rust.
+
+Both backends share recorded semantic MCP goldens and retain separate transport
+goldens, including discovery, authentication and session evidence. The Host default
+requires those fixtures and the actual broker acceptance checks, plus the platform
+isolation and measured gates in Ops CURRENT_DECISIONS §26. An explicit
+`mcp_backend = "rust"` remains available for one release after the qualified default
+flip, before the native protocol adapters retire. Missing or unsupported Node uses
+the existing doctor runtime diagnostic. Host failures never select Rust automatically.
 
 The stock finance, data and speech adapters have independent experimental flags:
 `[features] finance_host = true`, `data_host = true` and `speech_host = true`.
@@ -214,7 +214,28 @@ JSON under the `dataDir` Rust assigned. The API refuses access once owner
 disposal begins, symlinked storage, corrupt data and writes that exceed its
 bounded key/value/owner limits. It does not expose session history or secrets.
 Tool and command invocations also expose frozen `sessionId`, `agentId` and
-`originTurnId` strings when Rust supplies them for that particular call.
+`originTurnId` strings when Rust supplies them for that particular call. Tool invocations
+with an authoritative session and workspace also expose frozen `exec.agent.id`
+and `exec.agent.session.header.cwd`; root identity uses the session id and a
+child uses its supplied agent id. The projection has no methods and retaining it
+grants no operations after the invocation ends.
+
+An entry injecting `sessions` can call `ctx.sessions.flush(exec.agent.session)`
+while its directly invoked root tool holds an Engine checkpoint ticket. The
+argument must be that invocation's exact session object. The Engine captures
+its committed prefix and waits for the owning Runtime, terminal, or exec store
+to acknowledge persistence. Runtime retains its existing receipt-secret
+redaction policy; success describes that persisted projection. It does not
+include the running tool's future result or the plugin's separate journal.
+Runtime recovery retains later tool results without replaying the tool.
+Checkpoint-bearing Runtime turns require schema version 5; older readers
+refuse them rather than silently reconstructing incomplete history.
+
+`false` is reserved for a deliberately ephemeral host with no persistence
+backend. Missing authority, foreign or expired handles, child checkpoints,
+superseded writes, storage failure, cancellation and unavailable consumers
+reject. Cancellation can race a disk write, so a rejected call does not prove
+nothing was written. Other `sessions` methods remain unsupported.
 
 ## MCP definitions
 
@@ -305,6 +326,22 @@ Return a JSON value or text; the host renders it into ordinary tool output.
 Avoid secrets in descriptions, logs and results. An approval card's wording
 and identity come from Rust, never from plugin-supplied labels.
 
+For DSH definitions with `output`, declare both `output.schema` and
+`output.render`. The host validates the canonical JSON result before rendering
+it. This adapter currently accepts plain text blocks only; unsupported rich
+content or extra block fields produce an explicit error instead of disappearing.
+Nonempty registration options, `projectContent`, `finalizeContent`, `timeoutMs`
+and deferred loading are not implemented and are refused. The shared
+[`compatibility.json`](../crates/tui/extension-host/src/dsh/compatibility.json)
+pins the definition API to DSH 0.2.1-rc.2 and records service, row-bridge and
+module mappings. Its bytes participate in Native content and capability review,
+so changing the compatibility contract invalidates prior trust.
+
+Successful and soft-failure tool results carry Rust-stamped `extension`
+metadata identifying the plugin, reviewed content, entry, generation, caller
+selection, handle and process boot. Plugin-supplied output cannot choose this
+identity.
+
 ## Command rules
 
 Register a slash command with `ctx.commands.register`, which returns an
@@ -335,9 +372,9 @@ user's own action and needs no approval. It can only return an answer:
 
 - a string, or `{ kind: 'success', text? }`: shown in the transcript;
 - `{ kind: 'error', text }` or a thrown error: shown as a failure;
-- `{ kind: 'submit', prompt, text? }`: `prompt` is sent as the user's next
-  message, visibly, through the ordinary turn. Whatever the model then does,
-  including every tool call, is gated as usual. `text` is shown beside it.
+- `{ kind: 'submit', prompt, text? }`: `prompt` enters the ordinary turn with
+  Runtime provenance and visible plugin attribution. Every model tool call
+  is gated as usual. `text` is shown beside the prompt.
 
 The handler cannot call the model, a tool or approval. Output is stripped of
 terminal escape sequences and cut at 64 KiB; a prompt over 128 KiB is refused,
@@ -352,11 +389,52 @@ returning `{ kind: 'success' | 'error', text }` run unchanged, including
 `import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'` (the
 only `dsh-commands` import the host resolves; `definitionId` is accepted and
 ignored). DSH's `rawInput` is provided (it keeps the leading separator,
-`' name'`). Not
-provided: DSH's `agent` (the host has no agent or session handle),
-attachments (`input.attachments: true` fails activation), a `list`/`find`/
-`execute` surface, and command lifecycle events in a session log. Commands are
-TUI-only: the Runtime API does not list or run them.
+`' name'`). When Rust supplies the caller session, `invocation.agent` exposes
+its read-only id and `followup(message)`. A handler may capture exactly one
+JSON user message with a bounded id, a source containing only `kind`, and one
+plain text content block. Successful completion converts it to the same Submit
+result; an error result, cancellation or exception never submits it. Explicit
+Submit plus followup, multiple messages, attachments, empty text and text above
+128 KiB are refused. The handle closes when the invocation settles. Core owns
+the resulting turn identity and provenance; this is not a general agent service
+or persistence of the supplied DSH message identity. Missing caller context
+refuses access.
+
+Not provided: attachments (`input.attachments: true` fails activation), a `list`/`find`/
+`execute` surface, and DSH command lifecycle events. The Runtime API records
+Codewhale command admission, completion and cancellation in its existing event
+store.
+
+Thread snapshots also include bounded `command_receipts` for the most recent
+100 terminal commands that did not submit a turn. Each receipt has a stable
+identity, completion time, status, text and extension attribution. This is a
+projection of the existing event log; reopening a native App conversation can
+display the result without rerunning a command or adding it to model history.
+
+### Runtime API and native App
+
+Read `GET /v1/commands?thread_id=<id>` to discover commands for that thread's
+workspace and plugin selection. Extension entries have `kind` and `binding`
+set to `extension`, an `origin` and an opaque `registration_id`. A listing
+without a thread has no invocable registration identity.
+
+Submit `name`, `args`, `registration_id`, `operation_key` and
+`expected_workspace` to `POST /v1/threads/<id>/commands`. Reuse the same
+operation key only for the exact same request. A completed retry returns the
+stored outcome; a pending or uncertain invocation is never executed again.
+`GET /v1/threads/<id>/commands/<operation_key>` reads the result. If a recorded
+invocation has lost its worker, lookup settles an explicit uncertain outcome
+and recovers any admitted turn without rerunning the callback. `DELETE`
+requests cancellation, including cancellation before admission and interruption
+of an associated active turn. A stale
+registration or changed workspace requires discovering and selecting again.
+
+The Engine admits a returned prompt through its ordinary turn lifecycle with
+Runtime provenance. TUI and App present it as attributed plugin input and exclude
+it from ordinary human recall, edit and retry. Clients must not resubmit that prompt. Results include the
+accepted turn when present and the exact extension receipt. The native App
+uses these routes for its command palette and slash input, preserves edited
+drafts and refreshes the catalog after plugin changes and reconnects.
 
 ## Execution context
 
@@ -532,34 +610,29 @@ Dispose within 2 seconds and avoid leaving background work behind.
 
 ## Sandbox
 
-Trust is not a complete security boundary. Plugins share one process and can
-interfere with each other. On macOS the existing Seatbelt profile, and on Linux
-bubblewrap (`/usr/bin/bwrap`), deny direct network access, writes outside the
-host's data and temp paths and reads of the protected credential locations.
-Other user-readable files, including project `.env` files, remain readable.
+Trust is not a complete security boundary. Native plugins share one process
+and data-access cohort and can interfere with each other. Owner labels and
+JavaScript method locks do not isolate mutually untrusted plugins.
 
-The macOS profile is the one every Seatbelt-sandboxed Codewhale command gets,
-under a workspace-write policy rooted at the host's data directory
-(`~/.codewhale/extension-host/data`). Besides that directory and the temp
-directories it therefore also allows writes to:
+Native hosts use a positive filesystem-read policy on macOS Seatbelt and
+Linux bubblewrap (`/usr/bin/bwrap`). Grants cover the selected runtime and
+required system files, the host bundle, Core-managed reviewed snapshot stores,
+and the Native data/private temporary directories. Ordinary workspace files,
+including project `.env` files, are outside those grants. Child processes
+inherit the same boundary. Direct network access is denied; writes stay in
+the Native data and private temporary directories. The general shell profile's
+Cargo, npm and Darwin cache write grants do not apply to this Native profile.
 
-- the per-user Darwin cache directory (`confstr(_CS_DARWIN_USER_CACHE_DIR)`,
-  under `/var/folders/`);
-- `~/.cargo/registry` and `~/.cargo/git` (under `$CARGO_HOME` when set);
-- the npm cache, `~/.npm` (or `$NPM_CONFIG_CACHE`).
-
-They exist in the shared profile so that `cargo` and `npx`-launched tools work
-inside the shell sandbox (`sandbox/seatbelt.rs`). The extension host needs none
-of them and the sandbox tests do not probe them, but a plugin, or a process it
-starts, can write there. The cargo and npm entries are present only when
-`CARGO_HOME`/`NPM_CONFIG_CACHE` or `HOME` is set in Codewhale's environment.
-The bubblewrap sandbox on Linux has no equivalent
-allowances.
+Snapshot-store grants include other reviewed snapshots in the shared Native
+cohort, not just the currently selected entry. They do not grant repository
+access. A plugin that directly runs `git` over the user's project therefore
+needs a separately scoped operation bridge before it can work in this profile.
 
 Native extensions require a verified OS wrapper at each launch. On Linux,
 missing bwrap or a failed namespace probe refuses Native activation and reports
-the concrete error. Windows Native activation is likewise refused while its
-filesystem/network isolation is unavailable. The pinned Builtin tier retains
+the concrete error. Windows uses the existing LPAC filesystem/network wrapper
+and refuses Native activation when that wrapper cannot be established. Source
+support is not evidence of platform or bundled-artifact qualification. The pinned Builtin tier retains
 an explicitly diagnosed unsandboxed exception; every effect still requires
 Rust operation tickets. That exception does not qualify Native extensions or
 the mandatory-host/default-runtime cutover. Planning creates the sibling

@@ -17,11 +17,11 @@ use codewhale_execpolicy::ApprovalMode;
 use tempfile::tempdir;
 
 use crate::compaction::CompactionConfig;
-use crate::config::Config;
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::Event;
 use crate::core::ops::{Op, TurnSpec, UserInputProvenance};
 use crate::test_support::lock_test_env;
+use codewhale_runtime::config::Config;
 
 const CALLS: [&str; 3] = ["call_e2_first", "call_e2_second", "call_e2_third"];
 
@@ -97,19 +97,17 @@ async fn approving_the_first_of_three_queued_calls_cancels_none_of_them() {
         .mount(&server)
         .await;
 
-    let api_config = Config {
-        ..Config::default()
-    }
-    .with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
+    let api_config =
+        Config::default().with_legacy_root(Some("test-key".to_string()), Some(server.uri()));
     let route = crate::route_runtime::resolve_runtime_route(
         &api_config,
         api_config.active_provider_identity().unwrap().provider,
-        Some(crate::config::DEFAULT_TEXT_MODEL),
+        Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
     )
     .expect("resolve test route");
     let (engine, handle) = Engine::new(
         EngineConfig {
-            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
+            model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
             workspace: workspace.path().to_path_buf(),
             snapshots_enabled: false,
             subagents_enabled: false,

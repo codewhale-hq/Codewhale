@@ -274,15 +274,17 @@ async fn prose_work_seeds_preserves_other_work_and_queues_exact_text_once() {
     assert_eq!(todos.items.len(), 2);
     assert_eq!(todos.items[0].content, "Unrelated work");
     assert_eq!(todos.items[1].status, TodoStatus::Pending);
-    assert_eq!(
-        todos.items[1].content,
-        text.trim().chars().take(1024).collect::<String>().trim()
-    );
+    assert_eq!(todos.items[1].content, "先检查输入。");
     assert!(app.pending_plan_handoff.is_none());
     assert_eq!(app.queued_message_count(), 1);
     assert_eq!(
         app.queued_messages.front().unwrap().display,
-        format!("{}\n\n{text}", app.tr(MessageId::PlanHandoffProceed))
+        format!(
+            "{}\n\n{text}\n\n{}",
+            app.tr(MessageId::PlanHandoffProceed),
+            app.tr(MessageId::PlanHandoffTodoNote)
+                .replace("{title}", &todos.items[1].content)
+        )
     );
     assert!(matches!(
         engine.rx_op.try_recv(),
@@ -331,8 +333,7 @@ async fn existing_current_turn_checklist_is_not_replaced_or_seeded_again() {
 
 #[tokio::test]
 async fn refused_checkpoint_rolls_back_seed_and_retry_queues_once() {
-    // Cover surrounding/multiline whitespace and a Unicode title whose
-    // bounded prefix ends on whitespace before the graph normalizes it.
+    // Cover surrounding/multiline whitespace and a Unicode title.
     for text in [
         " \n\tRead the data.\n\nBuild the report.\r\n ".to_string(),
         format!("\n{} \nKeep the full message.\t", "鲸".repeat(1023)),
@@ -400,12 +401,20 @@ async fn refused_checkpoint_rolls_back_seed_and_retry_queues_once() {
         );
         assert_eq!(
             todos.items[0].content,
-            text.trim().chars().take(1024).collect::<String>().trim()
+            text.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap()
         );
         assert_eq!(app.queued_message_count(), 1);
         assert_eq!(
             app.queued_messages.front().unwrap().display,
-            format!("{}\n\n{text}", app.tr(MessageId::PlanHandoffProceed))
+            format!(
+                "{}\n\n{text}\n\n{}",
+                app.tr(MessageId::PlanHandoffProceed),
+                app.tr(MessageId::PlanHandoffTodoNote)
+                    .replace("{title}", &todos.items[0].content)
+            )
         );
     }
 }

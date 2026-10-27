@@ -12,10 +12,10 @@
 //! ignore rule does not swallow it) the dispatch spawns itself.
 //!
 //! [`DISPATCHES`] is the seam for the TypeScript migration
-//! (TS-EXTENSION-HOST-DESIGN §5.2, §9.3): today it holds the Rust pool path
-//! production uses (`Engine::execute_mcp_tool_with_pool`); `HostMcpDispatch`
-//! now joins it and must produce the *same* golden, because the golden
-//! does not name the dispatch. It uses the real pinned SDK and Rust broker.
+//! (TS-EXTENSION-HOST-DESIGN §5.2, §9.3): native Rust and the default Host
+//! SDK dispatch must produce the same semantic golden. Transport goldens
+//! name each dispatch so discovery, authentication and session behavior stay
+//! explicit. Host uses the real pinned SDK and Rust broker.
 //!
 //! Normalization: the server URL/port is masked; results are
 //! `{"ok": {success, content, metadata, content_blocks}}` with JSON content
@@ -126,14 +126,13 @@ trait McpDispatchUnderTest: Send + Sync {
 
 type DispatchFactory = fn(setup: DispatchSetup) -> Box<dyn McpDispatchUnderTest>;
 
-/// Every dispatch runs every transcript against the same golden.
+/// Every dispatch shares semantic goldens and retains its transport goldens.
 const DISPATCHES: &[(&str, DispatchFactory)] = &[
     ("mcp_pool", McpPoolDispatch::boxed),
     ("host_sdk", HostMcpDispatch::boxed),
 ];
 
-/// The Rust path production uses today: the shared pool behind the engine's
-/// direct MCP execution seam.
+/// The explicitly selected native Rust path through the shared engine pool.
 struct McpPoolDispatch {
     pool: Arc<AsyncMutex<McpPool>>,
     tx_event: mpsc::Sender<Event>,
@@ -145,7 +144,9 @@ struct McpPoolDispatch {
 impl McpPoolDispatch {
     fn boxed(setup: DispatchSetup) -> Box<dyn McpDispatchUnderTest> {
         let (tx_event, rx_event) = mpsc::channel(64);
-        let pool = McpPool::new(setup.config).with_disallowed_tools(setup.disallowed_tools.clone());
+        let pool = McpPool::new(setup.config)
+            .with_backend(codewhale_config::McpBackend::Rust)
+            .with_disallowed_tools(setup.disallowed_tools.clone());
         Box::new(Self {
             pool: Arc::new(AsyncMutex::new(pool)),
             tx_event,
@@ -238,7 +239,7 @@ impl HostMcpDispatch {
         let (tx_event, rx_event) = mpsc::channel(64);
         let pool = McpPool::new(setup.config)
             .with_disallowed_tools(setup.disallowed_tools.clone())
-            .with_backend(crate::mcp::McpBackend::Host);
+            .with_backend(codewhale_config::McpBackend::Host);
         Box::new(Self {
             inner: McpPoolDispatch {
                 pool: Arc::new(AsyncMutex::new(pool)),
@@ -448,6 +449,7 @@ fn harness_timeout_rejects_a_real_unanswered_mcp_call() {
     let outcome = run_case(
         "unanswered_call",
         &case,
+        "mcp_pool",
         McpPoolDispatch::boxed,
         Duration::from_secs(1),
         true,
@@ -631,6 +633,7 @@ fn assert_no_secret(secret: &str, recorded: &str) -> Result<(), String> {
 fn run_case(
     name: &str,
     case: &Value,
+    dispatch: &str,
     factory: DispatchFactory,
     deadline: Duration,
     compare_only: bool,
@@ -662,10 +665,29 @@ fn run_case(
     if let Some(secret) = secret {
         assert_no_secret(secret, &recorded)?;
     }
+    let transport = if let Some(kind) = case["record_requests"].as_str() {
+        let field = match kind {
+            "full" => "requests",
+            "summary" => "requests_summary",
+            other => panic!("unknown record_requests `{other}`"),
+        };
+        Some(
+            json!({field: outcome.as_object_mut().expect("outcome").remove(field).expect("recorded transport")}),
+        )
+    } else {
+        None
+    };
     golden::check_golden(
         &golden::family_dir(FAMILY).join(format!("{name}.golden.json")),
-        &recorded,
-    )
+        &golden::pretty(&golden::canonical(&outcome)),
+    )?;
+    if let Some(transport) = transport {
+        golden::check_golden(
+            &golden::family_dir(FAMILY).join(format!("{name}.{dispatch}.transport.golden.json")),
+            &golden::pretty(&golden::canonical(&transport)),
+        )?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -677,7 +699,7 @@ fn mcp_transcripts_match_goldens_for_every_dispatch() {
         for (dispatch, factory) in DISPATCHES {
             failures.record(
                 &format!("{name} via {dispatch}"),
-                run_case(name, &case, *factory, CALL_DEADLINE, false),
+                run_case(name, &case, dispatch, *factory, CALL_DEADLINE, false),
             );
         }
     }

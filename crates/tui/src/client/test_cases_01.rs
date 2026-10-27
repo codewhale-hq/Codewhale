@@ -7,10 +7,9 @@
         tool_to_chat_for_base_url,
     };
     use crate::client::responses::build_responses_body;
-    use crate::config::{
-        DEFAULT_CONCENTRATE_BASE_URL, DEFAULT_CONCENTRATE_MODEL, DEFAULT_EDENAI_MODEL,
-        DEFAULT_TELECOMJS_MODEL, OPENROUTER_QWEN_3_6_FLASH_MODEL, ProviderConfig, ProvidersConfig,
-    };
+    use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
+    use codewhale_config::descriptors::defaults::{DEFAULT_CONCENTRATE_BASE_URL, DEFAULT_CONCENTRATE_MODEL, DEFAULT_EDENAI_MODEL, DEFAULT_TELECOMJS_MODEL};
+    use codewhale_config::catalog::reviewed::constants::OPENROUTER_QWEN_3_6_FLASH_MODEL;
     use crate::tools::apply_patch::ApplyPatchTool;
     use crate::tools::spec::ToolSpec;
     use crate::tools::{ToolContext, ToolRegistryBuilder};
@@ -418,9 +417,9 @@
         model: &str,
         transport_base_url: String,
     ) -> CodewhaleClient {
-        let mut client = CodewhaleClient::new(&Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(ProvidersConfig {
+        let mut client = CodewhaleClient::new(&{
+            let __cw_config_init_0_0 = Some("moonshot".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 moonshot: ProviderConfig {
                     api_key: Some("moonshot-request-boundary-key".to_string()),
                     base_url: Some(route_base_url.to_string()),
@@ -428,8 +427,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         })
         .expect("Moonshot request-boundary client");
         assert_eq!(client.base_url, route_base_url);
@@ -443,9 +445,9 @@
         transport_base_url: String,
     ) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut client = CodewhaleClient::new(&Config {
-            provider: Some("zai".to_string()),
-            providers: Some(ProvidersConfig {
+        let mut client = CodewhaleClient::new(&{
+            let __cw_config_init_1_0 = Some("zai".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 zai: ProviderConfig {
                     api_key: Some("zai-request-boundary-key".to_string()),
                     base_url: Some(route_base_url.to_string()),
@@ -453,8 +455,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         })
         .expect("Z.ai request-boundary client");
         assert_eq!(client.base_url, route_base_url);
@@ -468,9 +473,9 @@
         transport_base_url: String,
     ) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut client = CodewhaleClient::new(&Config {
-            provider: Some("minimax".to_string()),
-            providers: Some(ProvidersConfig {
+        let mut client = CodewhaleClient::new(&{
+            let __cw_config_init_2_0 = Some("minimax".to_string());
+            let __cw_config_init_2_1 = Some(ProvidersConfig {
                 minimax: ProviderConfig {
                     api_key: Some("minimax-request-boundary-key".to_string()),
                     base_url: Some(route_base_url.to_string()),
@@ -478,8 +483,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         })
         .expect("MiniMax request-boundary client");
         assert_eq!(client.base_url, route_base_url);
@@ -492,10 +500,13 @@
         transport_base_url: String,
     ) -> CodewhaleClient {
         let mut client = CodewhaleClient::new(
-            &Config {
-                provider: Some("deepseek".to_string()),
-                default_text_model: Some("deepseek-v4-pro".to_string()),
-                ..Config::default()
+            &{
+                let __cw_config_init_3_0 = Some("deepseek".to_string());
+                let __cw_config_init_3_1 = Some("deepseek-v4-pro".to_string());
+                let mut __cw_config_init_3_value: Config = Config::default();
+                __cw_config_init_3_value.provider = __cw_config_init_3_0;
+                __cw_config_init_3_value.default_text_model = __cw_config_init_3_1;
+                __cw_config_init_3_value
             }
             .with_legacy_root(
                 Some("deepseek-request-boundary-key".to_string()),
@@ -508,23 +519,29 @@
     }
 
     fn ollama_cloud_request_boundary_client(transport_base_url: String) -> CodewhaleClient {
-        let mut client = CodewhaleClient::new(&Config {
-            provider: Some("ollama-cloud".to_string()),
-            providers: Some(ProvidersConfig {
+        let mut client = CodewhaleClient::new(&{
+            let __cw_config_init_4_0 = Some("ollama-cloud".to_string());
+            let __cw_config_init_4_1 = Some(ProvidersConfig {
                 ollama_cloud: ProviderConfig {
                     api_key: Some("ollama-cloud-request-boundary-key".to_string()),
-                    base_url: Some(crate::config::DEFAULT_OLLAMA_CLOUD_BASE_URL.to_string()),
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_BASE_URL
+                            .to_string(),
+                    ),
                     model: Some("gpt-oss:120b".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_4_value: Config = Config::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value.providers = __cw_config_init_4_1;
+            __cw_config_init_4_value
         })
         .expect("Ollama Cloud request-boundary client");
         assert_eq!(
             client.base_url,
-            crate::config::DEFAULT_OLLAMA_CLOUD_BASE_URL
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_BASE_URL
         );
         client.test_chat_transport_base_url = Some(transport_base_url);
         client
@@ -621,8 +638,8 @@
             "a 3600s Retry-After must not run past the envelope; took {:?}",
             started.elapsed()
         );
-        crate::retry_status::clear();
-        crate::retry_status::clear_rate_limit();
+        codewhale_runtime::retry_status::clear();
+        codewhale_runtime::retry_status::clear_rate_limit();
     }
 
     /// The open answers past the injected non-streaming envelope. The
@@ -645,9 +662,12 @@
 
         let client = deepseek_request_boundary_client(&server.uri(), server.uri());
         let response = client
-            .send_stream_open_with_retry(|| {
-                client
-                    .http_client
+            .send_stream_open_with_retry(|policy| {
+                super::stream_entry::client_for_policy(
+                    &client.http_client,
+                    client.http1_fallback_client(),
+                    policy,
+                )
                     .post(format!("{}/chat/completions", server.uri()))
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body("{}".to_string())
@@ -1207,10 +1227,10 @@
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
-        let _retry_guard = crate::retry_status::test_guard();
-        crate::retry_status::clear();
-        crate::retry_status::clear_rate_limit();
-        crate::retry_status::start(7, Duration::from_secs(60), "foreground sentinel");
+        let _retry_guard = codewhale_runtime::retry_status::test_guard();
+        codewhale_runtime::retry_status::clear();
+        codewhale_runtime::retry_status::clear_rate_limit();
+        codewhale_runtime::retry_status::start(7, Duration::from_secs(60), "foreground sentinel");
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1229,7 +1249,7 @@
             .await;
 
         let client = deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
-        crate::retry_status::note_rate_limit(&client.rate_limit_scope(), Duration::from_secs(60));
+        codewhale_runtime::retry_status::note_rate_limit(&client.rate_limit_scope(), Duration::from_secs(60));
         let request = MessageRequest {
             model: "deepseek-v4-pro".to_string(),
             messages: vec![Message {
@@ -1254,14 +1274,14 @@
             .prepare_outbound_request(request.clone(), false)
             .expect("request prepares");
         let wire_body = serde_json::to_vec(&prepared.body).expect("wire body serializes");
-        let cache_key = crate::llm_response_cache::ResponseCache::make_key(
+        let cache_key = codewhale_runtime::llm_response_cache::ResponseCache::make_key(
             client.api_provider.as_str(),
             &client.base_url,
             client.path_suffix.as_deref(),
             &client.api_key,
             &wire_body,
         );
-        crate::llm_response_cache::response_cache().put(
+        codewhale_runtime::llm_response_cache::response_cache().put(
             cache_key,
             MessageResponse {
                 id: "cached-sentinel-must-survive".to_string(),
@@ -1282,25 +1302,25 @@
             .expect("cache-free provider call succeeds");
         assert_eq!(response.id, "chatcmpl-cache-free-provider");
         assert_eq!(
-            crate::llm_response_cache::response_cache()
+            codewhale_runtime::llm_response_cache::response_cache()
                 .get(&cache_key)
                 .expect("sentinel remains")
                 .id,
             "cached-sentinel-must-survive"
         );
-        match crate::retry_status::snapshot() {
-            crate::retry_status::RetryState::Active(banner) => {
+        match codewhale_runtime::retry_status::snapshot() {
+            codewhale_runtime::retry_status::RetryState::Active(banner) => {
                 assert_eq!(banner.attempt, 7);
                 assert_eq!(banner.reason, "foreground sentinel");
             }
             state => panic!("isolated success mutated retry state: {state:?}"),
         }
         assert!(
-            crate::retry_status::rate_limit_remaining(&client.rate_limit_scope()).is_some(),
+            codewhale_runtime::retry_status::rate_limit_remaining(&client.rate_limit_scope()).is_some(),
             "isolated success must not clear the foreground provider pause"
         );
-        crate::retry_status::clear();
-        crate::retry_status::clear_rate_limit();
+        codewhale_runtime::retry_status::clear();
+        codewhale_runtime::retry_status::clear_rate_limit();
     }
 
     // This synchronous guard deliberately spans every await: the assertions
@@ -1308,10 +1328,10 @@
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn cache_free_classifier_429_does_not_publish_global_retry_or_rate_limit_state() {
-        let _retry_guard = crate::retry_status::test_guard();
-        crate::retry_status::clear();
-        crate::retry_status::clear_rate_limit();
-        crate::retry_status::start(9, Duration::from_secs(60), "foreground sentinel 429");
+        let _retry_guard = codewhale_runtime::retry_status::test_guard();
+        codewhale_runtime::retry_status::clear();
+        codewhale_runtime::retry_status::clear_rate_limit();
+        codewhale_runtime::retry_status::start(9, Duration::from_secs(60), "foreground sentinel 429");
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1327,7 +1347,7 @@
             deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
         client.retry.enabled = false;
         client.retry.max_retries = 0;
-        crate::retry_status::note_rate_limit(&client.rate_limit_scope(), Duration::from_secs(60));
+        codewhale_runtime::retry_status::note_rate_limit(&client.rate_limit_scope(), Duration::from_secs(60));
         let request = MessageRequest {
             model: "deepseek-v4-pro".to_string(),
             messages: vec![Message {
@@ -1359,21 +1379,21 @@
             ),
             "{error:#}"
         );
-        match crate::retry_status::snapshot() {
-            crate::retry_status::RetryState::Active(banner) => {
+        match codewhale_runtime::retry_status::snapshot() {
+            codewhale_runtime::retry_status::RetryState::Active(banner) => {
                 assert_eq!(banner.attempt, 9);
                 assert_eq!(banner.reason, "foreground sentinel 429");
             }
             state => panic!("isolated 429 mutated retry state: {state:?}"),
         }
-        let remaining = crate::retry_status::rate_limit_remaining(&client.rate_limit_scope())
+        let remaining = codewhale_runtime::retry_status::rate_limit_remaining(&client.rate_limit_scope())
             .expect("foreground provider pause remains");
         assert!(
             remaining < Duration::from_secs(70),
             "classifier Retry-After must not extend the global pause: {remaining:?}"
         );
-        crate::retry_status::clear();
-        crate::retry_status::clear_rate_limit();
+        codewhale_runtime::retry_status::clear();
+        codewhale_runtime::retry_status::clear_rate_limit();
     }
 
     async fn assert_deepseek_strict_request_route_boundary(streaming: bool) {
@@ -1592,9 +1612,9 @@
         transport_base_url: String,
     ) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut client = CodewhaleClient::new(&Config {
-            provider: Some("modelstudio-token-plan".to_string()),
-            providers: Some(ProvidersConfig {
+        let mut client = CodewhaleClient::new(&{
+            let __cw_config_init_5_0 = Some("modelstudio-token-plan".to_string());
+            let __cw_config_init_5_1 = Some(ProvidersConfig {
                 modelstudio_token_plan: ProviderConfig {
                     api_key: Some("modelstudio-request-boundary-key".to_string()),
                     base_url: Some(route_base_url.to_string()),
@@ -1602,8 +1622,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_5_value: Config = Config::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value.providers = __cw_config_init_5_1;
+            __cw_config_init_5_value
         })
         .expect("Model Studio request-boundary client");
         assert_eq!(client.base_url, route_base_url);
@@ -1630,8 +1653,8 @@
         // their OpenAI-compatible Chat Completions endpoints — but the fields
         // are model-specific, not provider-wide.
         for base_url in [
-            crate::config::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
-            crate::config::DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL,
         ] {
             // The default model, qwen3.8-max, is thinking-only: the bundled
             // catalog records it as `thinking: always_on`, and
@@ -1642,7 +1665,7 @@
             for effort in [None, Some("off"), Some("high"), Some("max")] {
                 let (path, body) = capture_modelstudio_chat_request(
                     base_url,
-                    crate::config::DEFAULT_MODELSTUDIO_TOKEN_PLAN_MODEL,
+                    codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_TOKEN_PLAN_MODEL,
                     effort,
                     streaming,
                 )

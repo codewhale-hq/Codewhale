@@ -44,7 +44,7 @@ impl Default for EventStream {
         thread::spawn(move || {
             while let Ok(task) = receiver.recv() {
                 loop {
-                    if let Ok(true) = poll_internal(None, &EventFilter) {
+                    if !matches!(poll_internal(None, &EventFilter), Ok(false)) {
                         break;
                     }
 

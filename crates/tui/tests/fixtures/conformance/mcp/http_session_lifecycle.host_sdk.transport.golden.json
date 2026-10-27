@@ -1,0 +1,123 @@
+{
+  "requests": [
+    {
+      "authorization": null,
+      "protocol_version": "2026-07-28",
+      "rpc": "server/discover",
+      "session": null,
+      "status": 404
+    },
+    {
+      "authorization": null,
+      "protocol_version": null,
+      "rpc": "initialize",
+      "session": null,
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "notifications/initialized",
+      "session": "session-1",
+      "status": 202
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/list",
+      "session": "session-1",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/call",
+      "session": "session-1",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/call",
+      "session": "session-1",
+      "status": 404
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2026-07-28",
+      "rpc": "server/discover",
+      "session": null,
+      "status": 404
+    },
+    {
+      "authorization": null,
+      "protocol_version": null,
+      "rpc": "initialize",
+      "session": null,
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "notifications/initialized",
+      "session": "session-2",
+      "status": 202
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/list",
+      "session": "session-2",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/call",
+      "session": "session-2",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/call",
+      "session": "session-2",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2026-07-28",
+      "rpc": "server/discover",
+      "session": null,
+      "status": 404
+    },
+    {
+      "authorization": null,
+      "protocol_version": null,
+      "rpc": "initialize",
+      "session": null,
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "notifications/initialized",
+      "session": "session-3",
+      "status": 202
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/list",
+      "session": "session-3",
+      "status": 200
+    },
+    {
+      "authorization": null,
+      "protocol_version": "2025-03-26",
+      "rpc": "tools/call",
+      "session": "session-3",
+      "status": 200
+    }
+  ]
+}

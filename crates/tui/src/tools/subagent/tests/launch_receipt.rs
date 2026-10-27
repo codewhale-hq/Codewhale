@@ -7,13 +7,13 @@ fn consultant_runtime(
     workspace: &std::path::Path,
     manager: SharedSubAgentManager,
 ) -> SubAgentRuntime {
-    let providers = crate::config::ProvidersConfig {
-        deepseek: crate::config::ProviderConfig {
+    let providers = codewhale_runtime::config::ProvidersConfig {
+        deepseek: codewhale_runtime::config::ProviderConfig {
             api_key: Some("deepseek-test-key".to_string()),
             base_url: Some("http://127.0.0.1:9/v1".to_string()),
             ..Default::default()
         },
-        openai_codex: crate::config::ProviderConfig {
+        openai_codex: codewhale_runtime::config::ProviderConfig {
             api_key: Some("codex-test-key".to_string()),
             // A custom endpoint lets a pinned codex client construct from the
             // table key alone (see the codex_credentials fallback in
@@ -26,10 +26,13 @@ fn consultant_runtime(
         },
         ..Default::default()
     };
-    let config = crate::config::Config {
-        provider: Some("deepseek".to_string()),
-        providers: Some(providers),
-        ..Default::default()
+    let config = {
+        let __cw_config_init_0_0 = Some("deepseek".to_string());
+        let __cw_config_init_0_1 = Some(providers);
+        let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
     .with_legacy_root(Some("deepseek-test-key".to_string()), None);
     let client = CodewhaleClient::new(&config).expect("DeepSeek parent client");

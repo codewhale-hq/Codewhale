@@ -36,14 +36,15 @@ pub(crate) fn review(input: &Value) -> Result<Value, String> {
         Some((runtime, _)) => runtime,
         None => {
             let choice = if bun_failed {
-                crate::config::ExtensionHostRuntime::Node
+                codewhale_config::extension_host::ExtensionHostRuntime::Node
             } else {
                 options.runtime
             };
-            crate::dependencies::resolve_extension_host_runtime(
+            codewhale_dependencies::resolve_extension_host_runtime(
                 choice,
                 options.node_override.as_deref(),
                 options.bun_override.as_deref(),
+                crate::extension_host::bundle_sha256(),
             )
             .selected
             .ok_or("composition reviewer runtime is unavailable")?
@@ -55,6 +56,7 @@ pub(crate) fn review(input: &Value) -> Result<Value, String> {
         &bundle,
         &root,
         options.supervision.memory_cap,
+        &[],
     )?;
     // A bounded process runner, not another Engine or session runtime.
     tokio::runtime::Builder::new_current_thread()
@@ -79,7 +81,7 @@ async fn bounded_read(pipe: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<
 async fn run(launch: super::supervisor::HostLaunch, input: Vec<u8>) -> Result<Value, String> {
     use std::process::Stdio;
     let mut command = tokio::process::Command::new(&launch.program);
-    crate::utils::suppress_tokio_console_window(&mut command);
+    codewhale_util::utils::suppress_tokio_console_window(&mut command);
     command
         .args(&launch.args)
         .current_dir(&launch.cwd)
@@ -94,7 +96,7 @@ async fn run(launch: super::supervisor::HostLaunch, input: Vec<u8>) -> Result<Va
         .chain(&launch.runtime_env)
         .map(|(key, value)| (key.as_str(), value.as_str()));
     for (key, value) in
-        crate::child_env::sanitized_plugin_mcp_env_from(std::env::vars_os(), overrides)
+        codewhale_runtime::child_env::sanitized_plugin_mcp_env_from(std::env::vars_os(), overrides)
     {
         command.env(key, value);
     }
@@ -105,7 +107,7 @@ async fn run(launch: super::supervisor::HostLaunch, input: Vec<u8>) -> Result<Va
         .spawn()
         .map_err(|_| "composition reviewer could not start")?;
     let tree = Arc::new(
-        crate::process_tree::ProcessTree::attach_tokio(&child)
+        codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child)
             .map_err(|_| "composition reviewer containment failed")?,
     );
     #[cfg(windows)]

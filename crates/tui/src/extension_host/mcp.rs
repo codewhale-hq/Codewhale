@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use codewhale_config::OwnerRef;
 use serde_json::{Value, json};
 use tokio::io::BufReader;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
@@ -24,6 +25,7 @@ const MAX_SESSIONS: usize = 64;
 const MAX_PENDING: usize = 256;
 const MAX_DEADLINE: Duration = Duration::from_secs(86_400);
 const SUPPORTED_METHODS: &[&str] = &[
+    "server/discover",
     "initialize",
     "notifications/initialized",
     "tools/list",
@@ -33,6 +35,8 @@ const SUPPORTED_METHODS: &[&str] = &[
     "tools/call",
     "resources/read",
     "prompts/get",
+    "skills/list",
+    "skills/get",
 ];
 
 #[derive(Clone)]
@@ -44,6 +48,7 @@ struct Operation {
 }
 struct BoundRequest {
     operation_id: String,
+    method: String,
 }
 
 /// No launch command, environment mapping, credential or decision key is wire data.
@@ -62,11 +67,28 @@ struct Session {
     replies: Mutex<HashMap<String, Value>>,
     server_requests: Mutex<HashMap<String, String>>,
     decision_key: Mutex<Option<[u8; 32]>>,
+    protocol_version: Mutex<Option<String>>,
+    legacy_allowed: std::sync::atomic::AtomicBool,
+    list_changed: std::sync::atomic::AtomicBool,
     launched: Mutex<bool>,
     launch_ticket: Mutex<Option<Ticket>>,
     http: Option<http::HttpSession>,
 }
+fn modern_metadata() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": crate::mcp::MCP_MODERN_PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientInfo": {"name": "codewhale-tui", "version": env!("CARGO_PKG_VERSION")},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
 impl Session {
+    fn modern(&self) -> bool {
+        self.protocol_version
+            .lock()
+            .expect("MCP protocol lock")
+            .as_deref()
+            == Some(crate::mcp::MCP_MODERN_PROTOCOL_VERSION)
+    }
     fn validate(&self, shared: &ManagerShared, generation: u64, owner: &OwnerRef) -> Result<()> {
         if self.cancel.is_cancelled() || generation != self.host_generation || owner != &self.owner
         {
@@ -107,6 +129,14 @@ impl Session {
         if frame.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             bail!("invalid MCP server frame");
         }
+        if frame.get("id").is_none()
+            && frame["method"]
+                .as_str()
+                .is_some_and(crate::mcp::is_mcp_list_changed_method)
+        {
+            self.list_changed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if let Some(id) = frame.get("id") {
             let id = wire_id(id)?;
             if frame.get("method").is_some() {
@@ -126,6 +156,37 @@ impl Session {
                 );
             } else if let Some(binding) = self.pending.lock().expect("MCP pending lock").remove(&id)
             {
+                if binding.method == "server/discover" {
+                    let error = &frame["error"];
+                    let legacy = if let Some(result) = frame.get("result") {
+                        !result["supportedVersions"]
+                            .as_array()
+                            .is_some_and(|versions| {
+                                versions.iter().any(|version| {
+                                    version == crate::mcp::MCP_MODERN_PROTOCOL_VERSION
+                                })
+                            })
+                    } else {
+                        error["code"] != -32022
+                            || (error["code"] == -32022
+                                && error["data"]["supported"]
+                                    .as_array()
+                                    .is_some_and(|versions| {
+                                        !versions.is_empty()
+                                            && versions.iter().all(|version| {
+                                                version.as_str().is_some_and(|version| {
+                                            version != crate::mcp::MCP_MODERN_PROTOCOL_VERSION
+                                                && crate::mcp::MCP_CLIENT_ACCEPTED_PROTOCOL_VERSIONS
+                                                    .contains(&version)
+                                        })
+                                            })
+                                    }))
+                    };
+                    if legacy {
+                        self.legacy_allowed
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
                 let mut replies = self.replies.lock().expect("MCP reply lock");
                 if replies.len() >= MAX_PENDING || replies.contains_key(&binding.operation_id) {
                     bail!("MCP reply bound exceeded");
@@ -227,6 +288,7 @@ impl Broker {
         request: HostRequest,
         cx: HostRequestContext,
     ) -> Result<Value, RpcErrorWire> {
+        let launch = matches!(request, HostRequest::ProcLaunch(_));
         let run = async {
             match request {
                 request @ (HostRequest::NetStart(_)
@@ -270,9 +332,13 @@ impl Broker {
                 _ => bail!("not an MCP broker request"),
             }
         };
-        run.await.map_err(|_| RpcErrorWire {
+        run.await.map_err(|error| RpcErrorWire {
             code: error_code::REFUSED,
-            message: "MCP broker request refused or closed".to_string(),
+            message: if launch {
+                format!("MCP server launch failed: {error:#}")
+            } else {
+                "MCP broker request refused or closed".to_string()
+            },
             data: None,
         })
     }
@@ -478,9 +544,14 @@ impl Broker {
                     .context("invalid MCP cancellation params")?;
                 if fields
                     .keys()
-                    .any(|key| !["requestId", "reason"].contains(&key.as_str()))
+                    .any(|key| !["requestId", "reason", "_meta"].contains(&key.as_str()))
                 {
                     bail!("invalid MCP cancellation params");
+                }
+                if fields.get("_meta")
+                    != expected_metadata(session, "notifications/cancelled").as_ref()
+                {
+                    bail!("MCP cancellation metadata refused");
                 }
             }
             Some(method) => {
@@ -534,6 +605,17 @@ impl Broker {
                 if operation.target != target || ticket != operation.ticket.expose() {
                     bail!("MCP operation does not match");
                 }
+                if body.get("_meta") != expected_metadata(session, method).as_ref() {
+                    bail!("host-supplied MCP metadata refused");
+                }
+                if matches!(method, "initialize" | "notifications/initialized")
+                    && (!session
+                        .legacy_allowed
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        || session.modern())
+                {
+                    bail!("legacy MCP handshake has no typed refusal");
+                }
                 if operation.expires <= Instant::now() {
                     bail!("MCP operation expired");
                 }
@@ -542,9 +624,6 @@ impl Broker {
                     let tool = body["name"].as_str().context("MCP tool name absent")?;
                     if !session.config.is_tool_enabled(tool) {
                         bail!("MCP tool disabled");
-                    }
-                    if body.get("_meta").is_some() {
-                        bail!("host-supplied MCP decision metadata refused");
                     }
                     if let Some(decision) = operation.decision.as_ref() {
                         if !decision.authorizes(
@@ -559,7 +638,11 @@ impl Broker {
                             .expect("MCP decision key lock")
                             .as_ref()
                         {
-                            frame["params"]["_meta"] = json!({});
+                            frame["params"]
+                                .as_object_mut()
+                                .context("MCP params absent")?
+                                .entry("_meta")
+                                .or_insert_with(|| json!({}));
                             frame["params"]["_meta"][crate::mcp::COMPUTER_USE_DECISION_META] =
                                 crate::mcp::attest_decision(key, tool, &body["arguments"])?;
                         }
@@ -579,6 +662,7 @@ impl Broker {
                         id,
                         BoundRequest {
                             operation_id: operation_id.to_string(),
+                            method: method.to_string(),
                         },
                     );
                 }
@@ -618,6 +702,9 @@ impl Broker {
         }
         Ok((frame, operation_deadline))
     }
+}
+fn expected_metadata(session: &Session, method: &str) -> Option<Value> {
+    (method == "server/discover" || session.modern()).then(modern_metadata)
 }
 struct CancelGuard {
     cancel: CancellationToken,
@@ -707,6 +794,11 @@ impl SdkTransport {
             replies: Mutex::new(HashMap::new()),
             server_requests: Mutex::new(HashMap::new()),
             decision_key: Mutex::new(None),
+            protocol_version: Mutex::new(None),
+            legacy_allowed: std::sync::atomic::AtomicBool::new(
+                crate::mcp::is_legacy_sse_transport(config),
+            ),
+            list_changed: std::sync::atomic::AtomicBool::new(false),
             launched: Mutex::new(false),
             launch_ticket: Mutex::new(None),
             http: client.map(|client| {
@@ -756,16 +848,12 @@ impl SdkTransport {
             replies: Default::default(),
             discovery_timeout: timeout,
         };
-        if let Some(http) = &transport.session.http {
-            http.preflight(&transport.session, &transport.manager.shared)
-                .await?;
-        }
         Ok(transport)
     }
     fn grant(
         &self,
         method: &str,
-        params: Value,
+        mut params: Value,
         timeout: Duration,
         decision: Option<&HumanDecision>,
         wire_id: Option<&str>,
@@ -782,6 +870,12 @@ impl SdkTransport {
             self.session.host_generation,
             &self.session.owner,
         )?;
+        if params.get("_meta").is_some() {
+            bail!("MCP semantic metadata is Rust-owned");
+        }
+        if let Some(metadata) = expected_metadata(&self.session, method) {
+            params["_meta"] = metadata;
+        }
         let operation_id = uuid::Uuid::new_v4().to_string();
         let target = self.session.target(&operation_id, method, &params, wire_id);
         let mut operations = self.session.operations.lock().expect("MCP operation lock");
@@ -830,9 +924,8 @@ impl SdkTransport {
         let method = value["method"]
             .as_str()
             .context("MCP semantic method absent")?;
-        // The SDK has already sent this notification during connect, under
-        // its separate exact Rust grant; the old connection facade sees one
-        // successful initialized exchange, not a second pipe write.
+        // The SDK owns the legacy handshake; modern connections use discovery.
+        // Completing the facade handshake never writes another notification.
         if method == "notifications/initialized" {
             return Ok(());
         }
@@ -853,7 +946,21 @@ impl SdkTransport {
             transport: self,
             armed: true,
         };
+        let mut discovery_operation = None;
+        let mut opening_operations = Vec::new();
         let request = if method == "initialize" {
+            let discover = if crate::mcp::is_legacy_sse_transport(&guard.transport.session.config) {
+                None
+            } else {
+                Some(guard.transport.grant(
+                    "server/discover",
+                    json!({}),
+                    timeout,
+                    None,
+                    Some(&uuid::Uuid::new_v4().to_string()),
+                )?)
+            };
+            discovery_operation = discover.as_ref().map(|grant| grant.operation_id.clone());
             let initialized = guard.transport.grant(
                 "notifications/initialized",
                 json!({}),
@@ -861,6 +968,9 @@ impl SdkTransport {
                 None,
                 None,
             )?;
+            opening_operations
+                .extend([grant.operation_id.clone(), initialized.operation_id.clone()]);
+            opening_operations.extend(discovery_operation.iter().cloned());
             let target = json!({"session_id": guard.transport.session_id});
             let launch = guard
                 .transport
@@ -900,6 +1010,7 @@ impl SdkTransport {
                     "http"
                 }
                 .to_string(),
+                discover_grant: discover,
                 initialize_grant: grant,
                 initialized_grant: initialized,
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -918,6 +1029,90 @@ impl SdkTransport {
             .host
             .call(request, Some("host:mcp".to_string()))
             .await;
+        for operation_id in opening_operations {
+            guard
+                .transport
+                .session
+                .pending
+                .lock()
+                .expect("MCP pending lock")
+                .retain(|_, binding| binding.operation_id != operation_id);
+            if let Some(operation) = guard
+                .transport
+                .session
+                .operations
+                .lock()
+                .expect("MCP operation lock")
+                .remove(&operation_id)
+            {
+                guard
+                    .transport
+                    .manager
+                    .shared
+                    .core_calls
+                    .tickets
+                    .revoke(&operation.ticket);
+            }
+        }
+        let discovery = discovery_operation.and_then(|id| {
+            guard
+                .transport
+                .session
+                .replies
+                .lock()
+                .expect("MCP reply lock")
+                .remove(&id)
+        });
+        if method == "initialize"
+            && let Ok(opened) = &outcome
+        {
+            let version = opened["protocolVersion"]
+                .as_str()
+                .context("MCP SDK omitted negotiated version")?;
+            if version == crate::mcp::MCP_MODERN_PROTOCOL_VERSION {
+                let mut result = discovery
+                    .as_ref()
+                    .and_then(|reply| reply.get("result"))
+                    .cloned()
+                    .context("modern MCP discovery reply absent")?;
+                anyhow::ensure!(
+                    result["resultType"] == "complete"
+                        && result["capabilities"].is_object()
+                        && result["supportedVersions"]
+                            .as_array()
+                            .is_some_and(|versions| versions.iter().any(|v| v == version)),
+                    "modern MCP discovery result refused"
+                );
+                result["protocolVersion"] = json!(version);
+                if let Some(info) = result["_meta"]
+                    .get("io.modelcontextprotocol/serverInfo")
+                    .cloned()
+                {
+                    result["serverInfo"] = info;
+                }
+                *guard
+                    .transport
+                    .session
+                    .protocol_version
+                    .lock()
+                    .expect("MCP protocol lock") = Some(version.to_string());
+                guard.transport.replies.push_back(serde_json::to_vec(
+                    &json!({"jsonrpc":"2.0", "id":value["id"], "result":result}),
+                )?);
+                guard.armed = false;
+                return Ok(());
+            }
+            anyhow::ensure!(
+                crate::mcp::MCP_CLIENT_ACCEPTED_PROTOCOL_VERSIONS.contains(&version),
+                "MCP SDK negotiated unsupported revision"
+            );
+            *guard
+                .transport
+                .session
+                .protocol_version
+                .lock()
+                .expect("MCP protocol lock") = Some(version.to_string());
+        }
         let raw = guard
             .transport
             .session
@@ -925,7 +1120,25 @@ impl SdkTransport {
             .lock()
             .expect("MCP reply lock")
             .remove(&operation_id);
+        let legacy_allowed = guard
+            .transport
+            .session
+            .legacy_allowed
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let raw = raw
+            .or_else(|| discovery.filter(|reply| reply.get("error").is_some() && !legacy_allowed));
         if let Some(mut raw) = raw {
+            if guard.transport.session.modern()
+                && let Some(result) = raw.get("result")
+            {
+                anyhow::ensure!(
+                    matches!(
+                        result["resultType"].as_str(),
+                        Some("complete" | "input_required")
+                    ),
+                    "MCP modern result type is missing or unsupported; request was not replayed"
+                );
+            }
             // Preserve the server's exact result/error (including extra MCP
             // fields), changing only correlation back to the Rust facade id.
             raw["id"] = value["id"].clone();
@@ -987,12 +1200,20 @@ impl crate::mcp::McpTransport for SdkTransport {
             .pop_front()
             .context("MCP SDK connection closed without a reply")
     }
+    fn is_modern(&self) -> bool {
+        self.session.modern()
+    }
     async fn last_stderr_line(&self) -> Option<String> {
         let slot = self.session.broker.lock().await;
         slot.as_ref()?.last_stderr_line().await
     }
     fn probe_dead(&self) -> bool {
         self.session.cancel.is_cancelled() || self.host.has_exited() || self.host.is_retiring()
+    }
+    fn take_list_changed(&self) -> bool {
+        self.session
+            .list_changed
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
     async fn shutdown(&mut self) {
         if let Some(session) = self

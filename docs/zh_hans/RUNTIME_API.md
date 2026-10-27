@@ -4,8 +4,9 @@
 > 最后与英文同步日期（last synced with English revision）：2026-09-29。
 > 2026-10-06 补齐设备令牌意图、逐调用变更、技能详情、持久配置与账号宪章契约。
 > 2026-10-11 补齐工作区信任契约：`workspace_trusted` 与 `POST /v1/workspace/trust`。
+> 2026-10-23 补齐完整 API 入口、兼容执行限制与 ACP MCP 拒绝边界。
 
-`codewhale app-server` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
+`codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
 API（`/v1/*`）、基于 stdio 的 JSON-RPC 控制传输，以及面向手机的移动端页面。
 `codewhale doctor --json` 提供机器可读的健康状态，`codewhale serve --acp` 则通过 stdio
@@ -13,7 +14,7 @@ API（`/v1/*`）、基于 stdio 的 JSON-RPC 控制传输，以及面向手机�
 
 `codewhale serve --http` / `serve --mobile` 仍作为 `codewhale app-server --http` /
 `--mobile` 的**兼容别名**存在；两者启动的是同一个服务器。新的集成应当以
-`app-server` 为目标。
+`app-server --http` 为目标。裸 `app-server`、`--stdio` 和 `--socket` 是能力较小的兼容接口。
 
 `codewhale exec` 是另一条一次性的无头 worker 路径（stream-json、fleet worker 子进程、
 CI 原语）。它不属于本 API，但共享同一个运行时、提供商/模型解析、权限配置
@@ -53,7 +54,7 @@ local supervisor / SDK / automation harness
 | `codewhale app-server --mobile` | 回环上的 HTTP/SSE + `/mobile` | 运行时 API + 本地移动端控制页 |
 | `codewhale app-server --stdio` | 基于 stdio 的 JSON-RPC 2.0 | 本地 SDK / 控制探针（不监听端口） |
 | `codewhale app-server --socket [--socket-path P]` | 基于权限为 `0600` 的 Unix 域套接字（macOS/Linux）或仅限所有者的命名管道（Windows）的 JSON-RPC 2.0 | 桌面守护进程：多客户端、内核对端身份校验、`daemon/attach` 认领握手。Windows 原生应用验收仍待完成。 |
-| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 旧式进程内 app-server（`/healthz`、`/thread`、`/app`、`/prompt`）；后台作业请用运行时 API 的 `GET /v1/jobs`；`/prompt` 与 `/thread` 消息会通过运行时桥执行真实回合。它没有直接的 `/tool` 路由：工具只在 Engine 回合内部、在 Engine 的工具目录与审批姿态下运行。这个旧式服务器不呈现审批：它的桥只转发文本增量和回合的完成，并且没有决策路由，所以一个受审批门控的调用会一直等不到答复。受审批门控的工作请通过运行时 API 驱动（`/v1/threads/*` 事件与 `POST /v1/approvals/{approval_id}`） |
+| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 兼容 `/healthz`、`/thread`、`/app`、`/prompt`。回合请求必须显式带 `allowed_tools: []`；交互执行在回合开始前拒绝。工具、审批、澄清、引导和完整事件日志请用 `app-server --http`。 |
 | `codewhale serve --http` / `--mobile` | 与 `app-server --http`/`--mobile` 相同的服务器 | 兼容别名 |
 
 `app-server --http` 与 `--mobile` 启动的是历史上经由 `serve --http` 访问的同一个
@@ -111,7 +112,7 @@ Drive 保留现有 Runtime/控制权限，但不能铸造、列举或撤销设�
 
 ### 工作区文件与会话工件
 
-原生客户端（GPUI 桌面的 Files 与 Preview 模块）通过三条需认证的路由浏览并编辑
+原生客户端通过三条需认证的路由浏览并编辑
 服务器配置的工作区。它们直接读写工作区；没有第二套文件存储、缓存或索引，
 也没有路径覆盖：工作区根目录是唯一的根目录。
 
@@ -343,16 +344,31 @@ printf '%s\n' \
 `crates/app-server/src/lib.rs` 中的一个漂移测试钉住，因此 SDK 与本地集成客户端
 可以依赖它不会悄悄变化。
 
+### 兼容执行限制
+
+HTTP 兼容路由、stdio 和 socket 均声明 `interactive_execution: false`、`goal_execution: false`、
+`tool_free_turns: true` 与 `full_api_entrypoint: "codewhale app-server --http"`。
+客户端必须先确认 `tool_free_turns: true`，才能依赖空工具列表；旧兼容服务器可能忽略该字段。
+`thread/message`、`thread/request` 的 message、`prompt/run`、`prompt/request`
+以及 HTTP `/prompt`、`/thread` 的 message 必须显式提供 `allowed_tools: []`。
+省略、null 或非空列表返回 `interactive_execution_unsupported`，不会创建 Runtime
+线程或启动回合；错误类型的值也会被拒绝。桥在实际回合请求中继续传递空工具列表，
+只转发助手文本和最终状态；意外的审批或澄清请求会报错并中断该回合。
+工具客户端须迁移到带 bearer 认证的完整 HTTP/SSE API。
+JSON-RPC 返回 `-32602` 和 `data.error: "interactive_execution_unsupported"`；
+HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error.data`。
+兼容 `thread/goal/set` 以及 `ThreadRequest::GoalSet` 也在修改目标前拒绝，
+因为设为活动目标会启动后台工作。读取、清除现有目标仍可用；开始目标请用完整 HTTP API。
+
+`@codewhale/runtime-sdk` 当前只封装 Fleet 和线程事件读取，未封装线程创建、
+回合开始/引导/中断、审批、澄清或模型发现。完整集成请使用
+[SDK 指南中的认证 HTTP 示例](../../npm/runtime-sdk/README.md#full-engine-api)。
+
 ### 守护进程套接字：`codewhale app-server --socket`
 
-桌面外壳（DESKTOP-APP-BRIEF §2）通过 unix 域套接字连接到一个长期存活的守护进程。
+此套接字传输在长期存活的守护进程上暴露兼容控制。
 其线上协议就是 `--stdio` 传输本身——同样的换行分隔 JSON-RPC 2.0 方法，由同一份代码
 分发——只是在前面加了一次握手。
-
-> 注（2026-09-14）：上面提到的 Tauri 桌面外壳在 2026-09-14 的产品客户端切换中正在退役，
-> 而 DESKTOP-APP-BRIEF 这个引用是一个悬空指针（本仓库中不存在该 brief）。私有
-> `codehwhale-gpui` 仓库中的 GPUI 客户端是这套 HTTP 运行时 API 的继任守护进程消费方；
-> 这里描述的套接字协议没有变化。
 
 **端点。** 若给了 `--socket-path` 就用它；否则若设置了 `CODEWHALE_HOME` 则用
 `$CODEWHALE_HOME/run/daemon.sock`（显式指定 home 即是一条隔离边界）；否则用
@@ -525,12 +541,10 @@ owner 存储中的原始操作；响应丢失或来源历史后来增长不会�
 POST /v1/user-input/{thread_id}/{request_id}
 ```
 
-app-server 控制传输无法接受该回复。
-带 `SubmitUserInput` 的 `app/request` 会返回 `ok: false` 与
-`error: "user_input_reply_unsupported"`。这是该传输的固有性质，
-不是遗漏：当一个回合正在流式传输时，stdio 循环只执行
-`thread/interrupt`，其他请求一律排队，所以从那里发出的答复会
-等待那个正在等它的回合本身。
+兼容控制传输无法接受该回复。`app/request` 的 `SubmitUserInput` 返回
+`ok: false` 与 `error: "user_input_reply_unsupported"`。兼容回合要求空工具列表，
+交互执行在准入时拒绝，因此受支持的回合不会静默等待无法提交的答案。
+这是 Codewhale 当前实现的限制。
 
 ## SDK 契约
 
@@ -594,6 +608,13 @@ Core 回合、事件时间线、审批等待器和完整 Engine 会话快照。
 连接最多保留64个空闲绑定；淘汰绑定不删除持久会话。恢复复用已有线程绑定。
 完整历史、工具调用/结果配对、签名、媒体和部分执行回执通过 HTTP 同用的检查点
 守卫与会话写入租约保存。ACP 展示文本可以缩短，持久历史仍是完整 Core 快照。
+
+Codewhale 0.10.2 的 ACP v1 支持不完整。`session/new` 和 `session/load`
+会在创建、恢复或返回缓存会话之前拒绝非空 `mcpServers`，返回 `-32602`。
+该字段可省略或为 `[]`；null 与其他非数组值无效。验证不会执行所提供的命令。
+[ACP v1 要求 stdio MCP 支持](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)；HTTP/SSE 能力为 false 并不代表完整合规。
+需要 MCP 的集成请用完整 Runtime API。下列工具限制来自 Codewhale host profile，
+不是 ACP 协议本身的限制。
 
 受信任的本地 ACP profile 将 Core 收窄到文件/搜索/git/patch，以及获准的前台
 shell 工具。Shell 同时要求编辑器声明 terminal 支持、操作者允许 `allow_shell`；
@@ -1630,9 +1651,9 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
 }
 ```
 
-### 原生客户端路由（GPUI 桌面）
+### 原生客户端路由
 
-这些族在同一套 bearer 令牌传输上为 GPUI 桌面客户端服务。它们复用运行时既有的权威——
+这些族在同一套 bearer 令牌传输上为原生客户端服务。它们复用运行时既有的权威——
 引擎的 shell 管理器、持久线程存储、工作区限制层、
 配置的凭据管道——并不增加第二套运行时、会话存储、
 调度器或凭据存储。
@@ -2382,13 +2403,35 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 请读条目的状态，或等待那个事件。
 
 常见事件名：`thread.started`、`thread.forked`、`turn.started`、
-`turn.lifecycle`、`turn.steered`、`turn.steer_dropped`、`turn.interrupt_requested`、
+`turn.lifecycle`、`turn.usage`、`turn.steered`、`turn.steer_dropped`、`turn.interrupt_requested`、
 `turn.completed`、`turn.artifacts`、`item.started`、`item.delta`、`item.completed`、
 `item.failed`、`item.interrupted`、`approval.required`、`approval.decided`、
 `approval.timeout`、`user_input.required`、`user_input.answered`、
 `user_input.canceled`、`tool_call.requested`、`tool_call.resolved`、
 `tool_call.timeout`、`tool_call.canceled`、`sandbox.denied`、
-`turn.workspace_snapshot`、`runtime.store_failure`。
+`turn.workspace_snapshot`、`turn.provider_request`、`runtime.store_failure`。
+
+`turn.usage` 是**一次模型调用**的回执：父回合的模型调用报告用量时发出，
+而不是每个回合一次。它的 `payload` 携带该次调用的 `usage`，
+`duration_ms` / `first_token_ms` / `request_ms` 计时，`maxOutputTokens` 额度，
+`billed_prompt_tokens`（提供商实际计费的提示大小：发生重试时取最后一次
+请求的输入，否则取本次调用的输入数）、以及 `cost` —— 该次调用按它实际派发的
+路由定价，形如 `{usd, cny, usd_priced, cny_priced}`。
+
+当该路由无法为这次调用用到的所有 token 类别定价时，`cost` 为 `null`；
+客户端不得把它读成“免费”。某币种的 `*_priced` 为 false 时，该币种未定价。
+这些回执覆盖父回合的模型调用；子代理和压缩用量通过其他路径到达。
+因此，逐调用价格之和只是部分估算，不是整个回合的完整账单。
+
+`turn.completed` 的 `payload.turn.usage` 携带回合的权威累计 token 用量，
+包括路由到其他工作的用量；它替换运行中的 token 计数，但不提供权威的
+上一回合费用。`GET /v1/threads/{id}/usage` 的线程总量仍是记账依据。
+移动页面在回合结束后保留已观察到的已定价调用估算，并标记为部分估算，
+并在新回合开始时重置读数。重放的日志序号只计数一次。
+`billed_prompt_tokens` 供 API 客户端使用；移动页头显示 token 用量和部分费用。
+
+`turn.provider_request` 携带请求诊断观察，不增加计费用量；详见
+[每次请求的缓存回执](CACHE.md#每次请求的回执)。
 
 `runtime.store_failure` 是运行时报告操作者自己磁盘状态的故障：会话运行时
 存储下的一个线程、回合或条目记录无法被读取、解析或写入。负载携带 `operation`

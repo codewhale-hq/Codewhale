@@ -18,6 +18,7 @@ export interface OpenParams {
   session_id: string
   launch_ticket: string
   transport?: 'stdio' | 'http' | 'sse'
+  discover_grant?: OperationGrant
   initialize_grant: OperationGrant
   initialized_grant: OperationGrant
   client_version: string
@@ -40,7 +41,9 @@ function requestMethod(value: string): RequestMethod {
     default: throw new Error('MCP request method is unavailable')
   }
 }
-const SUPPORTED = ['2025-06-18', '2025-11-25', '2025-03-26', '2024-11-05']
+const EXTENSION_METHODS = new Set(['skills/list', 'skills/get'])
+const brokerValidated = { '~standard': { version: 1, vendor: 'codewhale', validate: (value: unknown) => ({ value }) } } as const
+const SUPPORTED = ['2026-07-28', '2025-06-18', '2025-11-25', '2025-03-26', '2024-11-05']
 function identity(owner: OwnerRef): string {
   return JSON.stringify([owner.plugin_id, owner.generation, owner.owner_token])
 }
@@ -166,6 +169,7 @@ class HttpBrokerTransport implements GrantedTransport {
   private readonly writes = new Map<string, AdmittedFrame>()
   private inner: SSEClientTransport | StreamableHTTPClientTransport
   private negotiation?: OperationGrant
+  private legacyHandshake = false
   private legacy: boolean
   private started = false
   private closed = false
@@ -179,7 +183,7 @@ class HttpBrokerTransport implements GrantedTransport {
     const inner = legacy ? new SSEClientTransport(url, { fetch: fetcher }) : new StreamableHTTPClientTransport(url, { fetch: fetcher, onInsufficientScope: 'throw', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 0, maxReconnectionDelay: 0, reconnectionDelayGrowFactor: 1 } })
     inner.onmessage = value => { try { this.onmessage?.(this.frames.incoming(value)) } catch (error) { this.fail(error) } }
     inner.onclose = () => { if (!this.closed) this.fail(new Error('MCP HTTP channel closed')) }
-    inner.onerror = error => { if (!this.negotiation) this.fail(error) }
+    inner.onerror = error => { if (!this.negotiation && !this.legacyHandshake) this.fail(error) }
     return inner
   }
   private fail(error: unknown): void { if (!this.closed) this.onerror?.(error instanceof Error ? error : new Error('MCP HTTP failed')); void this.close().catch(() => undefined) }
@@ -204,7 +208,7 @@ class HttpBrokerTransport implements GrantedTransport {
         if (!replacement || this.legacy || this.closed || this.stop.signal.aborted) throw error
         this.negotiation = undefined
         const original = admitted.frame
-        if (!('method' in original) || replacement.method !== original.method || replacement.operation_id !== admitted.operation_id
+        if (!('method' in original) || original.method !== 'initialize' || replacement.method !== original.method || replacement.operation_id !== admitted.operation_id
           || replacement.wire_id !== ('id' in original ? original.id : undefined) || !jsonEqual(replacement.params, original.params ?? {})) throw new Error('MCP negotiation grant mismatch')
         // Only Rust's explicit refusal issued this fresh, single-use grant.
         // The original numeric SDK request remains pending; peer IDs stay exact.
@@ -216,7 +220,7 @@ class HttpBrokerTransport implements GrantedTransport {
         this.writes.set(key, { frame: original, ticket: replacement.ticket, operation_id: replacement.operation_id })
         await this.inner.send(original)
       }
-    } catch (error) { await this.close().catch(() => undefined); throw error }
+    } catch (error) { if (!this.legacyHandshake) await this.close().catch(() => undefined); this.legacyHandshake = false; throw error }
     finally { this.writes.delete(key) }
   }
   private async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
@@ -233,10 +237,15 @@ class HttpBrokerTransport implements GrantedTransport {
     }
     const headers: Record<string, string> = {}
     for (const [name, value] of new Headers(init?.headers)) {
-      if (!['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version'].includes(name) || value.length > 8192) throw new Error('MCP framing header unavailable')
+      if (!['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'mcp-method', 'mcp-name'].includes(name) || value.length > 8192) throw new Error('MCP framing header unavailable')
       headers[name.replaceAll('-', '_')] = value
     }
-    const reply = await this.rpc.request<{ response_id?: string; status: number; headers: Record<string, string>; legacy_grant?: OperationGrant }>('net/fetch', { owner: this.owner, session_id: this.session, url, method, headers, ...(admitted ?? {}) }, signal)
+    const reply = await this.rpc.request<{ response_id?: string; status: number; headers: Record<string, string>; legacy_grant?: OperationGrant; legacy_handshake?: boolean }>('net/fetch', { owner: this.owner, session_id: this.session, url, method, headers, ...(admitted ?? {}) }, signal)
+    if (reply.legacy_handshake === true) {
+      if (!admitted || !('method' in admitted.frame) || admitted.frame.method !== 'server/discover'
+        || reply.response_id !== undefined || ![404, 405, 406, 415].includes(reply.status)) throw new Error('MCP handshake refusal unavailable')
+      this.legacyHandshake = true
+    }
     if (reply.legacy_grant !== undefined) {
       if (!admitted || this.legacy || this.negotiation || reply.response_id !== undefined
         || ![404, 405, 406, 415, 501].includes(reply.status)
@@ -289,9 +298,10 @@ export class McpModule {
     const transport: GrantedTransport = params.transport === undefined || params.transport === 'stdio'
       ? new BrokerTransport(this.rpc, this.owner, params.session_id, params.launch_ticket)
       : new HttpBrokerTransport(this.rpc, this.owner, params.session_id, params.launch_ticket, params.transport === 'sse')
-    const client = new Client({ name: 'codewhale-tui', version: params.client_version }, { capabilities: {}, supportedProtocolVersions: SUPPORTED, versionNegotiation: { mode: 'legacy' }, listMaxPages: 64 })
+    const client = new Client({ name: 'codewhale-tui', version: params.client_version }, { capabilities: {}, supportedProtocolVersions: SUPPORTED, versionNegotiation: { mode: params.discover_grant === undefined ? 'legacy' : 'auto', probe: { timeoutMs: timeout, maxRetries: 0 } }, inputRequired: { autoFulfill: false }, listMaxPages: 64 })
     const session: Session = { client, transport, tail: Promise.resolve() }
     this.sessions.set(params.session_id, session)
+    if (params.discover_grant !== undefined) transport.grant(params.discover_grant)
     transport.grant(params.initialize_grant)
     transport.grant(params.initialized_grant)
     const abort = () => { void transport.close().catch(() => undefined) }
@@ -300,7 +310,8 @@ export class McpModule {
     timer.unref()
     try {
       if (signal.aborted) throw new Error('MCP open cancelled')
-      await client.connect(transport)
+      await client.connect(transport, { signal, timeout })
+      if (params.discover_grant !== undefined) transport.takeReply(params.discover_grant.operation_id)
       transport.takeReply(params.initialize_grant.operation_id)
       this.check(params.owner)
       return { protocolVersion: client.getNegotiatedProtocolVersion(), serverInfo: client.getServerVersion(), capabilities: client.getServerCapabilities(), instructions: client.getInstructions() }
@@ -313,7 +324,8 @@ export class McpModule {
   async request(params: RequestParams, signal: AbortSignal): Promise<unknown> {
     this.check(params.owner)
     const timeout = deadline(params.deadline_ms)
-    const method = requestMethod(params.grant.method)
+    const extension = EXTENSION_METHODS.has(params.grant.method)
+    const method = extension ? params.grant.method : requestMethod(params.grant.method)
     const session = this.sessions.get(params.session_id)
     if (!session) throw new Error('MCP session is no longer live')
     const run = session.tail.then(async () => {
@@ -323,7 +335,10 @@ export class McpModule {
       // Generic request preserves per-page cursors. listTools/listResources /
       // listPrompts convenience methods would auto-aggregate into an SDK cache.
       try {
-        return await session.client.request({ method, params: params.grant.params }, { signal, timeout, resetTimeoutOnProgress: false })
+        const options = { signal, timeout, resetTimeoutOnProgress: false, allowInputRequired: true }
+        return extension
+          ? await session.client.request({ method, params: params.grant.params }, brokerValidated, options)
+          : await session.client.request({ method: method as RequestMethod, params: params.grant.params }, options)
       } catch (error) {
         // A correlated reply completed the exchange, even if the SDK's
         // stricter result schema rejected a legacy malformed catalog item.

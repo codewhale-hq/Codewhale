@@ -45,7 +45,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-use crate::config::ToolOverride;
+use codewhale_runtime::config::ToolOverride;
 
 /// Timeout for plugin script execution (120 seconds).
 const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -115,7 +115,7 @@ pub(crate) const AUTO_APPROVAL_UNSUPPORTED: &str = "`approval: auto` is no longe
 fn warn_auto_approval_ignored(tool_name: &str) {
     tracing::warn!(
         "Script tool '{}': {AUTO_APPROVAL_UNSUPPORTED}",
-        crate::safe_label::SafeLabel::identifier(tool_name)
+        codewhale_runtime::safe_label::SafeLabel::identifier(tool_name)
     );
 }
 
@@ -147,7 +147,7 @@ impl ToolSpec for ScriptPluginTool {
     }
 
     fn registration_origin(&self) -> std::borrow::Cow<'_, str> {
-        use crate::safe_label::SafeLabel;
+        use codewhale_runtime::safe_label::SafeLabel;
         let filename = self
             .script_path
             .file_name()
@@ -184,7 +184,7 @@ impl ToolSpec for ScriptPluginTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let (interpreter, script_args) = script_command_parts(&self.script_path, &self.args);
         let mut command = tokio::process::Command::new(&interpreter);
-        crate::utils::suppress_tokio_console_window(&mut command);
+        codewhale_util::utils::suppress_tokio_console_window(&mut command);
         command.args(script_args);
         self.executor
             .run(
@@ -227,7 +227,7 @@ impl ToolSpec for CommandPluginTool {
     fn registration_origin(&self) -> std::borrow::Cow<'_, str> {
         format!(
             "config [tools.overrides.{}]",
-            crate::safe_label::SafeLabel::identifier(&self.name)
+            codewhale_runtime::safe_label::SafeLabel::identifier(&self.name)
         )
         .into()
     }
@@ -257,12 +257,12 @@ impl ToolSpec for CommandPluginTool {
         // we let tokio::process::Command resolve via PATH.
         let mut cmd = if cfg!(windows) && !self.command.contains('.') {
             let mut c = tokio::process::Command::new("cmd");
-            crate::utils::suppress_tokio_console_window(&mut c);
+            codewhale_util::utils::suppress_tokio_console_window(&mut c);
             c.arg("/c").arg(&self.command);
             c
         } else {
             let mut c = tokio::process::Command::new(&self.command);
-            crate::utils::suppress_tokio_console_window(&mut c);
+            codewhale_util::utils::suppress_tokio_console_window(&mut c);
             c
         };
         cmd.args(&self.args);
@@ -370,7 +370,7 @@ async fn run_plugin_child_raw(
     // down with it, not just the interpreter that `kill_on_drop` would reach.
     let output = tokio::time::timeout(
         PLUGIN_EXECUTION_TIMEOUT,
-        crate::process_tree::contained_output_with_input(cmd, input_bytes),
+        codewhale_runtime::process_tree::contained_output_with_input(cmd, input_bytes),
     )
     .await
     .map_err(|_| ToolError::Timeout {
@@ -828,9 +828,10 @@ echo hello
             .arg("sleep 300 & echo $! > grandchild.pid; wait")
             .current_dir(tmp.path());
         let run = run_plugin_child_raw(&mut cmd, "hanging plugin", serde_json::json!({}));
-        let grandchild = crate::process_tree::drop_once_pid_written(run, &pid_file).await;
+        let grandchild =
+            codewhale_runtime::process_tree::drop_once_pid_written(run, &pid_file).await;
         assert!(
-            crate::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
+            codewhale_runtime::process_tree::wait_for_pid_exit(grandchild, Duration::from_secs(5)),
             "a process started by the cancelled plugin is still running"
         );
     }

@@ -5,7 +5,7 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// node_modules/@modelcontextprotocol/client/dist/chunk-Br0eD_fh.mjs
+// node_modules/@modelcontextprotocol/client/dist/chunk-DYPzFuB5.mjs
 var __create = Object.create;
 var __defProp2 = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -45,7 +45,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   enumerable: true
 }) : target, mod));
 
-// node_modules/@modelcontextprotocol/client/dist/dialects-BOhdv1Fc.mjs
+// node_modules/@modelcontextprotocol/client/dist/dialects-BAIiebX0.mjs
 var DRAFT_2020_12_URIS = /* @__PURE__ */ new Set(["https://json-schema.org/draft/2020-12/schema", "http://json-schema.org/draft/2020-12/schema"]);
 var DRAFT_2019_09_URIS = /* @__PURE__ */ new Set(["https://json-schema.org/draft/2019-09/schema", "http://json-schema.org/draft/2019-09/schema"]);
 var DRAFT_07_URIS = /* @__PURE__ */ new Set(["https://json-schema.org/draft-07/schema", "http://json-schema.org/draft-07/schema"]);
@@ -133,6 +133,7 @@ __export(util_exports, {
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
+  sizeCaps: () => sizeCaps,
   slugify: () => slugify,
   stringifyPrimitive: () => stringifyPrimitive,
   toZod: () => toZod,
@@ -651,6 +652,18 @@ function prefixIssues(path, issues) {
 }
 function unwrapMessage(message) {
   return typeof message === "string" ? message : message?.message;
+}
+function sizeCaps(defChecks) {
+  const caps = [];
+  for (const ch of defChecks ?? []) {
+    const d = ch._zod.def;
+    if (!/_(length|size)$|_equals$/.test(d.check))
+      break;
+    const max = d.maximum ?? d.length ?? d.size;
+    if (max >= 0)
+      caps.push([max, ch]);
+  }
+  return caps;
 }
 function attachSchema(issues, start, inst) {
   var _a3;
@@ -1714,7 +1727,7 @@ ${content.join("\n")}
 var version = {
   major: 4,
   minor: 6,
-  patch: 5
+  patch: 7
 };
 
 // node_modules/zod/v4/core/schemas.js
@@ -2336,6 +2349,29 @@ var $ZodDate = /* @__PURE__ */ $constructor("$ZodDate", (inst, def) => {
     return payload;
   };
 });
+function capSize(inst, size) {
+  const caps = sizeCaps(inst._zod.def.checks);
+  if (!caps.length)
+    return;
+  const cap = Math.min(...caps.map((c) => c[0]));
+  const parse2 = inst._zod.parse;
+  inst._zod.parse = (payload, ctx) => {
+    const n = size(payload.value);
+    if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
+      for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
+        if (n > max && ch._zod.def.when(payload)) {
+          const start = payload.issues.length;
+          ch._zod.check(payload);
+          payload.issues[start].continue = false;
+          attachSchema(payload.issues, start, inst);
+          return payload;
+        }
+      }
+    }
+    return parse2(payload, ctx);
+  };
+}
+var arraySize = (input) => Array.isArray(input) ? input.length : -1;
 function handleArrayResult(result, final, index) {
   if (result.issues.length) {
     final.issues.push(...prefixIssues(index, result.issues));
@@ -2379,6 +2415,7 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     }
     return payload;
   };
+  capSize(inst, arraySize);
 });
 function handlePropertyResult(result, final, key, input, optin, optout) {
   const isPresent = key in input;
@@ -6864,7 +6901,7 @@ function date3(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// node_modules/@modelcontextprotocol/core/dist/auth-BNDyLTqp.mjs
+// node_modules/@modelcontextprotocol/core/dist/schemas-DscsoNZN.mjs
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [
   LATEST_PROTOCOL_VERSION,
@@ -7652,6 +7689,8 @@ var ServerResultSchema = union([
   ListToolsResultSchema,
   SubscriptionsListenResultSchema
 ]);
+
+// node_modules/@modelcontextprotocol/core/dist/auth-UMQCo-ad.mjs
 var SafeUrlSchema = url().superRefine((val, ctx) => {
   if (!URL.canParse(val)) {
     ctx.addIssue({
@@ -7805,7 +7844,7 @@ var OAuthTokenRevocationRequestSchema = object({
   token_type_hint: string2().optional()
 }).strip();
 
-// node_modules/@modelcontextprotocol/client/dist/src-WCy6ifGf.mjs
+// node_modules/@modelcontextprotocol/client/dist/src-CeKsbNLO.mjs
 var BRANDS = /* @__PURE__ */ Symbol.for("mcp.sdk.errorBrands");
 function stampErrorBrands(instance, ctor) {
   const brands = /* @__PURE__ */ new Set();
@@ -10728,12 +10767,12 @@ var RFC9110_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
   "string",
   "integer",
-  "boolean",
-  "number"
+  "boolean"
 ]);
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
+  let numberFault;
   const visit = (node2, path, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
@@ -10743,7 +10782,11 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (typeof raw !== "string" || raw.length === 0) return `${pathName(path)}: x-mcp-header MUST be a non-empty string`;
       if (!RFC9110_TOKEN.test(raw)) return `${pathName(path)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) {
+        const fault$1 = `${pathName(path)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+        if (type !== "number") return fault$1;
+        numberFault ??= fault$1;
+      }
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
@@ -10770,12 +10813,17 @@ function scanXMcpHeaderDeclarations(inputSchema) {
     }
   };
   const fault = visit(inputSchema, [], true);
-  return fault === void 0 ? {
+  if (fault !== void 0) return {
+    valid: false,
+    reason: numberFault ?? fault
+  };
+  return numberFault === void 0 ? {
     valid: true,
     declarations
   } : {
     valid: false,
-    reason: fault
+    reason: numberFault,
+    declarations
   };
 }
 var NON_REACHABLE_SUBSCHEMA_KEYWORDS = [
@@ -11007,15 +11055,18 @@ function standardSchemaToJsonSchema(schema, io = "input") {
     ...result
   };
 }
-function isProvablyObjectShapedRoot(schema) {
+var LOCAL_DEFINITION_REF = /^#\/(\$defs|definitions)\/([^/~%]+)$/;
+function isProvablyObjectShapedRoot(schema, root = schema) {
   if ("properties" in schema || "patternProperties" in schema || "additionalProperties" in schema || "required" in schema) return true;
+  const ref = typeof schema.$ref === "string" && LOCAL_DEFINITION_REF.exec(schema.$ref);
+  if (ref && root[ref[1]]?.[ref[2]]?.type === "object") return true;
   for (const key of [
     "oneOf",
     "anyOf",
     "allOf"
   ]) {
     const members2 = schema[key];
-    if (Array.isArray(members2) && members2.length > 0) return members2.every((m) => m !== null && typeof m === "object" && (m.type === "object" || isProvablyObjectShapedRoot(m)));
+    if (Array.isArray(members2) && members2.length > 0) return members2.every((m) => m !== null && typeof m === "object" && (m.type === "object" || isProvablyObjectShapedRoot(m, "$id" in m ? {} : root)));
   }
   return false;
 }
@@ -12574,7 +12625,7 @@ function unfollowedRedirect(url2, response) {
   return `Redirect to ${target.href} not followed; use that URL as the endpoint if it is the intended server`;
 }
 
-// node_modules/@modelcontextprotocol/client/dist/ajvProvider-97rDpkRx.mjs
+// node_modules/@modelcontextprotocol/client/dist/ajvProvider-BIwGVY6G.mjs
 var require_code$1 = /* @__PURE__ */ __commonJSMin(((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -15256,6 +15307,22 @@ var require_data = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 var require_utils = /* @__PURE__ */ __commonJSMin(((exports, module) => {
   const isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
   const isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
+  const isPort = RegExp.prototype.test.bind(/^\d*$/u);
+  const isHexPair = RegExp.prototype.test.bind(/^[\da-f]{2}$/iu);
+  const isUnreserved = RegExp.prototype.test.bind(/^[\da-z\-._~]$/iu);
+  const isPathCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:@/]$/u);
+  const isQueryFragmentCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:@/?]$/u);
+  const isUserinfoCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:]$/u);
+  const BYTE_HEX = new Array(256);
+  {
+    const HEX_DIGITS = "0123456789ABCDEF";
+    for (let i = 0; i < 256; i++) BYTE_HEX[i] = "%" + HEX_DIGITS[i >> 4] + HEX_DIGITS[i & 15];
+  }
+  function percentEncodeNonAscii(cp) {
+    if (cp < 2048) return BYTE_HEX[192 | cp >> 6] + BYTE_HEX[128 | cp & 63];
+    if (cp < 65536) return BYTE_HEX[224 | cp >> 12] + BYTE_HEX[128 | cp >> 6 & 63] + BYTE_HEX[128 | cp & 63];
+    return BYTE_HEX[240 | cp >> 18] + BYTE_HEX[128 | cp >> 12 & 63] + BYTE_HEX[128 | cp >> 6 & 63] + BYTE_HEX[128 | cp & 63];
+  }
   function stringArrayToHexStripped(input) {
     let acc = "";
     let code = 0;
@@ -15274,83 +15341,120 @@ var require_utils = /* @__PURE__ */ __commonJSMin(((exports, module) => {
     }
     return acc;
   }
+  const isHextet = RegExp.prototype.test.bind(/^[\dA-Fa-f]{1,4}$/);
+  const isIPvFuture = RegExp.prototype.test.bind(/^[vV][\dA-Fa-f]+\.[A-Za-z\d\-._~!$&'()*+,;=:]+$/);
+  const isZoneCharacter = RegExp.prototype.test.bind(/^[A-Za-z\d\-._~]$/);
   const nonSimpleDomain = RegExp.prototype.test.bind(/[^!"$&'()*+,\-.;=_`a-z{}~]/u);
-  function consumeIsZone(buffer) {
-    buffer.length = 0;
-    return true;
-  }
-  function consumeHextets(buffer, address, output) {
-    if (buffer.length) {
-      const hex = stringArrayToHexStripped(buffer);
-      if (hex !== "") address.push(hex);
-      else {
-        output.error = true;
-        return false;
+  function isZoneIdentifier(zone) {
+    if (zone.length === 0) return false;
+    for (let i = 0; i < zone.length; i++) {
+      if (isZoneCharacter(zone[i])) continue;
+      if (zone[i] === "%" && i + 2 < zone.length && isHexPair(zone.slice(i + 1, i + 3))) {
+        i += 2;
+        continue;
       }
-      buffer.length = 0;
+      return false;
     }
     return true;
   }
-  function getIPV6(input) {
-    let tokenCount = 0;
-    const output = {
-      error: false,
-      address: "",
-      zone: ""
-    };
-    const address = [];
-    const buffer = [];
-    let endipv6Encountered = false;
-    let endIpv6 = false;
-    let consume = consumeHextets;
-    for (let i = 0; i < input.length; i++) {
-      const cursor = input[i];
-      if (cursor === "[" || cursor === "]") continue;
-      if (cursor === ":") {
-        if (endipv6Encountered === true) endIpv6 = true;
-        if (!consume(buffer, address, output)) break;
-        if (++tokenCount > 7) {
-          output.error = true;
-          break;
-        }
-        if (i > 0 && input[i - 1] === ":") endipv6Encountered = true;
-        address.push(":");
-        continue;
-      } else if (cursor === "%") {
-        if (!consume(buffer, address, output)) break;
-        consume = consumeIsZone;
-      } else {
-        buffer.push(cursor);
+  function compressIPv6ZeroRun(hextets) {
+    let bestStart = -1;
+    let bestLength = 0;
+    let runStart = -1;
+    let runLength = 0;
+    for (let i = 0; i < hextets.length; i++) if (hextets[i] === "0") {
+      if (runStart === -1) runStart = i;
+      runLength++;
+      if (runLength > bestLength) {
+        bestLength = runLength;
+        bestStart = runStart;
+      }
+    } else {
+      runStart = -1;
+      runLength = 0;
+    }
+    if (bestLength < 2) return hextets.join(":");
+    const head = hextets.slice(0, bestStart).join(":");
+    const tail = hextets.slice(bestStart + bestLength).join(":");
+    return head + "::" + tail;
+  }
+  function normalizeIPv6Address(input) {
+    const compression = input.indexOf("::");
+    if (compression !== -1 && input.indexOf("::", compression + 1) !== -1) return void 0;
+    const left = compression === -1 ? input.split(":") : input.slice(0, compression).split(":");
+    const right = compression === -1 ? [] : input.slice(compression + 2).split(":");
+    if (compression !== -1) {
+      if (left.length === 1 && left[0] === "") left.length = 0;
+      if (right.length === 1 && right[0] === "") right.length = 0;
+    }
+    const parts = left.concat(right);
+    let hextetCount = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === "") return void 0;
+      if (part.indexOf(".") !== -1) {
+        if (i !== parts.length - 1 || compression !== -1 && right.length === 0 || !isIPv4(part)) return void 0;
+        hextetCount += 2;
         continue;
       }
+      if (!isHextet(part)) return void 0;
+      parts[i] = parseInt(part, 16).toString(16);
+      hextetCount++;
     }
-    if (buffer.length) if (consume === consumeIsZone) output.zone = buffer.join("");
-    else if (endIpv6) address.push(buffer.join(""));
-    else address.push(stringArrayToHexStripped(buffer));
-    output.address = address.join("");
-    return output;
+    if (compression === -1) {
+      if (hextetCount !== 8) return void 0;
+      return compressIPv6ZeroRun(parts);
+    }
+    if (hextetCount >= 8) return void 0;
+    const expanded = parts.slice(0, left.length);
+    for (let i = hextetCount; i < 8; i++) expanded.push("0");
+    for (let i = left.length; i < parts.length; i++) expanded.push(parts[i]);
+    return compressIPv6ZeroRun(expanded);
   }
   function normalizeIPv6(host) {
-    if (findToken(host, ":") < 2) return {
+    const bracketed = host[0] === "[" && host[host.length - 1] === "]";
+    if ((host[0] === "[" || host[host.length - 1] === "]") && !bracketed) return {
       host,
-      isIPV6: false
+      isIPV6: false,
+      error: true
     };
-    const ipv62 = getIPV6(host);
-    if (!ipv62.error) {
-      let newHost = ipv62.address;
-      let escapedHost = ipv62.address;
-      if (ipv62.zone) {
-        newHost += "%" + ipv62.zone;
-        escapedHost += "%25" + ipv62.zone;
-      }
+    let input = bracketed ? host.slice(1, -1) : host;
+    if (bracketed && isIPvFuture(input)) {
+      input = input.toLowerCase();
       return {
-        host: newHost,
-        isIPV6: true,
-        escapedHost
+        host: `[${input}]`,
+        escapedHost: input,
+        isIPV6: false,
+        isIPVFuture: true
       };
-    } else return {
+    }
+    if (findToken(input, ":") < 2) return {
       host,
-      isIPV6: false
+      isIPV6: false,
+      error: bracketed
+    };
+    let zoneIdentifier = "";
+    const zoneSeparator = input.indexOf("%");
+    if (zoneSeparator !== -1) {
+      const separatorLength = input.slice(zoneSeparator, zoneSeparator + 3).toLowerCase() === "%25" ? 3 : 1;
+      zoneIdentifier = input.slice(zoneSeparator + separatorLength);
+      if (!isZoneIdentifier(zoneIdentifier)) return {
+        host,
+        isIPV6: false,
+        error: true
+      };
+      input = input.slice(0, zoneSeparator);
+    }
+    const address = normalizeIPv6Address(input);
+    if (address === void 0) return {
+      host,
+      isIPV6: false,
+      error: true
+    };
+    return {
+      host: address + (zoneIdentifier ? "%" + zoneIdentifier : ""),
+      escapedHost: address + (zoneIdentifier ? "%25" + zoneIdentifier : ""),
+      isIPV6: true
     };
   }
   function findToken(str, token) {
@@ -15426,41 +15530,225 @@ var require_utils = /* @__PURE__ */ __commonJSMin(((exports, module) => {
     }
     return output.join("");
   }
-  function normalizeComponentEncoding(component, esc2) {
-    const func = esc2 !== true ? escape : unescape;
-    if (component.scheme !== void 0) component.scheme = func(component.scheme);
-    if (component.userinfo !== void 0) component.userinfo = func(component.userinfo);
-    if (component.host !== void 0) component.host = func(component.host);
-    if (component.path !== void 0) component.path = func(component.path);
-    if (component.query !== void 0) component.query = func(component.query);
-    if (component.fragment !== void 0) component.fragment = func(component.fragment);
-    return component;
+  const HOST_DELIMS = {
+    "@": "%40",
+    "/": "%2F",
+    "?": "%3F",
+    "#": "%23",
+    ":": "%3A"
+  };
+  const HOST_DELIM_RE = /[@/?#:]/g;
+  const HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
+  function reescapeHostDelimiters(host, isIP) {
+    const re = isIP ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE;
+    re.lastIndex = 0;
+    return host.replace(re, (ch) => HOST_DELIMS[ch]);
+  }
+  function normalizePercentEncoding(input, decodeUnreserved = false) {
+    if (input.indexOf("%") === -1) return input;
+    let output = "";
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          const normalizedHex = hex.toUpperCase();
+          const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
+          if (decodeUnreserved && isUnreserved(decoded)) output += decoded;
+          else output += "%" + normalizedHex;
+          i += 2;
+          continue;
+        }
+      }
+      output += input[i];
+    }
+    return output;
+  }
+  function normalizePathEncoding(input) {
+    let output = "";
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (ch === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          const normalizedHex = hex.toUpperCase();
+          const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
+          if (decoded !== "." && isUnreserved(decoded)) output += decoded;
+          else output += "%" + normalizedHex;
+          i += 2;
+          continue;
+        }
+      }
+      if (isPathCharacter(ch)) output += ch;
+      else {
+        const code = input.charCodeAt(i);
+        if (code < 128) output += isEscapeSafe(code) ? ch : BYTE_HEX[code];
+        else if (code < 55296 || code > 57343) output += percentEncodeNonAscii(code);
+        else if (code <= 56319 && i + 1 < input.length) {
+          const low = input.charCodeAt(i + 1);
+          if (low >= 56320 && low <= 57343) {
+            output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
+            i++;
+          } else output += percentEncodeNonAscii(65533);
+        } else output += percentEncodeNonAscii(65533);
+      }
+    }
+    return output;
+  }
+  function serializePathEncoding(input, pathNoScheme = false) {
+    let output = "";
+    let firstSegment = pathNoScheme && input[0] !== "/";
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (ch === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          output += "%" + hex.toUpperCase();
+          i += 2;
+          continue;
+        }
+      }
+      if (ch === "/") firstSegment = false;
+      if (isPathCharacter(ch) && (ch !== ":" || !firstSegment)) output += ch;
+      else {
+        const code = input.charCodeAt(i);
+        if (code < 128) output += BYTE_HEX[code];
+        else if (code < 55296 || code > 57343) output += percentEncodeNonAscii(code);
+        else if (code <= 56319 && i + 1 < input.length) {
+          const low = input.charCodeAt(i + 1);
+          if (low >= 56320 && low <= 57343) {
+            output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
+            i++;
+          } else output += percentEncodeNonAscii(65533);
+        } else output += percentEncodeNonAscii(65533);
+      }
+    }
+    return output;
+  }
+  function encodeComponent(input, isAllowed) {
+    let output = "";
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (ch === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          output += "%" + hex.toUpperCase();
+          i += 2;
+          continue;
+        }
+      }
+      if (isAllowed(ch)) output += ch;
+      else {
+        const code = input.charCodeAt(i);
+        if (code < 128) output += BYTE_HEX[code];
+        else if (code < 55296 || code > 57343) output += percentEncodeNonAscii(code);
+        else if (code <= 56319 && i + 1 < input.length) {
+          const low = input.charCodeAt(i + 1);
+          if (low >= 56320 && low <= 57343) {
+            output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
+            i++;
+          } else output += percentEncodeNonAscii(65533);
+        } else output += percentEncodeNonAscii(65533);
+      }
+    }
+    return output;
+  }
+  function encodeUserinfo(input) {
+    return encodeComponent(input, isUserinfoCharacter);
+  }
+  function encodeQuery(input) {
+    return encodeComponent(input, isQueryFragmentCharacter);
+  }
+  function encodeFragment(input) {
+    return encodeComponent(input, isQueryFragmentCharacter);
+  }
+  function isEscapeSafe(cp) {
+    return cp >= 48 && cp <= 57 || cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122 || cp === 42 || cp === 43 || cp === 45 || cp === 46 || cp === 47 || cp === 64 || cp === 95;
+  }
+  function normalizeQueryFragmentEncoding(input) {
+    let output = "";
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (ch === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          const normalizedHex = hex.toUpperCase();
+          const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
+          if (isUnreserved(decoded)) output += decoded;
+          else output += "%" + normalizedHex;
+          i += 2;
+          continue;
+        }
+      }
+      if (isQueryFragmentCharacter(ch)) output += ch;
+      else {
+        const code = input.charCodeAt(i);
+        if (code < 128) output += isEscapeSafe(code) ? ch : BYTE_HEX[code];
+        else if (code < 55296 || code > 57343) output += percentEncodeNonAscii(code);
+        else if (code <= 56319 && i + 1 < input.length) {
+          const low = input.charCodeAt(i + 1);
+          if (low >= 56320 && low <= 57343) {
+            output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
+            i++;
+          } else output += percentEncodeNonAscii(65533);
+        } else output += percentEncodeNonAscii(65533);
+      }
+    }
+    return output;
+  }
+  function escapePreservingEscapes(input) {
+    let output = "";
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] === "%" && i + 2 < input.length) {
+        const hex = input.slice(i + 1, i + 3);
+        if (isHexPair(hex)) {
+          output += "%" + hex.toUpperCase();
+          i += 2;
+          continue;
+        }
+      }
+      output += escape(input[i]);
+    }
+    return output;
   }
   function recomposeAuthority(component) {
     const uriTokens = [];
     if (component.userinfo !== void 0) {
-      uriTokens.push(component.userinfo);
+      uriTokens.push(encodeUserinfo(component.userinfo));
       uriTokens.push("@");
     }
     if (component.host !== void 0) {
-      let host = unescape(component.host);
+      let host = component.host;
       if (!isIPv4(host)) {
-        const ipV6res = normalizeIPv6(host);
-        if (ipV6res.isIPV6 === true) host = `[${ipV6res.escapedHost}]`;
-        else host = component.host;
+        let ipV6res = normalizeIPv6(host);
+        if (ipV6res.isIPV6 !== true && ipV6res.isIPVFuture !== true) {
+          host = normalizePercentEncoding(host, true);
+          ipV6res = normalizeIPv6(host);
+        }
+        if (ipV6res.isIPV6 === true || ipV6res.isIPVFuture === true) host = `[${ipV6res.escapedHost}]`;
+        else host = reescapeHostDelimiters(host, false);
       }
       uriTokens.push(host);
     }
     if (typeof component.port === "number" || typeof component.port === "string") {
+      const port = String(component.port);
+      if (!isPort(port)) throw new TypeError("URI port is malformed.");
       uriTokens.push(":");
-      uriTokens.push(String(component.port));
+      uriTokens.push(port);
     }
     return uriTokens.length ? uriTokens.join("") : void 0;
   }
   module.exports = {
     nonSimpleDomain,
     recomposeAuthority,
-    normalizeComponentEncoding,
+    reescapeHostDelimiters,
+    normalizePercentEncoding,
+    normalizePathEncoding,
+    serializePathEncoding,
+    normalizeQueryFragmentEncoding,
+    encodeUserinfo,
+    encodeQuery,
+    encodeFragment,
+    escapePreservingEscapes,
     removeDotSegments,
     isIPv4,
     isUUID,
@@ -15470,7 +15758,7 @@ var require_utils = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 }));
 var require_schemes = /* @__PURE__ */ __commonJSMin(((exports, module) => {
   const { isUUID } = require_utils();
-  const URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
+  const URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
   const supportedSchemeNames = [
     "http",
     "https",
@@ -15512,9 +15800,10 @@ var require_schemes = /* @__PURE__ */ __commonJSMin(((exports, module) => {
       wsComponent.secure = void 0;
     }
     if (wsComponent.resourceName) {
-      const [path, query] = wsComponent.resourceName.split("?");
+      const queryIndex = wsComponent.resourceName.indexOf("?");
+      const path = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
       wsComponent.path = path && path !== "/" ? path : void 0;
-      wsComponent.query = query;
+      wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
       wsComponent.resourceName = void 0;
     }
     wsComponent.fragment = void 0;
@@ -15526,7 +15815,7 @@ var require_schemes = /* @__PURE__ */ __commonJSMin(((exports, module) => {
       return urnComponent;
     }
     const matches = urnComponent.path.match(URN_REG);
-    if (matches) {
+    if (matches && matches[0] === urnComponent.path) {
       const scheme = options.scheme || urnComponent.scheme || "urn";
       urnComponent.nid = matches[1].toLowerCase();
       urnComponent.nss = matches[2];
@@ -15616,16 +15905,32 @@ var require_schemes = /* @__PURE__ */ __commonJSMin(((exports, module) => {
   };
 }));
 var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
-  const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, isIPv4, nonSimpleDomain } = require_utils();
+  const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   const { SCHEMES, getSchemeHandler } = require_schemes();
+  const VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u;
+  const MALFORMED_SCHEME_ERROR = "URI scheme is malformed.";
+  function decodeValidScheme(scheme) {
+    const decodedScheme = unescape(String(scheme));
+    if (!VALID_SCHEME.test(decodedScheme)) throw new TypeError(MALFORMED_SCHEME_ERROR);
+    return decodedScheme;
+  }
   function normalize(uri, options) {
-    if (typeof uri === "string") uri = serialize(parse2(uri, options), options);
+    if (typeof uri === "string") uri = normalizeString(uri, options);
     else if (typeof uri === "object") uri = parse2(serialize(uri, options), options);
     return uri;
   }
   function resolve(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-    const resolved = resolveComponent(parse2(baseURI, schemelessOptions), parse2(relativeURI, schemelessOptions), schemelessOptions, true);
+    const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed, malformedPercentEncoding: baseMalformedPercentEncoding, malformedSchemeSpecific: baseMalformedSchemeSpecific, malformedHost: baseMalformedHost, malformedScheme: baseMalformedScheme } = parseWithStatus(baseURI, schemelessOptions);
+    const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed, malformedPercentEncoding: relativeMalformedPercentEncoding, malformedSchemeSpecific: relativeMalformedSchemeSpecific, malformedHost: relativeMalformedHost, malformedScheme: relativeMalformedScheme } = parseWithStatus(relativeURI, schemelessOptions);
+    if (baseMalformed || relativeMalformed || baseMalformedPercentEncoding || relativeMalformedPercentEncoding || baseMalformedSchemeSpecific || relativeMalformedSchemeSpecific || baseMalformedHost || relativeMalformedHost || baseMalformedScheme || relativeMalformedScheme) throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+    const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
+    const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
+    const resolvedHost = resolved.host;
+    const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
+    canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
+    const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
+    if (resolved.error && !encodedASCIIHost) throw new Error(resolved.error);
     schemelessOptions.skipEscape = true;
     return serialize(resolved, schemelessOptions);
   }
@@ -15675,27 +15980,9 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
     return target;
   }
   function equal(uriA, uriB, options) {
-    if (typeof uriA === "string") {
-      uriA = unescape(uriA);
-      uriA = serialize(normalizeComponentEncoding(parse2(uriA, options), true), {
-        ...options,
-        skipEscape: true
-      });
-    } else if (typeof uriA === "object") uriA = serialize(normalizeComponentEncoding(uriA, true), {
-      ...options,
-      skipEscape: true
-    });
-    if (typeof uriB === "string") {
-      uriB = unescape(uriB);
-      uriB = serialize(normalizeComponentEncoding(parse2(uriB, options), true), {
-        ...options,
-        skipEscape: true
-      });
-    } else if (typeof uriB === "object") uriB = serialize(normalizeComponentEncoding(uriB, true), {
-      ...options,
-      skipEscape: true
-    });
-    return uriA.toLowerCase() === uriB.toLowerCase();
+    const normalizedA = normalizeComparableURI(uriA, options);
+    const normalizedB = normalizeComparableURI(uriB, options);
+    return normalizedA !== void 0 && normalizedB !== void 0 && normalizedA === normalizedB;
   }
   function serialize(cmpts, opts) {
     const component = {
@@ -15716,13 +16003,17 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
     };
     const options = Object.assign({}, opts);
     const uriTokens = [];
+    if (component.scheme) component.scheme = decodeValidScheme(component.scheme);
     const schemeHandler = getSchemeHandler(options.scheme || component.scheme);
     if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options);
-    if (component.path !== void 0) if (!options.skipEscape) {
-      component.path = escape(component.path);
-      if (component.scheme !== void 0) component.path = component.path.split("%3A").join(":");
-    } else component.path = unescape(component.path);
-    if (options.reference !== "suffix" && component.scheme) uriTokens.push(component.scheme, ":");
+    const hasAuthority = component.userinfo !== void 0 || component.host !== void 0 || component.port !== void 0;
+    const pathNoScheme = !options.skipEscape && component.scheme === void 0 && !hasAuthority;
+    if (component.path !== void 0) if (!options.skipEscape) component.path = serializePathEncoding(component.path, pathNoScheme);
+    else component.path = normalizePercentEncoding(component.path);
+    if (options.reference !== "suffix" && component.scheme) {
+      component.scheme = decodeValidScheme(component.scheme);
+      uriTokens.push(component.scheme, ":");
+    }
     const authority = recomposeAuthority(component);
     if (authority !== void 0) {
       if (options.reference !== "suffix") uriTokens.push("//");
@@ -15732,15 +16023,47 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
     if (component.path !== void 0) {
       let s = component.path;
       if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) s = removeDotSegments(s);
+      if (pathNoScheme) s = serializePathEncoding(s, true);
       if (authority === void 0 && s[0] === "/" && s[1] === "/") s = "/%2F" + s.slice(2);
       uriTokens.push(s);
     }
-    if (component.query !== void 0) uriTokens.push("?", component.query);
-    if (component.fragment !== void 0) uriTokens.push("#", component.fragment);
+    if (component.query !== void 0) uriTokens.push("?", encodeQuery(component.query));
+    if (component.fragment !== void 0) uriTokens.push("#", encodeFragment(component.fragment));
     return uriTokens.join("");
   }
   const URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
-  function parse2(uri, opts) {
+  const AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+  const AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
+  function getParseError(parsed, matches) {
+    if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") return 'URI path must start with "/" when authority is present.';
+    if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) return "URI port is malformed.";
+  }
+  function hasMalformedPercentEncoding(component) {
+    if (component === void 0) return false;
+    let percent = component.indexOf("%");
+    while (percent !== -1) {
+      if (percent + 2 >= component.length || !/^[\da-f]{2}$/iu.test(component.slice(percent + 1, percent + 3))) return true;
+      percent = component.indexOf("%", percent + 3);
+    }
+    return false;
+  }
+  function isIPLiteral(host) {
+    return host[0] === "[" && host[host.length - 1] === "]";
+  }
+  function hasMalformedComponentPercentEncoding(matches) {
+    const host = matches[4];
+    return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
+  }
+  function canonicalizeHost(parsed, options, schemeHandler, isIP) {
+    if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) try {
+      parsed.host = new URL("http://" + parsed.host).hostname;
+    } catch (e) {
+      parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
+      return true;
+    }
+    return false;
+  }
+  function parseWithStatus(uri, opts) {
     const options = Object.assign({}, opts);
     const parsed = {
       scheme: void 0,
@@ -15751,9 +16074,34 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
       query: void 0,
       fragment: void 0
     };
+    let malformedAuthorityOrPort = false;
+    let malformedPercentEncoding = false;
+    let malformedSchemeSpecific = false;
+    let malformedHost = false;
+    let malformedIPLiteral = false;
+    let malformedScheme = false;
     let isIP = false;
     if (options.reference === "suffix") if (options.scheme) uri = options.scheme + ":" + uri;
     else uri = "//" + uri;
+    const authorityMatch = uri.match(AUTHORITY_PREFIX);
+    if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
+      parsed.error = "URI authority must not contain a literal backslash.";
+      malformedAuthorityOrPort = true;
+    }
+    const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+    if (introducerMatch !== null) {
+      const region = introducerMatch[1];
+      const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+      if (normalizedRegion.length >= 2) {
+        if (normalizedRegion.slice(0, 2) !== "//") {
+          parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+          malformedAuthorityOrPort = true;
+        } else if (region.length !== normalizedRegion.length) {
+          parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+          malformedAuthorityOrPort = true;
+        }
+      }
+    }
     const matches = uri.match(URI_PARSE);
     if (matches) {
       parsed.scheme = matches[1];
@@ -15763,11 +16111,33 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
       parsed.path = matches[6] || "";
       parsed.query = matches[7];
       parsed.fragment = matches[8];
+      if (parsed.scheme !== void 0) {
+        const decodedScheme = unescape(parsed.scheme);
+        if (VALID_SCHEME.test(decodedScheme)) parsed.scheme = decodedScheme.toLowerCase();
+        else {
+          parsed.error = parsed.error || MALFORMED_SCHEME_ERROR;
+          malformedScheme = true;
+        }
+      }
+      malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
+      if (malformedPercentEncoding) parsed.error = parsed.error || "URI contains malformed percent-encoding.";
       if (isNaN(parsed.port)) parsed.port = matches[5];
+      const parseError = getParseError(parsed, matches);
+      if (parseError !== void 0) {
+        parsed.error = parsed.error || parseError;
+        malformedAuthorityOrPort = true;
+      }
       if (parsed.host) if (isIPv4(parsed.host) === false) {
+        const bracketedIPLiteral = isIPLiteral(parsed.host);
+        const hasIPLiteralBracket = parsed.host.indexOf("[") !== -1 || parsed.host.indexOf("]") !== -1;
         const ipv6result = normalizeIPv6(parsed.host);
-        parsed.host = ipv6result.host.toLowerCase();
-        isIP = ipv6result.isIPV6;
+        isIP = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
+        malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
+        parsed.host = isIP ? ipv6result.host : ipv6result.host.toLowerCase();
+        if (malformedIPLiteral) {
+          parsed.error = parsed.error || "URI host is malformed.";
+          malformedAuthorityOrPort = true;
+        }
       } else isIP = true;
       if (parsed.scheme === void 0 && parsed.userinfo === void 0 && parsed.host === void 0 && parsed.port === void 0 && parsed.query === void 0 && !parsed.path) parsed.reference = "same-document";
       else if (parsed.scheme === void 0) parsed.reference = "relative";
@@ -15775,24 +16145,58 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports, module) => {
       else parsed.reference = "uri";
       if (options.reference && options.reference !== "suffix" && options.reference !== parsed.reference) parsed.error = parsed.error || "URI is not a " + options.reference + " reference.";
       const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
-      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
-        if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) try {
-          parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
-        } catch (e) {
-          parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
-        }
+      if (!malformedIPLiteral) malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP);
+      if (uri.indexOf("%") !== -1 && parsed.host !== void 0 && !malformedIPLiteral) {
+        let host = isIP ? parsed.host : normalizePercentEncoding(parsed.host, true);
+        if (!isIP) host = normalizePercentEncoding(host.toLowerCase());
+        parsed.host = reescapeHostDelimiters(host, isIP);
       }
       if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
-        if (uri.indexOf("%") !== -1) {
-          if (parsed.scheme !== void 0) parsed.scheme = unescape(parsed.scheme);
-          if (parsed.host !== void 0) parsed.host = unescape(parsed.host);
-        }
-        if (parsed.path) parsed.path = escape(unescape(parsed.path));
-        if (parsed.fragment) parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment));
+        if (parsed.path) parsed.path = normalizePathEncoding(parsed.path);
+        if (parsed.query) parsed.query = normalizeQueryFragmentEncoding(parsed.query);
+        if (parsed.fragment) parsed.fragment = normalizeQueryFragmentEncoding(parsed.fragment);
       }
-      if (schemeHandler && schemeHandler.parse) schemeHandler.parse(parsed, options);
+      if (schemeHandler && schemeHandler.parse) {
+        schemeHandler.parse(parsed, options);
+        if (schemeHandler === SCHEMES.urn && parsed.nid === void 0) malformedSchemeSpecific = true;
+      }
     } else parsed.error = parsed.error || "URI can not be parsed.";
-    return parsed;
+    return {
+      parsed,
+      malformedAuthorityOrPort,
+      malformedPercentEncoding,
+      malformedSchemeSpecific,
+      malformedHost,
+      malformedScheme
+    };
+  }
+  function parse2(uri, opts) {
+    return parseWithStatus(uri, opts).parsed;
+  }
+  function normalizeString(uri, opts) {
+    return normalizeStringWithStatus(uri, opts).normalized;
+  }
+  function normalizeStringWithStatus(uri, opts) {
+    const { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = parseWithStatus(uri, opts);
+    return {
+      normalized: malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? uri : serialize(parsed, opts),
+      malformedAuthorityOrPort,
+      malformedPercentEncoding,
+      malformedSchemeSpecific,
+      malformedHost,
+      malformedScheme
+    };
+  }
+  function normalizeComparableURI(uri, opts) {
+    if (typeof uri !== "string" && typeof uri !== "object") return;
+    let value;
+    try {
+      value = typeof uri === "string" ? uri : serialize(uri, opts);
+    } catch {
+      return;
+    }
+    const { normalized, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value, opts);
+    return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized;
   }
   const fastUri = {
     SCHEMES,
@@ -19630,505 +20034,7 @@ async function pkceChallenge(length) {
   };
 }
 
-// node_modules/eventsource-parser/dist/index.js
-var ParseError = class extends Error {
-  constructor(message, options) {
-    super(message), this.name = "ParseError", this.type = options.type, this.field = options.field, this.value = options.value, this.line = options.line;
-  }
-};
-var LF = 10;
-var CR = 13;
-var SPACE = 32;
-function noop(_arg) {
-}
-function createParser(config2) {
-  if (typeof config2 == "function")
-    throw new TypeError(
-      "`config` must be an object, got a function instead. Did you mean `createParser({onEvent: fn})`?"
-    );
-  const { onEvent = noop, onError = noop, onRetry = noop, onComment, maxBufferSize } = config2, pendingFragments = [];
-  let pendingFragmentsLength = 0, isFirstChunk = true, id, data = "", dataLines = 0, eventType, terminated = false;
-  function feed(chunk) {
-    if (terminated)
-      throw new Error(
-        "Cannot feed parser: it was terminated after exceeding the configured max buffer size. Call `reset()` to resume parsing."
-      );
-    if (isFirstChunk && (isFirstChunk = false, chunk.charCodeAt(0) === 239 && chunk.charCodeAt(1) === 187 && chunk.charCodeAt(2) === 191 && (chunk = chunk.slice(3))), pendingFragments.length === 0) {
-      const trailing2 = processLines(chunk);
-      trailing2 !== "" && (pendingFragments.push(trailing2), pendingFragmentsLength = trailing2.length), checkBufferSize();
-      return;
-    }
-    if (chunk.indexOf(`
-`) === -1 && chunk.indexOf("\r") === -1) {
-      pendingFragments.push(chunk), pendingFragmentsLength += chunk.length, checkBufferSize();
-      return;
-    }
-    pendingFragments.push(chunk);
-    const input = pendingFragments.join("");
-    pendingFragments.length = 0, pendingFragmentsLength = 0;
-    const trailing = processLines(input);
-    trailing !== "" && (pendingFragments.push(trailing), pendingFragmentsLength = trailing.length), checkBufferSize();
-  }
-  function checkBufferSize() {
-    maxBufferSize !== void 0 && (pendingFragmentsLength + data.length <= maxBufferSize || (terminated = true, pendingFragments.length = 0, pendingFragmentsLength = 0, id = void 0, data = "", dataLines = 0, eventType = void 0, onError(
-      new ParseError(`Buffered data exceeded max buffer size of ${maxBufferSize} characters`, {
-        type: "max-buffer-size-exceeded"
-      })
-    )));
-  }
-  function processLines(chunk) {
-    let searchIndex = 0;
-    if (chunk.indexOf("\r") === -1) {
-      let lfIndex = chunk.indexOf(`
-`, searchIndex);
-      for (; lfIndex !== -1; ) {
-        if (searchIndex === lfIndex) {
-          dataLines > 0 && onEvent({ id, event: eventType, data }), id = void 0, data = "", dataLines = 0, eventType = void 0, searchIndex = lfIndex + 1, lfIndex = chunk.indexOf(`
-`, searchIndex);
-          continue;
-        }
-        const firstCharCode = chunk.charCodeAt(searchIndex);
-        if (isDataPrefix(chunk, searchIndex, firstCharCode)) {
-          const valueStart = chunk.charCodeAt(searchIndex + 5) === SPACE ? searchIndex + 6 : searchIndex + 5, value = chunk.slice(valueStart, lfIndex);
-          if (dataLines === 0 && chunk.charCodeAt(lfIndex + 1) === LF) {
-            onEvent({ id, event: eventType, data: value }), id = void 0, data = "", eventType = void 0, searchIndex = lfIndex + 2, lfIndex = chunk.indexOf(`
-`, searchIndex);
-            continue;
-          }
-          data = dataLines === 0 ? value : `${data}
-${value}`, dataLines++;
-        } else isEventPrefix(chunk, searchIndex, firstCharCode) ? eventType = chunk.slice(
-          chunk.charCodeAt(searchIndex + 6) === SPACE ? searchIndex + 7 : searchIndex + 6,
-          lfIndex
-        ) || void 0 : parseLine(chunk, searchIndex, lfIndex);
-        searchIndex = lfIndex + 1, lfIndex = chunk.indexOf(`
-`, searchIndex);
-      }
-      return chunk.slice(searchIndex);
-    }
-    for (; searchIndex < chunk.length; ) {
-      const crIndex = chunk.indexOf("\r", searchIndex), lfIndex = chunk.indexOf(`
-`, searchIndex);
-      let lineEnd = -1;
-      if (crIndex !== -1 && lfIndex !== -1 ? lineEnd = crIndex < lfIndex ? crIndex : lfIndex : crIndex !== -1 ? crIndex === chunk.length - 1 ? lineEnd = -1 : lineEnd = crIndex : lfIndex !== -1 && (lineEnd = lfIndex), lineEnd === -1)
-        break;
-      parseLine(chunk, searchIndex, lineEnd), searchIndex = lineEnd + 1, chunk.charCodeAt(searchIndex - 1) === CR && chunk.charCodeAt(searchIndex) === LF && searchIndex++;
-    }
-    return chunk.slice(searchIndex);
-  }
-  function parseLine(chunk, start, end) {
-    if (start === end) {
-      dispatchEvent();
-      return;
-    }
-    const firstCharCode = chunk.charCodeAt(start);
-    if (isDataPrefix(chunk, start, firstCharCode)) {
-      const valueStart = chunk.charCodeAt(start + 5) === SPACE ? start + 6 : start + 5, value2 = chunk.slice(valueStart, end);
-      data = dataLines === 0 ? value2 : `${data}
-${value2}`, dataLines++;
-      return;
-    }
-    if (isEventPrefix(chunk, start, firstCharCode)) {
-      eventType = chunk.slice(chunk.charCodeAt(start + 6) === SPACE ? start + 7 : start + 6, end) || void 0;
-      return;
-    }
-    if (firstCharCode === 105 && chunk.charCodeAt(start + 1) === 100 && chunk.charCodeAt(start + 2) === 58) {
-      const value2 = chunk.slice(chunk.charCodeAt(start + 3) === SPACE ? start + 4 : start + 3, end);
-      value2.includes("\0") || (id = value2);
-      return;
-    }
-    if (firstCharCode === 58) {
-      if (onComment) {
-        const line2 = chunk.slice(start, end);
-        onComment(line2.slice(chunk.charCodeAt(start + 1) === SPACE ? 2 : 1));
-      }
-      return;
-    }
-    const line = chunk.slice(start, end), fieldSeparatorIndex = line.indexOf(":");
-    if (fieldSeparatorIndex === -1) {
-      processField(line, "", line);
-      return;
-    }
-    const field = line.slice(0, fieldSeparatorIndex), offset = line.charCodeAt(fieldSeparatorIndex + 1) === SPACE ? 2 : 1, value = line.slice(fieldSeparatorIndex + offset);
-    processField(field, value, line);
-  }
-  function processField(field, value, line) {
-    switch (field) {
-      case "event":
-        eventType = value || void 0;
-        break;
-      case "data":
-        data = dataLines === 0 ? value : `${data}
-${value}`, dataLines++;
-        break;
-      case "id":
-        value.includes("\0") || (id = value);
-        break;
-      case "retry":
-        /^\d+$/.test(value) ? onRetry(parseInt(value, 10)) : onError(
-          new ParseError(`Invalid \`retry\` value: "${value}"`, {
-            type: "invalid-retry",
-            value,
-            line
-          })
-        );
-        break;
-      default:
-        onError(
-          new ParseError(
-            `Unknown field "${field.length > 20 ? `${field.slice(0, 20)}…` : field}"`,
-            { type: "unknown-field", field, value, line }
-          )
-        );
-        break;
-    }
-  }
-  function dispatchEvent() {
-    dataLines > 0 && onEvent({
-      id,
-      event: eventType,
-      data
-    }), id = void 0, data = "", dataLines = 0, eventType = void 0;
-  }
-  function reset(options = {}) {
-    if (options.consume && pendingFragments.length > 0) {
-      const incompleteLine = pendingFragments.join("");
-      parseLine(incompleteLine, 0, incompleteLine.length);
-    }
-    isFirstChunk = true, id = void 0, data = "", dataLines = 0, eventType = void 0, pendingFragments.length = 0, pendingFragmentsLength = 0, terminated = false;
-  }
-  return { feed, reset };
-}
-function isDataPrefix(chunk, i, firstCharCode) {
-  return firstCharCode === 100 && chunk.charCodeAt(i + 1) === 97 && chunk.charCodeAt(i + 2) === 116 && chunk.charCodeAt(i + 3) === 97 && chunk.charCodeAt(i + 4) === 58;
-}
-function isEventPrefix(chunk, i, firstCharCode) {
-  return firstCharCode === 101 && chunk.charCodeAt(i + 1) === 118 && chunk.charCodeAt(i + 2) === 101 && chunk.charCodeAt(i + 3) === 110 && chunk.charCodeAt(i + 4) === 116 && chunk.charCodeAt(i + 5) === 58;
-}
-
-// node_modules/eventsource/dist/index.js
-var ErrorEvent = class extends Event {
-  /**
-   * Constructs a new `ErrorEvent` instance. This is typically not called directly,
-   * but rather emitted by the `EventSource` object when an error occurs.
-   *
-   * @param type - The type of the event (should be "error")
-   * @param errorEventInitDict - Optional properties to include in the error event
-   */
-  constructor(type, errorEventInitDict) {
-    var _a3, _b;
-    super(type), this.code = (_a3 = errorEventInitDict == null ? void 0 : errorEventInitDict.code) != null ? _a3 : void 0, this.message = (_b = errorEventInitDict == null ? void 0 : errorEventInitDict.message) != null ? _b : void 0;
-  }
-  /**
-   * Node.js "hides" the `message` and `code` properties of the `ErrorEvent` instance,
-   * when it is `console.log`'ed. This makes it harder to debug errors. To ease debugging,
-   * we explicitly include the properties in the `inspect` method.
-   *
-   * This is automatically called by Node.js when you `console.log` an instance of this class.
-   *
-   * @param _depth - The current depth
-   * @param options - The options passed to `util.inspect`
-   * @param inspect - The inspect function to use (prevents having to import it from `util`)
-   * @returns A string representation of the error
-   */
-  [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
-    return inspect(inspectableError(this), options);
-  }
-  /**
-   * Deno "hides" the `message` and `code` properties of the `ErrorEvent` instance,
-   * when it is `console.log`'ed. This makes it harder to debug errors. To ease debugging,
-   * we explicitly include the properties in the `inspect` method.
-   *
-   * This is automatically called by Deno when you `console.log` an instance of this class.
-   *
-   * @param inspect - The inspect function to use (prevents having to import it from `util`)
-   * @param options - The options passed to `Deno.inspect`
-   * @returns A string representation of the error
-   */
-  [/* @__PURE__ */ Symbol.for("Deno.customInspect")](inspect, options) {
-    return inspect(inspectableError(this), options);
-  }
-};
-function syntaxError(message) {
-  const DomException = globalThis.DOMException;
-  return typeof DomException == "function" ? new DomException(message, "SyntaxError") : new SyntaxError(message);
-}
-function flattenError2(err) {
-  return err instanceof Error ? "errors" in err && Array.isArray(err.errors) ? err.errors.map(flattenError2).join(", ") : "cause" in err && err.cause instanceof Error ? `${err}: ${flattenError2(err.cause)}` : err.message : `${err}`;
-}
-function inspectableError(err) {
-  return {
-    type: err.type,
-    message: err.message,
-    code: err.code,
-    defaultPrevented: err.defaultPrevented,
-    cancelable: err.cancelable,
-    timeStamp: err.timeStamp
-  };
-}
-var __typeError = (msg) => {
-  throw TypeError(msg);
-};
-var __accessCheck = (obj, member, msg) => member.has(obj) || __typeError("Cannot " + msg);
-var __privateGet = (obj, member, getter) => (__accessCheck(obj, member, "read from private field"), getter ? getter.call(obj) : member.get(obj));
-var __privateAdd = (obj, member, value) => member.has(obj) ? __typeError("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
-var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "write to private field"), member.set(obj, value), value);
-var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
-var _readyState;
-var _url2;
-var _redirectUrl;
-var _withCredentials;
-var _fetch;
-var _reconnectInterval;
-var _reconnectTimer;
-var _lastEventId;
-var _controller;
-var _parser;
-var _onError;
-var _onMessage;
-var _onOpen;
-var _EventSource_instances;
-var connect_fn;
-var _onFetchResponse;
-var _onFetchError;
-var getRequestOptions_fn;
-var _onEvent;
-var _onRetryChange;
-var failConnection_fn;
-var scheduleReconnect_fn;
-var _reconnect;
-var EventSource = class extends EventTarget {
-  constructor(url2, eventSourceInitDict) {
-    var _a3, _b;
-    super(), __privateAdd(this, _EventSource_instances), this.CONNECTING = 0, this.OPEN = 1, this.CLOSED = 2, __privateAdd(this, _readyState), __privateAdd(this, _url2), __privateAdd(this, _redirectUrl), __privateAdd(this, _withCredentials), __privateAdd(this, _fetch), __privateAdd(this, _reconnectInterval), __privateAdd(this, _reconnectTimer), __privateAdd(this, _lastEventId, null), __privateAdd(this, _controller), __privateAdd(this, _parser), __privateAdd(this, _onError, null), __privateAdd(this, _onMessage, null), __privateAdd(this, _onOpen, null), __privateAdd(this, _onFetchResponse, async (response) => {
-      var _a22;
-      __privateGet(this, _parser).reset();
-      const { body, redirected, status, headers } = response;
-      if (status === 204) {
-        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, "Server sent HTTP 204, not reconnecting", 204), this.close();
-        return;
-      }
-      if (redirected ? __privateSet(this, _redirectUrl, new URL(response.url)) : __privateSet(this, _redirectUrl, void 0), status !== 200) {
-        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, `Non-200 status code (${status})`, status);
-        return;
-      }
-      if (!(headers.get("content-type") || "").startsWith("text/event-stream")) {
-        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, 'Invalid content type, expected "text/event-stream"', status);
-        return;
-      }
-      if (__privateGet(this, _readyState) === this.CLOSED)
-        return;
-      __privateSet(this, _readyState, this.OPEN);
-      const openEvent = new Event("open");
-      if ((_a22 = __privateGet(this, _onOpen)) == null || _a22.call(this, openEvent), this.dispatchEvent(openEvent), typeof body != "object" || !body || !("getReader" in body)) {
-        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, "Invalid response body, expected a web ReadableStream", status), this.close();
-        return;
-      }
-      const decoder = new TextDecoder(), reader = body.getReader();
-      let open2 = true;
-      do {
-        const { done, value } = await reader.read();
-        value && __privateGet(this, _parser).feed(decoder.decode(value, { stream: !done })), done && (open2 = false, __privateGet(this, _parser).reset(), __privateMethod(this, _EventSource_instances, scheduleReconnect_fn).call(this));
-      } while (open2);
-    }), __privateAdd(this, _onFetchError, (err) => {
-      __privateSet(this, _controller, void 0), !(err.name === "AbortError" || err.type === "aborted") && __privateMethod(this, _EventSource_instances, scheduleReconnect_fn).call(this, flattenError2(err));
-    }), __privateAdd(this, _onEvent, (event) => {
-      typeof event.id == "string" && __privateSet(this, _lastEventId, event.id);
-      const messageEvent = new MessageEvent(event.event || "message", {
-        data: event.data,
-        origin: __privateGet(this, _redirectUrl) ? __privateGet(this, _redirectUrl).origin : __privateGet(this, _url2).origin,
-        lastEventId: event.id || ""
-      });
-      __privateGet(this, _onMessage) && (!event.event || event.event === "message") && __privateGet(this, _onMessage).call(this, messageEvent), this.dispatchEvent(messageEvent);
-    }), __privateAdd(this, _onRetryChange, (value) => {
-      __privateSet(this, _reconnectInterval, value);
-    }), __privateAdd(this, _reconnect, () => {
-      __privateSet(this, _reconnectTimer, void 0), __privateGet(this, _readyState) === this.CONNECTING && __privateMethod(this, _EventSource_instances, connect_fn).call(this);
-    });
-    try {
-      if (url2 instanceof URL)
-        __privateSet(this, _url2, url2);
-      else if (typeof url2 == "string")
-        __privateSet(this, _url2, new URL(url2, getBaseURL()));
-      else
-        throw new Error("Invalid URL");
-    } catch {
-      throw syntaxError("An invalid or illegal string was specified");
-    }
-    __privateSet(this, _parser, createParser({
-      onEvent: __privateGet(this, _onEvent),
-      onRetry: __privateGet(this, _onRetryChange)
-    })), __privateSet(this, _readyState, this.CONNECTING), __privateSet(this, _reconnectInterval, 3e3), __privateSet(this, _fetch, (_a3 = eventSourceInitDict == null ? void 0 : eventSourceInitDict.fetch) != null ? _a3 : globalThis.fetch), __privateSet(this, _withCredentials, (_b = eventSourceInitDict == null ? void 0 : eventSourceInitDict.withCredentials) != null ? _b : false), __privateMethod(this, _EventSource_instances, connect_fn).call(this);
-  }
-  /**
-   * Returns the state of this EventSource object's connection. It can have the values described below.
-   *
-   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/readyState)
-   *
-   * Note: typed as `number` instead of `0 | 1 | 2` for compatibility with the `EventSource` interface,
-   * defined in the TypeScript `dom` library.
-   *
-   * @public
-   */
-  get readyState() {
-    return __privateGet(this, _readyState);
-  }
-  /**
-   * Returns the URL providing the event stream.
-   *
-   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/url)
-   *
-   * @public
-   */
-  get url() {
-    return __privateGet(this, _url2).href;
-  }
-  /**
-   * Returns true if the credentials mode for connection requests to the URL providing the event stream is set to "include", and false otherwise.
-   *
-   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/withCredentials)
-   */
-  get withCredentials() {
-    return __privateGet(this, _withCredentials);
-  }
-  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/error_event) */
-  get onerror() {
-    return __privateGet(this, _onError);
-  }
-  set onerror(value) {
-    __privateSet(this, _onError, value);
-  }
-  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/message_event) */
-  get onmessage() {
-    return __privateGet(this, _onMessage);
-  }
-  set onmessage(value) {
-    __privateSet(this, _onMessage, value);
-  }
-  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/open_event) */
-  get onopen() {
-    return __privateGet(this, _onOpen);
-  }
-  set onopen(value) {
-    __privateSet(this, _onOpen, value);
-  }
-  addEventListener(type, listener, options) {
-    const listen = listener;
-    super.addEventListener(type, listen, options);
-  }
-  removeEventListener(type, listener, options) {
-    const listen = listener;
-    super.removeEventListener(type, listen, options);
-  }
-  /**
-   * Aborts any instances of the fetch algorithm started for this EventSource object, and sets the readyState attribute to CLOSED.
-   *
-   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/close)
-   *
-   * @public
-   */
-  close() {
-    __privateGet(this, _reconnectTimer) && clearTimeout(__privateGet(this, _reconnectTimer)), __privateGet(this, _readyState) !== this.CLOSED && (__privateGet(this, _controller) && __privateGet(this, _controller).abort(), __privateSet(this, _readyState, this.CLOSED), __privateSet(this, _controller, void 0));
-  }
-};
-_readyState = /* @__PURE__ */ new WeakMap(), _url2 = /* @__PURE__ */ new WeakMap(), _redirectUrl = /* @__PURE__ */ new WeakMap(), _withCredentials = /* @__PURE__ */ new WeakMap(), _fetch = /* @__PURE__ */ new WeakMap(), _reconnectInterval = /* @__PURE__ */ new WeakMap(), _reconnectTimer = /* @__PURE__ */ new WeakMap(), _lastEventId = /* @__PURE__ */ new WeakMap(), _controller = /* @__PURE__ */ new WeakMap(), _parser = /* @__PURE__ */ new WeakMap(), _onError = /* @__PURE__ */ new WeakMap(), _onMessage = /* @__PURE__ */ new WeakMap(), _onOpen = /* @__PURE__ */ new WeakMap(), _EventSource_instances = /* @__PURE__ */ new WeakSet(), /**
-* Connect to the given URL and start receiving events
-*
-* @internal
-*/
-connect_fn = function() {
-  __privateSet(this, _readyState, this.CONNECTING), __privateSet(this, _controller, new AbortController()), __privateGet(this, _fetch)(__privateGet(this, _url2), __privateMethod(this, _EventSource_instances, getRequestOptions_fn).call(this)).then(__privateGet(this, _onFetchResponse)).catch(__privateGet(this, _onFetchError));
-}, _onFetchResponse = /* @__PURE__ */ new WeakMap(), _onFetchError = /* @__PURE__ */ new WeakMap(), /**
-* Get request options for the `fetch()` request
-*
-* @returns The request options
-* @internal
-*/
-getRequestOptions_fn = function() {
-  var _a3;
-  const init = {
-    // [spec] Let `corsAttributeState` be `Anonymous`…
-    // [spec] …will have their mode set to "cors"…
-    mode: "cors",
-    redirect: "follow",
-    headers: { Accept: "text/event-stream", ...__privateGet(this, _lastEventId) ? { "Last-Event-ID": __privateGet(this, _lastEventId) } : void 0 },
-    cache: "no-store",
-    signal: (_a3 = __privateGet(this, _controller)) == null ? void 0 : _a3.signal
-  };
-  return "window" in globalThis && (init.credentials = this.withCredentials ? "include" : "same-origin"), init;
-}, _onEvent = /* @__PURE__ */ new WeakMap(), _onRetryChange = /* @__PURE__ */ new WeakMap(), /**
-* Handles the process referred to in the EventSource specification as "failing a connection".
-*
-* @param error - The error causing the connection to fail
-* @param code - The HTTP status code, if available
-* @internal
-*/
-failConnection_fn = function(message, code) {
-  var _a3;
-  __privateGet(this, _readyState) !== this.CLOSED && __privateSet(this, _readyState, this.CLOSED);
-  const errorEvent = new ErrorEvent("error", { code, message });
-  (_a3 = __privateGet(this, _onError)) == null || _a3.call(this, errorEvent), this.dispatchEvent(errorEvent);
-}, /**
-* Schedules a reconnection attempt against the EventSource endpoint.
-*
-* @param message - The error causing the connection to fail
-* @param code - The HTTP status code, if available
-* @internal
-*/
-scheduleReconnect_fn = function(message, code) {
-  var _a3;
-  if (__privateGet(this, _readyState) === this.CLOSED)
-    return;
-  __privateSet(this, _readyState, this.CONNECTING);
-  const errorEvent = new ErrorEvent("error", { code, message });
-  (_a3 = __privateGet(this, _onError)) == null || _a3.call(this, errorEvent), this.dispatchEvent(errorEvent), __privateSet(this, _reconnectTimer, setTimeout(__privateGet(this, _reconnect), __privateGet(this, _reconnectInterval)));
-}, _reconnect = /* @__PURE__ */ new WeakMap(), /**
-* ReadyState representing an EventSource currently trying to connect
-*
-* @public
-*/
-EventSource.CONNECTING = 0, /**
-* ReadyState representing an EventSource connection that is open (eg connected)
-*
-* @public
-*/
-EventSource.OPEN = 1, /**
-* ReadyState representing an EventSource connection that is closed (eg disconnected)
-*
-* @public
-*/
-EventSource.CLOSED = 2;
-function getBaseURL() {
-  const doc = "document" in globalThis ? globalThis.document : void 0;
-  return doc && typeof doc == "object" && "baseURI" in doc && typeof doc.baseURI == "string" ? doc.baseURI : void 0;
-}
-
-// node_modules/eventsource-parser/dist/stream.js
-var EventSourceParserStream = class extends TransformStream {
-  constructor({ onError, onRetry, onComment, maxBufferSize } = {}) {
-    let parser;
-    super({
-      start(controller) {
-        parser = createParser({
-          onEvent: (event) => {
-            controller.enqueue(event);
-          },
-          onError(error2) {
-            typeof onError == "function" && onError(error2), (onError === "terminate" || error2.type === "max-buffer-size-exceeded") && controller.error(error2);
-          },
-          onRetry,
-          onComment,
-          maxBufferSize
-        });
-      },
-      transform(chunk) {
-        parser.feed(chunk);
-      }
-    });
-  }
-};
-
-// node_modules/@modelcontextprotocol/client/dist/index.mjs
+// node_modules/@modelcontextprotocol/client/dist/public-CvV4ZHkX.mjs
 var OAuthClientFlowError = class extends Error {
   static {
     Object.defineProperty(this, "mcpBrand", { value: "mcp.OAuthClientFlowError" });
@@ -20585,12 +20491,14 @@ async function authInternal(provider, { serverUrl, authorizationCode, iss, scope
     await provider.saveTokens(tokens, infoCtx);
   }
   if (tokens?.refresh_token && !forceReauthorization) {
+    const refreshScope = await provider.scopeForRefresh?.(tokens);
     let newTokens;
     try {
       newTokens = await refreshAuthorization(authorizationServerUrl, {
         metadata,
         clientInformation,
         refreshToken: tokens.refresh_token,
+        scope: refreshScope,
         resource,
         addClientAuthentication: provider.addClientAuthentication,
         dpop: await provider.dpop?.(),
@@ -20878,21 +20786,25 @@ async function executeTokenRequest(authorizationServerUrl, { metadata, tokenRequ
     throw parseError;
   }
 }
-async function refreshAuthorization(authorizationServerUrl, { metadata, clientInformation, refreshToken, resource, addClientAuthentication, dpop, fetchFn }) {
+async function refreshAuthorization(authorizationServerUrl, { metadata, clientInformation, refreshToken, scope, resource, addClientAuthentication, dpop, fetchFn }) {
+  const tokenRequestParams = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken
+  });
+  if (scope) tokenRequestParams.set("scope", scope);
+  const tokens = await executeTokenRequest(authorizationServerUrl, {
+    metadata,
+    tokenRequestParams,
+    clientInformation,
+    addClientAuthentication,
+    resource,
+    dpop,
+    fetchFn
+  });
   return {
     refresh_token: refreshToken,
-    ...await executeTokenRequest(authorizationServerUrl, {
-      metadata,
-      tokenRequestParams: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken
-      }),
-      clientInformation,
-      addClientAuthentication,
-      resource,
-      dpop,
-      fetchFn
-    })
+    ...tokens,
+    ...scope && !tokens.scope && { scope }
   };
 }
 async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, iss, scope, fetchFn } = {}) {
@@ -21941,6 +21853,7 @@ var LIST_CHANGED_EVICTIONS = {
   "notifications/resources/list_changed": ["resources/list", "resources/templates/list"]
 };
 var DEFAULT_LIST_MAX_PAGES = 64;
+var clientInternals = {};
 var Client = class extends Protocol {
   _serverCapabilities;
   _serverVersion;
@@ -21985,6 +21898,11 @@ var Client = class extends Protocol {
   _autoOpenedSubscription;
   /** Backing store for {@linkcode getDiscoverResult}. Per-connection. */
   _discoverResult;
+  static {
+    clientInternals.enforceStrictCapabilities = (client) => client._enforceStrictCapabilities;
+    clientInternals.walkPages = (client, method, fetchPage, items) => client._walkPages(method, fetchPage, items);
+    clientInternals.readResource = (client, params, options) => client._readResource(params, options);
+  }
   /**
   * Clears every per-connection field in one place. Called at the start of
   * each fresh (non-resuming) connect and from `close()`, so a stale
@@ -22671,10 +22589,25 @@ var Client = class extends Protocol {
   async _listAllPages(method, baseParams, options, items, finalize2) {
     const bypass = options?.cacheMode === "bypass";
     const generation = this._cache.captureGeneration(method);
-    const acc = await this.request({
-      method,
-      ...baseParams && { params: { ...baseParams } }
-    }, options);
+    const fetchPage = (cursor) => {
+      const params = cursor === void 0 ? baseParams && { ...baseParams } : {
+        ...baseParams,
+        cursor
+      };
+      return this.request({
+        method,
+        ...params && { params }
+      }, options);
+    };
+    const acc = await this._walkPages(method, fetchPage, items);
+    delete acc.nextCursor;
+    finalize2?.(acc);
+    if (bypass) return acc;
+    await this._cache.write(method, acc, generation, this._freshness(acc));
+    return acc;
+  }
+  async _walkPages(method, fetchPage, items) {
+    const acc = await fetchPage(void 0);
     let cursor = acc.nextCursor;
     let previous = acc;
     let pages = 1;
@@ -22683,23 +22616,13 @@ var Client = class extends Protocol {
         method,
         listMaxPages: this._listMaxPages
       });
-      const page = await this.request({
-        method,
-        params: {
-          ...baseParams,
-          cursor
-        }
-      }, options);
+      const page = await fetchPage(cursor);
       if (page.nextCursor === cursor && JSON.stringify(items(page)) === JSON.stringify(items(previous))) break;
       items(acc).push(...items(page));
       previous = page;
       cursor = page.nextCursor;
       pages++;
     }
-    delete acc.nextCursor;
-    finalize2?.(acc);
-    if (bypass) return acc;
-    await this._cache.write(method, acc, generation, this._freshness(acc));
     return acc;
   }
   /**
@@ -22815,8 +22738,15 @@ var Client = class extends Protocol {
   * unbounded).
   */
   async readResource(params, options) {
+    const { result } = await this._readResource(params, options);
+    return result;
+  }
+  async _readResource(params, options) {
     const hit = await this._serveFromCache("resources/read", params.uri, options);
-    if (hit !== void 0) return hit;
+    if (hit !== void 0) return {
+      result: hit,
+      cached: true
+    };
     const generation = this._cache.captureGeneration("resources/read", params.uri);
     const result = await this.request({
       method: "resources/read",
@@ -22827,7 +22757,10 @@ var Client = class extends Protocol {
       if (freshness.expiresAt > this._cache.now()) await this._cache.write("resources/read", result, generation, freshness);
       else if (options?.cacheMode === "refresh") await this._cache.evictKey("resources/read", params.uri);
     }
-    return result;
+    return {
+      result,
+      cached: false
+    };
   }
   /** Subscribes to change notifications for a resource. The server must support resource subscriptions. */
   async subscribeResource(params, options) {
@@ -23294,6 +23227,506 @@ var Client = class extends Protocol {
     return this.notification({ method: "notifications/roots/list_changed" });
   }
 };
+
+// node_modules/eventsource-parser/dist/index.js
+var ParseError = class extends Error {
+  constructor(message, options) {
+    super(message), this.name = "ParseError", this.type = options.type, this.field = options.field, this.value = options.value, this.line = options.line;
+  }
+};
+var LF = 10;
+var CR = 13;
+var SPACE = 32;
+function noop(_arg) {
+}
+function createParser(config2) {
+  if (typeof config2 == "function")
+    throw new TypeError(
+      "`config` must be an object, got a function instead. Did you mean `createParser({onEvent: fn})`?"
+    );
+  const { onEvent = noop, onError = noop, onRetry = noop, onComment, maxBufferSize } = config2, pendingFragments = [];
+  let pendingFragmentsLength = 0, isFirstChunk = true, id, data = "", dataLines = 0, eventType, terminated = false;
+  function feed(chunk) {
+    if (terminated)
+      throw new Error(
+        "Cannot feed parser: it was terminated after exceeding the configured max buffer size. Call `reset()` to resume parsing."
+      );
+    if (isFirstChunk && (isFirstChunk = false, chunk.charCodeAt(0) === 239 && chunk.charCodeAt(1) === 187 && chunk.charCodeAt(2) === 191 && (chunk = chunk.slice(3))), pendingFragments.length === 0) {
+      const trailing2 = processLines(chunk);
+      trailing2 !== "" && (pendingFragments.push(trailing2), pendingFragmentsLength = trailing2.length), checkBufferSize();
+      return;
+    }
+    if (chunk.indexOf(`
+`) === -1 && chunk.indexOf("\r") === -1) {
+      pendingFragments.push(chunk), pendingFragmentsLength += chunk.length, checkBufferSize();
+      return;
+    }
+    pendingFragments.push(chunk);
+    const input = pendingFragments.join("");
+    pendingFragments.length = 0, pendingFragmentsLength = 0;
+    const trailing = processLines(input);
+    trailing !== "" && (pendingFragments.push(trailing), pendingFragmentsLength = trailing.length), checkBufferSize();
+  }
+  function checkBufferSize() {
+    maxBufferSize !== void 0 && (pendingFragmentsLength + data.length <= maxBufferSize || (terminated = true, pendingFragments.length = 0, pendingFragmentsLength = 0, id = void 0, data = "", dataLines = 0, eventType = void 0, onError(
+      new ParseError(`Buffered data exceeded max buffer size of ${maxBufferSize} characters`, {
+        type: "max-buffer-size-exceeded"
+      })
+    )));
+  }
+  function processLines(chunk) {
+    let searchIndex = 0;
+    if (chunk.indexOf("\r") === -1) {
+      let lfIndex = chunk.indexOf(`
+`, searchIndex);
+      for (; lfIndex !== -1; ) {
+        if (searchIndex === lfIndex) {
+          dataLines > 0 && onEvent({ id, event: eventType, data }), id = void 0, data = "", dataLines = 0, eventType = void 0, searchIndex = lfIndex + 1, lfIndex = chunk.indexOf(`
+`, searchIndex);
+          continue;
+        }
+        const firstCharCode = chunk.charCodeAt(searchIndex);
+        if (isDataPrefix(chunk, searchIndex, firstCharCode)) {
+          const valueStart = chunk.charCodeAt(searchIndex + 5) === SPACE ? searchIndex + 6 : searchIndex + 5, value = chunk.slice(valueStart, lfIndex);
+          if (dataLines === 0 && chunk.charCodeAt(lfIndex + 1) === LF) {
+            onEvent({ id, event: eventType, data: value }), id = void 0, data = "", eventType = void 0, searchIndex = lfIndex + 2, lfIndex = chunk.indexOf(`
+`, searchIndex);
+            continue;
+          }
+          data = dataLines === 0 ? value : `${data}
+${value}`, dataLines++;
+        } else isEventPrefix(chunk, searchIndex, firstCharCode) ? eventType = chunk.slice(
+          chunk.charCodeAt(searchIndex + 6) === SPACE ? searchIndex + 7 : searchIndex + 6,
+          lfIndex
+        ) || void 0 : parseLine(chunk, searchIndex, lfIndex);
+        searchIndex = lfIndex + 1, lfIndex = chunk.indexOf(`
+`, searchIndex);
+      }
+      return chunk.slice(searchIndex);
+    }
+    for (; searchIndex < chunk.length; ) {
+      const crIndex = chunk.indexOf("\r", searchIndex), lfIndex = chunk.indexOf(`
+`, searchIndex);
+      let lineEnd = -1;
+      if (crIndex !== -1 && lfIndex !== -1 ? lineEnd = crIndex < lfIndex ? crIndex : lfIndex : crIndex !== -1 ? crIndex === chunk.length - 1 ? lineEnd = -1 : lineEnd = crIndex : lfIndex !== -1 && (lineEnd = lfIndex), lineEnd === -1)
+        break;
+      parseLine(chunk, searchIndex, lineEnd), searchIndex = lineEnd + 1, chunk.charCodeAt(searchIndex - 1) === CR && chunk.charCodeAt(searchIndex) === LF && searchIndex++;
+    }
+    return chunk.slice(searchIndex);
+  }
+  function parseLine(chunk, start, end) {
+    if (start === end) {
+      dispatchEvent();
+      return;
+    }
+    const firstCharCode = chunk.charCodeAt(start);
+    if (isDataPrefix(chunk, start, firstCharCode)) {
+      const valueStart = chunk.charCodeAt(start + 5) === SPACE ? start + 6 : start + 5, value2 = chunk.slice(valueStart, end);
+      data = dataLines === 0 ? value2 : `${data}
+${value2}`, dataLines++;
+      return;
+    }
+    if (isEventPrefix(chunk, start, firstCharCode)) {
+      eventType = chunk.slice(chunk.charCodeAt(start + 6) === SPACE ? start + 7 : start + 6, end) || void 0;
+      return;
+    }
+    if (firstCharCode === 105 && chunk.charCodeAt(start + 1) === 100 && chunk.charCodeAt(start + 2) === 58) {
+      const value2 = chunk.slice(chunk.charCodeAt(start + 3) === SPACE ? start + 4 : start + 3, end);
+      value2.includes("\0") || (id = value2);
+      return;
+    }
+    if (firstCharCode === 58) {
+      if (onComment) {
+        const line2 = chunk.slice(start, end);
+        onComment(line2.slice(chunk.charCodeAt(start + 1) === SPACE ? 2 : 1));
+      }
+      return;
+    }
+    const line = chunk.slice(start, end), fieldSeparatorIndex = line.indexOf(":");
+    if (fieldSeparatorIndex === -1) {
+      processField(line, "", line);
+      return;
+    }
+    const field = line.slice(0, fieldSeparatorIndex), offset = line.charCodeAt(fieldSeparatorIndex + 1) === SPACE ? 2 : 1, value = line.slice(fieldSeparatorIndex + offset);
+    processField(field, value, line);
+  }
+  function processField(field, value, line) {
+    switch (field) {
+      case "event":
+        eventType = value || void 0;
+        break;
+      case "data":
+        data = dataLines === 0 ? value : `${data}
+${value}`, dataLines++;
+        break;
+      case "id":
+        value.includes("\0") || (id = value);
+        break;
+      case "retry":
+        /^\d+$/.test(value) ? onRetry(parseInt(value, 10)) : onError(
+          new ParseError(`Invalid \`retry\` value: "${value}"`, {
+            type: "invalid-retry",
+            value,
+            line
+          })
+        );
+        break;
+      default:
+        onError(
+          new ParseError(
+            `Unknown field "${field.length > 20 ? `${field.slice(0, 20)}…` : field}"`,
+            { type: "unknown-field", field, value, line }
+          )
+        );
+        break;
+    }
+  }
+  function dispatchEvent() {
+    dataLines > 0 && onEvent({
+      id,
+      event: eventType,
+      data
+    }), id = void 0, data = "", dataLines = 0, eventType = void 0;
+  }
+  function reset(options = {}) {
+    if (options.consume && pendingFragments.length > 0) {
+      const incompleteLine = pendingFragments.join("");
+      parseLine(incompleteLine, 0, incompleteLine.length);
+    }
+    isFirstChunk = true, id = void 0, data = "", dataLines = 0, eventType = void 0, pendingFragments.length = 0, pendingFragmentsLength = 0, terminated = false;
+  }
+  return { feed, reset };
+}
+function isDataPrefix(chunk, i, firstCharCode) {
+  return firstCharCode === 100 && chunk.charCodeAt(i + 1) === 97 && chunk.charCodeAt(i + 2) === 116 && chunk.charCodeAt(i + 3) === 97 && chunk.charCodeAt(i + 4) === 58;
+}
+function isEventPrefix(chunk, i, firstCharCode) {
+  return firstCharCode === 101 && chunk.charCodeAt(i + 1) === 118 && chunk.charCodeAt(i + 2) === 101 && chunk.charCodeAt(i + 3) === 110 && chunk.charCodeAt(i + 4) === 116 && chunk.charCodeAt(i + 5) === 58;
+}
+
+// node_modules/eventsource/dist/index.js
+var ErrorEvent = class extends Event {
+  /**
+   * Constructs a new `ErrorEvent` instance. This is typically not called directly,
+   * but rather emitted by the `EventSource` object when an error occurs.
+   *
+   * @param type - The type of the event (should be "error")
+   * @param errorEventInitDict - Optional properties to include in the error event
+   */
+  constructor(type, errorEventInitDict) {
+    var _a3, _b;
+    super(type), this.code = (_a3 = errorEventInitDict == null ? void 0 : errorEventInitDict.code) != null ? _a3 : void 0, this.message = (_b = errorEventInitDict == null ? void 0 : errorEventInitDict.message) != null ? _b : void 0;
+  }
+  /**
+   * Node.js "hides" the `message` and `code` properties of the `ErrorEvent` instance,
+   * when it is `console.log`'ed. This makes it harder to debug errors. To ease debugging,
+   * we explicitly include the properties in the `inspect` method.
+   *
+   * This is automatically called by Node.js when you `console.log` an instance of this class.
+   *
+   * @param _depth - The current depth
+   * @param options - The options passed to `util.inspect`
+   * @param inspect - The inspect function to use (prevents having to import it from `util`)
+   * @returns A string representation of the error
+   */
+  [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+    return inspect(inspectableError(this), options);
+  }
+  /**
+   * Deno "hides" the `message` and `code` properties of the `ErrorEvent` instance,
+   * when it is `console.log`'ed. This makes it harder to debug errors. To ease debugging,
+   * we explicitly include the properties in the `inspect` method.
+   *
+   * This is automatically called by Deno when you `console.log` an instance of this class.
+   *
+   * @param inspect - The inspect function to use (prevents having to import it from `util`)
+   * @param options - The options passed to `Deno.inspect`
+   * @returns A string representation of the error
+   */
+  [/* @__PURE__ */ Symbol.for("Deno.customInspect")](inspect, options) {
+    return inspect(inspectableError(this), options);
+  }
+};
+function syntaxError(message) {
+  const DomException = globalThis.DOMException;
+  return typeof DomException == "function" ? new DomException(message, "SyntaxError") : new SyntaxError(message);
+}
+function flattenError2(err) {
+  return err instanceof Error ? "errors" in err && Array.isArray(err.errors) ? err.errors.map(flattenError2).join(", ") : "cause" in err && err.cause instanceof Error ? `${err}: ${flattenError2(err.cause)}` : err.message : `${err}`;
+}
+function inspectableError(err) {
+  return {
+    type: err.type,
+    message: err.message,
+    code: err.code,
+    defaultPrevented: err.defaultPrevented,
+    cancelable: err.cancelable,
+    timeStamp: err.timeStamp
+  };
+}
+var __typeError = (msg) => {
+  throw TypeError(msg);
+};
+var __accessCheck = (obj, member, msg) => member.has(obj) || __typeError("Cannot " + msg);
+var __privateGet = (obj, member, getter) => (__accessCheck(obj, member, "read from private field"), getter ? getter.call(obj) : member.get(obj));
+var __privateAdd = (obj, member, value) => member.has(obj) ? __typeError("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
+var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "write to private field"), member.set(obj, value), value);
+var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
+var _readyState;
+var _url2;
+var _redirectUrl;
+var _withCredentials;
+var _fetch;
+var _reconnectInterval;
+var _reconnectTimer;
+var _lastEventId;
+var _controller;
+var _parser;
+var _onError;
+var _onMessage;
+var _onOpen;
+var _EventSource_instances;
+var connect_fn;
+var _onFetchResponse;
+var _onFetchError;
+var getRequestOptions_fn;
+var _onEvent;
+var _onRetryChange;
+var failConnection_fn;
+var scheduleReconnect_fn;
+var _reconnect;
+var EventSource = class extends EventTarget {
+  constructor(url2, eventSourceInitDict) {
+    var _a3, _b;
+    super(), __privateAdd(this, _EventSource_instances), this.CONNECTING = 0, this.OPEN = 1, this.CLOSED = 2, __privateAdd(this, _readyState), __privateAdd(this, _url2), __privateAdd(this, _redirectUrl), __privateAdd(this, _withCredentials), __privateAdd(this, _fetch), __privateAdd(this, _reconnectInterval), __privateAdd(this, _reconnectTimer), __privateAdd(this, _lastEventId, null), __privateAdd(this, _controller), __privateAdd(this, _parser), __privateAdd(this, _onError, null), __privateAdd(this, _onMessage, null), __privateAdd(this, _onOpen, null), __privateAdd(this, _onFetchResponse, async (response) => {
+      var _a22;
+      __privateGet(this, _parser).reset();
+      const { body, redirected, status, headers } = response;
+      if (status === 204) {
+        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, "Server sent HTTP 204, not reconnecting", 204), this.close();
+        return;
+      }
+      if (redirected ? __privateSet(this, _redirectUrl, new URL(response.url)) : __privateSet(this, _redirectUrl, void 0), status !== 200) {
+        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, `Non-200 status code (${status})`, status);
+        return;
+      }
+      if (!(headers.get("content-type") || "").startsWith("text/event-stream")) {
+        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, 'Invalid content type, expected "text/event-stream"', status);
+        return;
+      }
+      if (__privateGet(this, _readyState) === this.CLOSED)
+        return;
+      __privateSet(this, _readyState, this.OPEN);
+      const openEvent = new Event("open");
+      if ((_a22 = __privateGet(this, _onOpen)) == null || _a22.call(this, openEvent), this.dispatchEvent(openEvent), typeof body != "object" || !body || !("getReader" in body)) {
+        __privateMethod(this, _EventSource_instances, failConnection_fn).call(this, "Invalid response body, expected a web ReadableStream", status), this.close();
+        return;
+      }
+      const decoder = new TextDecoder(), reader = body.getReader();
+      let open2 = true;
+      do {
+        const { done, value } = await reader.read();
+        value && __privateGet(this, _parser).feed(decoder.decode(value, { stream: !done })), done && (open2 = false, __privateGet(this, _parser).reset(), __privateMethod(this, _EventSource_instances, scheduleReconnect_fn).call(this));
+      } while (open2);
+    }), __privateAdd(this, _onFetchError, (err) => {
+      __privateSet(this, _controller, void 0), !(err.name === "AbortError" || err.type === "aborted") && __privateMethod(this, _EventSource_instances, scheduleReconnect_fn).call(this, flattenError2(err));
+    }), __privateAdd(this, _onEvent, (event) => {
+      typeof event.id == "string" && __privateSet(this, _lastEventId, event.id);
+      const messageEvent = new MessageEvent(event.event || "message", {
+        data: event.data,
+        origin: __privateGet(this, _redirectUrl) ? __privateGet(this, _redirectUrl).origin : __privateGet(this, _url2).origin,
+        lastEventId: event.id || ""
+      });
+      __privateGet(this, _onMessage) && (!event.event || event.event === "message") && __privateGet(this, _onMessage).call(this, messageEvent), this.dispatchEvent(messageEvent);
+    }), __privateAdd(this, _onRetryChange, (value) => {
+      __privateSet(this, _reconnectInterval, value);
+    }), __privateAdd(this, _reconnect, () => {
+      __privateSet(this, _reconnectTimer, void 0), __privateGet(this, _readyState) === this.CONNECTING && __privateMethod(this, _EventSource_instances, connect_fn).call(this);
+    });
+    try {
+      if (url2 instanceof URL)
+        __privateSet(this, _url2, url2);
+      else if (typeof url2 == "string")
+        __privateSet(this, _url2, new URL(url2, getBaseURL()));
+      else
+        throw new Error("Invalid URL");
+    } catch {
+      throw syntaxError("An invalid or illegal string was specified");
+    }
+    __privateSet(this, _parser, createParser({
+      onEvent: __privateGet(this, _onEvent),
+      onRetry: __privateGet(this, _onRetryChange)
+    })), __privateSet(this, _readyState, this.CONNECTING), __privateSet(this, _reconnectInterval, 3e3), __privateSet(this, _fetch, (_a3 = eventSourceInitDict == null ? void 0 : eventSourceInitDict.fetch) != null ? _a3 : globalThis.fetch), __privateSet(this, _withCredentials, (_b = eventSourceInitDict == null ? void 0 : eventSourceInitDict.withCredentials) != null ? _b : false), __privateMethod(this, _EventSource_instances, connect_fn).call(this);
+  }
+  /**
+   * Returns the state of this EventSource object's connection. It can have the values described below.
+   *
+   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/readyState)
+   *
+   * Note: typed as `number` instead of `0 | 1 | 2` for compatibility with the `EventSource` interface,
+   * defined in the TypeScript `dom` library.
+   *
+   * @public
+   */
+  get readyState() {
+    return __privateGet(this, _readyState);
+  }
+  /**
+   * Returns the URL providing the event stream.
+   *
+   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/url)
+   *
+   * @public
+   */
+  get url() {
+    return __privateGet(this, _url2).href;
+  }
+  /**
+   * Returns true if the credentials mode for connection requests to the URL providing the event stream is set to "include", and false otherwise.
+   *
+   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/withCredentials)
+   */
+  get withCredentials() {
+    return __privateGet(this, _withCredentials);
+  }
+  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/error_event) */
+  get onerror() {
+    return __privateGet(this, _onError);
+  }
+  set onerror(value) {
+    __privateSet(this, _onError, value);
+  }
+  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/message_event) */
+  get onmessage() {
+    return __privateGet(this, _onMessage);
+  }
+  set onmessage(value) {
+    __privateSet(this, _onMessage, value);
+  }
+  /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/open_event) */
+  get onopen() {
+    return __privateGet(this, _onOpen);
+  }
+  set onopen(value) {
+    __privateSet(this, _onOpen, value);
+  }
+  addEventListener(type, listener, options) {
+    const listen = listener;
+    super.addEventListener(type, listen, options);
+  }
+  removeEventListener(type, listener, options) {
+    const listen = listener;
+    super.removeEventListener(type, listen, options);
+  }
+  /**
+   * Aborts any instances of the fetch algorithm started for this EventSource object, and sets the readyState attribute to CLOSED.
+   *
+   * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/close)
+   *
+   * @public
+   */
+  close() {
+    __privateGet(this, _reconnectTimer) && clearTimeout(__privateGet(this, _reconnectTimer)), __privateGet(this, _readyState) !== this.CLOSED && (__privateGet(this, _controller) && __privateGet(this, _controller).abort(), __privateSet(this, _readyState, this.CLOSED), __privateSet(this, _controller, void 0));
+  }
+};
+_readyState = /* @__PURE__ */ new WeakMap(), _url2 = /* @__PURE__ */ new WeakMap(), _redirectUrl = /* @__PURE__ */ new WeakMap(), _withCredentials = /* @__PURE__ */ new WeakMap(), _fetch = /* @__PURE__ */ new WeakMap(), _reconnectInterval = /* @__PURE__ */ new WeakMap(), _reconnectTimer = /* @__PURE__ */ new WeakMap(), _lastEventId = /* @__PURE__ */ new WeakMap(), _controller = /* @__PURE__ */ new WeakMap(), _parser = /* @__PURE__ */ new WeakMap(), _onError = /* @__PURE__ */ new WeakMap(), _onMessage = /* @__PURE__ */ new WeakMap(), _onOpen = /* @__PURE__ */ new WeakMap(), _EventSource_instances = /* @__PURE__ */ new WeakSet(), /**
+* Connect to the given URL and start receiving events
+*
+* @internal
+*/
+connect_fn = function() {
+  __privateSet(this, _readyState, this.CONNECTING), __privateSet(this, _controller, new AbortController()), __privateGet(this, _fetch)(__privateGet(this, _url2), __privateMethod(this, _EventSource_instances, getRequestOptions_fn).call(this)).then(__privateGet(this, _onFetchResponse)).catch(__privateGet(this, _onFetchError));
+}, _onFetchResponse = /* @__PURE__ */ new WeakMap(), _onFetchError = /* @__PURE__ */ new WeakMap(), /**
+* Get request options for the `fetch()` request
+*
+* @returns The request options
+* @internal
+*/
+getRequestOptions_fn = function() {
+  var _a3;
+  const init = {
+    // [spec] Let `corsAttributeState` be `Anonymous`…
+    // [spec] …will have their mode set to "cors"…
+    mode: "cors",
+    redirect: "follow",
+    headers: { Accept: "text/event-stream", ...__privateGet(this, _lastEventId) ? { "Last-Event-ID": __privateGet(this, _lastEventId) } : void 0 },
+    cache: "no-store",
+    signal: (_a3 = __privateGet(this, _controller)) == null ? void 0 : _a3.signal
+  };
+  return "window" in globalThis && (init.credentials = this.withCredentials ? "include" : "same-origin"), init;
+}, _onEvent = /* @__PURE__ */ new WeakMap(), _onRetryChange = /* @__PURE__ */ new WeakMap(), /**
+* Handles the process referred to in the EventSource specification as "failing a connection".
+*
+* @param error - The error causing the connection to fail
+* @param code - The HTTP status code, if available
+* @internal
+*/
+failConnection_fn = function(message, code) {
+  var _a3;
+  __privateGet(this, _readyState) !== this.CLOSED && __privateSet(this, _readyState, this.CLOSED);
+  const errorEvent = new ErrorEvent("error", { code, message });
+  (_a3 = __privateGet(this, _onError)) == null || _a3.call(this, errorEvent), this.dispatchEvent(errorEvent);
+}, /**
+* Schedules a reconnection attempt against the EventSource endpoint.
+*
+* @param message - The error causing the connection to fail
+* @param code - The HTTP status code, if available
+* @internal
+*/
+scheduleReconnect_fn = function(message, code) {
+  var _a3;
+  if (__privateGet(this, _readyState) === this.CLOSED)
+    return;
+  __privateSet(this, _readyState, this.CONNECTING);
+  const errorEvent = new ErrorEvent("error", { code, message });
+  (_a3 = __privateGet(this, _onError)) == null || _a3.call(this, errorEvent), this.dispatchEvent(errorEvent), __privateSet(this, _reconnectTimer, setTimeout(__privateGet(this, _reconnect), __privateGet(this, _reconnectInterval)));
+}, _reconnect = /* @__PURE__ */ new WeakMap(), /**
+* ReadyState representing an EventSource currently trying to connect
+*
+* @public
+*/
+EventSource.CONNECTING = 0, /**
+* ReadyState representing an EventSource connection that is open (eg connected)
+*
+* @public
+*/
+EventSource.OPEN = 1, /**
+* ReadyState representing an EventSource connection that is closed (eg disconnected)
+*
+* @public
+*/
+EventSource.CLOSED = 2;
+function getBaseURL() {
+  const doc = "document" in globalThis ? globalThis.document : void 0;
+  return doc && typeof doc == "object" && "baseURI" in doc && typeof doc.baseURI == "string" ? doc.baseURI : void 0;
+}
+
+// node_modules/eventsource-parser/dist/stream.js
+var EventSourceParserStream = class extends TransformStream {
+  constructor({ onError, onRetry, onComment, maxBufferSize } = {}) {
+    let parser;
+    super({
+      start(controller) {
+        parser = createParser({
+          onEvent: (event) => {
+            controller.enqueue(event);
+          },
+          onError(error2) {
+            typeof onError == "function" && onError(error2), (onError === "terminate" || error2.type === "max-buffer-size-exceeded") && controller.error(error2);
+          },
+          onRetry,
+          onComment,
+          maxBufferSize
+        });
+      },
+      transform(chunk) {
+        parser.feed(chunk);
+      }
+    });
+  }
+};
+
+// node_modules/@modelcontextprotocol/client/dist/index.mjs
 function hasDpopChallenge(wwwAuthenticate) {
   return /(?:^|,)\s*dpop(?:\s|$|,)/i.test(wwwAuthenticate);
 }
@@ -24222,7 +24655,9 @@ function requestMethod(value) {
       throw new Error("MCP request method is unavailable");
   }
 }
-var SUPPORTED = ["2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"];
+var EXTENSION_METHODS = /* @__PURE__ */ new Set(["skills/list", "skills/get"]);
+var brokerValidated = { "~standard": { version: 1, vendor: "codewhale", validate: (value) => ({ value }) } };
+var SUPPORTED = ["2026-07-28", "2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"];
 function identity(owner) {
   return JSON.stringify([owner.plugin_id, owner.generation, owner.owner_token]);
 }
@@ -24398,6 +24833,7 @@ var HttpBrokerTransport = class {
   writes = /* @__PURE__ */ new Map();
   inner;
   negotiation;
+  legacyHandshake = false;
   legacy;
   started = false;
   closed = false;
@@ -24416,7 +24852,7 @@ var HttpBrokerTransport = class {
       if (!this.closed) this.fail(new Error("MCP HTTP channel closed"));
     };
     inner.onerror = (error2) => {
-      if (!this.negotiation) this.fail(error2);
+      if (!this.negotiation && !this.legacyHandshake) this.fail(error2);
     };
     return inner;
   }
@@ -24454,7 +24890,7 @@ var HttpBrokerTransport = class {
         if (!replacement || this.legacy || this.closed || this.stop.signal.aborted) throw error2;
         this.negotiation = void 0;
         const original = admitted.frame;
-        if (!("method" in original) || replacement.method !== original.method || replacement.operation_id !== admitted.operation_id || replacement.wire_id !== ("id" in original ? original.id : void 0) || !jsonEqual(replacement.params, original.params ?? {})) throw new Error("MCP negotiation grant mismatch");
+        if (!("method" in original) || original.method !== "initialize" || replacement.method !== original.method || replacement.operation_id !== admitted.operation_id || replacement.wire_id !== ("id" in original ? original.id : void 0) || !jsonEqual(replacement.params, original.params ?? {})) throw new Error("MCP negotiation grant mismatch");
         this.inner.onclose = void 0;
         this.inner.onerror = void 0;
         this.inner.onmessage = void 0;
@@ -24466,7 +24902,8 @@ var HttpBrokerTransport = class {
         await this.inner.send(original);
       }
     } catch (error2) {
-      await this.close().catch(() => void 0);
+      if (!this.legacyHandshake) await this.close().catch(() => void 0);
+      this.legacyHandshake = false;
       throw error2;
     } finally {
       this.writes.delete(key);
@@ -24486,10 +24923,14 @@ var HttpBrokerTransport = class {
     }
     const headers = {};
     for (const [name, value] of new Headers(init?.headers)) {
-      if (!["accept", "content-type", "mcp-session-id", "mcp-protocol-version"].includes(name) || value.length > 8192) throw new Error("MCP framing header unavailable");
+      if (!["accept", "content-type", "mcp-session-id", "mcp-protocol-version", "mcp-method", "mcp-name"].includes(name) || value.length > 8192) throw new Error("MCP framing header unavailable");
       headers[name.replaceAll("-", "_")] = value;
     }
     const reply = await this.rpc.request("net/fetch", { owner: this.owner, session_id: this.session, url: url2, method, headers, ...admitted ?? {} }, signal);
+    if (reply.legacy_handshake === true) {
+      if (!admitted || !("method" in admitted.frame) || admitted.frame.method !== "server/discover" || reply.response_id !== void 0 || ![404, 405, 406, 415].includes(reply.status)) throw new Error("MCP handshake refusal unavailable");
+      this.legacyHandshake = true;
+    }
     if (reply.legacy_grant !== void 0) {
       if (!admitted || this.legacy || this.negotiation || reply.response_id !== void 0 || ![404, 405, 406, 415, 501].includes(reply.status) || typeof reply.legacy_grant.ticket !== "string" || !reply.legacy_grant.ticket) throw new Error("MCP negotiation unavailable");
       this.negotiation = reply.legacy_grant;
@@ -24556,9 +24997,10 @@ var McpModule = class {
     if (params.transport !== void 0 && !["stdio", "http", "sse"].includes(params.transport)) throw new Error("MCP transport selector unavailable");
     if (this.sessions.size >= MAX_SESSIONS || this.sessions.has(params.session_id)) throw new Error("MCP session slot unavailable");
     const transport = params.transport === void 0 || params.transport === "stdio" ? new BrokerTransport(this.rpc, this.owner, params.session_id, params.launch_ticket) : new HttpBrokerTransport(this.rpc, this.owner, params.session_id, params.launch_ticket, params.transport === "sse");
-    const client = new Client({ name: "codewhale-tui", version: params.client_version }, { capabilities: {}, supportedProtocolVersions: SUPPORTED, versionNegotiation: { mode: "legacy" }, listMaxPages: 64 });
+    const client = new Client({ name: "codewhale-tui", version: params.client_version }, { capabilities: {}, supportedProtocolVersions: SUPPORTED, versionNegotiation: { mode: params.discover_grant === void 0 ? "legacy" : "auto", probe: { timeoutMs: timeout, maxRetries: 0 } }, inputRequired: { autoFulfill: false }, listMaxPages: 64 });
     const session = { client, transport, tail: Promise.resolve() };
     this.sessions.set(params.session_id, session);
+    if (params.discover_grant !== void 0) transport.grant(params.discover_grant);
     transport.grant(params.initialize_grant);
     transport.grant(params.initialized_grant);
     const abort = () => {
@@ -24569,7 +25011,8 @@ var McpModule = class {
     timer.unref();
     try {
       if (signal.aborted) throw new Error("MCP open cancelled");
-      await client.connect(transport);
+      await client.connect(transport, { signal, timeout });
+      if (params.discover_grant !== void 0) transport.takeReply(params.discover_grant.operation_id);
       transport.takeReply(params.initialize_grant.operation_id);
       this.check(params.owner);
       return { protocolVersion: client.getNegotiatedProtocolVersion(), serverInfo: client.getServerVersion(), capabilities: client.getServerCapabilities(), instructions: client.getInstructions() };
@@ -24585,7 +25028,8 @@ var McpModule = class {
   async request(params, signal) {
     this.check(params.owner);
     const timeout = deadline(params.deadline_ms);
-    const method = requestMethod(params.grant.method);
+    const extension = EXTENSION_METHODS.has(params.grant.method);
+    const method = extension ? params.grant.method : requestMethod(params.grant.method);
     const session = this.sessions.get(params.session_id);
     if (!session) throw new Error("MCP session is no longer live");
     const run = session.tail.then(async () => {
@@ -24593,7 +25037,8 @@ var McpModule = class {
       if (this.sessions.get(params.session_id) !== session || signal.aborted) throw new Error("MCP operation cancelled or stale");
       session.transport.grant(params.grant);
       try {
-        return await session.client.request({ method, params: params.grant.params }, { signal, timeout, resetTimeoutOnProgress: false });
+        const options = { signal, timeout, resetTimeoutOnProgress: false, allowInputRequired: true };
+        return extension ? await session.client.request({ method, params: params.grant.params }, brokerValidated, options) : await session.client.request({ method, params: params.grant.params }, options);
       } catch (error2) {
         if (!session.transport.takeReply(params.grant.operation_id)) {
           this.sessions.delete(params.session_id);

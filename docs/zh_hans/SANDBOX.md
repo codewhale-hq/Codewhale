@@ -20,9 +20,9 @@ Codewhale 可以执行由模型提出的 shell 命令。审批策略、感知工
 | 无操作系统包装器 | Windows | 当前实现 | `none` |
 | 兼容 OpenSandbox 的服务 | 任何受支持的主机 | `sandbox_backend = "opensandbox"` | 外部执行路径 |
 
-仓库里有一个 seccomp 实现模块，还有一份面向未来的 Windows 辅助程序契约
-（helper contract）。两者都没有接入子命令的启动流程，所以 Codewhale 不会对外声明它们
-是生效中的沙箱。光有沙箱源码，不能证明某条命令真的被限制过。
+仓库里有一份面向未来的 Windows 辅助程序契约（helper contract）。它没有接入
+子命令的启动流程，所以 Codewhale 不会对外声明它是生效中的沙箱。光有沙箱
+源码，不能证明某条命令真的被限制过。
 
 ## macOS：Seatbelt
 
@@ -211,9 +211,9 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 
 ## 实现参考
 
-- `crates/tui/src/sandbox/mod.rs` — 如实报告的选择逻辑与公开能力标记
-- `crates/tui/src/sandbox/seatbelt.rs` — macOS 包装器与可用性探测
-- `crates/tui/src/sandbox/bwrap.rs` — Linux 主动启用式包装器
-- `crates/tui/src/sandbox/process_hardening.rs` — Linux 父进程加固
-- `crates/tui/src/sandbox/backend.rs` — 外部后端选择
+- `crates/sandbox/src/lib.rs` — 如实报告的选择逻辑与公开能力标记
+- `crates/sandbox/src/seatbelt.rs` — macOS 包装器与可用性探测
+- `crates/sandbox/src/bwrap.rs` — Linux 主动启用式包装器
+- `crates/sandbox/src/process_hardening.rs` — Linux 父进程加固
+- `crates/sandbox/src/backend.rs` — 外部后端选择
 - `crates/tui/src/tools/diagnostics.rs` — 机器可读的诊断信息

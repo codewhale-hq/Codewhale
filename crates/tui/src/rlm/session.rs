@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::repl::PythonRuntime;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
+use codewhale_repl::PythonRuntime;
 
 pub type SharedRlmSessionStore = Arc<Mutex<HashMap<String, Arc<Mutex<RlmSession>>>>>;
 
@@ -93,7 +93,6 @@ pub enum OutputFeedback {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RlmSessionConfig {
     pub output_feedback: OutputFeedback,
-    pub sub_query_timeout_secs: u64,
     pub sub_rlm_max_depth: u32,
     pub share_session: bool,
 }
@@ -102,23 +101,10 @@ impl Default for RlmSessionConfig {
     fn default() -> Self {
         Self {
             output_feedback: OutputFeedback::Full,
-            sub_query_timeout_secs: 120,
             sub_rlm_max_depth: 1,
             share_session: false,
         }
     }
-}
-
-pub fn write_context_file(body: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!(
-        "session_{}_{}.txt",
-        std::process::id(),
-        Uuid::new_v4().simple()
-    ));
-    std::fs::write(&path, body)?;
-    Ok(path)
 }
 
 #[derive(Debug, Clone)]
@@ -454,7 +440,7 @@ pub fn derive_session_name(source_hint: Option<&str>) -> String {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    crate::hashing::sha256_hex(bytes)
+    codewhale_runtime::hashing::sha256_hex(bytes)
 }
 
 #[cfg(test)]

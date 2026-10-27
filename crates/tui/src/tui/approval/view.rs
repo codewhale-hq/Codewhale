@@ -13,11 +13,11 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::config::ApprovalDefaultSelection;
-use crate::tools::canonical_action::canonical_action_alias;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_runtime::config::ApprovalDefaultSelection;
 
 use super::previews::exact_edit_file_preview_lines;
 use super::{ApprovalRequest, ReviewDecision};

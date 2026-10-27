@@ -458,7 +458,11 @@ async fn owner_attaches_round_trips_and_shuts_down_cleanly() {
     for (id, method, params) in [
         (1, "capabilities", json!({})),
         (10, "thread/list", json!({})),
-        (11, "prompt/run", json!({ "prompt": "hi" })),
+        (
+            11,
+            "prompt/run",
+            json!({ "prompt": "hi", "allowed_tools": [] }),
+        ),
     ] {
         let early = client.call(id, method, params).await;
         assert_eq!(early["error"]["code"], json!(-32010), "{method}: {early}");

@@ -6,8 +6,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 
-use crate::config::{BaseUrlEnvReceipt, Config, ProviderIdentity, ProviderKind};
-use crate::config_persistence as persistence;
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::{BaseUrlEnvReceipt, Config, ProviderIdentity};
+use codewhale_runtime::config_persistence as persistence;
 
 /// Whether a config key names a provider or model selection.
 pub fn is_route_key(key: &str) -> bool {
@@ -24,7 +25,7 @@ fn provider_model_id(key: &str) -> Option<&str> {
 }
 
 fn parse_config(body: &str) -> Result<Config> {
-    crate::config::parse_config_base(body)
+    codewhale_runtime::config::parse_config_base(body)
         .map_err(|_| anyhow::anyhow!("Could not parse route configuration; contents omitted"))
 }
 
@@ -187,7 +188,7 @@ pub fn scrub_root_model_aliases_for_export(document: &mut toml::value::Table) ->
             scoped.set_provider_model_override(&identity, None)?;
             scoped.legacy_model = None;
             scoped.default_text_model = Some(value.to_string());
-            let wire_model = crate::config::wire_model_for_provider_route(
+            let wire_model = codewhale_runtime::config::wire_model_for_provider_route(
                 identity.provider,
                 &scoped.active_route_base_url(),
                 &value,
@@ -196,7 +197,7 @@ pub fn scrub_root_model_aliases_for_export(document: &mut toml::value::Table) ->
                 document.remove(root_key);
                 continue;
             }
-            if crate::config::normalize_model_name(&value).is_none() {
+            if codewhale_runtime::config::normalize_model_name(&value).is_none() {
                 document.remove(root_key);
                 continue;
             }
@@ -258,10 +259,10 @@ fn saved_config(store: &codewhale_config::ConfigStore) -> Result<Config> {
     };
     let mut config = parse_config(body)?;
     if config.route_preferences_version.is_none()
-        && crate::config::is_home_config_path(store.path())
+        && codewhale_runtime::config::is_home_config_path(store.path())
     {
         config.apply_saved_selection(
-            &crate::settings::Settings::load_legacy_route_preferences_read_only()?,
+            &codewhale_runtime::settings::Settings::load_legacy_route_preferences_read_only()?,
         );
     }
     Ok(config)
@@ -471,10 +472,10 @@ pub fn set_document(
         // Same root-alias authority as the Runtime/TUI provider writer: a CLI
         // switch must not leave the incoming route holding the outgoing one's
         // fallback, and must not delete a choice to get there.
-        return persistence::reconcile_root_model_aliases(doc, &config, &identity);
+        return reconcile_root_model_aliases(doc, &config, &identity);
     }
     let identity = model_identity(&config, key)?;
-    persistence::set_provider_model_document(doc, &identity, value)
+    set_provider_model_document(doc, &identity, value)
 }
 
 /// Clear a canonical selection without allowing archived Settings to restore it.
@@ -507,7 +508,7 @@ pub fn unset(path: &Path, key: &str) -> Result<()> {
                     continue;
                 };
                 scoped.default_text_model = Some(model.to_string());
-                let wire_model = crate::config::wire_model_for_provider_route(
+                let wire_model = codewhale_runtime::config::wire_model_for_provider_route(
                     identity.provider,
                     &scoped.active_route_base_url(),
                     model,
@@ -674,7 +675,7 @@ model = "Other-X"
         let doc = document(&path);
         assert!(doc.get("default_text_model").is_none());
         assert_eq!(doc["providers"]["zai"]["model"].as_str(), Some("GLM-4.6"));
-        let switched = Config::load(Some(path.clone()), None)
+        let switched = crate::plugins::providers::load_config(Some(path.clone()), None)
             .expect("a CLI provider switch must remain loadable");
         assert_eq!(
             switched.active_provider_identity().unwrap().provider,
@@ -683,7 +684,7 @@ model = "Other-X"
         assert_eq!(switched.default_model(), "deepseek-v4-pro");
         set(&path, "provider", "zai")?;
         assert_eq!(
-            Config::load(Some(path.clone()), None)
+            crate::plugins::providers::load_config(Some(path.clone()), None)
                 .expect("switching back must remain loadable")
                 .default_model(),
             "GLM-4.6"
@@ -702,11 +703,11 @@ model = "Other-X"
             doc["providers"]["volcengine"]["model"].as_str(),
             Some("ark-private-id")
         );
-        Config::load(Some(path.clone()), None)
+        crate::plugins::providers::load_config(Some(path.clone()), None)
             .expect("a CLI switch must not commit an unloadable config");
         set(&path, "provider", "volcengine")?;
         assert_eq!(
-            Config::load(Some(path), None)
+            crate::plugins::providers::load_config(Some(path), None)
                 .expect("switching back must remain loadable")
                 .default_model(),
             "ark-private-id"
@@ -815,7 +816,7 @@ model = "Other-X"
             set(&path, &leaf, model)?;
             assert_eq!(get(&path, &leaf)?.as_deref(), Some(model));
             assert_eq!(
-                Config::load(Some(path.clone()), None)?.default_model(),
+                crate::plugins::providers::load_config(Some(path.clone()), None)?.default_model(),
                 model
             );
             assert_eq!(document(&path)["provider"].as_str(), Some(provider));
@@ -830,7 +831,7 @@ model = "Other-X"
         )?;
         assert_eq!(get(&path, "model")?.as_deref(), Some("GLM-5.3"));
         assert_eq!(
-            Config::load(Some(path.clone()), None)?.default_model(),
+            crate::plugins::providers::load_config(Some(path.clone()), None)?.default_model(),
             "GLM-5.3"
         );
         assert_eq!(
@@ -840,12 +841,12 @@ model = "Other-X"
         // A foreign active-route root must never become the DeepSeek default.
         assert_eq!(
             get(&path, "default_model")?.as_deref(),
-            Some(crate::config::DEFAULT_TEXT_MODEL)
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL)
         );
         unset(&path, "providers.zai.model")?;
         assert!(document(&path).get("model").is_none());
         assert_eq!(
-            Config::load(Some(path.clone()), None)?.default_model(),
+            crate::plugins::providers::load_config(Some(path.clone()), None)?.default_model(),
             selected_route(&path)?.1
         );
 
@@ -868,7 +869,7 @@ model = "Other-X"
                 ),
             )?;
             assert_eq!(
-                Config::load(Some(path.clone()), None)?.default_model(),
+                crate::plugins::providers::load_config(Some(path.clone()), None)?.default_model(),
                 leaf
             );
             unset(&path, &format!("providers.{provider}.model"))?;
@@ -876,7 +877,7 @@ model = "Other-X"
             assert!(doc.get("model").is_none());
             assert!(doc.get("default_text_model").is_none());
             assert!(doc["providers"][provider].get("model").is_none());
-            let loaded = Config::load(Some(path.clone()), None)?;
+            let loaded = crate::plugins::providers::load_config(Some(path.clone()), None)?;
             assert_eq!(loaded.default_model(), selected_route(&path)?.1);
             assert!(loaded.legacy_model.is_none());
         }
@@ -892,9 +893,198 @@ model = "Other-X"
             Some("deepseek-v4-flash")
         );
         assert!(document(&path).get("model").is_none());
-        let loaded = Config::load(Some(path.clone()), None)?;
+        let loaded = crate::plugins::providers::load_config(Some(path.clone()), None)?;
         assert_ne!(loaded.default_model(), "GLM-5.1");
         assert_eq!(loaded.default_model(), selected_route(&path)?.1);
         Ok(())
     }
+}
+
+pub(crate) fn set_provider_model_document(
+    doc: &mut toml_edit::DocumentMut,
+    identity: &ProviderIdentity,
+    model: &str,
+) -> anyhow::Result<()> {
+    let mut config =
+        codewhale_runtime::config::parse_config_base(&doc.to_string()).map_err(|_| {
+            anyhow::anyhow!("Could not parse destination route identity; contents omitted")
+        })?;
+    crate::plugins::providers::apply_startup_providers(&mut config)?;
+    persistence::set_verified_provider_model_document(doc, &config, identity, model)
+}
+
+/// One persistent owner and atomic write for an explicitly saved route.
+///
+/// Also returns the undo for exactly this write, taken under the config lock,
+/// so a caller whose follow-up apply step is rejected can take back only the
+/// switch.
+pub(crate) fn persist_provider_selection(
+    config_path: Option<&Path>,
+    identity: &ProviderIdentity,
+    model: Option<&str>,
+) -> anyhow::Result<(std::path::PathBuf, codewhale_config::ConfigDocumentUndo)> {
+    let path = persistence::config_toml_path(config_path)?;
+    let ((), undo) =
+        codewhale_config::mutate_config_document_undoable_with_migration(&path, |doc, moved| {
+            persistence::migrate_legacy_route_preferences(&path, doc)?;
+            let mut config = codewhale_runtime::config::parse_config_after_locked_migration(
+                &doc.to_string(),
+                moved,
+            )
+            .map_err(|_| anyhow::anyhow!("Could not parse destination route; contents omitted"))?;
+            crate::plugins::providers::apply_startup_providers(&mut config)?;
+            config
+                .verify_provider_identity(identity)
+                .map_err(anyhow::Error::msg)?;
+            if let Some(model) = model {
+                persistence::set_verified_provider_model_document(doc, &config, identity, model)?;
+            }
+            persistence::set_document_value(
+                doc,
+                &["provider"],
+                identity.persisted_id().unwrap_or(identity.key.as_str()),
+            )?;
+            reconcile_root_model_aliases(doc, &config, identity)
+        })?;
+    Ok((path, undo))
+}
+
+/// Keep a root `default_text_model` alias from stranding a route switch,
+/// without discarding the choice it holds.
+///
+/// The root alias is the *active* route's fallback: `Config` resolves it only
+/// when the selected route has no model of its own. A switch that leaves the
+/// incoming route without a leaf therefore hands it an alias naming the route
+/// on its way out, and `Config::load` rejects the file the caller just wrote —
+/// a committed switch that produces an unloadable config — or, on a
+/// pass-through incoming route that loads it, a model the incoming route never
+/// chose while the outgoing route comes back on its catalog default.
+///
+/// When the outgoing route has no leaf and was resolving the alias, relocate
+/// that value onto the outgoing route's own canonical leaf, because it is real
+/// saved state, and only then clear the alias. Any other alias the incoming
+/// route already shadows with its own leaf is inert and stays: deleting a
+/// saved choice to satisfy validation of a value nothing resolves is data
+/// loss, not a repair. Likewise an unnamed custom route stores its
+/// model in the alias itself and has no leaf to receive it. If the incoming
+/// route cannot shadow that value, refuse the switch atomically and ask for an
+/// explicit destination model instead of saving an unloadable configuration.
+///
+/// `previous` is the document's configuration before the switch; `incoming` is
+/// the identity now selected. Every route writer calls this, so no writer can
+/// keep a private rule about which route owns the root alias.
+pub(crate) fn reconcile_root_model_aliases(
+    doc: &mut toml_edit::DocumentMut,
+    previous: &codewhale_runtime::config::Config,
+    incoming: &codewhale_runtime::config::ProviderIdentity,
+) -> anyhow::Result<()> {
+    // A freshly admitted id-less root keeps its legacy alias as a receipt.
+    // Its effective model is written to the canonical leaf created by this
+    // same-lock migration; the alias is never another route's saved choice.
+    if incoming.provider == ProviderKind::Custom && incoming.persisted_id().is_none() {
+        return Ok(());
+    }
+    // The outgoing route was resolving the alias as its own model. Move it
+    // onto that route's leaf even when the incoming route could load it: a
+    // pass-through incoming route would otherwise inherit a model it never
+    // chose, and the outgoing route would come back on its catalog default.
+    if let Some((outgoing, value)) = previous.root_model_alias_owned_by_outgoing(incoming) {
+        persistence::set_verified_provider_model_document(doc, previous, &outgoing, &value)?;
+        unset_root_model_aliases(doc)?;
+        return Ok(());
+    }
+    // Below, only `default_text_model` is read. The legacy root `model` key is
+    // never what blocks a load: `Config::default_model` already refuses to
+    // route a foreign legacy value to a provider that cannot serve it, and
+    // `Config::validate` does not consult it, so relocating it would move a
+    // value nothing is asking about. It is still cleared together with the
+    // alias that shadows it (`unset_root_model_aliases`).
+    const ROOT_KEY: &str = "default_text_model";
+    let Some(value) = doc
+        .get(ROOT_KEY)
+        .and_then(toml_edit::Item::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let mut switched = codewhale_runtime::config::parse_config_base(&doc.to_string())
+        .map_err(|_| anyhow::anyhow!("Could not parse switched route; contents omitted"))?;
+    crate::plugins::providers::apply_startup_providers(&mut switched)?;
+    // `Config::validate` is the single authority on what the incoming route can
+    // serve, so a writer cannot disagree with the loader. Act only when this
+    // alias is what the loader rejects: a document already broken for an
+    // unrelated reason is not this writer's to rewrite.
+    let mut without_alias = switched.clone();
+    without_alias.default_text_model = None;
+    if switched
+        .provider_config_for(incoming)
+        .and_then(|entry| entry.model.as_deref())
+        .is_some()
+        || switched.validate().is_ok()
+        || without_alias.validate().is_err()
+    {
+        return Ok(());
+    }
+    // An empty or control-bearing alias names no saved model. Nothing to
+    // relocate, and clearing it loses nothing.
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        unset_root_model_aliases(doc)?;
+        return Ok(());
+    }
+    // No leaf can hold this value. Keep the only copy of the user's choice
+    // rather than discard it for a document the incoming route loads as soon as
+    // it saves a model of its own.
+    let outgoing = previous.active_provider_identity().ok();
+    if outgoing.as_ref().is_some_and(|outgoing| {
+        outgoing != incoming
+            && outgoing.provider == ProviderKind::Custom
+            && outgoing.persisted_id().is_none()
+    }) {
+        // This same-lock canonicalizer copied the root model before moving
+        // its endpoint. Clear an alias only when that exact outgoing leaf
+        // proves the choice survives; otherwise retain the refusal.
+        if outgoing.as_ref().is_some_and(|outgoing| {
+            previous
+                .provider_config_for(outgoing)
+                .and_then(|entry| entry.model.as_deref())
+                == Some(value.as_str())
+        }) {
+            return unset_root_model_aliases(doc);
+        }
+        anyhow::bail!(
+            "Choose a model for the destination provider before switching from a legacy custom connection; the saved configuration was not changed"
+        );
+    }
+    let Some(outgoing) = outgoing.as_ref().filter(|outgoing| *outgoing != incoming) else {
+        return Ok(());
+    };
+    let mut scoped = switched;
+    scoped
+        .scope_to_provider_identity(outgoing)
+        .map_err(anyhow::Error::msg)?;
+    if scoped
+        .provider_config_for(outgoing)
+        .and_then(|entry| entry.model.as_deref())
+        .is_none()
+    {
+        persistence::set_verified_provider_model_document(doc, previous, outgoing, &value)?;
+    }
+    // The outgoing route either already saved its own choice or has just
+    // received this one, so the alias is now a shadowed duplicate that only
+    // blocks the incoming route.
+    unset_root_model_aliases(doc)?;
+    Ok(())
+}
+
+/// Clear the root model alias: `default_text_model` and the legacy root
+/// `model` that `Config::default_model` falls back to when the former is
+/// unset. While `default_text_model` is present the legacy key resolves on no
+/// route, so removing only the alias would resurrect a stale legacy model on
+/// the incoming route (a pass-through route would then use a model nobody
+/// chose for it). When the legacy key *is* the alias, the caller has already
+/// moved its value onto the outgoing route's leaf.
+fn unset_root_model_aliases(doc: &mut toml_edit::DocumentMut) -> anyhow::Result<()> {
+    persistence::unset_document_value(doc, &["default_text_model"])?;
+    persistence::unset_document_value(doc, &["model"])?;
+    Ok(())
 }

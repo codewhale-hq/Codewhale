@@ -2,11 +2,12 @@
 
 use super::*;
 use crate::client::CodewhaleClient;
-use crate::config::{Config, ProviderKind};
 use crate::fleet::exact::{ExactFleetWorkflow, StaticFleetRouter};
 use crate::fleet::members::add_fleet_model;
 use crate::fleet::store::{FleetFile, FleetScope, save_fleet, set_selected};
 use crate::tools::subagent::new_shared_subagent_manager;
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::Config;
 use codewhale_workflow::{FleetDocument, QualifiedFleetId};
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -33,10 +34,7 @@ impl RouteFixture {
         let (parent, parent_calls, _, _) = tests::fake_chat_client_capturing("parent route").await;
         let (target, target_calls, target_bodies, _) =
             tests::fake_chat_client_capturing("frozen route result").await;
-        let mut config = Config {
-            ..Default::default()
-        }
-        .with_legacy_root(
+        let mut config = <Config as Default>::default().with_legacy_root(
             Some("fixture-key".into()),
             Some(parent.base_url().to_string()),
         );
@@ -238,10 +236,20 @@ async fn native_non_shortlisted_model_is_rejected_without_a_provider_call() {
     let source = native_script(json!({
         "prompt": "read-only route check", "type": "reviewer", "model": "openrouter/outside-fixture",
     }));
-    let error = run_script(&source, fixture.driver(WorkflowFleetBinding::None))
+    let driver = fixture.driver(WorkflowFleetBinding::None);
+    let result = run_script(&source, driver.clone())
         .await
-        .expect_err("closed shortlist");
-    assert!(error.contains("outside the selected Fleet"), "{error}");
+        .expect("rejected children settle without aborting independent work");
+    assert_eq!(result, json!({"plan-child-1": null}));
+    let runs = driver.state.runs.lock().expect("run ledger");
+    let record = runs.get(&driver.run_id).expect("run receipt");
+    assert_eq!(record.dispatch_failure_count, 1);
+    assert!(
+        record.dispatch_failures[0]
+            .message
+            .contains("outside the selected Fleet")
+    );
+    assert_eq!(driver.dead_fanout_count(), 1);
     assert_eq!(fixture.parent_calls.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.target_calls.load(Ordering::SeqCst), 0);
 }
@@ -423,8 +431,14 @@ async fn native_exact_fleet_builder_keeps_the_plan_read_only_ceiling() {
         !profile.permissions.write,
         "the authored read_only mode must remain executable policy"
     );
-    assert_eq!(profile.shell, crate::worker_profile::ShellPolicy::ReadOnly);
-    assert_eq!(profile.tools, crate::worker_profile::ToolScope::Inherit);
+    assert_eq!(
+        profile.shell,
+        codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly
+    );
+    assert_eq!(
+        profile.tools,
+        codewhale_agent_contract::worker_profile::ToolScope::Inherit
+    );
     assert_eq!(
         records[0].spec.child_route.as_ref().unwrap().provider_id,
         "openrouter"

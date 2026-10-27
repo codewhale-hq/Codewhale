@@ -85,7 +85,6 @@ pub struct TurnStopDiagnostics {
     /// reasoning and no tool call (#6310): an exact-prefix retry, then a
     /// nudged one, before the turn fails visibly.
     pub empty_stop_retries: u32,
-    pub soft_landing_sent: bool,
     pub final_report_requested: bool,
     pub permission_strategy_switches: u32,
     /// Denied provider-response batches since the latest useful progress.

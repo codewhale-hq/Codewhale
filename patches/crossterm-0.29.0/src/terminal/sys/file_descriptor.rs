@@ -103,6 +103,24 @@ impl Drop for FileDesc<'_> {
     }
 }
 
+#[cfg(feature = "events")]
+impl FileDesc<'_> {
+    pub(crate) fn read_ready(&self) -> io::Result<bool> {
+        let mut fds = [filedescriptor::pollfd {
+            fd: self.raw_fd(),
+            events: filedescriptor::POLLIN,
+            revents: 0,
+        }];
+        match filedescriptor::poll(&mut fds, Some(std::time::Duration::ZERO)) {
+            Ok(count) => Ok(count > 0),
+            Err(filedescriptor::Error::Poll(error) | filedescriptor::Error::Io(error)) => {
+                Err(error)
+            }
+            Err(error) => Err(io::Error::new(io::ErrorKind::Other, error.to_string())),
+        }
+    }
+}
+
 impl AsRawFd for FileDesc<'_> {
     fn as_raw_fd(&self) -> RawFd {
         self.raw_fd()

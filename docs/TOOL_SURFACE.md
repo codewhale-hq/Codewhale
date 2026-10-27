@@ -196,8 +196,10 @@ auto-approved native calls only, no MCP.
 ### Conversation toolbox cache
 
 A successful search activation is remembered by name for the current
-conversation. The cache is bounded at eight deferred names and 16 KiB of
-serialized schemas. To make room it evicts tools that were never called first
+conversation. Its soft targets are eight deferred names and 16 KiB of added
+provider-wire schemas, measured after the route's production transformations
+against the eager-tool baseline. An adapter that cannot measure the wire reports
+unknown bytes; internal `Tool` serialization is not substituted. To make room it evicts tools that were never called first
 (oldest activation first), then the least recently called; a tool called in the
 current or previous turn is never evicted. When such tools already fill the
 cache, a search still activates its best match over the bound and holds the
@@ -213,10 +215,12 @@ from the next request. A held match is listed under
 `unavailable_tool_references`. Both carry `tool_search_input`, an exact regex
 query for that one name that loads it again. Only tools that actually left the
 active set are listed; a tool that became eager stays callable and is not
-reported. Known limit: a tool dropped by the per-turn revalidation (removed,
-denied, or no longer deferred), or evicted to make room for a direct first call
-to a deferred tool, is still dropped silently, because there is no search
-result to carry the notice.
+reported. Each search also returns the current `active_deferred_tools` snapshot
+and wire-byte measurement in `toolbox`; a new admission explicitly supersedes
+older eviction or unavailable notices for the same name. Other declared toolbox
+changes, including revalidation and direct first-use activation, append one
+current deferred-toolbox snapshot before the next model request. That snapshot
+supersedes old availability notices without rewriting earlier history.
 
 Each subagent gets its own policy-filtered deferred catalog, always-present
 `tool_search`, and bounded activation cache. Forked messages and instructions
@@ -238,7 +242,8 @@ reports the exact model-client tool JSON byte count and SHA-256 digest only when
 measurement fits the one-MiB inspection bound; larger payloads stay unavailable.
 Provider adapters may transform, sanitize, or omit those fields while building
 a provider-specific wire body, so `/tools` marks provider delivery and the wire
-payload unavailable. Capture and rendering are bounded: retained schemas,
+payload unavailable. The separate per-request receipt described in [CACHE.md](CACHE.md)
+measures the production wire schema and joins it with reported provider usage. Capture and rendering are bounded: retained schemas,
 descriptions, caller lists, catalog rows, turn IDs, and payload measurement all
 carry explicit truncation, omission, or unavailable receipts. The snapshot stays
 in memory only for the current session and is replaced on each prepared request.

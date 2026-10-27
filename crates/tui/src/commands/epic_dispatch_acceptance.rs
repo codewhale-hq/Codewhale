@@ -6,8 +6,8 @@ use cucumber::{World as _, given, then, when, writer::Stats as _};
 use tempfile::TempDir;
 
 use crate::commands::{self, CommandResult};
-use crate::config::Config;
 use crate::tui::app::{App, TuiOptions};
+use codewhale_runtime::config::Config;
 
 // --- FEAT-011 dispatch precedence constants ---
 

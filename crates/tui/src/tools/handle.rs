@@ -564,7 +564,7 @@ fn count_projection(record: &HandleRecord) -> Value {
         }),
         HandleValue::Json(value) => {
             let bytes = {
-                let mut cw = crate::utils::CountingWriter::new();
+                let mut cw = codewhale_util::utils::CountingWriter::new();
                 let _ = serde_json::to_writer(&mut cw, value);
                 cw.count()
             };
@@ -856,7 +856,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    crate::hashing::sha256_hex(bytes)
+    codewhale_runtime::hashing::sha256_hex(bytes)
 }
 
 fn json_type(value: &Value) -> &'static str {

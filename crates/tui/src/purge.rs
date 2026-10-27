@@ -10,13 +10,13 @@ use regex::Regex;
 use std::fmt::Write;
 use tokio::sync::mpsc::Sender;
 
-use crate::config::ProviderKind;
 use crate::core::events::Event;
-use crate::fast_hash::{FastHashMap, FastHashSet};
 use crate::llm_client::LlmClient;
-use crate::regex_cache::compile_user_regex;
+use codewhale_config::ProviderKind;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, MessageRequest, Tool};
+use codewhale_runtime::fast_hash::{FastHashMap, FastHashSet};
+use codewhale_runtime::regex_cache::compile_user_regex;
 
 // ── Prompt‑building constants ──────────────────────────────────────────────
 
@@ -470,7 +470,7 @@ fn publish_offloaded_context(
     let handle = crate::artifacts::artifact_id_for_tool_call(&call_id);
     let metadata = EvidenceArtifact {
         handle: handle.clone(),
-        digest: crate::hashing::sha256_hex(&bytes),
+        digest: codewhale_runtime::hashing::sha256_hex(&bytes),
         size_bytes: bytes.len().try_into().unwrap_or(u64::MAX),
         content_type: "application/json".to_string(),
         tool_name: "purge_context".to_string(),

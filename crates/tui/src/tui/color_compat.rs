@@ -430,9 +430,9 @@ fn render_debug_line(
 /// because the floor has to reason about the color the user will actually see
 /// while it is still full-precision RGB.
 ///
-/// Two guards keep the blast radius at exactly the #4833 failure:
+/// Unset text ink on painted ground uses the active theme body color.
 ///
-/// - Presets that own their own palette (`theme_remap_active`: Terminal,
+/// - Explicit preset colors (`theme_remap_active`: Terminal,
 ///   Catppuccin, Matrix, …) are exempt. Their authors tuned those pairs, some
 ///   deliberately below 4.5:1, and a user who typed `/theme matrix` asked for
 ///   that. The floor guards the auto-detected default path.
@@ -444,11 +444,27 @@ fn render_debug_line(
 /// that is the one colour guaranteed to read on the ground the terminal drew.
 fn enforce_cell_contrast(
     cell: &mut Cell,
+    depth: ColorDepth,
     theme_id: ThemeId,
+    ui_theme: &UiTheme,
     detected_background: Option<ratatui::style::Color>,
 ) {
-    if palette::theme_remap_active(theme_id) || !palette::symbol_needs_text_contrast(cell.symbol())
+    if !palette::symbol_needs_text_contrast(cell.symbol()) {
+        return;
+    }
+    if matches!(depth, ColorDepth::TrueColor | ColorDepth::Ansi256)
+        && cell.fg == ratatui::style::Color::Reset
+        && !cell.modifier.contains(ratatui::style::Modifier::REVERSED)
+        && palette::resolvable_rgb(cell.bg).is_some()
     {
+        cell.fg = if palette::theme_remap_active(theme_id) {
+            ui_theme.text_body
+        } else {
+            palette::enforce_contrast(ui_theme.text_body, cell.bg, palette::AA_BODY_CONTRAST)
+        };
+        return;
+    }
+    if palette::theme_remap_active(theme_id) {
         return;
     }
     let Some(surface) = palette::effective_surface(cell.bg, detected_background) else {
@@ -485,7 +501,7 @@ pub(crate) fn adapt_cell_colors(
     // near-white body text ends up on a near-white terminal (#4833). This
     // stage is membership-independent: it looks at the pair that will be
     // rendered and lifts it if the numbers fail.
-    enforce_cell_contrast(cell, theme_id, detected_background);
+    enforce_cell_contrast(cell, depth, theme_id, ui_theme, detected_background);
     // Stage 3: depth (truecolor / 256 / 16) downsampling.
     cell.fg = palette::adapt_fg_for_depth(source_fg, cell.fg, depth, ui_theme);
     cell.bg = palette::adapt_bg(cell.bg, depth);

@@ -158,6 +158,19 @@
       font-size: 12px;
       overflow-wrap: anywhere;
     }
+    #active-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #turn-usage {
+      margin-top: 0;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    #turn-usage.live { color: var(--accent); }
     #events {
       display: grid;
       gap: 8px;
@@ -259,6 +272,7 @@
     <section class="chat">
       <div class="head">
         <strong id="active-title">No thread selected</strong>
+        <span id="turn-usage" class="meta" hidden></span>
         <span id="event-count" class="meta">0 events</span>
       </div>
       <div class="body"><div id="events"></div></div>
@@ -307,8 +321,35 @@
       streamTicket: "",
       // Sub-agents of the open thread, by agent id: rebuilt from the
       // agent.* events the stream replays, so a reconnect restores it.
-      agents: new Map()
+      agents: new Map(),
+      turnUsage: emptyTurnUsage(),
+      turnUsageByThread: new Map()
     };
+
+    function emptyTurnUsage() {
+      return {
+        input: 0, output: 0, usd: 0, cny: 0,
+        usdPriced: false, cnyPriced: false, live: false,
+        turnId: "", lastSeq: 0
+      };
+    }
+
+    function turnUsageFor(threadId) {
+      if (!threadId) return state.turnUsage;
+      let figure = state.turnUsageByThread.get(threadId);
+      if (!figure) {
+        figure = emptyTurnUsage();
+        state.turnUsageByThread.set(threadId, figure);
+      }
+      return figure;
+    }
+
+    function formatTokens(count) {
+      if (!Number.isFinite(count) || count <= 0) return "0";
+      if (count < 1000) return String(count);
+      if (count < 1000000) return (count / 1000).toFixed(count < 10000 ? 1 : 0) + "K";
+      return (count / 1000000).toFixed(1) + "M";
+    }
 
     function setStatus(message, tone = "") {
       const el = $("conn");
@@ -561,7 +602,71 @@
       }
       if (name === "turn.lifecycle") return "Turn status: " + (payload.status || "");
       if (name === "turn.completed") return "Turn completed";
+      if (name === "turn.usage") return "";
       return JSON.stringify(payload, null, 2);
+    }
+
+    function noteTurnUsage(name, data) {
+      if (name !== "turn.started" && name !== "turn.usage" && name !== "turn.completed") return;
+      const payload = eventPayload(data) || {};
+      const turnId = String((data && data.turn_id) || (payload.turn || {}).id || "");
+      if (!turnId) return;
+      let figure = turnUsageFor(state.threadId);
+      const seq = Number(data && data.seq);
+      if (Number.isSafeInteger(seq) && seq > 0) {
+        if (seq <= figure.lastSeq) return;
+        figure.lastSeq = seq;
+      }
+      if (figure.turnId !== turnId) {
+        figure = Object.assign(emptyTurnUsage(), { turnId, lastSeq: figure.lastSeq });
+        if (state.threadId) state.turnUsageByThread.set(state.threadId, figure);
+      }
+      state.turnUsage = figure;
+      if (name === "turn.started") {
+        figure.live = true;
+      } else if (name === "turn.usage") {
+        const usage = payload.usage || {};
+        figure.input += Number(usage.input_tokens || 0) || 0;
+        figure.output += Number(usage.output_tokens || 0) || 0;
+        const cost = payload.cost;
+        if (cost && cost.usd_priced === true && Number.isFinite(Number(cost.usd))) {
+          figure.usd += Number(cost.usd);
+          figure.usdPriced = true;
+        }
+        if (cost && cost.cny_priced === true && Number.isFinite(Number(cost.cny))) {
+          figure.cny += Number(cost.cny);
+          figure.cnyPriced = true;
+        }
+        figure.live = true;
+      } else {
+        const usage = (payload.turn || {}).usage;
+        if (usage) {
+          figure.input = Number(usage.input_tokens || 0) || 0;
+          figure.output = Number(usage.output_tokens || 0) || 0;
+        }
+        figure.live = false;
+      }
+      renderTurnUsage();
+    }
+
+    function renderTurnUsage() {
+      const el = $("turn-usage");
+      if (!el) return;
+      const figure = state.turnUsage;
+      if (!figure.input && !figure.output && !figure.usdPriced && !figure.cnyPriced) {
+        el.hidden = true;
+        el.textContent = "";
+        el.className = "meta";
+        return;
+      }
+      const parts = ["\u2191" + formatTokens(figure.input), "\u2193" + formatTokens(figure.output)];
+      if (figure.cnyPriced) parts.push("~\u00a5" + figure.cny.toFixed(figure.cny < 0.01 ? 4 : 2) + " partial");
+      else if (figure.usdPriced) parts.push("~$" + figure.usd.toFixed(figure.usd < 0.01 ? 4 : 2) + " partial");
+      el.textContent = parts.join(" ");
+      el.className = figure.live ? "meta live" : "meta";
+      el.title = (figure.live ? "This turn so far" : "Last turn") +
+        "; cost is a partial estimate from priced calls, excluding unpriced, child and compaction work";
+      el.hidden = false;
     }
 
     function approvalInfo(name, data) {
@@ -612,6 +717,7 @@
     function appendEvent(name, data) {
       noteAgentEvent(name, data);
       retireApproval(name, data);
+      noteTurnUsage(name, data);
       const text = eventText(name, data);
       if (!text) return;
       const item = document.createElement("div");
@@ -693,6 +799,8 @@
       state.openedAt = 0;
       state.eventCount = 0;
       $("event-count").textContent = "0 events";
+      state.turnUsage = turnUsageFor(id);
+      renderTurnUsage();
       $("active-title").textContent = title || id;
       $("events").innerHTML = "";
       state.agents.clear();
@@ -759,6 +867,7 @@
         "thread.started",
         "turn.started",
         "turn.lifecycle",
+        "turn.usage",
         "turn.steered",
         "turn.interrupt_requested",
         "turn.completed",

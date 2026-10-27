@@ -67,10 +67,10 @@ use codewhale_core::role::Role;
 
 use crate::client::CodewhaleClient;
 use crate::client::system_one::{DecisionRouterRoute, SystemOneResponse};
-use crate::config::Config;
 use crate::model_routing::{
     AutoRouterFailure, auto_route_usage_source_id, decision_usage_batch, truncate_for_auto_router,
 };
+use codewhale_runtime::config::Config;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -582,17 +582,21 @@ mod tests {
 
     /// A chat provider the client can be built from; the gate never calls it.
     fn config() -> Config {
-        Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some("deepseek-v4-pro".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek: crate::config::ProviderConfig {
+        {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some("deepseek-v4-pro".to_string());
+            let __cw_config_init_0_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                deepseek: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("ds-test-key".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+            __cw_config_init_0_value.providers = __cw_config_init_0_2;
+            __cw_config_init_0_value
         }
     }
 

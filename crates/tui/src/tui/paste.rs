@@ -251,8 +251,8 @@ mod bracketed_paste_trust_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};

@@ -34,7 +34,8 @@ use super::worker_runtime::{
 use crate::tools::spec::{
     ToolAuthorityEnvelope, ToolMutationAuthority, ToolShellAuthority, ToolVerificationAuthority,
 };
-use crate::tools::subagent::{AgentWorkerSpec, FleetRole};
+use crate::tools::subagent::AgentWorkerSpec;
+use codewhale_agent_contract::role::FleetRole;
 
 #[derive(Clone, Copy, Default)]
 struct WorkerExecRoute<'a> {
@@ -494,7 +495,7 @@ fn parse_exec_terminal_route(value: &serde_json::Value) -> ParsedTerminalRoute {
         if provider.is_empty() || model.is_empty() {
             return None;
         }
-        let provider_kind = crate::config::ProviderKind::parse(provider)?;
+        let provider_kind = codewhale_config::ProviderKind::parse(provider)?;
         let provider_exact_id = match meta.get("provider_id") {
             None => None,
             Some(value) => {
@@ -505,7 +506,7 @@ fn parse_exec_terminal_route(value: &serde_json::Value) -> ParsedTerminalRoute {
                 Some(id.to_string())
             }
         };
-        if provider_exact_id.is_some() && provider_kind != crate::config::ProviderKind::Custom {
+        if provider_exact_id.is_some() && provider_kind != codewhale_config::ProviderKind::Custom {
             return None;
         }
         Some(FleetWorkerReportedRoute {
@@ -1081,9 +1082,9 @@ pub(crate) fn exec_stream_final_answer_excerpt(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_config::FleetRole;
     use codewhale_config::{
-        FleetDelegationHints, FleetLoadout, FleetProfile, FleetProfilePermissions, FleetRole,
-        FleetSlot,
+        FleetDelegationHints, FleetLoadout, FleetProfile, FleetProfilePermissions, FleetSlot,
     };
     use codewhale_protocol::fleet::{
         FleetHostSpec, FleetTaskBudget, FleetTaskSpec, FleetTaskWorkerProfile, FleetWorkerSpec,
@@ -1361,7 +1362,7 @@ mod tests {
         let launch_spec = launch_spec(&task, tmp.path());
         assert_eq!(
             launch_spec.agent_type,
-            crate::tools::subagent::FleetRole::Consultant
+            codewhale_agent_contract::role::FleetRole::Consultant
         );
         // Counsel only: never writes the workspace, but may read the web.
         assert!(!launch_spec.runtime_profile.permissions.write);
@@ -1437,7 +1438,8 @@ mod tests {
         assert_eq!(authority.shell, ToolShellAuthority::None);
         assert_eq!(authority.verification, ToolVerificationAuthority::Bounded);
 
-        launch_spec.runtime_profile.shell = crate::worker_profile::ShellPolicy::None;
+        launch_spec.runtime_profile.shell =
+            codewhale_agent_contract::worker_profile::ShellPolicy::None;
         let shellless = authority_envelope_for_worker(&launch_spec, &task).unwrap();
         assert_eq!(
             shellless.verification,

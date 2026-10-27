@@ -26,7 +26,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::project_context::{RepoLawAction, RepoLawRule, load_repo_law_rules};
-use crate::tools::apply_patch::{NormalizedApplyPatchInput, normalize_apply_patch_input};
+use codewhale_tools::patch_preflight::{NormalizedApplyPatchInput, normalize_apply_patch_input};
 
 /// Semantic write actions whose inputs name filesystem targets we can hold.
 /// Canonical action families are resolved to this policy vocabulary before the
@@ -51,7 +51,7 @@ pub(crate) fn repo_law_plan_decision(
     tool_input: &Value,
 ) -> Option<RepoLawPlanDecision> {
     let policy_action =
-        crate::tools::canonical_action::canonical_action_alias(tool_name, tool_input);
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     if !WRITE_POLICY_ACTIONS.contains(&policy_action) {
         return None;
     }
@@ -109,7 +109,7 @@ pub(crate) fn repo_law_plan_decision(
 /// bypass, so this deliberately over-collects candidate paths.
 fn write_target_paths(workspace: &Path, input: &Value) -> Vec<String> {
     let mut targets = Vec::new();
-    for key in crate::tools::file::path_argument_keys().chain(["target", "destination"]) {
+    for key in codewhale_tools::param_alias::path_argument_keys().chain(["target", "destination"]) {
         if let Some(path) = input.get(key).and_then(Value::as_str) {
             push_normalized(&mut targets, workspace, path);
         }

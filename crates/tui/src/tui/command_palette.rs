@@ -1504,7 +1504,7 @@ mod tests {
         let workspace = tmp.path().join("workspace");
         let commands_dir = workspace.join(".codewhale").join("commands");
         std::fs::create_dir_all(&commands_dir).expect("create commands dir");
-        crate::config::save_workspace_trust(&workspace).expect("trust workspace");
+        codewhale_runtime::config::save_workspace_trust(&workspace).expect("trust workspace");
         std::fs::write(
             commands_dir.join("review.md"),
             "---\ndescription: Review with context\nargument-hint: <path>\n---\nReview $ARGUMENTS",

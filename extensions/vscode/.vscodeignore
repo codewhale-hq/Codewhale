@@ -4,3 +4,4 @@ out/test/**
 *.vsix
 tsconfig.json
 package-lock.json
+scripts/**

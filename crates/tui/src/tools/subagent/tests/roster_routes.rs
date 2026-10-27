@@ -6,12 +6,14 @@ async fn roster_matches_actual_start_receipts_and_refreshes_live_role_defaults()
     let _env = crate::test_support::lock_test_env();
     let root = tempdir().unwrap();
     let (client, calls, _, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let config = crate::config::Config {
-        subagents: Some(crate::config::SubagentsConfig {
+    let config = {
+        let __cw_config_init_0_0 = Some(codewhale_runtime::config::SubagentsConfig {
             worker_model: Some("deepseek-v4-flash".into()),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_0_value.subagents = __cw_config_init_0_0;
+        __cw_config_init_0_value
     }
     .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let manager = new_shared_subagent_manager(root.path().to_path_buf(), 8);
@@ -98,9 +100,12 @@ async fn roster_preserves_unknown_and_non_metered_costs_and_invalid_role_errors(
         ),
     ] {
         let root = tempdir().unwrap();
-        let mut config = crate::config::Config {
-            provider: Some(provider.into()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_1_0 = Some(provider.into());
+            let mut __cw_config_init_1_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value
         };
         let selected = config
             .provider_config_for_mut(
@@ -151,10 +156,8 @@ async fn advertised_task_route_overrides_reach_start_and_foreign_models_fail_bef
     let _env = crate::test_support::lock_test_env();
     let root = tempdir().unwrap();
     let (client, _, _, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let manager = new_shared_subagent_manager(root.path().to_path_buf(), 2);
     let context = ToolContext::new(root.path()).with_state_namespace("explicit-task-route");
     let runtime = SubAgentRuntime::new(
@@ -210,12 +213,14 @@ async fn saved_profile_discovery_and_actual_start_share_current_instructions_rou
     std::fs::create_dir_all(&profile_dir).unwrap();
     let profile = profile_dir.join("bug-hunter.toml");
     let (client, calls, bodies, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let config = crate::config::Config {
-        subagents: Some(crate::config::SubagentsConfig {
+    let config = {
+        let __cw_config_init_3_0 = Some(codewhale_runtime::config::SubagentsConfig {
             explorer_model: Some("invalid\nrole-default".into()),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_3_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_3_value.subagents = __cw_config_init_3_0;
+        __cw_config_init_3_value
     }
     .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let manager = new_shared_subagent_manager(root.path().to_path_buf(), 2);
@@ -324,10 +329,8 @@ async fn saved_provider_pin_reaches_actual_request_and_conflicts_fail_before_adm
     std::fs::create_dir_all(&profile_dir).unwrap();
     std::fs::write(profile_dir.join("router-review.toml"), "id = \"router-review\"\nbase_role = \"reviewer\"\nprovider = \"openrouter\"\nmodel = \"qwen/qwen3.7-plus\"\nreasoning_effort = \"low\"\n").unwrap();
     let (client, calls, bodies, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let mut config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let mut config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let router = config
         .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Openrouter))
         .unwrap();
@@ -419,10 +422,8 @@ async fn saved_profile_cannot_widen_parent_posture_or_depth_and_missing_provider
     profile.delegation.max_spawn_depth = Some(0);
     profile.permissions.allow_shell = true;
     profile.permissions.trust = true;
-    let mut config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let mut config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let mut fleet = codewhale_config::FleetConfigToml::default();
     fleet
         .profiles
@@ -481,10 +482,8 @@ async fn selected_fleet_capability_and_broken_selection_refuse_actual_start() {
     let root = tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("state"));
     let (client, calls, _, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let mut fleet = FleetFile::new("Capability fixture".into(), None).unwrap();
     fleet.members.push(serde_json::from_value(json!({
         "id":"visual-review", "role":"reviewer", "provider":"deepseek", "model":"deepseek-v4-flash", "requires":["vision"]
@@ -531,10 +530,8 @@ async fn selected_models_reach_exact_provider_and_off_list_refuses_before_admiss
     let root = tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("state"));
     let (client, calls, bodies, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let mut config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let mut config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let router = config
         .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Openrouter))
         .unwrap();
@@ -760,7 +757,7 @@ async fn assert_admitted_route(
     assert_eq!(manifest.profile.role, spec.agent_type);
     assert_eq!(
         manifest.profile.model,
-        crate::worker_profile::ModelRoute::Fixed(spec.model.clone())
+        codewhale_agent_contract::worker_profile::ModelRoute::Fixed(spec.model.clone())
     );
     assert_eq!(
         manifest.profile.provider.as_deref(),
@@ -818,7 +815,7 @@ async fn fleet_editor_save_reload_reaches_type_only_admission_without_a_model_re
     drop(fixture_client);
 
     // Restart from the ordinary file loader; no old UI state or runtime roster survives.
-    let reloaded = crate::config::Config::load(Some(config_path), None).unwrap();
+    let reloaded = crate::plugins::providers::load_config(Some(config_path), None).unwrap();
     let client = CodewhaleClient::new(&reloaded).unwrap();
     let manager = new_shared_subagent_manager(root.path().to_path_buf(), 1);
     let gate = manager.read().await.launch_gate.clone();
@@ -932,7 +929,7 @@ model = "deepseek-v4-pro"
     }
     save_fleet(&fleet, FleetScope::Workspace, root.path()).unwrap();
     set_selected(&fleet.name, FleetScope::Workspace, root.path()).unwrap();
-    let config = crate::config::Config::load(Some(config_path), None).unwrap();
+    let config = crate::plugins::providers::load_config(Some(config_path), None).unwrap();
     let overrides = config.subagent_model_overrides();
     assert_eq!(overrides["reviewer"].model, "deepseek-v4-pro");
     assert_eq!(overrides["reviewer"].provider, None);
@@ -1114,7 +1111,7 @@ model = "deepseek/deepseek-v4-flash"
             base_url = fixture_client.base_url()
         );
         write_restart_route_config(&config_path, fixture_client.base_url(), &declarations);
-        let config = crate::config::Config::load(Some(config_path), None).unwrap();
+        let config = crate::plugins::providers::load_config(Some(config_path), None).unwrap();
         let overrides = config.subagent_model_overrides();
         assert_eq!(
             overrides["reviewer"].provider.as_deref(),
@@ -1231,10 +1228,8 @@ async fn issue_6117_invalid_personal_profile_is_visible_and_never_admitted_as_bu
     let profile = home.join("agents/scout.toml");
     std::fs::write(&profile, "provider = \"openrouter\"\nmodel = \"qwen/qwen3.7-plus\"\nallow_shell = false\ntrust = false\n").unwrap();
     let (client, calls, _, _) = delayed_chat_client(Duration::ZERO, "done").await;
-    let config = crate::config::Config {
-        ..Default::default()
-    }
-    .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
+    let config = <codewhale_runtime::config::Config as Default>::default()
+        .with_legacy_root(Some("test-key".into()), Some(client.base_url().into()));
     let manager = new_shared_subagent_manager(root.path().to_path_buf(), 2);
     let context = ToolContext::new(root.path()).with_state_namespace("issue-6117");
     let runtime = SubAgentRuntime::new(

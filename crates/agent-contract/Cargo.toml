@@ -1,0 +1,19 @@
+[package]
+name = "codewhale-agent-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fleet role, child authority and worker runtime profile contract shared by the engine and its clients"
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+serde = { workspace = true, features = ["derive"] }

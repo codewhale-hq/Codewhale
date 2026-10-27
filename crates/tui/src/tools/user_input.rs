@@ -29,7 +29,7 @@ pub const MAX_OPTIONS_KEY: &str = "[tools] user_input_max_options";
 /// Effective `request_user_input` payload ceilings for one session.
 ///
 /// Resolved once from `[tools]` in config.toml (see
-/// [`crate::config::Config::user_input_limits`]) and carried to the three
+/// [`UserInputLimits::from_config`]) and carried to the three
 /// places that must agree: the validator, the tool's JSON schema, and its
 /// model-visible description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,18 @@ impl Default for UserInputLimits {
 }
 
 impl UserInputLimits {
+    /// Effective `request_user_input` payload ceilings for this session
+    /// (#5949). Resolved once per engine build; out-of-range `[tools]` values
+    /// clamp with a single warning naming the key and the value used.
+    #[must_use]
+    pub fn from_config(config: &codewhale_runtime::config::Config) -> Self {
+        let tools = config.tools.as_ref();
+        Self::from_config_values(
+            tools.and_then(|t| t.user_input_max_questions),
+            tools.and_then(|t| t.user_input_max_options),
+        )
+    }
+
     /// Resolve raw `[tools]` values, clamping each into its supported range.
     /// An out-of-range value is honoured as far as it can be rather than
     /// failing the load, and says so once with the key and the value used.

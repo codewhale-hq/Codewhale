@@ -12,9 +12,10 @@ const pr = { state: 'open', draft: false, base: { sha: BASE, repo: { full_name: 
 const event = { action: 'opened', number: 12, pull_request: pr };
 const defaults = { GITHUB_REPOSITORY: 'owner/repo', GITHUB_EVENT_NAME: 'pull_request',
   CW_VERSION: 'v0.10.0', CW_PROVIDER: 'codewhale', CW_MODEL: 'provider/model',
-  CW_ACTION_PATH: '/trusted/action', GH_TOKEN: 'github-secret', CODEWHALE_API_KEY: 'account-secret' };
+  CW_ACTION_PATH: '/trusted/action', GH_TOKEN: 'github-secret', CODEWHALE_API_KEY: 'account-secret',
+  GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
 const completion = (override = {}) => ({ mode: 'review', success: true, complete: true,
-  pr: { head_sha: HEAD }, review: { issues: [] }, review_passes: 1, publication: 'posted',
+  pr: { head_sha: HEAD, number: 12, url: 'https://github.com/owner/repo/pull/12' }, review: { summary: 'No findings', issues: [], suggestions: [], overall_assessment: 'No findings' }, review_passes: 1, publication: 'posted',
   receipt: { coverage: { manifest: { head_sha: HEAD, base_sha: BASE, skipped_files: [] }, completed_passes: [{}] } },
   usage: { input_tokens: 10, output_tokens: 20 }, ...override });
 const output = data => ({ status: 0, stdout: JSON.stringify(data), stderr: '' });
@@ -97,6 +98,7 @@ test('stale events and a head changed during fetch stop before inference', t => 
 test('bad config cannot fall back to a stale vendor key or contact another GitHub host', t => {
   for (const env of [
     { CODEWHALE_API_KEY: '', DEEPSEEK_API_KEY: 'stale' }, { CW_PROVIDER: 'deepseek', DEEPSEEK_API_KEY: 'stale' },
+    { CODEWHALE_API_KEY: '', CW_PROVIDER: 'orcarouter', CW_MODEL: 'orcarouter/free', DEEPSEEK_API_KEY: 'stale' },
     { CW_MODEL: 'guessed-model' }, { CW_MODEL: 'provider/model\n::error::injection' },
     { CW_VERSION: 'latest' }, { CW_MAX_PASSES: '65' }, { CW_MAX_CHARS: '8388609' },
     { CW_MAX_OUTPUT_TOKENS: '1000' }, { CW_TIMEOUT_SECONDS: '0' }, { CW_POST: 'maybe' },
@@ -108,6 +110,15 @@ test('bad config cannot fall back to a stale vendor key or contact another GitHu
     assert.equal(result.calls.length, 0);
   }
   assert.equal(settings({ ...defaults, CODEWHALE_API_KEY: '', CW_PROVIDER: 'deepseek', CW_MODEL: 'exact-model', DEEPSEEK_API_KEY: 'vendor' }).provider, 'deepseek');
+  const orca = fixture(t, { env: { CODEWHALE_API_KEY: '', CW_PROVIDER: 'orcarouter', CW_MODEL: 'orcarouter/free',
+    ORCAROUTER_API_KEY: 'orca-fixture-secret', DEEPSEEK_API_KEY: 'stale' } });
+  assert.equal(orca.exitCode, 0);
+  const review = orca.calls.find(call => call.args.includes('review'));
+  assert.equal(review.opts.env.ORCAROUTER_API_KEY, 'orca-fixture-secret');
+  assert.equal(review.opts.env.DEEPSEEK_API_KEY, undefined);
+  assert.equal(review.opts.env.CODEWHALE_API_KEY, undefined);
+  assert.equal(review.args[review.args.indexOf('--model') + 1], 'orcarouter/free');
+  assert.doesNotMatch(JSON.stringify(orca.saved) + orca.summary, /orca-fixture-secret/);
   assert.throws(() => target({ ...defaults, GITHUB_REPOSITORY: '../x' }, event));
 });
 
@@ -144,4 +155,9 @@ test('findings are advisory and preview has no publication claim', t => {
   const preview = fixture(t, { env: { CW_POST: 'false' }, intercept: (_p, args) => args.includes('review') && output(completion({ publication: 'not_requested' })) });
   assert.equal(preview.exitCode, 0);
   assert.equal(preview.calls.find(c => c.args.includes('review')).args.includes('--post'), false);
+  const artifact = JSON.parse(readFileSync(preview.findingsPath, 'utf8'));
+  assert.equal(artifact.publication, 'not_requested');
+  assert.equal(artifact.head_sha, HEAD);
+  assert.deepEqual(artifact.review.issues, []);
+  assert.match(preview.outputs, /findings=.*findings\.json/);
 });

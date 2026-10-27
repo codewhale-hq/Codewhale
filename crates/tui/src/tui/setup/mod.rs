@@ -19,10 +19,10 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 
-use crate::config::{Config, has_api_key};
 use crate::prompts::{
     BASE_PROMPT_OVERRIDE_OPT_IN_ENV, CONSTITUTION_OVERRIDE_FILE, base_prompt_override_opt_in,
 };
+use crate::provider_readiness::has_api_key;
 use crate::tui::app::{App, AppModeUi};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
@@ -30,6 +30,7 @@ use crate::tui::views::{
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::Config;
 
 use codewhale_config::{
     AutonomyPreference, ConstitutionAuthoring, ConstitutionChoice, ConstitutionSource,
@@ -368,12 +369,12 @@ impl SetupRuntimeFacts {
             crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         ) {
             format!("{}; retry or open /provider", readiness.label())
-        } else if app.api_provider == crate::config::ProviderKind::OpenaiCodex {
+        } else if app.api_provider == codewhale_config::ProviderKind::OpenaiCodex {
             format!(
                 "{}; Sign in with ChatGPT via `codewhale auth chatgpt` or /provider setup openai-codex (subscription billing). Codex CLI import remains an explicit alternative.",
                 readiness.label()
             )
-        } else if let Some(url) = crate::config::credential_help_for_provider_route(
+        } else if let Some(url) = codewhale_runtime::config::credential_help_for_provider_route(
             app.api_provider,
             &config.active_route_base_url(),
         )
@@ -387,7 +388,7 @@ impl SetupRuntimeFacts {
             format!(
                 "{}; {}; open /provider to repair the route",
                 readiness.label(),
-                crate::config::credential_help_for_provider_route(
+                codewhale_runtime::config::credential_help_for_provider_route(
                     app.api_provider,
                     &config.active_route_base_url(),
                 )
@@ -575,7 +576,7 @@ impl SetupRuntimeFacts {
 
 fn setup_codewhale_home_dir() -> std::path::PathBuf {
     codewhale_config::codewhale_home().unwrap_or_else(|_| {
-        crate::config::effective_home_dir().map_or_else(
+        codewhale_paths::user_home().map_or_else(
             || std::path::PathBuf::from(".codewhale"),
             |home| home.join(".codewhale"),
         )
@@ -5437,7 +5438,7 @@ fn inherited_facts_for_app(app: &App, config: &Config) -> InheritedConfigFacts {
         language: Some(app.ui_locale.tag().to_string()),
         has_provider_route: !config.default_model().trim().is_empty(),
         has_credentials_or_local_runtime: has_api_key(config),
-        trust_chosen: app.trust_mode || !crate::config::needs_trust(&app.workspace),
+        trust_chosen: app.trust_mode || !codewhale_runtime::config::needs_trust(&app.workspace),
         has_expert_override: expert_override.is_active(),
         has_user_constitution,
         user_constitution_validity,

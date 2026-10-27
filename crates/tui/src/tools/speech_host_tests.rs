@@ -1,17 +1,17 @@
 //! Actual CLI/ToolSpec consumers, pinned host and loopback provider. No live provider calls.
 use super::*;
-use crate::config::Config;
 use crate::extension_host::tests::node_for_tests;
 use crate::extension_host::{ExtensionHostManager, ExtensionHostOptions, TestManagerGuard};
-use crate::features::{Feature, Features, FeaturesToml};
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_runtime::config::Config;
+use codewhale_runtime::features::{Feature, Features, FeaturesToml};
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(crate) fn manager(node: PathBuf, home: &Path) -> Arc<ExtensionHostManager> {
     Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-        runtime: crate::config::ExtensionHostRuntime::Node,
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
         node_override: Some(node),
         root: Some(home.join("host")),
         ..ExtensionHostOptions::default()
@@ -25,9 +25,11 @@ fn context(root: &Path, host: bool) -> ToolContext {
     ToolContext::new(root).with_features(features)
 }
 pub(crate) fn config(url: &str, host: bool) -> Config {
-    let mut config = Config {
-        provider: Some("xiaomi-mimo".into()),
-        ..Config::default()
+    let mut config = {
+        let __cw_config_init_0_0 = Some("xiaomi-mimo".into());
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value
     };
     config
         .set_provider_base_url_override(
@@ -70,7 +72,7 @@ fn speech_host_is_independent_and_defaults_to_rust() {
     let flags = Features::with_defaults();
     assert!(!flags.enabled(Feature::SpeechHost));
     assert_eq!(
-        crate::features::feature_from_key("speech_host"),
+        codewhale_runtime::features::feature_from_key("speech_host"),
         Some(Feature::SpeechHost)
     );
     let mut flags = flags;
@@ -286,7 +288,7 @@ async fn speech_tool_preserves_validation_and_file_error_order() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn real_host_speech_retains_core_network_policy_before_provider_calls() {
-    use crate::network_policy::{NetworkPolicy, NetworkPolicyDecider};
+    use codewhale_net::network_policy::{NetworkPolicy, NetworkPolicyDecider};
     let _home = crate::test_support::SealedHome::new();
     let _policy = TestPolicyGuard::extension_host(false);
     let Some(node) = node_for_tests("speech_network_policy") else {

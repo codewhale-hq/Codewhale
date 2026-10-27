@@ -20,9 +20,9 @@ use codewhale_models::{ContentBlock, Message, MessageRequest, Role};
 use super::golden::{self, Failures};
 use super::stream_json;
 use crate::client::CodewhaleClient;
-use crate::config::{Config, ProviderConfig, ProvidersConfig};
 use crate::llm_client::LlmClient;
 use crate::test_support::{EnvVarGuard, lock_test_env};
+use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 
 const FAMILY: &str = "sse";
 const STREAM_DEADLINE: Duration = Duration::from_secs(20);
@@ -195,51 +195,62 @@ async fn serve(
 fn client_for_route(route: &str, base: &str, model: &str) -> CodewhaleClient {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = match route {
-        "anthropic" => Config {
-            provider: Some("anthropic".to_string()),
-            providers: Some(ProvidersConfig {
+        "anthropic" => {
+            let __cw_config_init_0_0 = Some("anthropic".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 anthropic: ProviderConfig {
                     api_key: Some("conformance-key".to_string()),
                     base_url: Some(base.to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        },
-        "openai" => Config {
-            provider: Some("openai".to_string()),
-            providers: Some(ProvidersConfig {
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
+        }
+        "openai" => {
+            let __cw_config_init_1_0 = Some("openai".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 openai: ProviderConfig {
                     api_key: Some("conformance-key".to_string()),
                     base_url: Some(format!("{base}/v1")),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        },
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
+        }
         // Keep DeepSeek's semantic endpoint for route shaping; redirect only
         // its transport through the existing test seam below.
-        "deepseek" => Config {
-            provider: Some("deepseek".to_string()),
-            ..Config::default()
+        "deepseek" => {
+            let __cw_config_init_2_0 = Some("deepseek".to_string());
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value
         }
         .with_legacy_root(
             Some("conformance-key".to_string()),
             Some("https://api.deepseek.com/v1".to_string()),
         ),
-        "openai-codex" => Config {
-            provider: Some("openai-codex".to_string()),
-            providers: Some(ProvidersConfig {
+        "openai-codex" => {
+            let __cw_config_init_3_0 = Some("openai-codex".to_string());
+            let __cw_config_init_3_1 = Some(ProvidersConfig {
                 openai_codex: ProviderConfig {
                     base_url: Some(base.to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        },
+            });
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
+        }
         other => panic!("sse fixture names unknown route `{other}`"),
     };
     // The fixture model and the client must share the production resolver.

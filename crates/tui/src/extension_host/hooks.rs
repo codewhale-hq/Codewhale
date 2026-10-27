@@ -174,7 +174,7 @@ mod tests {
         let fixture = FixturePlugins::new(&["hook-policy"]).await;
         let manager = Arc::new(super::super::ExtensionHostManager::new(
             super::super::ExtensionHostOptions {
-                runtime: crate::config::ExtensionHostRuntime::Node,
+                runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
                 node_override: Some(node),
                 root: Some(fixture.root.clone()),
                 supervision: super::super::SupervisionOptions {

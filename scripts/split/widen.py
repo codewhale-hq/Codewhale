@@ -19,23 +19,37 @@ compiler names:
 It never bulk-rewrites `pub(crate)`. Every widened item is printed; items in
 security-relevant modules are flagged for human review.
 
-While the loop runs, the runtime manifest's `[lints] workspace = true` is
+While the loop runs, the destination manifest's `[lints] workspace = true` is
 commented out (lints capped to warnings), because an item that is dead inside
-the runtime would otherwise fail the runtime build under `warnings = "deny"`
-before cargo ever reached the TUI's privacy errors. The stanza is restored
-when the loop ends, and a final check runs with it.
+the destination would otherwise fail its build under `warnings = "deny"`
+before cargo ever reached the consumer's privacy errors. The stanza is
+restored on exit, on SIGTERM, SIGHUP and SIGINT (build-lock.py forwards the
+first two), and a manifest left capped by a killed earlier run is restored
+before anything else; a final check runs with the stanza back.
+
+`--prepass` widens, before the first compile, every `pub(crate)`/`pub(super)`
+declaration in the destination whose name also appears in the consumer crates,
+which saves most of the compile rounds (privacy errors only show when the
+consumer is compiled). `unused_imports` warnings left by the move are removed
+with the compiler's own machine-applicable suggestions, because
+`warnings = "deny"` turns each one into a hard error.
 
 Usage:
-    python3 scripts/split/widen.py [--cargo "scripts/dev-cargo.sh"] [--max-rounds N]
+    python3 scripts/split/widen.py [--dest-crate runtime] [--src-crate tui]
+        [--packages codewhale-runtime,codewhale-tui,codewhale-cli]
+        [--cargo "scripts/dev-cargo.sh"] [--max-rounds N] [--prepass]
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
+import collections
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +57,23 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_SRC = REPO_ROOT / "crates" / "runtime" / "src"
 RUNTIME_MANIFEST = REPO_ROOT / "crates" / "runtime" / "Cargo.toml"
+CONSUMER_DIRS = ["tui", "cli"]
+VIS = "pub"
+COMMON_NAMES = {
+    "new", "fmt", "from", "into", "default", "len", "get", "set", "build", "name", "id", "path", "run",
+    "load", "save", "parse", "take", "text", "kind", "value", "data", "state", "config", "error",
+}
+
+
+class Interrupted(BaseException):
+    pass
+
+
+def configure(dest: str, src: str) -> None:
+    global RUNTIME_SRC, RUNTIME_MANIFEST, CONSUMER_DIRS
+    RUNTIME_SRC = REPO_ROOT / "crates" / dest / "src"
+    RUNTIME_MANIFEST = REPO_ROOT / "crates" / dest / "Cargo.toml"
+    CONSUMER_DIRS = [src, "cli"] if src != "cli" else ["cli"]
 LINTS_ON = "[lints]\nworkspace = true\n"
 LINTS_CAPPED = "# [lints] capped by scripts/split/widen.py\n# workspace = true\n"
 PRIVACY_CODES = {"E0603", "E0624", "E0616", "E0451"}
@@ -95,16 +126,17 @@ def widen_line(line: str, name: str | None) -> str | None:
     """Rewrite one definition line to `pub`; None when it cannot be done safely."""
     m = re.match(r"^(\s*)pub\s*\((?:crate|super|in [^)]*)\)\s+", line)
     if m:
-        return m.group(1) + "pub " + line[m.end() :]
+        new = m.group(1) + VIS + " " + line[m.end() :]
+        return None if new == line else new
     if re.match(r"^\s*pub\s", line):
         return None  # already public: the error is about a parent module
     m = re.match(rf"^(\s*)(?={ITEM_KW})", line)
     if m:
-        return m.group(1) + "pub " + line[m.end() :]
+        return m.group(1) + VIS + " " + line[m.end() :]
     if name:
         m = re.match(rf"^(\s*)(?={re.escape(name)}\s*:)", line)
         if m:
-            return m.group(1) + "pub " + line[m.end() :]
+            return m.group(1) + VIS + " " + line[m.end() :]
     return None
 
 
@@ -149,8 +181,80 @@ def apply(edits: dict[tuple[Path, int], str | None]) -> list[str]:
             else:
                 lines[line_no - 1] = new
                 report.append(f"widened {rel}:{line_no}: {new.strip()}{flag}")
-        path.write_text("\n".join(lines), encoding="utf-8")
+        atomic_write(path, "\n".join(lines).encode("utf-8"))
     return report
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    tmp = path.with_name(path.name + ".widen-tmp")
+    tmp.write_bytes(data)
+    os.chmod(tmp, path.stat().st_mode & 0o7777)
+    os.replace(tmp, path)
+
+
+def unused_import_suggestions(messages: list[dict]) -> dict[Path, list[tuple[int, int, str]]]:
+    out: dict[Path, set[tuple[int, int, str]]] = collections.defaultdict(set)
+    for msg in messages:
+        if (msg.get("code") or {}).get("code") != "unused_imports":
+            continue
+        for child in msg.get("children", []):
+            for span in child.get("spans", []):
+                if span.get("suggested_replacement") is None or span.get("suggestion_applicability") != "MachineApplicable":
+                    continue
+                path = (REPO_ROOT / span["file_name"]).resolve()
+                if str(path).startswith(str(REPO_ROOT / "crates")):
+                    out[path].add((span["byte_start"], span["byte_end"], span["suggested_replacement"]))
+    return {p: sorted(v) for p, v in out.items()}
+
+
+def apply_suggestions(suggestions: dict[Path, list[tuple[int, int, str]]]) -> list[str]:
+    report = []
+    for path, spans in suggestions.items():
+        data = path.read_bytes()
+        last = len(data) + 1
+        applied = 0
+        for start, end, repl in sorted(spans, reverse=True):
+            if end > last:
+                continue
+            data = data[:start] + repl.encode("utf-8") + data[end:]
+            last = start
+            applied += 1
+        atomic_write(path, data)
+        report.append(f"unused import: {applied} removal(s) in {path.relative_to(REPO_ROOT)}")
+    return report
+
+
+def static_prepass() -> list[str]:
+    decl = re.compile(
+        r"^[ \t]*pub\((?:crate|super)\)[ \t]+(?:async\s+|unsafe\s+|const\s+)*(?:(?:fn|struct|enum|const|static|type|trait|mod)[ \t]+([A-Za-z_]\w*))",
+        re.M,
+    )
+    tok = re.compile(r"[A-Za-z_]\w*")
+    consumer_tokens: set[str] = set()
+    for crate in CONSUMER_DIRS:
+        for path in (REPO_ROOT / "crates" / crate).rglob("*.rs"):
+            if "target" in path.parts:
+                continue
+            consumer_tokens.update(tok.findall(path.read_text(encoding="utf-8", errors="replace")))
+    edits: dict[tuple[Path, int], str | None] = {}
+    skipped = 0
+    for path in RUNTIME_SRC.rglob("*.rs"):
+        lines = path.read_text(encoding="utf-8").split("\n")
+        for i, line in enumerate(lines):
+            m = decl.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in COMMON_NAMES or (len(name) < 6 and "_" not in name):
+                skipped += 1
+                continue
+            if name in consumer_tokens:
+                new = widen_line(line, name)
+                if new is not None:
+                    edits[(path, i + 1)] = new
+    log = apply(edits) if edits else []
+    log.append(f"prepass: {len(edits)} declaration(s) widened, {skipped} common/short name(s) left to the compiler")
+    return log
 
 
 def plan_edits(messages: list[dict]) -> tuple[dict, list[str]]:
@@ -217,31 +321,60 @@ def set_lints(capped: bool) -> None:
     text = RUNTIME_MANIFEST.read_text(encoding="utf-8")
     old, new = (LINTS_ON, LINTS_CAPPED) if capped else (LINTS_CAPPED, LINTS_ON)
     if old in text:
-        RUNTIME_MANIFEST.write_text(text.replace(old, new), encoding="utf-8")
+        atomic_write(RUNTIME_MANIFEST, text.replace(old, new).encode("utf-8"))
+
+
+def install_signal_handlers() -> None:
+    def handler(signum, _frame):
+        raise Interrupted(signal.Signals(signum).name)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, handler)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cargo", default="scripts/dev-cargo.sh")
     parser.add_argument("--max-rounds", type=int, default=12)
-    parser.add_argument("--packages", default="codewhale-runtime,codewhale-tui")
+    parser.add_argument("--dest-crate", default="runtime")
+    parser.add_argument("--src-crate", default="tui")
+    parser.add_argument("--packages", help="comma separated; default codewhale-<dest>,codewhale-<src>")
     parser.add_argument("--extra", default="--lib --tests")
+    parser.add_argument("--vis", choices=("pub", "pub(crate)"), default="pub", help="visibility given to widened items (pub, or pub(crate) inside one crate)")
+    parser.add_argument("--prepass", action="store_true", help="widen declarations the consumers name before the first compile")
+    parser.add_argument("--keep-unused-imports", action="store_true", help="do not apply the compiler's unused-import removals")
     args = parser.parse_args(argv)
+    configure(args.dest_crate, args.src_crate)
+    global VIS
+    VIS = args.vis
     cargo = shlex.split(args.cargo)
-    packages = args.packages.split(",")
+    packages = (args.packages or f"codewhale-{args.dest_crate},codewhale-{args.src_crate}").split(",")
     extra = shlex.split(args.extra)
 
+    if LINTS_CAPPED in RUNTIME_MANIFEST.read_text(encoding="utf-8"):
+        print(f"{RUNTIME_MANIFEST.relative_to(REPO_ROOT)} was left capped by an earlier run; restoring it first", flush=True)
+        set_lints(capped=False)
+
     log: list[str] = []
+    install_signal_handlers()
+    atexit.register(lambda: set_lints(capped=False) if RUNTIME_MANIFEST.exists() else None)
     set_lints(capped=True)
     try:
+        if args.prepass:
+            log.extend(static_prepass())
         for round_no in range(1, args.max_rounds + 1):
             messages = run_cargo(cargo, packages, extra)
             edits, unresolved = plan_edits(messages)
-            if not edits:
+            suggestions = {} if args.keep_unused_imports else unused_import_suggestions(messages)
+            if not edits and not suggestions:
                 break
-            changes = apply(edits)
+            changes = apply(edits) if edits else []
+            changes += apply_suggestions(suggestions)
             log.extend(changes)
             print(f"round {round_no}: {len(changes)} edit(s)", flush=True)
+    except Interrupted as exc:
+        print(f"interrupted by {exc}; manifest restored, edits so far stay in the tree", flush=True)
+        return 130
     finally:
         set_lints(capped=False)
     for line in log:

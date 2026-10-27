@@ -1828,13 +1828,13 @@ fn allow_once_default_selection_preselects_approve_once() {
 
 #[test]
 fn approval_config_resolves_default_selection() {
-    let bare: crate::config::Config = toml::from_str("").expect("empty config");
+    let bare: codewhale_runtime::config::Config = toml::from_str("").expect("empty config");
     assert_eq!(
         bare.approval_default_selection(),
         ApprovalDefaultSelection::Deny
     );
 
-    let opted_in: crate::config::Config =
+    let opted_in: codewhale_runtime::config::Config =
         toml::from_str("[approval]\ndefault_selection = \"allow_once\"").expect("approval table");
     assert_eq!(
         opted_in.approval_default_selection(),
@@ -1842,8 +1842,10 @@ fn approval_config_resolves_default_selection() {
     );
 
     assert!(
-        toml::from_str::<crate::config::Config>("[approval]\ndefault_selection = \"allow_always\"")
-            .is_err()
+        toml::from_str::<codewhale_runtime::config::Config>(
+            "[approval]\ndefault_selection = \"allow_always\""
+        )
+        .is_err()
     );
 }
 

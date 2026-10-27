@@ -48,7 +48,7 @@ pub(crate) enum StatusToastKind {
     RedactionGate(RedactionGateNotice),
     BehavioralTip(crate::tui::behavioral_tips::BehavioralTip),
     PluginSuggestion,
-    ContextPressure(crate::context_budget::PressureLevel),
+    ContextPressure(codewhale_runtime::context_budget::PressureLevel),
     /// A condition that holds until its owner retires it by event id (a
     /// session save that keeps failing). It never times out: expiring it
     /// would report recovery that has not happened.
@@ -110,7 +110,7 @@ impl StatusToast {
     #[must_use]
     pub(crate) fn context_pressure(
         text: impl Into<String>,
-        level: crate::context_budget::PressureLevel,
+        level: codewhale_runtime::context_budget::PressureLevel,
     ) -> Self {
         Self {
             text: text.into(),
@@ -413,10 +413,11 @@ impl App {
             (Some(sticky), Some(latest))
                 if matches!(
                     sticky.kind,
-                    StatusToastKind::ContextPressure(crate::context_budget::PressureLevel::High)
-                        | StatusToastKind::ContextPressure(
-                            crate::context_budget::PressureLevel::Medium
-                        )
+                    StatusToastKind::ContextPressure(
+                        codewhale_runtime::context_budget::PressureLevel::High
+                    ) | StatusToastKind::ContextPressure(
+                        codewhale_runtime::context_budget::PressureLevel::Medium
+                    )
                 ) =>
             {
                 Some(latest)
@@ -435,7 +436,7 @@ mod tests {
     fn app() -> App {
         App::new(
             crate::tui::test_support::test_tui_options(std::path::PathBuf::from(".")),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
         )
     }
 

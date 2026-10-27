@@ -39,7 +39,6 @@ jobs:
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
           - { name: extension-host, directory: crates/tui/extension-host }
-          - { name: embedded-computer-use, directory: crates/tui/plugins/computer-use }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }
           - { name: telegram-bridge, directory: integrations/telegram-bridge }
@@ -56,7 +55,7 @@ jobs:
       # Audit the complete committed lock, including build dependencies, and
       # keep the raw report. Runtime compatibility remains owned by surface CI.
       - name: Audit locked dependencies
-        if: matrix.name != 'web'
+        if: matrix.name != 'web' && matrix.name != 'vscode'
         run: |
           set +e
           npm audit --json > "${{ runner.temp }}/npm-audit.json"
@@ -69,13 +68,19 @@ jobs:
           ' "${{ runner.temp }}/npm-audit.json"
           exit "$status"
       # The website also verifies its installed, reviewed build dependency
-      # mitigation (docs/DEPENDENCY_SECURITY.md); the raw report keeps every
+      # mitigation (web/docs/DEPENDENCY_SECURITY.md); the raw report keeps every
       # upstream finding.
       - name: Install and verify website build dependency mitigation
         if: matrix.name == 'web'
         run: npm ci --no-audit
       - name: Audit website with verified build dependency mitigation
         if: matrix.name == 'web'
+        run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"
+      # The VS Code extension's packager toolchain carries one unfixed high
+      # advisory that never runs for users (DEPENDENCY_SECURITY.md at the repo
+      # root). It is admitted by name; anything else fails the job.
+      - name: Audit extension with reviewed packager advisory acceptance
+        if: matrix.name == 'vscode'
         run: npm run audit:dependencies -- --report "${{ runner.temp }}/npm-audit.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()

@@ -288,7 +288,7 @@ async fn wait_for_http(
     deadline: Instant,
     context: &ToolContext,
 ) -> Result<ReadinessOutput, ToolError> {
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .timeout(request.timeout)
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()

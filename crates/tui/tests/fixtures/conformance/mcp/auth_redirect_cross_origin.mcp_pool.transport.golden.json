@@ -1,0 +1,11 @@
+{
+  "requests": [
+    {
+      "authorization": "<bearer>",
+      "protocol_version": null,
+      "rpc": "initialize",
+      "session": null,
+      "status": 307
+    }
+  ]
+}

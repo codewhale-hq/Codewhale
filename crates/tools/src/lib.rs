@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
+pub mod names;
 mod outcome;
+pub mod param_alias;
+pub mod patch_preflight;
 mod prepared;
 mod resources;
 
@@ -284,6 +287,36 @@ pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'
             provided.join(", ")
         );
         Err(ToolError::invalid_input(hint))
+    }
+}
+
+/// Require the `action` discriminator on a canonical action-family call.
+///
+/// Every family schema marks `action` required, but the wrappers used to
+/// default a missing one (`File` → read, `Git` → status, `Web` → search,
+/// `Run` → tests). A call that merely omitted or misspelled the discriminator
+/// therefore ran a *different* operation and returned that operation's success
+/// receipt: `File{path, content}` answered an intended write with the file's
+/// current contents, so the write silently never happened. Same shape as
+/// #5209 — refuse, and name the values that actually dispatch.
+///
+/// `actions` must be the set this tool instance can really run, so a mode that
+/// hides `write` never suggests it.
+pub fn required_action(
+    input: &Value,
+    tool: &str,
+    actions: &[&str],
+) -> std::result::Result<String, ToolError> {
+    match input.get("action") {
+        Some(Value::String(action)) => Ok(action.clone()),
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "{tool} requires `action` to be a string, got {other}; nothing was run. Pass one of: {}.",
+            actions.join(", ")
+        ))),
+        None => Err(ToolError::invalid_input(format!(
+            "{tool} requires an `action` parameter; nothing was run. Pass one of: {}.",
+            actions.join(", ")
+        ))),
     }
 }
 

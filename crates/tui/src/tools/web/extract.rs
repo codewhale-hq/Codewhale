@@ -103,9 +103,11 @@ pub(crate) async fn extract_document_with_pdf_command(
 
     if validate_pdf_response(url, content_type, bytes)? {
         return extract_pdf(bytes, pdf_command).await.map_err(|error| {
-            if context
-                .is_some_and(|context| context.features.enabled(crate::features::Feature::PdfHost))
-            {
+            if context.is_some_and(|context| {
+                context
+                    .features
+                    .enabled(codewhale_runtime::features::Feature::PdfHost)
+            }) {
                 AdapterFailure::host(error)
             } else {
                 error.into()
@@ -147,7 +149,7 @@ pub(crate) async fn extract_document_with_pdf_command(
         if let Some(context) = context.filter(|context| {
             context
                 .features
-                .enabled(crate::features::Feature::WebExtractHost)
+                .enabled(codewhale_runtime::features::Feature::WebExtractHost)
         }) {
             return extract_html_with_host(url, &body, truncated, context).await;
         }

@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::tools::apply_patch::preflight_apply_patch;
+use codewhale_tools::patch_preflight::preflight_apply_patch;
 
 use super::*;
 
@@ -16,7 +16,7 @@ use super::*;
 /// three known edit tools — adding more (e.g. specialized refactor tools)
 /// is a one-line change here.
 pub(super) fn edited_paths_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<PathBuf> {
-    let semantic = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let semantic = codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     match semantic {
         "edit_file" | "write_file" => {
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
@@ -98,7 +98,7 @@ impl Engine {
         let blocks = std::mem::take(&mut self.pending_lsp_blocks);
         let found: usize = blocks.iter().map(|b| b.items.len()).sum();
         let files = blocks.len();
-        let rendered = crate::lsp::render_blocks(&blocks);
+        let rendered = codewhale_lsp::render_blocks(&blocks);
         if rendered.is_empty() {
             return;
         }

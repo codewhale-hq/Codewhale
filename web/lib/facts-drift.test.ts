@@ -50,7 +50,7 @@ function installGitHubFixture(
           revision: "remote-reviewed", intrinsic: { "deepseek-v4-pro": { source: "exact remote fixture", context_window: 1000000, max_output: 128000, reasoning: true } },
           public_models: [{ id: "deepseek-v4-pro", label: "DeepSeek", added_at: "2026-07-01", aliases: [] }],
         } }),
-        "crates/tui/src/sandbox/mod.rs": `
+        "crates/sandbox/src/lib.rs": `
           pub const PUBLIC_SANDBOX_BACKENDS: &[&str] = &[
             "seatbelt (macOS, when available)",
             "bubblewrap (Linux, opt-in when installed)",
@@ -219,7 +219,7 @@ describe("complete remote provider roster", () => {
       }
     }
     installGitHubFixture(VALID_GENERATED_FACTS, undefined, {
-      "crates/tui/src/config.rs": readFileSync(new URL("../../crates/tui/src/config.rs", import.meta.url), "utf8"),
+      "crates/runtime/src/config.rs": readFileSync(new URL("../../crates/runtime/src/config.rs", import.meta.url), "utf8"),
       "crates/config/assets/provider_descriptors.json": JSON.stringify(metadata),
     });
     const facts = await deriveFactsFromRemote();

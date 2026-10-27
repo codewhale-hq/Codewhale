@@ -181,21 +181,24 @@ pub fn triage_review(diff: &str) -> ReviewTriage {
     }
 }
 
+pub const REASONING_ROUTE_MIN_OUTPUT_TOKENS: u32 = 8_192;
+
 /// The budget a tier buys. Low risk still gets a real review of the diff, just
 /// without repository tools; high risk gets dependent tracing and room to
-/// reproduce.
+/// reproduce. Output is never tiered: every review may use the route's whole
+/// output limit, so spend is bounded by skipping steps, not by truncation.
 #[must_use]
-pub fn budget_for(triage: &ReviewTriage) -> ReviewBudget {
-    let (max_steps, max_tool_calls, max_output_tokens) = match triage.risk {
-        ReviewRisk::Low => (1, 0, 4_000),
-        ReviewRisk::Medium => (4, 6, 8_000),
-        ReviewRisk::High => (6, 12, 16_000),
+pub fn budget_for(triage: &ReviewTriage, route_output_limit: u32) -> ReviewBudget {
+    let (max_steps, max_tool_calls) = match triage.risk {
+        ReviewRisk::Low => (1, 0),
+        ReviewRisk::Medium => (4, 6),
+        ReviewRisk::High => (6, 12),
     };
     ReviewBudget {
         risk: triage.risk,
         max_steps,
         max_tool_calls,
-        max_output_tokens,
+        max_output_tokens: route_output_limit,
         money_cap_usd: None,
         money_limit_supported: false,
     }
@@ -319,7 +322,7 @@ mod tests {
             "diff --git a/docs/README.md b/docs/README.md\n--- a/docs/README.md\n+++ b/docs/README.md\n@@ -1 +1 @@\n-old\n+new\n",
         );
         assert_eq!(triage.risk, ReviewRisk::Low);
-        let budget = budget_for(&triage);
+        let budget = budget_for(&triage, 65_536);
         assert_eq!(budget.max_tool_calls, 0);
         assert_eq!(budget.max_steps, 1);
         assert!(!budget.money_limit_supported);
@@ -341,7 +344,7 @@ mod tests {
                 .iter()
                 .any(|reason| reason.contains("migration"))
         );
-        let budget = budget_for(&triage);
+        let budget = budget_for(&triage, 65_536);
         assert!(budget.max_tool_calls >= 12);
         assert!(budget.max_steps >= 6);
     }
@@ -371,12 +374,12 @@ mod tests {
     #[test]
     fn a_money_cap_without_a_price_is_reported_as_unsupported() {
         let triage = triage_review(&diff_for(&["src/auth.rs"]));
-        let without_rates = budget_for(&triage).with_money_cap(Some(0.25), None);
+        let without_rates = budget_for(&triage, 65_536).with_money_cap(Some(0.25), None);
         assert_eq!(without_rates.money_cap_usd, Some(0.25));
         assert!(!without_rates.money_limit_supported);
-        let with_rates = budget_for(&triage).with_money_cap(Some(0.25), Some((0.15, 0.60)));
+        let with_rates = budget_for(&triage, 65_536).with_money_cap(Some(0.25), Some((0.15, 0.60)));
         assert!(with_rates.money_limit_supported);
-        let no_cap = budget_for(&triage).with_money_cap(None, Some((0.15, 0.60)));
+        let no_cap = budget_for(&triage, 65_536).with_money_cap(None, Some((0.15, 0.60)));
         assert_eq!(no_cap.money_cap_usd, None);
         assert!(!no_cap.money_limit_supported);
     }
@@ -400,7 +403,7 @@ mod tests {
     #[test]
     fn a_partial_review_names_the_stop_and_the_limit() {
         let triage = triage_review(&diff_for(&["src/auth.rs"]));
-        let budget = budget_for(&triage).with_money_cap(Some(0.25), Some((0.15, 0.60)));
+        let budget = budget_for(&triage, 65_536).with_money_cap(Some(0.25), Some((0.15, 0.60)));
         let note = partial_review_note(&ReviewStop::MoneyCap, &triage, &budget);
         assert!(note.contains("named partial review"));
         assert!(note.contains("0.2500"));

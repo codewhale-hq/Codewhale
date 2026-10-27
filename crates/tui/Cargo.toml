@@ -62,8 +62,6 @@ exclude = [
   "extension-host/dist/shell-hooks.mjs",
   "extension-host/dist/skills.mjs",
   "extension-host/dist/stock-adapters.mjs",
-  "plugins/computer-use/tests/**",
-  "plugins/computer-use/scripts/smoke.mjs",
 ]
 
 [lints]
@@ -72,6 +70,7 @@ workspace = true
 [features]
 default = []
 long-running-tests = []
+test-thread-scoped-state = []
 # Accepted compatibility feature names. Allocators belong exclusively to the
 # canonical codewhale-cli executable; these library aliases have no effect.
 mimalloc-allocator = []
@@ -90,6 +89,7 @@ codewhale-memory = { path = "../memory", version = "0.10.2" }
 ahash = "0.8"
 anyhow.workspace = true
 codewhale-agent = { path = "../agent", version = "0.10.2" }
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2" }
 codewhale-app-server = { path = "../app-server", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
@@ -101,13 +101,22 @@ codewhale-hooks = { path = "../hooks", version = "0.10.2" }
 codewhale-lane = { path = "../lane", version = "0.10.2" }
 codewhale-mcp = { path = "../mcp", version = "0.10.2" }
 codewhale-models = { path = "../models", version = "0.10.2" }
+codewhale-net = { path = "../net", version = "0.10.2" }
+codewhale-notify = { path = "../notify", version = "0.10.2" }
 codewhale-palette = { path = "../palette", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
 codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.2" }
 codewhale-secrets = { path = "../secrets", version = "0.10.2" }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2" }
+codewhale-lsp = { path = "../lsp", version = "0.10.2" }
+codewhale-repl = { path = "../repl", version = "0.10.2" }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
 codewhale-tools = { path = "../tools", version = "0.10.2" }
 codewhale-workflow = { path = "../workflow", version = "0.10.2" }
 codewhale-workflow-js = { path = "../workflow-js", version = "0.10.2" }
@@ -123,9 +132,7 @@ encoding_rs.workspace = true
 fd-lock = "4.0.4"
 dirs.workspace = true
 futures-util = "0.3.31"
-hyper-util = { version = "=0.1.20", features = ["client-proxy"] }
 oauth2 = { version = "5", default-features = false }
-jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 # No ratatui-core pin: ColorCompatBackend answers `get_cursor_position()`
 # from tracked state (ratatui#2640's recommended workaround), so the CPR query
 # inside `Terminal::clear()` no longer races the input loop. See
@@ -134,7 +141,7 @@ ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
 regex = "1.11"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
 rquickjs.workspace = true
-rmcp = { version = "3.2.0", default-features = false, features = ["auth", "client"] }
+rmcp = { version = "3.7.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
 rustls.workspace = true
 qrcode = { version = "0.14", default-features = false }
 similar = { version = "3", features = ["unicode"] }
@@ -204,10 +211,21 @@ shell-words = "1.1.1"
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }
+codewhale-lsp = { path = "../lsp", version = "0.10.2", features = ["test-support"] }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2", features = ["test-support"] }
+codewhale-notify = { path = "../notify", version = "0.10.2", features = ["test-thread-scoped-state"] }
+codewhale-config = { path = "../config", version = "0.10.2", features = ["schema", "test-support"] }
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2", features = [
+    "test-support",
+] }
 codewhale-runtime = { path = "../runtime", version = "0.10.2", features = [
     "test-support",
     "test-thread-scoped-state",
 ] }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.2", features = ["test-support"] }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
+codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }
 codewhale-models = { path = "../models", version = "0.10.2", features = [
     "test-support",
 ] }
@@ -226,9 +244,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
 
-[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
-# JWT verification uses upstream assembly objects when NASM is unavailable.
-aws-lc-rs = { version = "1.18.1", default-features = false, features = ["prebuilt-nasm"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))'.dependencies]
 arboard = { version = "3.4", features = ["wayland-data-control"] }
@@ -241,4 +256,4 @@ objc2 = "0.6.3"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

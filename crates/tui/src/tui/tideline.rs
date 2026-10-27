@@ -128,7 +128,7 @@ impl<T: Clone> SettingFact<T> {
 
 /// The narrow, read-only workbench projection available in this slice.
 ///
-/// `App` intentionally does not retain a resident [`crate::settings::Settings`]
+/// `App` intentionally does not retain a resident [`codewhale_runtime::settings::Settings`]
 /// value. Consequently this projection never reloads disk or guesses startup
 /// defaults: those lanes remain `None` until the settings owner supplies them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +274,7 @@ mod tests {
         InteractionRegistry, InteractionTarget, InteractionTargetId, SettingApplySemantics,
         SettingAuthority, SettingFact, UiSnapshot,
     };
-    use crate::config::ProviderKind;
+    use codewhale_config::ProviderKind;
     use ratatui::layout::Rect;
 
     fn target(area: Rect, used_tokens: u32) -> InteractionTarget {

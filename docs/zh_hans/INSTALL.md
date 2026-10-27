@@ -198,7 +198,9 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 ### 重新运行安装器
 
 * 已安装的就是同一版本：无害。它会打印 `Already installed: …` 并以 0 退出。
-* 已安装的是不同版本：它会**拒绝**（`codewhale install: refusing to replace existing …/codewhale`），以 1 退出，并且不改动任何东西。拒绝之前它已经下载了约 160 MB。请改用 [`codewhale update`](#7-更新与回滚)。
+* 已安装的是不同版本：它会**拒绝**（`codewhale install: refusing to replace existing …/codewhale`），以 1 退出，并且不改动任何东西。拒绝之前它已经下载了发布包。请改用 [`codewhale update`](#7-更新与回滚)。
+* 是同一版本但不是发布构建（本地 `cargo build` 会报告 `0.10.2 (dev)`）：`codewhale update` 仍会用发布产物覆盖它，因为这种构建没有需要保留的发布溯源信息。
+* 主动替换：`CODEWHALE_FORCE_REINSTALL=1` 会替换安装目录中不同的 `codewhale`/`codew`，并把每个旧文件保留在同目录的 `<名称>.bak-<UTC 时间戳>`。它绝不替换符号链接或非普通文件，也绝不替换受管目录中的文件。
 
 ### 升级 / 卸载
 
@@ -446,6 +448,8 @@ codewhale update
 ```
 
 它会把 `codewhale` **和** `codew` 一起更新，在测试机上用了 10 秒。再运行一次会得到 `Already up to date; no download needed.`。其他选项：`--beta` 和 `--proxy <URL>`。
+
+不是发布构建的构建会在 `codewhale --version` 中显示自己的来源（本地构建是 `0.10.2 (dev)`，发布构建是提交哈希）。`codewhale update` 比较的是发布产物而不只是版本号，因此同版本的 `(dev)` 构建会被发布产物替换，而不是永远报告 "Already up to date"。
 
 <a id="roll-back-to-a-previous-release"></a>
 
@@ -760,7 +764,7 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 | Windows | arm64 | `codewhale-windows-arm64.exe`, `codew-windows-arm64.exe` | ✅ | ✅ |
 | Linux x64 或 arm64 上的 musl（Alpine） | 原生架构 | 匹配的静态 Linux 资源 | ✅（静态） | ✅ |
 | 其他 Linux（其他架构上的 musl） | — | 从源码构建 | ❌¹ | ✅² |
-| FreeBSD 14+ / OpenBSD | x64, arm64 | `cargo install codewhale-cli --locked`（无预编译；见 § FreeBSD） | ❌ | ✅² |
+| FreeBSD 14+ | x64, arm64 | `cargo install codewhale-cli --locked`（无预编译；见 § FreeBSD） | ❌ | ✅² |
 
 ¹ npm 包会以明确的错误退出，并引导你到这里。
 ² 前提是你的工具链能编译较新的 Rust workspace；见下文[从源码构建](#5-cargo-与从源码构建)。

@@ -1,0 +1,18 @@
+{
+  "requests": [
+    {
+      "authorization": "<bearer>",
+      "protocol_version": "2026-07-28",
+      "rpc": "server/discover",
+      "session": null,
+      "status": 200
+    },
+    {
+      "authorization": "<bearer>",
+      "protocol_version": null,
+      "rpc": "initialize",
+      "session": null,
+      "status": 307
+    }
+  ]
+}

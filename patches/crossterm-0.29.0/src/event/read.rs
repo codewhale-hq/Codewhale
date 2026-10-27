@@ -73,6 +73,7 @@ impl InternalEventReader {
                     }
                 }
                 Err(e) => {
+                    self.events.extend(self.skipped_events.drain(..));
                     if e.kind() == io::ErrorKind::Interrupted {
                         return Ok(false);
                     }
@@ -120,7 +121,12 @@ impl InternalEventReader {
                 }
             }
 
-            let _ = self.poll(None, filter)?;
+            if let Err(error) = self.poll(None, filter) {
+                while let Some(event) = skipped_events.pop_back() {
+                    self.events.push_front(event);
+                }
+                return Err(error);
+            }
         }
     }
 }
@@ -228,6 +234,14 @@ mod tests {
 
         assert_eq!(reader.read(&CursorPositionFilter).unwrap(), CURSOR_EVENT);
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), SKIPPED_EVENT);
+
+        const LATER_EVENT: InternalEvent = InternalEvent::Event(Event::Resize(20, 30));
+        reader.events.push_back(SKIPPED_EVENT);
+        reader.source = Some(Box::new(FakeSource::new(&[LATER_EVENT, CURSOR_EVENT])));
+        assert!(reader.read(&CursorPositionFilter).is_err());
+        assert_eq!(reader.read(&InternalEventFilter).unwrap(), SKIPPED_EVENT);
+        assert_eq!(reader.read(&InternalEventFilter).unwrap(), LATER_EVENT);
+        assert_eq!(reader.read(&CursorPositionFilter).unwrap(), CURSOR_EVENT);
     }
 
     #[test]
@@ -360,7 +374,9 @@ mod tests {
         };
 
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
-        assert!(reader.read(&InternalEventFilter).is_err());
+        reader.skipped_events.push(EVENT);
+        assert!(reader.poll(None, &InternalEventFilter).is_err());
+        assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert!(reader
             .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
             .unwrap());

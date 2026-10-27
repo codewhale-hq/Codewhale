@@ -33,16 +33,6 @@ impl StepStatus {
             _ => None,
         }
     }
-
-    #[must_use]
-    #[expect(dead_code)]
-    pub fn symbol(&self) -> &'static str {
-        match self {
-            StepStatus::Pending => "○",
-            StepStatus::InProgress => "◎",
-            StepStatus::Completed => "●",
-        }
-    }
 }
 
 /// Input representation for a plan item.
@@ -322,11 +312,6 @@ impl PlanState {
             plan: snapshot.items.clone(),
         });
         state
-    }
-
-    #[allow(dead_code)] // retained for PlanState consumers / older tests
-    pub fn steps(&self) -> &[PlanStep] {
-        &self.steps
     }
 
     /// Get counts of steps by status

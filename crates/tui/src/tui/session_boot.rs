@@ -24,6 +24,17 @@ use codewhale_localization::{Locale, MessageId, tr};
 pub(crate) const ITEM_SEPARATOR: &str = " · ";
 const MAX_NAMED_CHIPS: usize = 4;
 
+/// How long a boot *prediction* may stand in for the boot pass's receipt (#7035).
+///
+/// Configured rows paint as connecting because the engine's pass is expected to
+/// name them. That is a guess about work in flight, so it needs a horizon: the
+/// pass connects eight servers at a time with a 30 s default connect timeout,
+/// which is ten waves — far more than any real workspace — plus room for a
+/// first-run `npx`/`uvx` package fetch. Past this, no receipt has arrived, and
+/// the honest surface is the last known snapshot rather than an eternal
+/// "connecting".
+pub const MCP_BOOT_PREDICTION_HORIZON: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBootPhase {
     Hidden,
@@ -164,7 +175,7 @@ impl SessionBootSurface {
         spawn_render_prewarm_once();
         Self::from_parts(
             app.mcp_snapshot.as_ref(),
-            app.mcp_initializing,
+            app.mcp_boot_initializing(),
             &app.mcp_connecting,
             app.mcp_configured_count,
             PluginBootSummary::from_registry(app.plugin_registry.as_ref()),
@@ -522,18 +533,6 @@ mod tests {
 
         let registry = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(&workspace);
-        let shipped_disabled = registry
-            .list()
-            .into_iter()
-            .filter(|plugin| {
-                !plugin.enabled && plugin.trust_status == PluginTrustStatus::NeverReviewed
-            })
-            .count();
-        assert!(
-            shipped_disabled > 0,
-            "fixture must discover at least one disabled, never-reviewed built-in"
-        );
-
         let summary = PluginBootSummary::from_registry(&registry);
         assert_eq!(summary.loaded, registry.list().len());
         assert!(

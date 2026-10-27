@@ -1234,6 +1234,7 @@ async fn bridged_turn_sends_the_observed_owner_workspace_as_final_narrowing() {
         &state,
         "canonical-1".into(),
         "hello".into(),
+        Some(Vec::new()),
         Vec::new(),
         None,
     )

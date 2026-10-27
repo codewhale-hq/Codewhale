@@ -618,7 +618,7 @@ fn plain_clip(value: &str, width: usize) -> String {
         .collect()
 }
 
-/// The mounted composer's content floor and native total-row cap.
+/// The mounted composer's content floor and total-row cap while a menu is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NativeComposerDensity {
     Compact,

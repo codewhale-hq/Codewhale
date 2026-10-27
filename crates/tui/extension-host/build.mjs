@@ -12,6 +12,16 @@ import { redactMcpOAuthLogs } from './scripts/redact-mcp-oauth-logs.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const outdir = join(here, 'dist')
 mkdirSync(outdir, { recursive: true })
+const compatibilityBytes = readFileSync(join(here, 'src/dsh/compatibility.json'))
+const compatibility = JSON.parse(compatibilityBytes)
+writeFileSync(join(outdir, 'dsh-compatibility.json'), compatibilityBytes)
+const reusedPure = compatibility.pure_api.reuse
+const reusedRoot = join(here, 'node_modules', reusedPure.package)
+const reusedPackage = JSON.parse(readFileSync(join(reusedRoot, 'package.json'), 'utf8'))
+const reusedSource = readFileSync(join(reusedRoot, reusedPure.file), 'utf8').split('\n').slice(reusedPure.lines[0] - 1, reusedPure.lines[1]).join('\n')
+if (reusedPackage.version !== reusedPure.version || createHash('sha256').update(reusedSource).digest('hex') !== reusedPure.sha256) {
+  throw new Error(`${reusedPure.package} ${reusedPure.symbol} differs from the pinned pure helper receipt`)
+}
 
 // Built-in host modules (tier 0): each `src/builtin/<id>.ts` is built to
 // `dist/builtin/<id>.mjs`, the file the core activates under the owner id
@@ -235,11 +245,20 @@ function readLicense(root, label) {
 const EXCERPTED = [
   {
     name: '@deepseek-ai/dsh-tools',
-    version: '0.1.7-alpha.2',
+    version: compatibility.definition_api.version,
     license: 'MIT',
     file: 'src/dsh/dsh-tools-compat.js',
     licenseOf: '@deepseek-ai/dsh-util-values',
   },
+  ...compatibility.pure_api.packages.filter(pkg => pkg.excerpted).map(pkg => ({
+    name: pkg.package,
+    version: pkg.version,
+    license: pkg.license,
+    file: compatibility.pure_api.file,
+    sourceSha256: compatibility.pure_api.source_sha256,
+    licenseTextSha256: pkg.license_text_sha256,
+    licenseOf: '@deepseek-ai/dsh-util-values',
+  })),
 ]
 
 const packageInputs = [hostBuild.metafile, reviewBuild.metafile, ...builtinMetafiles].flatMap(bundledPackages)
@@ -259,11 +278,14 @@ if (packages.length === 0) throw new Error('the host bundle contains no node_mod
 const entries = packages.map((pkg) => ({ ...pkg, note: '' }))
 for (const excerpt of EXCERPTED) {
   const source = readFileSync(join(here, excerpt.file), 'utf8')
-  if (!source.includes(`${excerpt.name}@${excerpt.version}`)) {
+  if (excerpt.sourceSha256 ? createHash('sha256').update(source).digest('hex') !== excerpt.sourceSha256 : !source.includes(`${excerpt.name}@${excerpt.version}`)) {
     throw new Error(`${excerpt.file} no longer names ${excerpt.name}@${excerpt.version}; update EXCERPTED in build.mjs`)
   }
   const shared = packages.find((pkg) => pkg.name === excerpt.licenseOf)
   if (!shared) throw new Error(`${excerpt.licenseOf} (licence text of ${excerpt.name}) is not bundled`)
+  if (excerpt.licenseTextSha256 && (shared.license !== excerpt.license || createHash('sha256').update(shared.text).digest('hex') !== excerpt.licenseTextSha256)) {
+    throw new Error(`${excerpt.name} licence text differs from its pinned pure helper receipt`)
+  }
   entries.push({
     name: excerpt.name,
     version: excerpt.version,

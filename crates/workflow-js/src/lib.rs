@@ -17,9 +17,8 @@
 //! * `args` — the invocation input, verbatim.
 //! * `await task(opts)` — dispatch one subagent; resolves to the full result
 //!   text, or to a parsed + schema-validated object when `opts.responseSchema`
-//!   is set. Throws on rejection, failure, cancellation, budget exhaustion,
-//!   or once [`WORKFLOW_LIFETIME_CAP`] spawn attempts have been made. A reply
-//!   that fails `responseSchema` gets up to
+//!   is set. Throws on rejection, failure, cancellation or an owner budget
+//!   exhaustion. A reply that fails `responseSchema` gets up to
 //!   [`SCHEMA_REPAIR_MAX_ATTEMPTS`] bounded repairs (#5583) before it throws;
 //!   the failed attempts are reported as driver receipts either way.
 //! * `parallel(thunks, opts)` — fan-out, at most [`PARALLEL_MAX_ITEMS`] items.
@@ -45,8 +44,9 @@
 //! read from the thrown `Error`'s `.kind`, never inferred from message text.
 //! * `log(msg)` / `phase(title)` — progress events forwarded to the driver.
 //! * `budget.total` / `budget.spent()` / `budget.remaining()` — live driver
-//!   snapshots (`total` is `null` and `remaining()` is `Infinity` when no
-//!   ceiling is configured).
+//!   snapshots. An unmetered driver exposes `budget.metered === false` and
+//!   null spent/remaining; total is then only the declared hint. Metered
+//!   drivers use null total and infinite remaining for an unbounded pool.
 //!
 //! `Date.now()`, `new Date()`, `Date.parse/UTC`, and `Math.random()` throw:
 //! runs must be deterministic so recorded traces can be replayed.
@@ -74,13 +74,6 @@ pub use error::{DriverError, TaskErrorKind, WorkflowJsError};
 pub use schema::{SCHEMA_RAW_CARRY_CHARS, SCHEMA_RAW_PREVIEW_CHARS, SCHEMA_REPAIR_MAX_ATTEMPTS};
 pub use vm::{VmLimits, WorkflowRunCancel, WorkflowVm, normalize_task_cwd, normalize_task_cwd_in};
 
-/// Maximum `task()` spawn attempts per run (design §4.3). Counted in the VM
-/// before the driver is consulted, so a runaway `loop-until-dry` terminates
-/// even if the driver would keep admitting work.
-///
-/// Product scale: up to 1_000 agents per Workflow run.
-pub const WORKFLOW_LIFETIME_CAP: u64 = 1000;
-
 /// Maximum concurrently executing agents within one Workflow run.
 ///
 /// Fan-out may *declare* more work via `parallel()` / `pipeline()`, but the
@@ -89,13 +82,5 @@ pub const WORKFLOW_LIFETIME_CAP: u64 = 1000;
 pub const WORKFLOW_MAX_CONCURRENT: usize = 16;
 
 /// Maximum items per `parallel()` or `pipeline()` call (design §4.2).
-/// Kept at the per-run agent ceiling so a single fan-out cannot declare more
-/// work than the lifetime cap can ever complete.
+/// Bounds one materialized fan-out array; it does not limit total work.
 pub const PARALLEL_MAX_ITEMS: usize = 1000;
-
-/// Maximum `tools.call()` invocations per code-mode run.
-///
-/// Counted in the VM before the invoker is consulted, so a runaway loop
-/// terminates even if the invoker would keep admitting calls. Concurrency,
-/// deadlines, and result sizes are enforced host-side by the invoker.
-pub const CODEMODE_MAX_TOOL_CALLS: u64 = 50;

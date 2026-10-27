@@ -39,7 +39,7 @@ pub(crate) fn maybe_log_provider_wait_incident(app: &mut App) {
     }
     let (fanout_running, fanout_total) = fanout.unwrap_or((0, 0));
     app.provider_wait_incident_logged = true;
-    crate::logging::warn(format!(
+    codewhale_runtime::logging::warn(format!(
         "provider-wait incident: provider={} model={} elapsed_secs={elapsed} \
          idle_secs={} stream_idle_budget_secs={} max_subagents={} \
          fanout_running={fanout_running} fanout_total={fanout_total} \

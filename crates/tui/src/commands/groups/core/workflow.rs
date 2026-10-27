@@ -514,7 +514,7 @@ mod tests {
         let options = TuiOptions {
             ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
         };
-        App::new(options, &crate::config::Config::default())
+        App::new(options, &codewhale_runtime::config::Config::default())
     }
 
     #[test]
@@ -961,10 +961,8 @@ mod tests {
         let manager = new_shared_subagent_manager(dir.path().to_path_buf(), 2);
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = crate::client::CodewhaleClient::new(
-            &crate::config::Config {
-                ..crate::config::Config::default()
-            }
-            .with_legacy_root(Some("test-key".to_string()), None),
+            &codewhale_runtime::config::Config::default()
+                .with_legacy_root(Some("test-key".to_string()), None),
         )
         .expect("stub client");
         let mut runtime = SubAgentRuntime::new(
@@ -976,7 +974,9 @@ mod tests {
             manager.clone(),
         );
         // Stale snapshot: product defaults still require write approval.
-        runtime.api_config = Some(std::sync::Arc::new(crate::config::Config::default()));
+        runtime.api_config = Some(std::sync::Arc::new(
+            codewhale_runtime::config::Config::default(),
+        ));
         let tool = WorkflowTool::new(manager, runtime);
 
         let write_plan = json!({

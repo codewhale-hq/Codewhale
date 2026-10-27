@@ -39,6 +39,11 @@ fn reply(request: &Value) -> Option<Value> {
         "resources/list" => json!({"resources":[]}),
         "resources/templates/list" => json!({"resourceTemplates":[]}),
         "prompts/list" => json!({"prompts":[]}),
+        "server/discover" => {
+            return Some(
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}}),
+            );
+        }
         other => panic!("unexpected local fixture method {other}"),
     };
     Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
@@ -254,10 +259,10 @@ async fn native_remote_network_deny_and_credential_refusal_prevent_requests() {
     )
     .await;
     for backend in [McpBackend::Rust, McpBackend::Host] {
-        let policy: crate::network_policy::NetworkPolicy =
+        let policy: codewhale_net::network_policy::NetworkPolicy =
             serde_json::from_value(json!({"default":"deny","audit":false})).unwrap();
         let mut denied = pool(&fixture, &caller, backend).with_network_policy(
-            crate::network_policy::NetworkPolicyDecider::new(policy, None),
+            codewhale_net::network_policy::NetworkPolicyDecider::new(policy, None),
         );
         assert!(!denied.connect_all().await.is_empty());
         denied.shutdown_all().await;

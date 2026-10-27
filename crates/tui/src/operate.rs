@@ -661,10 +661,10 @@ pub fn read_direction(workspace: &Path) -> Result<String> {
 /// for a fresh/unpinned record. Auto stays a policy until Runtime admits a turn;
 /// resolving its inventory here could run a paid classifier.
 fn keepalive_route(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     current: Option<&AutomationRecord>,
-    selection: Option<(&crate::config::ProviderIdentity, &str)>,
-) -> Result<(crate::config::ProviderIdentity, String, bool)> {
+    selection: Option<(&codewhale_runtime::config::ProviderIdentity, &str)>,
+) -> Result<(codewhale_runtime::config::ProviderIdentity, String, bool)> {
     let (identity, model) = if let Some(record) = current
         .filter(|record| record.model_provider.is_some() || record.model_provider_id.is_some())
     {
@@ -702,13 +702,13 @@ fn keepalive_route(
         scoped
             .scope_to_provider_identity(&identity)
             .map_err(anyhow::Error::msg)?;
-        let credentials = crate::config::has_api_key_for(&scoped, &identity);
+        let credentials = crate::provider_readiness::has_api_key_for(&scoped, &identity);
         return Ok((identity, "auto".to_string(), credentials));
     }
     let route =
         crate::route_runtime::resolve_runtime_route_for_identity(config, &identity, Some(&model))
             .map_err(anyhow::Error::msg)?;
-    let credentials = crate::config::has_api_key_for(&route.config, &route.identity);
+    let credentials = crate::provider_readiness::has_api_key_for(&route.config, &route.identity);
     Ok((route.identity, route.model, credentials))
 }
 
@@ -716,8 +716,8 @@ fn keepalive_route(
 /// a local readiness observation, not proof of provider execution.
 pub(crate) fn keepalive_readiness(
     manager: &AutomationManager,
-    config: &crate::config::Config,
-    selection: Option<(&crate::config::ProviderIdentity, &str)>,
+    config: &codewhale_runtime::config::Config,
+    selection: Option<(&codewhale_runtime::config::ProviderIdentity, &str)>,
 ) -> Result<(String, bool)> {
     let mut readiness = (String::new(), false);
     manager.edit_automation(OPERATE_KEEPALIVE_ID, |current| {
@@ -1255,8 +1255,8 @@ pub(crate) fn upsert_keepalive(
     manager: &AutomationManager,
     workspace: &Path,
     kick_now: bool,
-    config: &crate::config::Config,
-    selection: Option<(&crate::config::ProviderIdentity, &str)>,
+    config: &codewhale_runtime::config::Config,
+    selection: Option<(&codewhale_runtime::config::ProviderIdentity, &str)>,
 ) -> Result<(String, bool)> {
     let now = Utc::now();
     let prompt = format!(
@@ -1278,6 +1278,7 @@ pub(crate) fn upsert_keepalive(
         let (identity, model, ready) = keepalive_route(config, current.as_ref(), selection)?;
         readiness = (model.clone(), ready);
         let mut record = current.unwrap_or_else(|| AutomationRecord {
+            destination_thread_id: None,
             schema_version: crate::automation_manager::CURRENT_AUTOMATION_SCHEMA_VERSION,
             execution_scope: Some(scope.to_string()),
             id: OPERATE_KEEPALIVE_ID.to_string(),
@@ -1390,7 +1391,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn route_fixture_config() -> crate::config::Config {
+    fn route_fixture_config() -> codewhale_runtime::config::Config {
         toml::from_str(
             r#"
 provider = "route-a"
@@ -1476,7 +1477,7 @@ api_key_env = "CW_OPERATE_MISSING_TEST_KEY"
         let _cli = crate::test_support::EnvVarGuard::remove("CODEWHALE_CLI_API_KEY");
         let root = TempDir::new()?;
         let manager = AutomationManager::open_for_test(root.path().join("automations"))?;
-        let config = crate::config::parse_config_base(
+        let config = codewhale_runtime::config::parse_config_base(
             r#"provider = "custom"
 [providers.custom]
 kind = "openai-compatible"

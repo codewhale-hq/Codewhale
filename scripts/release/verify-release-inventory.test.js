@@ -90,7 +90,7 @@ test("zero or several drafts for the tag need a maintainer, not a guess", () => 
 
 test("republish derives only from a release carrying exactly its own checksum manifest", () => {
   const names = ["codewhale-linux-x64", "codewhale-macos-arm64"];
-  const manifest = names.map((name) => `${"a".repeat(64)}  ${name}`).join("\n");
+  const manifest = names.map((name, index) => `${crypto.hash("sha256", "x".repeat(index + 1))}  ${name}`).join("\n");
   const complete = [{ id: 3, tag_name: TAG, draft: false, assets: uploaded([...names, CHECKSUM_MANIFEST]) }];
   assert.doesNotThrow(() => run(["--manifest", REPO, TAG], fakeGh(complete, { manifest }).gh, () => {}));
   const partial = [{ id: 3, tag_name: TAG, draft: false, assets: uploaded([names[0], CHECKSUM_MANIFEST]) }];

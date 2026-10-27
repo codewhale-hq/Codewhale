@@ -14,7 +14,7 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `F2`                 | Toggle the typed Settings editor                              |
 | `F3`                 | Open the provider/model picker (same as `/provider`)          |
 | `Ctrl-K`             | Open the command palette (slash-command finder)                |
-| `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
+| `Ctrl-C`             | Cancel current turn / dismiss modal / clear a non-empty draft (recoverable — see `Ctrl-Z`) / arm-then-confirm quit |
 | `Ctrl-B`             | Release the current shell wait so the turn can continue; foreground commands move into `/jobs`, and background tasks keep running. Use `/jobs` or `Bash` with `action: "wait"` to inspect output |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | When the composer is empty, cycle TUI mode: Plan → Work → Operate → Plan |
@@ -49,6 +49,7 @@ Editing the message you're about to send.
 | `Ctrl-Enter` / `Cmd-Enter`  | Send into the current turn; send normally when idle (when the terminal reports it distinctly) |
 | `Ctrl-U`                    | Clear the whole draft (recoverable — see `Ctrl-Z`)      |
 | `Ctrl-Z`                    | Restore the cleared draft (only while the composer is empty) |
+| `Ctrl-C`                    | Clear the whole draft when no turn is running (recoverable — see `Ctrl-Z`) |
 | `Ctrl-W` / `Ctrl-Backspace` / `Alt-Backspace` | Delete previous word        |
 | `Ctrl-A` / `Home`           | Move to start of input / start of line (readline convention) |
 | `Ctrl-E` / `End`            | Move to end of input / end of line                      |
@@ -84,10 +85,11 @@ Markdown source, whole cells joined with blank lines (see the Transcript
 section below), with `tui.selection_copy_markdown = false` restoring rendered
 text. Empty or oversized HTML falls back to plain text.
 
-Set `composer_multiline_mode = true` to swap the portable `Enter` and
-`Shift-Enter` behaviors: `Enter` inserts a newline and `Shift-Enter` sends.
-`Alt-Enter`, `Ctrl-J`, and supported `Ctrl-Enter` / `Cmd-Enter` behavior stays
-unchanged.
+Set `composer_multiline_mode = true` for `Enter` to insert a newline and
+`Alt-Enter` to send. `Shift-Enter` also sends when the terminal reports it
+distinctly; legacy terminals may report it as plain `Enter`. `Ctrl-J` always
+inserts a newline. Supported `Ctrl-Enter` / `Cmd-Enter` behavior stays unchanged.
+With multiline mode off, `Alt-Enter` and supported `Shift-Enter` insert newlines.
 
 ### Selection semantics
 
@@ -234,6 +236,15 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 | `↑` / `↓` / `Ctrl+P` / `Ctrl+N`| Move selection                                     |
 | `Enter` / `Tab`                | Run / complete the highlighted command             |
 | `Esc`                          | Dismiss palette                                     |
+
+## Provider and model pickers
+
+| Chord | Action |
+|---|---|
+| `F7` | View the OrcaRouter partner offer in `/provider` or `/model`, keeping the current selection |
+
+Click the OrcaRouter recommendation for the same offer. Its pager includes the
+redemption URL and referral disclosure. On Apple keyboards, hold Fn if needed.
 
 ## Session Picker (`Ctrl-R` or `/sessions`)
 

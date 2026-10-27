@@ -8,7 +8,6 @@
 //!
 
 use crate::compaction::CompactionConfig;
-use crate::config::SearchProvider;
 use crate::tui::app::{AppAction, ScreenMode};
 use codewhale_command_contract::config::{
     CommandCapabilityState, CommandCompactionConfig, CommandCompletionSound,
@@ -25,6 +24,7 @@ use codewhale_config::notifications::{
     NotificationMethod, SubagentCompletionNotification,
 };
 use codewhale_config::route::CapabilityState;
+use codewhale_runtime::config::SearchProvider;
 
 /// Convert a portable config action to the concrete TUI action it requests.
 pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {

@@ -15,8 +15,8 @@ use codewhale_localization::{Locale, MessageId};
 
 use crate::commands::debug_diagnostics_test_support::{DiagnosticsHarness, assert_fixture};
 use crate::commands::{CommandResult, execute};
-use crate::config::ProviderKind;
 use crate::tui::app::AppAction;
+use codewhale_config::ProviderKind;
 
 /// The eight declared diagnostics commands in registry order, with their exact
 /// aliases and catalog description ids.
@@ -258,6 +258,8 @@ fn diagnostics_registrations_expose_exact_facets_and_preview_is_pure() {
                         trust,
                         login,
                         work_surface,
+                        navigation,
+                        voice_input,
                     } = parts;
                     assert!(
                         permissions.is_none()
@@ -267,6 +269,8 @@ fn diagnostics_registrations_expose_exact_facets_and_preview_is_pure() {
                             && trust.is_none()
                             && login.is_none()
                             && work_surface.is_none()
+                            && navigation.is_none()
+                            && voice_input.is_none()
                     );
                     assert!(debug_diagnostics.is_some(), "/{spelling} needs diagnostics");
                     assert_eq!(

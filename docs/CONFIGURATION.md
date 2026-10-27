@@ -71,6 +71,19 @@ controls do not blur together.
   `project_instruction_imports` key, for example `["claude"]`, `["cursor"]` or
   `["all"]` (see `config.example.toml`); Codewhale warns when it finds one it
   did not load.
+
+  Codewhale reads one instruction file per directory, from the repository
+  root down to the workspace, and puts your global instruction file (such as
+  `~/.codewhale/AGENTS.md`) in front of them. The nearest scope reads last
+  and wins: the workspace file overrides its parents, and project files
+  override the global file. Global and project instructions are budgeted
+  separately in estimated tokens (see [Instruction budget](#instruction-budget-instruction_budget-6526)
+  below): a scope over its budget drops whole files from the broadest end
+  first, and a single file larger than the remaining budget keeps its head
+  with a marker that names the bytes and tokens dropped. A file keeps at most
+  its first 100 KiB, and a file larger than `file_max_bytes` (8 MiB, lowerable
+  only) is skipped with a notice. Every loss — trimmed, skipped, or refused —
+  reaches the model and `/context report`.
 - **Memory and handoffs** — recalled state. Useful, but lower authority than
   constitutions and project instructions.
 
@@ -1269,7 +1282,7 @@ provider = "ollama"
 
 [profiles.ollama.providers.ollama]
 base_url = "http://localhost:11434/v1"
-model = "qwen2.5-coder:7b" # any tag `ollama list` shows
+model = "qwen2.5-coder:7b" # an installed chat-capable tag
 
 [profiles.ollama-cloud]
 provider = "ollama-cloud"
@@ -1285,6 +1298,16 @@ Select a profile with:
 - Env: `DEEPSEEK_PROFILE=work`
 
 If a profile is selected but missing, codewhale exits with an error listing available profiles.
+
+For local Ollama, omit `providers.ollama.model` to select a tag whose native
+catalog confirms completion support. `/provider ollama`, exec, and Runtime API
+default-model admission refresh that catalog; embedding-only catalogs have no
+automatic chat default. An explicit model keeps its exact tag.
+
+A loaded model's `/api/ps` context observation is usable for 60 seconds.
+`/api/show` reports the trained maximum, which does not establish the served
+window. An unloaded model or an expired observation uses the unverified 8192-token
+fallback; explicit context-window configuration still takes precedence.
 
 ## Legacy top-level `base_url` and `api_key`
 
@@ -1540,14 +1563,101 @@ instructions = [
 Rules:
 
 - Paths run through `expand_path` so `~` and env vars work.
-- Each file is capped at 100 KiB; oversized files are
-  truncated with a `[…elided]` marker rather than skipped.
-- Missing files are skipped with a tracing warning so a stale
-  entry doesn't fail the launch.
+- These entries are **global-scope** instruction authority: they are charged
+  to the global budget together with the global `AGENTS.md`/`instructions.md`
+  fallbacks and `~/.claude/CLAUDE.md`.
+- A file keeps at most its first 100 KiB. A file larger than
+  `[instruction_budget] file_max_bytes` (8 MiB by default) is skipped with a
+  notice. Missing and empty files are skipped with a notice so a stale entry
+  doesn't fail the launch.
 - Only user-owned config, profiles, and managed config may set this array.
   Project config (`<workspace>/.codewhale/config.toml`, or legacy
   `<workspace>/.deepseek/config.toml`) ignores `instructions` so a cloned repo
   cannot choose arbitrary local files to place into the prompt.
+
+### Instruction budget (`[instruction_budget]`, #6526)
+
+Standing instruction files are assembled into two independent scopes and
+budgeted in **estimated tokens** — the same conservative estimator `/context`
+uses, never a `bytes/4` shortcut, which underestimates Cyrillic by 30–50%.
+
+- **global** — `~/.codewhale/AGENTS.md` (or the `.agents`/`.deepseek`
+  fallbacks), the global `instructions.md` fallbacks, `~/.claude/CLAUDE.md`
+  as a last resort when `claude_fallback` is on, and the
+  `instructions = [...]` array.
+- **project** — the repository-root → workspace `AGENTS.md` chain, co-read
+  foreign files, and the `.codewhale/rules`/`.claude/rules` block.
+
+Each scope is capped at `min(absolute_tokens, percent × usable_window)`. The
+usable window is the route window minus the output reservation the request
+will actually carry and a safety reserve of 10% of the window (minimum 2,048
+tokens). A route whose context window is unknown has no usable window: the
+percentage ceilings and the guard are reported as `unknown` and only the
+absolute caps apply.
+
+```toml
+[instruction_budget]
+global_budget_tokens = 100000
+project_budget_tokens = 100000
+global_budget_percent = 25
+project_budget_percent = 25
+static_prefix_guard_percent = 80
+file_max_bytes = 8388608
+policy = "trim"
+claude_fallback = false
+```
+
+With a 64K (65,536-token) output reservation:
+
+| window | usable | per scope | both scopes | guard 80% |
+| --- | --- | --- | --- | --- |
+| 128,000 | 49,664 | 12,416 | 24,832 | 39,731 |
+| 1,000,000 | 834,464 | 100,000 (absolute cap) | 200,000 | 667,571 |
+
+Behaviour:
+
+- **Nothing is trimmed while a source is within its scope budget.**
+- A scope over budget drops whole files from the broadest end first — the
+  root-most ancestor goes first, the workspace file last — and a single file
+  that alone exceeds the remaining budget keeps its **head** and drops its
+  tail with a marker carrying bytes and estimated tokens.
+- Every instruction, rules, and configured file retains at most its first
+  100 KiB of text, ending in a marker that names the bytes kept and dropped.
+- Rules are charged to the project scope after the instruction chain and keep
+  a head-first trim.
+- `file_max_bytes` is a hard ceiling that can only be lowered from its 8 MiB
+  default: a larger file is **skipped**, never trimmed, and the read is
+  bounded on the open file, so a FIFO or a growing file cannot exhaust memory.
+  The same applies to a whitespace-only file and to files beyond the
+  50-per-directory rules cap.
+- `policy = "trim"` (default) trims and reports. `policy = "refuse"` stops the
+  request before dispatch when a scope budget, the rules budget, or the
+  100 KiB retention would trim, or when the request prefix exceeds the guard;
+  skips stay skips, because one bad file must not make the project unopenable.
+- `static_prefix_guard_percent` caps the request prefix: every system block
+  plus the tool schemas the request carries. When it trips, the two scopes are
+  narrowed largest first until the prefix fits, only the installed instruction
+  block is replaced, and the change is recorded as a declared prefix change.
+  If the prefix still exceeds the guard afterwards, the residual excess is
+  reported rather than looped on. The guard must leave at least 10 points
+  above the two scope percents. Prompts owned by a host (child agents,
+  isolated chat, RLM) are measured and can be refused, but are never trimmed.
+- `claude_fallback = true` (opt in; default `false`): a directory with no
+  `AGENTS.md` (or codewhale `instructions.md`) uses its `CLAUDE.md`. A skipped
+  `AGENTS.md` counts as absent; a file already loaded from a wider scope (a
+  symlink) is a reported duplicate, not a fallback trigger. Other tools'
+  instruction files are never imported unless you opt in here or through
+  `project_instruction_imports`.
+- Every loss — trimmed, skipped, refused — reaches the model as one
+  runtime-provenance message whenever the list changes, and appears per source
+  in `/context report`. `codewhale doctor`'s report is a preview built from the
+  current files and config; it does not claim a request passed the tool-schema
+  guard.
+- The table is **user config only**, like `instructions`: project config is
+  ignored and a cloned repository cannot shrink the global budget or force
+  `refuse`. An invalid table (unknown key, zero budget, percent outside
+  1–100, guard without room left, `file_max_bytes` outside 1–8388608) fails
+  the launch.
 
 ### Hooks
 
@@ -2182,7 +2292,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `reasoning_stream_style` (string, optional provider-table key): override how streaming reasoning is separated from answer text for the active provider route. Use `separate_field` for `reasoning_content` / `reasoning` deltas, `inline_tags` for gateways that stream `<think>...</think>` inside `delta.content`, or `none` to render incoming content exactly as answer text. When unset, every Chat Completions route uses `separate_field` (Mistral's first-party route uses its typed thinking blocks); set `none` only for a gateway that streams its answer inside `reasoning_content`.
 - `[providers.<name>.auth]` (table, optional): provider-scoped auth source metadata. `source = "command"` stores a command argv plus optional `timeout_ms`; `source = "secret"` stores a `secret_id`. This slice lets provider readiness, `/provider`, and doctor JSON report the auth source class without exposing command argv output or secret values; executing commands and resolving external secret material is handled by the follow-up resolver work.
 - `insecure_skip_tls_verify` (bool, optional provider-table key): legacy compatibility key, disabled by default. When true on the active provider table, provider clients reject the configuration instead of skipping TLS certificate verification. Use `SSL_CERT_FILE` for corporate or private CA bundles; `codewhale doctor` reports stale uses of this setting.
-- `default_text_model` (string, optional): defaults to `deepseek-flash` for DeepSeek and `deepseek-anthropic`, `gpt-5.6` for OpenAI, `grok-4.6` for xAI, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `DeepSeek-V4-Pro` for Volcengine Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.6-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow and DeepInfra, `trinity-large-thinking` for Arcee AI, `kimi-k2.7-code` for Moonshot, `MiniMax-M3` for MiniMax, `GLM-5.3` for Z.ai, `step-3.7-flash` for StepFun, `ernie-4.0-turbo-8k` for Qianfan, `fugu` for Sakana AI, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, no fixed id for local Ollama (Codewhale adopts a chat-capable tag from the live local catalog — coder or tool-capable tags first, then the largest context — and never an embedding or reranker model), and `gpt-oss:120b` for Ollama Cloud. Hugging Face and Together AI both default to `deepseek-ai/DeepSeek-V4-Pro`; `openai-codex` defaults to `gpt-5.6`; `anthropic` defaults to `claude-sonnet-4-6`; `openmodel` defaults to `deepseek-v4-flash`. Current public DeepSeek IDs include `deepseek-v4-pro` and `deepseek-flash` (V4.1 Flash, shipped as the unversioned id), both with 1M context windows, 384K max output, and thinking mode enabled by default. DeepSeek's live pricing/model page now labels the Pro backend `DeepSeek-V4-Pro-0813`; the callable API ID remains `deepseek-v4-pro`, so Codewhale does not send the backend label or the Claude Code-specific `deepseek-v4-pro[1m]` selector. DeepSeek retired `deepseek-chat` and `deepseek-reasoner` on July 24, 2026; direct first-party routes migrate both to `deepseek-flash`, with omitted reasoning settings preserving their former non-thinking (`off`) and thinking (`high`) intent. DeepSeek has also retired the `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` models: it still accepts both names, serves them with V4.1 Flash, and bills them at the `deepseek-flash` price, which Codewhale applies to turns from 2026-09-10 04:00 UTC. The `flash`, `deepseek-v4flash`, `flash-vision`, and `deepseek-v4flashvisionexp` shorthands select `deepseek-flash`. Explicit `reasoning_effort` wins, and provider-owned ids on Wanjie Ark, aggregators, self-hosted runtimes, and custom endpoints are not globally rewritten. SiliconFlow retains its own mapping: `deepseek-reasoner` and `deepseek-r1` select its Pro model while `deepseek-chat` and `deepseek-v3` select Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `minimax/minimax-m3`, `minimax/minimax-m2.7`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-max-preview`, `qwen/qwen3.6-27b`, `qwen/qwen3.6-plus`, `qwen/qwen3.7-max`, `google/gemma-4-31b-it`, `moonshotai/kimi-k2.7-code`, `moonshotai/kimi-k2.6`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, and `nvidia/nemotron-3-ultra-550b-a55b`; direct Arcee uses bare IDs such as `trinity-large-thinking` and `trinity-large-preview`; direct Moonshot recognizes `kimi-k3`, `kimi-k2.7-code`, and `kimi-k2.6`. The exact Kimi Code endpoint recognizes bare `k3` for K3 and `kimi-for-coding` for K2.7; those membership IDs are distinct from the direct Moonshot IDs and are never rewritten across routes. Direct MiniMax recognizes `MiniMax-M3` and the documented M2.x chat model IDs; direct Z.ai recognizes `GLM-5.3` (the default), `GLM-5.2`, `GLM-5.1`, and `GLM-5-Turbo`, and OpenRouter recognizes the matching `z-ai/glm-5.1`, `z-ai/glm-5.2`, `z-ai/glm-5.3`, and `z-ai/glm-5-turbo` IDs — `GLM-5.3` has been live on the Z.ai Coding Plan since 2026-08-13; it inherits its catalog metadata from `GLM-5.2` until Z.ai publishes distinct 5.3 numbers and carries no price, and an explicit `GLM-5.2` selection keeps its own id; direct Sakana recognizes `fugu` and `fugu-ultra-20260615`; direct Xiaomi MiMo recognizes chat IDs `mimo-v2.6-pro`, `mimo-v2.6-flash`, and `mimo-v2.5-pro-ultraspeed` (the retired `mimo-v2.5-pro` and `mimo-v2.5` are sent as `mimo-v2.6-pro` and `mimo-v2.6-flash`), while TTS IDs are selected through `codewhale speech` / `tts`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, `arcee`, `moonshot`, `minimax`, `openmodel`, `zai`, `stepfun`, `qianfan`, `sakana`, local Ollama, and Ollama Cloud model IDs are passed through unchanged after known aliases are normalized. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codewhale models` to discover live IDs from your configured endpoint. `CODEWHALE_MODEL` overrides this for a single process; `DEEPSEEK_MODEL` is the legacy alias.
+- `default_text_model` (string, optional): defaults to `deepseek-flash` for DeepSeek and `deepseek-anthropic`, `gpt-5.6` for OpenAI, `grok-4.6` for xAI, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `DeepSeek-V4-Pro` for Volcengine Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.6-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow and DeepInfra, `trinity-large-thinking` for Arcee AI, `kimi-k2.7-code` for Moonshot, `MiniMax-M3` for MiniMax, `GLM-5.3` for Z.ai, `step-3.7-flash` for StepFun, `ernie-4.0-turbo-8k` for Qianfan, `fugu` for Sakana AI, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, no fixed id for local Ollama (Codewhale adopts a chat-capable tag from the live local catalog — coder or tool-capable tags first, then the largest context — and never an embedding or reranker model), and `gpt-oss:120b` for Ollama Cloud. Hugging Face and Together AI both default to `deepseek-ai/DeepSeek-V4-Pro`; `openai-codex` defaults to `gpt-6.1-sol`; `anthropic` defaults to `claude-sonnet-5-5`; `openmodel` defaults to `deepseek-v4-flash`. Current public DeepSeek IDs include `deepseek-v4-pro` and `deepseek-flash` (V4.1 Flash, shipped as the unversioned id), both with 1M context windows, 384K max output, and thinking mode enabled by default. DeepSeek's live pricing/model page now labels the Pro backend `DeepSeek-V4-Pro-0813`; the callable API ID remains `deepseek-v4-pro`, so Codewhale does not send the backend label or the Claude Code-specific `deepseek-v4-pro[1m]` selector. DeepSeek retired `deepseek-chat` and `deepseek-reasoner` on July 24, 2026; direct first-party routes migrate both to `deepseek-flash`, with omitted reasoning settings preserving their former non-thinking (`off`) and thinking (`high`) intent. DeepSeek has also retired the `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` models: it still accepts both names, serves them with V4.1 Flash, and bills them at the `deepseek-flash` price, which Codewhale applies to turns from 2026-09-10 04:00 UTC. The `flash`, `deepseek-v4flash`, `flash-vision`, and `deepseek-v4flashvisionexp` shorthands select `deepseek-flash`. Explicit `reasoning_effort` wins, and provider-owned ids on Wanjie Ark, aggregators, self-hosted runtimes, and custom endpoints are not globally rewritten. SiliconFlow retains its own mapping: `deepseek-reasoner` and `deepseek-r1` select its Pro model while `deepseek-chat` and `deepseek-v3` select Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `minimax/minimax-m3`, `minimax/minimax-m2.7`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-max-preview`, `qwen/qwen3.6-27b`, `qwen/qwen3.6-plus`, `qwen/qwen3.7-max`, `google/gemma-4-31b-it`, `moonshotai/kimi-k2.7-code`, `moonshotai/kimi-k2.6`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, and `nvidia/nemotron-3-ultra-550b-a55b`; direct Arcee uses bare IDs such as `trinity-large-thinking` and `trinity-large-preview`; direct Moonshot recognizes `kimi-k3`, `kimi-k2.7-code`, and `kimi-k2.6`. The exact Kimi Code endpoint recognizes bare `k3` for K3 and `kimi-for-coding` for K2.7; those membership IDs are distinct from the direct Moonshot IDs and are never rewritten across routes. Direct MiniMax recognizes `MiniMax-M3` and the documented M2.x chat model IDs; direct Z.ai recognizes `GLM-5.3` (the default), `GLM-5.2`, `GLM-5.1`, and `GLM-5-Turbo`, and OpenRouter recognizes the matching `z-ai/glm-5.1`, `z-ai/glm-5.2`, `z-ai/glm-5.3`, and `z-ai/glm-5-turbo` IDs — `GLM-5.3` has been live on the Z.ai Coding Plan since 2026-08-13; it inherits its catalog metadata from `GLM-5.2` until Z.ai publishes distinct 5.3 numbers and carries no price, and an explicit `GLM-5.2` selection keeps its own id; direct Sakana recognizes `fugu` and `fugu-ultra-20260615`; direct Xiaomi MiMo recognizes chat IDs `mimo-v2.6-pro`, `mimo-v2.6-flash`, and `mimo-v2.5-pro-ultraspeed` (the retired `mimo-v2.5-pro` and `mimo-v2.5` are sent as `mimo-v2.6-pro` and `mimo-v2.6-flash`), while TTS IDs are selected through `codewhale speech` / `tts`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, `arcee`, `moonshot`, `minimax`, `openmodel`, `zai`, `stepfun`, `qianfan`, `sakana`, local Ollama, and Ollama Cloud model IDs are passed through unchanged after known aliases are normalized. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codewhale models` to discover live IDs from your configured endpoint. `CODEWHALE_MODEL` overrides this for a single process; `DEEPSEEK_MODEL` is the legacy alias.
 - TelecomJS uses `deepseek-v4-pro` only as a conservative pre-refresh fallback. Once its key-scoped `/models` catalog is available, the picker uses those live rows; Codewhale omits unsupported reasoning request fields on this route.
 - `reasoning_effort` (string, optional): `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `ultra` (`ultracode` is an alias of `ultra`), or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. Ollama Cloud's OpenAI-compatible Chat Completions route preserves its documented `none` / `low` / `medium` / `high` / `max` ladder (`off` is sent as `none`; `xhigh` and `ultracode` normalize to `max`). Direct xAI `grok-4.7` and `grok-4.6` on exact `https://api.x.ai/v1` receive top-level `reasoning_effort = "low" | "medium" | "high" | "xhigh"` (the ladder comes from the bundled catalog row; `grok-4.5` maps `xhigh` to `high`, and rows without a documented effort such as `grok-4.3` get no field); Grok reasoning cannot be disabled, so `off` normalizes to `high`, `max`/`ultracode` to `xhigh`, and `auto` leaves the field omitted so xAI's documented default `high` applies. A custom xAI-compatible `base_url` does not inherit that dialect. Direct Moonshot `kimi-k3` on exact `https://api.moonshot.ai/v1` is always-thinking and receives only top-level `reasoning_effort = "low" | "high" | "max"`; `off` normalizes to `low`, and `medium` to `high`. Kimi Code membership `k3` on exact `https://api.kimi.com/coding/v1` instead receives nested `thinking.effort`, and its `off` setting also normalizes to enabled `low`. Normal dispatched `auto` uses Codewhale's auto-reasoning selector and sends a concrete route-normalized tier; only an omitted reasoning setting leaves the provider default in control. Neighboring gateways and model/endpoint combinations retain the generic Moonshot contract. OpenAI Codex normalizes stale `off` to `low` and sends `max` / `ultracode` as Responses `xhigh`. Z.ai receives documented `thinking` controls and treats enabled thinking as the GLM coding high/max lane. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `verbosity` (string, optional): `normal` or `concise`. `normal` keeps the
@@ -2272,7 +2382,15 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - **Read deny-list.** Every sandbox posture — `read-only` included — grants
   read access to the whole filesystem; the postures differ in what they may
   *write* and whether they may reach the network. The read deny-list narrows
-  that:
+  that, in two scopes. Codewhale's own file tools (`read`, `grep`,
+  `file_search`, `read_media`) refuse every listed path. A shell command
+  refuses only the *key material and other-principal* entries — SSH and GPG
+  keys, `/etc/shadow`, `/etc/sudoers`, system and login keychains, browser
+  profiles, other agents' credential stores, Codewhale's own secret stores,
+  runtime daemon sockets, and anything in `sandbox_denied_read_paths`. A
+  tool's own auth config is refused to the model but stays readable to the
+  tool: `gh` cannot start without `~/.config/gh/hosts.yml`, so denying it to
+  the process would disable the CLI without keeping its token out of reach.
   - `sandbox_read_denylist_defaults` (bool, default `true`): apply the built-in
     credential-store set — `~/.ssh`, `~/.gnupg`, cloud credential directories
     (`~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, …), `~/.netrc`,
@@ -2301,15 +2419,17 @@ reasoning contract, and all four membership ids omit generic sampling fields.
     every `.env` and `.env.<name>` on disk rather than one project's.
     (`.env.example` and friends are never denied, so they need no exemption.)
 
-  Enforced at two points: sandboxed shell commands (Seatbelt last-match-wins
-  `deny file-read*` rules; bubblewrap masks each path) and Codewhale's own
-  in-process tools, which the OS sandbox never wraps — `read_file` / `read` /
-  `read_media` for contents, `list_dir` / `file_search` for *enumeration*
-  (listing a denied directory, or searching one, is refused just as Seatbelt
-  blocks its readdir; a name search rooted above a denied tree skips entries
-  inside it). A refused read is always an explicit error, never an empty
-  result, and the error names the path as the caller spelled it rather than a
-  symlink target's real location.
+  Enforced at two points, with different reach. Codewhale's own in-process
+  tools, which the OS sandbox never wraps, refuse every rule — `read_file` /
+  `read` / `read_media` for contents, `list_dir` / `file_search` for
+  *enumeration* (listing a denied directory, or searching one, is refused just
+  as Seatbelt blocks its readdir; a name search rooted above a denied tree
+  skips entries inside it). Sandboxed shell commands (Seatbelt last-match-wins
+  `deny file-read*` rules; bubblewrap masks each path) refuse only the
+  key-material and other-principal rules, so an authenticated CLI can still
+  read its own config. A refused read is always an explicit error, never an
+  empty result, and the error names the path as the caller spelled it rather
+  than a symlink target's real location.
 
   **This is defense-in-depth, not a security boundary.** It does not stop a
   hardlink to a denied file, a secret already copied into the workspace, an
@@ -2657,17 +2777,19 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   - `[retry].respect_retry_after` (bool, default `true`): wait for a server
     `Retry-After` header instead of the computed backoff
 
-  `[retry]` schedules HTTP-request retries inside the client. When a
-  streaming request opens, its retries, backoff and any honored `Retry-After`
-  wait share one `stream.open_timeout_secs` window per protocol attempt, so
-  that window bounds how many of `max_retries` the open can reach. On the
-  default HTTP/2 client an expired window counts as a header stall and the open
-  is tried once more over HTTP/1.1 with a fresh window and retry schedule; with
-  HTTP/1.1 pinned there is one window. A `Retry-After` longer than the
-  remaining window ends the open as a response-header timeout; raise
-  `stream.open_timeout_secs` to wait it out. The stream-level
-  budgets that sit above it — how often a turn re-issues a request whose
-  stream failed to open or died — are the `[stream]` keys below; legacy `tui.stream_max_*` keys remain fallbacks.
+  `[retry]` schedules HTTP-request retries inside the client. Each physical
+  streaming request gets its own `stream.open_timeout_secs` response-header
+  wait. Provider backoff and honored `Retry-After` waits happen between
+  attempts, outside that timer, so the configured retry count remains
+  reachable. A classified transport failure or header stall on the default
+  client may switch once to HTTP/1.1 within that attempt; pinned HTTP/1.1
+  skips that protocol fallback. Both clients use the same HTTP status
+  classification and retry policy. Explicit plan-window exhaustion is a
+  terminal quota error. A transport failure after the provider accepted a
+  request remains ambiguous and a retry may bill another completion.
+  The stream-level budgets above this client — how often a turn re-issues a
+  request whose stream failed to open or died — are the `[stream]` keys
+  below; legacy `tui.stream_max_*` keys remain fallbacks.
 - `[notifications]`: notification delivery, attention, categories and audio share one
   policy. `quiet = true`, `method = "off"`, `condition = "never"` and disabled
   categories suppress both the banner and Codewhale's selected sound.
@@ -2716,8 +2838,8 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 
 - `tui.stream_chunk_timeout_secs` (int, optional, default `900`): per-SSE-chunk idle timeout for streamed model responses. Slow local or compatible servers can raise this with `/config stream_chunk_timeout_secs <seconds>` (add `--save` to write canonical `stream.chunk_timeout_secs`); `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
-- `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are clamped to `1..=100000`. Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. At ~80% of an explicit step budget the model gets one soft-landing notice; at exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
-- `tui.turn_wall_clock_secs` (int, optional, default: no limit): cumulative per-turn wall-clock budget in seconds, measured across every model step of one turn (not per request). Time blocked on a human approval is excluded. Omitted or `0` means no limit; positive values clamp to `30..=86400` (24 hours is the ceiling). When exhausted the turn stops before authorizing another billable request with a message naming the limit and the key to raise.
+- `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are preserved (`4294967295` is the compatibility value for no limit). Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. At exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
+- `tui.turn_wall_clock_secs` (int, optional, default: no limit): cumulative per-turn wall-clock budget in seconds, measured across every model step of one turn (not per request). Time blocked on a human approval is excluded. Omitted or `0` means no limit; positive values are preserved without an added runtime ceiling. When exhausted the turn stops before authorizing another billable request with a message naming the limit and the key to raise.
 - `tui.stream_max_resumes` (int, optional, default `3`): how many times one turn re-issues a model request after its stream failed — the request never opened (connect failure or response-header stall), the stream died before any content, the host slept mid-stream, or the network dropped mid-stream. Every one of those paths spends this one budget, and a healthy stream resets it. `0` disables turn-level re-issues (a failed stream then fails the turn); values clamp to `0..=10`.
 - `tui.stream_max_transparent_retries` (int, optional, default `2`): in-stream re-requests while nothing has streamed yet. `0` disables them; values clamp to `0..=10`.
 - `tui.stream_max_errors` (int, optional, default `5`): recoverable errors tolerated within one stream before it ends. Unlike the two retry counts above, `0` does not switch anything off: like the other finite stream budgets it selects the default. Other values clamp to `1..=50`, so `1` ends the stream on its first recoverable error.
@@ -2845,7 +2967,7 @@ max_continuations = 100
 continuation_delay_seconds = 300
 
 # Optional per-turn model-step ceiling while a goal is active (#6512).
-# Default: uncapped (0 or absent). Positive values clamp to 1..=100,000.
+# Default: uncapped (0 or absent). Positive values are preserved.
 # This bounds each provider turn, never the number of continuation passes.
 max_steps = 0
 ```
@@ -2859,8 +2981,7 @@ inspecting progress, or raise/disable the backstop.
 
 `[goal] max_steps` governs one engine turn at a time. Like ordinary interactive
 turns, omitted or `0` leaves model steps uncapped. Explicit per-invocation
-ceilings — `exec --max-turns N`, child-worker caps — always win over it. At
-about 80% of an explicit positive budget the model is told to land; at exhaustion
+ceilings — `exec --max-turns N`, child-worker caps — always win over it. At exhaustion
 it gets one bounded final report and the turn classifies as budget-exhausted. An
 unfinished goal then pauses with the BudgetLimit reason instead of re-arming
 another goal turn — resume it explicitly after reviewing the report. Wall-clock
@@ -2875,36 +2996,53 @@ is persisted for the loop.
 
 ### Reasoning-only recovery (`[reasoning_only]`)
 
-When a reasoning model (thinking mode) finishes a response with only hidden
-reasoning and no answer text or tool call, the engine can automatically
-re-request the answer. Configure this behavior with the `[reasoning_only]`
-table:
+When a model finishes with only reasoning and no answer or tool call, Codewhale
+can request an answer again. A clean stop permits two retries by default:
+the first keeps the request unchanged, and later retries carry a request-scoped
+nudge. The default nudge is `Continue: give your answer, or make the next tool call.`
 
 ```toml
 [reasoning_only]
-# Maximum number of automatic re-requests. Default: 2.
-# Set to 0 to disable automatic recovery (fail immediately).
-max_reprompts = 10
-
-# Optional custom message sent to the model on each re-request.
-# When set, overrides the built-in default message.
-# When unset (or commented out), the engine uses:
-#   "So, what's up ? Keep running !"
-reprompt_message = "Allez, répond quelque chose !"
+max_reprompts = 2
+on_output_limit = false
 ```
 
-This only applies when the model returns a clean `stop` finish reason with
-only thinking content. An output-length stop (`length`/`max_tokens`) is never
-retried, and a persistently answerless model still fails honestly after the
-configured bound.
+Set `on_output_limit = true` to also retry `length`/`max_tokens` stops that
+produced no answer or tool call, including providers that did not stream their
+hidden reasoning. This option is off by default. Output-limit retries carry the
+nudge immediately and share the same `max_reprompts` allowance. Set
+`max_reprompts = 0` to disable both reasoning-only and output-limit recovery;
+transport and empty-stop recovery have their own existing limits.
 
-To disable the reprompt message entirely (silent retry), set it to an empty
-string:
+This applies to ordinary interactive, exec and Runtime API engines and Fleet
+workers. Workers use the captured parent configuration. RLM keeps its separate
+completion/FINAL/REPL stop protocol and does not use this option.
+
+Every retry is a fresh request and may repeat the model's reasoning. It does not
+carry hidden reasoning forward, raise output limits or bypass route, context,
+turn, cancellation or tool-admission controls. Each request can incur provider
+cost. Existing output-limit overrides still apply, and request preparation may
+reduce or refuse an allowance when input grows. Restart existing engines after
+changing these settings.
+
+The nudge appears in one outbound request without joining conversation history
+or later resumed model context. Retry status retains its stable protocol prefix
+and localizes its human text. Its receipt is visible in the transcript; Fleet
+also stores an owner-bound prepared-request receipt in its existing private
+artifact before dispatch. A prepared receipt does not claim a completed model
+call. Existing version-1 artifacts remain readable.
+
+To customize or disable the nudge:
 
 ```toml
 [reasoning_only]
-reprompt_message = ""
+reprompt_message = "Give your answer, or make the next tool call."
 ```
+
+An empty `reprompt_message = ""` disables the nudge, including on output-limit
+retries; the retry still counts against `max_reprompts` and uses the unchanged
+request. Configuration with recovery enabled does not guarantee the model will
+complete a long proof within its allowance.
 
 ### Notifications
 

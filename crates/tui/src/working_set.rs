@@ -9,10 +9,10 @@
 use crate::tools::echolocation::{
     CodeReadReference, MAX_DELIVERED_REFS, delivered_navigation_refs,
 };
-use crate::workspace_discovery::{
+use codewhale_models::{ContentBlock, Message};
+use codewhale_runtime::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
-use codewhale_models::{ContentBlock, Message};
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};

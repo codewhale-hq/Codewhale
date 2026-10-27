@@ -111,59 +111,22 @@ fn cached_build_scripts_classify_the_current_manifest_and_require_it() {
     }
 }
 
-#[cfg(unix)]
 #[test]
-fn macos_helper_compilation_follows_the_relocated_manifest() {
-    use std::os::unix::fs::PermissionsExt;
-
+fn tui_build_does_not_compile_or_embed_computer_use() {
     let fixture = Fixture::new();
-    let original = fixture.0.path().join("original manifest");
-    let relocated = fixture.0.path().join("relocated manifest");
-    let source = Path::new("plugins/computer-use/src/backends/darwin-accessibility.m");
-    std::fs::create_dir_all(original.join(source).parent().unwrap()).unwrap();
-    std::fs::write(original.join(source), "fixture source").unwrap();
-    let executable = fixture.compile("tui", include_str!("../../tui/build.rs"), &original);
-    std::fs::rename(&original, &relocated).unwrap();
+    let manifest = fixture.0.path().join("manifest");
+    std::fs::create_dir(&manifest).unwrap();
+    let executable = fixture.compile("tui", include_str!("../../tui/build.rs"), &manifest);
     let out = fixture.0.path().join("out");
-    let bin = fixture.0.path().join("bin");
     std::fs::create_dir(&out).unwrap();
-    std::fs::create_dir(&bin).unwrap();
-    // Exercise the real build-script command arguments without requiring a macOS
-    // SDK or accessing a signing identity. A missing source fails as clang did.
-    for (name, script) in [
-        (
-            "xcrun",
-            "#!/bin/sh\nset -eu\nsource=\noutput=\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in *.m) source=$1 ;; -o) shift; output=$1 ;; esac\nshift\ndone\ntest -f \"$source\"\nprintf %s \"$source\" > \"$output\"\n",
-        ),
-        (
-            "codesign",
-            "#!/bin/sh\nset -eu\nfor last in \"$@\"; do :; done\ntest -s \"$last\"\n",
-        ),
-    ] {
-        let path = bin.join(name);
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let mut paths = vec![bin];
-    paths.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
     let output = checked(
-        run_script(&executable, &relocated, fixture.0.path())
+        run_script(&executable, &manifest, fixture.0.path())
             .env("CARGO_CFG_TARGET_OS", "macos")
             .env("CARGO_CFG_TARGET_ARCH", "aarch64")
-            .env("OUT_DIR", &out)
-            .env("PATH", std::env::join_paths(paths).unwrap())
-            .env_remove("CODEWHALE_CU_SIGN_IDENTITY"),
+            .env("OUT_DIR", &out),
     );
-    assert_eq!(
-        std::fs::read_to_string(out.join("computer-use-accessibility")).unwrap(),
-        relocated.join(source).to_string_lossy()
-    );
+    assert_eq!(std::fs::read_dir(out).unwrap().count(), 0);
     let directives = String::from_utf8_lossy(&output.stdout);
-    assert!(directives.contains(&format!(
-        "cargo:rerun-if-changed={}\n",
-        relocated.join(source).display()
-    )));
-    assert!(!directives.contains(original.to_string_lossy().as_ref()));
+    assert!(!directives.contains("computer-use"));
+    assert!(!directives.contains("CODEWHALE_CU_SIGN_IDENTITY"));
 }

@@ -87,7 +87,7 @@ function report(input: Row): string {
       const replacement = optional(suggestion.replacement)
       if (replacement !== undefined && trim(replacement).length) {
         const codeFence = fence(replacement)
-        out += `\n  ${codeFence}${posted ? 'text' : 'suggestion'}\n`
+        out += `\n  ${codeFence}${posted ? 'diff' : 'suggestion'}\n`
         for (const line of replacement.split('\n')) out += `  ${line}\n`
         out += `  ${codeFence}\n`
       }
@@ -95,6 +95,16 @@ function report(input: Row): string {
     out += '\n'
   }
   if (assessment.length) out += '### Assessment\n\n' + trim(assessment) + '\n\n'
+  const tally = {blocker: 0, concern: 0, nit: 0, introduced: 0, preexisting: 0}
+  for (const item of issues) {
+    const issue = row(item), severity = text(issue.severity)
+    if (severity === 'blocker') tally.blocker += 1
+    else if (severity === 'concern') tally.concern += 1
+    else if (severity === 'nit') tally.nit += 1
+    if (optional(issue.authorship) === 'preexisting') tally.preexisting += 1
+    else tally.introduced += 1
+  }
+  out += `<!-- codewhale-review: {"blocker":${tally.blocker},"concern":${tally.concern},"nit":${tally.nit},"introduced":${tally.introduced},"preexisting":${tally.preexisting}} -->\n`
   return out
 }
 export function transformReviewSnapshot(operation: string, value: unknown): Result {

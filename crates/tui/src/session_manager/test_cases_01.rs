@@ -92,7 +92,7 @@
                     ProviderKind::Deepseek,
                     "deepseek",
                     "deepseek-v4-flash",
-                    Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL),
+                    Some(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL),
                     Utc::now(),
                 ),
                 usage: codewhale_models::Usage {
@@ -1012,7 +1012,7 @@
             ProviderKind::Deepseek,
             "deepseek",
             "deepseek-v4-flash",
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL),
             Utc::now(),
         );
         let usage = codewhale_models::Usage {
@@ -1092,7 +1092,7 @@
         )
         .expect("late ledger");
         assert!(!ledger.contains("translation:old-turn"));
-        assert!(!ledger.contains(crate::config::DEFAULT_DEEPSEEK_BASE_URL));
+        assert!(!ledger.contains(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1195,7 +1195,7 @@
             ProviderKind::Deepseek,
             "deepseek",
             "deepseek-v4-flash",
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL),
             Utc::now(),
         );
         let record = crate::cost_status::RuntimeUsageRecord {

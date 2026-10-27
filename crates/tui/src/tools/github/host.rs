@@ -938,7 +938,7 @@ exit "${CW_GH_TEST_EXIT:-0}"
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn deny_or_prompt_policy_and_dry_run_never_invoke_gh() {
-        use crate::network_policy::{DecisionToml, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{DecisionToml, NetworkPolicy, NetworkPolicyDecider};
         let _home = crate::test_support::SealedHome::new();
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join("args");

@@ -99,6 +99,7 @@ async fn foreign_scoped_automation_and_unbound_trigger_never_dispatch_through_cu
     foreign.execution_scope = Some(crate::task_manager::test_execution_scope("foreign"));
     manager.save_automation(&foreign)?;
     let mut trigger = manager.create_trigger(CreateDelayedTriggerRequest {
+        destination_thread_id: None,
         fire_at: Utc::now() + Duration::hours(1),
         message: "legacy continuation".into(),
         workspace: Some(root.path().to_path_buf()),

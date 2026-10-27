@@ -7,15 +7,15 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
 use crate::mcp::{
     McpCommandAvailability, McpConfig, McpManagerSnapshot, McpServerConfig, McpServerSnapshot,
     static_mcp_command_availability,
 };
 use crate::tui::app::App;
 use crate::tui::hotbar::actions::HotbarActionCategory;
-use crate::utils::display_path;
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_runtime::config::Config;
+use codewhale_util::utils::display_path;
 
 /// Per-surface readiness vocabulary shared with setup summaries and doctor-like
 /// copy. These never block first-run; they only describe optional power tools.
@@ -657,11 +657,11 @@ fn count_skill_dirs(dir: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::TuiOptions;
     use crate::tui::hotbar::actions::HotbarActionRegistry;
     use codewhale_localization::Locale;
+    use codewhale_runtime::config::Config;
     use tempfile::TempDir;
 
     fn test_app(

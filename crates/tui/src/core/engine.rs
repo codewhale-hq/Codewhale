@@ -27,10 +27,8 @@ use tokio_util::sync::CancellationToken;
 use crate::approval_log::ApprovalReceiptStore;
 use crate::client::CodewhaleClient;
 use crate::compaction::{CompactionConfig, PreparedCompactionEnvelope, compact_messages_safe};
-use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL, ProviderKind};
 use crate::core::model_client::SharedModelClient;
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity, StreamError};
-use crate::features::{Feature, Features};
 use crate::mcp::{McpConfig, McpPool, McpSupervisorUpdate};
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
@@ -39,7 +37,6 @@ use crate::route_runtime::resolve_runtime_route;
 use crate::route_runtime::{
     ResolvedRuntimeRoute, ValidatedRuntimeRoute, resolve_runtime_route_for_identity,
 };
-use crate::snapshot::{WorkspaceSnapshotKind, WorkspaceSnapshotRef};
 use crate::tools::goal::{
     GoalPauseReason, GoalSnapshot, GoalStatus, SharedGoalState, new_shared_goal_state,
 };
@@ -52,18 +49,20 @@ use crate::tools::spec::{
     RuntimeToolServices, SharedFileReadTracker, new_shared_file_read_tracker,
 };
 use crate::tools::subagent::{
-    FleetRole, ForegroundChildRegistry, Mailbox, MailboxMessage, SharedSubAgentManager,
-    SubAgentCompletion, SubAgentExecutionLimits, SubAgentForkContext, SubAgentManager,
-    SubAgentResult, SubAgentRuntime, SubAgentStatus, TerminalEventDelivery,
-    agent_worker_owner_snapshot, new_shared_subagent_manager_with_state_root_and_timeout,
+    ForegroundChildRegistry, Mailbox, MailboxMessage, SharedSubAgentManager, SubAgentCompletion,
+    SubAgentExecutionLimits, SubAgentForkContext, SubAgentManager, SubAgentResult, SubAgentRuntime,
+    SubAgentStatus, TerminalEventDelivery, agent_worker_owner_snapshot,
+    new_shared_subagent_manager_with_state_root_and_timeout,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
-use crate::utils::spawn_supervised;
-use crate::worker_profile::WorkerRuntimeProfile;
 use crate::working_set::WorkingSet;
+use codewhale_agent_contract::role::FleetRole;
+use codewhale_agent_contract::worker_profile::WorkerRuntimeProfile;
 use codewhale_config::AppMode;
+use codewhale_config::ProviderKind;
+use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_execpolicy::ApprovalMode;
 #[cfg(test)]
 use codewhale_models::ToolCaller;
@@ -72,6 +71,10 @@ use codewhale_models::{
     SystemPrompt, Tool, Usage, is_incomplete_stop_reason, is_output_limit_stop_reason,
     stop_contradicts_output_ceiling, stop_reason_detail,
 };
+use codewhale_runtime::config::{Config, DEFAULT_MAX_SUBAGENTS};
+use codewhale_runtime::features::{Feature, Features};
+use codewhale_snapshot::{WorkspaceSnapshotKind, WorkspaceSnapshotRef};
+use codewhale_util::utils::spawn_supervised;
 
 #[cfg(test)]
 use super::authority::agent_approval_mode_for_turn;
@@ -84,8 +87,8 @@ use super::ops::{
     USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
 };
 use super::session::Session;
-use super::tool_parser;
 use super::turn::{TurnContext, format_snapshot_label, post_turn_snapshot};
+use codewhale_core::tool_parser;
 use codewhale_models::Role;
 
 const ENGINE_OP_CHANNEL_CAPACITY: usize = 32;
@@ -100,6 +103,7 @@ const SUBAGENT_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 /// tolerated by design (`let _ =`), and the terminal `Finished` waits for a
 /// slot instead of being dropped.
 const MCP_BOOT_CHANNEL_CAPACITY: usize = 64;
+const EXTENSION_FIRST_SYNC_WAIT: Duration = Duration::from_secs(10);
 const GOAL_CONTINUATION_FAILURE_DETAIL_MAX_BYTES: usize = 512;
 const PLAN_SHELL_NETWORK_DENIED_HINT: &str = "Shell command blocked: in Plan mode shell commands run in a read-only sandbox with no writes and no network access. The user can change modes with /mode.";
 
@@ -372,7 +376,7 @@ pub struct EngineConfig {
     /// Per-domain network policy decider (#135). Shared across the session so
     /// session-scoped approvals (`/network allow <host>`) persist for the
     /// remainder of the run.
-    pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
+    pub network_policy: Option<codewhale_net::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
     /// Maximum workspace size (in bytes) before snapshots self-disable on
@@ -401,11 +405,11 @@ pub struct EngineConfig {
     pub record_restore_points: bool,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
-    pub lsp_config: Option<crate::lsp::LspConfig>,
+    pub lsp_config: Option<codewhale_lsp::LspConfig>,
     /// Durable runtime services exposed to model-visible tools.
     pub runtime_services: RuntimeToolServices,
     /// Per-role/type sub-agent model overrides already resolved from config.
-    pub subagent_model_overrides: HashMap<String, crate::config::SubagentModelOverride>,
+    pub subagent_model_overrides: HashMap<String, codewhale_runtime::config::SubagentModelOverride>,
     /// Merged fleet roster (built-ins + config + personal/workspace agent
     /// files) shared by model-spawned sub-agents and fleet dispatch
     /// (#fleet-roster cutover (v0.8.67)). Defaults to built-ins only; the
@@ -421,7 +425,7 @@ pub struct EngineConfig {
     pub memory_path: PathBuf,
     /// Default directory for Xiaomi MiMo speech/TTS tool outputs.
     pub speech_output_dir: Option<PathBuf>,
-    pub vision_config: Option<crate::config::VisionModelConfig>,
+    pub vision_config: Option<codewhale_runtime::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_status: GoalStatus,
@@ -442,8 +446,9 @@ pub struct EngineConfig {
     /// reasoning without any answer or tool call. Defaults to 2.
     /// Resolved from `[reasoning_only] max_reprompts` in config.toml.
     pub reasoning_only_max_reprompts: u32,
-    /// Nudge carried by a reasoning-only re-request once a bare retry has
-    /// already come back answerless. `None` uses the built-in text; an empty
+    pub reasoning_only_on_output_limit: bool,
+    /// Nudge carried after a bare clean-stop retry or immediately on an
+    /// opted-in output-limit retry. `None` uses the built-in text; an empty
     /// string disables the nudge and keeps every retry a bare one.
     ///
     /// The nudge is attached to one outbound request and never added to the
@@ -473,9 +478,9 @@ pub struct EngineConfig {
     /// schemas into DeepSeek beta strict mode.
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
-    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
+    pub workshop: Option<codewhale_config::WorkshopConfig>,
     /// Which search backend `web_search` should use. Default: Firecrawl.
-    pub search_provider: crate::config::SearchProvider,
+    pub search_provider: codewhale_runtime::config::SearchProvider,
     /// Optional Firecrawl key, or required key for other API search providers.
     /// Metaso also falls back to the `METASO_API_KEY` env var.
     /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
@@ -501,12 +506,12 @@ pub struct EngineConfig {
     pub turn_wall_clock: Duration,
     /// Per-step cap on accumulated streamed content, in bytes (R1). Resolved
     /// from `[tui].stream_max_content_mb`. Pre-R1 this was the hard-coded
-    /// `STREAM_MAX_CONTENT_BYTES`; it is still finite by default and now
+    /// `DEFAULT_STREAM_MAX_CONTENT_BYTES`; it is still finite by default and now
     /// overridable.
     pub stream_max_content_bytes: usize,
     /// Per-step cap on a single stream's wall-clock duration (R1). Resolved
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
-    /// `STREAM_MAX_DURATION_SECS`.
+    /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
     /// Stream-level retry budgets (#6700): whole-request resumes (also spent
     /// by stream-open failures, #6699), in-stream transparent retries, and
@@ -544,18 +549,18 @@ pub struct EngineConfig {
     pub prefer_bwrap: bool,
     /// User-configured bwrap mount extensions (#5410): extra read-only roots
     /// and writable device nodes such as `/dev/null`.
-    pub bwrap_extensions: crate::sandbox::BwrapMountExtensions,
+    pub bwrap_extensions: codewhale_sandbox::BwrapMountExtensions,
     /// Sandbox read deny-list (S1). One source of truth for two enforcement
     /// points: the OS wrappers get its subtree paths, and the in-process
     /// file-reading tools consult it directly (they run inside the harness
     /// process and are never wrapped by `sandbox-exec` or `bwrap`).
     /// Defense-in-depth, not a security boundary — see
-    /// `crate::sandbox::read_guard` for what it does and does not stop.
-    pub read_denylist: crate::sandbox::read_guard::ReadDenylist,
+    /// `codewhale_sandbox::read_guard` for what it does and does not stop.
+    pub read_denylist: codewhale_sandbox::read_guard::ReadDenylist,
     /// Tool override and plugin configuration (`[tools]` table in config.toml).
     /// Applied to the per-turn tool registry after built-in tools are registered.
     /// When `None`, no overrides or plugin loading occurs.
-    pub tools: Option<crate::config::ToolsConfig>,
+    pub tools: Option<codewhale_runtime::config::ToolsConfig>,
     /// Whether tools should follow symbolic links. When `true`, symlinked
     /// directories are traversed by walk-based tools and symlinked paths
     /// that resolve outside the workspace are still allowed (the symlink
@@ -568,6 +573,7 @@ pub struct EngineConfig {
     /// Interactive TUI sessions enable this; headless and machine-readable
     /// hosts disable it so stdout remains protocol-clean.
     pub terminal_chrome_enabled: bool,
+    pub session_checkpoint_backend: Option<crate::core::events::SessionCheckpointProjection>,
     /// Resolved advisor watcher configuration (#3982). Off by default.
     /// Updated live by `Op::SetAdvisorEnabled`.
     pub advisor_config: crate::tools::subagent::AdvisorConfig,
@@ -614,7 +620,7 @@ impl Default for EngineConfig {
             network_policy: None,
             snapshots_enabled: true,
             snapshots_max_workspace_bytes:
-                crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
+                codewhale_config::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             record_restore_points: false,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
@@ -628,10 +634,12 @@ impl Default for EngineConfig {
             goal_objective: None,
             goal_token_budget: None,
             goal_status: GoalStatus::Active,
-            goal_max_continuations: crate::goal_loop::DEFAULT_MAX_GOAL_CONTINUATIONS,
+            goal_max_continuations: codewhale_runtime::goal_loop::DEFAULT_MAX_GOAL_CONTINUATIONS,
             goal_continuation_delay_seconds: 0,
             goal_enforce_token_budget: false,
-            reasoning_only_max_reprompts: crate::config::DEFAULT_REASONING_ONLY_REPROMPTS,
+            reasoning_only_max_reprompts:
+                codewhale_runtime::config::DEFAULT_REASONING_ONLY_REPROMPTS,
+            reasoning_only_on_output_limit: false,
             // `None` means "use the built-in nudge". Storing the default text
             // here instead would make an operator's explicit empty string
             // indistinguishable from having set nothing.
@@ -642,23 +650,23 @@ impl Default for EngineConfig {
             hook_executor: None,
             locale_tag: "en".to_string(),
             workshop: None,
-            search_provider: crate::config::SearchProvider::default(),
+            search_provider: codewhale_runtime::config::SearchProvider::default(),
             search_api_key: None,
             search_base_url: None,
             search_native: None,
             subagent_api_timeout: Duration::from_secs(
-                crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
+                codewhale_runtime::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
             ),
             stream_chunk_timeout: Duration::from_secs(
-                crate::config::DEFAULT_STREAM_CHUNK_TIMEOUT_SECS,
+                codewhale_runtime::config::DEFAULT_STREAM_CHUNK_TIMEOUT_SECS,
             ),
             turn_wall_clock: turn_budget::resolve_turn_wall_clock(None),
             stream_max_content_bytes: turn_budget::DEFAULT_STREAM_MAX_CONTENT_BYTES,
             stream_max_duration: Duration::from_secs(turn_budget::DEFAULT_STREAM_MAX_DURATION_SECS),
             stream_retry_limits: turn_budget::StreamRetryLimits::default(),
-            stream_open_timeout: crate::client::resolve_stream_open_timeout(None),
+            stream_open_timeout: codewhale_config::resolve_stream_open_timeout(None),
             subagent_heartbeat_timeout: Duration::from_secs(
-                crate::config::DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
+                codewhale_runtime::config::DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
             ),
             tools_always_load: HashSet::new(),
             user_input_limits: crate::tools::user_input::UserInputLimits::default(),
@@ -666,19 +674,20 @@ impl Default for EngineConfig {
             goal_max_steps: None,
             // Mirrors `Config::prefers_bwrap`: on unless explicitly opted out.
             prefer_bwrap: true,
-            bwrap_extensions: crate::sandbox::BwrapMountExtensions::default(),
+            bwrap_extensions: codewhale_sandbox::BwrapMountExtensions::default(),
             // Fail-closed (F7): `Engine::new` unconditionally installs this
             // list process-wide via `read_guard::set_active`, so a default
             // here must be the built-in credential-store defaults — an empty
             // list would override the safe fallback and fail open. Mirrors
             // `Config::default`, where `sandbox_read_denylist_defaults`
             // defaults to true.
-            read_denylist: crate::sandbox::read_guard::ReadDenylist::build(true, &[], &[]),
+            read_denylist: codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]),
             verbosity: None,
             tools: None,
             workspace_follow_symlinks: false,
             exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine::new(Vec::new(), Vec::new()),
             terminal_chrome_enabled: true,
+            session_checkpoint_backend: None,
             advisor_config: crate::tools::subagent::AdvisorConfig::disabled(),
         }
     }
@@ -687,9 +696,6 @@ impl Default for EngineConfig {
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
 /// approval and user-input waits that need to explain cancellation.
-///
-/// `External`, `Preempted`, and `Internal` are reserved for the
-/// remaining direct cancellation paths tracked in #1541.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelReason {
     /// User-initiated cancel (Esc, `/cancel`, click cancel on modal).
@@ -697,11 +703,6 @@ pub enum CancelReason {
     /// External / runtime-API cancel (HTTP `DELETE /v1/threads/...`,
     /// task manager stop, parent agent cancel).
     External,
-    /// Cancel triggered when a new turn starts before the previous one
-    /// finished — e.g. plain Enter while busy after the queueing path
-    /// pre-empts the running turn.
-    #[expect(dead_code)]
-    Preempted,
     /// Engine internals tore down the turn (drop, channel close,
     /// shutdown). Rare — surfaced as an internal error.
     Internal,
@@ -714,7 +715,6 @@ impl CancelReason {
         match self {
             Self::User => "user cancelled the request",
             Self::External => "request cancelled by external caller",
-            Self::Preempted => "request was preempted by a new turn",
             Self::Internal => "engine torn down before approval resolved",
             Self::Stalled => "the turn stalled and was ended by the watchdog",
         }
@@ -725,7 +725,7 @@ impl CancelReason {
 #[derive(Clone)]
 pub struct EngineHandle {
     goal_state: SharedGoalState,
-    pub(crate) sandbox_enforcement: crate::sandbox::policy::SandboxEnforcement,
+    pub(crate) sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement,
     /// Send operations to the engine
     pub tx_op: mpsc::Sender<Op>,
     /// Receive events from the engine
@@ -971,7 +971,7 @@ pub(crate) fn compaction_checkpoint_for_restore(
         // with a stripped system prompt. Only the existing structural
         // validator can authorize a history block as that checkpoint.
         messages.iter().rev().find_map(|message| {
-            if !crate::compaction::is_wire_compaction_checkpoint_message(message) {
+            if !codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message) {
                 return None;
             }
             match &message.content[0] {
@@ -1005,6 +1005,7 @@ pub struct Engine {
     turn_acp_shell_ceiling: Option<bool>,
     config: EngineConfig,
     api_config: Config,
+    instruction_settings: crate::project_context::InstructionSettings,
     /// Runtime-host authority consulted only when constructing a later turn
     /// descriptor (goal continuation, idle child completion, `/edit`). Active
     /// turns keep their already-installed immutable descriptor.
@@ -1021,10 +1022,14 @@ pub struct Engine {
     codewhale_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
     session: Session,
+    /// Instruction-budget notices for the model, delivered through session history.
+    pending_instruction_notices: Vec<String>,
+    instruction_guard_key: Option<String>,
+    instruction_budget_error: Option<String>,
     /// One lazy, session-scoped working kernel for inline `repl` blocks.
     /// Its context is refreshed before each run, while user-created Python
     /// state stays alive across model turns.
-    repl_kernel: Option<crate::repl::PythonRuntime>,
+    repl_kernel: Option<codewhale_repl::PythonRuntime>,
     subagent_manager: SharedSubAgentManager,
     subagent_execution_limits: Option<SubAgentExecutionLimits>,
     /// The deterministic Auto-Review policy shared with every child runtime
@@ -1092,14 +1097,15 @@ pub struct Engine {
     api_provider: ProviderKind,
     /// One captured admitted route. Presentation snapshots derive strings from
     /// it; a changed table cannot be blessed by reinterpreting those strings.
-    api_provider_identity: Option<crate::config::ProviderIdentity>,
+    api_provider_identity: Option<codewhale_runtime::config::ProviderIdentity>,
     /// Live header cell for fork-prefix inheritance: the turn loop writes
     /// the latest request's exact (system, tools, route, hit-flag) here
     /// per model call, and fork contexts clone the handle so a
     /// same-route child can extend the parent's cached prefix. Safe as
     /// a session-lifetime cell: turns run strictly one at a time, so it
     /// always holds the latest request of the running turn.
-    live_header: crate::prompt_zones::SharedLiveHeader<crate::route_receipt::TurnRouteReceipt>,
+    live_header:
+        codewhale_runtime::prompt_zones::SharedLiveHeader<crate::route_receipt::TurnRouteReceipt>,
     active_route_limits: Option<codewhale_config::route::RouteLimits>,
     active_route_capabilities: codewhale_config::route::RouteCapabilities,
     /// The endpoint the current client was built from: base URL, endpoint
@@ -1156,24 +1162,24 @@ pub struct Engine {
     /// next receipt's `changed_paths` is computed against. `None` before a
     /// turn's first snapshot and after one failed, so a span that cannot be
     /// accounted for is reported as unknown rather than folded into the next.
-    restore_point_since: Option<crate::snapshot::SnapshotId>,
+    restore_point_since: Option<codewhale_snapshot::SnapshotId>,
     /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
-    lsp_manager: Arc<crate::lsp::LspManager>,
+    lsp_manager: Arc<codewhale_lsp::LspManager>,
     /// External sandbox backend (#516). When `Some`, exec_shell routes commands
     /// through this instead of spawning a local process.
-    sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
+    sandbox_backend: Option<std::sync::Arc<dyn codewhale_sandbox::backend::SandboxBackend>>,
     /// Session-pinned execution boundary used by model-visible sandbox labels.
     /// This must not be re-probed per turn or metadata bytes can drift.
-    sandbox_enforcement: crate::sandbox::policy::SandboxEnforcement,
+    sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement,
     /// Live no-new-privileges flag, read once at construction beside
     /// `sandbox_enforcement`: both are fixed for the process, so the per-turn
     /// posture line stays byte-stable for the session.
     no_new_privs_active: Option<bool>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
-    pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+    pending_lsp_blocks: Vec<codewhale_lsp::DiagnosticBlock>,
     /// Current operating mode. Updated on `ChangeMode` and `SendMessage`.
     current_mode: AppMode,
     /// R1: cumulative wall-clock budget for the turn currently running.
@@ -1636,7 +1642,7 @@ impl Engine {
     #[cfg(all(test, unix))]
     pub(crate) fn pin_recorded_platform_posture(
         &mut self,
-        enforcement: crate::sandbox::policy::SandboxEnforcement,
+        enforcement: codewhale_sandbox::policy::SandboxEnforcement,
         no_new_privs_active: Option<bool>,
     ) {
         self.sandbox_enforcement = enforcement;
@@ -1731,8 +1737,29 @@ impl Engine {
             .map(handle::SteerInput::into_pending)
     }
 
+    async fn wait_turn_steer(&mut self) -> handle::PendingSteer {
+        loop {
+            while let Some(pending) = self.next_turn_steer() {
+                if !pending.content.trim().is_empty() {
+                    return pending;
+                }
+            }
+            if self.queued_steers.len() >= self.rx_steer.max_capacity() {
+                return std::future::pending().await;
+            }
+            let Some(steer) = self.rx_steer.recv().await else {
+                return std::future::pending().await;
+            };
+            if steer.replace_pending {
+                self.queued_steers
+                    .retain(|older| older.turn_id != steer.turn_id);
+            }
+            self.queued_steers.push_back(steer);
+        }
+    }
+
     fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
-        if !crate::config::active_provider_uses_env_only_api_key(api_config) {
+        if !codewhale_runtime::config::active_provider_uses_env_only_api_key(api_config) {
             return None;
         }
 
@@ -1842,7 +1869,7 @@ impl Engine {
         let key = (self.image_route_provider_key(), model.to_string());
         let learned = self.learned_image_caps.entry(key).or_insert(cap);
         *learned = (*learned).min(cap);
-        crate::logging::warn(format!(
+        codewhale_runtime::logging::warn(format!(
             "request_images: model {model} refused {sent} image(s) in one request (stated limit {:?}); learned cap {}",
             rejection.limit, *learned
         ));
@@ -1852,7 +1879,7 @@ impl Engine {
     pub(super) async fn note_request_image_window(
         &mut self,
         provider: String,
-        window: crate::image_attach::ImageWindow,
+        window: codewhale_models::image_window::ImageWindow,
     ) {
         let model = self.session.model.clone();
         let current = (window.elided > 0)
@@ -1865,7 +1892,7 @@ impl Engine {
             return;
         }
         let cap_source = "provider_rejection";
-        crate::logging::warn(format!(
+        codewhale_runtime::logging::warn(format!(
             "request_images: provider={provider} model={model} total={} elided={} cap={} cap_source={cap_source}",
             window.total, window.elided, window.cap
         ));
@@ -2073,7 +2100,13 @@ impl Engine {
         mut host: Option<EngineHostSetup>,
         supplied_subagent_manager: Option<SharedSubAgentManager>,
     ) -> (Self, EngineHandle) {
-        crate::tls::ensure_rustls_crypto_provider();
+        codewhale_release::tls::ensure_rustls_crypto_provider();
+        let mut instruction_settings =
+            crate::project_context::InstructionSettings::from_config(api_config);
+        let instruction_budget_error = instruction_settings.budget.validate().err();
+        if instruction_budget_error.is_some() {
+            instruction_settings.budget = Default::default();
+        }
 
         // Compaction re-states the user's `/anchor` file after its summary;
         // hand it the workspace root once so every prepared pass can read it.
@@ -2147,8 +2180,9 @@ impl Engine {
             .as_ref()
             .filter(|registry| registry.workspace() == config.workspace)
             .cloned();
-        // Experimental extension host: start in the background, never on the
-        // first-prompt path. Its tools join at the next turn's rebuild. Only
+        // Experimental extension host: start in the background here. The
+        // first turn's tool build waits briefly for this snapshot to activate
+        // so reviewed plugin tools are present on turn one. Only
         // an engine with its own plugin snapshot attaches; the empty fallback
         // below would desire nothing and must not affect other engines.
         let extension_host = match host.as_mut() {
@@ -2229,9 +2263,12 @@ impl Engine {
         // durable receipt path so the Context Lens can show what was assembled
         // for it. Both are inert when memory is disabled — no store I/O.
         if host.is_none()
+            && !api_config.runtime_chat_isolated
             && config.memory_enabled
             && let Some(store) =
-                crate::native_memory::NativeMemoryStore::from_global_path(&config.memory_path)
+                codewhale_runtime::native_memory::NativeMemoryStore::from_global_path(
+                    &config.memory_path,
+                )
         {
             match store.session_start(&config.workspace, &session.id) {
                 Ok(0) => {}
@@ -2244,8 +2281,8 @@ impl Engine {
                 }
             }
         }
-        let user_memory_block = crate::native_memory::native_prompt_block_traced(
-            host.is_none() && config.memory_enabled,
+        let user_memory_block = codewhale_runtime::native_memory::native_prompt_block_traced(
+            host.is_none() && !api_config.runtime_chat_isolated && config.memory_enabled,
             &config.memory_path,
             &config.workspace,
             &session.id,
@@ -2255,8 +2292,7 @@ impl Engine {
         // #5715: name a prior workspace session that ended mid-turn so the
         // model can offer recovery without being asked. Frozen-prefix
         // contributor — computed once here, identical for every turn.
-        let recovery_hint = host
-            .is_none()
+        let recovery_hint = (host.is_none() && !api_config.runtime_chat_isolated)
             .then(|| {
                 crate::session_manager::session_recovery_hint(
                     &config.workspace,
@@ -2269,12 +2305,45 @@ impl Engine {
         } else {
             prompts::PromptHost::Headless
         };
-        let system_prompt = if let Some(host) = host.as_ref() {
-            host.system_prompt().clone()
+        let (system_prompt, instruction_assembly) = if let Some(host) = host.as_ref() {
+            (host.system_prompt().clone(), None)
         } else if api_config.runtime_chat_isolated {
-            SystemPrompt::Text(ISOLATED_CHAT_SYSTEM_PROMPT.to_string())
+            (
+                SystemPrompt::Text(ISOLATED_CHAT_SYSTEM_PROMPT.to_string()),
+                None,
+            )
         } else {
-            prompts::system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
+            let raw = crate::project_context::capture_instruction_context(
+                &config.workspace,
+                &config.instructions,
+                &instruction_settings,
+            );
+            let initial_instruction_budgets =
+                crate::project_context::InstructionBudgets::resolve_or_default(
+                    &instruction_settings.budget,
+                    crate::route_runtime::resolve_context_window(
+                        api_provider,
+                        &config.model,
+                        config.active_route_limits,
+                        None,
+                        None,
+                    )
+                    .instruction_budget_tokens(),
+                    Some(crate::route_budget::effective_max_output_tokens_for_turn(
+                        api_provider,
+                        &config.model,
+                        config.active_route_limits,
+                        None,
+                        turn_loop::resolve_auto_effort(
+                            api_config.reasoning_effort(),
+                            api_provider,
+                            &api_config.active_route_base_url(),
+                            &config.model,
+                        )
+                        .as_deref(),
+                    ) as usize),
+                );
+            let (prompt, assembly) = prompts::system_prompt_with_instruction_assembly_for_host(
                 &config.workspace,
                 None,
                 Some(&config.skills_dir),
@@ -2302,8 +2371,13 @@ impl Engine {
                     mode: AppMode::Agent,
                 },
                 prompt_host,
-            )
+                Some((&raw, &instruction_settings, initial_instruction_budgets)),
+            );
+            session.project_context = Some(raw);
+            (prompt, Some(assembly))
         };
+        let pending_instruction_notices = Vec::new();
+        session.instruction_assembly = instruction_assembly.map(Arc::new);
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -2368,7 +2442,7 @@ impl Engine {
         // `read_file`/`read`/`read_media` tools read in-process, so the same
         // deny-list is installed process-wide for them to consult (S1).
         if host.is_none() {
-            crate::sandbox::read_guard::set_active(config.read_denylist.clone());
+            codewhale_sandbox::read_guard::set_active(config.read_denylist.clone());
         }
         let shell_manager = host
             .as_ref()
@@ -2396,8 +2470,8 @@ impl Engine {
                 host.context().file_read_tracker.clone()
             });
         let lsp_manager = Arc::new(match config.lsp_config.clone() {
-            Some(cfg) => crate::lsp::LspManager::new(cfg, config.workspace.clone()),
-            None => crate::lsp::LspManager::disabled(),
+            Some(cfg) => codewhale_lsp::LspManager::new(cfg, config.workspace.clone()),
+            None => codewhale_lsp::LspManager::disabled(),
         });
 
         // External sandbox backend (#516). Logged but non-fatal: if the
@@ -2407,7 +2481,7 @@ impl Engine {
             .as_ref()
             .map(|host| host.context().sandbox_backend.clone())
             .unwrap_or_else(|| {
-                crate::sandbox::backend::create_backend(api_config)
+                codewhale_sandbox::backend::create_backend(api_config)
                     .unwrap_or_else(|e| {
                         tracing::warn!("Failed to create sandbox backend: {e}");
                         None
@@ -2415,16 +2489,16 @@ impl Engine {
                     .map(std::sync::Arc::from)
             });
         let sandbox_enforcement = if sandbox_backend.is_some() {
-            crate::sandbox::policy::SandboxEnforcement::ExternalBackend
+            codewhale_sandbox::policy::SandboxEnforcement::ExternalBackend
         } else if shell_manager
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .configured_sandbox_type()
             .is_some()
         {
-            crate::sandbox::policy::SandboxEnforcement::LocalOs
+            codewhale_sandbox::policy::SandboxEnforcement::LocalOs
         } else {
-            crate::sandbox::policy::SandboxEnforcement::Unavailable
+            codewhale_sandbox::policy::SandboxEnforcement::Unavailable
         };
 
         let active_route_limits = config.active_route_limits;
@@ -2471,6 +2545,7 @@ impl Engine {
             rlm_host,
             config,
             api_config: api_config.clone(),
+            instruction_settings,
             authoritative_route_config: None,
             host_profile,
             turn_narrowing: TurnNarrowing::Inherit,
@@ -2481,6 +2556,9 @@ impl Engine {
             codewhale_client_error,
             api_key_env_only_recovery,
             session,
+            pending_instruction_notices,
+            instruction_guard_key: None,
+            instruction_budget_error,
             repl_kernel: None,
             subagent_manager,
             subagent_execution_limits,
@@ -2508,7 +2586,7 @@ impl Engine {
             repeated_upstream_failure: None,
             api_provider,
             api_provider_identity,
-            live_header: crate::prompt_zones::new_live_header_cell(),
+            live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
             active_route_limits,
             active_route_capabilities: codewhale_config::route::RouteCapabilities::default(),
             active_route_endpoint: None,
@@ -2541,7 +2619,7 @@ impl Engine {
             pending_lsp_blocks: Vec::new(),
             sandbox_backend,
             sandbox_enforcement,
-            no_new_privs_active: crate::sandbox::process_hardening::no_new_privs_active(),
+            no_new_privs_active: codewhale_sandbox::process_hardening::no_new_privs_active(),
             current_mode: AppMode::Agent,
             turn_wall_clock: turn_budget::TurnWallClock::start(turn_wall_clock_budget),
             last_policy_narrowing: None,
@@ -2680,7 +2758,9 @@ impl Engine {
             })
             .await;
 
-        let tool_context = self.build_tool_context(mode, auto_approve);
+        let tool_context = self
+            .build_tool_context(mode, auto_approve)
+            .with_origin_tool_call_id(tool_id.as_str());
         let registry = ToolRegistryBuilder::new()
             .with_shell_tools()
             .build(tool_context);
@@ -2874,9 +2954,9 @@ impl Engine {
     /// snapshot [`Self::post_turn_snapshot_after_complete`] takes. Called
     /// before `TurnComplete`, so a `/undo` the user types as soon as the
     /// turn ends waits for that snapshot instead of racing it (#6644).
-    fn reserve_post_turn_snapshot(&self) -> Option<crate::snapshot::PendingPostTurnSnapshot> {
+    fn reserve_post_turn_snapshot(&self) -> Option<codewhale_snapshot::PendingPostTurnSnapshot> {
         (self.config.snapshots_enabled && !self.config.record_restore_points)
-            .then(crate::snapshot::PendingPostTurnSnapshot::reserve)
+            .then(codewhale_snapshot::PendingPostTurnSnapshot::reserve)
     }
 
     /// Take the post-turn snapshot reserved by
@@ -2888,7 +2968,7 @@ impl Engine {
         &self,
         task: &'static str,
         prompt: String,
-        pending: Option<crate::snapshot::PendingPostTurnSnapshot>,
+        pending: Option<codewhale_snapshot::PendingPostTurnSnapshot>,
     ) {
         let Some(pending) = pending else {
             return;
@@ -2897,7 +2977,7 @@ impl Engine {
         let post_seq = self.turn_counter;
         let post_cap = self.config.snapshots_max_workspace_bytes;
         let post_sid = self.session.id.clone();
-        crate::utils::spawn_blocking_supervised(task, move || {
+        codewhale_util::utils::spawn_blocking_supervised(task, move || {
             post_turn_snapshot(
                 &post_workspace,
                 post_seq,
@@ -3236,6 +3316,8 @@ impl Engine {
         // Host-owned overrides remain byte-stable because the
         // refresh path exits early while the override is set.
         self.session.pinned_prompt_context = None;
+        self.session.instruction_assembly = None;
+        self.instruction_guard_key = None;
         self.session.context_update_baseline = None;
         // A session sync installs a new (or restored) prefix.
         // Declare it so the next request re-pins the KV-cache
@@ -3266,6 +3348,11 @@ impl Engine {
                 .and_then(|identity| identity.persisted_id().map(str::to_string)),
             workspace: self.session.workspace.clone(),
             system_prompt: self.session.system_prompt.clone(),
+            instruction_assembly: self
+                .session
+                .instruction_assembly
+                .as_deref()
+                .map(crate::project_context::InstructionAssembly::receipt_json),
             mode: self.current_mode.as_setting().to_string(),
         }
     }
@@ -3320,7 +3407,7 @@ impl Engine {
             || codewhale_config::persistence::redact_secrets(detail),
             |client| client.redact_model_bound_text(detail),
         );
-        Some(crate::utils::truncate_with_ellipsis(
+        Some(codewhale_util::utils::truncate_with_ellipsis(
             &detail,
             GOAL_CONTINUATION_FAILURE_DETAIL_MAX_BYTES,
             "…",
@@ -3648,494 +3735,546 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn run_owned(mut self) -> Option<Result<crate::tools::subagent::SubAgentResult>> {
-        let mut child_result = None;
-        // RuntimeThreadManager owns durable turn claims and installs a thread
-        // id in runtime services. Only the interactive TUI may autonomously
-        // create a new turn while the engine is otherwise idle; a hosted
-        // engine must wait for its host to claim and explicitly dispatch the
-        // next turn so events cannot be attached to the wrong durable record.
-        let host_managed_turns = self.host_managed_turns();
-        // #6184: supervise the turn heartbeat from outside the turn future,
-        // so a wedged await still produces a log line, a stall record and a
-        // status event. The watchdog exits once the event channel closes.
-        let stall_watchdog = turn_heartbeat::spawn_turn_stall_watchdog(
-            Arc::clone(&self.turn_heartbeat),
-            self.tx_event.clone(),
-        );
-        let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
-        if let Err(error) = self
-            .start_mcp_session_boot(McpConnectRefresh::IfChanged)
-            .await
-        {
-            tracing::debug!(
-                "MCP session boot failed: {}",
-                crate::mcp::format_mcp_error_for_display(&error)
+    fn run_owned(
+        mut self,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Option<Result<crate::tools::subagent::SubAgentResult>>,
+    > {
+        Box::pin(async move {
+            let mut child_result = None;
+            // RuntimeThreadManager owns durable turn claims and installs a thread
+            // id in runtime services. Only the interactive TUI may autonomously
+            // create a new turn while the engine is otherwise idle; a hosted
+            // engine must wait for its host to claim and explicitly dispatch the
+            // next turn so events cannot be attached to the wrong durable record.
+            let host_managed_turns = self.host_managed_turns();
+            // #6184: supervise the turn heartbeat from outside the turn future,
+            // so a wedged await still produces a log line, a stall record and a
+            // status event. The watchdog exits once the event channel closes.
+            let stall_watchdog = turn_heartbeat::spawn_turn_stall_watchdog(
+                Arc::clone(&self.turn_heartbeat),
+                self.tx_event.clone(),
             );
-        }
-        self.mcp_pool_slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .handoff = None;
-
-        loop {
-            let Some(input) = self.next_run_input(host_managed_turns).await else {
-                break;
-            };
-
-            // Runtime posture updates publish through shared typed state
-            // before attempting their best-effort wake-up. If the mailbox was
-            // already full, its next queued operation is the wake-up: apply
-            // the latest authority before doing any work under an obsolete
-            // policy.
-            if matches!(&input, EngineRunInput::Operation(_)) {
-                self.apply_pending_runtime_authority().await;
+            let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
+            if let Err(error) = self
+                .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                .await
+            {
+                tracing::debug!(
+                    "MCP session boot failed: {}",
+                    crate::mcp::format_mcp_error_for_display(&error)
+                );
             }
+            self.mcp_pool_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .handoff = None;
 
-            match input {
-                EngineRunInput::SubAgentCompletion(completion) => {
-                    self.handle_idle_subagent_completion(completion).await;
+            loop {
+                let Some(input) = self.next_run_input(host_managed_turns).await else {
+                    break;
+                };
+
+                // Runtime posture updates publish through shared typed state
+                // before attempting their best-effort wake-up. If the mailbox was
+                // already full, its next queued operation is the wake-up: apply
+                // the latest authority before doing any work under an obsolete
+                // policy.
+                if matches!(&input, EngineRunInput::Operation(_)) {
+                    self.apply_pending_runtime_authority().await;
                 }
-                EngineRunInput::McpBootUpdate(update) => {
-                    self.apply_mcp_boot_update(update).await;
-                }
-                EngineRunInput::McpSupervisorUpdate(update) => {
-                    self.apply_mcp_supervisor_update(update).await;
-                }
-                EngineRunInput::ShellCompletionWake => {
-                    self.handle_idle_shell_completion_wake().await;
-                }
-                EngineRunInput::Operation(op) => match *op {
-                    Op::SendMessage(spec) => {
-                        self.admitted_turn_control = {
-                            let mut controls = self
-                                .turn_controls
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let control = controls.pending.pop_front();
-                            controls.active = control.clone();
-                            control
-                        };
-                        // Keep the send-message state machine out of this
-                        // event-loop future's stack frame.
-                        if self.child_host.is_some() {
-                            match Box::pin(self.handle_child_send_message(spec)).await {
-                                Ok(None) => {}
-                                Ok(Some(result)) => {
-                                    child_result = Some(Ok(result));
-                                    break;
-                                }
-                                Err(error) => {
-                                    child_result = Some(Err(error));
-                                    break;
-                                }
-                            }
-                        } else {
-                            Box::pin(self.handle_send_message(spec)).await;
-                        }
+
+                match input {
+                    EngineRunInput::SubAgentCompletion(completion) => {
+                        self.handle_idle_subagent_completion(completion).await;
                     }
-                    Op::ContinueGoal {
-                        dynamic_tools,
-                        engine_schedule_id,
-                    } => {
-                        // Cancellation can race the delay expiry after the
-                        // coalesced token entered the mailbox. Re-check the
-                        // same turn token before consuming the schedule so an
-                        // interrupt at the boundary never starts a provider
-                        // request and is not erased by the next turn's reset.
-                        if engine_schedule_id.is_some() && self.cancel_token.is_cancelled() {
-                            self.cancel_scheduled_goal_continuation(true).await;
-                            continue;
+                    EngineRunInput::McpBootUpdate(update) => {
+                        self.apply_mcp_boot_update(update).await;
+                    }
+                    EngineRunInput::McpSupervisorUpdate(update) => {
+                        self.apply_mcp_supervisor_update(update).await;
+                    }
+                    EngineRunInput::ShellCompletionWake => {
+                        self.handle_idle_shell_completion_wake().await;
+                    }
+                    EngineRunInput::Operation(op) => match *op {
+                        Op::Review { turn, request } => {
+                            self.admitted_turn_control = {
+                                let mut controls = self
+                                    .turn_controls
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let control = controls.pending.pop_front();
+                                controls.active = control.clone();
+                                control
+                            };
+                            Box::pin(self.handle_message_operation(turn, Some(request))).await;
                         }
-                        let Some(dynamic_tools) = self
-                            .take_scheduled_goal_continuation(engine_schedule_id, dynamic_tools)
-                        else {
-                            continue;
-                        };
-                        // Host-injected tokens carry their own quiet period:
-                        // host-managed sessions never run the engine-owned
-                        // scheduler, so this arm is their only continuation
-                        // dispatch site and must honor
-                        // [goal] continuation_delay_seconds itself before
-                        // dispatching. The wait is biased-cancellable (Esc,
-                        // steer, or host cancel always wins over a racing
-                        // expiry), and the live goal is re-read below only
-                        // after it, so a pause/clear/complete/blocked landing
-                        // during the quiet period cancels the pass and
-                        // failures never continue. Engine-owned tokens (Some)
-                        // already waited out ready_at in the scheduler and
-                        // keep those semantics untouched.
-                        if engine_schedule_id.is_none()
-                            && crate::goal_loop::await_continuation_wait(
-                                crate::goal_loop::continuation_wait(
-                                    self.config.goal_continuation_delay_seconds,
-                                ),
-                                &self.cancel_token,
-                            )
-                            .await
-                                == crate::goal_loop::ContinuationWaitOutcome::Cancelled
-                        {
-                            continue;
-                        }
-                        // Status controls queued while the previous turn was
-                        // running are processed before this operation, and a
-                        // host-injected quiet period has now elapsed. Re-read
-                        // the live goal so pause/clear/complete/blocked can
-                        // cancel a stale continuation without starting a turn.
-                        let (content, goal_snapshot) = match self.goal_continuation_if_active() {
-                            GoalContinuationAction::Inactive => continue,
-                            GoalContinuationAction::Dispatch { content, snapshot } => {
-                                (content, *snapshot)
+                        Op::SendMessage(spec) => {
+                            self.admitted_turn_control = {
+                                let mut controls = self
+                                    .turn_controls
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let control = controls.pending.pop_front();
+                                controls.active = control.clone();
+                                control
+                            };
+                            // Keep the send-message state machine out of this
+                            // event-loop future's stack frame.
+                            if self.child_host.is_some() {
+                                match Box::pin(self.handle_child_send_message(spec)).await {
+                                    Ok(None) => {}
+                                    Ok(Some(result)) => {
+                                        child_result = Some(Ok(result));
+                                        break;
+                                    }
+                                    Err(error) => {
+                                        child_result = Some(Err(error));
+                                        break;
+                                    }
+                                }
+                            } else {
+                                Box::pin(self.handle_send_message(spec)).await;
                             }
-                            GoalContinuationAction::Stopped { message, reason } => {
-                                self.pause_goal_continuation(reason, message).await;
+                        }
+                        Op::ContinueGoal {
+                            dynamic_tools,
+                            engine_schedule_id,
+                        } => {
+                            // Cancellation can race the delay expiry after the
+                            // coalesced token entered the mailbox. Re-check the
+                            // same turn token before consuming the schedule so an
+                            // interrupt at the boundary never starts a provider
+                            // request and is not erased by the next turn's reset.
+                            if engine_schedule_id.is_some() && self.cancel_token.is_cancelled() {
+                                self.cancel_scheduled_goal_continuation(true).await;
                                 continue;
                             }
-                        };
-                        // Budget and inactive-state decisions are route
-                        // independent. Resolve the live route only for a real
-                        // dispatch so an exhausted goal still reaches its
-                        // truthful terminal state when provider config drifted.
-                        let route = match self.current_runtime_route() {
-                            Ok(route) => route,
-                            Err(err) => {
-                                let message = format!(
-                                    "Goal continuation blocked because its provider route is no longer valid: {err}. Fix the route, then resume the goal."
-                                );
-                                let _ = self.send_event(Event::error(ErrorEnvelope::fatal_auth(format!(
+                            let Some(dynamic_tools) = self.take_scheduled_goal_continuation(
+                                engine_schedule_id,
+                                dynamic_tools,
+                            ) else {
+                                continue;
+                            };
+                            // Host-injected tokens carry their own quiet period:
+                            // host-managed sessions never run the engine-owned
+                            // scheduler, so this arm is their only continuation
+                            // dispatch site and must honor
+                            // [goal] continuation_delay_seconds itself before
+                            // dispatching. The wait is biased-cancellable (Esc,
+                            // steer, or host cancel always wins over a racing
+                            // expiry), and the live goal is re-read below only
+                            // after it, so a pause/clear/complete/blocked landing
+                            // during the quiet period cancels the pass and
+                            // failures never continue. Engine-owned tokens (Some)
+                            // already waited out ready_at in the scheduler and
+                            // keep those semantics untouched.
+                            if engine_schedule_id.is_none()
+                                && codewhale_runtime::goal_loop::await_continuation_wait(
+                                    codewhale_runtime::goal_loop::continuation_wait(
+                                        self.config.goal_continuation_delay_seconds,
+                                    ),
+                                    &self.cancel_token,
+                                )
+                                .await
+                                    == codewhale_runtime::goal_loop::ContinuationWaitOutcome::Cancelled
+                            {
+                                continue;
+                            }
+                            // Status controls queued while the previous turn was
+                            // running are processed before this operation, and a
+                            // host-injected quiet period has now elapsed. Re-read
+                            // the live goal so pause/clear/complete/blocked can
+                            // cancel a stale continuation without starting a turn.
+                            let (content, goal_snapshot) = match self.goal_continuation_if_active()
+                            {
+                                GoalContinuationAction::Inactive => continue,
+                                GoalContinuationAction::Dispatch { content, snapshot } => {
+                                    (content, *snapshot)
+                                }
+                                GoalContinuationAction::Stopped { message, reason } => {
+                                    self.pause_goal_continuation(reason, message).await;
+                                    continue;
+                                }
+                            };
+                            // Budget and inactive-state decisions are route
+                            // independent. Resolve the live route only for a real
+                            // dispatch so an exhausted goal still reaches its
+                            // truthful terminal state when provider config drifted.
+                            let route = match self.current_runtime_route() {
+                                Ok(route) => route,
+                                Err(err) => {
+                                    let message = format!(
+                                        "Goal continuation blocked because its provider route is no longer valid: {err}. Fix the route, then resume the goal."
+                                    );
+                                    let _ = self.send_event(Event::error(ErrorEnvelope::fatal_auth(format!(
                                         "Goal continuation stopped because its provider route is no longer valid: {err}"
                                     ))))
                                     .await;
-                                self.block_goal_continuation(message).await;
-                                continue;
-                            }
-                        };
+                                    self.block_goal_continuation(message).await;
+                                    continue;
+                                }
+                            };
 
-                        let _ = self
-                            .handle_send_message(TurnSpec {
-                                profile_constitution: None,
-                                content,
-                                mode: self.current_mode,
-                                route: Box::new(route),
-                                compaction: Box::new(self.config.compaction.clone()),
-                                initial_routed_usage: Box::new(
-                                    crate::cost_status::RuntimeUsageBatch::default(),
-                                ),
-                                goal_objective: goal_snapshot.objective,
-                                goal_token_budget: goal_snapshot.token_budget,
-                                goal_status: GoalStatus::Active,
-                                reasoning_effort: self.session.reasoning_effort.clone(),
-                                reasoning_effort_auto: self.session.reasoning_effort_auto,
-                                auto_model: self.session.auto_model,
-                                allow_shell: self.session.allow_shell,
-                                trust_mode: self.session.trust_mode,
-                                auto_approve: self.session.auto_approve,
-                                approval_mode: self.session.approval_mode,
-                                translation_enabled: self.config.translation_enabled,
-                                allowed_tools: self.config.allowed_tools.clone(),
-                                dynamic_tools,
-                                hook_executor: self.config.hook_executor.clone(),
-                                verbosity: self.config.verbosity.clone(),
-                                provenance: UserInputProvenance::Runtime,
-                                images: Vec::new(),
-                                max_output_tokens: None,
-                                // Engine-scheduled goal continuation: no host
-                                // submission to correlate with.
-                                submission_id: None,
-                            })
-                            .await;
-                    }
-                    Op::RunShellCommand {
-                        command,
-                        mode,
-                        allow_shell,
-                        trust_mode,
-                        auto_approve,
-                        approval_mode,
-                    } => {
-                        self.handle_run_shell_command(
+                            let _ = self
+                                .handle_send_message(TurnSpec {
+                                    profile_constitution: None,
+                                    content,
+                                    mode: self.current_mode,
+                                    route: Box::new(route),
+                                    compaction: Box::new(self.config.compaction.clone()),
+                                    initial_routed_usage: Box::new(
+                                        crate::cost_status::RuntimeUsageBatch::default(),
+                                    ),
+                                    goal_objective: goal_snapshot.objective,
+                                    goal_token_budget: goal_snapshot.token_budget,
+                                    goal_status: GoalStatus::Active,
+                                    reasoning_effort: self.session.reasoning_effort.clone(),
+                                    reasoning_effort_auto: self.session.reasoning_effort_auto,
+                                    auto_model: self.session.auto_model,
+                                    allow_shell: self.session.allow_shell,
+                                    trust_mode: self.session.trust_mode,
+                                    auto_approve: self.session.auto_approve,
+                                    approval_mode: self.session.approval_mode,
+                                    translation_enabled: self.config.translation_enabled,
+                                    allowed_tools: self.config.allowed_tools.clone(),
+                                    dynamic_tools,
+                                    hook_executor: self.config.hook_executor.clone(),
+                                    verbosity: self.config.verbosity.clone(),
+                                    provenance: UserInputProvenance::Runtime,
+                                    images: Vec::new(),
+                                    max_output_tokens: None,
+                                    // Engine-scheduled goal continuation: no host
+                                    // submission to correlate with.
+                                    submission_id: None,
+                                })
+                                .await;
+                        }
+                        Op::RunShellCommand {
                             command,
                             mode,
                             allow_shell,
                             trust_mode,
                             auto_approve,
                             approval_mode,
-                        )
-                        .await;
-                    }
-                    Op::SetGoalStatus {
-                        status,
-                        clear,
-                        goal_id,
-                    } => {
-                        self.handle_set_goal_status(status, clear, goal_id).await;
-                    }
-                    Op::SetGoalObjective {
-                        objective,
-                        token_budget,
-                        goal_id,
-                    } => {
-                        self.handle_set_goal_objective(objective, token_budget, goal_id)
-                            .await;
-                    }
-                    Op::PreviewOutboundRequest {
-                        inputs,
-                        json,
-                        base_prompt_only,
-                    } => {
-                        // Pure inspection: no turn is started, no message is
-                        // added, no engine state is written, and no provider
-                        // request is sent. Facts that are not exactly knowable
-                        // come back as typed unavailable sections rather than
-                        // as an error or a guess.
-                        let rendered = if base_prompt_only {
-                            crate::request_manifest::exact_base_prompt_only()
-                        } else {
-                            let manifest = self.build_request_manifest(*inputs).await;
-                            if json {
-                                manifest.to_json()
-                            } else {
-                                manifest.render()
-                            }
-                        };
-                        let _ = self
-                            .send_event(Event::RequestManifestReady { rendered })
-                            .await;
-                    }
-                    Op::ListSubAgents => {
-                        // #3803: the sidebar refresh is a read-only snapshot.
-                        // Render from a read lock; only take the write lock to
-                        // run cleanup on a bounded cadence, so a UI refresh storm
-                        // during a sub-agent fanout no longer contends for the
-                        // write lock (against completions/persistence) on every
-                        // request. Cleanup still auto-cancels stale agents.
-                        let active_session_id = self.session.id.clone();
-                        self.touch_workers_with_running_shells().await;
-                        let due = {
-                            let manager = self.subagent_manager.read().await;
-                            manager.cleanup_due(
-                                crate::tools::subagent::SUBAGENT_LIST_CLEANUP_MIN_INTERVAL,
+                        } => {
+                            self.handle_run_shell_command(
+                                command,
+                                mode,
+                                allow_shell,
+                                trust_mode,
+                                auto_approve,
+                                approval_mode,
                             )
-                        };
-                        let event = if due {
-                            let mut manager = self.subagent_manager.write().await;
-                            manager.cleanup_for_session(
-                                &active_session_id,
-                                Duration::from_secs(60 * 60),
-                            );
-                            agent_list_event(&manager, &active_session_id)
-                        } else {
-                            let manager = self.subagent_manager.read().await;
-                            agent_list_event(&manager, &active_session_id)
-                        };
-                        // #3802: use non-blocking send — this is a refresh event
-                        // that can safely be dropped when the channel is full.
-                        // The next drain cycle will re-request the list.
-                        if let Err(_e) = self.tx_event.try_send(event) {
-                            tracing::debug!(
-                                "Event channel full; dropping ListSubAgents refresh (will retry next drain)"
-                            );
+                            .await;
                         }
-                    }
-                    Op::GetSubAgentSettlement { tx } => {
-                        let snapshot = self.subagent_settlement_snapshot().await;
-                        if let Some(tx) = tx
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take()
-                        {
-                            let _ = tx.send(snapshot);
+                        Op::SetGoalStatus {
+                            status,
+                            clear,
+                            goal_id,
+                        } => {
+                            self.handle_set_goal_status(status, clear, goal_id).await;
                         }
-                    }
-                    Op::CancelSubAgent { agent_id } => {
-                        let active_session_id = self.session.id.clone();
-                        let cancelled = self
-                            .subagent_manager
-                            .write()
-                            .await
-                            .cancel_agent_for_session(&active_session_id, &agent_id);
-                        let result = match cancelled {
-                            Ok(snapshot) => {
-                                let snapshot = crate::tools::subagent::settle_requested_child(
-                                    &self.subagent_manager,
-                                    snapshot,
-                                )
+                        Op::SetGoalObjective {
+                            objective,
+                            token_budget,
+                            goal_id,
+                        } => {
+                            self.handle_set_goal_objective(objective, token_budget, goal_id)
                                 .await;
-                                // F4: cancelling keeps the work — inventory and
-                                // checkpoint what the child left, off the lock.
-                                crate::tools::subagent::preserve_cancelled_work(
-                                    &self.subagent_manager,
-                                    snapshot,
-                                )
+                        }
+                        Op::PreviewOutboundRequest {
+                            inputs,
+                            json,
+                            base_prompt_only,
+                        } => {
+                            // Pure inspection: no turn is started, no message is
+                            // added, no engine state is written, and no provider
+                            // request is sent. Facts that are not exactly knowable
+                            // come back as typed unavailable sections rather than
+                            // as an error or a guess.
+                            let rendered = if base_prompt_only {
+                                crate::request_manifest::exact_base_prompt_only()
+                            } else {
+                                let manifest = self.build_request_manifest(*inputs).await;
+                                if json {
+                                    manifest.to_json()
+                                } else {
+                                    manifest.render()
+                                }
+                            };
+                            let _ = self
+                                .send_event(Event::RequestManifestReady { rendered })
                                 .await;
+                        }
+                        Op::ListSubAgents => {
+                            // #3803: the sidebar refresh is a read-only snapshot.
+                            // Render from a read lock; only take the write lock to
+                            // run cleanup on a bounded cadence, so a UI refresh storm
+                            // during a sub-agent fanout no longer contends for the
+                            // write lock (against completions/persistence) on every
+                            // request. Cleanup still auto-cancels stale agents.
+                            let active_session_id = self.session.id.clone();
+                            self.touch_workers_with_running_shells().await;
+                            let due = {
                                 let manager = self.subagent_manager.read().await;
-                                Ok(agent_list_event(&manager, &active_session_id))
+                                manager.cleanup_due(
+                                    crate::tools::subagent::SUBAGENT_LIST_CLEANUP_MIN_INTERVAL,
+                                )
+                            };
+                            let event = if due {
+                                let mut manager = self.subagent_manager.write().await;
+                                manager.cleanup_for_session(
+                                    &active_session_id,
+                                    Duration::from_secs(60 * 60),
+                                );
+                                agent_list_event(&manager, &active_session_id)
+                            } else {
+                                let manager = self.subagent_manager.read().await;
+                                agent_list_event(&manager, &active_session_id)
+                            };
+                            // #3802: use non-blocking send — this is a refresh event
+                            // that can safely be dropped when the channel is full.
+                            // The next drain cycle will re-request the list.
+                            if let Err(_e) = self.tx_event.try_send(event) {
+                                tracing::debug!(
+                                    "Event channel full; dropping ListSubAgents refresh (will retry next drain)"
+                                );
                             }
-                            Err(err) => Err(err),
-                        };
-                        match result {
-                            Ok(event) => {
-                                if let Err(_e) = self.tx_event.try_send(event) {
-                                    tracing::debug!(
-                                        "Event channel full; dropping CancelSubAgent refresh"
-                                    );
+                        }
+                        Op::GetSubAgentSettlement { tx } => {
+                            let snapshot = self.subagent_settlement_snapshot().await;
+                            if let Some(tx) = tx
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take()
+                            {
+                                let _ = tx.send(snapshot);
+                            }
+                        }
+                        Op::CancelSubAgent { agent_id } => {
+                            let active_session_id = self.session.id.clone();
+                            let cancelled = self
+                                .subagent_manager
+                                .write()
+                                .await
+                                .cancel_agent_for_session(&active_session_id, &agent_id);
+                            let result = match cancelled {
+                                Ok(snapshot) => {
+                                    let snapshot = crate::tools::subagent::settle_requested_child(
+                                        &self.subagent_manager,
+                                        snapshot,
+                                    )
+                                    .await;
+                                    // F4: cancelling keeps the work — inventory and
+                                    // checkpoint what the child left, off the lock.
+                                    crate::tools::subagent::preserve_cancelled_work(
+                                        &self.subagent_manager,
+                                        snapshot,
+                                    )
+                                    .await;
+                                    let manager = self.subagent_manager.read().await;
+                                    Ok(agent_list_event(&manager, &active_session_id))
+                                }
+                                Err(err) => Err(err),
+                            };
+                            match result {
+                                Ok(event) => {
+                                    if let Err(_e) = self.tx_event.try_send(event) {
+                                        tracing::debug!(
+                                            "Event channel full; dropping CancelSubAgent refresh"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = self.tx_event.try_send(Event::error(
+                                        ErrorEnvelope::transient(format!(
+                                            "Failed to cancel sub-agent {agent_id}: {err}"
+                                        )),
+                                    ));
                                 }
                             }
-                            Err(err) => {
-                                let _ =
-                                    self.tx_event
-                                        .try_send(Event::error(ErrorEnvelope::transient(format!(
-                                            "Failed to cancel sub-agent {agent_id}: {err}"
-                                        ))));
+                        }
+                        Op::StartFleetMember { start, tx } => {
+                            let result = match self.off_turn_subagent_runtime() {
+                                Some(runtime) => {
+                                    crate::tools::subagent::start_fleet_member(
+                                        Arc::clone(&self.subagent_manager),
+                                        runtime,
+                                        *start,
+                                    )
+                                    .await
+                                }
+                                None => {
+                                    Err("This session has no model connection to start a member."
+                                        .to_string())
+                                }
+                            };
+                            if let Some(tx) = tx
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take()
+                            {
+                                let _ = tx.send(result);
+                            }
+                            let refresh = {
+                                let manager = self.subagent_manager.read().await;
+                                agent_list_event(&manager, &self.session.id)
+                            };
+                            if self.tx_event.try_send(refresh).is_err() {
+                                tracing::debug!(
+                                    "Event channel full; dropping StartFleetMember refresh"
+                                );
                             }
                         }
-                    }
-                    Op::FollowUpSubAgent { agent_id, text } => {
-                        let active_session_id = self.session.id.clone();
-                        let runtime = self.off_turn_subagent_runtime();
-                        let manager_handle = Arc::clone(&self.subagent_manager);
-                        let (outcome, refresh) = {
-                            let mut manager = self.subagent_manager.write().await;
-                            let outcome = manager
-                                .continue_child_from_user_for_session(
-                                    &active_session_id,
-                                    manager_handle,
-                                    runtime,
-                                    &agent_id,
-                                    &text,
-                                )
-                                .map_err(|err| err.to_string());
-                            (outcome, agent_list_event(&manager, &active_session_id))
-                        };
-                        let _ = self
-                            .send_event(Event::SubAgentFollowUp {
-                                owner_session_id: active_session_id,
-                                agent_id,
-                                outcome,
-                            })
-                            .await;
-                        if let Err(_e) = self.tx_event.try_send(refresh) {
-                            tracing::debug!(
-                                "Event channel full; dropping FollowUpSubAgent refresh"
-                            );
+                        Op::FollowUpSubAgent { agent_id, text } => {
+                            let active_session_id = self.session.id.clone();
+                            let runtime = self.off_turn_subagent_runtime();
+                            let manager_handle = Arc::clone(&self.subagent_manager);
+                            let (outcome, refresh) = {
+                                let mut manager = self.subagent_manager.write().await;
+                                let outcome = manager
+                                    .continue_child_from_user_for_session(
+                                        &active_session_id,
+                                        manager_handle,
+                                        runtime,
+                                        &agent_id,
+                                        &text,
+                                    )
+                                    .map_err(|err| err.to_string());
+                                (outcome, agent_list_event(&manager, &active_session_id))
+                            };
+                            let _ = self
+                                .send_event(Event::SubAgentFollowUp {
+                                    owner_session_id: active_session_id,
+                                    agent_id,
+                                    outcome,
+                                })
+                                .await;
+                            if let Err(_e) = self.tx_event.try_send(refresh) {
+                                tracing::debug!(
+                                    "Event channel full; dropping FollowUpSubAgent refresh"
+                                );
+                            }
                         }
-                    }
-                    Op::ChangeMode { .. } => {
-                        // The mailbox payload may predate a newer posture that
-                        // was published while the channel was full. Apply the
-                        // single live snapshot so a stale queued ChangeMode
-                        // can never roll authority backward.
-                        let authority = self.runtime_authority_snapshot();
-                        self.apply_runtime_authority(authority).await;
-                    }
-                    Op::SetModel {
-                        model,
-                        mode: _,
-                        route_limits,
-                    } => {
-                        let identity = self.api_provider_identity.clone();
-                        // SetModel carries no route: the endpoint stays the
-                        // one the current client is built on.
-                        let endpoint = self.active_route_endpoint.clone();
-                        self.forget_input_bill_if_route_changes(
-                            identity
-                                .as_ref()
-                                .map_or("unavailable", |identity| identity.key.as_str()),
-                            identity
-                                .as_ref()
-                                .and_then(|identity| identity.persisted_id()),
-                            endpoint.as_ref(),
-                            &model,
+                        Op::ChangeMode { .. } => {
+                            // The mailbox payload may predate a newer posture that
+                            // was published while the channel was full. Apply the
+                            // single live snapshot so a stale queued ChangeMode
+                            // can never roll authority backward.
+                            let authority = self.runtime_authority_snapshot();
+                            self.apply_runtime_authority(authority).await;
+                        }
+                        Op::SetModel {
+                            model,
+                            mode: _,
                             route_limits,
-                        );
-                        self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
-                        self.session.model = model;
-                        self.config.model.clone_from(&self.session.model);
-                        self.active_route_limits = route_limits;
-                        // This lightweight operation carries no executable
-                        // route candidate, so old provider/model capability
-                        // facts must not bleed into the new model.
-                        self.active_route_capabilities =
-                            codewhale_config::route::RouteCapabilities::default();
-                        self.refresh_system_prompt_with_reason("model");
-                        self.emit_session_updated().await;
-                        let _ = self
-                            .send_event(Event::status(format!(
-                                "Model set to: {}",
-                                self.session.model
-                            )))
-                            .await;
-                    }
-                    Op::SetCompaction { config } => {
-                        // Hosts resend the compaction config on every route,
-                        // model or session sync, and those syncs move the
-                        // model, window and thresholds without the user
-                        // touching the switch. Only the switch is news: an
-                        // acknowledgement for anything else used to overwrite
-                        // a real error in the footer (U1) and the "Resumed:"
-                        // receipt a session restore had just shown.
-                        let enabled = config.enabled;
-                        let switched = self.config.compaction.enabled != enabled;
-                        self.config.compaction = config;
-                        if switched {
+                        } => {
+                            let identity = self.api_provider_identity.clone();
+                            // SetModel carries no route: the endpoint stays the
+                            // one the current client is built on.
+                            let endpoint = self.active_route_endpoint.clone();
+                            self.forget_input_bill_if_route_changes(
+                                identity
+                                    .as_ref()
+                                    .map_or("unavailable", |identity| identity.key.as_str()),
+                                identity
+                                    .as_ref()
+                                    .and_then(|identity| identity.persisted_id()),
+                                endpoint.as_ref(),
+                                &model,
+                                route_limits,
+                            );
+                            self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
+                            self.session.model = model;
+                            self.config.model.clone_from(&self.session.model);
+                            self.active_route_limits = route_limits;
+                            // This lightweight operation carries no executable
+                            // route candidate, so old provider/model capability
+                            // facts must not bleed into the new model.
+                            self.active_route_capabilities =
+                                codewhale_config::route::RouteCapabilities::default();
+                            self.refresh_system_prompt_with_reason("model");
+                            self.emit_session_updated().await;
                             let _ = self
                                 .send_event(Event::status(format!(
-                                    "Make room automatically: {}",
-                                    if enabled { "on" } else { "off" }
+                                    "Model set to: {}",
+                                    self.session.model
                                 )))
                                 .await;
                         }
-                    }
-                    Op::SetStreamChunkTimeout { timeout_secs } => {
-                        self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
-                        let _ = self
-                            .send_event(Event::status(format!(
-                                "Stream chunk timeout set to {timeout_secs}s"
-                            )))
-                            .await;
-                    }
-                    Op::SetSubagentRuntimeConfig {
-                        enabled,
-                        max_subagents,
-                        launch_concurrency,
-                        max_spawn_depth,
-                        api_timeout_secs,
-                        heartbeat_timeout_secs,
-                    } => {
-                        self.config.subagents_enabled = enabled;
-                        self.config.max_subagents =
-                            max_subagents.clamp(1, crate::config::MAX_SUBAGENTS);
-                        self.config.launch_concurrency =
-                            launch_concurrency.clamp(1, self.config.max_subagents);
-                        self.config.max_spawn_depth =
-                            max_spawn_depth.min(codewhale_config::MAX_SPAWN_DEPTH_CEILING);
-                        self.config.subagent_api_timeout = Duration::from_secs(api_timeout_secs);
-                        self.config.subagent_heartbeat_timeout =
-                            Duration::from_secs(heartbeat_timeout_secs);
-                        let launch_gate_applied =
-                            if let Some(limits) = self.subagent_execution_limits.as_mut() {
-                                limits.update(
-                                    self.config.max_subagents,
-                                    self.config.max_admitted_subagents,
-                                    self.config.subagent_heartbeat_timeout,
-                                    self.config.launch_concurrency,
-                                );
-                                true
+                        Op::SetCompaction { config } => {
+                            // Hosts resend the compaction config on every route,
+                            // model or session sync, and those syncs move the
+                            // model, window and thresholds without the user
+                            // touching the switch. Only the switch is news: an
+                            // acknowledgement for anything else used to overwrite
+                            // a real error in the footer (U1) and the "Resumed:"
+                            // receipt a session restore had just shown.
+                            let enabled = config.enabled;
+                            let switched = self.config.compaction.enabled != enabled;
+                            self.config.compaction = config;
+                            if switched {
+                                let _ = self
+                                    .send_event(Event::status(format!(
+                                        "Make room automatically: {}",
+                                        if enabled { "on" } else { "off" }
+                                    )))
+                                    .await;
+                            }
+                        }
+                        Op::SetStreamChunkTimeout { timeout_secs } => {
+                            self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
+                            let _ = self
+                                .send_event(Event::status(format!(
+                                    "Stream chunk timeout set to {timeout_secs}s"
+                                )))
+                                .await;
+                        }
+                        Op::SetSubagentRuntimeConfig {
+                            enabled,
+                            max_subagents,
+                            launch_concurrency,
+                            max_spawn_depth,
+                            api_timeout_secs,
+                            heartbeat_timeout_secs,
+                        } => {
+                            self.config.subagents_enabled = enabled;
+                            self.config.max_subagents =
+                                max_subagents.clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
+                            self.config.launch_concurrency =
+                                launch_concurrency.clamp(1, self.config.max_subagents);
+                            self.config.max_spawn_depth = max_spawn_depth;
+                            self.config.subagent_api_timeout =
+                                Duration::from_secs(api_timeout_secs);
+                            self.config.subagent_heartbeat_timeout =
+                                Duration::from_secs(heartbeat_timeout_secs);
+                            let launch_gate_applied =
+                                if let Some(limits) = self.subagent_execution_limits.as_mut() {
+                                    limits.update(
+                                        self.config.max_subagents,
+                                        self.config.max_admitted_subagents,
+                                        self.config.subagent_heartbeat_timeout,
+                                        self.config.launch_concurrency,
+                                    );
+                                    true
+                                } else {
+                                    let mut manager = self.subagent_manager.write().await;
+                                    manager.update_runtime_limits(
+                                        self.config.max_subagents,
+                                        self.config.max_admitted_subagents,
+                                        self.config.subagent_heartbeat_timeout,
+                                        self.config.launch_concurrency,
+                                    )
+                                };
+                            let launch_note = if launch_gate_applied {
+                                ""
                             } else {
-                                let mut manager = self.subagent_manager.write().await;
-                                manager.update_runtime_limits(
-                                    self.config.max_subagents,
-                                    self.config.max_admitted_subagents,
-                                    self.config.subagent_heartbeat_timeout,
-                                    self.config.launch_concurrency,
-                                )
+                                "; launch_concurrency takes full effect after active sub-agents finish or the session restarts"
                             };
-                        let launch_note = if launch_gate_applied {
-                            ""
-                        } else {
-                            "; launch_concurrency takes full effect after active sub-agents finish or the session restarts"
-                        };
-                        let _ = self.send_event(Event::status(format!(
+                            let _ = self.send_event(Event::status(format!(
                                 "Sub-agent runtime updated: enabled={enabled}, max_subagents={}, launch_concurrency={}, max_depth={}{}",
                                 self.config.max_subagents,
                                 self.config.launch_concurrency,
@@ -4143,258 +4282,265 @@ impl Engine {
                                 launch_note
                             )))
                             .await;
-                    }
-                    Op::SetFleetRoster { roster } => {
-                        self.config.fleet_roster = roster;
-                        let _ = self
-                            .send_event(Event::status(
-                                "Fleet roster refreshed for subsequent turns".to_string(),
-                            ))
-                            .await;
-                    }
-                    Op::SyncSession {
-                        session_id,
-                        messages,
-                        system_prompt,
-                        system_prompt_override,
-                        model,
-                        workspace,
-                        mode,
-                    } => {
-                        let plugin_workspace_changed =
-                            self.plugin_registry.workspace() != workspace.as_path();
-                        let previous_session_id = self.session.id.clone();
-                        let next_session_id = if let Some(session_id) = session_id {
-                            session_id
-                        } else if messages.is_empty() && system_prompt.is_none() {
-                            uuid::Uuid::new_v4().to_string()
-                        } else {
-                            previous_session_id.clone()
-                        };
-                        let closed_session_id = self.install_synced_session_id(next_session_id);
-                        // SyncSession installs a conversation's identity; an id
-                        // change IS a conversation boundary in this runtime —
-                        // callers must pass their own conversation id for
-                        // same-conversation re-syncs. A boundary in the same
-                        // process does not rebuild the sub-agent manager, so the
-                        // previous conversation's live children and write claims
-                        // must be finalized here or they keep gating writers in
-                        // the new conversation (#5372). Same-session reloads
-                        // keep their id and are deliberately left untouched.
-                        if let Some(closed_session_id) = closed_session_id {
-                            let finalized = self
-                                .subagent_manager
-                                .write()
-                                .await
-                                .finalize_session_close_for_session(&closed_session_id);
-                            crate::tools::subagent::settle_requested_children_for_session(
-                                &self.subagent_manager,
-                                &closed_session_id,
-                                None,
-                            )
-                            .await;
-                            if finalized > 0 {
-                                tracing::info!(
-                                    target: "subagent",
-                                    finalized,
-                                    "finalized sub-agent fleet for closed session"
-                                );
-                            }
                         }
-                        self.restore_session_history(
+                        Op::SetFleetRoster { roster } => {
+                            self.config.fleet_roster = roster;
+                            let _ = self
+                                .send_event(Event::status(
+                                    "Fleet roster refreshed for subsequent turns".to_string(),
+                                ))
+                                .await;
+                        }
+                        Op::SyncSession {
+                            session_id,
                             messages,
                             system_prompt,
                             system_prompt_override,
-                        );
-                        self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
-                        self.session.model = model;
-                        self.session.workspace = workspace.clone();
-                        self.current_mode = mode;
-                        self.config.model.clone_from(&self.session.model);
-                        self.config.workspace = workspace.clone();
-                        if plugin_workspace_changed {
-                            self.plugin_registry =
-                                self.plugin_registry.rediscover_for_workspace(&workspace);
-                            self.config.plugin_registry = Some(Arc::clone(&self.plugin_registry));
-                            // A pool may contain plugin servers and authority
-                            // receipts from the previous workspace snapshot.
-                            self.drop_mcp_pool();
-                            if let Some(attachment) = &self.extension_host {
-                                attachment.set_plugins(Arc::clone(&self.plugin_registry));
-                                self.plugin_registry = attachment.plugin_view();
-                                attachment.sync_in_background();
+                            model,
+                            workspace,
+                            mode,
+                        } => {
+                            // A fresh conversation arrives with its own
+                            // sources: re-arm the guard and rebuild the notice
+                            // from the assembly that installs its header.
+                            self.instruction_guard_key = None;
+                            self.pending_instruction_notices.clear();
+                            self.session.instruction_assembly = None;
+                            let plugin_workspace_changed =
+                                self.plugin_registry.workspace() != workspace.as_path();
+                            let previous_session_id = self.session.id.clone();
+                            let next_session_id = if let Some(session_id) = session_id {
+                                session_id
+                            } else if messages.is_empty() && system_prompt.is_none() {
+                                uuid::Uuid::new_v4().to_string()
+                            } else {
+                                previous_session_id.clone()
+                            };
+                            let closed_session_id = self.install_synced_session_id(next_session_id);
+                            // SyncSession installs a conversation's identity; an id
+                            // change IS a conversation boundary in this runtime —
+                            // callers must pass their own conversation id for
+                            // same-conversation re-syncs. A boundary in the same
+                            // process does not rebuild the sub-agent manager, so the
+                            // previous conversation's live children and write claims
+                            // must be finalized here or they keep gating writers in
+                            // the new conversation (#5372). Same-session reloads
+                            // keep their id and are deliberately left untouched.
+                            if let Some(closed_session_id) = closed_session_id {
+                                let finalized = self
+                                    .subagent_manager
+                                    .write()
+                                    .await
+                                    .finalize_session_close_for_session(&closed_session_id);
+                                crate::tools::subagent::settle_requested_children_for_session(
+                                    &self.subagent_manager,
+                                    &closed_session_id,
+                                    None,
+                                )
+                                .await;
+                                if finalized > 0 {
+                                    tracing::info!(
+                                        target: "subagent",
+                                        finalized,
+                                        "finalized sub-agent fleet for closed session"
+                                    );
+                                }
                             }
-                        }
-                        let ctx =
-                            crate::project_context::load_project_context_with_parents(&workspace);
-                        self.session.project_context = if ctx.has_instructions() {
-                            Some(ctx)
-                        } else {
-                            None
-                        };
-                        self.session.rebuild_working_set();
-                        self.reconcile_restored_work_bindings().await;
-                        if self.mcp_pool.is_none()
-                            && let Err(error) = self
-                                .start_mcp_session_boot(McpConnectRefresh::IfChanged)
-                                .await
-                        {
-                            tracing::debug!(
-                                "MCP session boot failed: {}",
-                                crate::mcp::format_mcp_error_for_display(&error)
+                            self.restore_session_history(
+                                messages,
+                                system_prompt,
+                                system_prompt_override,
                             );
+                            self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
+                            self.session.model = model;
+                            self.session.workspace = workspace.clone();
+                            self.current_mode = mode;
+                            self.config.model.clone_from(&self.session.model);
+                            self.config.workspace = workspace.clone();
+                            if plugin_workspace_changed {
+                                self.plugin_registry =
+                                    self.plugin_registry.rediscover_for_workspace(&workspace);
+                                self.config.plugin_registry =
+                                    Some(Arc::clone(&self.plugin_registry));
+                                // A pool may contain plugin servers and authority
+                                // receipts from the previous workspace snapshot.
+                                self.drop_mcp_pool();
+                                if let Some(attachment) = &self.extension_host {
+                                    attachment.set_plugins(Arc::clone(&self.plugin_registry));
+                                    self.plugin_registry = attachment.plugin_view();
+                                    attachment.sync_in_background();
+                                }
+                            }
+                            self.session.project_context =
+                                self.host_owned_system_prompt().is_none().then(|| {
+                                    crate::project_context::capture_instruction_context(
+                                        &workspace,
+                                        &self.config.instructions,
+                                        &self.instruction_settings,
+                                    )
+                                });
+                            self.session.rebuild_working_set();
+                            self.reconcile_restored_work_bindings().await;
+                            if self.mcp_pool.is_none()
+                                && let Err(error) = self
+                                    .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                                    .await
+                            {
+                                tracing::debug!(
+                                    "MCP session boot failed: {}",
+                                    crate::mcp::format_mcp_error_for_display(&error)
+                                );
+                            }
+                            self.mcp_pool_slot
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .handoff = None;
+                            // SessionUpdated acknowledges the sync. A generic status
+                            // would immediately cover the host's confirmed resume receipt.
+                            self.emit_session_updated().await;
                         }
-                        self.mcp_pool_slot
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .handoff = None;
-                        // SessionUpdated acknowledges the sync. A generic status
-                        // would immediately cover the host's confirmed resume receipt.
-                        self.emit_session_updated().await;
-                    }
-                    Op::RewindConversation {
-                        expected,
-                        messages,
-                        tx,
-                    } => {
-                        // Compare at the Engine mailbox boundary, not only in
-                        // the UI: queued work may have changed the conversation
-                        // since preflight. Refuse before touching any state.
-                        if self.session_snapshot() != *expected
-                            || messages.len() >= expected.messages.len()
-                            || !expected.messages.starts_with(&messages)
-                        {
-                            let _ = tx.send(None);
-                            continue;
-                        }
-                        self.restore_session_history(
+                        Op::RewindConversation {
+                            expected,
                             messages,
-                            self.session.system_prompt.clone(),
-                            self.session.system_prompt_override,
-                        );
-                        self.session.rebuild_working_set();
-                        self.reconcile_restored_work_bindings().await;
-                        let _ = tx.send(Some(self.session_snapshot()));
-                        self.emit_session_updated().await;
-                    }
-                    Op::CompactContext {
-                        id,
-                        route,
-                        compaction,
-                    } => {
-                        self.handle_manual_compaction_op(id, *route, *compaction)
-                            .await;
-                    }
-                    Op::CancelCompaction { id } => {
-                        // Cancellation is published out-of-band by the handle
-                        // so a provider await cannot block it. Draining the
-                        // typed op only clears a late, already-settled marker.
-                        self.finish_compaction(&id);
-                    }
-                    Op::GetSessionSnapshot { tx } => {
-                        let snapshot = self.session_snapshot();
-                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                            let _ = tx.send(snapshot);
-                        }
-                    }
-                    Op::GetContextBudget { tx } => {
-                        let input_tokens = self.estimated_input_tokens() as u64;
-                        let budget = route_context_budget_for_route(
-                            self.api_provider,
-                            &self.session.model,
-                            self.active_route_limits,
-                            usize::try_from(input_tokens).unwrap_or(usize::MAX),
-                        );
-                        let snapshot = budget.map(|budget| SessionContextBudget {
-                            window_tokens: budget.window_tokens,
-                            input_tokens,
-                            billed_input_tokens: self
-                                .session
-                                .latest_parent_input_tokens
-                                .map(u64::from),
-                            output_cap_tokens: budget.output_cap_tokens,
-                            input_budget_ceiling: budget.input_budget_ceiling,
-                            available_input_tokens: budget.available_input_tokens,
-                            compaction_trigger_tokens: budget.compaction_trigger_tokens,
-                            usage_percent: budget.usage_percent(),
-                            pressure: budget.pressure.label(),
-                            model: self.session.model.clone(),
-                            provider: self.api_provider_identity.as_ref().map_or_else(
-                                || "unavailable".to_string(),
-                                |identity| identity.persisted_kind().to_string(),
-                            ),
-                            model_provider_id: self
-                                .api_provider_identity
-                                .as_ref()
-                                .and_then(|identity| identity.persisted_id().map(str::to_string)),
-                        });
-                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                            let _ = tx.send(snapshot);
-                        }
-                    }
-                    Op::GetProviderRuntimeStatus { tx } => {
-                        let status = if let Some(client) = self.codewhale_client.as_ref() {
-                            ProviderRuntimeStatus {
-                                provider: client.api_provider(),
-                                request_concurrency_limit: client
-                                    .provider_request_concurrency_limit(),
-                                active_provider_requests: client.active_provider_requests(),
+                            tx,
+                        } => {
+                            // Compare at the Engine mailbox boundary, not only in
+                            // the UI: queued work may have changed the conversation
+                            // since preflight. Refuse before touching any state.
+                            if self.session_snapshot() != *expected
+                                || messages.len() >= expected.messages.len()
+                                || !expected.messages.starts_with(&messages)
+                            {
+                                let _ = tx.send(None);
+                                continue;
                             }
-                        } else {
-                            let provider = self.api_provider;
-                            ProviderRuntimeStatus {
-                                provider,
-                                request_concurrency_limit: self
-                                    .api_provider_identity
-                                    .as_ref()
-                                    .and_then(|identity| {
-                                        self.api_config.provider_max_concurrency(identity)
-                                    }),
-                                active_provider_requests: 0,
+                            self.restore_session_history(
+                                messages,
+                                self.session.system_prompt.clone(),
+                                self.session.system_prompt_override,
+                            );
+                            self.session.rebuild_working_set();
+                            self.reconcile_restored_work_bindings().await;
+                            let _ = tx.send(Some(self.session_snapshot()));
+                            self.emit_session_updated().await;
+                        }
+                        Op::CompactContext {
+                            id,
+                            route,
+                            compaction,
+                        } => {
+                            self.handle_manual_compaction_op(id, *route, *compaction)
+                                .await;
+                        }
+                        Op::CancelCompaction { id } => {
+                            // Cancellation is published out-of-band by the handle
+                            // so a provider await cannot block it. Draining the
+                            // typed op only clears a late, already-settled marker.
+                            self.finish_compaction(&id);
+                        }
+                        Op::GetSessionSnapshot { tx } => {
+                            let snapshot = self.session_snapshot();
+                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                                let _ = tx.send(snapshot);
                             }
-                        };
-                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                            let _ = tx.send(status);
                         }
-                    }
-                    Op::BootstrapMcp { tx } => {
-                        let result = self.bootstrap_mcp_pool().await.map_err(|error| {
-                            codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
-                        });
-                        if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
-                            let _ = tx.send(result);
+                        Op::GetContextBudget { tx } => {
+                            let input_tokens = self.estimated_input_tokens() as u64;
+                            let budget = route_context_budget_for_route(
+                                self.api_provider,
+                                &self.session.model,
+                                self.active_route_limits,
+                                usize::try_from(input_tokens).unwrap_or(usize::MAX),
+                            );
+                            let snapshot = budget.map(|budget| SessionContextBudget {
+                                window_tokens: budget.window_tokens,
+                                input_tokens,
+                                billed_input_tokens: self
+                                    .session
+                                    .latest_parent_input_tokens
+                                    .map(u64::from),
+                                output_cap_tokens: budget.output_cap_tokens,
+                                input_budget_ceiling: budget.input_budget_ceiling,
+                                available_input_tokens: budget.available_input_tokens,
+                                compaction_trigger_tokens: budget.compaction_trigger_tokens,
+                                usage_percent: budget.usage_percent(),
+                                pressure: budget.pressure.label(),
+                                model: self.session.model.clone(),
+                                provider: self.api_provider_identity.as_ref().map_or_else(
+                                    || "unavailable".to_string(),
+                                    |identity| identity.persisted_kind().to_string(),
+                                ),
+                                model_provider_id: self.api_provider_identity.as_ref().and_then(
+                                    |identity| identity.persisted_id().map(str::to_string),
+                                ),
+                            });
+                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                                let _ = tx.send(snapshot);
+                            }
                         }
-                    }
-                    Op::RetryMcpServer { name, tx } => {
-                        let result = self.retry_mcp_server(&name).await.map_err(|error| {
-                            codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
-                        });
-                        if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
-                            let _ = tx.send(result);
+                        Op::GetProviderRuntimeStatus { tx } => {
+                            let status = if let Some(client) = self.codewhale_client.as_ref() {
+                                ProviderRuntimeStatus {
+                                    provider: client.api_provider(),
+                                    request_concurrency_limit: client
+                                        .provider_request_concurrency_limit(),
+                                    active_provider_requests: client.active_provider_requests(),
+                                }
+                            } else {
+                                let provider = self.api_provider;
+                                ProviderRuntimeStatus {
+                                    provider,
+                                    request_concurrency_limit: self
+                                        .api_provider_identity
+                                        .as_ref()
+                                        .and_then(|identity| {
+                                            self.api_config.provider_max_concurrency(identity)
+                                        }),
+                                    active_provider_requests: 0,
+                                }
+                            };
+                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                                let _ = tx.send(status);
+                            }
                         }
-                    }
-                    Op::ReloadMcp { config_path, tx } => {
-                        let result = self.reload_mcp_pool(config_path).await.map_err(|error| {
-                            codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
-                        });
-                        if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
-                            let _ = tx.send(result);
+                        Op::BootstrapMcp { tx } => {
+                            let result = self.bootstrap_mcp_pool().await.map_err(|error| {
+                                codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
+                            });
+                            if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
+                                let _ = tx.send(result);
+                            }
                         }
-                    }
-                    Op::PurgeContext => {
-                        if let Some(pm) = self.session.prefix_stability.as_mut() {
-                            pm.note_history_reset("clear");
+                        Op::RetryMcpServer { name, tx } => {
+                            let result = self.retry_mcp_server(&name).await.map_err(|error| {
+                                codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
+                            });
+                            if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
+                                let _ = tx.send(result);
+                            }
                         }
-                        self.handle_purge().await;
-                    }
-                    Op::EditLastTurn {
-                        new_message,
-                        submission_id,
-                    } => {
-                        let route = match self.current_runtime_route() {
-                            Ok(route) => route,
-                            Err(err) => {
-                                self.reject_edit_last_turn(
+                        Op::ReloadMcp { config_path, tx } => {
+                            let result = self.reload_mcp_pool(config_path).await.map_err(|error| {
+                                codewhale_config::persistence::redact_secrets(&format!("{error:#}"))
+                            });
+                            if let Some(tx) = tx.lock().ok().and_then(|mut guard| guard.take()) {
+                                let _ = tx.send(result);
+                            }
+                        }
+                        Op::PurgeContext => {
+                            if let Some(pm) = self.session.prefix_stability.as_mut() {
+                                pm.note_history_reset("clear");
+                            }
+                            self.handle_purge().await;
+                        }
+                        Op::EditLastTurn {
+                            new_message,
+                            submission_id,
+                        } => {
+                            let route = match self.current_runtime_route() {
+                                Ok(route) => route,
+                                Err(err) => {
+                                    self.reject_edit_last_turn(
                                     submission_id.clone(),
                                     ErrorEnvelope::new(
                                         ErrorCategory::Authentication,
@@ -4407,22 +4553,22 @@ impl Engine {
                                     ),
                                 )
                                 .await;
-                                continue;
-                            }
-                        };
-                        // #383: /edit — remove the last user+assistant exchange
-                        // from the session, then re-send with the new content.
-                        // Tool results and runtime-owned internal envelopes are
-                        // also persisted with role "user", so locate the cut
-                        // point by genuine user prompt — a bare role scan would
-                        // land mid-turn on a tool_result and keep the old
-                        // prompt plus its tool round-trips in history.
-                        let idx = match crate::runtime_handoff::edit_last_turn_target(
-                            &self.session.messages,
-                        ) {
-                            crate::runtime_handoff::EditLastTurnTarget::Editable(idx) => idx,
-                            crate::runtime_handoff::EditLastTurnTarget::Unsupported => {
-                                self.reject_edit_last_turn(
+                                    continue;
+                                }
+                            };
+                            // #383: /edit — remove the last user+assistant exchange
+                            // from the session, then re-send with the new content.
+                            // Tool results and runtime-owned internal envelopes are
+                            // also persisted with role "user", so locate the cut
+                            // point by genuine user prompt — a bare role scan would
+                            // land mid-turn on a tool_result and keep the old
+                            // prompt plus its tool round-trips in history.
+                            let idx = match crate::runtime_handoff::edit_last_turn_target(
+                                &self.session.messages,
+                            ) {
+                                crate::runtime_handoff::EditLastTurnTarget::Editable(idx) => idx,
+                                crate::runtime_handoff::EditLastTurnTarget::Unsupported => {
+                                    self.reject_edit_last_turn(
                                     submission_id.clone(),
                                     ErrorEnvelope::new(
                                         ErrorCategory::InvalidInput,
@@ -4433,10 +4579,10 @@ impl Engine {
                                     ),
                                 )
                                 .await;
-                                continue;
-                            }
-                            crate::runtime_handoff::EditLastTurnTarget::Missing => {
-                                self.reject_edit_last_turn(
+                                    continue;
+                                }
+                                crate::runtime_handoff::EditLastTurnTarget::Missing => {
+                                    self.reject_edit_last_turn(
                                     submission_id.clone(),
                                     ErrorEnvelope::new(
                                         ErrorCategory::State,
@@ -4447,130 +4593,132 @@ impl Engine {
                                     ),
                                 )
                                 .await;
-                                continue;
-                            }
-                        };
-                        // C02-02: stage the cut. The removed exchange is kept
-                        // until the replacement turn actually starts; a send
-                        // that never starts puts it back (below).
-                        let removed_exchange = self
-                            .session
-                            .messages
-                            .get(idx..)
-                            .map(<[_]>::to_vec)
-                            .unwrap_or_default();
-                        self.session.messages.truncate_to(idx);
-                        self.session.bump_messages_revision();
-                        // Now dispatch the new message as a normal send,
-                        // reusing the engine's stored mode/model config.
-                        let mode = self.current_mode;
-                        let outcome = self
-                            .handle_send_message(TurnSpec {
-                                profile_constitution: None,
-                                content: new_message.clone(),
-                                mode,
-                                route: Box::new(route),
-                                compaction: Box::new(self.config.compaction.clone()),
-                                initial_routed_usage: Box::new(
-                                    crate::cost_status::RuntimeUsageBatch::default(),
-                                ),
-                                goal_objective: self.config.goal_objective.clone(),
-                                goal_token_budget: self.config.goal_token_budget,
-                                goal_status: self.config.goal_status,
-                                reasoning_effort: self.session.reasoning_effort.clone(),
-                                reasoning_effort_auto: self.session.reasoning_effort_auto,
-                                auto_model: self.session.auto_model,
-                                allow_shell: self.session.allow_shell,
-                                trust_mode: self.session.trust_mode,
-                                auto_approve: self.session.auto_approve,
-                                approval_mode: self.session.approval_mode,
-                                translation_enabled: self.config.translation_enabled,
-                                allowed_tools: self.config.allowed_tools.clone(),
-                                dynamic_tools: Vec::new(),
-                                hook_executor: self.config.hook_executor.clone(),
-                                verbosity: self.config.verbosity.clone(),
-                                provenance: UserInputProvenance::ExternalUser,
-                                images: Vec::new(),
-                                max_output_tokens: None,
-                                submission_id,
-                            })
-                            .await;
-                        if matches!(outcome, SendMessageOutcome::NotStarted { .. }) {
-                            // Anything the failed send appended after the cut
-                            // (a drained shell-completion notice) stays, after
-                            // the restored exchange.
-                            let appended = self
+                                    continue;
+                                }
+                            };
+                            // C02-02: stage the cut. The removed exchange is kept
+                            // until the replacement turn actually starts; a send
+                            // that never starts puts it back (below).
+                            let removed_exchange = self
                                 .session
                                 .messages
                                 .get(idx..)
                                 .map(<[_]>::to_vec)
                                 .unwrap_or_default();
                             self.session.messages.truncate_to(idx);
-                            self.session.messages.push_batch(removed_exchange);
-                            self.session.messages.push_batch(appended);
                             self.session.bump_messages_revision();
-                            self.emit_session_updated().await;
+                            // Now dispatch the new message as a normal send,
+                            // reusing the engine's stored mode/model config.
+                            let mode = self.current_mode;
+                            let outcome = self
+                                .handle_send_message(TurnSpec {
+                                    profile_constitution: None,
+                                    content: new_message.clone(),
+                                    mode,
+                                    route: Box::new(route),
+                                    compaction: Box::new(self.config.compaction.clone()),
+                                    initial_routed_usage: Box::new(
+                                        crate::cost_status::RuntimeUsageBatch::default(),
+                                    ),
+                                    goal_objective: self.config.goal_objective.clone(),
+                                    goal_token_budget: self.config.goal_token_budget,
+                                    goal_status: self.config.goal_status,
+                                    reasoning_effort: self.session.reasoning_effort.clone(),
+                                    reasoning_effort_auto: self.session.reasoning_effort_auto,
+                                    auto_model: self.session.auto_model,
+                                    allow_shell: self.session.allow_shell,
+                                    trust_mode: self.session.trust_mode,
+                                    auto_approve: self.session.auto_approve,
+                                    approval_mode: self.session.approval_mode,
+                                    translation_enabled: self.config.translation_enabled,
+                                    allowed_tools: self.config.allowed_tools.clone(),
+                                    dynamic_tools: Vec::new(),
+                                    hook_executor: self.config.hook_executor.clone(),
+                                    verbosity: self.config.verbosity.clone(),
+                                    provenance: UserInputProvenance::ExternalUser,
+                                    images: Vec::new(),
+                                    max_output_tokens: None,
+                                    submission_id,
+                                })
+                                .await;
+                            if matches!(outcome, SendMessageOutcome::NotStarted { .. }) {
+                                // Anything the failed send appended after the cut
+                                // (a drained shell-completion notice) stays, after
+                                // the restored exchange.
+                                let appended = self
+                                    .session
+                                    .messages
+                                    .get(idx..)
+                                    .map(<[_]>::to_vec)
+                                    .unwrap_or_default();
+                                self.session.messages.truncate_to(idx);
+                                self.session.messages.push_batch(removed_exchange);
+                                self.session.messages.push_batch(appended);
+                                self.session.bump_messages_revision();
+                                self.emit_session_updated().await;
+                            }
                         }
-                    }
-                    Op::SetAdvisorEnabled { enabled } => {
-                        self.config.advisor_config.enabled = enabled;
-                        let state = if enabled { "enabled" } else { "disabled" };
-                        let _ = self.send_event(Event::status(format!(
+                        Op::SetAdvisorEnabled { enabled } => {
+                            self.config.advisor_config.enabled = enabled;
+                            let state = if enabled { "enabled" } else { "disabled" };
+                            let _ = self.send_event(Event::status(format!(
                                 "Advisor watcher {state}. Notes will appear after turns with tool calls."
                             )))
                             .await;
-                        tracing::info!(target: "advisor", "advisor watcher {state}");
-                    }
-                    Op::SetSearchProvider { provider } => {
-                        self.config.search_provider = provider;
-                        // A provider picked in-session is a pin; only an
-                        // explicit `[search] native = true` still leads.
-                        self.config.search_native.get_or_insert(false);
-                    }
-                    Op::Shutdown => {
-                        break;
-                    }
-                },
-            }
-        }
-
-        // #freeze: flush any sub-agent checkpoint that the hot-path debounce
-        // coalesced away, so a graceful shutdown keeps the latest progress.
-        {
-            let mut manager = self.subagent_manager.write().await;
-            let children = manager.list_for_session(&self.session.id);
-            for child in children {
-                let owned = self.child_host.as_ref().is_none_or(|owner| {
-                    child.parent_run_id.as_deref() == Some(owner.authority.owner_agent_id.as_str())
-                });
-                if owned && child.status == SubAgentStatus::Running {
-                    let _ = manager.cancel_agent_for_session(&self.session.id, &child.agent_id);
+                            tracing::info!(target: "advisor", "advisor watcher {state}");
+                        }
+                        Op::SetSearchProvider { provider } => {
+                            self.config.search_provider = provider;
+                            // A provider picked in-session is a pin; only an
+                            // explicit `[search] native = true` still leads.
+                            self.config.search_native.get_or_insert(false);
+                        }
+                        Op::Shutdown => {
+                            break;
+                        }
+                    },
                 }
             }
-            manager.flush_pending_persist();
-        }
-        crate::tools::subagent::settle_requested_children_for_session(
-            &self.subagent_manager,
-            &self.session.id,
-            self.child_host
-                .as_ref()
-                .map(|child| child.authority.owner_agent_id.as_str()),
-        )
-        .await;
-        self.subagent_manager.write().await.flush_pending_persist();
 
-        // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
-        // a brief window to exit before drop fires SIGKILL via kill_on_drop.
-        // Best-effort: pool may not exist (no MCP configured) and the lock
-        // can fail under contention; either way the kill_on_drop fallback
-        // still reaps the children.
-        if self.child_host.is_none()
-            && let Some(pool) = self.mcp_pool.as_ref()
-        {
-            let mut guard = pool.lock().await;
-            guard.shutdown_all().await;
-        }
-        child_result
+            // #freeze: flush any sub-agent checkpoint that the hot-path debounce
+            // coalesced away, so a graceful shutdown keeps the latest progress.
+            {
+                let mut manager = self.subagent_manager.write().await;
+                let children = manager.list_for_session(&self.session.id);
+                for child in children {
+                    let owned = self.child_host.as_ref().is_none_or(|owner| {
+                        child.parent_run_id.as_deref()
+                            == Some(owner.authority.owner_agent_id.as_str())
+                    });
+                    if owned && child.status == SubAgentStatus::Running {
+                        let _ = manager.cancel_agent_for_session(&self.session.id, &child.agent_id);
+                    }
+                }
+                manager.flush_pending_persist();
+            }
+            crate::tools::subagent::settle_requested_children_for_session(
+                &self.subagent_manager,
+                &self.session.id,
+                self.child_host
+                    .as_ref()
+                    .map(|child| child.authority.owner_agent_id.as_str()),
+            )
+            .await;
+            self.subagent_manager.write().await.flush_pending_persist();
+
+            // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
+            // a brief window to exit before drop fires SIGKILL via kill_on_drop.
+            // Best-effort: pool may not exist (no MCP configured) and the lock
+            // can fail under contention; either way the kill_on_drop fallback
+            // still reaps the children.
+            if self.child_host.is_none()
+                && let Some(pool) = self.mcp_pool.as_ref()
+            {
+                let mut guard = pool.lock().await;
+                guard.shutdown_all().await;
+            }
+            child_result
+        })
     }
 
     fn host_managed_turns(&self) -> bool {
@@ -4615,9 +4763,11 @@ impl Engine {
         }
         let _ = self
             .send_event(Event::SessionUpdated {
+                checkpoint: None,
                 session_id: self.session.id.clone(),
                 messages: self.session.messages.snapshot(),
                 system_prompt: self.session.system_prompt.clone(),
+                instruction_assembly: self.session.instruction_assembly.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
             })
@@ -4660,11 +4810,12 @@ impl Engine {
         &self,
         current_text: &str,
         system_prompt: Option<&SystemPrompt>,
+        messages: &[Message],
     ) -> usize {
-        // Estimate the installed history IN PLACE — no full-transcript clone
+        // Estimate the supplied history IN PLACE — no full-transcript clone
         // per `<turn_meta>` build (#perf-r5). `&AppendLog` deref-coerces to
         // `&[Message]` exactly like the cache call site.
-        let base = estimate_input_tokens_conservative(&self.session.messages, system_prompt);
+        let base = estimate_input_tokens_conservative(messages, system_prompt);
         if current_text.trim().is_empty() {
             return base;
         }
@@ -4675,9 +4826,7 @@ impl Engine {
         // ceil((S+own)*3/2) − ceil(S*3/2) = floor(own*3/2) + 1 exactly when
         // S is even and own is odd; pinned exhaustively (80k pairs) and per
         // case by `context_pressure_delta_matches_clone_and_push_reference`.
-        let sum: usize = self
-            .session
-            .messages
+        let sum: usize = messages
             .iter()
             .map(|m| {
                 crate::compaction::estimate_tokens_for_message(
@@ -4700,8 +4849,10 @@ impl Engine {
         current_text: &str,
         prompt_context: &NextTurnPromptContext,
         system_prompt: Option<&SystemPrompt>,
+        messages: &[Message],
     ) {
-        if let Some(line) = self.context_pressure_line(current_text, prompt_context, system_prompt)
+        if let Some(line) =
+            self.context_pressure_line(current_text, prompt_context, system_prompt, messages)
         {
             lines.push(line);
         }
@@ -4801,6 +4952,7 @@ impl Engine {
                 system_prompt: self.session.system_prompt.as_ref(),
                 approval_mode: self.session.approval_mode,
                 working_set: &self.session.working_set,
+                messages: &self.session.messages,
                 policy_narrowing,
             },
         )
@@ -4833,6 +4985,7 @@ impl Engine {
             approval_mode,
             working_set,
             policy_narrowing,
+            messages,
         } = snapshot;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let working_set_summary = working_set
@@ -4910,6 +5063,7 @@ impl Engine {
             current_text,
             prompt_context,
             system_prompt,
+            messages,
         );
         if let Some(working_set_summary) = working_set_summary {
             lines.push(working_set_summary);
@@ -5253,15 +5407,15 @@ impl Engine {
         // The snapshot status is a string ("active", "paused", "complete",
         // "blocked"). Map it to the goal-loop decision core's status enum.
         let status = match snapshot.status.as_str() {
-            "active" => crate::goal_loop::GoalRunStatus::Active,
-            "complete" => crate::goal_loop::GoalRunStatus::Completed,
+            "active" => codewhale_runtime::goal_loop::GoalRunStatus::Active,
+            "complete" => codewhale_runtime::goal_loop::GoalRunStatus::Completed,
             // Paused / Blocked / unknown → no continuation.
             _ => return GoalContinuationAction::Inactive,
         };
 
-        let decision = crate::goal_loop::decide_continuation(
+        let decision = codewhale_runtime::goal_loop::decide_continuation(
             status,
-            crate::goal_loop::GoalProgress {
+            codewhale_runtime::goal_loop::GoalProgress {
                 tokens_used: snapshot.tokens_used,
                 time_used_seconds: snapshot.time_used_seconds,
                 continuations: snapshot.continuation_count,
@@ -5273,7 +5427,7 @@ impl Engine {
             // ContinuationLimit pause the loop. The goal's own budget must be
             // carried here: `unbounded()` has none, which left the enforced
             // stop unreachable on this cross-turn gate (T08-03).
-            crate::goal_loop::GoalBudget {
+            codewhale_runtime::goal_loop::GoalBudget {
                 token_budget: snapshot.token_budget.map(u64::from),
                 time_budget_seconds: None,
                 enforce_token_budget: self.config.goal_enforce_token_budget,
@@ -5282,7 +5436,7 @@ impl Engine {
         );
 
         match decision {
-            crate::goal_loop::ContinuationDecision::Continue => {
+            codewhale_runtime::goal_loop::ContinuationDecision::Continue => {
                 // A cross-turn dispatch is a real continuation pass just like
                 // the bounded intra-turn retry in `turn_loop`. Record it before
                 // rendering and carrying the snapshot so the durable prompt,
@@ -5297,25 +5451,25 @@ impl Engine {
                     snapshot: Box::new(snapshot),
                 }
             }
-            crate::goal_loop::ContinuationDecision::Stop(reason) => {
+            codewhale_runtime::goal_loop::ContinuationDecision::Stop(reason) => {
                 tracing::info!(?reason, "goal continuation stopped");
                 let (message, pause_reason) = match reason {
-                    crate::goal_loop::StopReason::ContinuationLimit => (
+                    codewhale_runtime::goal_loop::StopReason::ContinuationLimit => (
                         format!(
                             "Goal paused after {} automatic continuations without a terminal result (safety backstop; raise or disable via [goal] max_continuations); inspect progress, then resume if useful.",
                             self.config.goal_max_continuations,
                         ),
                         GoalPauseReason::Backoff,
                     ),
-                    crate::goal_loop::StopReason::BudgetLimit => (
+                    codewhale_runtime::goal_loop::StopReason::BudgetLimit => (
                         "Goal paused: the goal's token budget was reached and \
                          [goal] enforce_token_budget makes that a hard stop; \
                          raise the budget or resume to continue."
                             .to_string(),
                         GoalPauseReason::BudgetLimit,
                     ),
-                    crate::goal_loop::StopReason::Completed
-                    | crate::goal_loop::StopReason::Blocked => {
+                    codewhale_runtime::goal_loop::StopReason::Completed
+                    | codewhale_runtime::goal_loop::StopReason::Blocked => {
                         return GoalContinuationAction::Inactive;
                     }
                 };
@@ -5599,16 +5753,13 @@ impl Engine {
         if clear || status != GoalStatus::Active {
             self.cancel_scheduled_goal_continuation(true).await;
         }
-        // A continuation is scheduled only on a real transition INTO Active
-        // from a non-active state (paused/blocked resume). Re-asserting
-        // Active on an already-active goal must not stack a second
-        // autonomous turn on top of the loop that is already running.
-        let was_active = self
+        let (was_active, had_objective) = self
             .config
             .goal_state
             .lock()
-            .map(|state| state.is_active())
-            .unwrap_or(false);
+            .map(|state| (state.is_active(), state.objective().is_some()))
+            .unwrap_or((false, false));
+        let had_goal = had_objective || self.config.goal_objective.is_some();
         let snapshot = match self.config.goal_state.lock() {
             Ok(mut state) => {
                 if clear {
@@ -5622,7 +5773,9 @@ impl Engine {
                     let objective = state.objective().map(str::to_string);
                     let budget = state.token_budget();
                     if status == GoalStatus::Active {
-                        state.resume(goal_id);
+                        if !was_active {
+                            state.resume(goal_id);
+                        }
                     } else {
                         state.sync_from_host_status(objective.as_deref(), budget, status);
                     }
@@ -5666,15 +5819,23 @@ impl Engine {
                 GoalStatus::Blocked => "blocked",
             }
         };
-        let _ = self
-            .send_event(Event::status(format!("Goal {label}.")))
-            .await;
+        if !clear || had_goal {
+            let _ = self
+                .send_event(Event::status(format!("Goal {label}.")))
+                .await;
+        }
 
         // Resuming an objective-bearing goal restarts the runtime's own
         // steering loop — the kickoff is a continuation turn, never a raw
         // user message echoing the objective (codex `/goal resume` parity).
-        let resumed_into_active = !clear && status == GoalStatus::Active && !was_active;
-        if resumed_into_active && snapshot_has_objective {
+        let resume_requested = !clear && status == GoalStatus::Active;
+        if resume_requested
+            && snapshot_has_objective
+            && (!was_active
+                || (!self.host_managed_turns()
+                    && !self.cancel_token.is_cancelled()
+                    && !self.has_scheduled_goal_continuation()))
+        {
             self.schedule_goal_continuation(Vec::new()).await;
         }
     }
@@ -5822,7 +5983,7 @@ impl Engine {
                 tool_context.clone(),
                 self.tx_subagent_completion.clone(),
                 SubAgentForkContext {
-                    live_header: crate::prompt_zones::new_live_header_cell(),
+                    live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
                     messages: self.messages_with_turn_metadata(),
                     structured_state_block: None,
                     work_source: Some(self.todo_source()),
@@ -6006,7 +6167,9 @@ impl Engine {
                     self.config.disallowed_tools.clone().unwrap_or_default();
                 if let Some(allowed) = allowed_tools.as_ref() {
                     rt.worker_profile.tools =
-                        crate::worker_profile::ToolScope::Explicit(allowed.clone());
+                        codewhale_agent_contract::worker_profile::ToolScope::Explicit(
+                            allowed.clone(),
+                        );
                 }
                 if let Some(context) = fork_context_for_runtime.clone() {
                     rt = rt.with_fork_context(context);
@@ -6047,7 +6210,11 @@ impl Engine {
             attachment
                 .manager()
                 .note_native_names(tool_registry.names());
-            attachment.sync_in_background();
+            if attachment.selection_settled() {
+                attachment.sync_in_background();
+            } else {
+                attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+            }
         }
         let (mut plugin_tool_names, refused_overrides) =
             configure_plugin_tools(&mut tool_registry, self.config.tools.as_ref());
@@ -6170,7 +6337,7 @@ impl Engine {
             self.config.disallowed_tools.clone(),
             self.config.max_tool_calls,
             // Model metadata wins once wired; today the hint is always None
-            // and the [features] flags decide (model_registry follow-up).
+            // and the [features] flags decide.
             tool_catalog::requested_tool_mode(None, &self.config.features),
         );
         if let Some(child) = self.child_host.as_ref() {
@@ -6237,6 +6404,14 @@ impl Engine {
     }
 
     async fn handle_send_message(&mut self, spec: TurnSpec) -> SendMessageOutcome {
+        self.handle_message_operation(spec, None).await
+    }
+
+    async fn handle_message_operation(
+        &mut self,
+        spec: TurnSpec,
+        review: Option<codewhale_protocol::op::ReviewOperation>,
+    ) -> SendMessageOutcome {
         let autonomous =
             self.admitted_turn_control.is_none() && !spec.provenance.can_authorize_work();
         // Claim first. Pending controls never affect the active Engine policy.
@@ -6246,7 +6421,13 @@ impl Engine {
         let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
         let shell_ceiling = self.is_acp_turn().then_some(spec.allow_shell);
         let previous_shell = std::mem::replace(&mut self.turn_acp_shell_ceiling, shell_ceiling);
-        let outcome = self.handle_admitted_message(spec, autonomous).await;
+        let outcome = match review {
+            Some(request) => {
+                self.handle_admitted_operation(spec, autonomous, Some(request))
+                    .await
+            }
+            None => self.handle_admitted_message(spec, autonomous).await,
+        };
         self.turn_acp_shell_ceiling = previous_shell;
         self.turn_narrowing = previous;
         drop(control);
@@ -6258,6 +6439,16 @@ impl Engine {
         spec: TurnSpec,
         autonomous: bool,
     ) -> SendMessageOutcome {
+        self.handle_admitted_operation(spec, autonomous, None).await
+    }
+
+    async fn handle_admitted_operation(
+        &mut self,
+        spec: TurnSpec,
+        autonomous: bool,
+        review: Option<codewhale_protocol::op::ReviewOperation>,
+    ) -> SendMessageOutcome {
+        let is_review = review.is_some();
         let TurnSpec {
             profile_constitution,
             max_output_tokens,
@@ -6336,7 +6527,8 @@ impl Engine {
         // keeps no lifecycle.
         // Internal follow-ups belong to the already-admitted work. They must
         // not replace its account preferences with the host operator's profile.
-        let constitution_block = if self.rlm_host.is_some()
+        let constitution_block = if is_review
+            || self.rlm_host.is_some()
             || (!provenance.can_authorize_work() && profile_constitution.is_none())
         {
             self.constitution_block.clone()
@@ -6494,7 +6686,9 @@ impl Engine {
         // Deliver completions that arrived after the previous turn before the
         // next user request is sent. This keeps background shell work
         // model-visible without requiring an explicit wait/poll tool call.
-        self.deliver_shell_completions("").await;
+        if !is_review {
+            self.deliver_shell_completions("").await;
+        }
 
         // A person writing to a goal that only the runtime stopped (a failed
         // or timed-out continuation) is continuing the work: resume it as a
@@ -6531,7 +6725,7 @@ impl Engine {
             auto_approve,
             approval_mode,
         );
-        let prompt_context = NextTurnPromptContext::for_planned_turn(
+        let mut prompt_context = NextTurnPromptContext::for_planned_turn(
             effective_provider,
             model.clone(),
             route_limits,
@@ -6542,6 +6736,27 @@ impl Engine {
             translation_enabled,
             verbosity.clone(),
         );
+        let planned_effort = turn_loop::resolve_auto_effort(
+            reasoning_effort.as_deref(),
+            effective_provider,
+            &route_api_config.active_route_base_url(),
+            &model,
+        );
+        prompt_context.planned_output_tokens =
+            Some(crate::route_budget::effective_max_output_tokens_for_turn(
+                effective_provider,
+                &model,
+                route_limits,
+                max_output_tokens,
+                planned_effort.as_deref(),
+            ));
+        if max_output_tokens.is_some()
+            && let Some(client) = self.model_client.as_ref()
+        {
+            prompt_context.planned_output_tokens = prompt_context
+                .planned_output_tokens
+                .map(|tokens| tokens.min(client.effective_max_output_tokens(&model)));
+        }
         // #3947: an effective-mode change is never silent. The structured
         // event is recorded first (so doctor and this turn's metadata can read
         // it), then rendered to the UI from that same value.
@@ -6731,21 +6946,23 @@ impl Engine {
         // failure is non-fatal (the helper logs at WARN).
         // The label carries a truncated first line of the prompt so
         // `/restore` listings are human-readable.
-        self.take_restore_point(
-            WorkspaceSnapshotKind::PreTurn,
-            format_snapshot_label("pre-turn", self.turn_counter, Some(&content)),
-            None,
-            None,
-        )
-        .await;
+        if !is_review {
+            self.take_restore_point(
+                WorkspaceSnapshotKind::PreTurn,
+                format_snapshot_label("pre-turn", self.turn_counter, Some(&content)),
+                None,
+                None,
+            )
+            .await;
 
-        self.emit_pending_snapshot_notices().await;
+            self.emit_pending_snapshot_notices().await;
+        }
 
         // A new turn means any leftover retry banner (success cleared
         // it, failure pinned it) is no longer relevant — reset to idle
         // so the footer doesn't display a stale failure row across
         // turns (#499).
-        crate::retry_status::clear();
+        codewhale_runtime::retry_status::clear();
 
         // Clone user prompt for post-turn snapshot label before `content`
         // is moved into `user_text_message_with_turn_metadata_for_route` below.
@@ -6845,42 +7062,60 @@ impl Engine {
         self.config.translation_enabled = translation_enabled;
         self.config.verbosity = verbosity;
 
-        // Capture only this engine's reviewed, live plugin contributions. A
-        // failed/withdrawn capture records retirement. Full bounded snapshots
-        // use ordinary session history, not the smaller workspace line delta.
-        if let Some(attachment) = self.extension_host.as_ref() {
-            self.plugin_registry = attachment.plugin_view();
-        }
-        self.config.hook_executor = self.config.hook_executor.as_ref().map(|hooks| {
-            Arc::new(
-                hooks.bind_caller(crate::hooks::HookCaller {
-                    workspace: self.session.workspace.clone(),
-                    plugins: Some(Arc::clone(&self.plugin_registry)),
-                    session_id: Some(self.session.id.clone()),
-                    agent_id: self
-                        .child_host
-                        .as_ref()
-                        .map(|child| child.authority.owner_agent_id.clone()),
-                    origin_turn_id: Some(turn.id.clone()),
-                    origin_call_id: None,
-                }),
-            )
-        });
-        self.extension_prompt_block = if self.rlm_host.is_some() {
-            self.extension_prompt_block.clone()
-        } else if self.config.features.enabled(Feature::ExtensionHost) {
-            if let Some(attachment) = &self.extension_host {
-                match attachment.prompt_sections().await.and_then(|sections| {
-                    crate::extension_host::prompt::render_prompt_sections_for_turn(
-                        &sections,
-                        &prompt_context.model,
-                        &self.session.workspace,
-                    )
-                }) {
-                    Ok(block) => block,
-                    Err(reason) => {
-                        tracing::warn!(%reason, "extension prompt contributions unavailable");
-                        let _ = self
+        let (
+            context_update,
+            surface,
+            mut mailbox_for_runtime,
+            tool_surface,
+            tool_catalog_for_event,
+        ) = if is_review {
+            self.session.add_message(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: content,
+                    cache_control: None,
+                }],
+            });
+            turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
+            self.emit_session_updated().await;
+            (Ok(None), None, None, None, None)
+        } else {
+            // Capture only this engine's reviewed, live plugin contributions. A
+            // failed/withdrawn capture records retirement. Full bounded snapshots
+            // use ordinary session history, not the smaller workspace line delta.
+            if let Some(attachment) = self.extension_host.as_ref() {
+                self.plugin_registry = attachment.plugin_view();
+            }
+            self.config.hook_executor = self.config.hook_executor.as_ref().map(|hooks| {
+                Arc::new(
+                    hooks.bind_caller(crate::hooks::HookCaller {
+                        workspace: self.session.workspace.clone(),
+                        plugins: Some(Arc::clone(&self.plugin_registry)),
+                        session_id: Some(self.session.id.clone()),
+                        agent_id: self
+                            .child_host
+                            .as_ref()
+                            .map(|child| child.authority.owner_agent_id.clone()),
+                        origin_turn_id: Some(turn.id.clone()),
+                        origin_call_id: None,
+                    }),
+                )
+            });
+            self.extension_prompt_block = if self.rlm_host.is_some() {
+                self.extension_prompt_block.clone()
+            } else if self.config.features.enabled(Feature::ExtensionHost) {
+                if let Some(attachment) = &self.extension_host {
+                    match attachment.prompt_sections().await.and_then(|sections| {
+                        crate::extension_host::prompt::render_prompt_sections_for_turn(
+                            &sections,
+                            &prompt_context.model,
+                            &self.session.workspace,
+                        )
+                    }) {
+                        Ok(block) => block,
+                        Err(reason) => {
+                            tracing::warn!(%reason, "extension prompt contributions unavailable");
+                            let _ = self
                             .send_event(Event::status(
                                 codewhale_localization::tr(
                                     codewhale_localization::resolve_locale(&self.config.locale_tag),
@@ -6889,135 +7124,129 @@ impl Engine {
                                 .to_string(),
                             ))
                             .await;
-                        None
+                            None
+                        }
                     }
+                } else {
+                    None
                 }
             } else {
                 None
+            };
+            self.constitution_block = constitution_block;
+            self.record_current_constitution().await;
+            self.record_current_extension_prompt_contributions().await;
+
+            // Compose from the immutable values accepted for this turn. Preview
+            // receives the same context before anything is installed, so prompt
+            // bytes cannot depend on stale session state or mutation order. The
+            // pinned header only moves on an explicit-input change; workspace
+            // drift arrives as a `<context_update>` user message appended below.
+            let context_update = self.refresh_pinned_header_for_turn(&prompt_context);
+            if let Ok(Some(update)) = context_update.as_ref() {
+                self.session.add_message(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: update.clone(),
+                        cache_control: None,
+                    }],
+                });
             }
-        } else {
-            None
-        };
-        self.constitution_block = constitution_block;
-        self.record_current_constitution().await;
-        self.record_current_extension_prompt_contributions().await;
 
-        // Compose from the immutable values accepted for this turn. Preview
-        // receives the same context before anything is installed, so prompt
-        // bytes cannot depend on stale session state or mutation order. The
-        // pinned header only moves on an explicit-input change; workspace
-        // drift arrives as a `<context_update>` user message appended below.
-        let context_update = self.refresh_pinned_header_for_turn(&prompt_context);
-        if let Some(update) = context_update {
-            self.session.add_message(Message {
-                role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: update,
-                    cache_control: None,
-                }],
-            });
-        }
+            self.record_mode_context(mode);
 
-        self.record_mode_notice(mode);
-
-        // The Operate contract (docs/MODES.md) precedes the first Operate
-        // prompt. KV-cache effect: append-only history, one user-role runtime
-        // message; it is derived from the session log rather than a flag so a
-        // cleared, restored, or compacted session gets it again exactly once
-        // and every later Operate turn does not repeat it.
-        if mode == AppMode::Operate
-            && !self
-                .session
-                .messages
-                .iter()
-                .any(crate::runtime_handoff::is_current_operate_contract_message)
-        {
             self.session
-                .add_message(crate::runtime_handoff::operate_contract_runtime_message());
-        }
+                .working_set
+                .observe_user_message(&content, &self.session.workspace);
 
-        self.session
-            .working_set
-            .observe_user_message(&content, &self.session.workspace);
-
-        // Add the user message through the same explicit snapshot constructor
-        // preview uses. Route limits and mode in resource metadata therefore
-        // belong to this turn even when the previous route was different.
-        let mut user_msg = self.user_text_message_from_snapshot(
-            content,
-            &model,
-            auto_model,
-            self.session.reasoning_effort.as_deref(),
-            self.session.reasoning_effort_auto,
-            provenance,
-            TurnMetadataSnapshot {
-                prompt_context: &prompt_context,
-                system_prompt: self.session.system_prompt.as_ref(),
-                approval_mode: self.session.approval_mode,
-                working_set: &self.session.working_set,
-                policy_narrowing: self.last_policy_narrowing.as_ref(),
-            },
-        );
-        let image_index = if self.api_config.runtime_chat_isolated {
-            user_msg.content.len()
-        } else {
-            user_msg.content.len().saturating_sub(1)
-        };
-        user_msg.content.splice(image_index..image_index, images);
-        self.session.add_message(user_msg);
-        turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
-
-        self.emit_session_updated().await;
-
-        // Build tool registry and tool list for the current mode
-        let turn_id_for_mailbox = turn.id.clone();
-        let TurnToolBuild {
-            surface,
-            mailbox: mut mailbox_for_runtime,
-            plugin_tool_names,
-            ..
-        } = self
-            .build_turn_tool_registry_and_catalog(
-                &input_policy,
-                &dynamic_tools,
-                self.config.allowed_tools.clone(),
-                SubAgentWiring::Live,
-                McpAccess::Connect,
-                TurnRouteContext {
-                    provider: self.api_provider,
-                    model: self.config.model.clone(),
-                    capabilities: route_capabilities,
-                    limits: self.active_route_limits,
-                    client: self.codewhale_client.clone(),
-                    api_config: route_api_config,
-                    locale_tag: self.config.locale_tag.clone(),
-                    role_models: self.subagent_role_models(),
-                    auto_model,
-                    reasoning_effort: self.session.reasoning_effort.clone(),
-                    reasoning_effort_auto: self.session.reasoning_effort_auto,
+            // Add the user message through the same explicit snapshot constructor
+            // preview uses. Route limits and mode in resource metadata therefore
+            // belong to this turn even when the previous route was different.
+            let mut user_msg = self.user_text_message_from_snapshot(
+                content,
+                &model,
+                auto_model,
+                self.session.reasoning_effort.as_deref(),
+                self.session.reasoning_effort_auto,
+                provenance,
+                TurnMetadataSnapshot {
+                    prompt_context: &prompt_context,
+                    system_prompt: self.session.system_prompt.as_ref(),
+                    approval_mode: self.session.approval_mode,
+                    working_set: &self.session.working_set,
+                    messages: &self.session.messages,
+                    policy_narrowing: self.last_policy_narrowing.as_ref(),
                 },
-                &turn_id_for_mailbox,
-                prompt_context.goal_objective.as_deref(),
-            )
-            .await;
-        let tool_catalog_for_event = Some(surface.catalog.clone());
+            );
+            let image_index = if self.api_config.runtime_chat_isolated {
+                user_msg.content.len()
+            } else {
+                user_msg.content.len().saturating_sub(1)
+            };
+            user_msg.content.splice(image_index..image_index, images);
+            self.session.add_message(user_msg);
+            turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
 
-        // Resolve, once per turn, the out-of-request facts the read-only
-        // request projection is allowed to report: flattened registry facts,
-        // the MCP pool's own server attribution, and the engine-injected
-        // catalog names. This is where `plugin_tool_names` and the pool lock
-        // live; the snapshot itself is built later, at the request seam, from
-        // the tools actually prepared for that step.
-        let mut tool_surface = crate::tool_inspection::ToolSurfaceContext {
-            registry: surface.registry.registry_facts(&plugin_tool_names),
-            mcp_servers: match self.mcp_pool.as_ref() {
-                Some(pool) => pool.lock().await.resolved_tool_servers(),
-                None => std::collections::BTreeMap::new(),
-            },
-            synthetic_names: default_synthetic_catalog_tool_names(),
-            provider: crate::tool_inspection::ProviderAvailability::Unknown,
+            self.emit_session_updated().await;
+
+            // Build tool registry and tool list for the current mode
+            let turn_id_for_mailbox = turn.id.clone();
+            let TurnToolBuild {
+                surface,
+                mailbox: mailbox_for_runtime,
+                plugin_tool_names,
+                ..
+            } = self
+                .build_turn_tool_registry_and_catalog(
+                    &input_policy,
+                    &dynamic_tools,
+                    self.config.allowed_tools.clone(),
+                    SubAgentWiring::Live,
+                    McpAccess::Connect,
+                    TurnRouteContext {
+                        provider: self.api_provider,
+                        model: self.config.model.clone(),
+                        capabilities: route_capabilities,
+                        limits: self.active_route_limits,
+                        client: self.codewhale_client.clone(),
+                        api_config: route_api_config,
+                        locale_tag: self.config.locale_tag.clone(),
+                        role_models: self.subagent_role_models(),
+                        auto_model,
+                        reasoning_effort: self.session.reasoning_effort.clone(),
+                        reasoning_effort_auto: self.session.reasoning_effort_auto,
+                    },
+                    &turn_id_for_mailbox,
+                    prompt_context.goal_objective.as_deref(),
+                )
+                .await;
+            let tool_catalog_for_event = Some(surface.catalog.clone());
+
+            // Resolve, once per turn, the out-of-request facts the read-only
+            // request projection is allowed to report: flattened registry facts,
+            // the MCP pool's own server attribution, and the engine-injected
+            // catalog names. This is where `plugin_tool_names` and the pool lock
+            // live; the snapshot itself is built later, at the request seam, from
+            // the tools actually prepared for that step.
+            let mut tool_surface = crate::tool_inspection::ToolSurfaceContext {
+                registry: surface.registry.registry_facts(&plugin_tool_names),
+                mcp_servers: match self.mcp_pool.as_ref() {
+                    Some(pool) => pool.lock().await.resolved_tool_servers(),
+                    None => std::collections::BTreeMap::new(),
+                },
+                synthetic_names: default_synthetic_catalog_tool_names(),
+                provider: crate::tool_inspection::ProviderAvailability::Unknown,
+            };
+            tool_surface.provider = self.tool_surface_provider_receipt();
+
+            (
+                context_update,
+                Some(surface),
+                mailbox_for_runtime,
+                Some(tool_surface),
+                tool_catalog_for_event,
+            )
         };
-        tool_surface.provider = self.tool_surface_provider_receipt();
 
         let base_url_for_event = if self.model_client_injected {
             None
@@ -7036,14 +7265,21 @@ impl Engine {
             .as_ref()
             .map(|barrier| Arc::clone(&barrier.foreground_children));
         let turn_result = std::panic::AssertUnwindSafe(async {
+            if let Some(request) = review {
+                return self.run_structured_review(&mut turn, request).await;
+            }
+            if let Err(error) = context_update {
+                self.post_turn_budget_stop(&error).await;
+                return (TurnOutcomeStatus::Failed, Some(error));
+            }
             // Keep the turn state machine out of the enclosing event-loop
             // futures. Their nested poll frames must fit ordinary thread
             // stacks while cloning route config or executing tools.
             Box::pin(self.run_turn(
                 &mut turn,
-                surface,
+                surface.expect("ordinary turn prepared its registry"),
                 foreground_children_for_turn,
-                Some(tool_surface),
+                tool_surface,
             ))
             .await
         })
@@ -7055,8 +7291,8 @@ impl Engine {
         let (mut status, error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
-                let detail = crate::utils::panic_message(&*panic);
-                crate::utils::record_caught_panic("engine-event-loop", &detail);
+                let detail = codewhale_util::utils::panic_message(&*panic);
+                codewhale_util::utils::record_caught_panic("engine-event-loop", &detail);
                 (
                     TurnOutcomeStatus::Failed,
                     Some(format!(
@@ -7116,7 +7352,8 @@ impl Engine {
         // belongs to this originating turn. Acquire the owner lease before an
         // interactive owner is marked terminal so a late provider response
         // retains its exact sink instead of falling into a later session.
-        let advisor_usage_context = (!self.is_acp_turn()
+        let advisor_usage_context = (!is_review
+            && !self.is_acp_turn()
             && self.config.advisor_config.enabled
             && status == TurnOutcomeStatus::Completed
             && self.codewhale_client.is_some())
@@ -7145,9 +7382,13 @@ impl Engine {
                 .send_event(Event::ToolRequestSnapshot { snapshot })
                 .await;
         }
-        self.post_turn_snapshot_before_complete(&snapshot_prompt_post)
-            .await;
-        let pending_post_turn = self.reserve_post_turn_snapshot();
+        if !is_review {
+            self.post_turn_snapshot_before_complete(&snapshot_prompt_post)
+                .await;
+        }
+        let pending_post_turn = (!is_review)
+            .then(|| self.reserve_post_turn_snapshot())
+            .flatten();
         // Cancellation still owns the decision while mailbox/snapshot
         // bookkeeping runs. The reserved completion itself never waits.
         status = terminal_turn_status_at_settlement(status, self.cancel_token.is_cancelled());
@@ -7179,11 +7420,13 @@ impl Engine {
 
         // Post-turn snapshot, unless it was already taken before
         // TurnComplete (see `EngineConfig::record_restore_points`).
-        self.post_turn_snapshot_after_complete(
-            "post-turn-snapshot",
-            snapshot_prompt_post,
-            pending_post_turn,
-        );
+        if !is_review {
+            self.post_turn_snapshot_after_complete(
+                "post-turn-snapshot",
+                snapshot_prompt_post,
+                pending_post_turn,
+            );
+        }
 
         // ── Background advisor watcher (#3982) ────────────────────────────
         // Fire-and-forget: TurnComplete is already emitted. The advisor
@@ -7217,7 +7460,7 @@ impl Engine {
             let advisor_tx = self.tx_event.clone();
             let advisor_turn_id = turn.id.clone();
 
-            crate::utils::spawn_supervised(
+            codewhale_util::utils::spawn_supervised(
                 "advisor-watcher",
                 std::panic::Location::caller(),
                 async move {
@@ -7441,7 +7684,9 @@ impl Engine {
     /// Role/type model map for sub-agent runtimes: roster member pins first,
     /// then explicit `[subagents]` overrides on top so explicit config wins
     /// (#fleet-roster cutover (v0.8.67)).
-    fn subagent_role_models(&self) -> HashMap<String, crate::config::SubagentModelOverride> {
+    fn subagent_role_models(
+        &self,
+    ) -> HashMap<String, codewhale_runtime::config::SubagentModelOverride> {
         let mut models = self.config.fleet_roster.model_overrides();
         models.extend(
             self.config
@@ -7523,7 +7768,8 @@ impl Engine {
         }
         rt.worker_profile.denied_tools = self.config.disallowed_tools.clone().unwrap_or_default();
         if let Some(allowed) = self.config.allowed_tools.as_ref() {
-            rt.worker_profile.tools = crate::worker_profile::ToolScope::Explicit(allowed.clone());
+            rt.worker_profile.tools =
+                codewhale_agent_contract::worker_profile::ToolScope::Explicit(allowed.clone());
         }
         Some(rt)
     }
@@ -7591,11 +7837,14 @@ impl Engine {
     /// the approval prompt survives it. An adopted table has no cache to
     /// inherit: the session had no decider, so nothing was ever approved under
     /// one.
-    fn current_network_decider(&self) -> Option<crate::network_policy::NetworkPolicyDecider> {
+    fn current_network_decider(
+        &self,
+    ) -> Option<codewhale_net::network_policy::NetworkPolicyDecider> {
         let Some(path) = self.api_config.loaded_config_path.as_deref() else {
             return self.config.network_policy.clone();
         };
-        let Some(document) = crate::config::network_policy_from_document(path) else {
+        let Some(document) = codewhale_net::network_policy::network_policy_from_document(path)
+        else {
             // The document carries no `[network]` table. Keep what the session
             // resolved: removing a table must not ungate a gated run.
             return self.config.network_policy.clone();
@@ -7616,7 +7865,9 @@ impl Engine {
             // Nothing resolved a policy for this session, so there is no higher
             // layer to protect. Adopt the table the moment it exists — that is
             // how `/network deny <host>` lands where there was no policy yet.
-            None => Some(crate::network_policy::NetworkPolicyDecider::with_default_audit(document)),
+            None => Some(
+                codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(document),
+            ),
         }
     }
 
@@ -7670,7 +7921,8 @@ impl Engine {
         }
         let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         let mut trusted_external_paths = trusted.paths().to_vec();
-        let clipboard_images_dir = crate::config::clipboard_images_dir(&self.session.workspace);
+        let clipboard_images_dir =
+            codewhale_runtime::config::clipboard_images_dir(&self.session.workspace);
         if !trusted_external_paths
             .iter()
             .any(|path| path == &clipboard_images_dir)
@@ -7681,7 +7933,6 @@ impl Engine {
             self.session.workspace.clone(),
             authority.trust_mode,
             self.session.notes_path.clone(),
-            self.session.mcp_config_path.clone(),
             authority.auto_approve,
         )
         .with_state_namespace(self.session.id.clone())
@@ -7933,7 +8184,7 @@ impl Engine {
                 )))
                 .await;
         }
-        pool = pool.with_backend(crate::mcp::McpBackend::from_config(&self.api_config));
+        pool = pool.with_backend(self.api_config.mcp_backend());
         pool = pool.with_disallowed_tools(self.config.disallowed_tools.clone().unwrap_or_default());
         if let Some(decider) = self.current_network_decider() {
             pool = pool.with_network_policy(decider);
@@ -8921,24 +9172,51 @@ impl Engine {
     /// across modes).
     ///
     /// Derived from the session log, like the workspace-trust note: a session
-    /// with no notice gets one only in Plan, and once a notice exists a new
-    /// one is appended whenever the mode differs from the latest, so leaving
-    /// Plan is announced too and history never ends on a stale mode. A
-    /// compaction that dropped the notice re-records it on the next Plan turn.
+    /// with no notice gets one in Plan or Operate, and once a notice exists a
+    /// new one is appended whenever the mode differs from the latest. Restored
+    /// Operate contracts also require a current notice after leaving Operate.
     /// Child and RLM hosts get none: their mode is fixed by their parent.
+    /// Record the mode notice and, on entering Operate, the Operate contract
+    /// (docs/MODES.md), which precedes the first Operate prompt. KV-cache
+    /// effect: append-only history, user-role runtime messages; derived from
+    /// the session log rather than a flag so a cleared, restored, or compacted
+    /// session gets the contract again exactly once and every later Operate
+    /// step does not repeat it. Runs at turn start and before every model
+    /// request, so a mode switched mid-turn reaches the next request. Known
+    /// limitation: a response already streaming is not restarted for a mode
+    /// change; it finishes under the notice it was sent with, and its tool
+    /// calls are planned under the new posture. Returns whether anything was
+    /// appended.
+    fn record_mode_context(&mut self, mode: AppMode) -> bool {
+        let before = self.session.messages.len();
+        self.record_mode_notice(mode);
+        if mode == AppMode::Operate
+            && !self
+                .session
+                .messages
+                .iter()
+                .any(crate::runtime_handoff::is_current_operate_contract_message)
+        {
+            self.session
+                .add_message(crate::runtime_handoff::operate_contract_runtime_message());
+        }
+        self.session.messages.len() != before
+    }
+
     fn record_mode_notice(&mut self, mode: AppMode) {
         if self.child_host.is_some() || self.rlm_host.is_some() {
             return;
         }
-        let previous = self
-            .session
-            .messages
-            .iter()
-            .rev()
-            .find(|message| crate::runtime_handoff::mode_notice_display(message).is_some());
+        let previous = self.session.messages.iter().rev().find(|message| {
+            crate::runtime_handoff::mode_notice_display(message).is_some()
+                || crate::runtime_handoff::is_operate_contract_message(message)
+        });
         let message = crate::runtime_handoff::mode_runtime_message(mode);
         let record = match previous {
-            None => mode == AppMode::Plan,
+            None => matches!(mode, AppMode::Plan | AppMode::Operate),
+            Some(previous) if crate::runtime_handoff::is_operate_contract_message(previous) => {
+                mode != AppMode::Operate
+            }
             Some(previous) => previous != &message,
         };
         if record {
@@ -9106,19 +9384,48 @@ impl Engine {
     /// logged reason instead of reporting undeclared drift. This is only ever
     /// called from explicit header-change edges (session construction, submit
     /// turn boundary, `/model`, mode change, goal edits) — never mid-tool-loop,
-    /// so an agent writing a file cannot silently move the pinned prefix.
+    /// so an agent writing a file cannot silently move the pinned prefix. The
+    /// one declared exception is the instruction-budget guard, which re-narrows
+    /// only the installed instruction block when the tool catalog changes.
     fn refresh_system_prompt_from_context_with_reason(
         &mut self,
         context: &NextTurnPromptContext,
         reason: &str,
     ) {
-        self.record_project_trust_warning();
-        let stable_prompt = self.compose_stable_system_prompt(context);
-
-        let stable_hash = system_prompt_hash(stable_prompt.as_ref());
+        self.pending_instruction_notices.clear();
         if self.session.system_prompt_override {
+            self.session.instruction_assembly = None;
             return;
         }
+        let (stable_prompt, assembly) = match self.host_owned_system_prompt() {
+            Some(prompt) => (Some(prompt), None),
+            None => {
+                self.record_project_trust_warning();
+                let raw = crate::project_context::capture_instruction_context(
+                    &self.config.workspace,
+                    &self.config.instructions,
+                    &self.instruction_settings,
+                );
+                let memory = codewhale_runtime::native_memory::native_prompt_block_traced(
+                    self.config.memory_enabled,
+                    &self.config.memory_path,
+                    &self.config.workspace,
+                    &self.session.id,
+                );
+                let budgets = self.instruction_budgets(context);
+                let (prompt, assembly) = self.compose_stable_system_prompt_with_assembly(
+                    context,
+                    &raw,
+                    memory.as_deref(),
+                    budgets,
+                );
+                self.session.project_context = Some(raw);
+                (Some(prompt), Some(assembly))
+            }
+        };
+        self.session.instruction_assembly = assembly.map(Arc::new);
+        self.instruction_guard_key = None;
+        let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         self.session.pinned_prompt_context = Some(context.clone());
         if self.session.last_system_prompt_hash != Some(stable_hash) {
             self.session.system_prompt = stable_prompt;
@@ -9141,14 +9448,14 @@ impl Engine {
     ///   delta is returned as a bounded `<context_update>` snapshot for the
     ///   caller to append as a user-role message *before* the user's message
     ///   — a normal history append, so the prefix still extends.
-    /// - Returns `None` when nothing changed or a header re-pin absorbed it.
+    /// - Returns `Ok(None)` when nothing changed or a header re-pin absorbed it.
     fn refresh_pinned_header_for_turn(
         &mut self,
         context: &NextTurnPromptContext,
-    ) -> Option<String> {
-        self.record_project_trust_warning();
+    ) -> Result<Option<String>, String> {
+        self.pending_instruction_notices.clear();
         if self.session.system_prompt_override {
-            return None;
+            return Ok(None);
         }
         let explicit_reason = match self.session.pinned_prompt_context.as_ref() {
             None => Some("system".to_string()),
@@ -9159,14 +9466,55 @@ impl Engine {
         };
         if let Some(reason) = explicit_reason {
             self.refresh_system_prompt_from_context_with_reason(context, &reason);
-            return None;
+            return Ok(None);
         }
+        if self.host_owned_system_prompt().is_some() {
+            return Ok(None);
+        }
+        self.record_project_trust_warning();
+        let memory = codewhale_runtime::native_memory::native_prompt_block_traced(
+            self.config.memory_enabled,
+            &self.config.memory_path,
+            &self.config.workspace,
+            &self.session.id,
+        );
+        let observed = self.observe_context_update(context, memory.as_deref())?;
+        if let Some(notice) = observed.notice {
+            self.queue_instruction_notice_body(notice);
+        }
+        if observed.message.is_some() {
+            self.session.context_update_baseline = Some(observed.current_text);
+            if let Some(pm) = self.session.prefix_stability.as_mut() {
+                pm.note_context_update();
+            }
+        }
+        Ok(observed.message)
+    }
 
-        let composed = self.compose_stable_system_prompt(context);
-        let composed_hash = system_prompt_hash(composed.as_ref());
-        if self.session.last_system_prompt_hash == Some(composed_hash) {
-            return None;
-        }
+    fn observe_context_update(
+        &self,
+        context: &NextTurnPromptContext,
+        memory: Option<&str>,
+    ) -> Result<context::ObservedContextUpdate, String> {
+        let raw = crate::project_context::capture_instruction_context(
+            &self.config.workspace,
+            &self.config.instructions,
+            &self.instruction_settings,
+        );
+        let budgets = self.session.instruction_assembly.as_deref().map_or_else(
+            || self.instruction_budgets(context),
+            |assembly| assembly.budgets,
+        );
+        let (prompt, assembly) =
+            self.compose_stable_system_prompt_with_assembly(context, &raw, memory, budgets);
+        let (composed, assembly, _) = prompts::guard_instruction_prefix(
+            Some(prompt),
+            Some(&raw),
+            Some(assembly),
+            budgets,
+            &[],
+        )
+        .map_err(|refusal| refusal.render(&self.config.locale_tag))?;
         let pinned_text =
             codewhale_core::prefix_cache::system_prompt_text(self.session.system_prompt.as_ref());
         let known_text = self
@@ -9175,30 +9523,40 @@ impl Engine {
             .clone()
             .unwrap_or(pinned_text);
         let current_text = codewhale_core::prefix_cache::system_prompt_text(composed.as_ref());
-        if known_text == current_text {
-            return None;
-        }
-        let summary =
-            codewhale_core::prefix_cache::context_update_message(&known_text, &current_text)?;
-        self.session.context_update_baseline = Some(current_text);
-        if let Some(pm) = self.session.prefix_stability.as_mut() {
-            pm.note_context_update();
-        }
-        Some(summary)
+        let message =
+            codewhale_core::prefix_cache::context_update_message(&known_text, &current_text);
+        let notice = assembly
+            .as_ref()
+            .filter(|observed| {
+                !self
+                    .session
+                    .instruction_assembly
+                    .as_ref()
+                    .is_some_and(|installed| {
+                        installed
+                            .notices
+                            .iter()
+                            .filter(|notice| {
+                                notice.limit
+                                    != crate::project_context::InstructionLimit::StaticGuard
+                            })
+                            .eq(observed.notices.iter())
+                    })
+            })
+            .and_then(|assembly| {
+                crate::project_context::render_notice_body(
+                    &assembly.notices,
+                    &self.config.locale_tag,
+                )
+            });
+        Ok(context::ObservedContextUpdate {
+            current_text,
+            message,
+            notice,
+        })
     }
 
-    /// Compose the stable system prompt for an explicit route, without
-    /// touching session state.
-    ///
-    /// [`Self::refresh_system_prompt`] calls it for the installed route;
-    /// `/preview-request` calls it for the route the *next* turn would use,
-    /// which may be a different model with a different context window when
-    /// auto routing is on. Extracting it is what lets a preview describe the
-    /// next prompt exactly without mutating the session to find out.
-    pub(super) fn compose_stable_system_prompt(
-        &self,
-        context: &NextTurnPromptContext,
-    ) -> Option<SystemPrompt> {
+    fn host_owned_system_prompt(&self) -> Option<SystemPrompt> {
         if let Some(rlm) = self.rlm_host.as_ref() {
             return Some(rlm.system_prompt.clone());
         }
@@ -9211,12 +9569,67 @@ impl Engine {
         if self.api_config.runtime_chat_isolated {
             return Some(SystemPrompt::Text(ISOLATED_CHAT_SYSTEM_PROMPT.to_string()));
         }
-        let user_memory_block = crate::native_memory::native_prompt_block_traced(
+        None
+    }
+
+    /// Compose the stable system prompt for an explicit route, without
+    /// touching session state.
+    ///
+    /// `/preview-request` goes through [`Self::compose_preview_prefix`] for the
+    /// route the *next* turn would use,
+    /// which may be a different model with a different context window when
+    /// auto routing is on. Extracting it is what lets a preview describe the
+    /// next prompt exactly without mutating the session to find out.
+    #[cfg(test)]
+    pub(super) fn compose_stable_system_prompt(
+        &self,
+        context: &NextTurnPromptContext,
+    ) -> Option<SystemPrompt> {
+        self.compose_preview_prefix(context).0
+    }
+
+    pub(super) fn compose_preview_prefix(
+        &self,
+        context: &NextTurnPromptContext,
+    ) -> (
+        Option<SystemPrompt>,
+        Option<crate::project_context::ProjectContext>,
+        Option<crate::project_context::InstructionAssembly>,
+    ) {
+        if let Some(prompt) = self.host_owned_system_prompt() {
+            return (Some(prompt), None, None);
+        }
+        let raw = crate::project_context::capture_instruction_context(
+            &self.config.workspace,
+            &self.config.instructions,
+            &self.instruction_settings,
+        );
+        let memory = codewhale_runtime::native_memory::native_prompt_block(
             self.config.memory_enabled,
             &self.config.memory_path,
             &self.config.workspace,
-            &self.session.id,
         );
+        let budgets = self.instruction_budgets(context);
+        let (prompt, assembly) = self.compose_stable_system_prompt_with_assembly(
+            context,
+            &raw,
+            memory.as_deref(),
+            budgets,
+        );
+        (Some(prompt), Some(raw), Some(assembly))
+    }
+
+    /// Compose the root-owned stable system prompt together with the
+    /// instruction assembly that produced it. The assembly carries the budgets
+    /// and every trim/skip notice, so the caller can enforce the static-prefix
+    /// guard and tell the user and the model what was lost.
+    pub(super) fn compose_stable_system_prompt_with_assembly(
+        &self,
+        context: &NextTurnPromptContext,
+        raw: &crate::project_context::ProjectContext,
+        user_memory_block: Option<&str>,
+        budgets: crate::project_context::InstructionBudgets,
+    ) -> (SystemPrompt, crate::project_context::InstructionAssembly) {
         let prompt_host = if self.config.terminal_chrome_enabled {
             prompts::PromptHost::Interactive
         } else {
@@ -9228,39 +9641,164 @@ impl Engine {
             &self.config.workspace,
             Some(self.session.id.as_str()),
         );
-        let base =
-            prompts::system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
-                &self.config.workspace,
+        prompts::system_prompt_with_instruction_assembly_for_host(
+            &self.config.workspace,
+            None,
+            Some(&self.config.skills_dir),
+            Some(&self.config.instructions),
+            prompts::PromptSessionContext {
+                user_memory_block,
+                goal_objective: context.goal_objective.as_deref(),
+                project_context_pack_enabled: self.config.project_context_pack_enabled,
+                locale_tag: &self.config.locale_tag,
+                translation_enabled: context.translation_enabled,
+                model_id: &context.model,
+                context_window_override: Some(crate::route_budget::route_context_window_tokens(
+                    context.provider,
+                    &context.model,
+                    context.route_limits,
+                )),
+                verbosity: context.verbosity.as_deref(),
+                recovery_hint: recovery_hint.as_deref(),
+                skills_discovery_mode: self.config.skills_discovery_mode,
+                plugin_registry: Some(self.plugin_registry.as_ref()),
+                mode: context.mode,
+            },
+            prompt_host,
+            Some((raw, &self.instruction_settings, budgets)),
+        )
+    }
+
+    fn instruction_budgets(
+        &self,
+        context: &NextTurnPromptContext,
+    ) -> crate::project_context::InstructionBudgets {
+        crate::project_context::InstructionBudgets::resolve_or_default(
+            &self.instruction_settings.budget,
+            crate::route_runtime::resolve_context_window(
+                context.provider,
+                &context.model,
+                context.route_limits,
                 None,
-                Some(&self.config.skills_dir),
-                Some(&self.config.instructions),
-                prompts::PromptSessionContext {
-                    user_memory_block: user_memory_block.as_deref(),
-                    goal_objective: context.goal_objective.as_deref(),
-                    project_context_pack_enabled: self.config.project_context_pack_enabled,
-                    locale_tag: &self.config.locale_tag,
-                    translation_enabled: context.translation_enabled,
-                    model_id: &context.model,
-                    context_window_override: Some(
-                        crate::route_budget::route_context_window_tokens(
-                            context.provider,
-                            &context.model,
-                            context.route_limits,
-                        ),
-                    ),
-                    verbosity: context.verbosity.as_deref(),
-                    recovery_hint: recovery_hint.as_deref(),
-                    skills_discovery_mode: self.config.skills_discovery_mode,
-                    plugin_registry: Some(self.plugin_registry.as_ref()),
-                    mode: context.mode,
-                },
-                prompt_host,
-            );
-        Some(base)
+                None,
+            )
+            .instruction_budget_tokens(),
+            context.planned_output_tokens.map(|tokens| tokens as usize),
+        )
+    }
+
+    fn queue_instruction_notice(&mut self) {
+        let body = self
+            .session
+            .instruction_assembly
+            .as_deref()
+            .and_then(|assembly| {
+                crate::project_context::render_notice_body(
+                    &assembly.notices,
+                    &self.config.locale_tag,
+                )
+            });
+        if let Some(body) = body {
+            self.queue_instruction_notice_body(body);
+        }
+    }
+
+    fn queue_instruction_notice_body(&mut self, body: String) {
+        if !self.instruction_notice_in_history(&body, &self.session.messages)
+            && !self.pending_instruction_notices.contains(&body)
+        {
+            self.pending_instruction_notices.push(body);
+        }
+    }
+
+    fn instruction_notice_in_history(&self, body: &str, messages: &[Message]) -> bool {
+        let header = codewhale_localization::tr(
+            codewhale_localization::resolve_locale(&self.config.locale_tag),
+            codewhale_localization::MessageId::InstructionNoticeHeader,
+        );
+        messages
+            .iter()
+            .filter_map(|message| match message.content.first() {
+                Some(ContentBlock::Text { text, .. })
+                    if matches!(&message.role, Role::User) && text.starts_with(header.as_ref()) =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .any(|notice| notice == body)
+    }
+
+    pub(super) async fn apply_instruction_budget_notices(
+        &mut self,
+        tools: &[codewhale_models::Tool],
+        output_tokens: u32,
+    ) -> Result<(), String> {
+        if let Some(error) = self.instruction_budget_error.as_deref() {
+            return Err(format!("invalid [instruction_budget]: {error}"));
+        }
+        let mut context = self
+            .session
+            .pinned_prompt_context
+            .clone()
+            .unwrap_or_else(|| self.installed_next_turn_prompt_context());
+        context.planned_output_tokens = Some(output_tokens);
+        let budgets = self.instruction_budgets(&context);
+        let tool_catalog = preview::active_tool_catalog_sha256(tools);
+        let key = format!(
+            "{:?}:{tool_catalog}:{budgets:?}",
+            system_prompt_hash(self.session.system_prompt.as_ref())
+        );
+        let mut receipt_changed = false;
+        if self.instruction_guard_key.as_ref() != Some(&key) {
+            let (prompt, assembly, unowned_notices) = prompts::guard_instruction_prefix(
+                self.session.system_prompt.clone(),
+                self.session.project_context.as_ref(),
+                self.session.instruction_assembly.as_deref().cloned(),
+                budgets,
+                tools,
+            )
+            .map_err(|refusal| refusal.render(&self.config.locale_tag))?;
+            let changed = self.session.system_prompt != prompt;
+            receipt_changed =
+                changed || self.session.instruction_assembly.as_deref() != assembly.as_ref();
+            self.session.system_prompt = prompt;
+            self.session.instruction_assembly = assembly.map(Arc::new);
+            self.queue_instruction_notice();
+            if let Some(body) = crate::project_context::render_notice_body(
+                &unowned_notices,
+                &self.config.locale_tag,
+            ) {
+                self.queue_instruction_notice_body(body);
+            }
+            if changed {
+                self.session.last_system_prompt_hash =
+                    Some(system_prompt_hash(self.session.system_prompt.as_ref()));
+                self.session.pending_prefix_change_reason =
+                    Some("instruction-budget:static-guard".into());
+                self.session.context_update_baseline = None;
+            }
+            self.instruction_guard_key = Some(format!(
+                "{:?}:{tool_catalog}:{budgets:?}",
+                system_prompt_hash(self.session.system_prompt.as_ref())
+            ));
+        }
+        let notices = std::mem::take(&mut self.pending_instruction_notices);
+        if notices.is_empty() && receipt_changed {
+            self.emit_session_updated().await;
+        }
+        for body in notices {
+            self.add_session_message(self.runtime_text_message_with_turn_metadata(
+                body,
+                crate::core::ops::UserInputProvenance::Runtime,
+            ))
+            .await;
+        }
+        Ok(())
     }
 
     fn installed_next_turn_prompt_context(&self) -> NextTurnPromptContext {
-        NextTurnPromptContext::for_planned_turn(
+        let mut context = NextTurnPromptContext::for_planned_turn(
             self.api_provider,
             self.config.model.clone(),
             self.active_route_limits,
@@ -9273,20 +9811,35 @@ impl Engine {
             self.config.goal_token_budget,
             self.config.translation_enabled,
             self.config.verbosity.clone(),
-        )
+        );
+        let effort = turn_loop::resolve_auto_effort(
+            self.session.reasoning_effort.as_deref(),
+            self.api_provider,
+            &self.api_config.active_route_base_url(),
+            &self.config.model,
+        );
+        context.planned_output_tokens =
+            Some(crate::route_budget::effective_max_output_tokens_for_turn(
+                self.api_provider,
+                &self.config.model,
+                self.active_route_limits,
+                None,
+                effort.as_deref(),
+            ));
+        context
     }
 }
 
 fn default_plugin_tools_dir() -> PathBuf {
     codewhale_config::codewhale_home()
         .unwrap_or_else(|_| {
-            crate::config::effective_home_dir()
+            codewhale_paths::user_home()
                 .map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"))
         })
         .join("tools")
 }
 
-fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBuf {
+fn plugin_tools_dir(tools_config: Option<&codewhale_runtime::config::ToolsConfig>) -> PathBuf {
     if let Some(tools_config) = tools_config
         && let Some(custom_dir) = tools_config.plugin_dir.as_deref()
     {
@@ -9310,7 +9863,7 @@ fn first_notice(key: &str) -> bool {
 /// this added and the overrides refused for naming a built-in (D4).
 fn configure_plugin_tools(
     tool_registry: &mut crate::tools::ToolRegistry,
-    tools_config: Option<&crate::config::ToolsConfig>,
+    tools_config: Option<&codewhale_runtime::config::ToolsConfig>,
 ) -> (std::collections::HashSet<String>, Vec<String>) {
     // Everything registered before the plugin directory loads is built in
     // (native and host-dynamic tools); no script tool may replace it (D4).
@@ -9532,7 +10085,7 @@ pub(crate) fn exec_shell_ask_rule_decision_for_policy(
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
     let policy_tool_name =
-        crate::tools::canonical_action::canonical_action_alias(tool_name, tool_input);
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     // Task tools that hand a command string to the shell answer to the same
     // shell deny and ask rules. Their own approval requirement stays: a shell
     // allow rule does not waive it.
@@ -9582,7 +10135,7 @@ pub(crate) fn file_tool_ask_rule_decision_for_policy(
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
     let policy_tool_name =
-        crate::tools::canonical_action::canonical_action_alias(tool_name, tool_input);
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     let paths = file_tool_permission_paths(policy_tool_name, tool_input)?;
     if paths.is_empty() {
         if matches!(policy_tool_name, "write_file" | "edit_file" | "apply_patch") {
@@ -9678,7 +10231,7 @@ fn tool_ask_rule_decision_for_context(
 /// here too; a rule keyed on `path` would otherwise never see that target.
 fn file_tool_permission_paths(tool_name: &str, input: &Value) -> Option<Vec<String>> {
     let path_arguments = || {
-        let mut paths: Vec<String> = crate::tools::file::path_argument_keys()
+        let mut paths: Vec<String> = codewhale_tools::param_alias::path_argument_keys()
             .filter_map(|key| string_field(input, key))
             .collect();
         paths.dedup();
@@ -9697,7 +10250,7 @@ fn file_tool_permission_paths(tool_name: &str, input: &Value) -> Option<Vec<Stri
             })
         }
         "apply_patch" => Some(apply_patch_permission_paths(
-            &crate::tools::file::with_canonical_path_argument(input),
+            &codewhale_tools::param_alias::with_canonical_path_argument(input),
         )),
         _ => None,
     }
@@ -9707,7 +10260,8 @@ fn file_tool_permission_paths(tool_name: &str, input: &Value) -> Option<Vec<Stri
 /// tools (`write_file` / `edit_file` / `apply_patch`), `None` for any other
 /// tool. Feeds the in-workspace write carve-out (#5185).
 pub(crate) fn file_write_tool_target_paths(tool_name: &str, input: &Value) -> Option<Vec<String>> {
-    let canonical = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let canonical =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     if !matches!(canonical, "write_file" | "edit_file" | "apply_patch") {
         return None;
     }
@@ -9724,7 +10278,7 @@ fn string_field(input: &Value, key: &str) -> Option<String> {
 }
 
 fn apply_patch_permission_paths(input: &Value) -> Vec<String> {
-    crate::tools::apply_patch::preflight_apply_patch(input)
+    codewhale_tools::patch_preflight::preflight_apply_patch(input)
         .map(|preflight| preflight.touched_files)
         .unwrap_or_default()
 }
@@ -9824,7 +10378,7 @@ pub(crate) enum MockApprovalEvent {
     },
     RetryWithPolicy {
         id: String,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_sandbox::SandboxPolicy,
     },
 }
 
@@ -9931,7 +10485,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
     let compaction_cancellation = Arc::new(StdMutex::new(CompactionCancellationState::default()));
     let handle = EngineHandle {
         goal_state: new_shared_goal_state(),
-        sandbox_enforcement: crate::sandbox::policy::SandboxEnforcement::Unavailable,
+        sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,
         rx_event: Arc::new(RwLock::new(rx_event)),
         cancel_token: shared_cancel_token,
@@ -9975,6 +10529,7 @@ pub(crate) struct TurnMetadataSnapshot<'a> {
     pub(crate) approval_mode: ApprovalMode,
     pub(crate) working_set: &'a crate::working_set::WorkingSet,
     pub(crate) policy_narrowing: Option<&'a PolicyNarrowingEvent>,
+    pub(crate) messages: &'a [Message],
 }
 
 /// Immutable prompt facts for the next accepted turn.
@@ -9985,17 +10540,33 @@ pub(crate) struct TurnMetadataSnapshot<'a> {
 /// inherit the installed turn's goal, translation, verbosity, mode,
 /// model, or context window. Workspace-scoped prompt inputs remain engine
 /// configuration and are documented separately as snapshot dependencies.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct NextTurnPromptContext {
     pub(crate) provider: ProviderKind,
     pub(crate) model: String,
     pub(crate) route_limits: Option<codewhale_config::route::RouteLimits>,
+    pub(crate) planned_output_tokens: Option<u32>,
     pub(crate) mode: AppMode,
     pub(crate) goal_objective: Option<String>,
     pub(crate) goal_token_budget: Option<u32>,
     pub(crate) translation_enabled: bool,
     pub(crate) verbosity: Option<String>,
 }
+
+impl PartialEq for NextTurnPromptContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.model == other.model
+            && self.route_limits == other.route_limits
+            && self.mode == other.mode
+            && self.goal_objective == other.goal_objective
+            && self.goal_token_budget == other.goal_token_budget
+            && self.translation_enabled == other.translation_enabled
+            && self.verbosity == other.verbosity
+    }
+}
+
+impl Eq for NextTurnPromptContext {}
 
 /// Name the explicit prompt inputs that differ between two contexts, for the
 /// `change:<what>` prefix-pin reason.
@@ -10049,6 +10620,13 @@ impl NextTurnPromptContext {
     ) -> Self {
         Self {
             provider,
+            planned_output_tokens: Some(crate::route_budget::effective_max_output_tokens_for_turn(
+                provider,
+                &model,
+                route_limits,
+                None,
+                None,
+            )),
             model,
             route_limits,
             mode,
@@ -10223,9 +10801,9 @@ pub(crate) struct TurnRouteContext {
     pub(crate) client: Option<CodewhaleClient>,
     /// Route-scoped runtime config, captured by the planner. A preview must
     /// never construct child agents from the previously installed config.
-    pub(crate) api_config: Box<crate::config::Config>,
+    pub(crate) api_config: Box<codewhale_runtime::config::Config>,
     pub(crate) locale_tag: String,
-    pub(crate) role_models: HashMap<String, crate::config::SubagentModelOverride>,
+    pub(crate) role_models: HashMap<String, codewhale_runtime::config::SubagentModelOverride>,
     pub(crate) auto_model: bool,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) reasoning_effort_auto: bool,
@@ -10357,16 +10935,19 @@ pub use context::context_input_budget_for_route;
 use context::route_context_budget_for_provider;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_overflow_exhausted_message,
-    effective_max_output_tokens_for_route, extract_compaction_summary_prompt,
-    is_context_length_error_message, is_image_input_rejection_message,
-    route_context_budget_for_route, summarize_text,
+    extract_compaction_summary_prompt, is_context_length_error_message,
+    is_image_input_rejection_message, route_context_budget_for_route, summarize_text,
 };
 #[cfg(test)]
-use context::{context_input_budget_for_provider, effective_max_output_tokens};
+use context::{
+    context_input_budget_for_provider, effective_max_output_tokens,
+    effective_max_output_tokens_for_route,
+};
 mod dispatch;
 mod lsp_hooks;
+pub(crate) mod review;
 pub(crate) mod reviewer;
-mod streaming;
+pub(crate) mod streaming;
 mod token_estimate_cache;
 pub(crate) mod tool_catalog;
 pub(crate) mod tool_execution;
@@ -10375,7 +10956,7 @@ pub(crate) use tool_execution::pin_replay_span_sequence;
 mod tool_media;
 mod tool_preparation;
 mod tool_setup;
-pub(crate) mod turn_budget;
+use codewhale_runtime::turn_budget;
 pub(crate) mod turn_heartbeat;
 pub(crate) mod turn_loop;
 pub(crate) use approval::HumanDecision;
@@ -10412,26 +10993,28 @@ use self::streaming::{
     should_resume_interactive_after_network_drop, should_transparently_retry_stream,
     sleep_gap_detected, stream_read_error_user_message,
 };
-#[cfg(test)]
-use self::streaming::{
-    MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_STREAM_RETRIES, MAX_TRANSPARENT_STREAM_RETRIES,
-};
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME,
-    REQUEST_USER_INPUT_NAME, ToolSurfacePolicy, active_tools_for_request,
-    build_model_tool_catalog_with_surface, default_synthetic_catalog_tool_names,
-    execute_code_execution_tool, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message,
+    CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, ToolSurfacePolicy,
+    active_tools_for_request, build_model_tool_catalog_with_surface,
+    default_synthetic_catalog_tool_names, execute_code_execution_tool,
+    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
 };
 #[cfg(test)]
 use self::tool_catalog::{
-    TOOL_SEARCH_NAME, active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_tool_search, initial_active_tools, preflight_requested_deferred_tool,
-    should_default_defer_tool, tool_allowed, tool_catalog_consistency_issues, tool_denied,
+    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling, execute_tool_search,
+    initial_active_tools, preflight_requested_deferred_tool, should_default_defer_tool,
+    tool_allowed, tool_catalog_consistency_issues,
 };
 pub(crate) use self::tool_execution::emit_tool_audit;
 use self::tool_preparation::{prepare_tool_call, reprepare_tool_call_after_hook};
 use crate::tools::js_execution::execute_js_execution_tool;
+#[cfg(test)]
+use codewhale_runtime::turn_budget::{
+    DEFAULT_STREAM_MAX_ERRORS, DEFAULT_STREAM_MAX_RESUMES, DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
+};
+#[cfg(test)]
+use codewhale_tools::names::TOOL_SEARCH_NAME;
+use codewhale_tools::names::{REQUEST_USER_INPUT_NAME, is_tool_search_tool};
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -290,7 +290,7 @@ shell 无法承载的条目会被丢弃，而不是放任其破坏工具调用�
 
 **shell 命令最终确切得到什么——本地执行。** 当 `exec_shell` 在本地运行命令（默认情况）时，它不继承 Codewhale 的环境。它的环境按如下方式构建：
 
-1. 一份净化的固定父变量 allowlist——`PATH`、`HOME`、`USER`、`LANG` 和其他 `LC_*`/locale 条目、`TERM`、`SHELL`、`TMPDIR`、`proxy` 相关变量、`NO_COLOR` 这类颜色/终端条目、`CARGO_HOME`/`RUSTUP_HOME`/`RUSTUP_TOOLCHAIN`、Windows 系统与 MSVC 工具链条目，以及其他平台相关的键（完整列表在 `crates/tui/src/child_env.rs`）——仅此而已。allowlist 之外的变量，包括任何看起来像密钥的内容，都会被丢弃；
+1. 一份净化的固定父变量 allowlist——`PATH`、`HOME`、`USER`、`LANG` 和其他 `LC_*`/locale 条目、`TERM`、`SHELL`、`TMPDIR`、`proxy` 相关变量、`NO_COLOR` 这类颜色/终端条目、`CARGO_HOME`/`RUSTUP_HOME`/`RUSTUP_TOOLCHAIN`、Windows 系统与 MSVC 工具链条目，以及其他平台相关的键（完整列表在 `crates/runtime/src/child_env.rs`）——仅此而已。allowlist 之外的变量，包括任何看起来像密钥的内容，都会被丢弃；
 2. 然后，你的 `shell_env` hooks 产生的 `KEY=VALUE` 对叠加应用在上面。这些是你配置的显式值，因此它们胜过 allowlist。
 
 因此，`shell_env` hook 是把凭据送进一次本地 `exec_shell` 调用的受支持方式。启动 Codewhale 的终端中导出的环境变量里的密钥**不会**自行转发给本地 `exec_shell`。

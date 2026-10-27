@@ -45,11 +45,10 @@ jobs:
         run: node marketplace/scripts/check-marketplace.mjs
       - name: Check bundled catalog snapshot
         run: python3 core/scripts/sync-marketplace.py --marketplace marketplace --check
-      - name: Check current skill and Computer Use mirrors
+      - name: Check current skill mirrors
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           node marketplace/scripts/check-marketplace.mjs --core core
-          node marketplace/scripts/check-cu-sync.mjs --core core
       - name: Explain a drift failure
         if: failure()
         run: |

@@ -10,9 +10,8 @@
 //! Keeping every layer's text in one module makes prompt tuning a
 //! single-file operation.
 
-use crate::project_context::load_project_context_with_parents;
 use codewhale_config::AppMode;
-use codewhale_models::{SystemBlock, SystemPrompt};
+use codewhale_models::{SystemBlock, SystemPrompt, Tool};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -105,12 +104,17 @@ pub(crate) fn resolve_handoff_path(workspace: &Path) -> (PathBuf, &'static str) 
     }
 }
 
-/// Per-file size cap for `instructions = [...]` entries (#454). Mirrors
-/// the existing project-context cap in `project_context::load_context_file`
-/// so a malicious / oversized include can't blow the prompt budget on
-/// its own. Files larger than this are truncated with an explicit `[…truncated: N bytes omitted]`
-/// marker rather than skipped entirely so the model still sees the head.
-const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
+/// Per-file size cap for the workspace relay artifact (`/relay`, compaction).
+///
+/// Deliberately separate from the instruction-file ceiling: the relay is a
+/// workspace-writable checkpoint with its own trim marker, and
+/// `[instruction_budget] policy = "refuse"` must not change how the relay is
+/// read.
+const RELAY_ARTIFACT_MAX_BYTES: usize = 100 * 1024;
+
+fn read_prompt_file_bounded(path: &Path, cap: usize) -> std::io::Result<(String, usize)> {
+    read_prompt_text_bounded(std::fs::File::open(path)?, cap)
+}
 
 /// Read at most `cap` bytes of a prompt file plus slack for the leading
 /// whitespace the renderers trim, so an oversized file is never read whole
@@ -118,11 +122,13 @@ const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
 /// length (for the truncation note). A file that is not UTF-8 within the read
 /// window is an error, as a whole-file `read_to_string` would report; only a
 /// character cut by the window's end is dropped.
-fn read_prompt_file_bounded(path: &Path, cap: usize) -> std::io::Result<(String, usize)> {
+pub(crate) fn read_prompt_text_bounded(
+    file: std::fs::File,
+    cap: usize,
+) -> std::io::Result<(String, usize)> {
     use std::io::Read as _;
 
     const LEADING_WHITESPACE_SLACK: usize = 4 * 1024;
-    let file = std::fs::File::open(path)?;
     let full_len = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
     let mut bytes = Vec::new();
     file.take((cap + LEADING_WHITESPACE_SLACK) as u64)
@@ -151,7 +157,7 @@ fn read_prompt_file_bounded(path: &Path, cap: usize) -> std::io::Result<(String,
 
 /// Cap `trimmed` at `cap` bytes on a character boundary, noting what was
 /// omitted out of `total` (the file length when the read itself was bounded).
-fn cap_prompt_text(trimmed: &str, total: usize, cap: usize, hint: &str) -> String {
+pub(crate) fn cap_prompt_text(trimmed: &str, total: usize, cap: usize, hint: &str) -> String {
     if trimmed.len() <= cap && total <= trimmed.len() {
         return trimmed.to_string();
     }
@@ -372,7 +378,7 @@ fn environment_host_facts() -> (String, String) {
     }
     (
         std::env::consts::OS.to_string(),
-        crate::shell_dispatcher::global_dispatcher()
+        codewhale_sandbox::shell_dispatcher::global_dispatcher()
             .kind()
             .binary()
             .to_string(),
@@ -433,10 +439,9 @@ impl Drop for RecordedEnvironmentGuard {
 /// keep working with a `.into()` upgrade at the call site.
 #[derive(Debug, Clone)]
 pub enum InstructionSource {
-    /// Load this file from disk at prompt-render time. Original behavior:
-    /// missing files are skipped with a warning, oversized files are
-    /// truncated to `INSTRUCTIONS_FILE_MAX_BYTES` with an `[…elided]`
-    /// marker.
+    /// Read this file from disk when the instruction assembly runs.
+    /// Missing, empty, and over-`file_max_bytes` files are skipped with a
+    /// notice; a file that fits is charged to the global scope budget.
     File(PathBuf),
     /// Use the provided string directly. `name` becomes the
     /// `<instructions source="…">` attribute (typically a synthetic
@@ -456,63 +461,6 @@ impl From<&PathBuf> for InstructionSource {
     }
 }
 
-/// Render the `instructions = [...]` config array as a single
-/// system-prompt block (#454). Each source is processed in declared order;
-/// missing `File` sources are skipped with a tracing warning so a stale entry
-/// doesn't fail the launch. Empty input (or all sources missing/empty)
-/// returns `None` so callers append nothing.
-fn render_instructions_block(sources: &[InstructionSource]) -> Option<String> {
-    let mut sections: Vec<String> = Vec::new();
-    for source in sources {
-        let mut total_len: Option<usize> = None;
-        let (raw_source_name, raw_content): (String, String) = match source {
-            InstructionSource::File(path) => {
-                match read_prompt_file_bounded(path, INSTRUCTIONS_FILE_MAX_BYTES) {
-                    Ok((raw, full_len)) => {
-                        // `full_len` covers bytes the bounded read left unread.
-                        total_len = Some(full_len);
-                        (path.display().to_string(), raw)
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "instructions",
-                            ?err,
-                            ?path,
-                            "skipping unreadable instructions file"
-                        );
-                        continue;
-                    }
-                }
-            }
-            InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
-        };
-        let trimmed = raw_content.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // A bounded read that stopped short makes the file's own length the
-        // total; otherwise the trimmed text is everything there was.
-        let total = match total_len {
-            Some(full_len) if raw_content.len() < full_len => full_len,
-            _ => trimmed.len(),
-        };
-        let body = cap_prompt_text(
-            trimmed,
-            total,
-            INSTRUCTIONS_FILE_MAX_BYTES,
-            "consider splitting this instructions file",
-        );
-        sections.push(format!(
-            "<instructions source=\"{raw_source_name}\">\n{body}\n</instructions>"
-        ));
-    }
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n"))
-    }
-}
-
 /// Read the workspace-local relay artifact, if present, and format it as a
 /// system-prompt block. Returns `None` when the file is absent or empty so
 /// callers can keep the default-uncluttered prompt for fresh workspaces.
@@ -520,7 +468,7 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
     let (path, shown) = resolve_handoff_path(workspace);
     // The relay is workspace-writable, so it gets the same per-file cap as
     // an instructions file rather than an unbounded read into the prompt.
-    let (raw, full_len) = read_prompt_file_bounded(&path, INSTRUCTIONS_FILE_MAX_BYTES).ok()?;
+    let (raw, full_len) = read_prompt_file_bounded(&path, RELAY_ARTIFACT_MAX_BYTES).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -533,7 +481,7 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
     let relay = cap_prompt_text(
         trimmed,
         total,
-        INSTRUCTIONS_FILE_MAX_BYTES,
+        RELAY_ARTIFACT_MAX_BYTES,
         "shorten the relay artifact",
     );
     Some(format!(
@@ -1278,6 +1226,37 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
     session_context: PromptSessionContext<'_>,
     prompt_host: PromptHost,
 ) -> SystemPrompt {
+    system_prompt_with_instruction_assembly_for_host(
+        workspace,
+        _working_set_summary,
+        skills_dir,
+        instructions,
+        session_context,
+        prompt_host,
+        None,
+    )
+    .0
+}
+
+/// Compose the system prompt **and** the instruction assembly that produced
+/// its instruction block.
+///
+/// The assembly carries the per-scope budgets and every trim/skip notice, so
+/// the engine can enforce the static-prefix guard and surface the losses to
+/// the user, the model, and `/context` from one measurement.
+pub(crate) fn system_prompt_with_instruction_assembly_for_host(
+    workspace: &Path,
+    _working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[InstructionSource]>,
+    session_context: PromptSessionContext<'_>,
+    prompt_host: PromptHost,
+    instruction_input: Option<(
+        &crate::project_context::ProjectContext,
+        &crate::project_context::InstructionSettings,
+        crate::project_context::InstructionBudgets,
+    )>,
+) -> (SystemPrompt, crate::project_context::InstructionAssembly) {
     // One base prompt for every host (AGENTS.md: `BASE_PROMPT` is the sole
     // base prompt). Headless still skips interactive ceremony layers below —
     // the execution profile and authority recap — which are host chrome, not
@@ -1293,8 +1272,33 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
         &default_layers,
     );
 
-    // Load project context from workspace
-    let project_context = load_project_context_with_parents(workspace);
+    let default_settings = crate::project_context::InstructionSettings::default();
+    let settings = instruction_input
+        .as_ref()
+        .map_or(&default_settings, |input| input.1);
+    let raw_context = instruction_input.as_ref().map_or_else(
+        || {
+            crate::project_context::capture_instruction_context(
+                workspace,
+                instructions.unwrap_or_default(),
+                settings,
+            )
+        },
+        |input| input.0.clone(),
+    );
+    let mut project_context = raw_context;
+    let budgets = instruction_input.map_or_else(
+        || {
+            crate::project_context::InstructionBudgets::defaults_for(
+                session_context
+                    .context_window_override
+                    .map(|window| window as usize),
+            )
+        },
+        |input| input.2,
+    );
+    let mut assembly =
+        crate::project_context::assemble_instruction_block(&mut project_context, &[], &budgets);
 
     // 0. Locale-native reinforcement preamble (#1118 follow-up). When the
     // user's UI locale is non-English we prepend a short native-script
@@ -1311,16 +1315,22 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
     // `load_project_context_with_parents` generates an in-memory bounded
     // overview when no context file exists, so the fallback should usually be
     // available without writing project-local files.
-    let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
+    let mut full_prompt = if let Some(project_block) = assembly.block.as_deref() {
+        let start = composed.trim().len();
+        assembly.prompt_range = Some(start..start + 2 + project_block.len());
         format!("{}\n\n{project_block}", composed.trim())
     } else {
         // Extremely unlikely: context generation failed (e.g. filesystem error).
         // Use the shared constitution alone rather than panic.
         tracing::warn!("No project context available and auto-generation failed");
-        composed
+        composed.trim().to_string()
     };
 
     if let Some(preamble) = preamble {
+        if let Some(range) = assembly.prompt_range.as_mut() {
+            range.start += preamble.len() + 2;
+            range.end += preamble.len() + 2;
+        }
         full_prompt = format!("{preamble}\n\n{full_prompt}");
     }
 
@@ -1419,7 +1429,7 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
         workspace_parts.push(format!("{memory_block}\n\n{MEMORY_GUIDANCE}"));
     }
     if prompt_host == PromptHost::Interactive
-        && let Some(harness_block) = crate::continual_harness::prompt_block(workspace)
+        && let Some(harness_block) = codewhale_runtime::continual_harness::prompt_block(workspace)
     {
         workspace_parts.push(harness_block);
     }
@@ -1444,8 +1454,21 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
     }
     let workspace_body = workspace_parts.join("\n\n");
 
-    // Permissions fragment: configured `instructions = [...]` files (#454).
-    let permissions_body = instructions.and_then(render_instructions_block);
+    // Configured `instructions = [...]` files (#454) are global-scope
+    // instruction authority now: the assembly reads and charges them, and they
+    // render inside the project-instructions block instead of as a separate
+    // world-state fragment. Exactly one owner, one charge.
+    let runtime_sections: Vec<_> = instructions
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|source| match source {
+            InstructionSource::Inline { name, content } if name.starts_with("runtime:") => Some(
+                format!("<instructions source=\"{name}\">\n{content}\n</instructions>"),
+            ),
+            _ => None,
+        })
+        .collect();
+    let permissions_body = (!runtime_sections.is_empty()).then(|| runtime_sections.join("\n\n"));
 
     // Route fragment: verbosity / translation posture (the model id was
     // removed by the turn-meta diet — it is telemetry the model cannot act on).
@@ -1467,17 +1490,20 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
     // `.cursorrules`, `.clinerules`, `.windsurf/rules/*`, `.gemini/*`,
     // `.github/copilot-instructions.md` etc., beyond the canonical
     // `AGENTS.md` already in the constitution prefix.
-    if let Some(fragment) = codewhale_core::fragments::load_selected_project_instruction_fragment(
-        workspace,
-        &crate::project_context::active_fragment_candidates(),
-    ) {
+    if let Some(fragment) =
+        codewhale_core::fragments::load_selected_project_instruction_fragment_with_reader(
+            workspace,
+            &crate::project_context::fragment_candidates_for(&settings.imports),
+            |path| codewhale_util::fs_confined::open_read(workspace, path),
+        )
+    {
         // `BoundedFragment` already enforces `MAX_FRAGMENT_BYTES` (10K-token
         // ceiling) and per-fragment caps; WorldState's `with_*` also clamps.
         world_state = world_state.with_project_instructions(fragment.content);
         debug_assert!(world_state.validate_caps().is_ok());
     }
 
-    let mut blocks = crate::model_context::WorldStateSnapshot {
+    let mut blocks = codewhale_runtime::model_context::WorldStateSnapshot {
         constitution: full_prompt,
         world_state,
     }
@@ -1499,7 +1525,182 @@ pub(crate) fn system_prompt_for_mode_with_context_skills_session_and_approval_fo
         });
     }
 
-    SystemPrompt::Blocks(blocks)
+    (SystemPrompt::Blocks(blocks), assembly)
+}
+
+/// Estimated tokens of the request prefix before any conversation: every
+/// system block — so inline authority appended after the constitution counts
+/// — plus the tool schemas the request carries.
+#[must_use]
+pub(crate) fn measure_static_prefix(system: Option<&SystemPrompt>, tools: &[Tool]) -> usize {
+    let text_tokens = match system {
+        Some(SystemPrompt::Text(text)) => {
+            crate::compaction::estimate_text_tokens_conservative(text)
+        }
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| crate::compaction::estimate_text_tokens_conservative(&block.text))
+            .sum(),
+        None => 0,
+    };
+    let tool_tokens: usize = tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_string(tool).map_or(0, |json| {
+                crate::compaction::estimate_text_tokens_conservative(&json)
+            })
+        })
+        .sum();
+    text_tokens.saturating_add(tool_tokens)
+}
+
+const GUARD_PASSES_PER_SCOPE: usize = 2;
+
+fn replace_installed_instruction_block(
+    prompt: &mut Option<SystemPrompt>,
+    raw: &crate::project_context::ProjectContext,
+    installed: &crate::project_context::InstructionAssembly,
+    budgets: &crate::project_context::InstructionBudgets,
+) -> Result<
+    Option<crate::project_context::InstructionAssembly>,
+    crate::project_context::InstructionRefusal,
+> {
+    let Some(range) = installed.prompt_range.clone() else {
+        return Ok(None);
+    };
+    let text = match prompt.as_mut() {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(blocks)) => match blocks.first_mut() {
+            Some(block) => &mut block.text,
+            None => return Ok(None),
+        },
+        None => return Ok(None),
+    };
+    let owned = |block: Option<&str>| {
+        block
+            .filter(|block| !block.is_empty())
+            .map_or_else(String::new, |block| format!("\n\n{block}"))
+    };
+    if text.get(range.clone()) != Some(owned(installed.block.as_deref()).as_str()) {
+        return Err(crate::project_context::InstructionRefusal::ReceiptMismatch);
+    }
+    let mut candidate = raw.clone();
+    let mut next = crate::project_context::assemble_instruction_block(&mut candidate, &[], budgets);
+    let replacement = owned(next.block.as_deref());
+    text.replace_range(range.clone(), &replacement);
+    next.prompt_range = Some(range.start..range.start + replacement.len());
+    Ok(Some(next))
+}
+
+pub(crate) fn guard_instruction_prefix(
+    mut prompt: Option<SystemPrompt>,
+    raw: Option<&crate::project_context::ProjectContext>,
+    mut assembly: Option<crate::project_context::InstructionAssembly>,
+    budgets: crate::project_context::InstructionBudgets,
+    tools: &[Tool],
+) -> Result<
+    (
+        Option<SystemPrompt>,
+        Option<crate::project_context::InstructionAssembly>,
+        Vec<crate::project_context::InstructionNotice>,
+    ),
+    crate::project_context::InstructionRefusal,
+> {
+    use crate::project_context::{
+        InstructionAction, InstructionBudgetPolicy, InstructionLimit, InstructionNotice,
+        InstructionRefusal, InstructionScope,
+    };
+    if let Some(assembly) = assembly.as_mut() {
+        assembly
+            .notices
+            .retain(|notice| notice.limit != InstructionLimit::StaticGuard);
+    }
+    let refuse = budgets.policy == InstructionBudgetPolicy::Refuse;
+    if let Some((raw, installed)) = raw.zip(assembly.as_ref())
+        && installed.budgets != budgets
+        && let Some(next) =
+            replace_installed_instruction_block(&mut prompt, raw, installed, &budgets)?
+    {
+        assembly = Some(next);
+    }
+    if refuse
+        && let Some(loss) = assembly.as_ref().and_then(|assembly| {
+            assembly.notices.iter().find(|notice| {
+                notice.is_loss()
+                    && matches!(
+                        notice.limit,
+                        InstructionLimit::ScopeBudget
+                            | InstructionLimit::RulesBudget
+                            | InstructionLimit::FileContent
+                    )
+            })
+        })
+    {
+        let mut refused = loss.clone();
+        refused.action = InstructionAction::Refused;
+        return Err(InstructionRefusal::Loss(refused));
+    }
+    let Some(guard) = budgets.static_guard_tokens else {
+        return Ok((prompt, assembly, Vec::new()));
+    };
+    let mut measured = measure_static_prefix(prompt.as_ref(), tools);
+    if measured <= guard {
+        return Ok((prompt, assembly, Vec::new()));
+    }
+    if refuse {
+        return Err(InstructionRefusal::OverGuard { measured, guard });
+    }
+    let mut guard_notices: Vec<InstructionNotice> = Vec::new();
+    if let (Some(raw), Some(first)) = (raw, assembly.as_ref()) {
+        let mut effective = first.budgets;
+        let mut order = [
+            (InstructionScope::Global, first.global_tokens),
+            (InstructionScope::Project, first.project_tokens),
+        ];
+        order.sort_by_key(|&(_, retained)| std::cmp::Reverse(retained));
+        'scopes: for (scope, initial) in order {
+            let mut retained = initial;
+            for _ in 0..GUARD_PASSES_PER_SCOPE {
+                if measured <= guard || retained == 0 {
+                    break;
+                }
+                effective =
+                    effective.with_scope_ceiling(scope, retained.saturating_sub(measured - guard));
+                let Some(installed) = assembly.as_ref() else {
+                    break 'scopes;
+                };
+                let Some(next) =
+                    replace_installed_instruction_block(&mut prompt, raw, installed, &effective)?
+                else {
+                    break 'scopes;
+                };
+                retained = match scope {
+                    InstructionScope::Global => next.global_tokens,
+                    InstructionScope::Project => next.project_tokens,
+                };
+                assembly = Some(next);
+                measured = measure_static_prefix(prompt.as_ref(), tools);
+            }
+            if retained < initial {
+                guard_notices.push(InstructionNotice::static_guard(
+                    scope,
+                    initial - retained,
+                    false,
+                ));
+            }
+        }
+    }
+    if measured > guard {
+        guard_notices.push(InstructionNotice::static_guard(
+            InstructionScope::Global,
+            measured - guard,
+            true,
+        ));
+    }
+    if let Some(assembly) = assembly.as_mut() {
+        assembly.notices.append(&mut guard_notices);
+    }
+    Ok((prompt, assembly, guard_notices))
 }
 
 /// Flatten a system prompt to joined text (tests + debug inspectors).
@@ -1541,8 +1742,8 @@ pub fn world_state_from_session_facts(
     agent_topology_body: Option<&str>,
     skills_tools_body: Option<&str>,
     token_budget_body: Option<&str>,
-) -> crate::model_context::WorldState {
-    let mut state = crate::model_context::WorldState::new();
+) -> codewhale_runtime::model_context::WorldState {
+    let mut state = codewhale_runtime::model_context::WorldState::new();
     if let Some(body) = workspace_body.filter(|s| !s.trim().is_empty()) {
         state = state.with_workspace(body);
     }
@@ -2837,10 +3038,10 @@ mod tests {
     #[test]
     fn continual_harness_is_injected_as_untrusted_world_state() {
         let tmp = tempdir().expect("tempdir");
-        crate::continual_harness::refine(
+        codewhale_runtime::continual_harness::refine(
             tmp.path(),
-            crate::continual_harness::HarnessRefinement {
-                kind: crate::continual_harness::HarnessEntryKind::PromptNote,
+            codewhale_runtime::continual_harness::HarnessRefinement {
+                kind: codewhale_runtime::continual_harness::HarnessEntryKind::PromptNote,
                 title: "Verify release claims from direct evidence".to_string(),
                 content: "Retain exact current command output for each release gate.".to_string(),
                 evidence:
@@ -2879,10 +3080,10 @@ mod tests {
     #[test]
     fn headless_prompt_omits_continual_harness_guidance() {
         let tmp = tempdir().expect("tempdir");
-        crate::continual_harness::refine(
+        codewhale_runtime::continual_harness::refine(
             tmp.path(),
-            crate::continual_harness::HarnessRefinement {
-                kind: crate::continual_harness::HarnessEntryKind::PromptNote,
+            codewhale_runtime::continual_harness::HarnessRefinement {
+                kind: codewhale_runtime::continual_harness::HarnessEntryKind::PromptNote,
                 title: "Use a project-specific orchestration routine".to_string(),
                 content: "This guidance is available through the harness tool.".to_string(),
                 evidence: "Prior interactive session.".to_string(),
@@ -3767,12 +3968,6 @@ mod tests {
         assert!(!prompt.contains("# Session relay"));
     }
 
-    #[test]
-    fn render_instructions_block_returns_none_for_empty_input() {
-        let empty: &[super::InstructionSource] = &[];
-        assert!(super::render_instructions_block(empty).is_none());
-    }
-
     /// #4632 — The system prompt prefix (the byte-stable part cached by
     /// inference servers) must never contain private content: absolute
     /// filesystem paths, API keys, or home-directory references.
@@ -3826,112 +4021,108 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_instructions_block_skips_missing_files_with_warning() {
-        let tmp = tempdir().expect("tempdir");
-        let real = tmp.path().join("real.md");
-        std::fs::write(&real, "real content here").unwrap();
-        let bogus = tmp.path().join("does-not-exist.md");
-
-        let block = super::render_instructions_block(&[bogus.clone().into(), real.clone().into()])
-            .expect("present file should produce a block");
-        assert!(block.contains("real content here"));
-        assert!(block.contains(&real.display().to_string()));
-        // Bogus path is skipped, not rendered.
-        assert!(!block.contains(&bogus.display().to_string()));
+    fn test_tool(name: &str, description: &str) -> Tool {
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}}
+            }),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }
     }
 
     #[test]
-    fn render_instructions_block_concatenates_in_declared_order() {
-        let tmp = tempdir().expect("tempdir");
-        let a = tmp.path().join("a.md");
-        let b = tmp.path().join("b.md");
-        std::fs::write(&a, "ALPHA_MARKER").unwrap();
-        std::fs::write(&b, "BRAVO_MARKER").unwrap();
-
-        let block = super::render_instructions_block(&[a.into(), b.into()]).expect("non-empty");
-        let alpha_pos = block.find("ALPHA_MARKER").expect("alpha rendered");
-        let bravo_pos = block.find("BRAVO_MARKER").expect("bravo rendered");
+    fn static_prefix_guard_measures_tool_schemas() {
+        let prompt = SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "constitution".to_string(),
+            cache_control: None,
+        }]);
+        let without_tools = super::measure_static_prefix(Some(&prompt), &[]);
+        let with_tools = super::measure_static_prefix(
+            Some(&prompt),
+            &[test_tool("read_file", "Read a file from the workspace")],
+        );
         assert!(
-            alpha_pos < bravo_pos,
-            "instructions must concatenate in declared order"
+            with_tools > without_tools,
+            "tool schemas are part of the stable prefix ({with_tools} vs {without_tools})"
         );
     }
 
     #[test]
-    fn render_instructions_block_skips_empty_files() {
-        let tmp = tempdir().expect("tempdir");
-        let empty = tmp.path().join("empty.md");
-        let real = tmp.path().join("real.md");
-        std::fs::write(&empty, "   \n   \n").unwrap();
-        std::fs::write(&real, "real content").unwrap();
-
-        let block =
-            super::render_instructions_block(&[empty.into(), real.into()]).expect("non-empty");
-        // Empty file produces no `<instructions>` section, only the real one.
-        let count = block.matches("<instructions").count();
-        assert_eq!(count, 1, "only the non-empty file should produce a section");
-    }
-
-    #[test]
-    fn render_instructions_block_truncates_oversize_files() {
-        let tmp = tempdir().expect("tempdir");
-        let big = tmp.path().join("big.md");
-        // 200 KiB of content — well above the 100 KiB cap.
-        std::fs::write(&big, "X".repeat(200 * 1024)).unwrap();
-
-        let block = super::render_instructions_block(&[big.into()]).expect("non-empty");
-        assert!(block.contains("[…truncated:"), "truncation marker missing");
-        // Block should be much smaller than the original file.
-        assert!(
-            block.len() < 110 * 1024,
-            "block should be capped near 100 KiB"
-        );
-    }
-
-    /// `InstructionSource::Inline` bypasses disk reads — the content is used
-    /// directly and `name` becomes the `<instructions source="…">` attribute.
-    /// Empty / oversize handling mirrors `File` variant.
-    #[test]
-    fn render_instructions_block_handles_inline_source() {
-        let block = super::render_instructions_block(&[super::InstructionSource::Inline {
-            name: "embedded:test/template".to_string(),
-            content: "INLINE_MARKER_CONTENT".to_string(),
-        }])
-        .expect("non-empty");
-        assert!(block.contains("INLINE_MARKER_CONTENT"));
-        assert!(block.contains("source=\"embedded:test/template\""));
-
-        // Empty inline → skipped just like empty file.
-        let empty_inline = super::InstructionSource::Inline {
-            name: "empty".to_string(),
-            content: "   ".to_string(),
+    fn prefix_guard_includes_memory_growth() {
+        let stable = SystemBlock {
+            block_type: "text".to_string(),
+            text: "stable prefix".to_string(),
+            cache_control: None,
         };
-        assert!(super::render_instructions_block(&[empty_inline]).is_none());
-
-        // Oversize inline → truncated with elided marker.
-        let big_inline = super::InstructionSource::Inline {
-            name: "huge".to_string(),
-            content: "Y".repeat(200 * 1024),
-        };
-        let trimmed = super::render_instructions_block(&[big_inline]).expect("non-empty");
-        assert!(trimmed.contains("[…truncated:"));
-
-        // File + Inline 混用,顺序保持。
-        let tmp = tempdir().expect("tempdir");
-        let file_path = tmp.path().join("file-first.md");
-        std::fs::write(&file_path, "FILE_MARKER").unwrap();
-        let mixed = super::render_instructions_block(&[
-            file_path.into(),
-            super::InstructionSource::Inline {
-                name: "inline-second".to_string(),
-                content: "INLINE_MARKER".to_string(),
+        let one_block = SystemPrompt::Blocks(vec![stable.clone()]);
+        let with_volatile = SystemPrompt::Blocks(vec![
+            stable,
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "MEMORY_BLOCK ".repeat(2_000),
+                cache_control: None,
             },
-        ])
-        .expect("non-empty");
-        let file_pos = mixed.find("FILE_MARKER").expect("file rendered");
-        let inline_pos = mixed.find("INLINE_MARKER").expect("inline rendered");
-        assert!(file_pos < inline_pos, "声明顺序必须保留(File then Inline)");
+        ]);
+        assert!(
+            super::measure_static_prefix(Some(&with_volatile), &[])
+                > super::measure_static_prefix(Some(&one_block), &[])
+        );
+    }
+
+    #[test]
+    fn relay_artifact_cap_unchanged() {
+        // The relay keeps its own 100 KiB cap; the instruction ceiling comes
+        // from `[instruction_budget] file_max_bytes` and must not change how a
+        // relay artifact is read.
+        assert_eq!(super::RELAY_ARTIFACT_MAX_BYTES, 100 * 1024);
+    }
+
+    #[test]
+    fn configured_instructions_render_inside_the_instruction_block() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let present = workspace.join("present.md");
+        std::fs::write(&present, "CONFIGURED_PRESENT").unwrap();
+        let empty = workspace.join("empty.md");
+        std::fs::write(&empty, "   \n\n").unwrap();
+        let missing = workspace.join("missing.md");
+        let configured = vec![
+            super::InstructionSource::File(missing),
+            super::InstructionSource::File(empty),
+            super::InstructionSource::File(present.clone()),
+            super::InstructionSource::Inline {
+                name: "embedded:test".to_string(),
+                content: "INLINE_PRESENT".to_string(),
+            },
+        ];
+        let mut ctx = crate::project_context::load_project_context_with_parents(workspace);
+        let budgets = crate::project_context::InstructionBudgets::defaults_for(Some(128_000));
+        let assembly =
+            crate::project_context::assemble_instruction_block(&mut ctx, &configured, &budgets);
+        let block = assembly.block.expect("a block");
+        assert!(block.contains("CONFIGURED_PRESENT"), "{block}");
+        assert!(block.contains("INLINE_PRESENT"), "{block}");
+        assert!(block.contains("source=\"embedded:test\""), "{block}");
+        let present_at = block.find("CONFIGURED_PRESENT").unwrap();
+        let inline_at = block.find("INLINE_PRESENT").unwrap();
+        assert!(present_at < inline_at, "declared order is preserved");
+        assert!(
+            assembly
+                .notices
+                .iter()
+                .any(|notice| notice.action == crate::project_context::InstructionAction::Skipped),
+            "missing and empty entries are reported: {:?}",
+            assembly.notices
+        );
     }
 
     #[test]
@@ -3956,8 +4147,9 @@ mod tests {
             "configured instructions file body must appear in the prompt"
         );
         assert!(
-            prompt.contains(&extra.display().to_string()),
-            "instructions block must annotate its source path"
+            prompt.contains("source=\"extra-instructions.md\"")
+                && !prompt.contains(&extra.display().to_string()),
+            "instructions block must name its source without the host root"
         );
     }
 
@@ -4035,8 +4227,8 @@ mod tests {
         );
 
         let flat = system_prompt_flat_text(&SystemPrompt::Blocks(blocks.clone()));
-        assert!(flat.contains(crate::model_context::FragmentId::Workspace.marker()));
-        assert!(flat.contains(crate::model_context::FragmentId::Route.marker()));
+        assert!(flat.contains(codewhale_runtime::model_context::FragmentId::Workspace.marker()));
+        assert!(flat.contains(codewhale_runtime::model_context::FragmentId::Route.marker()));
         assert!(flat.contains("## Environment"));
         assert!(
             flat.contains("verbosity: concise") && flat.contains("translation: off"),
@@ -4048,7 +4240,7 @@ mod tests {
         assert!(flat.contains("remember the cutover"));
         assert!(flat.contains("## Authority Recap"));
         assert!(
-            !flat.contains(crate::model_context::FragmentId::SkillsTools.marker()),
+            !flat.contains(codewhale_runtime::model_context::FragmentId::SkillsTools.marker()),
             "skills remain in constitution, not a volatile SkillsTools fragment"
         );
     }
@@ -4088,40 +4280,44 @@ mod tests {
             },
         );
 
-        let extract_world = |prompt: &SystemPrompt| -> crate::model_context::WorldState {
-            let SystemPrompt::Blocks(blocks) = prompt else {
-                panic!("expected Blocks");
-            };
-            let mut state = crate::model_context::WorldState::new();
-            for block in blocks.iter().skip(1) {
-                for id in crate::model_context::FragmentId::all() {
-                    let marker = id.marker();
-                    if let Some(rest) = block.text.strip_prefix(marker) {
-                        let body = rest.trim_start_matches('\n');
-                        state.upsert(crate::model_context::ModelContextFragment::new(
-                            *id,
-                            id.role(),
-                            body,
-                        ));
+        let extract_world =
+            |prompt: &SystemPrompt| -> codewhale_runtime::model_context::WorldState {
+                let SystemPrompt::Blocks(blocks) = prompt else {
+                    panic!("expected Blocks");
+                };
+                let mut state = codewhale_runtime::model_context::WorldState::new();
+                for block in blocks.iter().skip(1) {
+                    for id in codewhale_runtime::model_context::FragmentId::all() {
+                        let marker = id.marker();
+                        if let Some(rest) = block.text.strip_prefix(marker) {
+                            let body = rest.trim_start_matches('\n');
+                            state.upsert(
+                                codewhale_runtime::model_context::ModelContextFragment::new(
+                                    *id,
+                                    id.role(),
+                                    body,
+                                ),
+                            );
+                        }
                     }
                 }
-            }
-            state
-        };
+                state
+            };
 
         let previous = extract_world(&first);
         let next = extract_world(&second);
         let diff = next.render_diff(Some(&previous));
         assert!(
-            diff.retained
-                .iter()
-                .any(|marker| marker == crate::model_context::FragmentId::Route.marker()),
+            diff.retained.iter().any(
+                |marker| marker == codewhale_runtime::model_context::FragmentId::Route.marker()
+            ),
             "unchanged route fragment must be retained: {diff:?}"
         );
         assert!(
             diff.updated
                 .iter()
-                .any(|fragment| fragment.id == crate::model_context::FragmentId::Workspace),
+                .any(|fragment| fragment.id
+                    == codewhale_runtime::model_context::FragmentId::Workspace),
             "goal change must update workspace fragment: {diff:?}"
         );
     }

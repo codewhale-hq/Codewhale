@@ -63,21 +63,12 @@ fn sandbox_visible_fixture_root() -> &'static Path {
     })
 }
 
-/// Build a syntactically valid, non-secret JWT fixture without embedding a
-/// high-entropy token-shaped literal in Git history.
-pub(crate) fn future_test_jwt(label: &str) -> String {
-    use base64::Engine as _;
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":9999999999}"#);
-    format!("test.{payload}.{label}")
-}
-
 /// Mark `workspace` trusted in the test's config, creating it first so the
 /// trust key is the canonical path. Repository-supplied commands and skills
 /// load only in a trusted workspace.
 pub(crate) fn trust_workspace(workspace: &Path) {
     std::fs::create_dir_all(workspace).expect("create test workspace");
-    crate::config::save_workspace_trust(workspace).expect("trust test workspace");
+    codewhale_runtime::config::save_workspace_trust(workspace).expect("trust test workspace");
 }
 
 #[cfg(test)]
@@ -161,13 +152,10 @@ mod tests {
         );
         inside(
             "snapshots",
-            &crate::snapshot::snapshot_dir_for(Path::new("/nonexistent/codewhale-fence-probe"))
+            &codewhale_snapshot::snapshot_dir_for(Path::new("/nonexistent/codewhale-fence-probe"))
                 .expect("snapshot dir"),
         );
-        for bundle in crate::plugins::builtin::materialized_dirs() {
-            inside("built-in plugins", &bundle);
-        }
-        let audit = crate::audit::audit_log_path().expect("audit log path");
+        let audit = codewhale_runtime::audit::audit_log_path().expect("audit log path");
         assert!(
             audit.starts_with(std::env::temp_dir()),
             "the audit log resolved outside the temp dir: {}",
@@ -372,7 +360,7 @@ mod tests {
             "removing HOME variables must keep state in the isolated test root"
         );
         assert_eq!(
-            crate::config_persistence::config_toml_path(None)
+            codewhale_runtime::config_persistence::config_toml_path(None)
                 .expect("resolve isolated config path"),
             unsealed_test_state_root().join(codewhale_config::CONFIG_FILE_NAME)
         );
@@ -381,7 +369,7 @@ mod tests {
     #[test]
     fn lock_without_sealed_paths_does_not_use_developer_config() {
         let _lock = lock_test_env();
-        let path = crate::config_persistence::config_toml_path(None)
+        let path = codewhale_runtime::config_persistence::config_toml_path(None)
             .expect("resolve isolated config path");
         let root = isolated_test_state_root();
         assert!(
@@ -401,17 +389,21 @@ mod tests {
         const RECEIPT_ENV: &str = "CODEWHALE_TEST_STATE_ISOLATION_RECEIPT";
 
         if std::env::var_os(PROBE_ENV).is_some() {
-            let config_path =
-                crate::config_persistence::persist_root_bool_key(None, "allow_shell", true)
-                    .expect("write isolated config");
-            let direct_config_path =
-                crate::config::save_workspace_trust(Path::new("/tmp/codewhale-test-workspace"))
-                    .expect("write through direct default config path");
-            crate::settings::Settings::default()
+            let config_path = codewhale_runtime::config_persistence::persist_root_bool_key(
+                None,
+                "allow_shell",
+                true,
+            )
+            .expect("write isolated config");
+            let direct_config_path = codewhale_runtime::config::save_workspace_trust(Path::new(
+                "/tmp/codewhale-test-workspace",
+            ))
+            .expect("write through direct default config path");
+            codewhale_runtime::settings::Settings::default()
                 .save()
                 .expect("write isolated settings");
             let settings_path =
-                crate::settings::Settings::path().expect("resolve isolated settings");
+                codewhale_runtime::settings::Settings::path().expect("resolve isolated settings");
             let root = isolated_test_state_root();
             assert!(config_path.starts_with(root), "{}", config_path.display());
             assert!(
@@ -507,8 +499,10 @@ mod tests {
             let redirect = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &redirected);
             let reader = std::thread::spawn(move || {
                 started_tx.send(()).expect("signal config path read start");
-                tx.send(crate::config_persistence::config_toml_path(None))
-                    .expect("send resolved config path");
+                tx.send(codewhale_runtime::config_persistence::config_toml_path(
+                    None,
+                ))
+                .expect("send resolved config path");
             });
 
             started_rx
@@ -550,7 +544,7 @@ mod tests {
         let writer = std::thread::spawn(move || {
             started_tx.send(()).expect("signal settings save start");
             saved_tx
-                .send(crate::settings::Settings::default().save())
+                .send(codewhale_runtime::settings::Settings::default().save())
                 .expect("send settings save result");
         });
         started_rx

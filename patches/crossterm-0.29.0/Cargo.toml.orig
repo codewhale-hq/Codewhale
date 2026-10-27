@@ -28,7 +28,7 @@ default = ["bracketed-paste", "events", "windows", "derive-more"]
 bracketed-paste = []
 
 ## Enables reading input/events from the system using the [`event`] module.
-events = ["dep:mio", "dep:signal-hook", "dep:signal-hook-mio"]
+events = ["filedescriptor", "dep:mio", "dep:signal-hook", "dep:signal-hook-mio"]
 
 ## Enables windows specific crates.
 windows = ["dep:winapi", "dep:crossterm_winapi"]

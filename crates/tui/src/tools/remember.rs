@@ -3,8 +3,8 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::native_memory::{MemoryScope, NativeMemoryStore};
 use async_trait::async_trait;
+use codewhale_runtime::native_memory::{MemoryScope, NativeMemoryStore};
 use serde::Deserialize;
 use serde_json::{Value, json};
 

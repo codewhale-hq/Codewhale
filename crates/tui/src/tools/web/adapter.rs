@@ -111,7 +111,7 @@ pub(crate) async fn transform<T: DeserializeOwned>(
 pub(crate) fn search_selected(context: &ToolContext) -> bool {
     context
         .features
-        .enabled(crate::features::Feature::WebSearchHost)
+        .enabled(codewhale_runtime::features::Feature::WebSearchHost)
 }
 
 /// Read the complete provider body under the selected Host capture cap. A cap

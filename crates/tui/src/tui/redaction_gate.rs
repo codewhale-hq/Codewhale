@@ -183,9 +183,9 @@ fn wrap_body_muted(lines: &mut Vec<Line<'static>>, app: &App, id: MessageId, wid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use crate::tui::views::action_footer_lines;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn app_fixture() -> App {
@@ -345,7 +345,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("selected.toml");
         std::fs::write(&path, "[redaction]\nmodel_bound = \"disabled\"\n").unwrap();
-        let config = Config::load(Some(path.clone()), None).unwrap();
+        let config = crate::plugins::providers::load_config(Some(path.clone()), None).unwrap();
         // An existing directory makes the write fail on every supported OS.
         std::fs::create_dir(codewhale_config::redaction::model_bound_state_path(&path)).unwrap();
         assert!(config.record_redaction_confirmation().is_err());

@@ -1,9 +1,9 @@
 use super::CodewhaleClient;
 use super::chat::{parse_chat_message, parse_sse_chunk};
-use crate::config::{Config, ProviderConfig, ProvidersConfig};
 use anyhow::Result;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Delta, Message, MessageRequest, StreamEvent, Tool};
+use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 use serde_json::{Value, json};
 
 fn ds4_client() -> CodewhaleClient {
@@ -19,10 +19,13 @@ fn ds4_client() -> CodewhaleClient {
             ..Default::default()
         },
     );
-    CodewhaleClient::new(&Config {
-        provider: Some("ds4".to_string()),
-        providers: Some(providers),
-        ..Default::default()
+    CodewhaleClient::new(&{
+        let __cw_config_init_0_0 = Some("ds4".to_string());
+        let __cw_config_init_0_1 = Some(providers);
+        let mut __cw_config_init_0_value: Config = Default::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     })
     .expect("DS4 client")
 }

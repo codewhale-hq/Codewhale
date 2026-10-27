@@ -14,11 +14,11 @@ fn undo_conversation(app: &mut App) -> CommandResult {
 fn retry(app: &mut App) -> CommandResult {
     super::execute("/retry", app)
 }
-use crate::config::Config;
 use crate::tui::app::{App, AppAction, TuiOptions};
 use crate::tui::history::HistoryCell;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, Tool};
+use codewhale_runtime::config::Config;
 use std::path::PathBuf;
 
 pub(in crate::commands) fn create_test_app() -> App {
@@ -28,8 +28,8 @@ pub(in crate::commands) fn create_test_app() -> App {
     };
     let mut app = App::new(options, &Config::default());
     app.ui_locale = codewhale_localization::Locale::En;
-    app.cost_currency = crate::pricing::CostCurrency::Usd;
-    app.api_provider = crate::config::ProviderKind::Deepseek;
+    app.cost_currency = codewhale_config::pricing::CostCurrency::Usd;
+    app.api_provider = codewhale_config::ProviderKind::Deepseek;
     app
 }
 
@@ -316,7 +316,7 @@ fn test_retry_truncates_long_input() {
 
 #[test]
 fn test_patch_undo_requests_session_resync_after_restore() {
-    use crate::snapshot::SnapshotRepo;
+    use codewhale_snapshot::SnapshotRepo;
     use tempfile::tempdir;
 
     let tmp = tempdir().unwrap();
@@ -379,7 +379,7 @@ fn test_patch_undo_requests_session_resync_after_restore() {
 
 #[test]
 fn test_undo_legacy_chain_falls_back_to_conversation_only() {
-    use crate::snapshot::SnapshotRepo;
+    use codewhale_snapshot::SnapshotRepo;
     use tempfile::tempdir;
 
     let tmp = tempdir().unwrap();
@@ -421,7 +421,7 @@ fn test_undo_legacy_chain_falls_back_to_conversation_only() {
 
 #[test]
 fn test_patch_undo_prunes_pre_turn_context() {
-    use crate::snapshot::SnapshotRepo;
+    use codewhale_snapshot::SnapshotRepo;
     use tempfile::tempdir;
 
     let tmp = tempdir().unwrap();
@@ -485,7 +485,7 @@ fn test_patch_undo_prunes_pre_turn_context() {
 
 #[test]
 fn test_patch_undo_never_crosses_session_boundary() {
-    use crate::snapshot::SnapshotRepo;
+    use codewhale_snapshot::SnapshotRepo;
     use tempfile::tempdir;
 
     let tmp = tempdir().unwrap();
@@ -581,7 +581,7 @@ fn test_undo_reports_that_files_were_not_reverted_when_the_repo_is_unavailable()
 // lock before the directory it pointed at is deleted.
 struct UndoFixture {
     workspace: PathBuf,
-    repo: crate::snapshot::SnapshotRepo,
+    repo: codewhale_snapshot::SnapshotRepo,
     _home: crate::test_support::SealedHome,
     _tmp: tempfile::TempDir,
 }
@@ -592,7 +592,7 @@ impl UndoFixture {
         let home = crate::test_support::SealedHome::at(tmp.path());
         let workspace = tmp.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
-        let repo = crate::snapshot::SnapshotRepo::open_or_init(&workspace).unwrap();
+        let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace).unwrap();
         Self {
             workspace,
             repo,
@@ -1407,9 +1407,9 @@ fn patch_undo_waits_for_a_pending_post_turn_snapshot() {
     fx.write("a.txt", "a1");
 
     // The turn has completed; its post-turn snapshot is still in flight.
-    let pending = crate::snapshot::PendingPostTurnSnapshot::reserve();
+    let pending = codewhale_snapshot::PendingPostTurnSnapshot::reserve();
     let writer = {
-        let repo = crate::snapshot::SnapshotRepo::open_or_init(&fx.workspace).unwrap();
+        let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&fx.workspace).unwrap();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(500));
             let taken = repo.take_snapshot("post-turn:1", Some("s1")).unwrap();
@@ -1646,6 +1646,8 @@ fn whole_debug_registry_matches_portable_inventory_and_exact_host_authority() {
                         trust,
                         login,
                         work_surface,
+                        navigation,
+                        voice_input,
                     } = bundle.contexts(capabilities).into_parts();
                     assert!(
                         permissions.is_none()
@@ -1655,6 +1657,8 @@ fn whole_debug_registry_matches_portable_inventory_and_exact_host_authority() {
                             && trust.is_none()
                             && login.is_none()
                             && work_surface.is_none()
+                            && navigation.is_none()
+                            && voice_input.is_none()
                     );
                     for (name, present, capability) in [
                         ("session", session.is_some(), Caps::SESSION),

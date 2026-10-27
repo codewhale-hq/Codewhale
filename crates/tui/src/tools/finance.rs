@@ -14,7 +14,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64,
 };
-use crate::network_policy::Decision;
+use codewhale_net::network_policy::Decision;
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
@@ -46,7 +46,7 @@ impl FinanceEndpoints {
         format!(
             "{}?symbols={}",
             self.quote_base.trim_end_matches('/'),
-            crate::utils::url_encode(symbol)
+            codewhale_util::utils::url_encode(symbol)
         )
     }
 
@@ -54,7 +54,7 @@ impl FinanceEndpoints {
         format!(
             "{}/{}?interval=1d&range=5d",
             self.chart_base.trim_end_matches('/'),
-            crate::utils::url_encode(symbol)
+            codewhale_util::utils::url_encode(symbol)
         )
     }
 }
@@ -192,7 +192,7 @@ impl FinanceTool {
     pub fn new() -> Self {
         Self {
             endpoints: FinanceEndpoints::default(),
-            client: crate::tls::reqwest_client_builder()
+            client: codewhale_release::tls::reqwest_client_builder()
                 .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
@@ -206,7 +206,7 @@ impl FinanceTool {
                 quote_base: quote_base.into(),
                 chart_base: chart_base.into(),
             },
-            client: crate::tls::reqwest_client_builder()
+            client: codewhale_release::tls::reqwest_client_builder()
                 .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
@@ -305,7 +305,7 @@ impl ToolSpec for FinanceTool {
         let deadline = std::time::Instant::now() + timeout;
         let host = context
             .features
-            .enabled(crate::features::Feature::FinanceHost);
+            .enabled(codewhale_runtime::features::Feature::FinanceHost);
         let quote_result = if host {
             fetch_host_endpoint(
                 &self.client,
@@ -373,7 +373,7 @@ fn check_network_policy(
         return Ok(());
     };
     for base in [&endpoints.quote_base, &endpoints.chart_base] {
-        let Some(host) = crate::network_policy::host_from_url(base) else {
+        let Some(host) = codewhale_net::network_policy::host_from_url(base) else {
             continue;
         };
         match decider.evaluate(&host, "finance") {
@@ -1297,7 +1297,7 @@ mod tests {
     }
 
     fn denied_context_for(host: &str) -> (ToolContext, tempfile::TempDir) {
-        use crate::network_policy::{NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{NetworkPolicy, NetworkPolicyDecider};
         let (ctx, tmp) = context();
         let policy = NetworkPolicy {
             default: Decision::Allow.into(),
@@ -1357,7 +1357,7 @@ mod tests {
         // default = prompt with no allow list: the undecided host must fail
         // closed with the approval hint, never with a silent request.
         let (ctx, tmp) = context();
-        use crate::network_policy::{NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{NetworkPolicy, NetworkPolicyDecider};
         let policy = NetworkPolicy {
             default: Decision::Prompt.into(),
             allow: Vec::new(),

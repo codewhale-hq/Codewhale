@@ -1,7 +1,7 @@
 {
   "name": "@codewhale/runtime-sdk",
   "version": "0.10.2",
-  "description": "Typed JavaScript helpers for Codewhale Runtime API Fleet endpoints.",
+  "description": "JavaScript helpers for Codewhale Runtime Fleet operations and read-only thread events.",
   "license": "MIT",
   "type": "module",
   "main": "index.js",

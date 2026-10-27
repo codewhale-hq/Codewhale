@@ -34,13 +34,13 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::config::Config;
 use crate::fleet::profile::AgentProfile;
-use crate::fleet::role::public_role_label;
 use crate::fleet::roster::{FleetRoster, ProfileLayer, ProfileOrigin, layers_from_parts};
 use crate::fleet::worker_runtime::roster_member_agent_type;
 use crate::tui::app::App;
 use crate::tui::menu_style;
+use codewhale_agent_contract::role::public_role_label;
+use codewhale_runtime::config::Config;
 
 /// Rows one PageUp/PageDown travels. Pages clamp at the ends per the shared
 /// vocabulary instead of wrapping (#6290).
@@ -50,7 +50,7 @@ use crate::tui::views::{
     truncate_view_text,
 };
 use crate::tui::whales;
-use crate::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
+use codewhale_agent_contract::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
@@ -85,7 +85,7 @@ impl OperatorInfo {
             app.last_effective_provider_identity
                 .clone()
                 .unwrap_or_else(|| {
-                    if route_provider == crate::config::ProviderKind::Custom {
+                    if route_provider == codewhale_config::ProviderKind::Custom {
                         app.provider_identity_for_persistence().to_string()
                     } else {
                         route_provider.as_str().to_string()
@@ -94,7 +94,7 @@ impl OperatorInfo {
         } else {
             app.provider_identity_for_persistence().to_string()
         };
-        let provider = if route_provider == crate::config::ProviderKind::Custom {
+        let provider = if route_provider == codewhale_config::ProviderKind::Custom {
             provider_id.clone()
         } else {
             route_provider.provider().display_name().to_string()

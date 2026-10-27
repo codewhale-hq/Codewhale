@@ -1,9 +1,9 @@
 use super::*;
 // `fs` was a cfg(test) import on the parent, and `Path` is now only used by
 // the legacy/render seams. Both belong here.
-use crate::config::Config;
 use crate::tui::app::{App, TuiOptions};
 use codewhale_localization::Locale;
+use codewhale_runtime::config::Config;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -103,12 +103,14 @@ fn create_test_app(root: &Path) -> (App, TempDir) {
         mcp_config_path: temp.path().join("mcp.json"),
         ..crate::tui::test_support::test_tui_options(root)
     };
-    let config = Config {
-        tools: Some(crate::config::ToolsConfig {
+    let config = {
+        let __cw_config_init_0_0 = Some(codewhale_runtime::config::ToolsConfig {
             plugin_dir: Some(tools_dir.to_string_lossy().into_owned()),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_0_value: Config = Default::default();
+        __cw_config_init_0_value.tools = __cw_config_init_0_0;
+        __cw_config_init_0_value
     };
     let discovery = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv();
     let registry = discovery.registry_for_workspace(root);
@@ -213,16 +215,11 @@ fn list_show_validate_are_read_only_and_label_legacy_tools() {
         assert!(!result.is_error, "{:?}", result.message);
         assert!(!state_path.exists(), "read-only command wrote plugin state");
     }
-    // PR #5865's call shape, with main's assertions: the workspace bundle plus
-    // the built-in computer-use bundle, which every binary now carries and
-    // which lists disabled until it is reviewed.
     let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
         .message
         .unwrap();
-    assert!(list.contains("Plugin bundles (2)"), "{list}");
-    // The renderer escapes markdown, so the hyphen arrives backslashed.
-    assert!(list.contains(r"computer\-use"), "{list}");
-    assert!(list.contains("builtin · not-reviewed"), "{list}");
+    assert!(list.contains("Plugin bundles (1)"), "{list}");
+    assert!(list.contains("workspace · not-reviewed"), "{list}");
     assert!(list.contains("disabled"));
     assert!(list.contains("Legacy plugin tools (1)"));
 }
@@ -931,7 +928,7 @@ fn plugin_dismissals_list_and_reset_both_kinds() {
     fs::create_dir_all(&codewhale_home).unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
     let (mut app, _temp) = create_test_app(root.path());
-    crate::settings::Settings::transact_opt(|settings| {
+    codewhale_runtime::settings::Settings::transact_opt(|settings| {
         Ok(settings
             .dismissed_plugin_suggestions
             .insert("keptaway".to_string())
@@ -957,7 +954,7 @@ fn plugin_dismissals_list_and_reset_both_kinds() {
         .expect("reset receipt");
     assert!(reset.contains("keptaway"), "{reset}");
     assert!(
-        crate::settings::Settings::load()
+        codewhale_runtime::settings::Settings::load()
             .unwrap()
             .dismissed_plugin_suggestions
             .is_empty(),

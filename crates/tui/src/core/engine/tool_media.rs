@@ -77,10 +77,13 @@ fn publish_image(
     let (_, width, height) =
         crate::image_attach::decode_and_guard_image(&bytes).map_err(|_| invalid())?;
     let identity = serde_json::to_vec(&(session_id, call_id, 0u8)).map_err(|_| invalid())?;
-    let handle = format!("art_image_{}", crate::hashing::sha256_hex(&identity));
+    let handle = format!(
+        "art_image_{}",
+        codewhale_runtime::hashing::sha256_hex(&identity)
+    );
     let storage_path =
         PathBuf::from(crate::artifacts::ARTIFACTS_DIR_NAME).join(format!("{handle}.image"));
-    let digest = crate::hashing::sha256_hex(&bytes);
+    let digest = codewhale_runtime::hashing::sha256_hex(&bytes);
     let now = unix_millis_now();
     let proposed = EvidenceArtifact {
         handle: handle.clone(),

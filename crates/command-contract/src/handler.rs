@@ -48,9 +48,10 @@ impl CommandCapabilities {
     /// basic session capability.
     pub const SESSION_LIFECYCLE: Self = Self(1 << 13);
     /// Session-control host data (FEAT-024 D3), the next non-conflicting bit
-    /// after `SESSION_LIFECYCLE`. Required only by the six host-dependent
+    /// after `SESSION_LIFECYCLE`. Required only by the seven host-dependent
     /// control commands (`/relay`, `/rename`, `/resume`, `/rc`, `/remote-env`,
-    /// `/title`); `/remote-env` also declares `PRESENTATION`. Bit 14 fit the
+    /// `/title`, `/color`); `/remote-env` and `/color` also declare
+    /// `PRESENTATION`. Bit 14 fit the
     /// original `u16` backing without speculative widening in FEAT-023.
     pub const SESSION_CONTROL: Self = Self(1 << 14);
     /// Session-export host data (FEAT-025 D1), the next non-conflicting bit
@@ -95,12 +96,14 @@ impl CommandCapabilities {
     /// general configuration and system settings.
     pub const PET: Self = Self(1 << 26);
     /// Workspace trust and trusted-path allow-list host data (FEAT-028 D3),
-    /// independent of the general config facet and of `WORKSPACE` path reads.
+    /// independent of the general config facet and of `WORKSPACE` operations.
     pub const TRUST: Self = Self(1 << 27);
     /// Account/provider session state for `/login` and `/logout` (FEAT-028 D3).
     pub const LOGIN: Self = Self(1 << 28);
     /// Workbar placement/panel state for `/workbar` (FEAT-028 D3).
     pub const WORK_SURFACE: Self = Self(1 << 29);
+    pub const NAVIGATION: Self = Self(1 << 30);
+    pub const VOICE_INPUT: Self = Self(1 << 31);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -174,6 +177,8 @@ pub struct CommandContexts<'a> {
     trust: Option<&'a mut dyn crate::config::CommandTrustContext>,
     login: Option<&'a mut dyn crate::config::CommandLoginContext>,
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
+    navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
+    voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
 }
 
 /// Consumed envelope used when one handler needs several independent facets.
@@ -208,6 +213,8 @@ pub struct ContextParts<'a> {
     pub trust: Option<&'a mut dyn crate::config::CommandTrustContext>,
     pub login: Option<&'a mut dyn crate::config::CommandLoginContext>,
     pub work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
+    pub navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
+    pub voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
 }
 
 impl<'a> CommandContexts<'a> {
@@ -243,6 +250,8 @@ impl<'a> CommandContexts<'a> {
             trust: None,
             login: None,
             work_surface: None,
+            navigation: None,
+            voice_input: None,
         }
     }
 
@@ -278,6 +287,8 @@ impl<'a> CommandContexts<'a> {
             trust: self.trust,
             login: self.login,
             work_surface: self.work_surface,
+            navigation: self.navigation,
+            voice_input: self.voice_input,
         }
     }
 
@@ -317,6 +328,28 @@ impl<'a> CommandContexts<'a> {
         assert!(
             self.work_surface.replace(value).is_none(),
             "work-surface facet already set"
+        );
+        self
+    }
+
+    pub fn with_navigation(
+        mut self,
+        value: &'a mut dyn crate::navigation::CommandNavigationContext,
+    ) -> Self {
+        assert!(
+            self.navigation.replace(value).is_none(),
+            "navigation facet already set"
+        );
+        self
+    }
+
+    pub fn with_voice_input(
+        mut self,
+        value: &'a mut dyn crate::navigation::CommandVoiceInputContext,
+    ) -> Self {
+        assert!(
+            self.voice_input.replace(value).is_none(),
+            "voice-input facet already set"
         );
         self
     }

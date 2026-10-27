@@ -117,9 +117,11 @@ whole-document atomic replace. One per-workspace advisory flock
   fleet`, `codewhale resume`/`fork` mounts and the TUI's background task runtime
   (`/task`, `task_create`, automations) take the flock shared, so several
   sessions in one folder hold it at once. Failing to get it only logs a warning.
-- **Exclusive, fatal on failure.** `codewhale serve` and the other standalone
-  Runtime hosts take it exclusively and refuse to start without it. Beside such an
-  owner, shared holders cannot append.
+- **Exclusive, degrade read-only.** `codewhale serve` and the other standalone
+  Runtime hosts take it exclusively and refuse every durable ledger append when
+  another process already holds it; they log the refusal and pick the ledger back
+  up when the process restarts after that owner exits. Beside such an owner,
+  shared holders cannot append.
 
 Every shared holder may append, and each append replaces the whole file, so the
 last rename wins. The ledger is loaded once at boot; agents another process

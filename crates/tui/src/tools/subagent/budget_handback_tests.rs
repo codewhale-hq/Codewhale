@@ -5,7 +5,7 @@ use tempfile::{TempDir, tempdir};
 use tokio::sync::Notify;
 
 struct Fixture {
-    workspace: TempDir,
+    _workspace: TempDir,
     manager: SharedSubAgentManager,
     task: Option<JoinHandle<()>>,
     server: JoinHandle<()>,
@@ -44,8 +44,6 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     // Only these cases exercise wall/API timeouts. The other cases exercise
     // budget and report semantics, so leave room for full-suite scheduling.
     let timeout_case = matches!(mode, "hold" | "timeout" | "work-timeout");
-    // "work-timeout" narrows its own deadline below; its 30s budget sizes the
-    // hand-back reserve and must not undercut that deadline.
     let wall_time_secs = if matches!(mode, "hold" | "timeout") {
         5
     } else {
@@ -74,10 +72,10 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
                     requests.push(body.clone());
                     requests.len()
                 };
-                let choice = if call == 1 {
+                let choice = if call == 1 || mode == "tool-only" {
                     json!({"index": 0, "message": {"role": "assistant",
                         "content": if mode == "tool-only" { Value::Null } else { json!("RECORDED_FINDING: checksum validation is missing.") },
-                        "tool_calls": [{"id": "read-one", "type": "function", "function": {
+                        "tool_calls": [{"id": format!("read-{call}"), "type": "function", "function": {
                             "name": "read", "arguments": "{\"path\":\"README.md\"}"
                         }}]}, "finish_reason": "tool_calls"})
                 } else {
@@ -111,8 +109,8 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let config = crate::config::Config {
-        retry: Some(crate::config::RetryConfig {
+    let config = {
+        let __cw_config_init_0_0 = Some(codewhale_runtime::config::RetryConfig {
             enabled: Some(false),
             max_retries: Some(0),
             initial_delay: Some(0.0),
@@ -121,8 +119,10 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_0_value.retry = __cw_config_init_0_0;
+        __cw_config_init_0_value
     }
     .with_legacy_root(
         Some("fixture-key".to_string()),
@@ -138,21 +138,6 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     spec.runtime_profile.wall_time_secs = Some(wall_time_secs);
     spec.runtime_profile.wall_deadline_ms = Some(epoch_millis_now() + wall_time_secs * 1_000);
     if mode == "work-timeout" {
-        // A partly consumed original deadline leaves time to persist the
-        // missing-coverage receipt after the in-flight call is abandoned.
-        //
-        // The hand-back window is the reserve `wall_deadlines` carves off the
-        // hard deadline: `wall_time_secs * 100ms`. The shared 5s budget made
-        // that only 500ms, which had to cover the digest artifact, the
-        // unreported-usage state write, the pre-report checkpoint and the
-        // loopback connect before the report reached the server. On Windows
-        // CI it did not fit, so the report fell back without reaching the
-        // server (2 requests, not 3). A 30s budget reserves 3s. The work
-        // deadline lands 6s in: the first call, its tool, and the dispatch of
-        // the second call must all fit before it, and a loaded shared-process
-        // `cargo test --workspace` run overran the earlier 2s (#6698). The
-        // step API timeout below is longer than that, so the in-flight call
-        // is still abandoned by wall time, not by a step timeout.
         spec.runtime_profile.wall_deadline_ms = Some(epoch_millis_now() + 9_000);
     }
     spec.launch_manifest = Some(serde_json::from_value(json!({
@@ -174,9 +159,9 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     runtime.spawn_depth = spec.spawn_depth;
     runtime.allow_shell = false;
     runtime.accept_edits = false;
-    runtime.step_api_timeout = if mode == "work-timeout" {
-        // Past the 6s work deadline, and bounding the held hand-back call
-        // no tighter than the 9s hard deadline already does.
+    runtime.step_api_timeout = if mode == "timeout" {
+        Duration::from_millis(100)
+    } else if mode == "work-timeout" {
         Duration::from_secs(10)
     } else if timeout_case {
         Duration::from_secs(2)
@@ -222,14 +207,14 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
         fork_context: false,
         started_at: Instant::now(),
         max_steps,
-        wall_time: Duration::from_secs(wall_time_secs),
+        wall_time: Some(Duration::from_secs(wall_time_secs)),
         wall_ceiling_ms: None,
         input_rx,
         launch_gate: None,
         _foreground_child_registration: None,
     }));
     Fixture {
-        workspace,
+        _workspace: workspace,
         manager,
         task: Some(task),
         server,
@@ -244,15 +229,15 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_consolidates_tool_only_work_and_checks_declared_deliverables() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
-    let mut fixture = fixture("tool-only", 15, 1).await;
+async fn owner_step_limit_preserves_tool_only_work_without_an_extra_request() {
+    let _retry = codewhale_runtime::retry_status::test_guard();
+    codewhale_runtime::retry_status::clear_rate_limit();
+    let mut fixture = fixture("tool-only", 15, 2).await;
     let result = fixture.finish().await;
     assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
     assert_eq!(result.steps_taken, 2);
     assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(45));
-    assert!(result.result.as_deref().unwrap().contains("PARTIAL_REPORT"));
+    assert!(result.result.as_deref().unwrap().contains("README.md"));
     assert!(
         result
             .checkpoint
@@ -263,7 +248,7 @@ async fn budget_handback_turn_consolidates_tool_only_work_and_checks_declared_de
             .flat_map(|message| &message.content)
             .any(
                 |block| matches!(block, ContentBlock::ToolResult { tool_use_id, content, .. }
-                if tool_use_id == "read-one" && content.contains("TOOL_EVIDENCE"))
+                if tool_use_id == "read-1" && content.contains("TOOL_EVIDENCE"))
             ),
         "the read must execute successfully before reporting: {:?}",
         result.checkpoint,
@@ -277,20 +262,6 @@ async fn budget_handback_turn_consolidates_tool_only_work_and_checks_declared_de
             .unwrap()
             .iter()
             .any(|tool| tool["function"]["name"] == "read")
-    );
-    assert_eq!(requests[1]["model"], requests[0]["model"]);
-    assert!(requests[1].get("tools").is_none_or(Value::is_null));
-    assert!(requests[1].get("tool_choice").is_none_or(Value::is_null));
-    assert!(
-        requests[1].to_string().contains("TOOL_EVIDENCE"),
-        "report must read actual completed tool output"
-    );
-    assert!(
-        requests[1]["max_tokens"]
-            .as_u64()
-            .or_else(|| requests[1]["max_completion_tokens"].as_u64())
-            .unwrap()
-            <= 1_024
     );
     drop(requests);
     let guard = fixture.manager.read().await;
@@ -308,17 +279,14 @@ async fn budget_handback_turn_consolidates_tool_only_work_and_checks_declared_de
     assert!(fixture.completions.try_recv().is_err());
 }
 
-/// #6536 — the provider truncates the hand-back report. The deterministic
-/// digest recorded before that turn stays the deliverable: in the result
-/// text `agent result` / `agent wait` return, and as a private file.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn budget_handback_truncated_report_leaves_the_digest_as_the_deliverable() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
+async fn owner_step_limit_keeps_the_digest_as_the_deliverable() {
+    let _retry = codewhale_runtime::retry_status::test_guard();
+    codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("truncated", 15, 1).await;
     let result = fixture.finish().await;
-    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
+    assert_eq!(fixture.requests.lock().unwrap().len(), 1);
     assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
     let text = result.result.as_deref().unwrap();
     assert!(
@@ -326,7 +294,6 @@ async fn budget_handback_truncated_report_leaves_the_digest_as_the_deliverable()
         "digest is the result: {text}"
     );
     assert!(!text.contains("TRUNCATED_REPORT"), "{text}");
-    assert!(text.contains("did not finish"), "{text}");
     assert!(text.contains("this child's deliverable"), "{text}");
 
     let state_root = fixture.manager.read().await.state_root.clone();
@@ -334,7 +301,7 @@ async fn budget_handback_truncated_report_leaves_the_digest_as_the_deliverable()
         &state_root,
         &Path::new(".codewhale/state/subagent-results").join(format!(
             "{}.md",
-            crate::hashing::sha256_hex(b"report-worker")
+            codewhale_runtime::hashing::sha256_hex(b"report-worker")
         )),
     )
     .unwrap();
@@ -346,147 +313,9 @@ async fn budget_handback_truncated_report_leaves_the_digest_as_the_deliverable()
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_rejects_provider_tools_and_preserves_fallback_verdicts() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
-    let mut fixture = fixture("tool", 15, 1).await;
-    let result = fixture.finish().await;
-    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
-    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
-    assert!(!fixture.workspace.path().join("report.md").exists());
-    assert!(
-        result
-            .result
-            .as_deref()
-            .unwrap()
-            .contains("provider returned a tool call")
-    );
-    assert!(
-        !result
-            .result
-            .as_deref()
-            .unwrap()
-            .contains("REJECTED_REPORT")
-    );
-    assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(45));
-    let history = &result.checkpoint.as_ref().unwrap().messages;
-    let completed = history
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    for block in history.iter().flat_map(|message| &message.content) {
-        match block {
-            ContentBlock::ToolUse { id, .. } => assert!(
-                completed.contains(id.as_str()),
-                "no orphan tool call may survive for replay"
-            ),
-            ContentBlock::ServerToolUse { .. } => {
-                panic!("a rejected server tool call entered history")
-            }
-            ContentBlock::Text { text, .. } => assert!(!text.contains("REJECTED_REPORT")),
-            _ => {}
-        }
-    }
-    assert!(
-        history
-            .iter()
-            .flat_map(|message| &message.content)
-            .any(|block| matches!(block,
-        ContentBlock::Text { text, .. } if text.contains("Host budget hand-back receipt")))
-    );
-    assert_eq!(
-        fixture.manager.read().await.worker_records["report-worker"]
-            .verification
-            .status,
-        "deliverable_missing"
-    );
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_failure_and_timeout_do_not_add_worker_retries() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
-    for (mode, reason) in [
-        ("failure", "provider call failed"),
-        ("timeout", "report deadline expired"),
-    ] {
-        let mut fixture = fixture(mode, 15, 1).await;
-        tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
-            .await
-            .expect("report request must reach the fixture");
-        let result = fixture.finish().await;
-        assert_eq!(
-            fixture.requests.lock().unwrap().len(),
-            2,
-            "{mode}: {result:?}"
-        );
-        assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
-        assert!(
-            result.result.as_deref().unwrap().contains(reason),
-            "{result:?}"
-        );
-        assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(15));
-        assert_eq!(
-            fixture.manager.read().await.worker_records["report-worker"].has_unreported_usage,
-            mode == "timeout",
-            "only the timed-out dispatched call establishes missing coverage here",
-        );
-        assert_eq!(
-            fixture.manager.read().await.worker_records["report-worker"]
-                .verification
-                .status,
-            "deliverable_missing"
-        );
-    }
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_missing_report_usage_is_not_claimed_as_zero_cost() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
-    let mut fixture = fixture("report-unknown", 15, 1).await;
-    let result = fixture.finish().await;
-    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
-    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
-    assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(15));
-    let report = result.result.as_deref().unwrap();
-    assert!(report.contains("PARTIAL_REPORT"));
-    assert!(report.contains("only a subtotal, not a zero-cost report"));
-    let host_receipts: Vec<_> = result
-        .checkpoint
-        .as_ref()
-        .unwrap()
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. }
-                if text.starts_with("Host budget hand-back receipt:") =>
-            {
-                Some(text)
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        host_receipts.len(),
-        1,
-        "one attributed canonical report outcome"
-    );
-    assert!(host_receipts[0].contains("unreported provider usage remains unknown"));
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn budget_handback_inflight_wall_timeout_persists_unreported_usage() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
+    let _retry = codewhale_runtime::retry_status::test_guard();
+    codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("work-timeout", 15, 4).await;
     let result = fixture.finish().await;
     assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
@@ -499,8 +328,8 @@ async fn budget_handback_inflight_wall_timeout_persists_unreported_usage() {
     );
     assert_eq!(
         fixture.requests.lock().unwrap().len(),
-        3,
-        "the reserved hand-back turn still dispatches after an unmeasured in-flight request; its own deadline bounds it"
+        2,
+        "the owner deadline does not admit another model request for reporting"
     );
     let manager = fixture.manager.read().await;
     assert!(manager.worker_records["report-worker"].has_unreported_usage);
@@ -534,8 +363,6 @@ fn budget_handback_coverage_marker_is_sticky_without_reclassifying_legacy_or_mea
     let legacy: AgentWorkerRecord = serde_json::from_value(legacy).unwrap();
     assert!(!legacy.has_unreported_usage);
     manager.worker_records.insert("worker".to_string(), legacy);
-    let (_output, lease) = manager.reserve_handback("worker", 500, 1_024).unwrap();
-    drop(lease);
     manager.record_worker_usage("worker", "missing", &Usage::default(), None);
     manager.record_worker_usage(
         "worker",
@@ -558,9 +385,9 @@ fn budget_handback_coverage_marker_is_sticky_without_reclassifying_legacy_or_mea
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_cancellation_wins_once_and_releases_shared_reservation() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
+async fn child_work_cancellation_wins_once() {
+    let _retry = codewhale_runtime::retry_status::test_guard();
+    codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
     tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
         .await
@@ -579,22 +406,13 @@ async fn budget_handback_turn_cancellation_wins_once_and_releases_shared_reserva
             .contains("cancelled")
     );
     assert!(fixture.completions.try_recv().is_err());
-    assert!(
-        fixture
-            .manager
-            .read()
-            .await
-            .handback_reservations
-            .values()
-            .all(|value| value.upgrade().is_none())
-    );
 }
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn budget_handback_turn_cancellation_after_response_preserves_actual_usage() {
-    let _retry = crate::retry_status::test_guard();
-    crate::retry_status::clear_rate_limit();
+async fn child_work_cancellation_after_response_preserves_actual_usage() {
+    let _retry = codewhale_runtime::retry_status::test_guard();
+    codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
     tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
         .await
@@ -617,7 +435,7 @@ async fn budget_handback_turn_cancellation_after_response_preserves_actual_usage
                 && usage_total_tokens(&usage) == 30
             {
                 assert!(source_id.starts_with("child:report-worker:turn:"));
-                assert!(source_id.contains(":request:1:dispatch:"));
+                assert!(source_id.contains(":request:2:dispatch:"));
                 break;
             }
         }
@@ -641,26 +459,8 @@ async fn budget_handback_turn_cancellation_after_response_preserves_actual_usage
     assert!(fixture.completions.try_recv().is_err());
 }
 
-#[test]
-fn handback_reservation_uses_the_fixed_allowance_and_refuses_a_second_turn() {
-    let tmp = tempdir().unwrap();
-    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 4);
-    manager.register_worker(make_worker_spec("w", tmp.path().to_path_buf()));
-    let (output, lease) = manager.reserve_handback("w", 500, 1_024).unwrap();
-    assert_eq!(output, 1_024);
-    assert!(matches!(
-        manager.reserve_handback("w", 500, 1_024),
-        Err(reason) if reason.contains("already in flight")
-    ));
-    drop(lease);
-    assert!(matches!(
-        manager.reserve_handback("w", 8_200, 1_024),
-        Err(reason) if reason.contains("fixed hand-back allowance")
-    ));
-}
-
 #[tokio::test]
-async fn budget_handback_expired_original_deadline_refuses_the_model_call() {
+async fn child_job_preserves_the_original_deadline_without_a_reserve() {
     let tmp = tempdir().unwrap();
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
@@ -691,19 +491,12 @@ async fn budget_handback_expired_original_deadline_refuses_the_model_call() {
     )
     .await
     .unwrap();
-    let outcome =
-        budget_handback::admit_report(&job, &[], "wall-time budget exhausted", 1024).await;
-    assert!(matches!(outcome, Err(ref why) if why.contains("deadline has expired")));
+    assert!(
+        job.deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+    );
     assert_eq!(job.steps(), 0, "no model turn was admitted");
     assert!(!runtime.manager.read().await.worker_records["expired"].has_unreported_usage);
-    assert!(
-        runtime
-            .manager
-            .read()
-            .await
-            .handback_reservations
-            .is_empty()
-    );
 }
 
 fn git(root: &Path, args: &[&str]) {

@@ -178,7 +178,7 @@ fn fingerprint(root: &Path, relative: &str) -> Option<String> {
     }
     Some(format!(
         "sha256:{}",
-        crate::hashing::hex_bytes(hash.finalize())
+        codewhale_runtime::hashing::hex_bytes(hash.finalize())
     ))
 }
 
@@ -240,7 +240,7 @@ impl DeliveryEvidence {
         candidates.extend(baseline.dirty.keys().cloned());
         if let Some(head) = baseline.head.as_deref() {
             let mut args = vec!["diff"];
-            args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS);
+            args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS);
             args.extend(["--name-only", "-z", head, "HEAD", "--"]);
             let output = git(&baseline.root, &args)?;
             for path in output
@@ -429,9 +429,9 @@ pub(super) fn declared_paths(
     for path in paths {
         let path = normalize_claim_path(&path)?;
         if path == "."
-            || path
-                .split('/')
-                .any(|part| crate::snapshot::is_git_metadata_name(std::ffi::OsStr::new(part)))
+            || path.split('/').any(|part| {
+                codewhale_util::git_metadata::is_git_metadata_name(std::ffi::OsStr::new(part))
+            })
         {
             return Err("deliverables must name files outside git metadata".into());
         }

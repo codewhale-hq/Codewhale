@@ -54,6 +54,7 @@ pub enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusScope {
     TerminalPanel,
+    RoutePicker,
     PetHabitat,
     Pet,
     /// Only the sandbox-elevation decision card.
@@ -78,6 +79,10 @@ impl FocusScope {
     pub fn admits(self, focus: Focus) -> bool {
         match self {
             Self::TerminalPanel => focus == Focus::TerminalPanel,
+            Self::RoutePicker => matches!(
+                focus,
+                Focus::Modal(ModalKind::ProviderPicker | ModalKind::ModelPicker)
+            ),
             Self::PetHabitat => focus == Focus::Modal(ModalKind::PetHabitat),
             Self::Pet => matches!(focus, Focus::Composer | Focus::Modal(ModalKind::PetHabitat)),
             Self::Elevation => focus == Focus::Modal(ModalKind::Elevation),
@@ -134,7 +139,9 @@ pub enum ShellBindingId {
     ToolDetails,
     ContextInspector,
     ProviderRoute,
+    ProviderOffer,
     Help,
+    ExternalEditor,
     Settings,
     /// Tab: cycle the session mode.
     ModeCycle,
@@ -216,7 +223,9 @@ impl ShellBinding {
             ShellBindingId::ToolDetails => is_tool_details_shortcut(key),
             ShellBindingId::ContextInspector => is_context_inspector_shortcut(key),
             ShellBindingId::ProviderRoute => is_provider_route_shortcut(key),
+            ShellBindingId::ProviderOffer => key.code == KeyCode::F(7) && key.modifiers.is_empty(),
             ShellBindingId::Help => is_help_shortcut(key),
+            ShellBindingId::ExternalEditor => key_shortcuts::is_external_editor_shortcut(key),
             ShellBindingId::Settings => is_settings_shortcut(key),
             ShellBindingId::ModeCycle => is_mode_cycle_shortcut(key),
             ShellBindingId::PermissionCycle => is_permission_cycle_shortcut(key),
@@ -428,6 +437,18 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
         catalog_chord: "F3 / /provider",
         footer_chord: "F3",
         // The route is also pickable before a session exists.
+        focus: FocusScope::AnyShell,
+    },
+    ShellBinding {
+        id: ShellBindingId::ProviderOffer,
+        catalog_chord: crate::keybinding_table::PROVIDER_OFFER_CHORD,
+        footer_chord: crate::keybinding_table::PROVIDER_OFFER_CHORD,
+        focus: FocusScope::RoutePicker,
+    },
+    ShellBinding {
+        id: ShellBindingId::ExternalEditor,
+        catalog_chord: crate::keybinding_table::EXTERNAL_EDITOR_CHORD,
+        footer_chord: "F4",
         focus: FocusScope::AnyShell,
     },
     ShellBinding {

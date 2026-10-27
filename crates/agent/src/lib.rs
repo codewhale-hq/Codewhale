@@ -1131,7 +1131,7 @@ mod tests {
 
         for (provider, id) in [
             (ProviderKind::Zai, "GLM-5.2"),
-            (ProviderKind::Stepfun, "step-3.7-flash"),
+            (ProviderKind::Stepfun, "step-5-preview"),
             (ProviderKind::Minimax, "MiniMax-M2.1"),
             (ProviderKind::MinimaxAnthropic, "MiniMax-M3"),
             (ProviderKind::Openmodel, "deepseek-v4-flash"),
@@ -1307,7 +1307,7 @@ mod tests {
 
         let stepfun = registry.resolve_ok(None, Some(ProviderKind::Stepfun));
         assert_eq!(stepfun.resolved.provider, ProviderKind::Stepfun);
-        assert_eq!(stepfun.resolved.id, "step-3.7-flash");
+        assert_eq!(stepfun.resolved.id, "step-5-preview");
 
         for (alias, expected) in [
             ("minimax", "MiniMax-M3"),

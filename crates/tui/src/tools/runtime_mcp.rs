@@ -363,7 +363,7 @@ fn connected_result(
         .into_iter()
         .filter(|(name, _)| {
             owners.get(name).map(String::as_str) == Some(server_name)
-                && !crate::core::engine::tool_catalog::tool_matches_any_rule(
+                && !codewhale_execpolicy::tool_rules::tool_matches_any_rule(
                     &context.disallowed_tools,
                     name,
                 )
@@ -381,7 +381,7 @@ fn connected_result(
         "transport": transport,
         "server": server_name,
         "new_tools": tools_list.len(),
-        "total_mcp_tools": pool.all_tools().iter().filter(|(name, _)| !crate::core::engine::tool_catalog::tool_matches_any_rule(&context.disallowed_tools, name)).count(),
+        "total_mcp_tools": pool.all_tools().iter().filter(|(name, _)| !codewhale_execpolicy::tool_rules::tool_matches_any_rule(&context.disallowed_tools, name)).count(),
         "message": format!(
             "MCP server '{}' connected via {}. {} tools discovered.\n\nCallable tools (use these exact names):\n{}",
             server_name, transport, tools_list.len(), tools_list.join("\n")

@@ -61,7 +61,7 @@ that actively migrates `~/.deepseek/` → `~/.codewhale/` on first run and a dep
 | `crates/tui/src/session_manager.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/skill_state.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/tui/src/tools/skill.rs` | no — hardcoded | keep-as-fallback; follow-up |
-| `crates/tui/src/snapshot/mod.rs` | no — hardcoded | keep-as-fallback; follow-up |
+| `crates/snapshot/src/lib.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/workspace_discovery.rs` | no — hardcoded | keep-as-fallback; follow-up |
 
 ## Follow-up (separate, non-doc change — out of scope for #3068)

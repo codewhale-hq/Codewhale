@@ -4,16 +4,20 @@ use super::*;
 async fn rejected_manual_compaction_route_closes_typed_lifecycle() {
     let _env_lock = lock_test_env();
     let _api_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
-    let route_config = Config {
-        provider: Some("deepseek".to_string()),
-        default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-        ..Config::default()
+    let route_config = {
+        let __cw_config_init_0_0 = Some("deepseek".to_string());
+        let __cw_config_init_0_1 =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
     .with_legacy_root(Some(String::new()), None);
     let route = resolve_runtime_route(
         &route_config,
         ProviderKind::Deepseek,
-        Some(crate::config::DEFAULT_TEXT_MODEL),
+        Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
     )
     .expect("structurally resolve route without credential");
     assert!(
@@ -72,16 +76,20 @@ async fn rejected_manual_compaction_route_closes_typed_lifecycle() {
 async fn queued_manual_compaction_cancellation_is_idempotent_and_skips_route_activation() {
     let _env_lock = lock_test_env();
     let _api_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
-    let route_config = Config {
-        provider: Some("deepseek".to_string()),
-        default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-        ..Config::default()
+    let route_config = {
+        let __cw_config_init_1_0 = Some("deepseek".to_string());
+        let __cw_config_init_1_1 =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+        let mut __cw_config_init_1_value: Config = Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.default_text_model = __cw_config_init_1_1;
+        __cw_config_init_1_value
     }
     .with_legacy_root(Some(String::new()), None);
     let route = resolve_runtime_route(
         &route_config,
         ProviderKind::Deepseek,
-        Some(crate::config::DEFAULT_TEXT_MODEL),
+        Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
     )
     .expect("structurally resolve route without credential");
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &route_config);
@@ -133,16 +141,20 @@ async fn terminal_correlation_preflight_failures_keep_each_submitted_owner() {
     let _env_lock = lock_test_env();
     let _api_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
     let workspace = tempdir().expect("isolated workspace");
-    let route_config = Config {
-        provider: Some("deepseek".to_string()),
-        default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-        ..Config::default()
+    let route_config = {
+        let __cw_config_init_2_0 = Some("deepseek".to_string());
+        let __cw_config_init_2_1 =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+        let mut __cw_config_init_2_value: Config = Config::default();
+        __cw_config_init_2_value.provider = __cw_config_init_2_0;
+        __cw_config_init_2_value.default_text_model = __cw_config_init_2_1;
+        __cw_config_init_2_value
     }
     .with_legacy_root(Some(String::new()), None);
     let invalid_route = resolve_runtime_route(
         &route_config,
         ProviderKind::Deepseek,
-        Some(crate::config::DEFAULT_TEXT_MODEL),
+        Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
     )
     .expect("structurally resolved route");
     assert!(
@@ -395,7 +407,7 @@ async fn manual_compaction_accounts_accepted_and_rejected_responses_once() {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": format!("compaction-{finish_reason}"),
                 "object": "chat.completion",
-                "model": crate::config::DEFAULT_TEXT_MODEL,
+                "model": codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
                 "choices": [{
                     "index": 0,
                     "message": { "role": "assistant", "content": "Primary request: preserve the session migration. Completed: inspected the existing store. Constraints: keep every user message and failing test. Next: finish the transactional migration and rerun session_store::roundtrip." },
@@ -406,9 +418,11 @@ async fn manual_compaction_accounts_accepted_and_rejected_responses_once() {
             .expect(1)
             .mount(&server)
             .await;
-        let route_config = Config {
-            provider: Some("deepseek".to_string()),
-            ..Config::default()
+        let route_config = {
+            let __cw_config_init_3_0 = Some("deepseek".to_string());
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value
         }
         .with_legacy_root(
             Some("fixture-key".to_string()),
@@ -485,7 +499,7 @@ impl crate::core::model_client::ModelClient for BlockingEmergencyCompactionModel
     }
 
     fn model(&self) -> &str {
-        crate::config::DEFAULT_TEXT_MODEL
+        codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL
     }
 
     async fn create_message(
@@ -511,10 +525,14 @@ impl crate::core::model_client::ModelClient for BlockingEmergencyCompactionModel
 
 #[tokio::test]
 async fn emergency_compaction_cancellation_drops_provider_and_never_mutates_context() {
-    let route_config = Config {
-        provider: Some("deepseek".to_string()),
-        default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-        ..Config::default()
+    let route_config = {
+        let __cw_config_init_4_0 = Some("deepseek".to_string());
+        let __cw_config_init_4_1 =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+        let mut __cw_config_init_4_value: Config = Config::default();
+        __cw_config_init_4_value.provider = __cw_config_init_4_0;
+        __cw_config_init_4_value.default_text_model = __cw_config_init_4_1;
+        __cw_config_init_4_value
     };
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &route_config);
     engine.session.messages = (0..8)

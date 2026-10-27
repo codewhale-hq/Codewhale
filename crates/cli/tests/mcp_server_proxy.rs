@@ -3,7 +3,7 @@
 //! rewrite legacy child-server definitions. The active MCP client is separate.
 
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -67,23 +67,35 @@ impl Fixture {
             .spawn()
             .expect("spawn codewhale mcp-server");
 
-        {
-            let stdin = child.stdin.as_mut().expect("mcp-server stdin");
-            for request in requests {
-                writeln!(stdin, "{request}").expect("write request");
+        let mut stdin = child.stdin.take().expect("mcp-server stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("mcp-server stdout"));
+        let mut responses = Vec::new();
+        for request in requests {
+            writeln!(stdin, "{request}").expect("write request");
+            stdin.flush().expect("flush request");
+            if let Some(id) = request.get("id") {
+                let mut line = String::new();
+                assert!(stdout.read_line(&mut line).expect("read response") > 0);
+                let response: Value = serde_json::from_str(&line).expect("stdout is only JSON-RPC");
+                assert_eq!(response.get("id"), Some(id));
+                responses.push(response);
             }
         }
-
+        drop(stdin);
+        let mut remainder = String::new();
+        stdout
+            .read_to_string(&mut remainder)
+            .expect("read remaining output");
+        assert!(
+            remainder.trim().is_empty(),
+            "unexpected response: {remainder}"
+        );
         let output = child.wait_with_output().expect("mcp-server output");
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         assert!(
             output.status.success(),
             "native MCP server failed: {stderr}"
         );
-        let responses = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("stdout is only JSON-RPC"))
-            .collect();
         (responses, stderr)
     }
 }

@@ -11,6 +11,7 @@ export const STREAM_EVENT_NAMES = [
   "turn.interrupt_requested",
   "turn.artifacts",
   "turn.workspace_snapshot",
+  "turn.provider_request",
   "turn.completed",
   "item.started",
   "item.delta",

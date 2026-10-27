@@ -20,8 +20,9 @@ use super::dispatch::{
     mcp_tool_approval_description, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
 };
 use super::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, is_tool_search_tool,
+    CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME,
 };
+use codewhale_tools::names::is_tool_search_tool;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PreparedToolPolicy {
@@ -248,7 +249,7 @@ fn registered_resource_claims(
     input: &Value,
     context: &crate::tools::ToolContext,
 ) -> Result<Vec<ResourceClaim>, ToolError> {
-    let canonical = crate::tools::canonical_action::canonical_action_alias(name, input);
+    let canonical = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
     match canonical {
         "read_file" => path_claim(input, "path", None, context, ResourceClaim::ReadPath),
         "write_file" | "edit_file" => {
@@ -296,7 +297,7 @@ fn apply_patch_resource_claims(
     input: &Value,
     context: &crate::tools::ToolContext,
 ) -> Result<Vec<ResourceClaim>, ToolError> {
-    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(input) else {
+    let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(input) else {
         return Ok(global_exclusive_claim());
     };
     if preflight.touched_files.is_empty() {

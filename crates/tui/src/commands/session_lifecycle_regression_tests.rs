@@ -9,7 +9,6 @@ use std::time::Instant;
 use tempfile::TempDir;
 
 use crate::commands::CommandResult;
-use crate::config::Config;
 use crate::reasoning_preference::ReasoningEffort;
 use crate::session_manager::create_saved_session_with_id_and_mode;
 use crate::test_support::SealedHome;
@@ -17,6 +16,7 @@ use crate::tui::app::{App, AppAction, TuiOptions, TurnCacheRecord};
 use crate::tui::history::HistoryCell;
 use codewhale_config::AppMode;
 use codewhale_models::Role;
+use codewhale_runtime::config::Config;
 
 fn dispatch_lifecycle(app: &mut App, name: &str, arg: Option<&str>) -> CommandResult {
     let command = match arg {
@@ -113,8 +113,10 @@ fn save_preserves_latest_auto_route_receipt() {
     let receipt = crate::model_routing::AutoRouteReceipt {
         tier: crate::model_routing::AutoRouteTier::Fast,
         pair: crate::model_routing::AutoRoutePair {
-            strong: crate::config::ZAI_GLM_5_2_MODEL.to_string(),
-            fast: Some(crate::config::ZAI_GLM_5_TURBO_MODEL.to_string()),
+            strong: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string(),
+            fast: Some(
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string(),
+            ),
         },
         scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
         data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
@@ -125,9 +127,10 @@ fn save_preserves_latest_auto_route_receipt() {
         router_failure: None,
     };
     app.set_model_selection("auto".to_string());
-    app.last_effective_provider = Some(crate::config::ProviderKind::Zai);
+    app.last_effective_provider = Some(codewhale_config::ProviderKind::Zai);
     app.last_effective_provider_identity = Some("zai".to_string());
-    app.last_effective_model = Some(crate::config::ZAI_GLM_5_TURBO_MODEL.to_string());
+    app.last_effective_model =
+        Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string());
     app.last_auto_route_receipt = Some(receipt.clone());
     app.last_effective_reasoning_effort =
         Some(crate::reasoning_preference::EffectiveReasoningEffort::ThinkingEnabledGranularityUnavailable);
@@ -138,13 +141,16 @@ fn save_preserves_latest_auto_route_receipt() {
     let saved: crate::session_manager::SavedSession =
         serde_json::from_str(&std::fs::read_to_string(save_path).unwrap()).unwrap();
     let route = saved.last_auto_route.expect("latest Auto route");
-    assert_eq!(route.provider, crate::config::ProviderKind::Zai);
+    assert_eq!(route.provider, codewhale_config::ProviderKind::Zai);
     assert_eq!(route.provider_identity, "zai");
-    assert_eq!(route.model, crate::config::ZAI_GLM_5_TURBO_MODEL);
+    assert_eq!(
+        route.model,
+        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL
+    );
     assert_eq!(route.receipt, receipt);
     assert_eq!(
         route.effective_reasoning_effort,
-        Some(crate::work_graph::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable)
+        Some(codewhale_models::reasoning_effort_tier::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable)
     );
 }
 
@@ -153,7 +159,7 @@ fn fork_saves_parent_and_switches_to_child_session() {
     let tmpdir = TempDir::new().unwrap();
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
-    app.set_provider_identity(crate::config::ProviderKind::Custom, "lm-studio");
+    app.set_provider_identity(codewhale_config::ProviderKind::Custom, "lm-studio");
     app.current_session_id = Some("parent-session".to_string());
     let mut cached_parent = create_saved_session_with_id_and_mode(
         "parent-session".to_string(),
@@ -363,7 +369,7 @@ fn conversation_reset_forgets_approvals(command: &str) {
         "k",
         "g",
         None,
-        crate::config::ApprovalDefaultSelection::Deny,
+        codewhale_runtime::config::ApprovalDefaultSelection::Deny,
         None,
     );
     crate::tui::pending_requests::record(

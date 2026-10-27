@@ -8,7 +8,6 @@
 //! and publishes non-inline results exactly once under their origin session
 //! with immutable evidence metadata for bounded retrieval.
 
-use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -16,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::spec::ToolResult;
+use codewhale_config::WorkshopConfig;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -110,85 +110,60 @@ fn active_workshop_slot() -> &'static Mutex<WorkshopConfig> {
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
-/// Existing `[workshop]` threshold configuration, retained for compatibility.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct WorkshopConfig {
-    /// Token threshold above which results become handle-only evidence.
-    #[serde(default)]
-    pub large_output_threshold_tokens: Option<usize>,
-
-    /// Per-tool threshold overrides (tool name → token limit). A tool whose
-    /// name appears here uses this limit instead of
-    /// `large_output_threshold_tokens`.
-    #[serde(default)]
-    pub per_tool_thresholds: Option<HashMap<String, usize>>,
-
-    /// Optional model-visible byte budget for a single `read` / `read_file`
-    /// result. Absent keeps the compile-time default (#5367).
-    #[serde(default)]
-    pub read_result_max_bytes: Option<usize>,
-
-    /// Optional model-visible byte budget for a generic tool result after
-    /// spillover. Absent keeps the compile-time default (#5367).
-    #[serde(default)]
-    pub tool_result_max_bytes: Option<usize>,
+/// Install the process-wide workshop budgets used by read/tool compactors.
+///
+/// The returned immutable receipt is the snapshot written while the
+/// singleton lock was held. Callers that need evidence of their own
+/// activation can inspect it without racing a later process-wide update.
+pub fn install_active_workshop(config: Option<&WorkshopConfig>) -> WorkshopConfig {
+    #[cfg(test)]
+    let _test_serial = if ACTIVE_WORKSHOP_TEST_SERIAL_HELD.with(std::cell::Cell::get) {
+        None
+    } else {
+        Some(
+            ACTIVE_WORKSHOP_TEST_SERIAL
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    };
+    let snapshot = config.cloned().unwrap_or_default();
+    let mut slot = active_workshop_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = snapshot;
+    slot.clone()
 }
 
-impl WorkshopConfig {
-    /// Install the process-wide workshop budgets used by read/tool compactors.
-    ///
-    /// The returned immutable receipt is the snapshot written while the
-    /// singleton lock was held. Callers that need evidence of their own
-    /// activation can inspect it without racing a later process-wide update.
-    pub fn install_active(config: Option<&Self>) -> Self {
-        #[cfg(test)]
-        let _test_serial = if ACTIVE_WORKSHOP_TEST_SERIAL_HELD.with(std::cell::Cell::get) {
-            None
-        } else {
-            Some(
-                ACTIVE_WORKSHOP_TEST_SERIAL
-                    .get_or_init(|| Mutex::new(()))
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )
-        };
-        let snapshot = config.cloned().unwrap_or_default();
-        let mut slot = active_workshop_slot()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = snapshot;
-        slot.clone()
-    }
+/// Optional model-visible read budget, when the user opted in (#5367).
+#[must_use]
+pub fn active_read_result_max_bytes() -> Option<usize> {
+    active_workshop_slot()
+        .lock()
+        .ok()
+        .and_then(|cfg| cfg.read_result_max_bytes.filter(|n| *n > 0))
+}
 
-    /// Optional model-visible read budget, when the user opted in (#5367).
-    #[must_use]
-    pub fn active_read_result_max_bytes() -> Option<usize> {
-        active_workshop_slot()
-            .lock()
-            .ok()
-            .and_then(|cfg| cfg.read_result_max_bytes.filter(|n| *n > 0))
-    }
+/// Optional model-visible tool-result budget, when the user opted in (#5367).
+#[must_use]
+pub fn active_tool_result_max_bytes() -> Option<usize> {
+    active_workshop_slot()
+        .lock()
+        .ok()
+        .and_then(|cfg| cfg.tool_result_max_bytes.filter(|n| *n > 0))
+}
 
-    /// Optional model-visible tool-result budget, when the user opted in (#5367).
-    #[must_use]
-    pub fn active_tool_result_max_bytes() -> Option<usize> {
-        active_workshop_slot()
-            .lock()
-            .ok()
-            .and_then(|cfg| cfg.tool_result_max_bytes.filter(|n| *n > 0))
+/// Resolve the effective threshold for the given tool name.
+#[must_use]
+pub fn workshop_threshold_for(config: &WorkshopConfig, tool_name: &str) -> usize {
+    if let Some(per_tool) = config.per_tool_thresholds.as_ref()
+        && let Some(&limit) = per_tool.get(tool_name)
+    {
+        return limit;
     }
-
-    /// Resolve the effective threshold for the given tool name.
-    #[must_use]
-    pub fn threshold_for(&self, tool_name: &str) -> usize {
-        if let Some(per_tool) = self.per_tool_thresholds.as_ref()
-            && let Some(&limit) = per_tool.get(tool_name)
-        {
-            return limit;
-        }
-        self.large_output_threshold_tokens
-            .unwrap_or(DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS)
-    }
+    config
+        .large_output_threshold_tokens
+        .unwrap_or(DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS)
 }
 
 // ── Token estimation ──────────────────────────────────────────────────────────
@@ -230,7 +205,7 @@ impl LargeOutputRouter {
         tool_name: &str,
         result: &ToolResult,
     ) -> (EvidenceRouting, usize, usize) {
-        let threshold = self.config.threshold_for(tool_name);
+        let threshold = workshop_threshold_for(&self.config, tool_name);
         let estimated_tokens = estimate_tokens(&result.content);
         // There is no per-call bypass of the context bound: exact bytes stay
         // available through the artifact handle.
@@ -344,7 +319,7 @@ pub fn read_evidence_metadata(session_id: &str, handle: &str) -> io::Result<Evid
 /// Bounded, no-follow read shared by publication/replay and authenticated HTTP
 /// retrieval. The caller chooses the existing session-root authority.
 pub(crate) fn read_evidence_metadata_file(
-    file: &crate::fleet::files::WorkspaceFile,
+    file: &codewhale_util::files::WorkspaceFile,
 ) -> io::Result<EvidenceArtifact> {
     use std::io::Read;
     const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -382,6 +357,7 @@ pub fn evidence_is_expired(artifact: &EvidenceArtifact, now_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn make_result(content: &str) -> ToolResult {
         ToolResult::success(content.to_string())
@@ -410,11 +386,11 @@ mod tests {
             read_result_max_bytes: None,
             tool_result_max_bytes: None,
         };
-        assert_eq!(config.threshold_for("grep_files"), 100);
-        assert_eq!(config.threshold_for("read_file"), 4096);
+        assert_eq!(workshop_threshold_for(&config, "grep_files"), 100);
+        assert_eq!(workshop_threshold_for(&config, "read_file"), 4096);
         let default_config = WorkshopConfig::default();
         assert_eq!(
-            default_config.threshold_for("read_file"),
+            workshop_threshold_for(&default_config, "read_file"),
             DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS
         );
     }
@@ -422,7 +398,7 @@ mod tests {
     #[test]
     fn workshop_byte_budgets_raise_floor_only() {
         let _guard = active_workshop_test_guard();
-        let installed = WorkshopConfig::install_active(Some(&WorkshopConfig {
+        let installed = install_active_workshop(Some(&WorkshopConfig {
             large_output_threshold_tokens: None,
             per_tool_thresholds: None,
             read_result_max_bytes: Some(102_400),
@@ -430,16 +406,13 @@ mod tests {
         }));
         assert_eq!(installed.read_result_max_bytes, Some(102_400));
         assert_eq!(installed.tool_result_max_bytes, Some(80_000));
-        assert_eq!(
-            WorkshopConfig::active_read_result_max_bytes(),
-            Some(102_400)
-        );
-        assert_eq!(WorkshopConfig::active_tool_result_max_bytes(), Some(80_000));
-        let cleared = WorkshopConfig::install_active(None);
+        assert_eq!(active_read_result_max_bytes(), Some(102_400));
+        assert_eq!(active_tool_result_max_bytes(), Some(80_000));
+        let cleared = install_active_workshop(None);
         assert_eq!(cleared.read_result_max_bytes, None);
         assert_eq!(cleared.tool_result_max_bytes, None);
-        assert_eq!(WorkshopConfig::active_read_result_max_bytes(), None);
-        assert_eq!(WorkshopConfig::active_tool_result_max_bytes(), None);
+        assert_eq!(active_read_result_max_bytes(), None);
+        assert_eq!(active_tool_result_max_bytes(), None);
     }
 
     #[test]

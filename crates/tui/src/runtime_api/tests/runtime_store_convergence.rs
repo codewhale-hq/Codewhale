@@ -117,7 +117,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     assert_eq!(after_acp_eof.data_dir, captured.data_dir);
     assert_eq!(after_generation, captured.lease_generation);
     assert!(!threads.is_acp_host());
-    let unauthenticated = crate::tls::reqwest_client()
+    let unauthenticated = codewhale_release::tls::reqwest_client()
         .get(format!("http://{addr}/v1/threads"))
         .send()
         .await?;
@@ -159,7 +159,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
             .send(
                 json!(id),
                 "prompt/request",
-                json!({"thread_id":conversation,"prompt":id,"model":"deepseek-v4-pro"}),
+                json!({"thread_id":conversation,"allowed_tools":[],"prompt":id,"model":"deepseek-v4-pro"}),
             )
             .await?;
         let result = reply(&mut guest, id).await?;
@@ -176,7 +176,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
         )
         .await??;
     }
-    let catalog: Value = crate::tls::reqwest_client()
+    let catalog: Value = codewhale_release::tls::reqwest_client()
         .get(format!("http://{addr}/v1/threads"))
         .bearer_auth(&token)
         .send()
@@ -466,7 +466,7 @@ async fn real_normal_owner_distinct_listener_detach_keeps_turn_compat_acp_and_su
         .send(
             json!("compat"),
             "prompt/request",
-            json!({"thread_id":compat_id,"prompt":"same owner compatibility"}),
+            json!({"thread_id":compat_id,"allowed_tools":[],"prompt":"same owner compatibility"}),
         )
         .await?;
     let result = reply(&mut compat, "compat").await?;
@@ -710,7 +710,7 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
     );
     // Cookies/proofs are admitted only at this selected origin and cannot
     // replace the original listener's bearer gate.
-    let unauth = crate::tls::reqwest_client();
+    let unauth = codewhale_release::tls::reqwest_client();
     let selected_origin = format!("http://{}", selected.endpoint);
     let created: Value = unauth
         .post(format!("{selected_origin}/v1/threads"))
@@ -1290,7 +1290,7 @@ async fn real_owner_rejects_different_operator_source_before_attach_and_accepts_
     fs::create_dir_all(&workspace)?;
     let config_path = root.join("operator.toml");
     fs::write(&config_path, "")?;
-    let config = Config::load(Some(config_path.clone()), None)?;
+    let config = crate::plugins::providers::load_config(Some(config_path.clone()), None)?;
     let other_config = root.join("other-operator.toml");
     fs::write(&other_config, "")?;
     let alias_directory = root.join("alias");
@@ -1469,7 +1469,7 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
         reqwest::header::AUTHORIZATION,
         format!("Bearer {token}").parse()?,
     );
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .default_headers(headers)
         .build()?;
     let endpoint = format!("http://{addr}/v1/thread-history/import");
@@ -1498,13 +1498,13 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     // journal retains System while the Runtime item projection omits it.
     let operation_path = binding.data_dir.join("turn-operations").join(format!(
         "history_{}.json",
-        crate::hashing::sha256_hex(
+        codewhale_runtime::hashing::sha256_hex(
             format!("codewhale:history-operation:v1\0{}", request.operation_key).as_bytes()
         )
     ));
     let mut operation: Value = serde_json::from_slice(&fs::read(&operation_path)?)?;
     operation["committed"] = json!(false);
-    crate::utils::write_atomic(&operation_path, &serde_json::to_vec(&operation)?)?;
+    codewhale_util::utils::write_atomic(&operation_path, &serde_json::to_vec(&operation)?)?;
     let post_seed_retry: CanonicalThreadReceipt = client
         .post(&endpoint)
         .json(&request)
@@ -1750,7 +1750,7 @@ impl HistoryOperationFixture {
         Ok(Self {
             addr,
             runtime,
-            client: crate::tls::reqwest_client_builder()
+            client: codewhale_release::tls::reqwest_client_builder()
                 .default_headers(headers)
                 .build()?,
             sessions_dir,
@@ -2043,7 +2043,7 @@ async fn canonical_fork_keeps_all_branches_selects_exact_leaf_and_recovers_after
         .join("turn-operations")
         .join(format!(
             "history_{}.json",
-            crate::hashing::sha256_hex(
+            codewhale_runtime::hashing::sha256_hex(
                 format!("codewhale:history-operation:v1\0{}", request.operation_key).as_bytes()
             )
         ));
@@ -2055,7 +2055,7 @@ async fn canonical_fork_keeps_all_branches_selects_exact_leaf_and_recovers_after
     );
     // Model interruption after complete publication but before the intent commit.
     prepared["committed"] = json!(false);
-    crate::utils::write_atomic(&operation_path, &serde_json::to_vec(&prepared)?)?;
+    codewhale_util::utils::write_atomic(&operation_path, &serde_json::to_vec(&prepared)?)?;
     let association = match fixture.lookup(&request).await? {
         CanonicalThreadOperationStatus::Pending { association, .. } => association,
         other => anyhow::bail!("expected prepared Fork intent: {other:?}"),
@@ -2253,7 +2253,7 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
     let published_journal = raw.journal.as_ref().context("published full journal")?;
     let offered_leaf = format!(
         "offered:{}:3",
-        crate::hashing::sha256_hex(request.operation_key.as_bytes())
+        codewhale_runtime::hashing::sha256_hex(request.operation_key.as_bytes())
     );
     assert_eq!(
         published_journal.leaf_id.as_deref(),
@@ -2285,7 +2285,7 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
         .join("turn-operations")
         .join(format!(
             "history_{}.json",
-            crate::hashing::sha256_hex(
+            codewhale_runtime::hashing::sha256_hex(
                 format!("codewhale:history-operation:v1\0{}", request.operation_key).as_bytes()
             )
         ));
@@ -2296,7 +2296,7 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
         "the retained recovery witness must bind the exact count and offered leaf published to disk"
     );
     operation["committed"] = json!(false);
-    crate::utils::write_atomic(&operation_path, &serde_json::to_vec(&operation)?)?;
+    codewhale_util::utils::write_atomic(&operation_path, &serde_json::to_vec(&operation)?)?;
     let association = match fixture.lookup(&request).await? {
         CanonicalThreadOperationStatus::Pending { association, .. } => association,
         other => anyhow::bail!("expected published pending intent: {other:?}"),
@@ -2404,14 +2404,15 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
         .as_mut()
         .context("tampered full graph")?
         .entries[3];
-    let crate::session_tree::SessionEntryKind::Message { message } = &mut entry.kind else {
+    let codewhale_runtime::session_tree::SessionEntryKind::Message { message } = &mut entry.kind
+    else {
         anyhow::bail!("inactive fixture entry lost its message");
     };
     let codewhale_models::ContentBlock::Text { text, .. } = &mut message.content[0] else {
         anyhow::bail!("inactive fixture text missing");
     };
     *text = "tampered inactive branch".into();
-    crate::utils::write_atomic(&file, &serde_json::to_vec(&tampered)?)?;
+    codewhale_util::utils::write_atomic(&file, &serde_json::to_vec(&tampered)?)?;
     let lookup = codewhale_protocol::CanonicalThreadOperationLookup {
         version: 1,
         operation_key: request.operation_key,
@@ -2593,7 +2594,7 @@ async fn canonical_fork_copies_local_goal_under_source_witness_and_never_replays
         .sessions_dir
         .join(".goals")
         .join(format!("{}.json", original.session_id));
-    crate::utils::write_atomic(&goal_path, b"{corrupt-local-goal")?;
+    codewhale_util::utils::write_atomic(&goal_path, b"{corrupt-local-goal")?;
     assert_eq!(
         fixture
             .client
@@ -2754,7 +2755,7 @@ async fn native_fork_copy_refusal_never_publishes_a_shared_session_thread() -> R
         .sessions_dir
         .join(format!("{}.json", original.session_id));
     let original_bytes = fs::read(&path)?;
-    crate::utils::write_atomic(&path, b"{invalid-complete-source")?;
+    codewhale_util::utils::write_atomic(&path, b"{invalid-complete-source")?;
     let refused = fixture
         .client
         .post(fixture.url(&format!("/v1/threads/{}/fork", original.runtime_thread_id)))
@@ -2778,7 +2779,7 @@ async fn native_fork_copy_refusal_never_publishes_a_shared_session_thread() -> R
         Some(original.session_id.clone())
     );
     assert_eq!(fs::read(&path)?, b"{invalid-complete-source");
-    crate::utils::write_atomic(&path, &original_bytes)?;
+    codewhale_util::utils::write_atomic(&path, &original_bytes)?;
     assert!(fixture.model.captured_requests().is_empty());
     Ok(())
 }

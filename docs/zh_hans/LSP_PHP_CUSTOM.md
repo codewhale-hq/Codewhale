@@ -15,13 +15,13 @@
 
 ### 1. PHP 内置支持
 
-- 在 `crates/tui/src/lsp/registry.rs` 的 `Language` 枚举中添加 `Php` 变体
+- 在 `crates/lsp/src/registry.rs` 的 `Language` 枚举中添加 `Php` 变体
 - `.php` 文件自动检测，默认路由至 `intelephense --stdio`
 - 用户可通过 `[lsp.servers].php` 覆盖默认命令
 
 ### 2. 自定义 LSP 服务器扩展
 
-新增 `CustomLspDef` 结构体（定义于 `crates/tui/src/lsp/mod.rs`，同步至
+新增 `CustomLspDef` 结构体（定义于 `crates/lsp/src/lib.rs`，同步至
 `crates/config/src/lib.rs`）：
 
 ```rust
@@ -115,9 +115,9 @@ cargo clippy -p codewhale-tui --lib
 
 | 文件 | 改动 |
 |------|------|
-| `crates/tui/src/lsp/registry.rs` | +Php 变体、检测、服务器映射、测试 |
-| `crates/tui/src/lsp/mod.rs` | +CustomLspDef、LspConfig.custom、LspManager 自定义回退 |
-| `crates/tui/src/lsp/client.rs` | spawn 接受 &str language_id |
+| `crates/lsp/src/registry.rs` | +Php 变体、检测、服务器映射、测试 |
+| `crates/lsp/src/lib.rs` | +CustomLspDef、LspConfig.custom、LspManager 自定义回退 |
+| `crates/lsp/src/client.rs` | spawn 接受 &str language_id |
 | `crates/tui/src/config.rs` | LspConfigToml.custom + into_runtime |
 | `crates/config/src/lib.rs` | LspConfigToml.custom + CustomLspDef |
 | `config.example.toml` | PHP 文档 + 自定义扩展示例 |

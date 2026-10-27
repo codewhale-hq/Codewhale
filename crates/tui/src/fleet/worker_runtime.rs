@@ -24,15 +24,20 @@ use codewhale_protocol::fleet::{
 use serde::{Deserialize, Serialize};
 
 use super::identity::{FleetSelectorError, resolve_member_in_profiles};
+use super::profile::FleetRole as FleetProfileRole;
 use super::profile::{
     AgentProfile, FleetDelegationHints, FleetLoadout, FleetProfile, FleetProfilePermissions,
-    FleetRole as FleetProfileRole, FleetSlot, ProfileOrigin, canonical_public_role_name,
+    FleetSlot, ProfileOrigin, canonical_public_role_name,
 };
-use super::role::runtime_role_for_member;
-use crate::config::{Config, ProviderKind};
 use crate::route_runtime::resolve_route_candidate;
-use crate::tools::subagent::{AgentWorkerSpec, AgentWorkerToolProfile, FleetRole};
-use crate::worker_profile::{ChildLaunchManifest, ModelRoute, ToolScope, WorkerRuntimeProfile};
+use crate::tools::subagent::{AgentWorkerSpec, AgentWorkerToolProfile};
+use codewhale_agent_contract::role::FleetRole;
+use codewhale_agent_contract::role::runtime_role_for_member;
+use codewhale_agent_contract::worker_profile::{
+    ChildLaunchManifest, ModelRoute, ToolScope, WorkerRuntimeProfile,
+};
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::Config;
 
 /// Reserved durable task metadata written after author input is validated.
 ///
@@ -371,7 +376,7 @@ fn validate_fleet_reasoning_effort(
         return Ok(());
     };
     let provider = ProviderKind::parse(&route.provider_kind).unwrap_or(ProviderKind::Custom);
-    let capability = crate::config::provider_capability(provider, &route.wire_model_id);
+    let capability = crate::provider_lake::provider_capability(provider, &route.wire_model_id);
     if capability.thinking_supported {
         return Ok(());
     }
@@ -1235,28 +1240,6 @@ pub(crate) fn explicit_fleet_provider_id(agent_profile: Option<&AgentProfile>) -
         .map(str::to_string)
 }
 
-/// The built-in provider a resolved agent profile EXPLICITLY pins, if any (#4093).
-///
-/// This returns `None` (never the DeepSeek default) when no profile names a
-/// provider, so call sites can leave `--provider` off the worker argv and
-/// preserve today's behavior for profile-less / provider-less workers (they
-/// resolve their provider from their own session default). EPIC #2608: never
-/// inferred from `model`.
-///
-/// `pub(crate)` so the interactive-TUI in-process spawn path
-/// (`tools::subagent`) resolves the pinned provider from the SAME
-/// explicit-only source as the headless `codewhale exec` launch route (#4193),
-/// instead of re-deriving it and risking a second, divergent policy. User-named
-/// custom providers intentionally return `None` here; launch paths that can
-/// carry strings should use [`explicit_fleet_provider_id`].
-pub(crate) fn explicit_fleet_provider(
-    agent_profile: Option<&AgentProfile>,
-) -> Option<ProviderKind> {
-    explicit_fleet_provider_id(agent_profile)
-        .as_deref()
-        .and_then(ProviderKind::parse)
-}
-
 pub(crate) fn effective_fleet_reasoning_effort(
     agent_profile: Option<&AgentProfile>,
 ) -> Option<String> {
@@ -1478,8 +1461,7 @@ pub fn apply_exec_hardening(
     spec.max_spawn_depth = spec
         .max_spawn_depth
         .min(spec.runtime_profile.max_spawn_depth)
-        .min(exec.max_spawn_depth)
-        .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING);
+        .min(exec.max_spawn_depth);
     spec.runtime_profile.max_spawn_depth = spec.max_spawn_depth;
     spec.runtime_profile.spawn_depth = spec.spawn_depth;
 
@@ -1513,7 +1495,7 @@ pub(crate) fn fleet_effective_permissions_for_task(
     let agent_profile = resolve_task_agent_profile(task_spec, agent_profiles)
         .ok()
         .flatten();
-    crate::fleet::role::fleet_effective_permissions(
+    codewhale_agent_contract::role::fleet_effective_permissions(
         &spec.agent_type,
         &spec.runtime_profile,
         agent_profile.as_ref().map(|profile| profile.id.as_str()),
@@ -1603,11 +1585,13 @@ fn profile_origin_label(origin: crate::fleet::roster::ProfileOrigin) -> &'static
     }
 }
 
-fn shell_policy_label(shell: crate::worker_profile::ShellPolicy) -> &'static str {
+fn shell_policy_label(
+    shell: codewhale_agent_contract::worker_profile::ShellPolicy,
+) -> &'static str {
     match shell {
-        crate::worker_profile::ShellPolicy::None => "none",
-        crate::worker_profile::ShellPolicy::ReadOnly => "read_only",
-        crate::worker_profile::ShellPolicy::Full => "full",
+        codewhale_agent_contract::worker_profile::ShellPolicy::None => "none",
+        codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly => "read_only",
+        codewhale_agent_contract::worker_profile::ShellPolicy::Full => "full",
     }
 }
 
@@ -1647,18 +1631,20 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn explicit_deepseek_config() -> Config {
-        Config {
-            provider: Some("deepseek".to_string()),
-            ..Config::default()
+        {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         }
         .with_legacy_root(Some("test-key".to_string()), None)
     }
 
     #[test]
     fn read_only_roles_report_the_narrowed_shell_they_actually_run_under() {
-        use crate::fleet::role;
-        use crate::tools::subagent::FleetRole;
-        use crate::worker_profile::ShellPolicy;
+        use codewhale_agent_contract::role;
+        use codewhale_agent_contract::role::FleetRole;
+        use codewhale_agent_contract::worker_profile::ShellPolicy;
         let mut requested = WorkerRuntimeProfile {
             shell: ShellPolicy::Full,
             ..WorkerRuntimeProfile::default()
@@ -2272,10 +2258,10 @@ mod tests {
     /// one of them into write-capable `custom`.
     #[test]
     fn the_two_fleet_drivers_agree_on_every_member_role_alias() {
-        let session = codewhale_workflow::PermissionCeiling {
+        let session = codewhale_protocol::fleet::PermissionCeiling {
             write: true,
             network_tool: true,
-            shell: codewhale_workflow::ShellCeiling::Full,
+            shell: codewhale_protocol::fleet::ShellCeiling::Full,
             delegation_depth: 2,
             tools: true,
         };
@@ -2292,7 +2278,7 @@ mod tests {
             assert_eq!(runtime_role_for_member(role), expected, "role {role}");
             // The exact driver's authority comes from the same mapper.
             assert_eq!(
-                crate::fleet::role::ChildAuthority::from_runtime_role(role, session)
+                codewhale_agent_contract::role::ChildAuthority::from_runtime_role(role, session)
                     .write_authority,
                 expected_write,
                 "role {role} must resolve the same authority on the exact driver"
@@ -2713,7 +2699,7 @@ mod tests {
                 );
                 assert_eq!(
                     spec.runtime_profile.shell,
-                    crate::worker_profile::ShellPolicy::None
+                    codewhale_agent_contract::worker_profile::ShellPolicy::None
                 );
                 assert_eq!(
                     fleet_worker_launch_reasoning_effort(&task, &[]).as_deref(),
@@ -2978,12 +2964,15 @@ mod tests {
 
     #[test]
     fn validate_fleet_task_routes_rejects_known_foreign_providerless_pin() {
-        let mut providers = crate::config::ProvidersConfig::default();
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
         providers.moonshot.api_key = Some("test-key".to_string());
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_1_0 = Some("moonshot".to_string());
+            let __cw_config_init_1_1 = Some(providers);
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let mut profile = agent_profile(
             "moonshot-builder",
@@ -3321,12 +3310,12 @@ mod tests {
             resolve_fleet_route(&task, &[profile.clone()], Some("deepseek-v4-pro")).is_none(),
             "a profile string alone is not proof that a named custom route exists"
         );
-        let config = Config {
-            provider: Some("lm-studio".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("lm-studio".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "lm-studio".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         base_url: Some("http://127.0.0.1:1234/v1".to_string()),
                         model: Some("qwen-2.5-7b".to_string()),
@@ -3335,8 +3324,11 @@ mod tests {
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
         let route = resolve_fleet_route_with_config(
             &task,
@@ -3407,12 +3399,12 @@ mod tests {
                 vec![],
             )),
         );
-        let config = Config {
-            provider: Some("CUSTOM".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let config = {
+            let __cw_config_init_3_0 = Some("CUSTOM".to_string());
+            let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "CUSTOM".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         base_url: Some("http://127.0.0.1:5678/v1".to_string()),
                         model: Some("case-model".to_string()),
@@ -3420,8 +3412,11 @@ mod tests {
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
 
         let route = resolve_fleet_route_with_config(
@@ -4508,7 +4503,7 @@ mod tests {
         );
         assert_eq!(
             spec.runtime_profile.shell,
-            crate::worker_profile::ShellPolicy::Full
+            codewhale_agent_contract::worker_profile::ShellPolicy::Full
         );
         assert_eq!(
             spec.runtime_profile.tools,
@@ -4518,7 +4513,7 @@ mod tests {
         assert_eq!(spec.max_spawn_depth, 2);
         assert_eq!(spec.spawn_depth, 1);
 
-        let permissions = crate::fleet::role::fleet_effective_permissions(
+        let permissions = codewhale_agent_contract::role::fleet_effective_permissions(
             &spec.agent_type,
             &spec.runtime_profile,
             None,
@@ -4591,17 +4586,13 @@ mod tests {
         )
         .expect("worker spec with empty profiles");
 
-        // Root fleet worker runs at depth 0; its budget equals the shared
-        // sub-agent default (3) so fleet and sub-agents are one substrate and
-        // at least 3 nested delegation levels are afforded.
         assert_eq!(spec.spawn_depth, 0);
-        assert_eq!(spec.max_spawn_depth, codewhale_config::DEFAULT_SPAWN_DEPTH);
-        assert_eq!(spec.max_spawn_depth, 3);
+        assert_eq!(
+            spec.max_spawn_depth,
+            codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
+        );
+        assert_eq!(spec.max_spawn_depth, u32::MAX);
 
-        // End-to-end reachability: walk the SAME gate the SubAgentRuntime
-        // enforces (`would_exceed_depth` = `spawn_depth + 1 > max_spawn_depth`).
-        // A depth-0 root must reach 3 nested levels, then stop. This fails if
-        // anyone lowers the shared default below 3 (Hunter: afford >= 3).
         let hardened = apply_exec_hardening(spec, &codewhale_config::FleetExecConfig::default());
         let would_exceed = |spawn_depth: u32| spawn_depth + 1 > hardened.max_spawn_depth;
         assert!(
@@ -4611,8 +4602,8 @@ mod tests {
         assert!(!would_exceed(1), "depth-1 child must spawn to depth 2");
         assert!(!would_exceed(2), "depth-2 child must spawn to depth 3");
         assert!(
-            would_exceed(3),
-            "depth 3 is the afforded ceiling; depth 4 is blocked"
+            !would_exceed(8),
+            "default delegation continues beyond eight levels"
         );
     }
 
@@ -4715,7 +4706,7 @@ mod tests {
             )
             .expect("worker spec with empty profiles");
 
-            let public_role = crate::fleet::role::public_role_label(role);
+            let public_role = codewhale_agent_contract::role::public_role_label(role);
             assert_eq!(spec.role.as_deref(), Some(public_role.as_str()));
             assert_eq!(spec.agent_type, expected_type, "role {role}");
             assert_eq!(spec.tool_profile, expected_tools, "role {role}");
@@ -4744,8 +4735,8 @@ mod tests {
 
     #[test]
     fn fleet_route_parity_uses_shared_router_candidates() {
-        use crate::config::ProviderKind;
         use crate::model_routing::{RouterCandidates, provider_router_candidates};
+        use codewhale_config::ProviderKind;
 
         // Fleet emits the SAME `ModelRoute` seam the sub-agent assignment path
         // consumes. `Fast` no longer re-prices the child onto a cheaper
@@ -4852,7 +4843,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_hardening_applies_and_clamps_spawn_depth() {
+    fn exec_hardening_applies_explicit_spawn_depth_without_a_product_cap() {
         let spec = AgentWorkerSpec {
             worker_id: "w1".to_string(),
             run_id: "r1".to_string(),
@@ -4891,10 +4882,7 @@ mod tests {
             ..Default::default()
         };
         let hardened = apply_exec_hardening(spec.clone(), &exec);
-        assert_eq!(
-            hardened.max_spawn_depth,
-            codewhale_config::MAX_SPAWN_DEPTH_CEILING
-        );
+        assert_eq!(hardened.max_spawn_depth, 99);
 
         let exec = codewhale_config::FleetExecConfig {
             max_spawn_depth: 0,

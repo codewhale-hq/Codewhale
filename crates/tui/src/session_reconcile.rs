@@ -253,7 +253,7 @@ pub fn reconcile(
     };
     let lock_file =
         crate::session_manager::open_private_lock_file(&sessions_dir.join(RECONCILE_LOCK_FILE))?;
-    if !crate::runtime_threads::try_lock_file_exclusive(&lock_file)? {
+    if !codewhale_util::lock::try_lock_file_exclusive(&lock_file)? {
         summary.skipped_concurrent = true;
         return Ok(summary);
     }
@@ -273,7 +273,7 @@ pub fn reconcile(
         let dir = sessions.sessions_dir().join(RECONCILE_DIR);
         fs::create_dir_all(&dir)?;
         let bytes = serde_json::to_vec_pretty(&summary).map_err(io::Error::other)?;
-        crate::utils::write_atomic(&dir.join(LAST_RUN_FILE), &bytes)?;
+        codewhale_util::utils::write_atomic(&dir.join(LAST_RUN_FILE), &bytes)?;
     }
     drop(lock_file);
     Ok(summary)

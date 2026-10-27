@@ -1,7 +1,7 @@
 //! Whole mounted transcript acceptance against private frozen production code.
 use super::*;
-use crate::config::Config;
 use crate::tui::selection::TranscriptSelectionPoint;
+use codewhale_runtime::config::Config;
 use std::path::PathBuf;
 
 fn app(locale: Locale, case: usize) -> App {

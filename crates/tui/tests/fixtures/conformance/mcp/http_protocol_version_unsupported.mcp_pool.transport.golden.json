@@ -1,0 +1,13 @@
+{
+  "requests_summary": {
+    "authorization_shapes": [
+      null
+    ],
+    "rpcs": [
+      "initialize"
+    ],
+    "statuses": [
+      200
+    ]
+  }
+}

@@ -276,6 +276,7 @@ pub struct QueuedMessage {
     pub display: String,
     pub skill_instruction: Option<String>,
     pub skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub extension_command: Option<(crate::extension_host::command::ExtensionCommandRef, String)>,
     /// True once this turn has been painted into `history` as `HistoryCell::User`.
     /// Queue/offline submit echoes before the model runs; Immediate prepare skips
     /// a second paint when this is set so drained queued turns do not double.
@@ -400,6 +401,7 @@ impl QueuedMessage {
             display,
             skill_instruction,
             skill_provenance: None,
+            extension_command: None,
             history_echoed: false,
         }
     }
@@ -760,7 +762,7 @@ pub enum AppAction {
     /// Switch provider+model through the same apply path as a `/model` route
     /// row. Used by Hotbar route slots so dispatch does not hand-mutate config.
     SwitchModelRoute {
-        identity: crate::config::ProviderIdentity,
+        identity: codewhale_runtime::config::ProviderIdentity,
         model: String,
     },
     UpdateCompaction(CompactionConfig),
@@ -775,7 +777,7 @@ pub enum AppAction {
     },
     /// Apply `/config search.provider` to the live Config and engine.
     UpdateSearchProvider {
-        provider: crate::config::SearchProvider,
+        provider: codewhale_runtime::config::SearchProvider,
     },
     /// Apply `/config prompt_suggestion` to the live Config.
     UpdatePromptSuggestion {
@@ -783,7 +785,7 @@ pub enum AppAction {
     },
     /// Apply one `/config notifications` scalar to the live Config.
     UpdateNotification {
-        update: crate::config::NotificationConfigUpdate,
+        update: codewhale_config::notifications::NotificationConfigUpdate,
     },
     /// Enable or disable the background advisor watcher for this session (#3982).
     SetAdvisorEnabled {

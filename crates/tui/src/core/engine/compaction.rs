@@ -134,7 +134,7 @@ impl Engine {
         if let Err(error) = tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             let _membership = crate::test_support::join_env_scope(env_ticket);
-            crate::audit::log_sensitive_event(event, details);
+            codewhale_runtime::audit::log_sensitive_event(event, details);
         })
         .await
         {
@@ -199,6 +199,7 @@ impl Engine {
         current_text: &str,
         prompt_context: &NextTurnPromptContext,
         system_prompt: Option<&SystemPrompt>,
+        messages: &[Message],
     ) -> Option<String> {
         // The engine owns automatic compaction. Asking the model to warn the
         // user here created a competing save/compact ceremony before the
@@ -206,7 +207,8 @@ impl Engine {
         if self.config.compaction.enabled {
             return None;
         }
-        let input_tokens = self.active_input_tokens_with_current_text(current_text, system_prompt);
+        let input_tokens =
+            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
         let budget = route_context_budget_for_route(
             prompt_context.provider,
             &prompt_context.model,
@@ -233,9 +235,9 @@ impl Engine {
             &prepared.config.model,
         );
         if let Some(cap) = prepared.image_cap {
-            crate::image_attach::cap_request_images(&mut messages, cap);
+            codewhale_models::image_window::cap_request_images(&mut messages, cap);
         }
-        let sent = crate::image_attach::count_request_images(&messages);
+        let sent = codewhale_models::image_window::count_request_images(&messages);
         self.learn_image_cap(&prepared.config.model, sent, rejection)
     }
 

@@ -45,6 +45,7 @@ export const METHODS = [
   { name: 'registry/register', direction: 'host_to_core', request: true, params: 'RegisterParams', tiers: ['plugin', 'builtin'] },
   { name: 'registry/unregister', direction: 'host_to_core', request: true, params: 'UnregisterParams', tiers: ['plugin', 'builtin'] },
   { name: 'core/call', direction: 'host_to_core', request: true, params: 'CoreCallParams', tiers: ['plugin', 'builtin'] },
+  { name: 'session/checkpoint', direction: 'host_to_core', request: true, params: 'SessionCheckpointParams', tiers: ['plugin', 'builtin'] },
   { name: 'proc/launch', direction: 'host_to_core', request: true, params: 'ProcLaunchParams', tiers: ['builtin'] },
   { name: 'proc/read', direction: 'host_to_core', request: true, params: 'ProcSessionParams', tiers: ['builtin'] },
   { name: 'proc/write', direction: 'host_to_core', request: true, params: 'ProcWriteParams', tiers: ['builtin'] },
@@ -179,12 +180,12 @@ export const SHAPES: { readonly [name: string]: Shape } = {
   McpHttpHeaders: {
     strict: true,
     required: {},
-    optional: { accept: 'string', content_type: 'string', mcp_session_id: 'string', mcp_protocol_version: 'string' },
+    optional: { accept: 'string', content_type: 'string', mcp_session_id: 'string', mcp_protocol_version: 'string', mcp_method: 'string', mcp_name: 'string' },
   },
   McpOpenParams: {
     strict: true,
     required: { owner: { ref: 'OwnerRef' }, session_id: 'string', launch_ticket: 'string', transport: 'string', initialize_grant: { ref: 'McpOperationGrant' }, initialized_grant: { ref: 'McpOperationGrant' }, client_version: 'string', deadline_ms: 'uint' },
-    optional: {},
+    optional: { discover_grant: { ref: 'McpOperationGrant' } },
   },
   McpOperationGrant: {
     strict: true,
@@ -251,10 +252,15 @@ export const SHAPES: { readonly [name: string]: Shape } = {
     required: { code: 'integer', message: 'string' },
     optional: { data: 'json' },
   },
+  SessionCheckpointParams: {
+    strict: true,
+    required: { owner: { ref: 'OwnerRef' }, ticket: 'string' },
+    optional: {},
+  },
   ToolCallParams: {
     strict: false,
     required: { handle: 'uint', call_id: 'string', input: 'json', deadline_ms: 'uint' },
-    optional: { workspace: 'string', ticket: 'string', session_id: 'string', agent_id: 'string', origin_turn_id: 'string' },
+    optional: { workspace: 'string', ticket: 'string', checkpoint_ticket: 'string', session_id: 'string', agent_id: 'string', origin_turn_id: 'string' },
   },
   UnregisterParams: {
     strict: true,
@@ -410,6 +416,8 @@ export interface McpHttpHeaders {
   content_type?: string
   mcp_session_id?: string
   mcp_protocol_version?: string
+  mcp_method?: string
+  mcp_name?: string
 }
 
 export interface McpOpenParams {
@@ -417,6 +425,7 @@ export interface McpOpenParams {
   session_id: string
   launch_ticket: string
   transport: string
+  discover_grant?: McpOperationGrant
   initialize_grant: McpOperationGrant
   initialized_grant: McpOperationGrant
   client_version: string
@@ -514,6 +523,11 @@ export interface RpcErrorWire {
   data?: Json
 }
 
+export interface SessionCheckpointParams {
+  owner: OwnerRef
+  ticket: string
+}
+
 export interface ToolCallParams {
   handle: number
   call_id: string
@@ -521,6 +535,7 @@ export interface ToolCallParams {
   deadline_ms: number
   workspace?: string
   ticket?: string
+  checkpoint_ticket?: string
   session_id?: string
   agent_id?: string
   origin_turn_id?: string

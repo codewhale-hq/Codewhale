@@ -373,6 +373,11 @@ pub fn handle_launch_composer_key(app: &mut App, key: KeyEvent) -> LaunchCompose
         KeyCode::Enter
             if crate::tui::composer_ui::composer_submit_chord(key, multiline).is_some() =>
         {
+            if key.modifiers != KeyModifiers::NONE
+                && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
+            {
+                app.insert_str(&pending);
+            }
             // Explicit home navigation takes precedence over a preserved draft.
             // Only painted rows may own Enter, just as with mouse activation.
             if app.launch.return_to_session
@@ -955,14 +960,14 @@ fn filesystem_scope_notice(app: &App) -> Option<Cow<'static, str>> {
     let unenforced = app.sandbox_backend.is_none()
         && !matches!(
             policy,
-            crate::sandbox::SandboxPolicy::DangerFullAccess
-                | crate::sandbox::SandboxPolicy::ExternalSandbox { .. }
+            codewhale_sandbox::SandboxPolicy::DangerFullAccess
+                | codewhale_sandbox::SandboxPolicy::ExternalSandbox { .. }
         );
     match policy {
-        crate::sandbox::SandboxPolicy::ReadOnly { .. } if unenforced => {
+        codewhale_sandbox::SandboxPolicy::ReadOnly { .. } if unenforced => {
             Some(Cow::Borrowed("files: read-only (unenforced)"))
         }
-        crate::sandbox::SandboxPolicy::ReadOnly { .. } => {
+        codewhale_sandbox::SandboxPolicy::ReadOnly { .. } => {
             (app.mode != AppMode::Plan).then_some(Cow::Borrowed("files: read-only"))
         }
         // `DangerFullAccess` only ever arises from the Bypass posture
@@ -971,11 +976,11 @@ fn filesystem_scope_notice(app: &App) -> Option<Cow<'static, str>> {
         // restating it as `files: full disk` spent columns saying it twice.
         // The scope chip speaks in this posture only when the scope is
         // *narrower* than the name implies (the WorkspaceWrite arm below).
-        crate::sandbox::SandboxPolicy::DangerFullAccess => None,
-        crate::sandbox::SandboxPolicy::ExternalSandbox { .. } => {
+        codewhale_sandbox::SandboxPolicy::DangerFullAccess => None,
+        codewhale_sandbox::SandboxPolicy::ExternalSandbox { .. } => {
             Some(Cow::Borrowed("files: external sandbox"))
         }
-        crate::sandbox::SandboxPolicy::WorkspaceWrite { .. } if unenforced => {
+        codewhale_sandbox::SandboxPolicy::WorkspaceWrite { .. } if unenforced => {
             Some(Cow::Borrowed("files: workspace (unenforced)"))
         }
         // The unremarkable case: writes are confined to the workspace and the
@@ -988,7 +993,7 @@ fn filesystem_scope_notice(app: &App) -> Option<Cow<'static, str>> {
         // to mean unrestricted disk writes), and that pairing is reachable:
         // Bypass with a configured `workspace-write` is clamped to this policy
         // by `sandbox_policy_for_turn`.
-        crate::sandbox::SandboxPolicy::WorkspaceWrite { .. } => {
+        codewhale_sandbox::SandboxPolicy::WorkspaceWrite { .. } => {
             (app.approval_mode == ApprovalMode::Bypass).then_some(Cow::Borrowed("files: workspace"))
         }
     }
@@ -1193,7 +1198,7 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         &app.workspace,
         app.workspace_context.as_deref(),
     );
-    let workspace = crate::utils::display_path(&app.workspace);
+    let workspace = codewhale_util::utils::display_path(&app.workspace);
     let branch = identity.branch.as_deref().map_or_else(
         || tr(app.ui_locale, MessageId::EmptyStateNoGit),
         |branch| Cow::Owned(branch.to_string()),
@@ -1245,7 +1250,7 @@ pub(crate) fn mcp_remedy_command(app: &App) -> Option<String> {
     use crate::tui::session_boot::{McpServerBootState, PluginBootSummary, SessionBootSurface};
     let boot = SessionBootSurface::from_parts(
         app.mcp_snapshot.as_ref(),
-        app.mcp_initializing,
+        app.mcp_boot_initializing(),
         &app.mcp_connecting,
         app.mcp_configured_count,
         PluginBootSummary::default(),
@@ -1298,7 +1303,7 @@ fn mcp_launch_lines(app: &App, text_width: usize) -> McpLaunchBlock {
     // discard it would be waste.
     let boot = SessionBootSurface::from_parts(
         app.mcp_snapshot.as_ref(),
-        app.mcp_initializing,
+        app.mcp_boot_initializing(),
         &app.mcp_connecting,
         app.mcp_configured_count,
         PluginBootSummary::default(),
@@ -1738,7 +1743,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         text.push(Some(Line::from(spans)));
     }
     if fit.context {
-        let workspace = shorten_workspace(&crate::utils::display_path(&app.workspace), 2);
+        let workspace = shorten_workspace(&codewhale_util::utils::display_path(&app.workspace), 2);
         let identity = crate::tui::workspace_context::identity_from_context(
             &app.workspace,
             app.workspace_context.as_deref(),
@@ -2162,7 +2167,7 @@ mod launch_card_tests {
             reload_required: false,
             servers,
         });
-        app.mcp_initializing = false;
+        app.set_mcp_boot_initializing(false);
         app.mcp_connecting = Vec::new();
         app
     }
@@ -2381,7 +2386,7 @@ mod launch_card_tests {
     #[test]
     fn a_boot_in_flight_says_connecting_rather_than_connected() {
         let mut app = app_with_recent(&["one"], 1);
-        app.mcp_initializing = true;
+        app.set_mcp_boot_initializing(true);
         app.mcp_configured_count = 23;
         app.mcp_connecting = Vec::new();
         let lines = painted(&app, 120, 30);

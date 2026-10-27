@@ -8,6 +8,14 @@
 > from the text that follows. Where they disagree, the newest "As built"
 > section and the code are current; the rest is the plan for later phases.
 
+## As built: independent Computer Use plugin (2026-10-26)
+
+Computer Use is installed and updated through the ordinary plugin catalog. Its
+runtime and native Mac helper are no longer embedded in the Engine. References
+below to the former CU embedding are historical design evidence, not the
+current CU distribution contract. The TypeScript extension host retains its
+own packaging; it does not own or distribute the CU runtime.
+
 ## As built: authored prompt sections, owner-local storage and invocation identity (2026-10-02)
 
 `prompt` and `storage` are host-provided shim services whose replacement is
@@ -419,7 +427,7 @@ built" sections below, this one is current.
   Codewhale home's location.
 - **Plugin configuration.** There was no per-plugin config (`config` was always
   `{}`). `[plugins."<name>".config]` in the *user's* `config.toml`
-  (`config::PluginSettings`, a new field on `Config`; project scope reads an
+  (`codewhale_config::extension_host::PluginSettings`, a field on `Config`; project scope reads an
   explicit key list that excludes it) becomes the second argument of `apply`.
   Cordis already validates it against an exported `Config` schema (a
   schemastery `Schema`) and applies defaults, so a mismatch fails activation
@@ -571,7 +579,7 @@ the diagnosed fallback. The same embedded bundle runs on either runtime.
 
 - **Selection** (`dependencies::resolve_extension_host_runtime`). Unset
   means `node`, or `bun` when the table sets only a `bun` path
-  (`ExtensionHostConfig::effective_runtime`). A configured `node`/`bun` path is
+  (`codewhale_config::extension_host::ExtensionHostConfig::effective_runtime`). A configured `node`/`bun` path is
   the only candidate for its runtime and fails resolution with its reason
   rather than falling through. Otherwise each `bun` on `PATH`, then
   `$BUN_INSTALL/bin` or `~/.bun/bin` (or each `node` on `PATH`) is run, and
@@ -1250,7 +1258,7 @@ The threats, from the outside in:
 
 ### 4.5 Sandboxing the host (phase 5, required before third-party host plugins leave experimental)
 
-- Launch the host under `crates/tui/src/sandbox/` (seatbelt, bwrap or seccomp), with a profile that:
+- Launch the host under `crates/sandbox/` (seatbelt or bwrap), with a profile that:
   - denies network except the loopback control socket;
   - denies writes outside `$CODEWHALE_HOME/extension-host/data/<plugin>/` and the OS temp dir;
   - allows reading the workspace and plugin roots;
@@ -1671,7 +1679,7 @@ below are historical proposals unless that table leaves the choice open.
 - `crates/runtime/src/features.rs`
 - `config.example.toml:1228`
 - `crates/tui/src/mcp.rs:536-575,753-756,2852-2865`
-- `crates/tui/src/dependencies.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)
+- `crates/dependencies/src/lib.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)
 - `crates/tui/src/tools/{plugin.rs:1-20,57-172, registry.rs:53-63,360-440, spec.rs:1436-1550, codemode.rs:193-238}` (main)
 - `crates/tui/src/core/engine.rs:4672,4895-4915,7360-7400`; `core/engine/{tool_catalog.rs:136-155, tool_preparation.rs:40-60, dispatch.rs:870-886}`
 - `crates/tui/src/mcp.rs:929-1000` (`ReviewedStdioLaunch`), `:1265-1274` (`approval_hint_for`); `mcp/oauth.rs:700-760`

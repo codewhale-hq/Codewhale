@@ -913,11 +913,11 @@ fn uninstall_bundle(
 }
 
 /// Read the active network policy for plugin downloads (host-side, D11).
-pub(crate) fn plugin_network_policy() -> crate::network_policy::NetworkPolicy {
-    crate::config::Config::load(None, None)
+pub(crate) fn plugin_network_policy() -> codewhale_net::network_policy::NetworkPolicy {
+    crate::plugins::providers::load_config(None, None)
         .unwrap_or_default()
         .network
-        .map(|policy| policy.into_runtime())
+        .map(codewhale_net::network_policy::NetworkPolicy::from)
         .unwrap_or_default()
 }
 

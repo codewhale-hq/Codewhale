@@ -28,7 +28,16 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus};
-use crate::utils::spawn_supervised;
+use codewhale_util::utils::spawn_supervised;
+
+#[derive(Clone)]
+pub struct ThreadEventSink(pub Arc<dyn Fn(String, &'static str, serde_json::Value) + Send + Sync>);
+
+impl std::fmt::Debug for ThreadEventSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ThreadEventSink")
+    }
+}
 
 /// Current automation record schema. `pub(crate)` so the Operate keepalive
 /// can build a fixed-id record directly (no create/delete id swap).
@@ -97,6 +106,8 @@ pub struct DelayedTriggerRecord {
     /// Session that scheduled this trigger. Missing legacy ownership fails closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
     pub status: DelayedTriggerStatus,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +142,7 @@ pub struct CreateDelayedTriggerRequest {
     pub owner_session_id: Option<String>,
     /// Optional parent trigger id for re-arm lineage tracking.
     pub parent_trigger_id: Option<String>,
+    pub destination_thread_id: Option<String>,
 }
 
 // ── End delayed-trigger types ──────────────────────────────────────────────
@@ -187,6 +199,8 @@ pub struct AutomationRecord {
     pub auto_approve: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_mode: Option<AutomationDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
     pub status: AutomationStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -302,6 +316,8 @@ pub struct CreateAutomationRequest {
     pub auto_approve: Option<bool>,
     #[serde(default)]
     pub delivery_mode: Option<AutomationDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
     #[serde(default)]
     pub status: Option<AutomationStatus>,
 }
@@ -320,6 +336,8 @@ pub struct UpdateAutomationRequest {
     pub trust_mode: Option<bool>,
     pub auto_approve: Option<bool>,
     pub delivery_mode: Option<AutomationDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_thread_id: Option<String>,
     pub status: Option<AutomationStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
@@ -1054,6 +1072,7 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 #[derive(Debug, Clone)]
 pub struct AutomationManager {
     execution_scope: Option<String>,
+    thread_events: Option<ThreadEventSink>,
     automations_dir: PathBuf,
     runs_dir: PathBuf,
     triggers_dir: PathBuf,
@@ -1150,6 +1169,7 @@ impl AutomationManager {
             .with_context(|| format!("Failed to create {}", archive_dir.display()))?;
         Ok(Self {
             execution_scope: None,
+            thread_events: None,
             automations_dir,
             runs_dir,
             triggers_dir,
@@ -1177,6 +1197,49 @@ impl AutomationManager {
         }
         self.execution_scope = Some(tasks.execution_scope().to_string());
         Ok(())
+    }
+
+    pub(crate) fn set_thread_event_sink(&mut self, sink: ThreadEventSink) {
+        self.thread_events = Some(sink);
+    }
+
+    fn emit_thread_event(
+        &self,
+        thread_id: Option<&str>,
+        event: &'static str,
+        payload: serde_json::Value,
+    ) {
+        if let (Some(sink), Some(thread_id)) = (self.thread_events.as_ref(), thread_id) {
+            (sink.0)(thread_id.to_string(), event, payload);
+        }
+    }
+
+    fn emit_automation_event(&self, event: &'static str, record: &AutomationRecord) {
+        self.emit_thread_event(
+            record.destination_thread_id.as_deref(),
+            event,
+            serde_json::json!({
+                "automation_id": record.id,
+                "name": record.name,
+                "rrule": record.rrule,
+                "status": record.status,
+                "next_run_at": record.next_run_at,
+            }),
+        );
+    }
+
+    pub(crate) fn emit_trigger_event(&self, event: &'static str, record: &DelayedTriggerRecord) {
+        self.emit_thread_event(
+            record.destination_thread_id.as_deref(),
+            event,
+            serde_json::json!({
+                "trigger_id": record.trigger_id,
+                "message": record.message,
+                "fire_at": record.fire_at,
+                "status": record.status,
+                "task_id": record.task_id,
+            }),
+        );
     }
 
     pub(crate) fn execution_scope(&self) -> Option<&str> {
@@ -1303,6 +1366,7 @@ impl AutomationManager {
             trust_mode: req.trust_mode,
             auto_approve: req.auto_approve,
             delivery_mode: req.delivery_mode,
+            destination_thread_id: normalize_optional_string(req.destination_thread_id),
             status,
             created_at: now,
             updated_at: now,
@@ -1312,6 +1376,7 @@ impl AutomationManager {
         };
 
         self.save_automation(&record)?;
+        self.emit_automation_event("automation.created", &record);
         Ok(record)
     }
 
@@ -1424,6 +1489,9 @@ impl AutomationManager {
         if let Some(delivery_mode) = req.delivery_mode {
             existing.delivery_mode = Some(delivery_mode);
         }
+        if let Some(destination) = req.destination_thread_id {
+            existing.destination_thread_id = normalize_optional_string(Some(destination));
+        }
         if let Some(status) = req.status {
             existing.status = status;
         }
@@ -1449,6 +1517,7 @@ impl AutomationManager {
         existing.updated_at = Utc::now();
         existing.revision = existing.revision.saturating_add(1);
         self.save_automation_unlocked(&existing)?;
+        self.emit_automation_event("automation.updated", &existing);
         Ok(existing)
     }
 
@@ -2121,6 +2190,7 @@ impl AutomationManager {
             message: req.message.trim().to_string(),
             workspace: req.workspace,
             owner_session_id: req.owner_session_id,
+            destination_thread_id: normalize_optional_string(req.destination_thread_id),
             status: DelayedTriggerStatus::Pending,
             created_at: now,
             fired_at: None,
@@ -2131,6 +2201,7 @@ impl AutomationManager {
             dispatch: None,
         };
         self.save_trigger(&record)?;
+        self.emit_trigger_event("trigger.scheduled", &record);
         Ok(record)
     }
 
@@ -2239,8 +2310,23 @@ impl AutomationManager {
         trigger_id: &str,
         owner_session_id: &str,
     ) -> Result<DelayedTriggerRecord> {
-        self.with_transaction(|| {
-            let mut record = self.get_trigger_for_owner(trigger_id, owner_session_id)?;
+        self.cancel_trigger_visible_to(trigger_id, Some(owner_session_id))
+    }
+
+    pub fn cancel_trigger(&self, trigger_id: &str) -> Result<DelayedTriggerRecord> {
+        self.cancel_trigger_visible_to(trigger_id, None)
+    }
+
+    fn cancel_trigger_visible_to(
+        &self,
+        trigger_id: &str,
+        owner_session_id: Option<&str>,
+    ) -> Result<DelayedTriggerRecord> {
+        let record = self.with_transaction(|| {
+            let mut record = match owner_session_id {
+                Some(owner) => self.get_trigger_for_owner(trigger_id, owner)?,
+                None => self.get_trigger(trigger_id)?,
+            };
             if record.status != DelayedTriggerStatus::Pending || record.dispatch.is_some() {
                 bail!(
                     "Trigger '{trigger_id}' cannot be canceled after admission (status: {:?})",
@@ -2250,7 +2336,9 @@ impl AutomationManager {
             record.status = DelayedTriggerStatus::Canceled;
             self.save_trigger_unlocked(&record)?;
             Ok(record)
-        })
+        })?;
+        self.emit_trigger_event("trigger.canceled", &record);
+        Ok(record)
     }
 
     /// Return due proposals and unfinished durable trigger admissions.
@@ -2298,9 +2386,9 @@ fn new_run_record(
 /// task from re-deriving a posture out of a legacy bit on every later change to
 /// what that bit means.
 fn automation_posture(auto_approve: bool) -> String {
-    crate::runtime_policy::approval_wire(crate::core::authority::posture_from_auto_approve(
-        auto_approve,
-    ))
+    codewhale_runtime::runtime_policy::approval_wire(
+        codewhale_execpolicy::ApprovalMode::from_auto_approve(auto_approve),
+    )
     .to_string()
 }
 
@@ -2318,6 +2406,7 @@ fn automation_task_request(automation: &AutomationRecord) -> NewTaskRequest {
         auto_approve: Some(automation.task_auto_approve()),
         permission_posture: Some(automation_posture(automation.task_auto_approve())),
         owner_session_id: None,
+        destination_thread_id: automation.destination_thread_id.clone(),
     }
 }
 
@@ -2663,7 +2752,10 @@ async fn enqueue_trigger_task(
         Ok(task) => {
             trigger.status = DelayedTriggerStatus::Fired;
             trigger.fired_at = Some(Utc::now());
-            trigger.thread_id = task.thread_id.clone();
+            trigger.thread_id = task
+                .thread_id
+                .clone()
+                .or_else(|| trigger.destination_thread_id.clone());
             trigger.error = None;
         }
         Err(error) => {
@@ -2757,6 +2849,7 @@ where
                             auto_approve: Some(false),
                             permission_posture: Some(automation_posture(false)),
                             owner_session_id: current.owner_session_id.clone(),
+                            destination_thread_id: current.destination_thread_id.clone(),
                         },
                         task_data_dir: task_data_dir.canonicalize()?,
                         accepted: false,
@@ -2797,7 +2890,13 @@ where
         };
         if let Err(error) = with_manager_blocking(automations, {
             let trigger = trigger.clone();
-            move |manager| manager.save_trigger(&trigger)
+            move |manager| {
+                manager.save_trigger(&trigger)?;
+                if trigger.status == DelayedTriggerStatus::Fired {
+                    manager.emit_trigger_event("trigger.fired", &trigger);
+                }
+                Ok(())
+            }
         })
         .await
         {
@@ -3134,7 +3233,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    crate::utils::write_atomic(path, &serde_json::to_vec_pretty(value)?)
+    codewhale_util::utils::write_atomic(path, &serde_json::to_vec_pretty(value)?)
         .with_context(|| format!("write {}", path.display()))
 }
 
@@ -3644,6 +3743,7 @@ mod tests {
         let mut triggers = Vec::new();
         for index in 0..2 {
             let mut trigger = manager.create_trigger(CreateDelayedTriggerRequest {
+                destination_thread_id: None,
                 fire_at: Utc::now() + Duration::hours(1),
                 message: format!("trigger fixture {index}"),
                 workspace: None,
@@ -3801,7 +3901,7 @@ mod tests {
         let mut service = AutomationManager::open(root.join("automations"))?;
         service.bind_task_manager(&tasks)?;
         let shared = Arc::new(Mutex::new(service));
-        crate::utils::write_atomic(&root.join(format!("{role}-ready")), b"ready")?;
+        codewhale_util::utils::write_atomic(&root.join(format!("{role}-ready")), b"ready")?;
         wait_fixture_path(&root.join(format!("{role}-go"))).await?;
         let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
         scheduler_tick_with(&shared, &tasks.data_dir(), {
@@ -3817,14 +3917,17 @@ mod tests {
                 async move {
                     let id = run.task_id.clone().expect("durably claimed fixture id");
                     observations.lock().unwrap().push(id.clone());
-                    crate::utils::write_atomic(
+                    codewhale_util::utils::write_atomic(
                         &root.join(format!("{role}-entered")),
                         id.as_bytes(),
                     )
                     .expect("record dispatch entry");
                     if role == "first" {
-                        crate::utils::write_atomic(&root.join("first-held"), id.as_bytes())
-                            .expect("record claim barrier");
+                        codewhale_util::utils::write_atomic(
+                            &root.join("first-held"),
+                            id.as_bytes(),
+                        )
+                        .expect("record claim barrier");
                         wait_fixture_path(&root.join("release-first"))
                             .await
                             .expect("release owner");
@@ -3846,7 +3949,7 @@ mod tests {
             assert_eq!(task.status, TaskStatus::Completed);
         }
         reconcile_run_statuses_shared(&shared, &tasks).await?;
-        crate::utils::write_atomic(
+        codewhale_util::utils::write_atomic(
             &root.join(format!("{role}-done")),
             serde_json::to_vec(&ids)?.as_slice(),
         )?;
@@ -3865,10 +3968,10 @@ mod tests {
         // adopt the first scope's immutable dispatch even before acceptance.
         wait_fixture_path(&root.path().join("first-ready")).await?;
         wait_fixture_path(&root.path().join("second-ready")).await?;
-        crate::utils::write_atomic(&root.path().join("first-go"), b"go")?;
+        codewhale_util::utils::write_atomic(&root.path().join("first-go"), b"go")?;
         wait_fixture_path(&root.path().join("first-held")).await?;
         let id = fs::read_to_string(root.path().join("first-held"))?;
-        crate::utils::write_atomic(&root.path().join("second-go"), b"go")?;
+        codewhale_util::utils::write_atomic(&root.path().join("second-go"), b"go")?;
         wait_fixture_path(&root.path().join("second-done")).await?;
         finish_scheduler_fixture(&mut second, &root.path().join("second.log")).await?;
         assert!(
@@ -3879,7 +3982,7 @@ mod tests {
             fixture_executions(&root.path().join("executions")).is_empty(),
             "owner is blocked before actual enqueue"
         );
-        crate::utils::write_atomic(&root.path().join("release-first"), b"release")?;
+        codewhale_util::utils::write_atomic(&root.path().join("release-first"), b"release")?;
         finish_scheduler_fixture(&mut first, &root.path().join("first.log")).await?;
         assert_eq!(
             fixture_executions(&root.path().join("executions")),
@@ -4041,6 +4144,7 @@ mod tests {
     ) -> AutomationRecord {
         let now = Utc::now();
         AutomationRecord {
+            destination_thread_id: None,
             schema_version: CURRENT_AUTOMATION_SCHEMA_VERSION,
             execution_scope: Some(crate::task_manager::test_execution_scope("test")),
             id: Uuid::new_v4().to_string(),
@@ -4450,6 +4554,7 @@ mod tests {
 
         let created = manager
             .create_automation(CreateAutomationRequest {
+                destination_thread_id: None,
                 name: "Pinned model".to_string(),
                 prompt: "prompt".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
@@ -4495,6 +4600,7 @@ mod tests {
 
         let created = manager
             .create_automation(CreateAutomationRequest {
+                destination_thread_id: None,
                 name: "Delete me".to_string(),
                 prompt: "prompt".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
@@ -4932,7 +5038,7 @@ mod tests {
     {
         let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir()?;
-        let mut config: crate::config::Config = toml::from_str(
+        let mut config: codewhale_runtime::config::Config = toml::from_str(
             r#"
 provider = "first"
 [providers.first]
@@ -5028,6 +5134,7 @@ model = "private-model"
         let manager = AutomationManager::open_for_test(tempdir.path().join("automations"))?;
 
         let mut owned = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
             fire_at: Utc::now() + Duration::hours(1),
             message: "owned delayed continuation".to_string(),
             workspace: None,
@@ -5038,6 +5145,7 @@ model = "private-model"
         manager.save_trigger(&owned)?;
 
         let mut legacy = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
             fire_at: Utc::now() + Duration::hours(1),
             message: "legacy delayed continuation".to_string(),
             workspace: None,
@@ -5400,6 +5508,7 @@ model = "private-model"
             AutomationManager::open_for_test(tempdir.path().to_path_buf()).expect("manager");
         let created = manager
             .create_automation(CreateAutomationRequest {
+                destination_thread_id: None,
                 name: "Slow enqueue".to_string(),
                 prompt: "prompt".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),

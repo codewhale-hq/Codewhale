@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::ProviderKind;
+use codewhale_config::ProviderKind;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -631,7 +631,7 @@ fn reject_linked_workspace_dir(
     if scope != FleetScope::Workspace {
         return Ok(());
     }
-    super::files::reject_linked_path(workspace, dir).map_err(|e| FleetStoreError::Io {
+    codewhale_util::files::reject_linked_path(workspace, dir).map_err(|e| FleetStoreError::Io {
         path: dir.display().to_string(),
         message: e.to_string(),
     })
@@ -1067,7 +1067,7 @@ fn write_scoped(
             path: path.display().to_string(),
             message: "a workspace Fleet file must stay within the workspace".to_string(),
         })?;
-    super::files::WorkspaceFile::open_shared(workspace, relative, true)
+    codewhale_util::files::WorkspaceFile::open_shared(workspace, relative, true)
         .and_then(|file| file.replace(bytes))
         .map_err(io_error)
 }
@@ -1077,7 +1077,7 @@ fn write_scoped(
 /// Each write gets its own temp file, so two concurrent savers can never
 /// interleave bytes into one shared temp and publish a mixed file.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FleetStoreError> {
-    crate::utils::write_atomic_workspace(path, bytes).map_err(|e| FleetStoreError::Io {
+    codewhale_util::utils::write_atomic_workspace(path, bytes).map_err(|e| FleetStoreError::Io {
         path: path.display().to_string(),
         message: e.to_string(),
     })

@@ -271,8 +271,8 @@ pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remain
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn test_app() -> App {

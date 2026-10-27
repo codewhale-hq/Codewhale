@@ -53,7 +53,7 @@ pub(crate) fn test_tui_options(workspace: impl AsRef<Path>) -> crate::tui::app::
 /// a session after the user has chosen a Startup action; direct `App::new`
 /// tests remain the clean-launch authority.
 pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> crate::tui::app::App {
-    let config = crate::config::Config::default();
+    let config = codewhale_runtime::config::Config::default();
     let mut app = crate::tui::app::App::new(options, &config);
 
     // Shared behavior tests operate on the live session surface. Do not make
@@ -62,7 +62,7 @@ pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> cra
     app.launch.visible = false;
 
     // Deterministic presentation regardless of host locale.
-    app.cost_currency = crate::pricing::CostCurrency::Usd;
+    app.cost_currency = codewhale_config::pricing::CostCurrency::Usd;
     app.ui_locale = codewhale_localization::Locale::En;
     // Transcript tests must not depend on a concurrently swapped settings
     // home. Tests for hidden reasoning opt out explicitly.
@@ -70,7 +70,7 @@ pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> cra
     // Pin the route identity: without this, a machine with customized
     // settings computes context-window assertions against a different model
     // than the requested deepseek-v4-pro.
-    app.set_provider_identity(crate::config::ProviderKind::Deepseek, "deepseek");
+    app.set_provider_identity(codewhale_config::ProviderKind::Deepseek, "deepseek");
     app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;

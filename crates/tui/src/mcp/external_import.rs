@@ -143,7 +143,7 @@ fn checked_source(
     // caches), routinely past the 1 MiB MCP config bound. Use the bound
     // `/import-claude` already reads it with.
     let max_bytes = match kind {
-        ExternalMcpSourceKind::ClaudeJson => crate::import_claude::MAX_SOURCE_BYTES,
+        ExternalMcpSourceKind::ClaudeJson => codewhale_net::import_claude::MAX_SOURCE_BYTES,
         _ => super::MAX_MCP_CONFIG_BYTES,
     };
     let Some(raw) = super::read_bounded_mcp_config_file(path, max_bytes)? else {
@@ -248,9 +248,9 @@ fn checked_entry(mut config: Value, from_array: bool) -> anyhow::Result<McpServe
     );
     if let Some(oauth) = fields.get("oauth").filter(|v| !v.is_null()) {
         anyhow::ensure!(
-            oauth
-                .as_object()
-                .is_some_and(|map| map.keys().all(|key| key == "client_id")),
+            oauth.as_object().is_some_and(|map| map
+                .keys()
+                .all(|key| matches!(key.as_str(), "client_id" | "issuer" | "client_metadata_url"))),
             "Entry contains unsupported OAuth fields"
         );
     }
@@ -399,7 +399,7 @@ pub fn persist_decisions(
         if rendered.len() as u64 > super::MAX_MCP_CONFIG_BYTES {
             anyhow::bail!("MCP consent history exceeds size limit");
         }
-        crate::utils::write_atomic(path, &rendered)?;
+        codewhale_util::utils::write_atomic(path, &rendered)?;
         Ok(())
     })
 }
@@ -592,7 +592,7 @@ impl<'a> ImportContext<'a> {
             workspace,
             mcp_path,
             plugins,
-            home: crate::config::effective_home_dir()
+            home: codewhale_paths::user_home()
                 .ok_or_else(|| anyhow::anyhow!("Home directory unavailable"))?,
             codewhale_home: codewhale_config::codewhale_home()?,
         })
@@ -686,7 +686,7 @@ fn candidate_id(candidate: &ImportCandidate) -> String {
 fn source_blocked(context: &ImportContext<'_>, candidate: &ImportCandidate) -> bool {
     candidate.hard_blocked
         || (candidate.source_kind == ExternalMcpSourceKind::ProjectMcpJson
-            && !crate::config::is_workspace_trusted(context.workspace))
+            && !codewhale_runtime::config::is_workspace_trusted(context.workspace))
 }
 
 pub fn preview_imports(context: &ImportContext<'_>) -> anyhow::Result<ImportPreview> {
@@ -1011,7 +1011,7 @@ mod tests {
             let path = context.home.join(".claude.json");
             fs::write(
                 &path,
-                vec![b' '; crate::import_claude::MAX_SOURCE_BYTES as usize + 1],
+                vec![b' '; codewhale_net::import_claude::MAX_SOURCE_BYTES as usize + 1],
             )
             .unwrap();
             let preview = preview_imports(context).unwrap();

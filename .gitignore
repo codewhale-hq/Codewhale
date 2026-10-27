@@ -1,6 +1,7 @@
 # Build artifacts
 /target
 /target-*
+/vendor/codewhale-ratatui/target/
 .entire/
 .cursor/
 .plans/

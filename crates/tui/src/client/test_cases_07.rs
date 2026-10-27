@@ -34,13 +34,16 @@
                 ..Default::default()
             },
         );
-        let config = Config {
-            provider: Some("my_thing".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("my_thing".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
 
         // The config names a custom provider, so it must resolve as Custom.
@@ -233,10 +236,13 @@
                     ..ProviderConfig::default()
                 },
             );
-            CodewhaleClient::new(&Config {
-                provider: Some(identity.to_string()),
-                providers: Some(providers),
-                ..Config::default()
+            CodewhaleClient::new(&{
+                let __cw_config_init_1_0 = Some(identity.to_string());
+                let __cw_config_init_1_1 = Some(providers);
+                let mut __cw_config_init_1_value: Config = Config::default();
+                __cw_config_init_1_value.provider = __cw_config_init_1_0;
+                __cw_config_init_1_value.providers = __cw_config_init_1_1;
+                __cw_config_init_1_value
             })
             .expect("client")
         }

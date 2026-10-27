@@ -5,7 +5,8 @@ Resolves #1097 — FreeBSD install via `cargo` today, native `pkg` port planned.
 ## Current: cargo install (supported)
 
 FreeBSD has no prebuilt GitHub Release asset. The npm wrapper intentionally fails with
-`Unsupported platform: freebsd` and points to the Cargo path. Build from source:
+`Unsupported platform: freebsd` and points to the Cargo path. Build from source with
+Rust 1.89 or newer (the workspace `rust-version`):
 
 ```bash
 pkg install -y rust pkgconf git  # or: pkg install -y lang/rust devel/pkgconf devel/git
@@ -22,13 +23,14 @@ installed `codewhale-tui` from ports or Cargo, run
 
 Linux `libdbus-1` / `pkg-config` build deps are not needed on FreeBSD for the default
 feature set; the `rquickjs` FreeBSD bindings are generated at build time via `bindgen`
-(see `crates/tui/build.rs` and the `1582ba965`/`5eb0385e8` FreeBSD bindgen fix).
+(see the `target_os = "freebsd"` dependency in `crates/workflow-js/Cargo.toml`, added by
+`1582ba965`/`5eb0385e8`).
 
 ## Target validation
 
-- Rust tier-2 target `x86_64-unknown-freebsd` is validated in CI via `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` on the `release/0.9.5` branch.
+- No CI job builds or checks the Rust tier-2 target `x86_64-unknown-freebsd`, so FreeBSD source builds are not verified before a release. To check one, run `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` on a FreeBSD host.
 - `aarch64-unknown-freebsd` cross-check is tracked for future hardware.
-- The release matrix in `.github/workflows/release-artifacts.yml` remains 7×1 (Linux musl x64, Linux gnu arm64, Android arm64, macOS x64/arm64, Windows x64/arm64). FreeBSD is a source-build target — no prebuilt asset, no matrix bloat, but the row in `docs/INSTALL.md` is authoritative.
+- The release matrix in `.github/workflows/release-artifacts.yml` remains 7×1 (Linux musl x64, Linux musl arm64, Android arm64, macOS x64/arm64, Windows x64/arm64). FreeBSD is a source-build target — no prebuilt asset, no matrix bloat, but the row in `docs/INSTALL.md` is authoritative.
 
 ## Future: native pkg / port
 
@@ -53,7 +55,7 @@ and report the `codewhale doctor` JSON in #1097.
 
 ```bash
 # on a FreeBSD 14.1 amd64 host or VM
-rustc --version  # >= 1.88
+rustc --version  # >= 1.89
 cargo install --path crates/cli --locked
 codewhale --version
 codewhale exec --auto "run pwd"

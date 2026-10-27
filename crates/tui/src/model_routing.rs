@@ -11,17 +11,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::CodewhaleClient;
 use crate::client::system_one::{DecisionRouterRoute, SystemOneAnswer, SystemOneResponse};
-use crate::config::{
-    AutoRouterKind, Config, ProviderIdentity, ProviderKind, normalize_model_name_for_provider,
-};
 use crate::cost_status::{
     EffectiveRouteEnvelope, EffectiveRouteUsage, RuntimeUsageDropRecord, RuntimeUsageRecord,
 };
 use crate::llm_client::LlmClient;
 use crate::model_inventory::{ModelInventory, probability_bp};
 use crate::reasoning_preference::ReasoningEffort;
+use codewhale_config::ProviderKind;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
+use codewhale_runtime::config::{
+    AutoRouterKind, Config, ProviderIdentity, normalize_model_name_for_provider,
+};
 
 /// Big/cheap model pair the auto-router may choose between for the active
 /// provider (#3018).
@@ -135,25 +136,36 @@ fn catalog_family_candidates(
 /// session model and `cheap` is `None`, so auto mode never fabricates a
 /// DeepSeek id for a provider that cannot serve it.
 pub(crate) fn provider_router_candidates(
-    provider: crate::config::ProviderKind,
+    provider: codewhale_config::ProviderKind,
     current_model: &str,
 ) -> RouterCandidates {
-    use crate::config::ProviderKind;
+    use codewhale_config::ProviderKind;
     if let Some(candidates) = catalog_family_candidates(provider, current_model) {
         return candidates;
     }
 
     if provider == ProviderKind::Zai {
-        let normalized = crate::config::normalize_model_name_for_provider(provider, current_model)
-            .unwrap_or_else(|| current_model.to_string());
+        let normalized =
+            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
+                .unwrap_or_else(|| current_model.to_string());
         return RouterCandidates {
             // GLM-5.3 routes faster/explore children to GLM-5.3-Flash.
             // GLM-5.2 still uses GLM-5-Turbo. Flash, Turbo, and 5.1 have no
             // cheaper tier and keep children on the parent model.
-            cheap: if normalized == crate::config::ZAI_GLM_5_3_MODEL {
-                Some(crate::config::ZAI_GLM_5_3_FLASH_MODEL.to_string())
-            } else if normalized == crate::config::ZAI_GLM_5_2_MODEL {
-                Some(crate::config::ZAI_GLM_5_TURBO_MODEL.to_string())
+            cheap: if normalized
+                == codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_MODEL
+            {
+                Some(
+                    codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_FLASH_MODEL
+                        .to_string(),
+                )
+            } else if normalized
+                == codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+            {
+                Some(
+                    codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL
+                        .to_string(),
+                )
             } else {
                 None
             },
@@ -163,24 +175,34 @@ pub(crate) fn provider_router_candidates(
 
     if provider == ProviderKind::Openrouter
         && let Some(normalized) =
-            crate::config::normalize_model_name_for_provider(provider, current_model)
+            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
         && matches!(
             normalized.as_str(),
-            crate::config::OPENROUTER_GLM_5_1_MODEL
-                | crate::config::OPENROUTER_GLM_5_2_MODEL
-                | crate::config::OPENROUTER_GLM_5_3_MODEL
-                | crate::config::OPENROUTER_GLM_5_3_FLASH_MODEL
-                | crate::config::OPENROUTER_GLM_5_TURBO_MODEL
+            codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_1_MODEL
+                | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
+                | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
+                | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_FLASH_MODEL
+                | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_TURBO_MODEL
         )
     {
         return RouterCandidates {
             // z-ai/glm-5.3 routes faster children to z-ai/glm-5.3-flash;
             // z-ai/glm-5.2 still uses z-ai/glm-5-turbo. Flash, turbo, and 5.1
             // have no cheaper tier and keep children on parent.
-            cheap: if normalized == crate::config::OPENROUTER_GLM_5_3_MODEL {
-                Some(crate::config::OPENROUTER_GLM_5_3_FLASH_MODEL.to_string())
-            } else if normalized == crate::config::OPENROUTER_GLM_5_2_MODEL {
-                Some(crate::config::OPENROUTER_GLM_5_TURBO_MODEL.to_string())
+            cheap: if normalized
+                == codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
+            {
+                Some(
+                    codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_FLASH_MODEL
+                        .to_string(),
+                )
+            } else if normalized
+                == codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
+            {
+                Some(
+                    codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_TURBO_MODEL
+                        .to_string(),
+                )
             } else {
                 None
             },
@@ -201,8 +223,11 @@ pub(crate) fn provider_router_candidates(
             if current_model.to_ascii_lowercase().contains("deepseek") =>
         {
             RouterCandidates {
-                big: crate::config::wire_model_for_provider(provider, "deepseek-v4-pro"),
-                cheap: Some(crate::config::wire_model_for_provider(
+                big: codewhale_runtime::config::wire_model_for_provider(
+                    provider,
+                    "deepseek-v4-pro",
+                ),
+                cheap: Some(codewhale_runtime::config::wire_model_for_provider(
                     provider,
                     "deepseek-v4-flash",
                 )),
@@ -210,8 +235,11 @@ pub(crate) fn provider_router_candidates(
         }
         ProviderKind::Volcengine if current_model.to_ascii_lowercase().contains("deepseek") => {
             RouterCandidates {
-                big: crate::config::DEFAULT_VOLCENGINE_MODEL.to_string(),
-                cheap: Some(crate::config::DEFAULT_VOLCENGINE_FLASH_MODEL.to_string()),
+                big: codewhale_config::descriptors::defaults::DEFAULT_VOLCENGINE_MODEL.to_string(),
+                cheap: Some(
+                    codewhale_config::descriptors::defaults::DEFAULT_VOLCENGINE_FLASH_MODEL
+                        .to_string(),
+                ),
             }
         }
         _ => RouterCandidates {
@@ -1351,7 +1379,7 @@ pub(crate) fn auto_route_usage_source_id(
     }
     format!(
         "auto-router:{}",
-        crate::hashing::hex_bytes(digest.finalize())
+        codewhale_runtime::hashing::hex_bytes(digest.finalize())
     )
 }
 
@@ -2152,29 +2180,36 @@ mod tests {
         crate::provider_lake::clear_live_snapshot();
 
         let model = "synthetic/openrouter-auto-classifier";
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openrouter: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-openrouter-key".to_string()),
-                    base_url: Some(crate::config::DEFAULT_OPENROUTER_BASE_URL.to_string()),
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL
+                            .to_string(),
+                    ),
                     model: Some(model.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            auto: Some(crate::config::AutoConfig {
+            });
+            let __cw_config_init_0_2 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: None,
                 cross_provider: None,
-                router: Some(crate::config::AutoRouterConfig {
+                router: Some(codewhale_runtime::config::AutoRouterConfig {
                     provider: Some("openrouter".to_string()),
                     model: Some(model.to_string()),
                     thinking: Some("off".to_string()),
                     timeout_secs: None,
                     ..Default::default()
                 }),
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value.auto = __cw_config_init_0_2;
+            __cw_config_init_0_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
         assert!(
@@ -2184,7 +2219,7 @@ mod tests {
         );
         let client = CodewhaleClient::new(&config).expect("OpenRouter classifier client");
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
-            crate::config::DEFAULT_OPENROUTER_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
         );
         let first_at = chrono::Utc::now();
         let fetched_at = u64::try_from(first_at.timestamp()).expect("nonnegative timestamp");
@@ -2406,10 +2441,8 @@ mod tests {
     #[test]
     fn classifier_prompt_redacts_secret_after_tool_result_flattening() {
         let secret = "cw-router-secret-should-never-leave-process";
-        let config = Config {
-            ..Default::default()
-        }
-        .with_legacy_root(Some(secret.to_string()), None);
+        let config =
+            <Config as Default>::default().with_legacy_root(Some(secret.to_string()), None);
         let client = CodewhaleClient::new(&config).expect("classifier client");
         // `recent_auto_router_context` converts ToolResult blocks into ordinary
         // text before this boundary. Exercise that exact flattened shape.
@@ -2440,9 +2473,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_2_0 = Some("zai".to_string());
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
 
@@ -2533,17 +2568,23 @@ mod tests {
 
     #[test]
     fn configured_route_effort_normalizer_keeps_kimi_code_low_medium_local() {
-        let mut config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                moonshot: crate::config::ProviderConfig {
-                    base_url: Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL.to_string()),
+        let mut config = {
+            let __cw_config_init_3_0 = Some("moonshot".to_string());
+            let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL
+                            .to_string(),
+                    ),
                     model: Some("k3".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
         assert_eq!(
             normalize_auto_route_effort_for_configured_route(
@@ -2569,7 +2610,8 @@ mod tests {
             .as_mut()
             .expect("providers")
             .moonshot
-            .base_url = Some(crate::config::DEFAULT_MOONSHOT_BASE_URL.to_string());
+            .base_url =
+            Some(codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL.to_string());
         assert_eq!(
             normalize_auto_route_effort_for_configured_route(
                 &config,
@@ -2586,10 +2628,14 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_4_0 = Some("zai".to_string());
+            let __cw_config_init_4_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_4_value: Config = Default::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value.default_text_model = __cw_config_init_4_1;
+            __cw_config_init_4_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
 
@@ -2599,7 +2645,10 @@ mod tests {
         )
         .expect("valid inventory route should parse");
         assert_eq!(route.provider.provider, ProviderKind::Zai);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(
+            route.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
         assert_eq!(route.reasoning_effort, Some(ReasoningEffort::Max));
 
         assert!(
@@ -2617,7 +2666,10 @@ mod tests {
         )
         .expect("wrapped inventory route should parse");
         assert_eq!(wrapped.provider.provider, ProviderKind::Zai);
-        assert_eq!(wrapped.model, crate::config::ZAI_GLM_5_TURBO_MODEL);
+        assert_eq!(
+            wrapped.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL
+        );
         // Parsing is strict and literal; the historic Medium->High coercion
         // is applied downstream by normalize_auto_route_selection_for_config
         // so route-specific contracts (Kimi Code K3) can keep Medium.
@@ -2628,9 +2680,11 @@ mod tests {
     fn inventory_auto_route_recommendation_rejects_unready_candidate() {
         let _env_lock = crate::test_support::lock_test_env();
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_5_0 = Some("zai".to_string());
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value
         };
         let mut inventory = ModelInventory::from_config(&config).unwrap();
         let candidate = inventory
@@ -2638,7 +2692,8 @@ mod tests {
             .iter_mut()
             .find(|candidate| {
                 candidate.provider == ProviderKind::Zai
-                    && candidate.model == crate::config::ZAI_GLM_5_2_MODEL
+                    && candidate.model
+                        == codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
             })
             .expect("Z.ai strong candidate");
         candidate.readiness = crate::provider_readiness::ResolvedProviderReadiness::InvalidRoute;
@@ -2658,9 +2713,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _wanjie = crate::test_support::EnvVarGuard::set("WANJIE_ARK_API_KEY", "wanjie-key");
-        let config = Config {
-            provider: Some("wanjie-ark".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_6_0 = Some("wanjie-ark".to_string());
+            let mut __cw_config_init_6_value: Config = Default::default();
+            __cw_config_init_6_value.provider = __cw_config_init_6_0;
+            __cw_config_init_6_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
 
@@ -2691,10 +2748,13 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            reasoning_effort: Some("low".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_7_0 = Some("deepseek".to_string());
+            let __cw_config_init_7_1 = Some("low".to_string());
+            let mut __cw_config_init_7_value: Config = Default::default();
+            __cw_config_init_7_value.provider = __cw_config_init_7_0;
+            __cw_config_init_7_value.reasoning_effort = __cw_config_init_7_1;
+            __cw_config_init_7_value
         };
 
         let route = resolve_explicit_route_with_inventory(&config, "GLM-5.2")
@@ -2722,7 +2782,7 @@ mod tests {
         );
         assert_eq!(
             route_53.model,
-            crate::config::ZAI_GLM_5_3_MODEL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_MODEL,
             "GLM-5.3 must resolve to its own id"
         );
         // GLM-5.3 publishes its own ladder (low/high/max) instead of 5.2's, so
@@ -2736,9 +2796,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_8_0 = Some("zai".to_string());
+            let mut __cw_config_init_8_value: Config = Default::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value
         };
 
         // #6290 rework: without the flash classifier there is no
@@ -2753,7 +2815,10 @@ mod tests {
                 .expect("inventory route should resolve with authenticated active provider");
 
             assert_eq!(route.provider.provider, ProviderKind::Zai);
-            assert_eq!(route.model, crate::config::DEFAULT_ZAI_MODEL);
+            assert_eq!(
+                route.model,
+                codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
+            );
             assert_eq!(route.source, AutoRouteSource::Heuristic);
             let receipt = route.receipt.expect("Auto route receipt");
             assert_eq!(receipt.tier, AutoRouteTier::Strong);
@@ -2764,10 +2829,13 @@ mod tests {
                 AutoRouteReason::LocalFallback(AutoRouteHeuristicReason::DeclaredDefault),
                 "prompt {prompt:?} must take the declared default, not a content judgment"
             );
-            assert_eq!(receipt.pair.strong, crate::config::DEFAULT_ZAI_MODEL);
+            assert_eq!(
+                receipt.pair.strong,
+                codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
+            );
             assert_eq!(
                 receipt.pair.fast.as_deref(),
-                Some(crate::config::ZAI_GLM_5_3_FLASH_MODEL)
+                Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_FLASH_MODEL)
             );
         }
     }
@@ -2777,9 +2845,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_9_0 = Some("zai".to_string());
+            let mut __cw_config_init_9_value: Config = Default::default();
+            __cw_config_init_9_value.provider = __cw_config_init_9_0;
+            __cw_config_init_9_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
         let recommendation = parse_inventory_auto_route_recommendation(
@@ -2791,7 +2861,10 @@ mod tests {
         let route = auto_route_from_classifier(&inventory, recommendation);
 
         assert_eq!(route.provider.provider, ProviderKind::Zai);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_TURBO_MODEL);
+        assert_eq!(
+            route.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL
+        );
         assert_eq!(route.source, AutoRouteSource::FlashRouter);
         let receipt = route.receipt.expect("classifier receipt");
         assert_eq!(receipt.tier, AutoRouteTier::Fast);
@@ -2817,9 +2890,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let scoped = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let scoped = {
+            let __cw_config_init_10_0 = Some("zai".to_string());
+            let mut __cw_config_init_10_value: Config = Default::default();
+            __cw_config_init_10_value.provider = __cw_config_init_10_0;
+            __cw_config_init_10_value
         };
         let scoped_inventory = ModelInventory::from_config(&scoped).unwrap();
         let raw = r#"{"provider":"deepseek","model":"deepseek-v4-flash","thinking":"off"}"#;
@@ -2837,13 +2912,15 @@ mod tests {
             .is_some()
         );
 
-        let opted_in = Config {
-            auto: Some(crate::config::AutoConfig {
+        let opted_in = {
+            let __cw_config_init_11_0 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: None,
                 cross_provider: Some(true),
                 router: None,
-            }),
-            ..scoped.clone()
+            });
+            let mut __cw_config_init_11_value: Config = scoped.clone();
+            __cw_config_init_11_value.auto = __cw_config_init_11_0;
+            __cw_config_init_11_value
         };
         let opted_in_route = parse_inventory_auto_route_recommendation(
             raw,
@@ -2858,9 +2935,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_12_0 = Some("zai".to_string());
+            let mut __cw_config_init_12_value: Config = Default::default();
+            __cw_config_init_12_value.provider = __cw_config_init_12_0;
+            __cw_config_init_12_value
         };
 
         let prompt = inventory_auto_router_system_prompt(
@@ -2884,9 +2963,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_13_0 = Some("zai".to_string());
+            let mut __cw_config_init_13_value: Config = Default::default();
+            __cw_config_init_13_value.provider = __cw_config_init_13_0;
+            __cw_config_init_13_value
         };
 
         for prompt in [
@@ -2897,7 +2978,10 @@ mod tests {
                 .await
                 .expect("scoped Auto route");
             assert_eq!(route.provider.provider, ProviderKind::Zai);
-            assert_eq!(route.model, crate::config::DEFAULT_ZAI_MODEL);
+            assert_eq!(
+                route.model,
+                codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
+            );
             let receipt = route.receipt.expect("scoped receipt");
             assert_eq!(receipt.tier, AutoRouteTier::Strong);
             assert_eq!(receipt.scope, AutoRouteScope::ResolvedProvider);
@@ -2912,13 +2996,15 @@ mod tests {
     #[test]
     fn config_auto_cross_provider_defaults_to_false() {
         assert!(!Config::default().auto_cross_provider());
-        let opted_in = Config {
-            auto: Some(crate::config::AutoConfig {
+        let opted_in = {
+            let __cw_config_init_14_0 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: None,
                 cross_provider: Some(true),
                 router: None,
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_14_value: Config = Default::default();
+            __cw_config_init_14_value.auto = __cw_config_init_14_0;
+            __cw_config_init_14_value
         };
         assert!(opted_in.auto_cross_provider());
     }
@@ -2928,9 +3014,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _openrouter =
             crate::test_support::EnvVarGuard::set("OPENROUTER_API_KEY", "openrouter-key");
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_15_0 = Some("openrouter".to_string());
+            let mut __cw_config_init_15_value: Config = Default::default();
+            __cw_config_init_15_value.provider = __cw_config_init_15_0;
+            __cw_config_init_15_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
         let recommendation = parse_inventory_auto_route_recommendation(
@@ -2942,11 +3030,17 @@ mod tests {
         let route = auto_route_from_classifier(&inventory, recommendation);
         let receipt = route.receipt.expect("classifier receipt");
 
-        assert_eq!(route.model, crate::config::OPENROUTER_GLM_5_2_MODEL);
-        assert_eq!(receipt.pair.strong, crate::config::OPENROUTER_GLM_5_2_MODEL);
+        assert_eq!(
+            route.model,
+            codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
+        );
+        assert_eq!(
+            receipt.pair.strong,
+            codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
+        );
         assert_ne!(
             receipt.pair.fast.as_deref(),
-            Some(crate::config::DEFAULT_OPENROUTER_FLASH_MODEL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_FLASH_MODEL),
             "a GLM selection must not be described as the DeepSeek default pair"
         );
         assert!(matches!(
@@ -2960,9 +3054,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_16_0 = Some("zai".to_string());
+            let mut __cw_config_init_16_value: Config = Default::default();
+            __cw_config_init_16_value.provider = __cw_config_init_16_0;
+            __cw_config_init_16_value
         };
         let inventory = ModelInventory::from_config(&config).unwrap();
         let fallback = auto_route_declared_fallback(&config, &inventory);
@@ -3017,9 +3113,11 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::remove("ZAI_API_KEY");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_17_0 = Some("zai".to_string());
+            let mut __cw_config_init_17_value: Config = Default::default();
+            __cw_config_init_17_value.provider = __cw_config_init_17_0;
+            __cw_config_init_17_value
         };
 
         let route =
@@ -3046,14 +3144,17 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
         let _zai = crate::test_support::EnvVarGuard::remove("ZAI_API_KEY");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            auto: Some(crate::config::AutoConfig {
+        let config = {
+            let __cw_config_init_18_0 = Some("zai".to_string());
+            let __cw_config_init_18_1 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: None,
                 cross_provider: Some(true),
                 router: None,
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_18_value: Config = Default::default();
+            __cw_config_init_18_value.provider = __cw_config_init_18_0;
+            __cw_config_init_18_value.auto = __cw_config_init_18_1;
+            __cw_config_init_18_value
         };
 
         let route =
@@ -3072,17 +3173,21 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let balanced = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let balanced = {
+            let __cw_config_init_19_0 = Some("zai".to_string());
+            let mut __cw_config_init_19_value: Config = Default::default();
+            __cw_config_init_19_value.provider = __cw_config_init_19_0;
+            __cw_config_init_19_value
         };
-        let cost_saving = Config {
-            auto: Some(crate::config::AutoConfig {
+        let cost_saving = {
+            let __cw_config_init_20_0 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: Some(true),
                 cross_provider: None,
                 router: None,
-            }),
-            ..balanced.clone()
+            });
+            let mut __cw_config_init_20_value: Config = balanced.clone();
+            __cw_config_init_20_value.auto = __cw_config_init_20_0;
+            __cw_config_init_20_value
         };
 
         let balanced_route = resolve_auto_route_with_inventory(
@@ -3105,11 +3210,14 @@ mod tests {
         .expect("cost-saving Auto route should resolve");
 
         assert_eq!(balanced_route.provider.provider, ProviderKind::Zai);
-        assert_eq!(balanced_route.model, crate::config::DEFAULT_ZAI_MODEL);
+        assert_eq!(
+            balanced_route.model,
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
+        );
         assert_eq!(cost_saving_route.provider.provider, ProviderKind::Zai);
         assert_eq!(
             cost_saving_route.model,
-            crate::config::ZAI_GLM_5_3_FLASH_MODEL
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_FLASH_MODEL
         );
         assert_eq!(cost_saving_route.source, AutoRouteSource::Heuristic);
         assert_eq!(
@@ -3140,10 +3248,13 @@ mod tests {
         let _env_lock = crate::test_support::lock_test_env();
         let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _wanjie = crate::test_support::EnvVarGuard::set("WANJIE_ARK_API_KEY", "wanjie-key");
-        let config = Config {
-            provider: Some("wanjie-ark".to_string()),
-            default_text_model: Some("auto".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_21_0 = Some("wanjie-ark".to_string());
+            let __cw_config_init_21_1 = Some("auto".to_string());
+            let mut __cw_config_init_21_value: Config = Default::default();
+            __cw_config_init_21_value.provider = __cw_config_init_21_0;
+            __cw_config_init_21_value.default_text_model = __cw_config_init_21_1;
+            __cw_config_init_21_value
         };
 
         // #6290 rework: no classifier, no content signal — both wordings
@@ -3165,10 +3276,13 @@ mod tests {
         let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _volcengine =
             crate::test_support::EnvVarGuard::set("VOLCENGINE_API_KEY", "volcengine-key");
-        let config = Config {
-            provider: Some("volcengine".to_string()),
-            default_text_model: Some("auto".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_22_0 = Some("volcengine".to_string());
+            let __cw_config_init_22_1 = Some("auto".to_string());
+            let mut __cw_config_init_22_value: Config = Default::default();
+            __cw_config_init_22_value.provider = __cw_config_init_22_0;
+            __cw_config_init_22_value.default_text_model = __cw_config_init_22_1;
+            __cw_config_init_22_value
         };
 
         // #6290 rework: no classifier, no content signal — both wordings
@@ -3185,7 +3299,7 @@ mod tests {
 
     #[test]
     fn provider_router_candidates_cover_known_provider_classes() {
-        use crate::config::ProviderKind;
+        use codewhale_config::ProviderKind;
 
         let deepseek = provider_router_candidates(ProviderKind::Deepseek, "deepseek-v4-pro");
         assert_eq!(deepseek.big, "deepseek-v4-pro");
@@ -3256,7 +3370,7 @@ mod tests {
 
     #[test]
     fn provider_router_candidates_cover_catalog_fast_siblings() {
-        use crate::config::ProviderKind;
+        use codewhale_config::ProviderKind;
 
         let cases = [
             (ProviderKind::OpenaiCodex, "gpt-5.6-sol", "gpt-5.6-luna"),
@@ -3317,9 +3431,11 @@ mod tests {
         // declared fallback returns the configured default verbatim, so no
         // sibling id can be invented regardless of request wording.
         let _env_lock = crate::test_support::lock_test_env();
-        let config = Config {
-            provider: Some("ollama".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_23_0 = Some("ollama".to_string());
+            let mut __cw_config_init_23_value: Config = Default::default();
+            __cw_config_init_23_value.provider = __cw_config_init_23_0;
+            __cw_config_init_23_value
         };
         for prompt in ["hi", "please refactor the auth module for security"] {
             let route = resolve_auto_route_with_inventory(&config, prompt, "", "auto", "auto")
@@ -3343,13 +3459,15 @@ mod tests {
 
     #[test]
     fn config_auto_cost_saving_reads_table() {
-        let cfg = Config {
-            auto: Some(crate::config::AutoConfig {
+        let cfg = {
+            let __cw_config_init_24_0 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: Some(true),
                 cross_provider: None,
                 router: None,
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_24_value: Config = Default::default();
+            __cw_config_init_24_value.auto = __cw_config_init_24_0;
+            __cw_config_init_24_value
         };
         assert!(cfg.auto_cost_saving());
     }
@@ -3393,33 +3511,38 @@ mod decision_router_tests {
     /// Active DeepSeek (pro/flash pair runnable) with an OpenRouter decision
     /// router pointed at `openrouter_base`.
     fn decision_config(openrouter_base: &str, cost_saving: bool, timeout_secs: u64) -> Config {
-        Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some("deepseek-v4-pro".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek: crate::config::ProviderConfig {
+        {
+            let __cw_config_init_25_0 = Some("deepseek".to_string());
+            let __cw_config_init_25_1 = Some("deepseek-v4-pro".to_string());
+            let __cw_config_init_25_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                deepseek: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("ds-test-key".to_string()),
                     ..Default::default()
                 },
-                openrouter: crate::config::ProviderConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("or-test-key".to_string()),
                     base_url: Some(openrouter_base.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            auto: Some(crate::config::AutoConfig {
+            });
+            let __cw_config_init_25_3 = Some(codewhale_runtime::config::AutoConfig {
                 cost_saving: Some(cost_saving),
                 cross_provider: None,
-                router: Some(crate::config::AutoRouterConfig {
+                router: Some(codewhale_runtime::config::AutoRouterConfig {
                     kind: Some("decision".to_string()),
                     provider: Some("openrouter".to_string()),
                     model: Some("typesafe/jev-1.13".to_string()),
                     timeout_secs: Some(timeout_secs),
                     ..Default::default()
                 }),
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_25_value: Config = Default::default();
+            __cw_config_init_25_value.provider = __cw_config_init_25_0;
+            __cw_config_init_25_value.default_text_model = __cw_config_init_25_1;
+            __cw_config_init_25_value.providers = __cw_config_init_25_2;
+            __cw_config_init_25_value.auto = __cw_config_init_25_3;
+            __cw_config_init_25_value
         }
     }
 

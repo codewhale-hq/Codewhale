@@ -300,14 +300,14 @@ pub(super) async fn create_thread_job(
         )
         .await
         .map_err(|error| ApiError::forbidden(error.to_string()))?;
-    let external_backend = crate::sandbox::backend::SandboxKind::parse(
+    let external_backend = codewhale_sandbox::backend::SandboxKind::parse(
         state
             .runtime_threads
             .read_config()
             .sandbox_backend
             .as_deref()
             .unwrap_or("none"),
-    ) != Some(crate::sandbox::backend::SandboxKind::None);
+    ) != Some(codewhale_sandbox::backend::SandboxKind::None);
     if external_backend {
         return Err(ApiError::forbidden(
             "this server runs commands in an external sandbox backend, and a thread job starts a local process; run the command through the thread's shell tool instead",

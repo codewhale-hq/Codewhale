@@ -240,29 +240,26 @@ fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhanceme
         stdout.flush()?;
     }
 
-    loop {
-        match poll_internal(
-            Some(Duration::from_millis(2000)),
-            &KeyboardEnhancementFlagsFilter,
-        ) {
-            Ok(true) => {
-                match read_internal(&KeyboardEnhancementFlagsFilter) {
-                    Ok(InternalEvent::KeyboardEnhancementFlags(current_flags)) => {
-                        // Flush the PrimaryDeviceAttributes out of the event queue.
-                        read_internal(&PrimaryDeviceAttributesFilter).ok();
-                        return Ok(Some(current_flags));
-                    }
-                    _ => return Ok(None),
+    let timeout = Duration::from_millis(2000);
+    let started = std::time::Instant::now();
+    match poll_internal(Some(timeout), &KeyboardEnhancementFlagsFilter)? {
+        true => match read_internal(&KeyboardEnhancementFlagsFilter)? {
+            InternalEvent::KeyboardEnhancementFlags(current_flags) => {
+                // Drain PrimaryDeviceAttributes within the original query deadline.
+                if poll_internal(
+                    Some(timeout.saturating_sub(started.elapsed())),
+                    &PrimaryDeviceAttributesFilter,
+                )? {
+                    read_internal(&PrimaryDeviceAttributesFilter)?;
                 }
+                Ok(Some(current_flags))
             }
-            Ok(false) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "The keyboard enhancement status could not be read within a normal duration",
-                ));
-            }
-            Err(_) => {}
-        }
+            _ => Ok(None),
+        },
+        false => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "The keyboard enhancement status could not be read within a normal duration",
+        )),
     }
 }
 

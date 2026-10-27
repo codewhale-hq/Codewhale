@@ -60,7 +60,7 @@ Stage 2 of the loop: [cw-orient](../cw-orient/SKILL.md) → **slice** →
    - `crates/tui/src/core/` is a module inside the TUI crate. `crates/core` is a
      different crate that runs no turns. Do not confuse them.
    - Repeatedly misidentified as dead, verify consumers before removing:
-     `runtime/src/context_budget.rs`, `tui/src/model_registry.rs`,
+     `runtime/src/context_budget.rs`,
      `runtime/src/prompt_zones.rs`, `tui/src/tools/remember.rs`, `config/src/route/`.
 
 4. **Read the scoped guidance for the files you will touch.** `crates/tui/AGENTS.md`

@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 
 use super::agent_plugin;
 use super::manifest::PluginPathSpec;
-use super::path_identity::metadata_is_link_or_reparse;
 use super::types::LoadedPlugin;
+use codewhale_util::path_identity::metadata_is_link_or_reparse;
 
 /// Mirrors the install staging budget: a validated bundle already fits the
 /// review limits, and export refuses to grow unbounded copies regardless.
@@ -43,7 +43,7 @@ const EXPORT_EXCLUDED_ROOT_FILES: [&str; 4] = [
     agent_plugin::PLUGIN_JSON_NAME,
     agent_plugin::PLUGIN_TOML_NAME,
     agent_plugin::MCP_JSON_NAME,
-    crate::skills::install::INSTALLED_FROM_MARKER,
+    codewhale_skill_install::install::INSTALLED_FROM_MARKER,
 ];
 
 /// What an export wrote, for the caller to render.

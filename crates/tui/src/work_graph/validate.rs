@@ -273,8 +273,8 @@ fn check_structural(snapshot: &WorkGraphSnapshot, out: &mut Vec<Violation>) {
             };
         if matches!(
             requested,
-            super::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable
-                | super::ReasoningEffortTier::Unavailable
+            codewhale_models::reasoning_effort_tier::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable
+                | codewhale_models::reasoning_effort_tier::ReasoningEffortTier::Unavailable
         ) {
             out.push(Violation {
                 code: ValidationCode::Structural,
@@ -305,7 +305,9 @@ fn check_structural(snapshot: &WorkGraphSnapshot, out: &mut Vec<Violation>) {
                     && !model.chars().any(char::is_control)
             });
         if !provenance_is_bounded {
-            if *effective != super::ReasoningEffortTier::Unavailable {
+            if *effective
+                != codewhale_models::reasoning_effort_tier::ReasoningEffortTier::Unavailable
+            {
                 out.push(Violation {
                     code: ValidationCode::Structural,
                     message:
@@ -315,7 +317,7 @@ fn check_structural(snapshot: &WorkGraphSnapshot, out: &mut Vec<Violation>) {
             }
         } else {
             let api_provider = provider_kind.expect("provenance bounded above");
-            if api_provider != crate::config::ProviderKind::Custom
+            if api_provider != codewhale_config::ProviderKind::Custom
                 && provider != api_provider.as_str()
             {
                 out.push(Violation {
@@ -326,8 +328,8 @@ fn check_structural(snapshot: &WorkGraphSnapshot, out: &mut Vec<Violation>) {
                 continue;
             }
             let constrained = match api_provider {
-                crate::config::ProviderKind::Custom => {
-                    Some(super::ReasoningEffortTier::Unavailable)
+                codewhale_config::ProviderKind::Custom => {
+                    Some(codewhale_models::reasoning_effort_tier::ReasoningEffortTier::Unavailable)
                 }
                 api_provider => super::model::constrained_effective_reasoning_for_route(
                     *requested,
@@ -345,7 +347,7 @@ fn check_structural(snapshot: &WorkGraphSnapshot, out: &mut Vec<Violation>) {
             } else if constrained.is_none()
                 && matches!(
                     effective,
-                    super::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable
+                    codewhale_models::reasoning_effort_tier::ReasoningEffortTier::ThinkingEnabledGranularityUnavailable
                 )
             {
                 out.push(Violation {

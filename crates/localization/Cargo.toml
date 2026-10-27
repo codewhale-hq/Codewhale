@@ -16,7 +16,7 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 
 [build-dependencies]
-rust-i18n-support = { version = "=4.2.2", features = ["codegen"] }
+rust-i18n-support = { version = "=4.2.4", features = ["codegen"] }
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]

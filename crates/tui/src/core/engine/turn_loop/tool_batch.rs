@@ -137,6 +137,8 @@ impl Engine {
         );
         let denial_action = self
             .process_tool_results(
+                client.as_ref(),
+                tool_policy.strict_tool_mode,
                 outcomes,
                 turn,
                 &mut progress.tool_catalog,

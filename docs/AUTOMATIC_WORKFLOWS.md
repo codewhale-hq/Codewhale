@@ -46,11 +46,11 @@ request orchestration explicitly.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `automatic` | `true` | Soft-auto orchestration is enabled |
+| `automatic` | `true` | Legacy compatibility field; currently not a launch switch. The model chooses orchestration under the active tool and approval policy. |
 | `auto_start_read_only` | `true` | Read-only plans may start without a write-approval card |
 | `require_approval_for_writes` | `true` | Gates the plan-approval card for writes / elevated starts |
-| `max_children` / `max_concurrent` / `max_depth` | `1000` / `16` / `5` | Task count, concurrent children, and plan-structure (IR shape, not spawn depth) ceilings. The Runtime child-delegation budget (default 3, hard ceiling 8) is a separate quantity with an overlapping name; see `docs/SUBAGENTS.md`. |
-| `default_token_budget` | `0` | Shared admission cap for a run and its children; `0` = none — set it or pass `token_budget` on the call to bound spend |
+| `max_children` / `max_concurrent` / `max_depth` | `0` / `16` / `0` | Total children and structural plan depth are uncapped at zero; positive values are owner limits. Concurrency queues excess work. Runtime delegation has no default product depth cap and remains a separate authority setting. |
+| `default_token_budget` | `0` | Declared token hint retained in receipts; `0` = no hint. It does not cap spend, child lifetime, or admission. |
 
 Elevated work (writes, shell beyond read-only, network, secrets, worktrees, high
 budget) surfaces an approval card with goal, child summary, capability flags,
@@ -127,7 +127,8 @@ approval policy. See [Sandbox](SANDBOX.md).
 
 ## Synthesis and compatibility
 
-- Prefer `responseSchema` on children that must return structured fields.
+- Prefer `responseSchema` on read-only children that must return structured fields.
+  Write-capable children retain their change and verification evidence contract.
 - Ordinary failed parallel slots become `null` (partial success); filter them
   before synthesizing one operator-facing summary. A `responseSchema` mismatch
   is a contract failure and intentionally fails the run instead of being
@@ -147,16 +148,28 @@ approval policy. See [Sandbox](SANDBOX.md).
   rather than quietly reading as `settled`.
 - A run whose every task failed is recorded as **failed**, not as a partial
   success, even when the script itself returned a value.
-- Workflow token budgets govern admission and aggregate accounting. Once
-  exhausted they reject later or descendant spawns, but children already
-  running in parallel can reconcile aggregate usage above the hint because
-  providers report usage only at response boundaries.
+- Native plans settle ordinary failures in singleton, sequential, and parallel
+  steps. Independent work continues; a failed or missing required result skips
+  its dependents without launching them. The receipt retains surviving results
+  and the skip reason. Partial loss is `degraded`; no surviving work is `failed`.
+  Cancellation and explicit schema-contract failures still stop the run.
+- Legacy Workflow token budgets survive only for parse/receipt compatibility and
+  are absent from the advertised tool/plan schema. They are not caps. Aggregate token
+  accounting is unavailable: `budget.metered` is `false`, and `budget.spent()`
+  and `budget.remaining()` return `null`. `budget.total` retains the declared
+  hint. Actual reported provider usage remains in child/run receipts.
+- Model-authored child step, time, output and delegation-depth limits are not
+  runtime authority. Legacy fields remain parse-compatible but are ignored;
+  direct launch receipts identify ignored fields. Generated Workflow tasks omit
+  legacy token/step/time hints entirely. Configure actual owner limits through
+  the runtime's operator, role/Fleet, parent or saved-run controls. Stop remains
+  authoritative. Continue until the outcome is complete or a real blocker needs a handback.
 - Compatibility paths remain: `script`, `source_path` (checked-in
   `.workflow.js` / `.workflow.ts`), and structured `plan`.
 
-## When automatic stays off
+## Choosing orchestration
 
-Automatic Workflow is suppressed for:
+The model can use direct tools instead of a Workflow for:
 
 - One-file edits and tiny one-step asks  
 - Simple commands / factual questions  
@@ -164,7 +177,8 @@ Automatic Workflow is suppressed for:
 - Risky writes without a clear decomposition  
 - Plans that would exceed `max_children` / `max_depth` (refused before launch)
 
-In those cases Codewhale uses direct tools or a single `agent` instead.
+These are planning choices, not task-size cutoffs. Use the decomposition the
+work needs; only the configured structural and authority checks refuse launch.
 
 ## Example scenarios (#4131)
 

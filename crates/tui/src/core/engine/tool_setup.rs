@@ -5,7 +5,7 @@
 use super::*;
 use crate::core::authority::shell_policy_for_mode;
 use crate::tools::AgentToolSurfaceOptions;
-use crate::worker_profile::ShellPolicy;
+use codewhale_agent_contract::worker_profile::ShellPolicy;
 
 fn should_register_remember_tool(memory_enabled: bool) -> bool {
     memory_enabled
@@ -40,7 +40,7 @@ impl Engine {
     /// to every mode's surface and is inherited by child agents.
     fn request_plugin_install_allowed(&self) -> bool {
         self.config.terminal_chrome_enabled
-            && crate::settings::Settings::load_read_only()
+            && codewhale_runtime::settings::Settings::load_read_only()
                 .map(|settings| settings.contextual_tips)
                 .unwrap_or(true)
     }

@@ -174,7 +174,7 @@ fn contract_read_byte_limit_keeps_only_complete_utf8_lines() {
 fn read_budget_precedence_is_request_then_workshop_then_default() {
     let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
 
-    crate::tools::large_output_router::WorkshopConfig::install_active(None);
+    crate::tools::large_output_router::install_active_workshop(None);
     assert_eq!(effective_read_max_bytes(None), READ_DEFAULT_MAX_BYTES);
     assert_eq!(effective_read_max_bytes(Some(250_000)), 250_000);
     // Above the model-requestable maximum clamps down instead of erroring.
@@ -185,8 +185,8 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
     // A request below the active baseline leaves the baseline in place.
     assert_eq!(effective_read_max_bytes(Some(10)), READ_DEFAULT_MAX_BYTES);
 
-    crate::tools::large_output_router::WorkshopConfig::install_active(Some(
-        &crate::tools::large_output_router::WorkshopConfig {
+    crate::tools::large_output_router::install_active_workshop(Some(
+        &codewhale_config::WorkshopConfig {
             read_result_max_bytes: Some(700_000),
             ..Default::default()
         },
@@ -194,8 +194,8 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
     assert_eq!(effective_read_max_bytes(None), 700_000);
     assert_eq!(effective_read_max_bytes(Some(200_000)), 700_000);
     // The workshop override keeps the 2 MiB absolute ceiling.
-    crate::tools::large_output_router::WorkshopConfig::install_active(Some(
-        &crate::tools::large_output_router::WorkshopConfig {
+    crate::tools::large_output_router::install_active_workshop(Some(
+        &codewhale_config::WorkshopConfig {
             read_result_max_bytes: Some(READ_RESULT_ABSOLUTE_MAX_BYTES * 4),
             ..Default::default()
         },
@@ -204,7 +204,7 @@ fn read_budget_precedence_is_request_then_workshop_then_default() {
         effective_read_max_bytes(None),
         READ_RESULT_ABSOLUTE_MAX_BYTES
     );
-    crate::tools::large_output_router::WorkshopConfig::install_active(None);
+    crate::tools::large_output_router::install_active_workshop(None);
 }
 
 #[tokio::test]
@@ -663,7 +663,7 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
             "path": "doc.txt",
             "outcome": "updated",
             "size": on_disk.len(),
-            "sha256": crate::hashing::sha256_hex(&on_disk),
+            "sha256": codewhale_runtime::hashing::sha256_hex(&on_disk),
         }])
     );
 }
@@ -685,7 +685,7 @@ async fn contract_write_receipt_carries_written_size_and_sha256() {
             "path": "notes/out.md",
             "outcome": "created",
             "size": on_disk.len(),
-            "sha256": crate::hashing::sha256_hex(&on_disk),
+            "sha256": codewhale_runtime::hashing::sha256_hex(&on_disk),
         }])
     );
 }

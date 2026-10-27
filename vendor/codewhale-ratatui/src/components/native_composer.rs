@@ -194,10 +194,15 @@ pub fn native_composer_height(
     } else {
         usize::from(available >= 2)
     };
+    let cap = if menu == 0 {
+        available
+    } else {
+        available.min(density.max_rows())
+    };
     rows.max(floor)
         .saturating_add(menu)
         .saturating_add(border)
-        .clamp(1, usize::from(available.min(density.max_rows()))) as u16
+        .clamp(1, usize::from(cap)) as u16
 }
 
 /// Display width after the kit's control/bidi guard; raw source scalars remain
@@ -612,7 +617,7 @@ impl NativeComposerFrame<'_> {
     }
 }
 impl NativeComposerPlan {
-    fn paint(&self, buf: &mut Buffer) {
+    pub fn paint(&self, buf: &mut Buffer) {
         if self.area.is_empty() {
             return;
         }

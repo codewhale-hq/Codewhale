@@ -1,7 +1,7 @@
 //! Plugin configuration: what a plugin's `apply(ctx, config)` receives.
 //!
 //! The source is `[plugins."<name>".config]` in the user's `config.toml`
-//! ([`crate::config::PluginSettings`]); there was no per-plugin configuration
+//! ([`codewhale_config::extension_host::PluginSettings`]); there was no per-plugin configuration
 //! before this, so nothing is replaced. It is *user* input, not reviewed
 //! plugin content: the user owns it and may edit it without a new review, which
 //! is why project-scope config cannot set it and why it is delivered as data
@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::PluginSettings;
+use codewhale_config::extension_host::PluginSettings;
 
 /// Largest accepted config for one plugin, serialized as JSON.
 pub const MAX_PLUGIN_CONFIG_BYTES: usize = 16 * 1024;

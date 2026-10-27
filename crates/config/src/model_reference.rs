@@ -542,7 +542,7 @@ mod tests {
         let deepseek = db
             .find("deepseek", "deepseek-v4-pro")
             .expect("bundled deepseek row");
-        assert_eq!(deepseek.context_window, Some(1_000_000));
+        assert_eq!(deepseek.context_window, Some(1_048_576));
         assert_eq!(deepseek.modality, Modality::Text);
         assert_eq!(deepseek.price_label(), "unknown");
 

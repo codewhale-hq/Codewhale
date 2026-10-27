@@ -26,6 +26,35 @@ external servers in `mcp.json` for the existing MCP client, or connect to those
 servers directly from your external client. Native server write tools remain
 withheld unless the operator explicitly permits them in its server configuration.
 
+The native stdio server supports MCP **2026-07-28** with required per-request
+metadata and `server/discover`; no initialization handshake is needed for that
+revision. It also supports the explicit legacy revisions **2024-11-05**,
+**2025-03-26**, **2025-06-18** and **2025-11-25** through `initialize`.
+Initialization never selects a modern revision; unsupported initialization
+versions fall back to 2025-11-25. Legacy callers should send
+`notifications/initialized`, but calls may proceed after a valid initialize
+response. This describes Codewhale as a server; outbound MCP client version
+support is configured separately.
+
+`resources/list` pages through the effective native skill instruction catalog,
+and `resources/read` returns the accepted instruction body for an exact listed
+`codewhale://skills/...` URI. Discovery follows the configured skill roots,
+precedence and workspace trust; disabled skills are omitted. Reads supply inert
+Markdown and never activate a skill. These are instruction-body resources, not
+original SKILL.md files or complete skill packages. Plugin skills, arbitrary
+filesystem paths and session transcripts are not exposed by this catalog.
+The old workspace/session entries, which had no resource reader, are removed.
+Resource templates are empty. Lists and reads use private caching with a zero
+TTL; restart pagination if a changed catalog invalidates a cursor.
+
+Only tools and resources are advertised. Subscriptions, list-change
+notifications, the Skills extension, Apps, tasks and interactive approval are
+not implemented by this server. Tool execution remains serialized through the
+Rust registry, and request cancellation reaches the existing tool context.
+Keep stdin open until responses arrive; closing it cancels outstanding work.
+Malformed JSON and oversized input frames are discarded by the bounded SDK
+transport, while well-formed invalid JSON-RPC receives an error.
+
 ## Setup wizard vs manual MCP setup (#3407)
 
 The `/setup` hub includes an optional **Tools and MCP**
@@ -154,7 +183,7 @@ diagnostic surfaces:
 | --- | --- | --- | --- | --- |
 | Chrome DevTools | MCP server (stdio) | `npx -y chrome-devtools-mcp@1.7.0` (`npx.cmd` on Windows) | [Official ChromeDevTools project](https://github.com/ChromeDevTools/chrome-devtools-mcp) | npm may download the pinned package when the user restarts MCP. |
 | Playwright | MCP server (stdio) | `npx -y @playwright/mcp@0.0.79 --isolated` (`npx.cmd` on Windows) | [Official Microsoft project](https://github.com/microsoft/playwright-mcp) | `--isolated` starts a fresh browser profile; npm may download the pinned package only after an explicit restart. |
-| Computer Use | First-party plugin (MCP + skill) | Ships in the binary as the `computer-use` plugin | Codewhale; enable through `/plugin` or the Extensions marketplace | This is the only computer-use integration Codewhale recommends. Third-party desktop-control MCPs are not listed here. |
+| Computer Use | First-party plugin (MCP + skill) | Install `computer-use` from the first-party catalog; updates independently | Codewhale; install, review and enable through Connectors or `/plugin` | This is the only computer-use integration Codewhale recommends. Third-party desktop-control MCPs are not listed here. |
 | Browser Use | Skill plus separately installed Python runtime | Skill/runtime release `0.13.8` | [Official browser-use project](https://github.com/browser-use/browser-use) | Optional companion: not an MCP server. Codewhale does not auto-run the upstream Skill installer or install its browser/runtime dependencies. |
 | Anthropic Sandbox Runtime | Sandbox adapter companion | `@anthropic-ai/sandbox-runtime@0.0.73` | [Official anthropic-experimental project](https://github.com/anthropic-experimental/sandbox-runtime); beta | Documentation-only adapter candidate in v0.9.10: not an MCP server and not an active Codewhale plugin adapter. It does not replace Codewhale's sandbox policy. |
 
@@ -262,6 +291,11 @@ Codewhale discovers the server OAuth metadata, opens the authorization URL in
 your browser, listens on a local callback, exchanges the code, and stores the
 token response through the Codewhale secrets backend. Stored OAuth tokens are
 looked up by server name plus URL and refreshed when possible before requests.
+Each saved credential also records the exact discovered authorization issuer
+and resource. Reload compares both before installing credentials; a changed
+issuer or resource requires a new login. Existing records without this binding
+are preserved but cannot be reused: run `codewhale mcp login <name>` to replace
+them after authorization.
 During login, the CLI prints the authorization URL and a waiting status while
 the local callback listener is active. If a URL-based server returns 401 or
 Unauthorized during connect/discovery, `codewhale mcp connect <name>` reports
@@ -279,13 +313,29 @@ Optional OAuth fields:
       "url": "https://example.com/mcp",
       "scopes": ["tools/read"],
       "oauth": {
-        "client_id": "public-client-id"
+        "client_id": "public-client-id",
+        "issuer": "https://auth.example.com"
       },
-      "oauth_resource": "https://example.com"
+      "oauth_resource": "https://example.com/mcp"
     }
   }
 }
 ```
+
+A pre-registered `oauth.client_id` requires its exact `oauth.issuer`. The CLI
+accepts `--oauth-client-id` together with `--oauth-issuer`. The optional
+`oauth_resource` is an exact pin for the SDK-discovered resource; it does not
+append or override a second audience value.
+
+Alternatively, configure `oauth.client_metadata_url` (CLI:
+`--oauth-client-metadata-url`) with the HTTPS URL of an operator-hosted client
+metadata document. Codewhale uses it when the authorization server advertises
+CIMD support, otherwise tries advertised dynamic registration. Pre-registration
+takes priority. Codewhale identifies this desktop/CLI client as `native`; a
+hosted document must describe that client and its actual callback URLs. No
+Codewhale-hosted metadata document is supplied by this setting. Servers must
+publish discoverable authorization metadata; guessed legacy OAuth endpoints
+are not used for login or credential reload.
 
 User-level config can set callback behavior when the provider requires a fixed
 redirect:
@@ -602,6 +652,53 @@ in-session discovery or explicit tool selection. In the TUI,
 `/mcp retry <name>` connects through the current session's pool;
 `/mcp reload` re-reads its MCP configuration.
 
+### Catalog freshness
+
+A server's tools, resources, resource templates, prompts and skills are kept
+on its own live connection, so they are never shared between servers,
+credentials, sessions or reconnects. Every reconnect, login and config reload
+discovers them again, and allow/deny rules and approvals are checked on each
+call rather than cached with the catalog. Within one connection the catalog is
+revalidated in place, on the five-second supervision sweep, when either:
+
+- a list page carried `ttlMs` and the earliest of those TTLs (capped at 24
+  hours) has passed, or
+- the server sent `notifications/tools/list_changed`,
+  `notifications/resources/list_changed` or
+  `notifications/prompts/list_changed`.
+
+A list without `ttlMs` stays valid until one of those events. Because nothing
+is shared beyond the connection, `cacheScope: "public"` and `"private"` are
+both held to the stricter private rule. Pagination, item and byte bounds are
+the same as at connect, and ordering stays sorted. When revalidation changes
+the catalog, a tool call resolved against the previous catalog is refused with
+"retry the call", a removed tool can no longer run, and the next model request
+carries the new tool list. When revalidation fails, the connection is retired
+and ordinary reconnect supervision takes over; the stale catalog is not served.
+
+Known limits: the Rust backend reads list-change notices only while it waits
+for a reply, so an idle stdio server's notice is acted on after its next
+request. The 2026-07-28 `subscriptions/listen` stream and `resources/subscribe`
+are not opened; modern servers are kept fresh through their required `ttlMs`.
+
+### Skills from MCP servers
+
+A server that advertises the published Skills extension
+(`capabilities.extensions["io.modelcontextprotocol/skills"]`) has its
+`skills/list` read with the rest of its catalog, under the same bounds and
+freshness rules. An entry is kept only when its `SKILL.md` URI is listed among
+its own resources, its frontmatter has a name and description, every file sits
+beneath the skill's root without `.`/`..`, `%`, `?` or `#` segments, every
+digest is `sha256:` plus 64 lowercase hex characters, and it stays within 512
+files and 16 MiB. `"dynamic"` skills cannot be verified and are skipped.
+
+Kept skills appear in `list_mcp_resources` with a `skill` field naming their
+files. Listing a skill never loads or activates it. Reading one of its files
+with `read_mcp_resource` checks that the server returned exactly that URI with
+the listed size and digest; a mismatch is refused and nothing is loaded. MCP
+skills are not yet merged into the native skill catalog, `/skills` or skill
+activation.
+
 ## Server Fields
 
 Per-server settings:
@@ -628,8 +725,10 @@ Per-server settings:
 - `env_headers` or `env_http_headers` (object, optional): header names mapped to environment variable names.
 - `bearer_token_env_var` (string, optional): environment variable containing a bearer token.
 - `scopes` (array, optional): default OAuth scopes for `mcp login`.
-- `oauth.client_id` (string, optional): pre-registered OAuth client ID.
-- `oauth_resource` (string, optional): resource parameter appended to the authorization URL.
+- `oauth.client_id` (string, optional): pre-registered OAuth client ID; requires `oauth.issuer`.
+- `oauth.issuer` (string, optional): exact authorization issuer pin; required for a pre-registered client.
+- `oauth.client_metadata_url` (string, optional): HTTPS URL with a non-root path for an operator-hosted client metadata document.
+- `oauth_resource` (string, optional): exact resource pin checked against SDK discovery.
 
 ## Safety Notes
 

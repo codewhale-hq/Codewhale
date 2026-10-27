@@ -9,9 +9,9 @@ use super::adapter::{self, AdapterFailure, AdapterResult};
 use super::contract::{BackendId, BackendSearch, DegradedReason, QueryCapabilities, SearchQuery};
 use super::contract::{CapabilityState as QueryCapabilityState, SearchResult};
 use crate::client::ProviderNativeSearchRequest;
-use crate::config::SearchProvider;
-use crate::network_policy::Decision;
 use crate::tools::spec::{ToolContext, ToolError};
+use codewhale_net::network_policy::Decision;
+use codewhale_runtime::config::SearchProvider;
 
 const SEARCH_BACKEND_CONFIGURATION_HINT: &str = concat!(
     "Check network access, or configure `[search] provider` and `[search] api_key` in ",
@@ -868,11 +868,11 @@ mod tests {
 
     #[tokio::test]
     async fn zero_domain_native_providers_decline_without_failing_the_chain() {
-        use crate::config::{Config, ProviderConfig, ProvidersConfig};
+        use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 
-        let moonshot_config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(ProvidersConfig {
+        let moonshot_config = {
+            let __cw_config_init_0_0 = Some("moonshot".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 moonshot: ProviderConfig {
                     api_key: Some("moonshot-test-key".to_string()),
                     base_url: Some("https://api.moonshot.ai/v1".to_string()),
@@ -880,8 +880,11 @@ mod tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut context = ToolContext::new(tmp.path().to_path_buf());
@@ -912,9 +915,9 @@ mod tests {
             "declining must stay fallback-shaped, not fail-closed: {error:?}"
         );
 
-        let xai_config = Config {
-            provider: Some("xai".to_string()),
-            providers: Some(ProvidersConfig {
+        let xai_config = {
+            let __cw_config_init_1_0 = Some("xai".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 xai: ProviderConfig {
                     api_key: Some("xai-test-key".to_string()),
                     base_url: Some("https://api.x.ai/v1".to_string()),
@@ -922,8 +925,11 @@ mod tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let mut xai_context = ToolContext::new(tmp.path().to_path_buf());
         xai_context.route_capabilities.server_side_web_search =

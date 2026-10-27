@@ -736,7 +736,7 @@ impl PodVisibility<'_> {
         if abs
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-            || crate::sandbox::read_guard::active().check(abs).is_err()
+            || codewhale_sandbox::read_guard::active().check(abs).is_err()
         {
             return false;
         }
@@ -945,12 +945,13 @@ fn sound_file_symbols(root: &Path, path: &Path) -> Option<String> {
     let lang = detect_lang(path)?;
     super::file::enforce_read_denylist(path, "read").ok()?;
     let selected_path = path.canonicalize().ok()?;
-    workspace_relative(root, &selected_path)?;
+    let root = root.canonicalize().ok()?;
+    selected_path.strip_prefix(&root).ok()?;
     if super::file::is_codewhale_credential_path(&selected_path) {
         return None;
     }
     super::file::enforce_read_denylist(&selected_path, "read").ok()?;
-    let file = crate::external_credentials::open_secure_regular_file(&selected_path, false).ok()?;
+    let file = codewhale_util::fs_confined::open_read(&root, &selected_path).ok()?;
     crate::plugins::registry::validate_opened_regular_file(&selected_path, &file).ok()?;
     if file.metadata().ok()?.len() > MAX_SOUNDING_BYTES {
         return None;
@@ -2146,6 +2147,7 @@ fn sound_callers(
         })
         .collect();
     let omitted = mates.len().saturating_sub(MAX_CALLER_SCAN_FILES);
+    let canonical_workspace = workspace.canonicalize().ok();
     let mut callers = BTreeSet::new();
     for (mate_path, mate_lang) in mates.into_iter().take(MAX_CALLER_SCAN_FILES) {
         if super::file::enforce_read_denylist(&mate_path, "read").is_err() {
@@ -2162,8 +2164,10 @@ fn sound_callers(
         {
             continue;
         }
-        let Ok(file) = crate::external_credentials::open_secure_regular_file(&selected_path, false)
-        else {
+        let Some(root) = canonical_workspace.as_deref() else {
+            continue;
+        };
+        let Ok(file) = codewhale_util::fs_confined::open_read(root, &selected_path) else {
             continue;
         };
         if crate::plugins::registry::validate_opened_regular_file(&selected_path, &file).is_err()
@@ -2598,15 +2602,13 @@ define nothing;
         for name in ["open.txt", "secret.txt"] {
             fs::write(dir.path().join(name), "x").expect("fixture");
         }
-        let prior = crate::sandbox::read_guard::active();
-        crate::sandbox::read_guard::set_active(crate::sandbox::read_guard::ReadDenylist::build(
-            true,
-            &[secret],
-            &[],
-        ));
+        let prior = codewhale_sandbox::read_guard::active();
+        codewhale_sandbox::read_guard::set_active(
+            codewhale_sandbox::read_guard::ReadDenylist::build(true, &[secret], &[]),
+        );
         let vis = open_visibility(dir.path());
         let (pods, _) = sound_match_pods(dir.path(), &["open.txt".to_string()], &vis);
-        crate::sandbox::read_guard::set_active((*prior).clone());
+        codewhale_sandbox::read_guard::set_active((*prior).clone());
         assert_eq!(pods[0].mates, ["open.txt (match)"]);
     }
 

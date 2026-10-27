@@ -38,8 +38,9 @@ fn main() -> io::Result<()> {
                     .cursor(draft.buffer().cursor())
                     .can_submit(!draft.buffer().is_empty())
                     .placeholder("Write something…");
-                let shell = TerminalShell::new(composer.desired_height(area.width, area.height))
-                    .workbar_rows(workbar.height(area.width, &theme));
+                let shell =
+                    TerminalShell::new(composer.desired_height(area.width, area.height / 2))
+                        .workbar_rows(workbar.height(area.width, &theme));
                 let regions = shell.areas(area);
                 let cursor = composer.cursor_position(regions.composer);
                 let buf = frame.buffer_mut();

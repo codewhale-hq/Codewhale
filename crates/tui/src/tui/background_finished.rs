@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use codewhale_localization::{Locale, MessageId, tr};
 
-use crate::config::SubagentCompletionNotification;
-use crate::notify::payload::{NotificationPayload, PREVIEW_MAX_CHARS, sanitize_field};
 use crate::tools::subagent::SubAgentStatus;
+use codewhale_config::notifications::SubagentCompletionNotification;
+use codewhale_notify::payload::{NotificationPayload, PREVIEW_MAX_CHARS, sanitize_field};
 
 /// Finished background shells kept listed (muted) in the dock.
 pub const MAX_FINISHED_SHELLS: usize = 8;
@@ -299,7 +299,7 @@ pub fn background_finished_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SubagentCompletionNotification as Mode;
+    use codewhale_config::notifications::SubagentCompletionNotification as Mode;
 
     fn agent(name: &str, status: SubAgentStatus, result: &str) -> FinishedWork {
         FinishedWork::agent(name, &status, result, Duration::from_secs(30))
@@ -483,7 +483,7 @@ mod tests {
             let payload = background_finished_payload(Locale::En, &batch, false).unwrap();
             assert_eq!(
                 payload.kind(),
-                crate::notify::payload::NotificationKind::BackgroundTerminal
+                codewhale_notify::payload::NotificationKind::BackgroundTerminal
             );
             assert_eq!(
                 payload

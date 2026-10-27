@@ -2,8 +2,8 @@
 use super::*;
 use crate::extension_host::tests::node_for_tests;
 use crate::extension_host::{ExtensionHostManager, ExtensionHostOptions, TestManagerGuard};
-use crate::features::{Feature, Features};
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_runtime::features::{Feature, Features};
 use std::sync::Arc;
 
 fn host_context(root: &std::path::Path) -> ToolContext {
@@ -13,7 +13,7 @@ fn host_context(root: &std::path::Path) -> ToolContext {
 }
 fn new_manager(node: std::path::PathBuf, root: &std::path::Path) -> Arc<ExtensionHostManager> {
     Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-        runtime: crate::config::ExtensionHostRuntime::Node,
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
         node_override: Some(node),
         root: Some(root.join("host")),
         ..ExtensionHostOptions::default()
@@ -28,11 +28,11 @@ fn web_flags_are_separate_and_default_to_rust() {
     assert!(!flags.enabled(Feature::ExtensionHost));
     assert!(!flags.enabled(Feature::WebExtractHost));
     assert_eq!(
-        crate::features::feature_from_key("web_search_host"),
+        codewhale_runtime::features::feature_from_key("web_search_host"),
         Some(Feature::WebSearchHost)
     );
     assert_eq!(
-        crate::features::feature_from_key("web_extract_host"),
+        codewhale_runtime::features::feature_from_key("web_extract_host"),
         Some(Feature::WebExtractHost)
     );
 }
@@ -277,7 +277,7 @@ async fn real_core_http_capture_and_host_request_are_bounded_without_credentials
         )
         .mount(&server)
         .await;
-    let response = crate::tls::reqwest_client_builder()
+    let response = codewhale_release::tls::reqwest_client_builder()
         .build()
         .unwrap()
         .get(format!("{}/oversize", server.uri()))

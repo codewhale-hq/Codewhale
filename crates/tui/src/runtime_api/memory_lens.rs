@@ -1,11 +1,11 @@
 //! Merged inside the existing Runtime API auth layer. No new listener, token,
 //! CORS policy, or client-constructed capability grant is introduced here.
 use super::*;
-use crate::native_memory::NativeMemoryStore;
 use codewhale_memory::{
     Access, Capability, Draft, Evidence, MemoryBackend, Scope, SourceKind, Status,
     ValidationReceipt,
 };
+use codewhale_runtime::native_memory::NativeMemoryStore;
 
 type LensError = (StatusCode, Json<Value>);
 fn fail(error: codewhale_memory::Error) -> LensError {

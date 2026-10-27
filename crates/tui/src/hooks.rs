@@ -23,13 +23,8 @@ pub(crate) mod authority;
 pub(crate) mod config;
 mod executor;
 
-#[cfg(test)]
-pub use config::ALL_HOOK_EVENTS;
 #[allow(unused_imports)]
-pub use config::{
-    Hook, HookCondition, HookConfigProblem, HookEvent, HookSteering, HooksConfig,
-    PROJECT_HOOKS_TEMPLATE, workspace_allows_project_hooks,
-};
+pub use config::{PROJECT_HOOKS_TEMPLATE, workspace_allows_project_hooks};
 #[allow(unused_imports)]
 pub(crate) use executor::HookCaller;
 pub(crate) use executor::{

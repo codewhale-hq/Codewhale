@@ -86,6 +86,28 @@ mod tests {
 
     struct FakeWorkspace;
     impl codewhale_command_contract::facets::CommandWorkspaceContext for FakeWorkspace {
+        fn effective_home_dir(&self) -> Option<std::path::PathBuf> {
+            unreachable!("navigation is not used by task")
+        }
+        fn inspect_workspace_target(
+            &self,
+            _: &std::path::Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("navigation is not used by task")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            unreachable!("anchors are not used by task")
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _: &[&[u8]],
+        ) -> Result<std::path::PathBuf, codewhale_command_contract::navigation::AnchorWriteError>
+        {
+            unreachable!("anchors are not used by task")
+        }
+        fn replace_anchor_document(&mut self, _: &[u8]) -> Result<(), String> {
+            unreachable!("anchors are not used by task")
+        }
         fn workspace(&self) -> PathBuf {
             PathBuf::from(".")
         }
@@ -99,6 +121,28 @@ mod tests {
 
     struct FailingWorkspace;
     impl codewhale_command_contract::facets::CommandWorkspaceContext for FailingWorkspace {
+        fn effective_home_dir(&self) -> Option<std::path::PathBuf> {
+            unreachable!("navigation is not used by task")
+        }
+        fn inspect_workspace_target(
+            &self,
+            _: &std::path::Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("navigation is not used by task")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            unreachable!("anchors are not used by task")
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _: &[&[u8]],
+        ) -> Result<std::path::PathBuf, codewhale_command_contract::navigation::AnchorWriteError>
+        {
+            unreachable!("anchors are not used by task")
+        }
+        fn replace_anchor_document(&mut self, _: &[u8]) -> Result<(), String> {
+            unreachable!("anchors are not used by task")
+        }
         fn workspace(&self) -> PathBuf {
             PathBuf::from(".")
         }

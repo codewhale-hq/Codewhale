@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
-use crate::fleet::files::{WorkspaceFile, same_file};
+use codewhale_util::files::{WorkspaceFile, same_file};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Version {
@@ -35,7 +35,7 @@ fn version(file: &File) -> io::Result<Version> {
     }
     #[cfg(windows)]
     {
-        let identity = crate::plugins::windows_file_identity(file)?;
+        let identity = codewhale_util::path_identity::windows_file_identity(file)?;
         if identity.links != 1 || identity.attributes & 0x0000_0400 != 0 {
             return Err(invalid("delivery file is linked or a reparse point"));
         }
@@ -81,7 +81,7 @@ fn hash_exact_length(reader: &mut impl Read, length: u64) -> io::Result<String> 
     if total != length {
         return Err(invalid("delivery file shortened while reading"));
     }
-    Ok(crate::hashing::hex_bytes(hash.finalize()))
+    Ok(codewhale_runtime::hashing::hex_bytes(hash.finalize()))
 }
 
 fn stable_hash(file: &mut File, maximum: Option<u64>) -> io::Result<(String, Version)> {
@@ -189,6 +189,87 @@ impl GuardedFile {
         Ok(result)
     }
 
+    #[cfg(unix)]
+    pub fn verify_owned(&mut self) -> io::Result<()> {
+        self.location.verify_delivery_owner(&self.file)?;
+        self.verify()?;
+        self.location.verify_delivery_owner(&self.file)
+    }
+
+    #[cfg(unix)]
+    pub fn remove_checked(&mut self, unlinked: &mut bool) -> io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        *unlinked = false;
+        self.verify_owned()?;
+        let directory = tempfile::Builder::new()
+            .prefix(".codewhale-uninstall-")
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir_in(&self.directory)?
+            .keep();
+        let destination = WorkspaceFile::open_delivery(&directory, Path::new(&self.name))?;
+        self.location
+            .move_opened_to_directory(&self.file, &destination)?;
+        let previous_location = std::mem::replace(&mut self.location, destination);
+        self.directory = directory.clone();
+        let removed = (|| {
+            previous_location.sync_parent()?;
+            self.location.sync_parent()?;
+            if !self.matches_path()? {
+                return Err(invalid("retired uninstall entry has a different identity"));
+            }
+            let (digest, version) = stable_hash(&mut self.file, Some(self.version.length))?;
+            if digest != self.digest
+                || version.length != self.version.length
+                || version.modified != self.version.modified
+            {
+                return Err(invalid("delivery file changed during uninstall retirement"));
+            }
+            self.version = version;
+            self.verify_owned()?;
+            self.location.unlink_opened(&self.file)?;
+            *unlinked = true;
+            if self.file.metadata()?.nlink() != 0 {
+                return Err(invalid("delivery file retained another link after unlink"));
+            }
+            self.location.sync_parent()
+        })();
+        removed.map_err(|error| {
+            let detail = if *unlinked {
+                format!("file entry was unlinked, but its final identity or durability check failed: {error}; recovery directory {}", directory.display())
+            } else {
+                format!("{error}; inspect retained recovery location {}", directory.join(&self.name).display())
+            };
+            io::Error::new(error.kind(), detail)
+        })?;
+        if let Err(error) = std::fs::remove_dir(&directory) {
+            eprintln!(
+                "Removed owned file; empty recovery directory retained at {}: {error}",
+                directory.display()
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn verify_owned(&mut self) -> io::Result<()> {
+        self.verify()
+    }
+
+    #[cfg(windows)]
+    pub fn remove_checked(&mut self, unlinked: &mut bool) -> io::Result<()> {
+        *unlinked = false;
+        self.verify()?;
+        self.move_to_vacant(&Self::recovery_name())?;
+        *unlinked = true;
+        codewhale_config::private_directory::mark_windows_file_handle_for_deletion(&self.file)
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "{error:#}; retired entry retained at {}",
+                    self.directory.join(&self.name).display()
+                ))
+            })
+    }
+
     pub fn recovery_name() -> String {
         format!(".codewhale-host-recovery-{}", uuid::Uuid::new_v4())
     }
@@ -236,7 +317,7 @@ impl GuardedFile {
         (&mut self.file)
             .take(self.version.length.saturating_add(1))
             .read_to_end(&mut bytes)?;
-        if bytes.len() > maximum || crate::hashing::sha256_hex(&bytes) != self.digest {
+        if bytes.len() > maximum || codewhale_runtime::hashing::sha256_hex(&bytes) != self.digest {
             return Err(invalid("delivery receipt changed while reading"));
         }
         self.verify()?;
@@ -297,7 +378,7 @@ mod tests {
         let mut exact = &b"owned"[..];
         assert_eq!(
             hash_exact_length(&mut exact, 5).unwrap(),
-            crate::hashing::sha256_hex(b"owned")
+            codewhale_runtime::hashing::sha256_hex(b"owned")
         );
     }
 

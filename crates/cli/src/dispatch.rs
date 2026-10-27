@@ -6,6 +6,8 @@ use codewhale_config::ConfigStore;
 
 #[derive(Debug, Args)]
 pub(crate) struct DispatchArgs {
+    #[command(flatten)]
+    computer: crate::cloud::computer::ComputerOptions,
     /// Task for the remote agent. Required unless inspecting or cancelling a job.
     #[arg(value_name = "PROMPT")]
     prompt: Vec<String>,
@@ -51,6 +53,51 @@ pub(crate) fn run(
     config: &mut ConfigStore,
 ) -> Result<()> {
     use crate::cloud::{AccountDispatch, run_dispatch};
+    let legacy_work = args.agent.is_some()
+        || args.seconds.is_some()
+        || args.context_file.is_some()
+        || !args.file_refs.is_empty()
+        || args.message_id.is_some()
+        || args.yes
+        || args.confirm_eu_compute
+        || args.show.is_some()
+        || args.cancel.is_some();
+    if args.computer.selected() || !legacy_work {
+        if args.agent.is_some()
+            || args.seconds.is_some()
+            || args.context_file.is_some()
+            || !args.file_refs.is_empty()
+            || args.message_id.is_some()
+            || args.yes
+            || args.confirm_eu_compute
+        {
+            bail!(
+                "Cloud conversation dispatch uses --computer or --thread. Agent Work flags cannot be combined with it."
+            );
+        }
+        if args.show.is_some() && args.cancel.is_some()
+            || (!args.prompt.is_empty() && (args.show.is_some() || args.cancel.is_some()))
+        {
+            bail!("Choose a prompt, --show, or --cancel.");
+        }
+        let mut options = args.computer;
+        if let Some(id) = args.show.as_ref().or(args.cancel.as_ref()) {
+            if options.thread.as_ref().is_some_and(|thread| thread != id) {
+                bail!("Choose one conversation ID.");
+            }
+            options.thread = Some(id.clone());
+            options.stop = args.cancel.is_some();
+        }
+        return run_dispatch(
+            AccountDispatch::Computer(crate::cloud::computer::SessionArgs {
+                prompt: args.prompt,
+                options,
+                operation_key: args.operation_key,
+            }),
+            profile,
+            config,
+        );
+    }
     let modes = [
         args.show.is_some(),
         args.cancel.is_some(),

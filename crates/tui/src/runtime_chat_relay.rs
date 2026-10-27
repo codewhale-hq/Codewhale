@@ -21,7 +21,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    config::{Config, MemoryBackend, MemoryConfig, SkillsConfig},
     core::engine::ISOLATED_CHAT_SYSTEM_PROMPT,
     plugins::PluginRegistry,
     runtime_threads::{
@@ -29,9 +28,10 @@ use crate::{
         RuntimeTurnStatus, StartTurnRequest,
     },
 };
+use codewhale_runtime::config::{Config, MemoryBackend, MemoryConfig, SkillsConfig};
 
 #[cfg(test)]
-use crate::config::ContextConfig;
+use codewhale_runtime::config::ContextConfig;
 
 const STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_RELAY_ID_BYTES: usize = 240;
@@ -71,6 +71,8 @@ fn take_state_persist_failure(path: &Path) -> bool {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RuntimeChatPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_review: Option<codewhale_protocol::op::ReviewOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_model_owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +185,8 @@ struct RelayThreadBinding {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RelayTurnBinding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review_request_fingerprint: Option<String>,
     native_turn_id: String,
     operation_fingerprint: String,
     request_fingerprint: String,
@@ -238,6 +242,9 @@ impl RelayState {
             for (virtual_turn_id, turn) in &binding.turns {
                 validate_virtual_turn_id(virtual_turn_id)?;
                 validate_native_record_id(&turn.native_turn_id, "native turn id")?;
+                if let Some(fingerprint) = &turn.review_request_fingerprint {
+                    validate_fingerprint(fingerprint)?;
+                }
                 validate_fingerprint(&turn.operation_fingerprint)?;
                 validate_fingerprint(&turn.request_fingerprint)?;
             }
@@ -511,6 +518,7 @@ impl RuntimeChatRelayHost {
             turns: BTreeMap::from([(
                 virtual_turn_id.to_string(),
                 RelayTurnBinding {
+                    review_request_fingerprint: None,
                     native_turn_id: "turn_test_fixture".to_string(),
                     operation_fingerprint: fingerprint("operation-test-fixture"),
                     request_fingerprint: fingerprint("request-test-fixture"),
@@ -534,6 +542,7 @@ impl RuntimeChatRelayHost {
         let native_thread_id = self
             .manager
             .create_thread(CreateThreadRequest {
+                operation_key: None,
                 model: Some(command.model.clone()),
                 model_provider: Some(command.model_provider.clone()),
                 model_provider_id: Some(command.model_provider_id.clone()),
@@ -575,6 +584,12 @@ impl RuntimeChatRelayHost {
             turns: BTreeMap::from([(
                 command.turn_id.clone(),
                 RelayTurnBinding {
+                    review_request_fingerprint: command
+                        .structured_review
+                        .as_ref()
+                        .map(crate::core::engine::review::fingerprint)
+                        .transpose()
+                        .map_err(|error| error.to_string())?,
                     native_turn_id,
                     operation_fingerprint,
                     request_fingerprint,
@@ -602,6 +617,12 @@ impl RuntimeChatRelayHost {
         let operation_fingerprint = fingerprint(&command.operation_key);
         let request_fingerprint = runtime_chat_request_fingerprint(command)?;
         let system_prompt_fingerprint = command.system_prompt.as_deref().map(fingerprint);
+        let review_request_fingerprint = command
+            .structured_review
+            .as_ref()
+            .map(crate::core::engine::review::fingerprint)
+            .transpose()
+            .map_err(|error| error.to_string())?;
 
         let existing = {
             let state = self.state.lock();
@@ -657,6 +678,7 @@ impl RuntimeChatRelayHost {
             let thread = self
                 .manager
                 .create_thread(CreateThreadRequest {
+                    operation_key: None,
                     model: Some(command.model.clone()),
                     model_provider: Some(command.model_provider.clone()),
                     model_provider_id: Some(command.model_provider_id.clone()),
@@ -739,6 +761,7 @@ impl RuntimeChatRelayHost {
             &reserved_native_turn_id,
             &operation_fingerprint,
             &request_fingerprint,
+            review_request_fingerprint.as_deref(),
         )?;
         if matches!(reservation, TurnReservationDisposition::ExistingTerminal) {
             return Ok(());
@@ -762,36 +785,56 @@ impl RuntimeChatRelayHost {
             return Err(error);
         }
 
-        let turn = match self
-            .manager
-            .start_turn_with_reserved_id(
-                &binding.native_thread_id,
-                StartTurnRequest {
-                    account_model_owner: command.account_model_owner.clone(),
-                    profile_constitution: command.profile_constitution.clone(),
-                    expected_workspace: None,
-                    max_output_tokens: command.max_output_tokens,
-                    prompt: command.prompt.clone(),
-                    images: command.images.clone(),
-                    operation_key: Some(command.operation_key.clone()),
-                    input_summary: None,
-                    model: Some(command.model.clone()),
-                    reasoning_effort: command.reasoning_effort.clone(),
-                    allowed_tools: Some(Vec::new()),
-                    mode: Some("agent".to_string()),
-                    permission_posture: Some("ask".to_string()),
-                    allow_shell: Some(false),
-                    trust_mode: Some(false),
-                    auto_approve: Some(false),
-                    dynamic_tools: Vec::new(),
-                    environment_id: None,
-                    model_provider: None,
-                    model_provider_id: None,
-                },
-                &reserved_native_turn_id,
-            )
-            .await
-        {
+        let admission = if let Some(review) = &command.structured_review {
+            self.manager
+                .start_review_turn_with_reserved_id(
+                    &binding.native_thread_id,
+                    crate::runtime_api::review::StartReviewRequest {
+                        review: review.clone(),
+                        operation_key: command.operation_key.clone(),
+                        account_model_owner: command.account_model_owner.clone(),
+                        model: command.model.clone(),
+                        model_provider: None,
+                        model_provider_id: None,
+                        reasoning_effort: command.reasoning_effort.clone(),
+                        max_output_tokens: command
+                            .max_output_tokens
+                            .ok_or_else(|| "Review output allowance is required.".to_string())?,
+                    },
+                    &reserved_native_turn_id,
+                )
+                .await
+        } else {
+            self.manager
+                .start_turn_with_reserved_id(
+                    &binding.native_thread_id,
+                    StartTurnRequest {
+                        account_model_owner: command.account_model_owner.clone(),
+                        profile_constitution: command.profile_constitution.clone(),
+                        expected_workspace: None,
+                        max_output_tokens: command.max_output_tokens,
+                        prompt: command.prompt.clone(),
+                        images: command.images.clone(),
+                        operation_key: Some(command.operation_key.clone()),
+                        input_summary: None,
+                        model: Some(command.model.clone()),
+                        reasoning_effort: command.reasoning_effort.clone(),
+                        allowed_tools: Some(Vec::new()),
+                        mode: Some("agent".to_string()),
+                        permission_posture: Some("ask".to_string()),
+                        allow_shell: Some(false),
+                        trust_mode: Some(false),
+                        auto_approve: Some(false),
+                        dynamic_tools: Vec::new(),
+                        environment_id: None,
+                        model_provider: None,
+                        model_provider_id: None,
+                    },
+                    &reserved_native_turn_id,
+                )
+                .await
+        };
+        let turn = match admission {
             Ok(turn) => turn,
             Err(error) => {
                 // A process may crash after the relay reservation is durable
@@ -1066,6 +1109,7 @@ impl RuntimeChatRelayHost {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reserve_turn(
         &self,
         runtime_binding_id: &str,
@@ -1074,10 +1118,14 @@ impl RuntimeChatRelayHost {
         native_turn_id: &str,
         operation_fingerprint: &str,
         request_fingerprint: &str,
+        review_request_fingerprint: Option<&str>,
     ) -> Result<TurnReservationDisposition, String> {
         validate_native_record_id(native_turn_id, "native turn id")
             .map_err(public_validation_error)?;
         validate_fingerprint(request_fingerprint).map_err(public_validation_error)?;
+        if let Some(fingerprint) = review_request_fingerprint {
+            validate_fingerprint(fingerprint).map_err(public_validation_error)?;
+        }
         self.persist_state_update(
             "Runtime Chat could not persist its private turn reservation.",
             |state| {
@@ -1093,6 +1141,8 @@ impl RuntimeChatRelayHost {
                     if existing.operation_fingerprint == operation_fingerprint
                         && existing.request_fingerprint == request_fingerprint
                         && existing.native_turn_id == native_turn_id
+                        && existing.review_request_fingerprint.as_deref()
+                            == review_request_fingerprint
                     {
                         // A retry after a proven pre-dispatch failure reopens
                         // the same deterministic reservation. Any accepted or
@@ -1128,6 +1178,7 @@ impl RuntimeChatRelayHost {
                 binding.turns.insert(
                     virtual_turn_id.to_string(),
                     RelayTurnBinding {
+                        review_request_fingerprint: review_request_fingerprint.map(str::to_string),
                         native_turn_id: native_turn_id.to_string(),
                         operation_fingerprint: operation_fingerprint.to_string(),
                         request_fingerprint: request_fingerprint.to_string(),
@@ -1215,6 +1266,20 @@ impl RuntimeChatRelayHost {
 
 impl RuntimeChatPrompt {
     pub(crate) fn validate_shape(&self) -> Result<(), String> {
+        if let Some(review) = &self.structured_review {
+            crate::core::engine::review::validate(review).map_err(|error| error.to_string())?;
+            if self.account_model_owner.is_none()
+                || !self.prompt.is_empty()
+                || !self.images.is_empty()
+                || self.profile_constitution.is_some()
+                || self.system_prompt.is_some()
+                || !self
+                    .max_output_tokens
+                    .is_some_and(|value| (256..=8192).contains(&value.get()))
+            {
+                return Err("A native review requires an account model and bounded output, with no Chat prompt, images or caller instructions.".to_string());
+            }
+        }
         if let Some(owner) = &self.account_model_owner {
             validate_owner_component(owner, "account")?;
             if self.model_provider != "codewhale"
@@ -1250,9 +1315,10 @@ impl RuntimeChatPrompt {
         validate_route_id(&self.model_provider, "provider id").map_err(public_validation_error)?;
         validate_route_id(&self.model_provider_id, "model-provider id")
             .map_err(public_validation_error)?;
-        if self.prompt.trim().is_empty()
-            || self.prompt.len() > 128 * 1024
-            || self.prompt.contains('\0')
+        if self.structured_review.is_none()
+            && (self.prompt.trim().is_empty()
+                || self.prompt.len() > 128 * 1024
+                || self.prompt.contains('\0'))
         {
             return Err("The Runtime Chat prompt is empty or oversized.".to_string());
         }
@@ -1379,7 +1445,7 @@ fn project_native_event(
     let Some(native_turn_id) = event.turn_id.as_deref() else {
         return ProjectionDecision::Skip;
     };
-    let Some((virtual_turn_id, _)) = binding
+    let Some((virtual_turn_id, turn_binding)) = binding
         .turns
         .iter()
         .find(|(_, turn)| turn.native_turn_id == native_turn_id)
@@ -1420,6 +1486,52 @@ fn project_native_event(
             let mut projection = base();
             projection.event = "item.delta";
             projection.payload = json!({ "kind": "agent_message", "delta": delta });
+            ProjectionDecision::Project(Box::new(projection))
+        }
+        "item.completed" => {
+            let Some(expected_fingerprint) = turn_binding.review_request_fingerprint.as_deref()
+            else {
+                return ProjectionDecision::Skip;
+            };
+            let Some(item) = event.payload.get("item") else {
+                return ProjectionDecision::Skip;
+            };
+            let Some(metadata) = item.get("metadata") else {
+                return ProjectionDecision::Skip;
+            };
+            let Some(operation) = metadata.get("review_operation") else {
+                return ProjectionDecision::Skip;
+            };
+            if item.get("kind").and_then(Value::as_str) != Some("tool_call")
+                || item.get("status").and_then(Value::as_str) != Some("completed")
+                || metadata.get("tool_name").and_then(Value::as_str) != Some("review")
+                || metadata.get("is_error").and_then(Value::as_bool) != Some(false)
+                || !metadata
+                    .get("tool_result_for")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                || operation.get("version").and_then(Value::as_u64) != Some(1)
+                || operation.get("source").and_then(Value::as_str) != Some("codewhale.review_core")
+                || operation.get("request_fingerprint").and_then(Value::as_str)
+                    != Some(expected_fingerprint)
+                || operation.get("complete").and_then(Value::as_bool) != Some(true)
+                || operation.get("outcome").and_then(Value::as_str) != Some("completed")
+            {
+                return ProjectionDecision::Skip;
+            }
+            let Some(detail) = item
+                .get("detail")
+                .and_then(Value::as_str)
+                .filter(|value| value.len() <= crate::core::engine::review::MAX_RESULT_BYTES)
+            else {
+                return ProjectionDecision::Skip;
+            };
+            let Ok(output) = serde_json::from_str::<Value>(detail) else {
+                return ProjectionDecision::Skip;
+            };
+            let mut projection = base();
+            projection.event = "review.completed";
+            projection.payload = json!({ "review": { "operation": operation, "output": output } });
             ProjectionDecision::Project(Box::new(projection))
         }
         "turn.completed" => {
@@ -1728,7 +1840,7 @@ fn persist_state(path: &Path, state: &RelayState) -> Result<()> {
         bail!("injected Runtime Chat state persistence failure");
     }
     let body = serde_json::to_vec(state).context("encode Runtime Chat binding state")?;
-    crate::utils::write_atomic(path, &body).context("persist Runtime Chat binding state")
+    codewhale_util::utils::write_atomic(path, &body).context("persist Runtime Chat binding state")
 }
 
 fn validate_relay_id(value: &str, label: &str) -> Result<()> {
@@ -1866,6 +1978,7 @@ mod tests {
             turns: BTreeMap::from([(
                 format!("local_turn_{}", "b".repeat(24)),
                 RelayTurnBinding {
+                    review_request_fingerprint: None,
                     native_turn_id: "turn_native".to_string(),
                     operation_fingerprint: fingerprint("operation-1"),
                     request_fingerprint: fingerprint("request-1"),
@@ -1934,6 +2047,7 @@ mod tests {
     #[test]
     fn chat_command_shape_requires_empty_tools_and_exact_chat_modes() {
         let mut prompt = RuntimeChatPrompt {
+            structured_review: None,
             account_model_owner: None,
             profile_constitution: None,
             images: Vec::new(),
@@ -1976,10 +2090,13 @@ mod tests {
     #[tokio::test]
     async fn active_participant_rejects_new_and_exact_replay_without_blocking_or_starting() {
         let root = tempfile::tempdir().unwrap();
-        let config = Config {
-            provider: Some("ollama".to_string()),
-            default_text_model: Some("relay-local:fixture".to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_0_0 = Some("ollama".to_string());
+            let __cw_config_init_0_1 = Some("relay-local:fixture".to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let host = RuntimeChatRelayHost::open(
             config,
@@ -1993,6 +2110,7 @@ mod tests {
             .unwrap();
         host.authorize_run("run_fixture").unwrap();
         let prompt = RuntimeChatPrompt {
+            structured_review: None,
             account_model_owner: None,
             profile_constitution: None,
             images: Vec::new(),
@@ -2063,6 +2181,7 @@ mod tests {
             .unwrap_or_else(|| provider.as_str())
             .to_string();
         let prompt = RuntimeChatPrompt {
+            structured_review: None,
             account_model_owner: None,
             profile_constitution: None,
             images: Vec::new(),
@@ -2113,10 +2232,14 @@ mod tests {
 
     #[test]
     fn catalog_is_challenge_bound_active_ready_and_secret_free() {
-        let mut config = Config {
-            provider: Some("ollama".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_OLLAMA_MODEL.to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_1_0 = Some("ollama".to_string());
+            let __cw_config_init_1_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_MODEL.to_string());
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.default_text_model = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         config.set_legacy_root(Some("must-not-cross".to_string()), None);
         config.set_legacy_root(None, Some("http://127.0.0.1:11434/v1".to_string()));
@@ -2206,18 +2329,24 @@ mod tests {
     #[test]
     fn isolated_chat_prompt_drops_local_project_memory_and_skill_context() {
         let root = tempfile::tempdir().unwrap();
-        let config = Config {
-            skills_dir: Some("/Users/alice/CANARY_SKILLS".to_string()),
-            instructions: Some(vec!["/Users/alice/CANARY_AGENTS.md".to_string()]),
-            memory_path: Some("/Users/alice/CANARY_MEMORY.md".to_string()),
-            memory: Some(MemoryConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("/Users/alice/CANARY_SKILLS".to_string());
+            let __cw_config_init_2_1 = Some(vec!["/Users/alice/CANARY_AGENTS.md".to_string()]);
+            let __cw_config_init_2_2 = Some("/Users/alice/CANARY_MEMORY.md".to_string());
+            let __cw_config_init_2_3 = Some(MemoryConfig {
                 enabled: Some(true),
                 backend: Some(MemoryBackend::Native),
-            }),
-            context: ContextConfig {
+            });
+            let __cw_config_init_2_4 = ContextConfig {
                 project_pack: Some(true),
-            },
-            ..Config::default()
+            };
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.skills_dir = __cw_config_init_2_0;
+            __cw_config_init_2_value.instructions = __cw_config_init_2_1;
+            __cw_config_init_2_value.memory_path = __cw_config_init_2_2;
+            __cw_config_init_2_value.memory = __cw_config_init_2_3;
+            __cw_config_init_2_value.context = __cw_config_init_2_4;
+            __cw_config_init_2_value
         };
 
         let (execution, workspace) = isolated_chat_execution_config(&config, root.path()).unwrap();
@@ -2260,10 +2389,13 @@ mod tests {
             "internal:443/model",
         ] {
             assert!(validate_model_id(model).is_err(), "accepted {model:?}");
-            let config = Config {
-                provider: Some("ollama".to_string()),
-                default_text_model: Some(model.to_string()),
-                ..Config::default()
+            let config = {
+                let __cw_config_init_3_0 = Some("ollama".to_string());
+                let __cw_config_init_3_1 = Some(model.to_string());
+                let mut __cw_config_init_3_value: Config = Config::default();
+                __cw_config_init_3_value.provider = __cw_config_init_3_0;
+                __cw_config_init_3_value.default_text_model = __cw_config_init_3_1;
+                __cw_config_init_3_value
             };
             if let Ok(catalog) =
                 crate::runtime_api::runtime_chat_relay_catalog(&config, &"c".repeat(32))
@@ -2283,12 +2415,12 @@ mod tests {
             assert!(!crate::runtime_api::runtime_chat_route_id_is_safe(
                 provider_id
             ));
-            let config = Config {
-                provider: Some(provider_id.to_string()),
-                providers: Some(crate::config::ProvidersConfig {
+            let config = {
+                let __cw_config_init_4_0 = Some(provider_id.to_string());
+                let __cw_config_init_4_1 = Some(codewhale_runtime::config::ProvidersConfig {
                     custom: std::collections::HashMap::from([(
                         provider_id.to_string(),
-                        crate::config::ProviderConfig {
+                        codewhale_runtime::config::ProviderConfig {
                             kind: Some("openai-compatible".to_string()),
                             api_key: Some("fixture-key".to_string()),
                             base_url: Some("https://example.test/v1".to_string()),
@@ -2297,8 +2429,11 @@ mod tests {
                         },
                     )]),
                     ..Default::default()
-                }),
-                ..Config::default()
+                });
+                let mut __cw_config_init_4_value: Config = Config::default();
+                __cw_config_init_4_value.provider = __cw_config_init_4_0;
+                __cw_config_init_4_value.providers = __cw_config_init_4_1;
+                __cw_config_init_4_value
             };
             let error = crate::runtime_api::runtime_chat_relay_catalog(&config, &"c".repeat(32))
                 .unwrap_err();
@@ -2359,6 +2494,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &request_fingerprint,
+                None,
             )
             .is_err()
         );
@@ -2374,6 +2510,7 @@ mod tests {
             &native_turn_id,
             &operation_fingerprint,
             &request_fingerprint,
+            None,
         )
         .unwrap();
 
@@ -2426,6 +2563,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &original_request,
+                None,
             )
             .unwrap(),
             TurnReservationDisposition::New
@@ -2438,6 +2576,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &changed_request,
+                None,
             )
             .is_err()
         );
@@ -2472,6 +2611,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &request_fingerprint,
+                None,
             )
             .unwrap(),
             TurnReservationDisposition::New
@@ -2491,6 +2631,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &request_fingerprint,
+                None,
             )
             .unwrap(),
             TurnReservationDisposition::Reopened
@@ -2525,6 +2666,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &request_fingerprint,
+                None,
             )
             .unwrap(),
             TurnReservationDisposition::New
@@ -2541,6 +2683,7 @@ mod tests {
                 &native_turn_id,
                 &operation_fingerprint,
                 &request_fingerprint,
+                None,
             )
             .unwrap(),
             TurnReservationDisposition::ExistingTerminal

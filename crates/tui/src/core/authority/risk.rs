@@ -3,7 +3,7 @@
 //! Classifies a call so the engine's gates and the approval views agree on
 //! how much the call can touch. Intentionally UI-free.
 
-use crate::tools::canonical_action::canonical_action_alias;
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_execpolicy::command_safety::is_parallel_readonly_command;
 use serde_json::Value;
 

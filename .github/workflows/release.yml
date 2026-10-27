@@ -616,6 +616,8 @@ jobs:
             docs/public-surface-facts.json
             docs/cloud-facts/stable.json
             web/lib/facts.generated.ts
+            web/data/agent-docs.generated.json
+            web/data/features.generated.json
           )
           if git diff --quiet -- "${paths[@]}"; then
             echo "Release record already current on ${DEFAULT_BRANCH}; nothing to propose."

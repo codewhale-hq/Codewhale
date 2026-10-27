@@ -233,7 +233,7 @@ fn workspace_write_carve_out_covers_the_default_ask_posture_only() {
 
 #[test]
 fn sandbox_escalation_requires_a_pair_and_a_strictly_wider_mode() {
-    use crate::sandbox::SandboxPolicy;
+    use codewhale_sandbox::SandboxPolicy;
 
     for tool in ["bash", CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME] {
         let read_only = SandboxPolicy::read_only();
@@ -299,7 +299,7 @@ fn sandbox_escalation_requires_a_pair_and_a_strictly_wider_mode() {
 
 #[test]
 fn sandbox_escalation_denial_names_no_new_privs_remediation_only_when_flag_active() {
-    use crate::sandbox::SandboxPolicy;
+    use codewhale_sandbox::SandboxPolicy;
 
     let full = SandboxPolicy::DangerFullAccess;
 

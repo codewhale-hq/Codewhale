@@ -132,7 +132,7 @@ impl ToolSpec for TuiHelpTool {
 /// write that `Settings::load` performs.
 fn ui_locale() -> Locale {
     codewhale_localization::resolve_locale(
-        &crate::settings::Settings::load_read_only()
+        &codewhale_runtime::settings::Settings::load_read_only()
             .unwrap_or_default()
             .locale,
     )

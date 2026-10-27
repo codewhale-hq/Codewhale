@@ -109,14 +109,14 @@ mod tests {
         let options = TuiOptions {
             ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
         };
-        App::new(options, &crate::config::Config::default())
+        App::new(options, &codewhale_runtime::config::Config::default())
     }
 
     /// #6747: the /agent brief names only callable tools and teaches the
     /// deferred `handle_read` activation path.
     #[test]
     fn agent_dispatch_brief_names_only_callable_tools() {
-        crate::tools::canonical_action::tests::assert_text_names_only_callable_tools(
+        crate::tools::canonical_action_tests::assert_text_names_only_callable_tools(
             "/agent brief",
             &agent_dispatch_brief("inspect the repo", 1),
         );

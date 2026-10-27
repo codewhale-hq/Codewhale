@@ -111,9 +111,9 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
 #[cfg(test)]
 #[must_use]
 pub fn tool_family_for_call(name: &str, input: &serde_json::Value) -> ToolFamily {
-    tool_family_for_name(crate::tools::canonical_action::canonical_action_alias(
-        name, input,
-    ))
+    tool_family_for_name(
+        codewhale_execpolicy::canonical_action::canonical_action_alias(name, input),
+    )
 }
 
 /// User-facing label for an arbitrary tool name. Known tools collapse to the

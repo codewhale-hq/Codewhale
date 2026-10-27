@@ -1,26 +1,48 @@
 //! `/translate` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::CoreNavigationCommandResult as CommandResult;
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+pub const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "translate",
     aliases: &["translation", "transale"],
     usage: "/translate",
-    description_id: MessageId::CmdTranslateDescription,
+    description_key: "cmd_translate_description",
 };
 
-pub(in crate::commands) struct TranslateCmd;
+pub struct TranslateCmd;
 
-impl RegisterCommand for TranslateCmd {
+impl RegisterCommand<CommandResult> for TranslateCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
-
-    fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
-        super::core::translate(app)
+    fn handler() -> CommandHandler<CommandResult> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::CONFIG.union(CommandCapabilities::PRESENTATION),
+            handler: translate,
+        }
     }
+}
+
+fn translate(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
+    let parts = contexts.into_parts();
+    let Some(config) = parts.config else {
+        return CommandResult::error("Command capability unavailable: config");
+    };
+    let Some(presentation) = parts.presentation else {
+        return CommandResult::error("Command capability unavailable: presentation");
+    };
+    let enabled = !config.translation_enabled();
+    let key = if enabled {
+        "cmd_translate_on"
+    } else {
+        "cmd_translate_off"
+    };
+    let message = match presentation.translate(key, &[]) {
+        Ok(message) => message,
+        Err(error) => return CommandResult::error(error),
+    };
+    config.set_translation_enabled(enabled);
+    CommandResult::message(message)
 }

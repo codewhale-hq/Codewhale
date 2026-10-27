@@ -70,13 +70,25 @@ try {
         }
         $snapshots += [PSCustomObject]@{ Name=$name; Target=$target; Staged=$staged; OldHash=$oldHash; NewHash=$newHash; Backup=$backup }
     }
+    $receiptName = '.codewhale-install.sha256'
+    $receiptStaged = Join-Path $stage $receiptName
+    $receiptText = ($snapshots | Where-Object { $_.Name -in @('codewhale.exe', 'codew.exe', 'codewhale.bat') } | ForEach-Object { "$($_.NewHash)  $($_.Name)`n" }) -join ''
+    [IO.File]::WriteAllText($receiptStaged, $receiptText)
+    $receiptTarget = Join-Path $destination $receiptName
+    $receiptOld = File-Hash $receiptTarget
+    $receiptBackup = Join-Path $stage ($receiptName + '.previous')
+    if ($receiptOld) {
+        Copy-Item -LiteralPath $receiptTarget -Destination $receiptBackup
+        if ((File-Hash $receiptBackup) -ne $receiptOld) { throw "Destination changed during backup: $receiptTarget" }
+    }
+    $snapshots += [PSCustomObject]@{ Name=$receiptName; Target=$receiptTarget; Staged=$receiptStaged; OldHash=$receiptOld; NewHash=(File-Hash $receiptStaged); Backup=$receiptBackup }
     foreach ($row in $snapshots) { if ((File-Hash $row.Target) -ne $row.OldHash) { throw "Destination changed before publication: $($row.Target)" } }
     foreach ($row in $snapshots) {
         if ((File-Hash $row.Target) -ne $row.OldHash) { throw "Destination changed during publication: $($row.Target)" }
         Move-Item -LiteralPath $row.Staged -Destination $row.Target -Force:([bool]$row.OldHash)
         $published += $row
     }
-    Write-Host "Installed canonical Codewhale commands to $destination. Add this directory to your user PATH. Node remains the default host."
+    Write-Host "Installed canonical Codewhale commands to $destination. Add this directory to your user PATH. Node remains the default host. Remove later with: `"$destination\codewhale.exe`" uninstall"
 } catch {
     $original = $_
     [array]::Reverse($published)

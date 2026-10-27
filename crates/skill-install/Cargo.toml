@@ -1,0 +1,33 @@
+[package]
+name = "codewhale-skill-install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale community-skill installer, package digests and skill frontmatter"
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+codewhale-net = { path = "../net", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
+flate2 = "1.1"
+futures-util = "0.3.31"
+reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+thiserror.workspace = true
+tokio.workspace = true
+yaml-rust2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

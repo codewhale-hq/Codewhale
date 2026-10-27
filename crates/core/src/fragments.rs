@@ -286,17 +286,19 @@ fn is_symlink(p: &Path) -> bool {
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false)
 }
-fn read_capped(p: &Path) -> Option<String> {
-    let meta = std::fs::metadata(p).ok()?;
+pub fn read_project_instruction_file(file: std::fs::File) -> Option<String> {
+    let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
     }
-    if meta.len() > INSTRUCTIONS_FILE_MAX_BYTES as u64 {
-        let mut file = std::fs::File::open(p).ok()?;
-        let mut buf = vec![0u8; INSTRUCTIONS_FILE_MAX_BYTES];
-        use std::io::Read as _;
-        let n = file.read(&mut buf).ok()?;
-        buf.truncate(n);
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    file.take(INSTRUCTIONS_FILE_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let observed_len = buf.len() as u64;
+    if meta.len().max(observed_len) > INSTRUCTIONS_FILE_MAX_BYTES as u64 {
+        buf.truncate(INSTRUCTIONS_FILE_MAX_BYTES);
         let mut text = String::from_utf8_lossy(&buf).into_owned();
         let mut end = INSTRUCTIONS_FILE_MAX_BYTES.min(text.len());
         while end > 0 && !text.is_char_boundary(end) {
@@ -305,11 +307,12 @@ fn read_capped(p: &Path) -> Option<String> {
         text.truncate(end);
         let omitted = meta
             .len()
+            .max(observed_len)
             .saturating_sub(INSTRUCTIONS_FILE_MAX_BYTES as u64);
         text.push_str(&format!("\n[…truncated: {omitted} bytes omitted]"));
         return Some(text);
     }
-    let raw = std::fs::read_to_string(p).ok()?;
+    let raw = String::from_utf8(buf).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         None
@@ -392,6 +395,7 @@ pub fn selected_project_instruction_candidate_files(
 fn load_project_instruction_fragment_from_candidates(
     workspace: &Path,
     candidates: &[&str],
+    mut opener: impl FnMut(&Path) -> std::io::Result<std::fs::File>,
 ) -> Option<BoundedFragment> {
     let files = collect_candidate_files(workspace, candidates);
     if files.is_empty() {
@@ -399,7 +403,7 @@ fn load_project_instruction_fragment_from_candidates(
     }
     let mut sections = Vec::new();
     for path in files {
-        if let Some(content) = read_capped(&path) {
+        if let Some(content) = opener(&path).ok().and_then(read_project_instruction_file) {
             let rel = path
                 .strip_prefix(workspace)
                 .unwrap_or(&path)
@@ -420,7 +424,11 @@ fn load_project_instruction_fragment_from_candidates(
 }
 
 pub fn load_project_instruction_fragment(workspace: &Path) -> Option<BoundedFragment> {
-    load_project_instruction_fragment_from_candidates(workspace, PROJECT_INSTRUCTION_CANDIDATES)
+    load_project_instruction_fragment_from_candidates(
+        workspace,
+        PROJECT_INSTRUCTION_CANDIDATES,
+        |path| std::fs::File::open(path),
+    )
 }
 
 /// Load only instruction formats that the canonical TUI project-context path
@@ -434,6 +442,7 @@ pub fn load_additional_project_instruction_fragment(workspace: &Path) -> Option<
     load_project_instruction_fragment_from_candidates(
         workspace,
         ADDITIONAL_PROJECT_INSTRUCTION_CANDIDATES,
+        |path| std::fs::File::open(path),
     )
 }
 
@@ -445,10 +454,20 @@ pub fn load_selected_project_instruction_fragment(
     workspace: &Path,
     candidates: &[&str],
 ) -> Option<BoundedFragment> {
+    load_selected_project_instruction_fragment_with_reader(workspace, candidates, |path| {
+        std::fs::File::open(path)
+    })
+}
+
+pub fn load_selected_project_instruction_fragment_with_reader(
+    workspace: &Path,
+    candidates: &[&str],
+    opener: impl FnMut(&Path) -> std::io::Result<std::fs::File>,
+) -> Option<BoundedFragment> {
     if candidates.is_empty() {
         return None;
     }
-    load_project_instruction_fragment_from_candidates(workspace, candidates)
+    load_project_instruction_fragment_from_candidates(workspace, candidates, opener)
 }
 
 pub fn project_instructions_from_sources(

@@ -24,28 +24,13 @@ import {readFileSync} from 'node:fs'
 import { canonicalPath, insideKey, pathKey, unlinkedKeyMatches } from './canonical-path.ts'
 import { RUNTIME } from '../runtime.ts'
 import { prepareBunSource, REVIEWED_IMPORT } from './bun-closure.ts'
+import compatibility from './compatibility.json' with { type: 'json' }
 
 const SCHEME = 'codewhale-host:'
 const REGISTRY_KEY = Symbol.for('codewhale.extension-host.modules')
 
 /** Specifier → singleton key. */
-const SINGLETONS: Record<string, string> = {
-  '@codewhale/dsh-composition': 'dsh-composition',
-  '@deepseek-ai/cordis-plugin-loader': 'dsh-loader',
-  '@deepseek-ai/cordis-plugin-include': 'dsh-include',
-  '@deepseek-ai/cordis-plugin-group': 'dsh-group',
-  '@deepseek-ai/cordis': 'cordis',
-  '@deepseek-ai/schemastery': 'schemastery',
-  '@deepseek-ai/cosmokit': 'cosmokit',
-  cosmokit: 'cosmokit',
-  '@deepseek-ai/dsh-tools': 'dsh-tools',
-  '@deepseek-ai/dsh-util-values': 'dsh-util-values',
-}
-
-/** Subpaths of a refused package that are provided anyway: exact specifier → singleton key. */
-const SUBPATH_SINGLETONS: Record<string, string> = {
-  '@deepseek-ai/dsh-commands/brand': 'dsh-commands-brand',
-}
+const SINGLETONS: Readonly<Record<string, string>> = compatibility.module_singletons
 
 export class UnsupportedPeerError extends Error {
   constructor(readonly specifier: string) {
@@ -62,9 +47,9 @@ function packageName(specifier: string): string {
 /** Map a bare specifier to a singleton key, `null` for "not ours", or throw for an unsupported DSH peer. */
 export function classifySpecifier(specifier: string): string | null {
   if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.includes(':')) return null
-  if (specifier in SUBPATH_SINGLETONS) return SUBPATH_SINGLETONS[specifier]
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier]
   const name = packageName(specifier)
-  if (name in SINGLETONS) {
+  if (Object.hasOwn(SINGLETONS, name)) {
     if (specifier !== name) throw new UnsupportedPeerError(specifier)
     return SINGLETONS[name]
   }
@@ -133,7 +118,7 @@ function installBunResolver(modules: Record<string, Record<string, unknown>>) {
   bun.plugin({
     name: 'codewhale-host-modules',
     setup(build: any) {
-      for (const [specifier, key] of Object.entries({ ...SINGLETONS, ...SUBPATH_SINGLETONS })) {
+      for (const [specifier, key] of Object.entries(SINGLETONS)) {
         if (key in modules) build.module(specifier, () => ({ exports: modules[key], loader: 'object' }))
       }
       build.onResolve({ filter: /^[^./]/ }, (args: { path: string }) => {

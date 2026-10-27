@@ -3163,7 +3163,11 @@ fn account_agents_refuse_foreign_threads_ambiguous_main_and_machine_keys() {
             .contains("interactive Codewhale account login")
     );
     assert!(transport.requests().is_empty());
-    assert!(client.create_agent("Whale", None, "invalid/key").is_err());
+    assert!(
+        client
+            .create_agent("Whale", None, None, "invalid/key")
+            .is_err()
+    );
     assert!(transport.requests().is_empty());
 
     client

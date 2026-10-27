@@ -2,7 +2,7 @@
 //! **executes**, **mutates**, or **reaches the network**.
 //!
 //! Before this module the answer was spread across three hand-maintained name
-//! lists ([`crate::fleet::role::RAW_SHELL_DENYLIST`] and its siblings) plus a
+//! lists ([`codewhale_agent_contract::role::RAW_SHELL_DENYLIST`] and its siblings) plus a
 //! role posture that keyed on `ShellPolicy::Full`. That shape had a structural
 //! hole: a name list can only deny the execution primitives someone remembered
 //! to write down, and `shell = "full"` was being read as "may run arbitrary
@@ -60,8 +60,8 @@
 
 use serde_json::Value;
 
-use crate::tools::canonical_action::canonical_action_alias;
 use crate::tools::spec::{ApprovalRequirement, ToolCapability, ToolSpec};
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 
 /// The execution authority a child actually holds, read off the runtime posture
 /// rather than off a label.
@@ -476,6 +476,45 @@ pub(crate) fn enforce_execution_envelope(
             }
         }
     }
+}
+
+pub(crate) fn tool_call_denied(rules: Option<&[String]>, name: &str, input: &Value) -> bool {
+    let action = canonical_action_alias(name, input);
+    codewhale_execpolicy::tool_rules::tool_denied(rules, name)
+        || codewhale_execpolicy::tool_rules::tool_denied(rules, action)
+        || (action == "rlm_open"
+            && input
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|url| !url.trim().is_empty())
+            && codewhale_execpolicy::tool_rules::tool_denied(rules, "fetch_url"))
+        || (matches!(
+            classify_verification(action, input),
+            Some(VerificationBound::Unbounded)
+        ) && rules.is_some_and(|rules| {
+            codewhale_execpolicy::tool_rules::tool_matches_any_rule(rules, "Bash")
+        }))
+}
+
+/// Repeat the command ceiling at native dispatch and direct delegation sinks.
+/// The existing child evidence exception is limited to the canonical lowercase
+/// tool, a child-owned context, and the same strict read-only grammar enforced
+/// by Bash itself. It never admits a session, stdin, or background command.
+pub(crate) fn enforce_tool_denial(
+    context: &crate::tools::spec::ToolContext,
+    name: &str,
+    input: &Value,
+) -> Result<(), crate::tools::spec::ToolError> {
+    let bounded_child_read = name == "bash"
+        && context.owner_agent_id.is_some()
+        && context.shell_policy == codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly
+        && crate::tools::shell::agent_readonly_bash_input(input);
+    if !bounded_child_read && tool_call_denied(Some(&context.disallowed_tools), name, input) {
+        return Err(crate::tools::spec::ToolError::permission_denied(format!(
+            "Tool '{name}' or its execution dependency is in the disallowed-tools list"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -7,9 +7,11 @@ fn fixture(
     workspace: &Path,
     scope: Option<Vec<String>>,
 ) -> (Engine, EngineHandle, Arc<ChildAuthority>, TurnRouteContext) {
-    let api = Config {
-        allow_shell: Some(true),
-        ..Default::default()
+    let api = {
+        let __cw_config_init_0_0 = Some(true);
+        let mut __cw_config_init_0_value: Config = Default::default();
+        __cw_config_init_0_value.allow_shell = __cw_config_init_0_0;
+        __cw_config_init_0_value
     }
     .with_legacy_root(Some("child-local-fixture".into()), None);
     let (mut parent, _parent_handle) = Engine::new(
@@ -220,17 +222,20 @@ async fn child_shell_ceiling_survives_every_context_policy_setter() {
     let _home = crate::test_support::SealedHome::at(dir.path());
     let (_engine, _handle, authority, _route) = fixture(dir.path(), None);
     let ceiling = authority.grant.shell_policy();
-    assert_ne!(ceiling, crate::worker_profile::ShellPolicy::Full);
+    assert_ne!(
+        ceiling,
+        codewhale_agent_contract::worker_profile::ShellPolicy::Full
+    );
     let mut context = authority
         .context()
-        .with_shell_policy(crate::worker_profile::ShellPolicy::Full);
+        .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::Full);
     assert_eq!(context.shell_policy, ceiling);
-    context.set_shell_policy(crate::worker_profile::ShellPolicy::None);
+    context.set_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::None);
     assert_eq!(
         context.shell_policy,
-        crate::worker_profile::ShellPolicy::None
+        codewhale_agent_contract::worker_profile::ShellPolicy::None
     );
-    context.set_shell_policy(crate::worker_profile::ShellPolicy::Full);
+    context.set_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::Full);
     assert_eq!(context.shell_policy, ceiling);
 }
 
@@ -458,7 +463,7 @@ async fn actor_fixture_from_authority(
         EngineConfig {
             workspace: workspace.into(),
             model: DEFAULT_TEXT_MODEL.into(),
-            max_steps: job.work_max_steps,
+            max_steps: job.max_steps,
             ..Default::default()
         },
         &api,
@@ -480,7 +485,7 @@ async fn actor_fixture_from_authority(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn child_work_and_one_bounded_report_share_actual_engine_session_and_dispatch() {
+async fn child_work_can_finish_on_the_final_owner_selected_turn() {
     use crate::llm_client::mock::canned;
     let dir = tempdir().unwrap();
     let _home = crate::test_support::SealedHome::at(dir.path());
@@ -506,11 +511,11 @@ async fn child_work_and_one_bounded_report_share_actual_engine_session_and_dispa
         tokio::join!(Box::pin(engine.run_child()), collect)
     })
     .await
-    .expect("same actor must settle work and reporting");
+    .expect("same actor must settle the full work allowance");
     let result = result.unwrap();
     assert_eq!(
         result.status,
-        crate::tools::subagent::SubAgentStatus::BudgetExhausted
+        crate::tools::subagent::SubAgentStatus::Completed
     );
     assert_eq!(mock.call_count(), 2);
     let requests = mock.captured_requests();
@@ -522,12 +527,17 @@ async fn child_work_and_one_bounded_report_share_actual_engine_session_and_dispa
             .iter()
             .any(|tool| tool.name == "read")
     );
-    assert!(requests[1].tools.is_none());
-    assert!(requests[1].tool_choice.is_none());
-    assert!(requests[1].max_tokens <= 1024);
+    assert!(
+        requests[1]
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|tool| tool.name == "read")
+    );
     assert_eq!(job.steps(), 2);
     assert!(requests[1].messages.iter().flat_map(|m| &m.content).any(
-        |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("exact evidence bytes"))
+        |b| matches!(b, ContentBlock::ToolResult { content, .. } if content.contains("exact evidence bytes"))
     ));
     assert_eq!(
         events
@@ -600,7 +610,9 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
         let (_old, _old_handle, captured, _) = fixture(dir.path(), Some(vec!["bash".into()]));
         let mut runtime = captured.runtime.clone();
         runtime.worker_profile =
-            crate::worker_profile::WorkerRuntimeProfile::for_role(FleetRole::Worker);
+            codewhale_agent_contract::worker_profile::WorkerRuntimeProfile::for_role(
+                FleetRole::Worker,
+            );
         runtime.parent_can_prompt = true;
         runtime.context.auto_approve = false;
         runtime.context.approval_mode = ApprovalMode::Suggest;
@@ -1106,7 +1118,7 @@ async fn actual_child_tool_output_cap_reaches_core_fanout_with_full_artifact() {
         Arc::new(authority),
         vec![
             canned::tool_call_turn("read-capped", "read", r#"{"path":"evidence.txt"}"#),
-            canned::simple_text_turn("Bounded report."),
+            canned::simple_text_turn("Read the evidence."),
         ],
         2,
     )
@@ -1153,7 +1165,10 @@ async fn actual_child_tool_output_cap_reaches_core_fanout_with_full_artifact() {
     assert!(saved.len() > output.content.len());
     assert_eq!(
         metadata["content_digest"],
-        format!("sha256:{}", crate::hashing::sha256_hex(saved.as_bytes()))
+        format!(
+            "sha256:{}",
+            codewhale_runtime::hashing::sha256_hex(saved.as_bytes())
+        )
     );
     assert_eq!(metadata["truncated"], true);
 }
@@ -1347,7 +1362,9 @@ async fn detached_child_catastrophic_shell_floor_uses_captured_origin_in_every_p
         let (_old, _handle, captured, _) = fixture(dir.path(), Some(vec!["bash".into()]));
         let mut runtime = captured.runtime.clone();
         runtime.worker_profile =
-            crate::worker_profile::WorkerRuntimeProfile::for_role(FleetRole::Worker);
+            codewhale_agent_contract::worker_profile::WorkerRuntimeProfile::for_role(
+                FleetRole::Worker,
+            );
         runtime.context.live_posture = None;
         runtime.context.approval_mode = approval_mode;
         runtime.context.auto_approve = approval_mode == ApprovalMode::Bypass;

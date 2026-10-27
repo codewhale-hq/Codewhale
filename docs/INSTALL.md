@@ -170,7 +170,9 @@ What it does (verified):
 * It **never uses sudo and never edits your shell profile.** It refuses to
   install into system or package-manager directories (`/usr/bin`,
   `~/.cargo/bin`, Homebrew, `node_modules`, `/nix/store`…) and refuses to
-  overwrite a *different* existing `codewhale`.
+  overwrite a *different* existing `codewhale` unless you ask for it with
+  `CODEWHALE_FORCE_REINSTALL=1` (see [re-running the
+  installer](#re-running-the-installer)).
 
 Expected output:
 
@@ -258,14 +260,21 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
   `Already installed: …` and exits 0.
 * Different version already installed: it **refuses**
   (`codewhale install: refusing to replace existing …/codewhale`), exits 1 and
-  changes nothing. It downloads ~160 MB before refusing. Use
+  changes nothing. It downloads the release before refusing. Use
   [`codewhale update`](#7-updating-and-rolling-back) instead.
+* Not a release build, at the same version (a local `cargo build` reports
+  `0.10.2 (dev)`): `codewhale update` still reinstalls the release artifact
+  over it, because that build has no release provenance to preserve.
+* Deliberate replacement: `CODEWHALE_FORCE_REINSTALL=1` replaces a differing
+  `codewhale`/`codew` in the install directory and keeps each previous file
+  beside it as `<name>.bak-<utc-timestamp>`. It never replaces a symlink or a
+  non-regular file, and never replaces a file in a managed directory.
 
 ### Upgrade / uninstall
 
 * Upgrade: `codewhale update` (see §7).
-* Uninstall: `rm ~/.local/bin/codewhale ~/.local/bin/codew`, then see §12 for
-  data.
+* Uninstall: `~/.local/bin/codewhale uninstall` previews the receipt-owned
+  files; add `--yes` to remove them. See §12 for data.
 
 ---
 
@@ -587,6 +596,12 @@ It updates `codewhale` **and** `codew` together. It took 10 s here. Run it
 again and you get `Already up to date; no download needed.` Other options:
 `--beta` and `--proxy <URL>`.
 
+A build that is not a published release reports its provenance in
+`codewhale --version` (`0.10.2 (dev)` for a local build, a commit hash for a
+release). `codewhale update` compares the release, not just the version, so a
+same-version `(dev)` build is replaced by the release artifact instead of
+reporting "Already up to date" forever.
+
 <a id="roll-back-to-a-previous-release"></a>
 
 ### Rolling back (e.g. to v0.9.13)
@@ -758,7 +773,7 @@ codewhale
   this session, `n` deny, `Esc` abort the turn.
 * Useful keys: **F1** help (or `/help`), **Ctrl-K** command palette, **F3**
   provider/model picker, **Ctrl-R** resume a past session, **Ctrl-U** clear the
-  input (**Ctrl-Z** restores it), **Ctrl-C** cancel or quit, **Ctrl-D** quit
+  input (**Ctrl-Z** restores it), **Ctrl-C** cancel, clear the draft, or quit, **Ctrl-D** quit
   with an empty input. Full list: [KEYBINDINGS.md](KEYBINDINGS.md).
 * On exit it prints `To resume this session, run codewhale resume <id>`.
 
@@ -858,12 +873,31 @@ codewhale auth clear --provider deepseek
 
 | Installed with | Remove with |
 |---|---|
-| installer (§2) or manual (§3) | `rm ~/.local/bin/codewhale ~/.local/bin/codew` (or your `CODEWHALE_INSTALL_DIR`) |
-| npm | `npm uninstall -g codewhale` |
-| Cargo | `cargo uninstall codewhale-cli` |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui` (also removes its node dependency) |
+| current Unix installer (§2) | Run the intended executable by its full path with `uninstall` to inspect the plan, then `uninstall --yes` to remove it. |
+| Windows release archive (`install.ps1`) | `"%USERPROFILE%\bin\codewhale.exe" uninstall`, then `uninstall --yes`. Remove `%USERPROFILE%\bin` from your user PATH if you added it only for Codewhale. |
+| Windows setup (NSIS) | Settings > Apps > CodeWhale > Uninstall, or `%LOCALAPPDATA%\Programs\CodeWhale\Uninstall.exe`. `codewhale uninstall` prints this path. |
+| WinGet | `winget uninstall --id HunterBown.CodeWhale` |
+| Scoop | `scoop uninstall codewhale` |
+| old unreceipted installer or manual (§3) | Inspect the exact command paths and provenance before removing them manually; automatic uninstall preserves them. |
+| npm | `npm uninstall -g codewhale` (`codewhale uninstall` prints the `--prefix` for this copy) |
+| Cargo | `cargo uninstall codewhale-cli` (`codewhale uninstall` prints the owning `--root`) |
+| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui` (also removes its node dependency; `codewhale uninstall` prints the owning formula) |
 
-### Step 3: remove data. No uninstaller does this for you.
+Not sure which one you have? Run `codewhale uninstall` (no `--yes`): it names the owner of the copy you ran and the exact command that removes it, changes nothing, and lists every other `codewhale`/`codew` still on `PATH`. Run each listed copy by its full path with `uninstall` until none remain.
+
+The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
+
+The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces, shell profiles, completions and services. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
+
+Successful self-update renews an existing command receipt; it does not claim ownership of old unreceipted copies or unknown siblings. This command does not remove a remote-setup service or a desktop application.
+
+On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. Archive installs made before this receipt existed are treated as unreceipted (reinstall with the current `install.ps1`, then uninstall). Windows removal has been compile-checked but not yet exercised on a Windows host.
+
+Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
+
+### Step 3: remove data. Program removal never does this.
+
+`codewhale uninstall --purge-data` previews deleting `~/.codewhale` (or `$CODEWHALE_HOME`) and `~/.deepseek/snapshots`. Add `--yes` to delete exactly those directories. It refuses a path that is a symlink, your home directory or one of its parents, or (on Unix) a directory owned by another user. It also refuses an explicit `CODEWHALE_HOME` not named `.codewhale`; delete that one by hand after you review it. It does not search for per-workspace `.codewhale` directories, keyring entries, shell profile lines or completion files. Run `codewhale auth clear --provider <id>` first to remove keyring entries. To remove data by hand instead:
 
 | Path | What it is | Size seen |
 |---|---|---|
@@ -990,7 +1024,7 @@ v0.8.8 onward. Linux RISC-V prebuilts are temporarily paused because the locked
 | Windows | arm64 | `codewhale-windows-arm64.exe`, `codew-windows-arm64.exe` | ✅ | ✅ |
 | Linux x64 or arm64 on musl (Alpine) | native arch | matching static Linux asset | ✅ (static) | ✅ |
 | Other Linux (musl on other arches) | — | build from source | ❌¹ | ✅² |
-| FreeBSD 14+ / OpenBSD | x64, arm64 | `cargo install codewhale-cli --locked` (no prebuilt; see § FreeBSD) | ❌ | ✅² |
+| FreeBSD 14+ | x64, arm64 | `cargo install codewhale-cli --locked` (no prebuilt; see § FreeBSD) | ❌ | ✅² |
 
 ¹ The npm package will exit with a clear error and point you here.
 ² Provided your toolchain can compile a recent Rust workspace; see

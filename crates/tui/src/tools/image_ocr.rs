@@ -74,7 +74,7 @@ impl ToolSpec for ImageOcrTool {
 
 pub(crate) fn ocr_available() -> bool {
     std::env::var_os("CODEWHALE_LOCAL_OCR_UNAVAILABLE").is_none()
-        && (crate::dependencies::resolve_tesseract().is_some() || native_ocr_available())
+        && (codewhale_dependencies::resolve_tesseract().is_some() || native_ocr_available())
 }
 
 const OCR_TIMEOUT: Duration = Duration::from_secs(120);
@@ -120,14 +120,15 @@ impl CapturedOcr {
             let root = path.ancestors().last().expect("absolute source has a root");
             // Reuse the Fleet-anchored regular-file reader: no final or parent
             // link can redirect the read after the path guards authorize it.
-            let mut source = crate::fs_confined::open_read(root, &path).map_err(|error| {
-                ToolError::execution_failed(format!(
-                    "Failed to capture image {}: {error}",
-                    path.display()
-                ))
-            })?;
+            let mut source =
+                codewhale_util::fs_confined::open_read(root, &path).map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "Failed to capture image {}: {error}",
+                        path.display()
+                    ))
+                })?;
             let bytes = crate::tools::file::read_contract_source(&mut source, cancel.as_ref())?;
-            let captured_sha256 = crate::hashing::sha256_hex(&bytes);
+            let captured_sha256 = codewhale_runtime::hashing::sha256_hex(&bytes);
             // Reuse the fetched PDF staging contract. The temporary is private
             // and retained by the input through Native and Tesseract work.
             let mut staged = tempfile::NamedTempFile::new().map_err(|error| {
@@ -164,7 +165,9 @@ impl CapturedOcr {
     ) -> Self {
         Self {
             path: path.to_path_buf(),
-            captured_sha256: crate::hashing::sha256_hex(path.as_os_str().as_encoded_bytes()),
+            captured_sha256: codewhale_runtime::hashing::sha256_hex(
+                path.as_os_str().as_encoded_bytes(),
+            ),
             _staged: None, // private broker test port; production always stages bytes
             overrides: Some(TestOverrides { native, tesseract }),
         }
@@ -199,12 +202,13 @@ impl CapturedOcr {
             let supplied = self.overrides.as_ref().map(|value| value.tesseract.clone());
             #[cfg(all(test, unix))]
             {
-                supplied
-                    .unwrap_or_else(|| crate::dependencies::resolve_tesseract().map(OsString::from))
+                supplied.unwrap_or_else(|| {
+                    codewhale_dependencies::resolve_tesseract().map(OsString::from)
+                })
             }
             #[cfg(not(all(test, unix)))]
             {
-                crate::dependencies::resolve_tesseract().map(OsString::from)
+                codewhale_dependencies::resolve_tesseract().map(OsString::from)
             }
         };
         OcrNativeStep {
@@ -230,7 +234,7 @@ impl OcrNativeStep {
         if let Some(binary) = &self.fallback {
             value.extend_from_slice(binary.as_encoded_bytes());
         }
-        crate::hashing::sha256_hex(&value)
+        codewhale_runtime::hashing::sha256_hex(&value)
     }
     pub(crate) fn projection(&self) -> Value {
         let status = match &self.outcome {
@@ -253,11 +257,11 @@ impl OcrNativeStep {
             if tokio::time::Instant::now()>=deadline {return Err(ToolError::Timeout {seconds:OCR_TIMEOUT.as_secs()});}
             let binary=self.fallback.as_ref().ok_or_else(||ToolError::execution_failed("OCR fallback was not admitted"))?;
             let mut command=tokio::process::Command::new(binary);
-            crate::utils::suppress_tokio_console_window(&mut command);
+            codewhale_util::utils::suppress_tokio_console_window(&mut command);
             command.arg(&self.input.path).arg("-");
-            crate::child_env::apply_to_tokio_command(&mut command,std::iter::empty::<(&str,&str)>());
+            codewhale_runtime::child_env::apply_to_tokio_command(&mut command,std::iter::empty::<(&str,&str)>());
             let stop=async { tokio::select! {biased;()=wait_cancel(cancel)=>{},()=tokio::time::sleep_until(deadline)=>{},} };
-            let run=crate::process_tree::contained_output_with_input_bounded(&mut command,Vec::new(),MAX_OCR_TEXT,MAX_OCR_DIAGNOSTIC,stop).await
+            let run=codewhale_runtime::process_tree::contained_output_with_input_bounded(&mut command,Vec::new(),MAX_OCR_TEXT,MAX_OCR_DIAGNOSTIC,stop).await
                 .map_err(|error|ToolError::execution_failed(format!("failed to launch tesseract: {error}")))?;
             if cancel.is_some_and(CancellationToken::is_cancelled) {return Err(ToolError::cancelled("Image OCR was cancelled"));}
             if run.stopped || tokio::time::Instant::now()>=deadline {return Err(ToolError::Timeout {seconds:OCR_TIMEOUT.as_secs()});}
@@ -387,7 +391,10 @@ pub(crate) async fn ocr_image_path(
         .turn_deadline
         .unwrap_or_else(|| tokio::time::Instant::now() + OCR_TIMEOUT);
     let input = CapturedOcr::capture(image_path, context, deadline).await?;
-    if context.features.enabled(crate::features::Feature::OcrHost) {
+    if context
+        .features
+        .enabled(codewhale_runtime::features::Feature::OcrHost)
+    {
         let mut captured_context = context.clone();
         captured_context.turn_deadline = Some(deadline);
         let (outcome, decision) = crate::extension_host::manager()

@@ -16,7 +16,7 @@ async fn profile_constitution_preview_is_authenticated_and_uses_the_engine_rende
     else {
         bail!("loopback server unavailable");
     };
-    let client = crate::tls::reqwest_client();
+    let client = codewhale_release::tls::reqwest_client();
     let url = format!("http://{addr}/v1/constitution/preview");
     let document = codewhale_config::user_constitution::ProfileConstitution {
         notes: "Show the recommendation first. 🐋".into(),

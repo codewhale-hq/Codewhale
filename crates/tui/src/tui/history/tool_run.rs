@@ -322,7 +322,7 @@ fn activity_family_summary(run: &ToolRun, activities: &[ToolRunActivity]) -> Opt
     (!families.is_empty()).then(|| families.join(", "))
 }
 
-fn counted(count: usize, singular: &str, plural: &str) -> String {
+pub(super) fn counted(count: usize, singular: &str, plural: &str) -> String {
     let noun = if count == 1 { singular } else { plural };
     format!("{count} {noun}")
 }
@@ -341,7 +341,7 @@ fn sentence_case_activity(text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::canonical_action::canonical_action_alias;
+    use codewhale_execpolicy::canonical_action::canonical_action_alias;
     use serde_json::json;
 
     #[test]

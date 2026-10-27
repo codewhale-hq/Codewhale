@@ -3,23 +3,25 @@
 use super::*;
 use crate::extension_host::tests::{FixturePlugins, node_for_tests};
 use crate::extension_host::{ExtensionHostOptions, TestManagerGuard};
-use crate::mcp::{McpBackend, McpConnection, McpTimeouts, McpTransport};
+use crate::mcp::{McpConnection, McpTimeouts, McpTransport};
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_config::McpBackend;
 use std::sync::atomic::Ordering;
 
 const PEER: &str = r#"
 import readline from 'node:readline'; import fs from 'node:fs';
-const record = process.argv[2];
+const record = process.argv[2]; const modern = process.argv[3] === "--modern";
 const rl = readline.createInterface({input:process.stdin});
 rl.on('line', line => {
   const m=JSON.parse(line); fs.appendFileSync(record, JSON.stringify({method:m.method,wire_id:m.id,params:m.params,ping_reply:m.id==='fixture-ping'&&m.result&&Object.keys(m.result).length===0})+'\n');
   if(m.method==='notifications/initialized') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:'fixture-ping',method:'ping',params:{}})+'\n'); return; }
   if (!m.method || !Object.hasOwn(m,'id')) return;
   if(typeof m.id !== 'string') throw new Error('SDK numeric ID escaped the Rust wire adapter');
+  if(m.method==='server/discover') { process.stdout.write(JSON.stringify(modern ? {jsonrpc:'2.0',id:m.id,result:{resultType:'complete',ttlMs:0,cacheScope:'private',supportedVersions:['2026-07-28'],capabilities:{tools:{}}}} : {jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'Method not found'}})+'\n'); return; }
   const result=m.method==='initialize'?{protocolVersion:'2025-06-18',serverInfo:{name:'broker-fixture',version:'1'},capabilities:{tools:{}}}
     :m.method==='tools/list'?{tools:[{name:'echo',inputSchema:{type:'object'}}]}
     :{content:[{type:'text',text:JSON.stringify(m.params.arguments)}],isError:false};
-  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:modern?{resultType:'complete',ttlMs:0,cacheScope:'private',...result}:result})+'\n');
 });
 "#;
 
@@ -96,73 +98,105 @@ fn request(
 
 #[tokio::test(flavor = "current_thread")]
 async fn host_sdk_real_connection_keeps_rust_catalog_and_exact_tool_call() {
-    let _policy = TestPolicyGuard::extension_host(true);
-    let Some((_fixture, manager, record, config)) = fixture("host_sdk_real_connection").await
-    else {
-        return;
-    };
-    let _manager = TestManagerGuard::install(Arc::clone(&manager));
-    let mut connection = McpConnection::connect_with_backend(
-        "fixture".into(),
-        config,
-        &McpTimeouts::default(),
-        None,
-        McpBackend::Host,
-    )
-    .await
-    .unwrap();
-    assert!(connection.is_ready());
-    assert_eq!(connection.tools().len(), 1);
-    assert_eq!(connection.tools()[0].name, "echo");
-    let result = connection
-        .call_tool("echo", json!({"payload":"exact"}), 5)
+    for modern in [false, true] {
+        let _policy = TestPolicyGuard::extension_host(true);
+        let Some((_fixture, manager, record, mut config)) =
+            fixture("host_sdk_real_connection").await
+        else {
+            return;
+        };
+        if modern {
+            config.args.push("--modern".to_string());
+        }
+        let _manager = TestManagerGuard::install(Arc::clone(&manager));
+        let mut connection = McpConnection::connect_with_backend(
+            "fixture".into(),
+            config,
+            &McpTimeouts::default(),
+            None,
+            McpBackend::Host,
+        )
         .await
         .unwrap();
-    assert_eq!(result["content"][0]["text"], "{\"payload\":\"exact\"}");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !std::fs::read_to_string(&record)
-            .unwrap()
-            .contains("\"ping_reply\":true")
-        {
-            tokio::task::yield_now().await;
+        assert!(connection.is_ready());
+        assert_eq!(connection.tools().len(), 1);
+        assert_eq!(connection.tools()[0].name, "echo");
+        let result = connection
+            .call_tool("echo", json!({"payload":"exact"}), 5)
+            .await
+            .unwrap();
+        assert_eq!(result["content"][0]["text"], "{\"payload\":\"exact\"}");
+        if !modern {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !std::fs::read_to_string(&record)
+                    .unwrap()
+                    .contains("\"ping_reply\":true")
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
         }
-    })
-    .await
-    .unwrap();
-    let frames = std::fs::read_to_string(record).unwrap();
-    assert_eq!(
-        frames
-            .lines()
-            .filter(|line| line.contains("\"method\":\"initialize\""))
-            .count(),
-        1
-    );
-    assert_eq!(
-        frames
-            .lines()
-            .filter(|line| line.contains("\"method\":\"tools/call\""))
-            .count(),
-        1
-    );
-    assert!(!frames.contains("server/discover"));
-    assert!(frames.contains("\"ping_reply\":true"));
-    let frames: Vec<Value> = frames
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    for (method, expected) in [
-        ("initialize", "1"),
-        ("tools/list", "2"),
-        ("tools/call", "3"),
-    ] {
+        let frames = std::fs::read_to_string(record).unwrap();
         assert_eq!(
             frames
-                .iter()
-                .find(|frame| frame["method"] == method)
-                .unwrap()["wire_id"],
-            expected,
-            "the peer must see the original Rust facade ID"
+                .lines()
+                .filter(|line| line.contains("\"method\":\"initialize\""))
+                .count(),
+            if modern { 0 } else { 1 }
         );
+        assert_eq!(
+            frames
+                .lines()
+                .filter(|line| line.contains("\"method\":\"tools/call\""))
+                .count(),
+            1
+        );
+        assert!(frames.contains("server/discover"));
+        assert_eq!(frames.contains("\"ping_reply\":true"), !modern);
+        let frames: Vec<Value> = frames
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for (method, expected) in [
+            ("initialize", "1"),
+            ("tools/list", "2"),
+            ("tools/call", "3"),
+        ] {
+            if modern && method == "initialize" {
+                continue;
+            }
+            assert_eq!(
+                frames
+                    .iter()
+                    .find(|frame| frame["method"] == method)
+                    .unwrap()["wire_id"],
+                expected,
+                "the peer must see the original Rust facade ID"
+            );
+        }
+        if modern {
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "server/discover")
+                    .count(),
+                1
+            );
+            assert!(
+                !frames
+                    .iter()
+                    .any(|frame| frame["method"] == "notifications/initialized")
+            );
+            assert!(
+                frames
+                    .iter()
+                    .all(|frame| frame["params"]["_meta"] == modern_metadata())
+            );
+            assert_eq!(result["resultType"], "complete");
+        }
+        manager.shutdown().await;
     }
 }
 
@@ -387,7 +421,7 @@ async fn host_http_requires_rust_prepared_client_without_fallback_or_spawn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn real_computer_use_bootstrap_and_human_decision_stay_in_rust() {
+async fn computer_use_protocol_bootstrap_and_human_decision_stay_in_rust() {
     if !cfg!(target_os = "macos") {
         return;
     }
@@ -485,6 +519,7 @@ async fn cancelled_or_aborted_partial_pipe_write_retires_contained_child() {
 import fs from 'node:fs'; const record=process.argv[2]; let pending='';
 function parse(chunk) { pending+=chunk; while(pending.includes('\n')) {
   const at=pending.indexOf('\n'), m=JSON.parse(pending.slice(0,at)); pending=pending.slice(at+1);
+  if(m.method==='server/discover') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'Method not found'}})+'\n');
   if(m.method==='initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:'2025-06-18',serverInfo:{name:'paused',version:'1'},capabilities:{tools:{}}}})+'\n');
   if(m.method==='notifications/initialized') {process.stdin.off('data',parse); process.stdin.once('data',()=>{fs.appendFileSync(record,'partial-byte-observed\n'); process.stdin.pause()}); return;}
 }}
@@ -714,6 +749,13 @@ async fn host_mcp_without_native_keeps_restart_policy_and_harness_closed() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn selected_host_without_node_uses_runtime_diagnostic_not_native_gate() {
+    assert_eq!(McpBackend::default(), McpBackend::Host);
+    let mut selected = codewhale_runtime::config::Config::default();
+    assert_eq!(selected.mcp_backend(), McpBackend::Host);
+    selected.extension_host = Some(toml::from_str("").unwrap());
+    assert_eq!(selected.mcp_backend(), McpBackend::Host);
+    selected.extension_host = Some(toml::from_str(r#"mcp_backend = "rust""#).unwrap());
+    assert_eq!(selected.mcp_backend(), McpBackend::Rust);
     let _policy = TestPolicyGuard::extension_host(false);
     let root = tempfile::tempdir().unwrap();
     let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
@@ -724,16 +766,16 @@ async fn selected_host_without_node_uses_runtime_diagnostic_not_native_gate() {
     let _manager = TestManagerGuard::install(Arc::clone(&manager));
     let config: McpServerConfig =
         serde_json::from_value(json!({"command":"missing-peer"})).unwrap();
-    let error = McpConnection::connect_with_backend(
-        "missing-runtime".into(),
-        config,
-        &McpTimeouts::default(),
-        None,
-        McpBackend::Host,
-    )
-    .await
-    .err()
-    .expect("selected Host must fail without its runtime");
+    let mut pool = crate::mcp::McpPool::new(crate::mcp::McpConfig {
+        servers: [("missing-runtime".to_string(), config)].into(),
+        ..Default::default()
+    });
+    assert_eq!(pool.backend(), McpBackend::Host);
+    let error = pool
+        .get_or_connect("missing-runtime")
+        .await
+        .err()
+        .expect("selected Host must fail without its runtime");
     let diagnostic = format!("{error:#}");
     assert!(
         diagnostic.contains("Node.js ^22.19 || >=24"),

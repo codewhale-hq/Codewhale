@@ -897,7 +897,7 @@
     fn try_lock_elsewhere(manager: &SessionManager, id: &str) -> bool {
         let lease = open_private_read_file(&manager.live_lease_path(id, false).expect("path"))
             .expect("lease file");
-        crate::runtime_threads::try_lock_file_exclusive(&lease).expect("lock")
+        codewhale_util::lock::try_lock_file_exclusive(&lease).expect("lock")
     }
 
     #[test]

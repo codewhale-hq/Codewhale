@@ -16,6 +16,9 @@ Usage:
 Environment:
   CODEWHALE_INSTALL_DIR    Install directory. Default: $HOME/.local/bin
   CODEWHALE_VERSION        Release tag for a fresh directory. Default: latest
+  CODEWHALE_FORCE_REINSTALL=1
+                           Replace differing codewhale/codew already in the install
+                           directory, keeping each old file beside it as .bak-<time>
   CODEWHALE_RELEASE_BASE_URL
                            Custom release asset base URL ending in /download
   CODEWHALE_INSTALL_COMPILED_HOST=1
@@ -223,8 +226,74 @@ cli_asset="codewhale-$target"
 shim_asset="codew-$target"
 manifest_asset="codewhale-artifacts-sha256.txt"
 
+# Resolve the real directory before applying managed-prefix checks. Never use
+# sudo or allow an install directory symlink to obscure which files will change.
+case "$install_dir" in
+  /*) ;;
+  *) fail "CODEWHALE_INSTALL_DIR must be an absolute path" ;;
+esac
+[ ! -L "$install_dir" ] || fail "install directory is a symlink: $install_dir; choose a fresh user directory"
+mkdir -p "$install_dir" || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
+install_dir="$(cd -P "$install_dir" && pwd)"
+case "$install_dir/" in
+  /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*)
+    fail "refusing managed/system directory $install_dir; use a fresh user directory"
+    ;;
+esac
+[ -w "$install_dir" ] || fail "$install_dir is not writable; choose a user directory (no sudo is used)"
+for cargo_receipt in "$install_dir/../.crates.toml" "$install_dir/../.crates2.json"; do
+  if [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; then
+    fail "Cargo install metadata beside this directory; use a fresh directory instead"
+  fi
+done
+
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t codewhale-install)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
+
+forced_backups="$tmpdir/.forced-backups"
+: > "$forced_backups"
+
+stage=""
+stage_dir=""
+# Commands this run published. If a later publication fails they are removed
+# again, but only while each is still the exact file this run wrote, so a
+# failed install leaves no half-installed pair and never touches a file that
+# was already installed.
+published="$tmpdir/.published"
+: > "$published"
+rollback_published() {
+  while IFS= read -r name; do
+    destination="$install_dir/$name"
+    if [ ! -L "$destination" ] && [ -f "$destination" ] && cmp -s "$tmpdir/$name" "$destination"; then
+      rm -f "$destination"
+      say "Removed $destination: this install did not complete." >&2
+    fi
+  done < "$published"
+}
+restore_forced_backups() {
+  [ -f "$forced_backups" ] || return 0
+  while IFS= read -r backup; do
+    [ -n "$backup" ] || continue
+    [ -e "$backup" ] || continue
+    destination="$(printf '%s' "$backup" | sed 's/\.bak-[0-9TZ]*\(-[0-9][0-9]*\)\{0,1\}$//')"
+    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+      mv "$backup" "$destination" && say "Restored $destination: this install did not complete." >&2
+    fi
+  done < "$forced_backups"
+}
+on_exit() {
+  status=$?
+  if [ -n "$stage" ]; then rm -f "$stage"; fi
+  if [ -n "$stage_dir" ]; then rmdir "$stage_dir"; fi
+  if [ "$status" -ne 0 ]; then
+    rollback_published
+    restore_forced_backups
+  fi
+  rm -rf "$tmpdir"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 say "Installing Codewhale for $target"
 say "Release assets: $release_base"
@@ -243,22 +312,6 @@ if command -v xattr >/dev/null 2>&1; then
   xattr -d com.apple.quarantine "$tmpdir/codewhale" "$tmpdir/codew" 2>/dev/null || true
 fi
 
-# Resolve the real directory before applying managed-prefix checks. Never use
-# sudo or allow an install directory symlink to obscure which files will change.
-case "$install_dir" in
-  /*) ;;
-  *) fail "CODEWHALE_INSTALL_DIR must be an absolute path" ;;
-esac
-[ ! -L "$install_dir" ] || fail "install directory is a symlink: $install_dir; choose a fresh user directory"
-mkdir -p "$install_dir" || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
-install_dir="$(cd -P "$install_dir" && pwd)"
-case "$install_dir/" in
-  /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*)
-    fail "refusing managed/system directory $install_dir; use a fresh user directory"
-    ;;
-esac
-[ -w "$install_dir" ] || fail "$install_dir is not writable; choose a user directory (no sudo is used)"
-
 check_destination() {
   destination="$1"
   source="$2"
@@ -269,10 +322,24 @@ check_destination() {
       destination_exists=1
       return
     fi
+    if [ "${CODEWHALE_FORCE_REINSTALL:-}" = 1 ] && [ ! -L "$destination" ] && [ -f "$destination" ]; then
+      backup="$destination.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+      suffix=1
+      while [ -e "$backup" ] || [ -L "$backup" ]; do
+        backup="$destination.bak-$(date -u +%Y%m%dT%H%M%SZ)-$suffix"
+        suffix=$((suffix + 1))
+      done
+      mv "$destination" "$backup" || fail "cannot move $destination aside; it was not replaced"
+      printf '%s\n' "$backup" >> "$forced_backups"
+      say "Replacing $destination (previous file kept at $backup)"
+      return
+    fi
     cat >&2 <<EOF
 codewhale install: refusing to replace existing $destination.
 It may be a newer build, another installation, or a symlink. No existing file was changed.
 For an existing direct Codewhale install, run its full path with 'update'.
+To replace it with this release and keep the previous file beside it:
+  curl -fsSL https://codewhale.net/install.sh | CODEWHALE_FORCE_REINSTALL=1 sh
 To migrate safely from a package manager or mixed installation, create a fresh directory:
   mkdir -p "\$HOME/.local"
   codewhale_install_dir="\$(mktemp -d "\$HOME/.local/codewhale-release.XXXXXX")"
@@ -314,40 +381,20 @@ if [ "${CODEWHALE_INSTALL_COMPILED_HOST:-}" = 1 ]; then
   done
 fi
 
+receipt_name=".codewhale-install.sha256"
+for command_name in codewhale codew; do
+  command_digest="$(sha256_file "$tmpdir/$command_name" | tr '[:upper:]' '[:lower:]')"
+  [ "${#command_digest}" -eq 64 ] || fail "invalid command digest for $command_name"
+  case "$command_digest" in *[!0-9a-f]*) fail "invalid command digest for $command_name" ;; esac
+  printf '%s  %s\n' "$command_digest" "$command_name"
+done > "$tmpdir/$receipt_name"
+if [ -e "$install_dir/$receipt_name" ] || [ -L "$install_dir/$receipt_name" ]; then
+  [ ! -L "$install_dir/$receipt_name" ] && [ -f "$install_dir/$receipt_name" ] && cmp -s "$tmpdir/$receipt_name" "$install_dir/$receipt_name" || fail "existing command receipt differs; use this installation's updater or a fresh directory"
+fi
+check_destination "$install_dir/$receipt_name" "$tmpdir/$receipt_name" 644
 check_destination "$install_dir/codewhale" "$tmpdir/codewhale"
 check_destination "$install_dir/codew" "$tmpdir/codew"
-legacy_tui="$install_dir/codewhale-tui"
-if [ -e "$legacy_tui" ] || [ -L "$legacy_tui" ]; then
-  check_destination "$legacy_tui" "$tmpdir/codewhale"
-fi
 
-stage=""
-stage_dir=""
-# Commands this run published. If a later publication fails they are removed
-# again, but only while each is still the exact file this run wrote, so a
-# failed install leaves no half-installed pair and never touches a file that
-# was already installed.
-published="$tmpdir/.published"
-: > "$published"
-rollback_published() {
-  while IFS= read -r name; do
-    destination="$install_dir/$name"
-    if [ ! -L "$destination" ] && [ -f "$destination" ] && cmp -s "$tmpdir/$name" "$destination"; then
-      rm -f "$destination"
-      say "Removed $destination: this install did not complete." >&2
-    fi
-  done < "$published"
-}
-on_exit() {
-  status=$?
-  if [ -n "$stage" ]; then rm -f "$stage"; fi
-  if [ -n "$stage_dir" ]; then rmdir "$stage_dir"; fi
-  if [ "$status" -ne 0 ]; then rollback_published; fi
-  rm -rf "$tmpdir"
-}
-trap on_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 install_binary() {
   source="$1"
   destination="$2"
@@ -383,6 +430,8 @@ if [ "${CODEWHALE_INSTALL_COMPILED_HOST:-}" = 1 ]; then
   say "Installed qualified opt-in image and its notice/relink-source closure; Node remains default."
 fi
 
+install_binary "$tmpdir/$receipt_name" "$install_dir/$receipt_name" 644
+say "Uninstall this receipted copy: \"$install_dir/codewhale\" uninstall --yes"
 say "Installed checksummed release commands:"
 say "  $install_dir/codewhale"
 say "  $install_dir/codew"

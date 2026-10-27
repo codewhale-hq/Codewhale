@@ -1,143 +1,160 @@
 //! `/home` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use codewhale_command_contract::facets::CommandPresentationContext;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::navigation::NavigationOverview;
+use codewhale_command_contract::outcome::CoreNavigationCommandResult as CommandResult;
+use codewhale_command_contract::types::CommandMode;
+use std::fmt::Write;
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+pub const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "home",
     aliases: &["zhuye", "shouye"],
     usage: "/home",
-    description_id: MessageId::CmdHomeDescription,
+    description_key: "cmd_home_description",
 };
 
-pub(in crate::commands) struct HomeCmd;
+pub struct HomeCmd;
+pub struct OverviewCmd;
 
-impl RegisterCommand for HomeCmd {
+impl RegisterCommand<CommandResult> for HomeCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
-
-    fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
-        if app.session_transition_blocked() {
-            return CommandResult::error(app.tr(MessageId::HomeNavigationBusy).into_owned());
+    fn handler() -> CommandHandler<CommandResult> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::NAVIGATION.union(CommandCapabilities::PRESENTATION),
+            handler: home,
         }
-        app.launch.workspace = app.workspace.clone();
-        app.launch.restore_card();
-        app.launch.visible = true;
-        app.launch.return_to_session = true;
-        app.needs_redraw = true;
-        CommandResult::ok()
     }
 }
 
-/// Preserve the old read-only statistics view under its descriptive aliases.
-pub(in crate::commands) struct OverviewCmd;
-
-impl RegisterCommand for OverviewCmd {
+impl RegisterCommand<CommandResult> for OverviewCmd {
     fn info() -> &'static CommandInfo {
         &CommandInfo {
             name: "overview",
             aliases: &["stats"],
             usage: "/overview",
-            description_id: MessageId::CmdOverviewDescription,
+            description_key: "cmd_overview_description",
         }
     }
-
-    fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
-        super::core::home_dashboard(app)
+    fn handler() -> CommandHandler<CommandResult> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::NAVIGATION.union(CommandCapabilities::PRESENTATION),
+            handler: overview,
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    #[test]
-    fn home_preserves_session_draft_and_reveal_and_escape_returns() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
-        );
-        app.launch.dismiss();
-        app.current_session_id = Some("retained-session".into());
-        app.api_messages_mut().push(codewhale_models::Message {
-            role: codewhale_models::Role::User,
-            content: vec![codewhale_models::ContentBlock::Text {
-                text: "Retain this conversation".into(),
-                cache_control: None,
-            }],
-        });
-        app.add_message(crate::tui::history::HistoryCell::System {
-            content: "Retain this transcript".into(),
-        });
-        app.input = "unsent draft".into();
-        app.cursor_position = app.input.chars().count();
-        app.launch.mark_reveal_started_at = Some(std::time::Instant::now());
-        let reveal = app.launch.mark_reveal_started_at;
-        let messages = app.api_messages.clone();
-        let history_len = app.history.len();
-        let result = crate::commands::execute("/home", &mut app);
-        assert!(!result.is_error, "{:?}", result.message);
-        assert!(
-            result.action.is_none(),
-            "navigation must not sync/reset the Engine"
-        );
-        assert!(crate::tui::widgets::should_render_empty_state(&app));
-        assert!(app.launch.return_to_session);
-        assert!(!crate::tui::underwater::launch_motion_active(
-            &app, false, true
-        ));
-        crate::tui::underwater::refresh_launch_row_hitboxes(
-            &mut app,
-            ratatui::layout::Rect::new(0, 0, 80, 20),
-        );
-        let rows = crate::tui::underwater::launch_rows_for_app(&app);
-        assert_eq!(
-            crate::tui::underwater::launch_row_click_action(&rows[0].id),
-            crate::tui::underwater::LaunchAction::ReturnToSession,
-        );
-        app.launch.menu_selected = Some(0);
-        assert_eq!(
-            crate::tui::underwater::handle_launch_composer_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            ),
-            crate::tui::underwater::LaunchComposerKey::MenuRun,
-        );
-        assert_eq!(app.input, "unsent draft");
-        crate::tui::underwater::handle_launch_composer_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        );
-        assert!(!app.launch.visible);
-        assert!(!app.launch.return_to_session);
-        assert_eq!(app.current_session_id.as_deref(), Some("retained-session"));
-        assert_eq!(app.api_messages, messages);
-        assert_eq!(app.history.len(), history_len);
-        assert_eq!(app.input, "unsent draft");
-        assert_eq!(app.launch.mark_reveal_started_at, reveal);
-        assert!(!crate::tui::widgets::should_render_empty_state(&app));
-
-        for command in ["/overview", "/stats"] {
-            let result = crate::commands::execute(command, &mut app);
-            assert!(!result.is_error);
-            assert!(result.message.unwrap().contains("Quick Actions"));
-            assert!(!app.launch.visible);
-        }
+fn home(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
+    let parts = contexts.into_parts();
+    let Some(navigation) = parts.navigation else {
+        return CommandResult::error("Command capability unavailable: navigation");
+    };
+    let Some(presentation) = parts.presentation else {
+        return CommandResult::error("Command capability unavailable: presentation");
+    };
+    if navigation.home_is_blocked() {
+        return match presentation.translate("home_navigation_busy", &[]) {
+            Ok(message) => CommandResult::error(message),
+            Err(error) => CommandResult::error(error),
+        };
     }
+    navigation.restore_home();
+    CommandResult::ok()
+}
 
-    #[test]
-    fn home_refuses_to_cover_active_work() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
+fn overview(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
+    let parts = contexts.into_parts();
+    let Some(navigation) = parts.navigation else {
+        return CommandResult::error("Command capability unavailable: navigation");
+    };
+    let Some(presentation) = parts.presentation else {
+        return CommandResult::error("Command capability unavailable: presentation");
+    };
+    render_overview(presentation, navigation.overview())
+        .map(CommandResult::message)
+        .unwrap_or_else(CommandResult::error)
+}
+
+fn render_overview(
+    presentation: &dyn CommandPresentationContext,
+    facts: NavigationOverview,
+) -> Result<String, String> {
+    let label = |key| presentation.translate(key, &[]);
+    let mut stats = String::new();
+    let _ = writeln!(stats, "{}", label("home_dashboard_title")?);
+    let _ = writeln!(stats, "============================================");
+    let _ = writeln!(stats, "{}      {}", label("home_model")?, facts.model);
+    let _ = writeln!(stats, "{}       {}", label("home_mode")?, facts.mode_label);
+    let _ = writeln!(
+        stats,
+        "{}  {}",
+        label("home_workspace")?,
+        facts.workspace.display()
+    );
+    let _ = writeln!(
+        stats,
+        "{}    {} messages",
+        label("home_history")?,
+        facts.history_count
+    );
+    let _ = writeln!(
+        stats,
+        "{}     {} (session)",
+        label("home_tokens")?,
+        facts.total_tokens
+    );
+    if facts.queued_count > 0 {
+        let _ = writeln!(
+            stats,
+            "{}     {} messages",
+            label("home_queued")?,
+            facts.queued_count
         );
-        app.launch.dismiss();
-        app.is_loading = true;
-        let result = HomeCmd::execute(&mut app, None);
-        assert!(result.is_error);
-        assert!(!app.launch.visible);
     }
+    if facts.subagent_count > 0 {
+        let _ = writeln!(
+            stats,
+            "{} {} active",
+            label("home_subagents")?,
+            facts.subagent_count
+        );
+    }
+    if let Some(skill) = &facts.active_skill {
+        let _ = writeln!(stats, "{}      {} (active)", label("home_skill")?, skill);
+    }
+    let _ = writeln!(stats, "\n{}", label("home_quick_actions")?);
+    let _ = writeln!(stats, "--------------------------------------------");
+    for key in [
+        "home_quick_workspace",
+        "home_quick_restore",
+        "home_quick_tokens",
+        "home_quick_links",
+        "home_quick_skills",
+        "home_quick_config",
+        "home_quick_settings",
+        "home_quick_model",
+        "home_quick_subagents",
+        "home_quick_task_list",
+        "home_quick_help",
+    ] {
+        let _ = writeln!(stats, "{}", label(key)?);
+    }
+    let _ = writeln!(stats, "\n{}", label("home_mode_tips")?);
+    let _ = writeln!(stats, "--------------------------------------------");
+    let tips: &[&str] = match facts.mode {
+        CommandMode::Agent => &[
+            "home_agent_mode_tip",
+            "home_agent_mode_review_tip",
+            "home_agent_mode_yolo_tip",
+        ],
+        CommandMode::Operate => &["home_operate_mode_tip", "home_operate_mode_fleet_tip"],
+        CommandMode::Plan => &["home_plan_mode_tip", "home_plan_mode_checklist_tip"],
+    };
+    for key in tips {
+        let _ = writeln!(stats, "{}", label(key)?);
+    }
+    Ok(stats)
 }

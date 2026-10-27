@@ -615,7 +615,7 @@ pub(super) fn shell_exec_live_update(
     let Some(job) = jobs.get(task_id) else {
         return Some(ShellExecLiveUpdate {
             task_id: task_id.to_string(),
-            status: ToolStatus::Failed,
+            status: ToolStatus::Stopped,
             output: detached_shell_job_output(task_id, exec),
             duration_ms: exec.duration_ms.unwrap_or_default(),
             finalized: true,

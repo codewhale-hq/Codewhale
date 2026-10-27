@@ -36,7 +36,6 @@ use ratatui::{
 };
 
 use crate::client::system_one::DecisionRouterRoute;
-use crate::config::{AutoConfig, AutoRouterConfig, Config, ProviderKind};
 use crate::model_inventory::ModelInventory;
 use crate::model_routing::{AutoRouteSelection, provider_router_candidates};
 use crate::tui::app::{App, StatusToastLevel};
@@ -46,8 +45,10 @@ use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
+use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::{AutoConfig, AutoRouterConfig, Config};
 
 /// Pinned OpenRouter id for Jev; `~typesafe/jev-latest` is also accepted.
 pub(crate) const JEV_OPENROUTER_MODEL: &str = "typesafe/jev-1.13";
@@ -162,7 +163,7 @@ pub(crate) fn preset_router_config(
                 provider: Some(route.as_str().to_string()),
                 model: Some(model.to_string()),
                 timeout_secs: Some(JEV_TIMEOUT_SECS),
-                min_confidence: Some(crate::config::DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE),
+                min_confidence: Some(codewhale_runtime::config::DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE),
                 ..Default::default()
             }))
         }
@@ -212,7 +213,7 @@ pub(crate) fn persist_auto_router(
     config_path: Option<&Path>,
     router: Option<&AutoRouterConfig>,
 ) -> anyhow::Result<PathBuf> {
-    use crate::config_persistence::{
+    use codewhale_runtime::config_persistence::{
         config_toml_path, mutate_config_document, set_document_value, unset_document_value,
     };
     let path = config_toml_path(config_path)?;
@@ -829,21 +830,25 @@ mod tests {
     }
 
     fn deepseek_with_openrouter_key(openrouter_key: bool) -> Config {
-        Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some("deepseek-v4-pro".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek: crate::config::ProviderConfig {
+        {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some("deepseek-v4-pro".to_string());
+            let __cw_config_init_0_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                deepseek: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("ds-test-key".to_string()),
                     ..Default::default()
                 },
-                openrouter: crate::config::ProviderConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     api_key: openrouter_key.then(|| "or-test-key".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.default_text_model = __cw_config_init_0_1;
+            __cw_config_init_0_value.providers = __cw_config_init_0_2;
+            __cw_config_init_0_value
         }
     }
 

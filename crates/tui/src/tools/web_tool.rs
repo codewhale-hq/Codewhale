@@ -7,13 +7,13 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::canonical_action::required_action;
 use super::dev_server_readiness::WaitForDevServerTool;
 use super::fetch_url::FetchUrlTool;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use super::web_search::WebSearchTool;
+use codewhale_tools::required_action;
 
 pub struct WebTool {
     name: &'static str,

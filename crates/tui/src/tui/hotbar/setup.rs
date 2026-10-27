@@ -9,7 +9,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::config::Config;
 use crate::tui::app::App;
 use crate::tui::views::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
@@ -17,6 +16,7 @@ use crate::tui::views::{
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::Config;
 
 #[cfg(test)]
 use super::actions::HotbarRecommendation;
@@ -1063,10 +1063,11 @@ fn compact_action_id(action_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ProviderKind};
     use crate::tui::app::TuiOptions;
     use crate::tui::hotbar::HotbarActionRegistry;
+    use codewhale_config::ProviderKind;
     use codewhale_localization::{Locale, MessageId, tr};
+    use codewhale_runtime::config::Config;
     use crossterm::event::KeyModifiers;
     use std::path::PathBuf;
 
@@ -1536,9 +1537,11 @@ mod tests {
 
     #[test]
     fn keyboard_controls_navigate_source_action_and_slot() {
-        let mut config = Config {
-            provider: Some(ProviderKind::Deepseek.as_str().to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_0_0 = Some(ProviderKind::Deepseek.as_str().to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         config
             .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Openrouter))

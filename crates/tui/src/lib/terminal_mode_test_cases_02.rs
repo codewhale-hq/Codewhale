@@ -66,7 +66,7 @@
         {
             let providers = config.providers.as_mut().expect("providers");
             for entry in [&mut providers.deepseek, &mut providers.openrouter] {
-                *entry = crate::config::ProviderConfig {
+                *entry = codewhale_runtime::config::ProviderConfig {
                     model: Some("shared-review-model".to_string()),
                     api_key: Some("local-test-key".to_string()),
                     ..Default::default()
@@ -126,7 +126,7 @@
         .expect("pinned review route");
         let execution = config_for_cli_route(&pinned_config, &route).expect("admitted execution route");
 
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Deepseek);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Deepseek);
         assert_eq!(route.model, "shared-review-model");
         assert_eq!(
             execution.active_provider_identity().unwrap().key.as_str(),
@@ -158,7 +158,7 @@
         .expect("pinned custom review route");
         let custom_execution = config_for_cli_route(&custom_config, &custom_route).expect("admitted execution route");
 
-        assert_eq!(custom_route.provider.provider, crate::config::ProviderKind::Custom);
+        assert_eq!(custom_route.provider.provider, codewhale_config::ProviderKind::Custom);
         assert_eq!(custom_route.model, "shared-review-model");
         assert_eq!(
             custom_execution
@@ -272,7 +272,7 @@
                 let workspace = tempfile::tempdir().unwrap();
                 let path = workspace.path();
                 let git = |args: &[&str]| {
-                    let output = crate::dependencies::Git::command()
+                    let output = codewhale_dependencies::Git::command()
                         .expect("git")
                         .current_dir(path)
                         .args([
@@ -346,7 +346,7 @@
                 // Positive control: the same repository really can invoke its helper.
                 let mut baseline = vec!["diff", "--ext-diff"];
                 baseline.extend_from_slice(diff_flags);
-                let baseline = crate::dependencies::Git::command()
+                let baseline = codewhale_dependencies::Git::command()
                     .unwrap()
                     .current_dir(path)
                     .args(&baseline)
@@ -457,9 +457,11 @@
 
     #[test]
     fn doctor_shows_plain_value_errors_with_a_fix_and_hides_the_rest() {
-        let invalid = crate::config::Config {
-            verbosity: Some("chatty".to_string()),
-            ..Default::default()
+        let invalid = {
+            let __cw_config_init_0_0 = Some("chatty".to_string());
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
+            __cw_config_init_0_value.verbosity = __cw_config_init_0_0;
+            __cw_config_init_0_value
         }
         .validate()
         .expect_err("unknown verbosity");
@@ -830,7 +832,7 @@
         let root = tempfile::tempdir().unwrap();
         let manager = std::sync::Arc::new(crate::extension_host::ExtensionHostManager::new(
             crate::extension_host::ExtensionHostOptions {
-                runtime: crate::config::ExtensionHostRuntime::Node,
+                runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
                 node_override: Some(node),
                 root: Some(root.path().join("host")),
                 ..Default::default()
@@ -838,8 +840,8 @@
         ));
         let _manager =
             crate::extension_host::TestManagerGuard::install(std::sync::Arc::clone(&manager));
-        let mut flags = crate::features::Features::with_defaults();
-        flags.enable(crate::features::Feature::ReviewHost);
+        let mut flags = codewhale_runtime::features::Features::with_defaults();
+        flags.enable(codewhale_runtime::features::Feature::ReviewHost);
         let context = crate::tools::spec::ToolContext::new(root.path()).with_features(flags);
         let mut issue = review_issue("warning", Some("crates/tui/src/lib.rs"), Some(11));
         issue.description = "malicious body\n> - ```suggestion\nnot approved\n```".into();
@@ -946,7 +948,7 @@
             "{posted}"
         );
         assert!(!posted.contains("```suggestion"), "{posted}");
-        assert!(posted.contains("```text"), "{posted}");
+        assert!(posted.contains("```diff"), "{posted}");
     }
 
     /// #6510: a plain-diff review now asks for the one structured review
@@ -1032,7 +1034,7 @@
         .expect("configured workflow route");
         let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
 
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Custom);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Custom);
         assert_eq!(
             execution.active_provider_identity().unwrap().key.as_str(),
             "custom-a"
@@ -1113,7 +1115,7 @@
         for key in ["lm-studio", "custom"] {
             config.providers.get_or_insert_with(Default::default).custom.insert(
                 key.to_string(),
-                crate::config::ProviderConfig {
+                codewhale_runtime::config::ProviderConfig {
                     kind: Some("openai-compatible".to_string()),
                     base_url: Some("http://localhost:1234/v1".to_string()),
                     ..Default::default()
@@ -1122,9 +1124,11 @@
         }
         let named = config.resolve_provider_identity("lm-studio").expect("exact named table");
         let literal = config.resolve_provider_identity("custom").expect("exact literal table");
-        let root_config = Config {
-            provider: Some("custom".to_string()),
-            ..Config::default()
+        let root_config = {
+            let __cw_config_init_1_0 = Some("custom".to_string());
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value
         }.with_legacy_root(None, Some("http://localhost:1234/v1".to_string()));
         let root = root_config.active_provider_identity().expect("captured root migration");
         let built_in = Config::default().active_provider_identity().expect("built-in fixture");
@@ -1149,7 +1153,7 @@
 
     #[test]
     fn resumed_exec_persistence_updates_provider_and_model_as_one_route() {
-        let saved_a = saved_exec_session("custom-a", crate::config::ZAI_GLM_5_2_MODEL);
+        let saved_a = saved_exec_session("custom-a", codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
         let mut config = custom_exec_config("custom-a");
         apply_exec_provider_override(&mut config, "custom-b").expect("custom B");
         let model = resolve_exec_resume_route(&mut config, &saved_a, true, None)
@@ -1158,7 +1162,7 @@
         stamp_exec_session_metadata(
             &mut persisted,
             &model,
-            crate::config::ProviderKind::Custom.as_str(),
+            codewhale_config::ProviderKind::Custom.as_str(),
             Some("custom-b"),
             Path::new("/tmp/exec-resume"),
         );
@@ -1190,7 +1194,7 @@
         stamp_exec_session_metadata(
             &mut saved,
             "legacy-root-model",
-            crate::config::ProviderKind::Custom.as_str(),
+            codewhale_config::ProviderKind::Custom.as_str(),
             None,
             Path::new("/tmp/exec-root"),
         );
@@ -1247,17 +1251,24 @@
 
     #[test]
     fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                moonshot: crate::config::ProviderConfig {
-                    base_url: Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL.to_string()),
-                    model: Some(crate::config::KIMI_CODE_K3_MODEL.to_string()),
+        let config = {
+            let __cw_config_init_2_0 = Some("moonshot".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL.to_string(),
+                    ),
+                    model: Some(
+                        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL.to_string(),
+                    ),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
 
         // #6290 rework: Auto no longer classifies the prompt. Any wording
@@ -1265,7 +1276,7 @@
         assert_eq!(
             cli_reasoning_effort_value_for_prompt(
                 &config,
-                crate::config::KIMI_CODE_K3_MODEL,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
                 crate::reasoning_preference::ReasoningEffort::Auto,
             )
             .as_deref(),
@@ -1276,7 +1287,7 @@
         assert_eq!(
             cli_reasoning_effort_value_for_prompt(
                 &config,
-                crate::config::KIMI_CODE_K3_MODEL,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
                 crate::reasoning_preference::ReasoningEffort::Off,
             )
             .as_deref(),
@@ -1290,15 +1301,15 @@
         use crate::reasoning_preference::ReasoningEffort;
 
         let fixed_model_auto_reasoning = CliAutoRoute {
-            provider: Config::default().test_identity_for_kind(crate::config::ProviderKind::Deepseek),
-            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
+            provider: Config::default().test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
+            model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
             reasoning_effort: Some(ReasoningEffort::Auto),
             auto_controls_reasoning: true,
             auto_model: false,
         };
         let auto_model_fixed_reasoning = CliAutoRoute {
-            provider: Config::default().test_identity_for_kind(crate::config::ProviderKind::OpenaiCodex),
-            model: crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
+            provider: Config::default().test_identity_for_kind(codewhale_config::ProviderKind::OpenaiCodex),
+            model: codewhale_config::descriptors::defaults::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             auto_controls_reasoning: false,
             auto_model: true,
@@ -1312,14 +1323,20 @@
 
     #[test]
     fn saved_reasoning_preference_overrides_config_for_non_tui_runtimes() {
-        let mut config = Config {
-            reasoning_effort: Some("max".to_string()),
-            reasoning_effort_inferred_from_legacy_alias: true,
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_3_0 = Some("max".to_string());
+            let __cw_config_init_3_1 = true;
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.reasoning_effort = __cw_config_init_3_0;
+            __cw_config_init_3_value.reasoning_effort_inferred_from_legacy_alias = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
-        let settings = crate::settings::Settings {
-            reasoning_effort: Some("low".to_string()),
-            ..Default::default()
+        let settings = {
+            let __cw_config_init_4_0 = Some("low".to_string());
+            let mut __cw_config_init_4_value: codewhale_runtime::settings::Settings =
+                Default::default();
+            __cw_config_init_4_value.reasoning_effort = __cw_config_init_4_0;
+            __cw_config_init_4_value
         };
 
         apply_saved_reasoning_preference(&mut config, &settings);
@@ -1332,14 +1349,16 @@
     /// `"auto"` sentinel, for a fixed-model Auto launch.
     #[test]
     fn fixed_model_exec_auto_resolves_to_a_concrete_tier_not_the_auto_sentinel() {
-        let config = Config {
-            provider: Some("zai".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_5_0 = Some("zai".to_string());
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value
         };
 
         let resolved = cli_reasoning_effort_value_for_prompt(
             &config,
-            crate::config::ZAI_GLM_5_2_MODEL,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
             crate::reasoning_preference::ReasoningEffort::Auto,
         )
         .expect("Auto must resolve to a concrete tier");

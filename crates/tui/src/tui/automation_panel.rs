@@ -312,6 +312,7 @@ mod tests {
     fn record(id: &str, status: AutomationStatus) -> AutomationRecord {
         let now = Utc::now();
         AutomationRecord {
+            destination_thread_id: None,
             schema_version: 1,
             execution_scope: Some(crate::task_manager::test_execution_scope("test")),
             id: id.to_string(),

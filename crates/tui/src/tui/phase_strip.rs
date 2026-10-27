@@ -19,7 +19,7 @@
 
 use codewhale_ratatui::{PostureBar, PostureFact};
 use ratatui::{buffer::Buffer, layout::Rect};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::{
     app::App,
@@ -140,9 +140,10 @@ fn notice_clauses<'a>(text: &'a str, marks: &[char]) -> Vec<&'a str> {
             continue;
         }
         // Full-width marks carry no trailing space, so they break on sight.
-        // ASCII marks only break before whitespace, which keeps `0.9.11`,
+        // Other marks only break before whitespace, which keeps `0.9.11`,
         // `docs/TELEMETRY.md`, and `https://…` in one piece.
-        let breaks = !ch.is_ascii() || chars.peek().is_none_or(|(_, next)| next.is_whitespace());
+        let breaks =
+            ch.width() == Some(2) || chars.peek().is_none_or(|(_, next)| next.is_whitespace());
         if !breaks {
             continue;
         }
@@ -181,7 +182,8 @@ fn join_while_fitting(clauses: &[&str], budget: usize) -> Option<String> {
         // A full-width stop already carries its own breathing room; putting
         // a Latin space after `。` is a typographic accent in the wrong
         // language.
-        let space = usize::from(!fitted.is_empty() && fitted.ends_with(|ch: char| ch.is_ascii()));
+        let space =
+            usize::from(!fitted.is_empty() && !fitted.ends_with(|ch: char| ch.width() == Some(2)));
         let candidate = fitted.width() + space + clause.width();
         if candidate > budget {
             break;
@@ -270,7 +272,8 @@ const ITEM_SEPARATOR_WIDTH: usize = 3;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::Config, tui::app::TuiOptions};
+    use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn test_app() -> App {
@@ -433,13 +436,14 @@ mod tests {
     #[test]
     fn session_metrics_strip_is_on_by_default() {
         assert!(
-            crate::config::StatusItem::default_footer().contains(&crate::config::StatusItem::Ttft)
-                && crate::config::StatusItem::default_footer()
-                    .contains(&crate::config::StatusItem::OutputRate)
+            codewhale_runtime::config::StatusItem::default_footer()
+                .contains(&codewhale_runtime::config::StatusItem::Ttft)
+                && codewhale_runtime::config::StatusItem::default_footer()
+                    .contains(&codewhale_runtime::config::StatusItem::OutputRate)
         );
         assert_eq!(
-            crate::config::StatusItem::from_key("session_metrics"),
-            Some(crate::config::StatusItem::SessionMetrics)
+            codewhale_runtime::config::StatusItem::from_key("session_metrics"),
+            Some(codewhale_runtime::config::StatusItem::SessionMetrics)
         );
     }
 
@@ -502,7 +506,7 @@ mod tests {
     #[test]
     fn unproven_effort_keeps_named_provider_when_the_route_fits() {
         let mut app = test_app();
-        app.set_provider_identity(crate::config::ProviderKind::Custom, "lab-gateway");
+        app.set_provider_identity(codewhale_config::ProviderKind::Custom, "lab-gateway");
         app.model = "unlisted-model".to_string();
         assert!(app.provable_reasoning_effort_label().is_none());
         let fields = route_identity_fields(&app, ShellTier::for_chrome_width(160), 100).unwrap();
@@ -526,7 +530,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = codewhale_localization::Locale::En;
         app.set_provider_identity(
-            crate::config::ProviderKind::Custom,
+            codewhale_config::ProviderKind::Custom,
             "acme-research-gateway-eu-central",
         );
         app.model = model.to_string();
@@ -1035,7 +1039,10 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     // the working clocks (#5914) and the live counts are the bar's own
     // posture statement and stay unconditional.
     let mode_chip = mode_chip
-        .filter(|_| app.status_items.contains(&crate::config::StatusItem::Mode))
+        .filter(|_| {
+            app.status_items
+                .contains(&codewhale_runtime::config::StatusItem::Mode)
+        })
         .map(|(text, ink)| (text.into_owned(), ink));
     // Cycle keys come from the binding table and only when that binding is
     // live for the current focus.
@@ -1189,13 +1196,14 @@ mod neutrality_tests {
     #[test]
     fn session_metrics_strip_is_on_by_default() {
         assert!(
-            crate::config::StatusItem::default_footer().contains(&crate::config::StatusItem::Ttft)
-                && crate::config::StatusItem::default_footer()
-                    .contains(&crate::config::StatusItem::OutputRate)
+            codewhale_runtime::config::StatusItem::default_footer()
+                .contains(&codewhale_runtime::config::StatusItem::Ttft)
+                && codewhale_runtime::config::StatusItem::default_footer()
+                    .contains(&codewhale_runtime::config::StatusItem::OutputRate)
         );
         assert_eq!(
-            crate::config::StatusItem::from_key("session_metrics"),
-            Some(crate::config::StatusItem::SessionMetrics)
+            codewhale_runtime::config::StatusItem::from_key("session_metrics"),
+            Some(codewhale_runtime::config::StatusItem::SessionMetrics)
         );
     }
 }

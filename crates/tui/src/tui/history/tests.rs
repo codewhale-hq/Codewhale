@@ -872,11 +872,10 @@ fn streaming_reasoning_shows_its_newest_line_not_a_placeholder() {
     );
 }
 
-/// A foreground shell wait blocks the turn. The card's job is to tell the user
-/// how to take the terminal back, not to re-print the command they just watched
-/// the model type, and not to duplicate the sidebar's live tail in the
-/// transcript. Once the command finishes, the final output supersedes any stale
-/// live tail.
+/// A foreground shell wait blocks the turn. The card names the command it is
+/// running, without a key hint, and does not duplicate the sidebar's live tail
+/// in the transcript. Once the command finishes, the final output supersedes
+/// any stale live tail.
 ///
 /// Replaces three tests.
 #[test]

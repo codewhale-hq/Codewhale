@@ -1,4 +1,4 @@
-//! Unconfigured first-run adoption of a live local Ollama catalog.
+//! Live local Ollama catalog facts and unconfigured first-run adoption.
 //!
 //! Virgin sessions default to the DeepSeek costume (`deepseek-flash`). When a
 //! real local daemon answers `GET /api/tags` (or the OpenAI-compat
@@ -6,20 +6,12 @@
 //! actually exists. Discovery never replaces an explicit provider/model,
 //! including a configured route whose credentials need repair.
 
-use std::time::Duration;
-
-use codewhale_config::catalog::{
-    CatalogOffering, CatalogSource, ProviderCatalogDelta, base_url_fingerprint, now_unix,
+use crate::client::ollama_catalog::{
+    OllamaTagProfile, fetch_tag_profile, fetch_tag_profiles, fetch_text, ollama_catalog_delta,
+    ollama_native_origin, parse_ollama_tags_with_profiles,
 };
-use serde::Deserialize;
-
-use crate::config::{Config, ProviderKind};
-
-const TAGS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Upper bound on `/api/show` lookups per probe. A developer box can hold
-/// dozens of tags; ranking needs only the plausible chat candidates.
-const SHOW_PROBE_LIMIT: usize = 8;
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::Config;
 
 /// Result of a successful local Ollama tags/models probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,94 +29,6 @@ impl LiveLocalOllamaCatalog {
     pub(crate) fn preferred_tag(&self) -> Option<&str> {
         self.chat_tag.as_deref()
     }
-}
-
-/// What `/api/show` reports about one tag. Both fields are optional because
-/// older daemons omit `capabilities` and some architectures omit a context
-/// length; a missing fact is unknown, never a "no".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct OllamaTagProfile {
-    pub(crate) capabilities: Option<Vec<String>>,
-    pub(crate) context_length: Option<u64>,
-}
-
-impl OllamaTagProfile {
-    fn has_capability(&self, name: &str) -> Option<bool> {
-        self.capabilities
-            .as_ref()
-            .map(|caps| caps.iter().any(|cap| cap.eq_ignore_ascii_case(name)))
-    }
-}
-
-/// Name heuristic for tags that cannot chat: embedding and reranking models.
-/// Used only when the daemon did not report capabilities.
-pub(crate) fn looks_like_non_chat_tag(tag: &str) -> bool {
-    let lower = tag.to_ascii_lowercase();
-    ["embed", "bge", "rerank", "minilm"]
-        .iter()
-        .any(|needle| lower.contains(needle))
-}
-
-fn looks_like_coder_tag(tag: &str) -> bool {
-    let lower = tag.to_ascii_lowercase();
-    lower.contains("coder") || lower.contains("code")
-}
-
-/// Pick the tag adoption should switch to.
-///
-/// A tag is a chat candidate when `/api/show` lists `completion`, or — when
-/// the daemon reported no capabilities — when its name is not an embedding or
-/// reranker. Among candidates: coder or tool-capable models first, then the
-/// largest reported context, then alphabetical order for stability.
-pub(crate) fn choose_chat_tag(
-    tags: &[String],
-    profiles: &std::collections::HashMap<String, OllamaTagProfile>,
-) -> Option<String> {
-    let unknown = OllamaTagProfile::default();
-    tags.iter()
-        .filter_map(|tag| {
-            let profile = profiles.get(tag).unwrap_or(&unknown);
-            let chat = match profile.has_capability("completion") {
-                Some(known) => known,
-                None => !looks_like_non_chat_tag(tag),
-            };
-            if !chat {
-                return None;
-            }
-            let preferred =
-                looks_like_coder_tag(tag) || profile.has_capability("tools").unwrap_or(false);
-            Some((
-                preferred,
-                profile.context_length.unwrap_or(0),
-                std::cmp::Reverse(tag.as_str()),
-                tag,
-            ))
-        })
-        .max_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)))
-        .map(|(_, _, _, tag)| tag.clone())
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaShowResponse {
-    #[serde(default)]
-    capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    model_info: Option<serde_json::Map<String, serde_json::Value>>,
-}
-
-/// Parse `POST /api/show` JSON into the facts adoption ranks on.
-pub(crate) fn parse_ollama_show_response(payload: &str) -> anyhow::Result<OllamaTagProfile> {
-    let parsed: OllamaShowResponse = serde_json::from_str(payload)
-        .map_err(|err| anyhow::anyhow!("Failed to parse Ollama /api/show JSON: {err}"))?;
-    let context_length = parsed.model_info.as_ref().and_then(|info| {
-        info.iter()
-            .filter(|(key, _)| key.ends_with(".context_length"))
-            .find_map(|(_, value)| value.as_u64())
-    });
-    Ok(OllamaTagProfile {
-        capabilities: parsed.capabilities,
-        context_length,
-    })
 }
 
 /// True when this session should adopt a live local catalog into chrome.
@@ -164,151 +68,31 @@ pub(crate) fn ollama_v1_base_url(config: &Config) -> String {
         .unwrap_or_default()
 }
 
-/// Strip a trailing `/v1` (with optional slash) so we can hit native `/api/tags`.
-pub(crate) fn ollama_native_origin(v1_base: &str) -> String {
-    let trimmed = v1_base.trim().trim_end_matches('/');
-    if let Some(origin) = trimmed.strip_suffix("/v1") {
-        origin.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaTagsResponse {
-    #[serde(default)]
-    models: Vec<OllamaTagModel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaTagModel {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    model: String,
-}
-
-/// Parse native Ollama `GET /api/tags` JSON into sorted unique tag ids.
-pub(crate) fn parse_ollama_tags_response(payload: &str) -> anyhow::Result<Vec<String>> {
-    let parsed: OllamaTagsResponse = serde_json::from_str(payload)
-        .map_err(|err| anyhow::anyhow!("Failed to parse Ollama /api/tags JSON: {err}"))?;
-    let mut tags: Vec<String> = parsed
-        .models
-        .into_iter()
-        .filter_map(|row| {
-            let name = row.name.trim();
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-            let model = row.model.trim();
-            if !model.is_empty() {
-                Some(model.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    tags.sort();
-    tags.dedup();
-    Ok(tags)
-}
-
-fn record_ollama_tags_into_lake(endpoint_v1: &str, tags: &[String]) {
-    if tags.is_empty() {
-        return;
-    }
-    let fingerprint = base_url_fingerprint(endpoint_v1);
-    let fetched_at = now_unix();
-    let offerings = tags
+fn record_ollama_tags_into_lake(
+    endpoint_v1: &str,
+    tags: &[String],
+    profiles: &std::collections::HashMap<String, OllamaTagProfile>,
+    running_body: Option<&str>,
+) -> Option<String> {
+    let delta = ollama_catalog_delta("ollama", endpoint_v1, tags, profiles, running_body);
+    let chat_tag = delta
+        .offerings
         .iter()
-        .map(|tag| CatalogOffering {
-            provider: "ollama".into(),
-            wire_model_id: tag.clone(),
-            endpoint_key: "chat".into(),
-            source: CatalogSource::Live {
-                base_url_fingerprint: fingerprint.clone(),
-                fetched_at,
-            },
-            default_for_provider: false,
-            ..Default::default()
-        })
-        .collect();
+        .find(|offering| offering.default_for_provider)
+        .map(|offering| offering.wire_model_id.clone());
     let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
         ProviderKind::Ollama,
         "ollama",
         endpoint_v1,
     );
-    let _ = crate::provider_catalog_live::record_success_if_current(
-        &ticket,
-        ProviderCatalogDelta {
-            provider: "ollama".into(),
-            base_url_fingerprint: fingerprint,
-            fetched_at,
-            offerings,
-        },
-    );
-}
-
-fn probe_client() -> anyhow::Result<reqwest::Client> {
-    // The first-run probe can run before any provider client has installed
-    // the rustls crypto provider; the shared builder installs it (the bare
-    // `reqwest::Client::builder()` panics under `rustls-no-provider`).
-    Ok(crate::tls::reqwest_client_builder()
-        .timeout(TAGS_PROBE_TIMEOUT)
-        .build()?)
-}
-
-async fn fetch_text(url: &str) -> anyhow::Result<String> {
-    let response = probe_client()?.get(url).send().await?;
-    if !response.status().is_success() {
-        anyhow::bail!("HTTP {}", response.status());
+    if matches!(
+        crate::provider_catalog_live::record_success_if_current(&ticket, delta),
+        Some(codewhale_config::catalog::CatalogStatus::Fresh)
+    ) {
+        chat_tag
+    } else {
+        None
     }
-    Ok(response.text().await?)
-}
-
-async fn fetch_tag_profile(origin: &str, tag: &str) -> anyhow::Result<OllamaTagProfile> {
-    let response = probe_client()?
-        .post(format!("{origin}/api/show"))
-        .json(&serde_json::json!({ "model": tag }))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        anyhow::bail!("HTTP {}", response.status());
-    }
-    parse_ollama_show_response(&response.text().await?)
-}
-
-/// Ask `/api/show` about the plausible chat tags. Failures leave a tag
-/// unprofiled, so the name heuristic decides for it.
-async fn fetch_tag_profiles(
-    origin: &str,
-    tags: &[String],
-) -> std::collections::HashMap<String, OllamaTagProfile> {
-    let candidates: Vec<&String> = tags
-        .iter()
-        .filter(|tag| !looks_like_non_chat_tag(tag))
-        .take(SHOW_PROBE_LIMIT)
-        .collect();
-    let lookups = candidates
-        .iter()
-        .map(|tag| fetch_tag_profile(origin, tag.as_str()));
-    let results = futures_util::future::join_all(lookups).await;
-    candidates
-        .into_iter()
-        .zip(results)
-        .filter_map(|(tag, result)| match result {
-            Ok(profile) => Some((tag.clone(), profile)),
-            Err(err) => {
-                tracing::debug!(
-                    target: "local_ollama",
-                    error = %err,
-                    tag = %tag,
-                    "POST /api/show probe failed"
-                );
-                None
-            }
-        })
-        .collect()
 }
 
 /// Probe local Ollama for a live catalog. Prefers native `/api/tags`, falls
@@ -320,37 +104,27 @@ pub(crate) async fn probe_live_local_ollama_catalog(
     let endpoint_v1 = ollama_v1_base_url(config);
     let origin = ollama_native_origin(&endpoint_v1);
     let tags_url = format!("{origin}/api/tags");
-
-    let tags = match fetch_text(&tags_url).await {
-        Ok(body) => match parse_ollama_tags_response(&body) {
-            Ok(tags) if !tags.is_empty() => tags,
+    let (tags, mut profiles) = match fetch_text(&tags_url).await {
+        Ok(body) => match parse_ollama_tags_with_profiles(&body) {
+            Ok((tags, profiles)) if !tags.is_empty() => (tags, profiles),
             Ok(_) => return None,
             Err(err) => {
-                tracing::debug!(
-                    target: "local_ollama",
-                    error = %err,
-                    "GET /api/tags returned unusable body"
-                );
-                Vec::new()
+                tracing::debug!(target: "local_ollama", error = %err, "GET /api/tags returned unusable body");
+                (Vec::new(), std::collections::HashMap::new())
             }
         },
         Err(err) => {
-            tracing::debug!(
-                target: "local_ollama",
-                error = %err,
-                url = %tags_url,
-                "GET /api/tags probe failed"
-            );
-            Vec::new()
+            tracing::debug!(target: "local_ollama", error = %err, url = %tags_url, "GET /api/tags probe failed");
+            (Vec::new(), std::collections::HashMap::new())
         }
     };
-
     let tags = if tags.is_empty() {
-        // Fallback: OpenAI-compat roster (same tags, different shape).
         let models_url = format!("{}/models", endpoint_v1.trim_end_matches('/'));
         match fetch_text(&models_url).await {
             Ok(body) => match crate::client::parse_models_response(&body) {
-                Ok(models) if !models.is_empty() => models.into_iter().map(|m| m.id).collect(),
+                Ok(models) if !models.is_empty() => {
+                    models.into_iter().map(|model| model.id).collect()
+                }
                 _ => return None,
             },
             Err(_) => return None,
@@ -358,10 +132,27 @@ pub(crate) async fn probe_live_local_ollama_catalog(
     } else {
         tags
     };
-
-    record_ollama_tags_into_lake(&endpoint_v1, &tags);
-    let profiles = fetch_tag_profiles(&origin, &tags).await;
-    let chat_tag = choose_chat_tag(&tags, &profiles);
+    let fetched = fetch_tag_profiles(&tags, &profiles, |tag| {
+        let origin = &origin;
+        async move { fetch_tag_profile(origin, &tag).await }
+    })
+    .await;
+    for (tag, profile) in fetched {
+        profiles
+            .entry(tag)
+            .and_modify(|known| {
+                if known.capabilities.is_none() {
+                    known.capabilities = profile.capabilities.clone();
+                }
+                if known.context_length.is_none() {
+                    known.context_length = profile.context_length;
+                }
+            })
+            .or_insert(profile);
+    }
+    let running_body = fetch_text(&format!("{origin}/api/ps")).await.ok();
+    let chat_tag =
+        record_ollama_tags_into_lake(&endpoint_v1, &tags, &profiles, running_body.as_deref());
     Some(LiveLocalOllamaCatalog {
         endpoint_v1,
         tags,
@@ -392,12 +183,12 @@ pub(crate) fn spawn_local_ollama_adoption_probe(
     if !should_probe || local_ollama_probe_disabled() {
         return None;
     }
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
     {
         let _ = config;
         None
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
     {
         let config = config.clone();
         Some(tokio::spawn(async move {
@@ -409,6 +200,9 @@ pub(crate) fn spawn_local_ollama_adoption_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::ollama_catalog::{
+        choose_chat_tag, parse_ollama_show_response, parse_ollama_tags_response,
+    };
     use crate::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
 
@@ -561,7 +355,7 @@ mod tests {
             use std::io::{Read, Write};
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            let body = br#"{"models":[{"name":"qwen2.5:0.5b","model":"qwen2.5:0.5b"}]}"#;
+            let body = br#"{"models":[{"name":"qwen2.5:0.5b","model":"qwen2.5:0.5b","capabilities":["completion"]}]}"#;
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()

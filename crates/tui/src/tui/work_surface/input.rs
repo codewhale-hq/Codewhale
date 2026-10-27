@@ -328,7 +328,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
             app.work_surface.divider_hovered = on_divider;
             let top_height = app.work_surface.top_height;
             let side_width = app.work_surface.side_width;
-            if let Err(error) = crate::settings::Settings::transact(|settings| {
+            if let Err(error) = codewhale_runtime::settings::Settings::transact(|settings| {
                 settings.work_surface_top_height = top_height;
                 settings.work_surface_side_width = side_width;
                 Ok(())
@@ -623,7 +623,7 @@ mod tests {
     fn app() -> App {
         App::new(
             crate::tui::test_support::test_tui_options(std::path::PathBuf::from(".")),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
         )
     }
 

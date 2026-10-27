@@ -20,51 +20,29 @@
 //! **Tiers** ([`HostTier`]). The host is two processes, one per trust tier,
 //! started from the same bundle with `--tier=plugin|builtin` as the last
 //! argument. Each has its own data directory ([`tier_data_dir`]) and its own
-//! sandbox plan; the plugin tier's also denies reads of the builtin tier's
-//! data directory ([`host_denied_read_paths`]). Only the plugin tier starts
-//! in production today.
+//! sandbox plan; Native cannot read the builtin tier's data directory.
+//! Builtin backends are activated separately by the Engine.
 //!
-//! **OS sandbox** ([`HostSandbox`]: the one value `/plugin`, doctor and the
-//! start diagnostic report). The host runs under Codewhale's command sandbox
-//! with a workspace-write policy rooted at its tier's data directory (the
-//! plugin tier's is `$CODEWHALE_HOME/extension-host/data`): no direct network,
-//! writes only there and in the temp dirs, and **no reads** of the Codewhale
-//! homes (everything but the bundle, its data dir and plugin code), the Codex
-//! and DSH credential homes, and the credential-store default deny-list
-//! (`sandbox::read_guard`). Other user-readable files stay readable —
-//! including `.env` files, whose filename rule has no Seatbelt subpath or
-//! bubblewrap mount form — so this is defense-in-depth, not a containment
-//! boundary.
-//! * macOS: Seatbelt. Mach services are not restricted.
-//! * Linux: bubblewrap (`/usr/bin/bwrap`, the shell's builder), used without
-//!   the shell's `prefer_bwrap` opt-in. Every launch first runs the finished
-//!   wrapper around `<runtime> --version` ([`probe_bwrap`]). When bwrap is
-//!   missing or cannot start — e.g. unprivileged user namespaces blocked by
-//!   Ubuntu 24.04's `kernel.apparmor_restrict_unprivileged_userns` — the host
-//!   refuses Native launch and reports the concrete error. The pinned Builtin
-//!   exception is diagnosed and ticket-bound. bwrap can mask only what exists, so each
-//!   Codewhale home is masked whole and its readable entries are bound again
-//!   (`sandbox::bwrap_exception_args`): an entry created after launch is
-//!   denied, as on macOS.
-//! * Windows: Native uses a freshly created LPAC AppContainer with no network
-//!   capabilities. Rust checks its actual token, attaches/caps the existing Job
-//!   before resuming, and requires a real data-read/write + outside-read/write
-//!   + loopback-network allow/deny probe. Only Core-selected runtime/bundle and
-//!     reviewed staged roots are granted reads. The Job is lifetime/memory only.
-//!     Builtin retains the separately diagnosed Rust-ticket-bound exception.
+//! **OS sandbox** ([`HostSandbox`]). Native hosts use a restricted positive
+//! filesystem policy: selected runtime and its libraries, the canonical host
+//! bundle, Core-managed `.runtime/v2` package snapshots, and shared Native data.
+//! Writes are limited to Native data and private scratch. Project files,
+//! including `.env`, and unrelated user files are not granted. This remains
+//! one trusted Native cohort, not isolation between plugins or their data.
+//! Builtin keeps its existing separately diagnosed command-sandbox policy.
+//! * macOS: Seatbelt with explicit reads and no toolchain cache write grants.
+//! * Linux: bubblewrap starts an empty filesystem and binds explicit grants.
+//!   A finished `<runtime> --version` probe must succeed; missing bubblewrap
+//!   or blocked user namespaces refuses Native launch. Its private PID/network
+//!   namespaces and `--die-with-parent` contain descendants and lifetime.
+//! * Windows: Native keeps its LPAC AppContainer and Job. Its verified
+//!   runtime/bundle/staged-root ACL grants and startup allow/deny probe remain
+//!   separate from the Unix profile. Builtin retains its diagnosed exception.
 //!
-//! Known limits under bubblewrap: a default-deny-list credential store
-//! created after launch stays readable (Seatbelt denies it by name); a
-//! Codewhale home, or a readable entry such as `plugins/`, that does not exist
-//! at launch is not masked, or not visible, until the host restarts; bwrap
-//! anywhere but `/usr/bin/bwrap` is not used; the probe costs one extra
-//! runtime start per launch. The reported pid is bwrap's. The host runs in
-//! bwrap's PID namespace, where its parent is bwrap's init and never
-//! changes, so the host's own parent watchdog (`extension-host/src/main.ts`)
-//! cannot fire; `--die-with-parent` is what ends it with the core. That is
-//! a parent-death signal tied to the thread that spawned bwrap, a Tokio
-//! worker that lives as long as the runtime. Plugin child processes end with
-//! the namespace when bwrap's init loses the host.
+//! Snapshot stores are fixed at Unix host launch. A new store requires a
+//! restart; every owner admission verifies current authority and containment
+//! in the captured store roots. Snapshot contents remain subject to the
+//! existing immutable staging and per-component receipt checks.
 //!
 //! **Runtime.** Node (the default) or Bun (opt-in: `runtime = "bun"`, or
 //! `"auto"`, which prefers a supported Bun), chosen once per manager
@@ -113,8 +91,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::dependencies::{HostRuntime, HostRuntimeKind};
 use crate::tools::codemode::PauseClock;
+use codewhale_dependencies::{HostRuntime, HostRuntimeKind};
 
 use super::protocol::{
     self, CoreRequest, Direction, HelloParams, HostLimits, HostMessage, HostNotification,
@@ -187,6 +165,7 @@ pub(crate) struct HostLaunch {
     /// build pins ([`tier::BUILTIN_MODULES`]), which the host bundle embedded
     /// from the same build must agree with ([`check_hello_identity`]).
     pub builtin_modules: &'static [BuiltinModule],
+    pub native_snapshot_roots: Vec<PathBuf>,
     /// Exact verified Native LPAC plan; Builtin retains its labelled exception.
     #[cfg(windows)]
     pub windows: Option<super::windows::NativeSandbox>,
@@ -196,8 +175,8 @@ pub(crate) struct HostLaunch {
 /// (module docs). Settled by [`plan_launch`]; never inferred afterwards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostSandbox {
-    /// Under this wrapper, named as `sandbox::SandboxType` names it
-    /// (`macos-seatbelt`, `linux-bwrap`).
+    /// Under this wrapper, with a Native-specific suffix for the restricted
+    /// Unix profile (`macos-seatbelt-native`, `linux-bwrap-native`).
     Wrapped(String),
     /// With the user's permissions, for this reason.
     Unsandboxed(String),
@@ -221,6 +200,10 @@ impl std::fmt::Display for HostSandbox {
             Self::Wrapped(name) if name == "windows-lpac" => write!(
                 f,
                 "windows-lpac sandbox (no direct network; reads only the selected runtime, canonical bundle and reviewed staged code; writes to Native data and platform-private scratch; Job limits lifetime/memory)"
+            ),
+            Self::Wrapped(name) if name.ends_with("-native") => write!(
+                f,
+                "{name} sandbox (experimental shared Native tier; reads only the host runtime, system libraries, staged package snapshots and Native data; writes only Native data and private scratch; no direct network or repository access)"
             ),
             Self::Wrapped(name) => write!(
                 f,
@@ -308,7 +291,7 @@ pub const HOST_MEMORY_CAP: u64 = 1 << 30;
 /// `extension-host/test/harness.mjs` (`HOST_ARGS`).
 ///
 /// - Node: a 256 MB old-space cap, `__proto__` throws, no native addons,
-///   and the [`crate::dependencies::NODE_NATIVE_CODE_FLAGS`] this Node
+///   and the [`codewhale_dependencies::NODE_NATIVE_CODE_FLAGS`] this Node
 ///   accepts (`node:sqlite`, and `node:ffi` where it exists). On Windows it
 ///   also keeps symlinked paths as given, so module resolution never lstats
 ///   the drive root the LPAC cannot read.
@@ -447,7 +430,8 @@ pub(crate) fn host_denied_read_paths(
     home: &Path,
     whole_homes: bool,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut paths = crate::sandbox::read_guard::ReadDenylist::build(true, &[], &[]).subtree_paths();
+    let mut paths =
+        codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]).subtree_paths();
     let mut exceptions: Vec<PathBuf> = Vec::new();
     let mut push = |path: PathBuf| {
         if !paths.contains(&path) {
@@ -515,7 +499,7 @@ pub(crate) fn host_denied_read_paths(
     }
     // Codex's home (ChatGPT OAuth tokens in `auth.json`) and the DSH home
     // (`.credentials.yaml`), wherever the environment points them.
-    if let Some(codex_home) = crate::oauth::auth_file_path().parent() {
+    if let Some(codex_home) = codewhale_runtime::oauth::auth_file_path().parent() {
         push(codex_home.to_path_buf());
     }
     if let Some(user) = &user_home {
@@ -538,6 +522,7 @@ pub(crate) fn plan_launch(
     bundle: &Path,
     home: &Path,
     memory_cap: u64,
+    snapshot_state_paths: &[PathBuf],
 ) -> Result<HostLaunch, String> {
     let data = host_data_dir(home, tier)?;
     // Bubblewrap cannot mask a root that does not exist yet. Materialize the
@@ -566,16 +551,32 @@ pub(crate) fn plan_launch(
             memory_cap,
             memory: MemoryEnforcement::JobObject,
             builtin_modules: tier::BUILTIN_MODULES,
+            native_snapshot_roots: Vec::new(),
             windows: Some(sandbox),
         });
     }
-    let wrapped = wrap_host(tier, &runtime.path, &args, &data, home);
-    host_launch(tier, runtime, args, data, memory_cap, wrapped)
+    let snapshot_roots = if tier == HostTier::Plugin {
+        native_snapshot_roots(snapshot_state_paths)?
+    } else {
+        Vec::new()
+    };
+    let wrapped = wrap_host(
+        tier,
+        &runtime.path,
+        &args,
+        &data,
+        home,
+        bundle,
+        &snapshot_roots,
+    );
+    let mut launch = host_launch(tier, runtime, args, data, memory_cap, wrapped)?;
+    launch.native_snapshot_roots = snapshot_roots;
+    Ok(launch)
 }
 
-/// The sandbox a `tier` host started now would get, planned (and on Linux
-/// probed) exactly as [`plan_launch`] does, for doctor. Blocking; creates the
-/// data dir, as a launch would.
+/// The runtime sandbox a `tier` host would get, planned (and on Linux probed)
+/// as [`plan_launch`] does, without package-store grants, for doctor.
+/// Blocking; creates the data dir, as a launch would.
 pub(crate) fn planned_sandbox(
     tier: HostTier,
     runtime: &HostRuntime,
@@ -601,8 +602,21 @@ pub(crate) fn planned_sandbox(
             },
         );
     }
+    let bundle = if tier == HostTier::Plugin {
+        super::materialize_bundle(home)?
+    } else {
+        PathBuf::new()
+    };
     Ok(
-        match wrap_host(tier, &runtime.path, &runtime_args(runtime), &data, home) {
+        match wrap_host(
+            tier,
+            &runtime.path,
+            &runtime_args(runtime),
+            &data,
+            home,
+            &bundle,
+            &[],
+        ) {
             Ok(wrapped) => HostSandbox::Wrapped(wrapped.name),
             Err(reason) => HostSandbox::Unsandboxed(reason),
         },
@@ -695,6 +709,252 @@ struct Wrapped {
 /// Why the host runs on Windows without an OS sandbox.
 const WINDOWS_UNSANDBOXED: &str = "Windows has no host sandbox yet; its Job Object contains the process tree, which is not isolation";
 
+fn native_snapshot_roots(state_paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    for state in state_paths {
+        let parent = state.parent().ok_or("plugin state path has no parent")?;
+        let root = parent.join(".runtime/v2");
+        if !root.exists() {
+            continue;
+        }
+        crate::plugins::registry::ensure_private_plugin_state_directory(parent)?;
+        let mut path = parent.canonicalize().map_err(|error| error.to_string())?;
+        for component in [".runtime", "v2"] {
+            path.push(component);
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(
+                    "Native snapshot store must be a directory without symbolic links".into(),
+                );
+            }
+        }
+        let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+        if canonical != path {
+            return Err("Native snapshot store changed its canonical path".into());
+        }
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    Ok(roots)
+}
+
+fn native_readable_paths(
+    program: &Path,
+    bundle: &Path,
+    data: &Path,
+    snapshot_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    for path in [data, data.parent().ok_or("Native data path has no parent")?] {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("Native data directory must not traverse symbolic links".into());
+        }
+    }
+    let mut paths = vec![
+        program.to_path_buf(),
+        bundle.to_path_buf(),
+        data.to_path_buf(),
+    ];
+    paths.extend_from_slice(snapshot_roots);
+    let canonical_data = data.canonicalize().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        paths.extend(native_runtime_libraries(program)?);
+        for path in [
+            "/System/Library",
+            "/usr/lib",
+            "/Library/Apple/System/Library",
+            "/private/var/db/dyld",
+            "/usr/share/icu",
+            "/usr/share/zoneinfo",
+            "/private/etc/localtime",
+            "/dev/null",
+            "/dev/random",
+            "/dev/urandom",
+        ] {
+            if Path::new(path).exists() {
+                paths.push(PathBuf::from(path));
+            }
+        }
+    }
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    for path in [
+        "/usr/lib",
+        "/usr/lib64",
+        "/lib",
+        "/lib64",
+        "/usr/share/zoneinfo",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/localtime",
+        "/etc/nsswitch.conf",
+        "/etc/passwd",
+        "/etc/group",
+    ] {
+        if Path::new(path).exists() {
+            paths.push(PathBuf::from(path));
+        }
+    }
+    let mut canonical = Vec::new();
+    for path in &paths {
+        let resolved = path.canonicalize().map_err(|error| {
+            format!(
+                "Native read grant {} is unavailable: {error}",
+                path.display()
+            )
+        })?;
+        if path != data
+            && (resolved.starts_with(&canonical_data) || canonical_data.starts_with(&resolved))
+        {
+            return Err("Native writable data overlaps a runtime or package read grant".into());
+        }
+        canonical.push(resolved);
+        if path.is_file() {
+            if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+                canonical.push(
+                    parent
+                        .canonicalize()
+                        .map_err(|error| error.to_string())?
+                        .join(name),
+                );
+            }
+        }
+    }
+    paths.extend(canonical);
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn native_runtime_libraries(program: &Path) -> Result<Vec<PathBuf>, String> {
+    use std::io::{Read as _, Seek as _};
+    use wait_timeout::ChildExt as _;
+    let executable = program.canonicalize().map_err(|error| error.to_string())?;
+    let mut pending = vec![(executable.clone(), Vec::<PathBuf>::new())];
+    let mut inspected = std::collections::BTreeSet::new();
+    let mut libraries = Vec::new();
+    while let Some((binary, inherited_paths)) = pending.pop() {
+        if !inspected.insert(binary.clone()) {
+            continue;
+        }
+        if inspected.len() > 256 {
+            return Err("Native runtime library closure exceeds 256 files".into());
+        }
+        let mut output = tempfile::tempfile().map_err(|error| error.to_string())?;
+        let mut child = std::process::Command::new("/usr/bin/otool")
+            .args([
+                "-l",
+                binary.to_str().ok_or("Native runtime path is not UTF-8")?,
+            ])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(output.try_clone().map_err(|error| error.to_string())?)
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Native runtime library inspection unavailable: {error}"))?;
+        let status = match child.wait_timeout(Duration::from_secs(3)) {
+            Ok(Some(status)) => status,
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Native runtime library inspection timed out".into());
+            }
+        };
+        if !status.success()
+            || output.metadata().map_err(|error| error.to_string())?.len() > 1024 * 1024
+        {
+            return Err("Native runtime library inspection failed or exceeded its bound".into());
+        }
+        output.rewind().map_err(|error| error.to_string())?;
+        let mut text = String::new();
+        output
+            .take(1024 * 1024)
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        let expand = |name: &str| -> Result<PathBuf, String> {
+            if name == "@loader_path" {
+                Ok(binary
+                    .parent()
+                    .ok_or("Native library has no parent")?
+                    .to_path_buf())
+            } else if name == "@executable_path" {
+                Ok(executable
+                    .parent()
+                    .ok_or("Native runtime has no parent")?
+                    .to_path_buf())
+            } else if let Some(relative) = name.strip_prefix("@loader_path/") {
+                Ok(binary
+                    .parent()
+                    .ok_or("Native library has no parent")?
+                    .join(relative))
+            } else if let Some(relative) = name.strip_prefix("@executable_path/") {
+                Ok(executable
+                    .parent()
+                    .ok_or("Native runtime has no parent")?
+                    .join(relative))
+            } else if Path::new(name).is_absolute() {
+                Ok(PathBuf::from(name))
+            } else {
+                Err(format!(
+                    "Native runtime uses an unsupported library reference: {name}"
+                ))
+            }
+        };
+        let mut command = "";
+        let mut run_paths = Vec::new();
+        let mut dependencies = Vec::new();
+        for line in text.lines().map(str::trim) {
+            if let Some(value) = line.strip_prefix("cmd ") {
+                command = value;
+            } else if command == "LC_RPATH" {
+                if let Some(value) = line.strip_prefix("path ") {
+                    run_paths.push(expand(value.split(" (offset ").next().unwrap_or_default())?);
+                }
+            } else if matches!(
+                command,
+                "LC_LOAD_DYLIB"
+                    | "LC_LOAD_WEAK_DYLIB"
+                    | "LC_REEXPORT_DYLIB"
+                    | "LC_LOAD_UPWARD_DYLIB"
+            ) {
+                if let Some(value) = line.strip_prefix("name ") {
+                    dependencies.push(value.split(" (offset ").next().unwrap_or_default());
+                }
+            }
+        }
+        run_paths.extend(inherited_paths);
+        for name in dependencies {
+            if name.starts_with("/usr/lib/") || name.starts_with("/System/Library/") {
+                continue;
+            }
+            let path = if let Some(relative) = name.strip_prefix("@rpath/") {
+                run_paths
+                    .iter()
+                    .map(|root| root.join(relative))
+                    .find(|path| path.is_file())
+                    .ok_or_else(|| format!("Native runtime library cannot be resolved: {name}"))?
+            } else {
+                expand(name)?
+            };
+            let canonical = path.canonicalize().map_err(|error| {
+                format!(
+                    "Native runtime library {} is unavailable: {error}",
+                    path.display()
+                )
+            })?;
+            if !canonical.is_file() {
+                return Err("Native runtime library is not a regular file".into());
+            }
+            libraries.push(path);
+            libraries.push(canonical.clone());
+            pending.push((canonical, run_paths.clone()));
+        }
+    }
+    Ok(libraries)
+}
+
 /// Wrap `program args` in the host's OS sandbox (module docs), or say why it
 /// has none here. Blocking.
 fn wrap_host(
@@ -703,8 +963,10 @@ fn wrap_host(
     args: &[String],
     data: &Path,
     home: &Path,
+    bundle: &Path,
+    snapshot_roots: &[PathBuf],
 ) -> Result<Wrapped, String> {
-    use crate::sandbox::{CommandSpec, SandboxManager, SandboxPolicy, SandboxType};
+    use codewhale_sandbox::{CommandSpec, SandboxManager, SandboxPolicy, SandboxType};
     if cfg!(windows) {
         return Err(WINDOWS_UNSANDBOXED.to_string());
     }
@@ -718,18 +980,45 @@ fn wrap_host(
         .with_policy(SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
             network_access: false,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir: tier == HostTier::Plugin,
+            exclude_slash_tmp: tier == HostTier::Plugin,
         })
     };
     let bwrap = cfg!(all(target_os = "linux", not(target_env = "ohos")));
     let mut manager = SandboxManager::with_bwrap_preference(bwrap);
-    let (denied, exceptions) = host_denied_read_paths(tier, home, bwrap);
+    let (mut denied, exceptions) = if tier == HostTier::Plugin {
+        let mut denied =
+            codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]).subtree_paths();
+        denied.push(tier_data_dir(home, HostTier::Builtin));
+        (denied, Vec::new())
+    } else {
+        host_denied_read_paths(tier, home, bwrap)
+    };
+    if tier == HostTier::Plugin {
+        let readable = native_readable_paths(program, bundle, data, snapshot_roots)?;
+        denied.retain(|path| {
+            readable
+                .iter()
+                .any(|grant| path.starts_with(grant) || grant.starts_with(path))
+        });
+        manager.set_readable_paths(readable);
+    } else {
+        manager.set_denied_read_exceptions(exceptions);
+    }
     manager.set_denied_read_subpaths(denied);
-    manager.set_denied_read_exceptions(exceptions);
     let env = manager.prepare(&spec(args.to_vec()));
     if matches!(env.sandbox_type, SandboxType::None) {
         return Err(no_wrapper_reason());
+    }
+    let mut environment: Vec<_> = env.env.into_iter().collect();
+    if tier == HostTier::Plugin {
+        let scratch = data.join("tmp");
+        crate::plugins::registry::ensure_private_plugin_state_directory(&scratch)?;
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            environment.push((name.into(), scratch.to_string_lossy().into_owned()));
+        }
+        environment.push(("HOME".into(), data.to_string_lossy().into_owned()));
+        environment.push(("OPENSSL_CONF".into(), "/dev/null".into()));
     }
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     if matches!(env.sandbox_type, SandboxType::LinuxBubblewrap) {
@@ -738,12 +1027,21 @@ fn wrap_host(
                 .prepare(&spec(vec!["--version".to_string()]))
                 .command,
             data,
+            if tier == HostTier::Plugin {
+                &environment
+            } else {
+                &[]
+            },
         )?;
     }
     Ok(Wrapped {
-        name: env.sandbox_type.to_string(),
+        name: if tier == HostTier::Plugin {
+            format!("{}-native", env.sandbox_type)
+        } else {
+            env.sandbox_type.to_string()
+        },
         command: env.command,
-        env: env.env.into_iter().collect(),
+        env: environment,
     })
 }
 
@@ -797,6 +1095,7 @@ fn host_launch(
         memory_cap,
         memory: MemoryEnforcement::planned(runtime.kind),
         builtin_modules: tier::BUILTIN_MODULES,
+        native_snapshot_roots: Vec::new(),
         #[cfg(windows)]
         windows: None,
     })
@@ -807,7 +1106,7 @@ fn host_launch(
 fn no_wrapper_reason() -> String {
     format!(
         "bwrap unavailable: {} is not an executable file (install bubblewrap)",
-        crate::sandbox::bwrap::BWRAP_PATH
+        codewhale_sandbox::bwrap::BWRAP_PATH
     )
 }
 
@@ -830,10 +1129,10 @@ fn no_wrapper_reason() -> String {
 const BWRAP_PROBE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Run the finished bwrap wrapper around `<runtime> --version` (`command`),
-/// with no environment, to learn whether bwrap works on this host: it may be
+/// with the selected startup environment, to learn whether bwrap works here: it may be
 /// installed yet unable to create its namespaces. Blocking.
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-fn probe_bwrap(command: &[String], cwd: &Path) -> Result<(), String> {
+fn probe_bwrap(command: &[String], cwd: &Path, env: &[(String, String)]) -> Result<(), String> {
     use std::io::Read as _;
     use wait_timeout::ChildExt as _;
     let (program, args) = command
@@ -843,6 +1142,7 @@ fn probe_bwrap(command: &[String], cwd: &Path) -> Result<(), String> {
         .args(args)
         .current_dir(cwd)
         .env_clear()
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1069,6 +1369,11 @@ pub(crate) fn registry_host_request<E: HostEvents + ?Sized>(
             events.unregister(&params);
             Ok(json!({}))
         }
+        HostRequest::SessionCheckpoint(_) => Err(RpcErrorWire {
+            code: error_code::REFUSED,
+            message: "session/checkpoint is not served here".to_string(),
+            data: None,
+        }),
         HostRequest::ExecutionRedeem(_)
         | HostRequest::CoreCall(_)
         | HostRequest::ProcLaunch(_)
@@ -1246,7 +1551,8 @@ pub(crate) struct HostProcess {
     /// How the cap is enforced for this process, settled at the handshake.
     memory: Arc<std::sync::OnceLock<MemoryEnforcement>>,
     pub sandbox: HostSandbox,
-    tree: Arc<crate::process_tree::ProcessTree>,
+    native_snapshot_roots: Vec<PathBuf>,
+    tree: Arc<codewhale_runtime::process_tree::ProcessTree>,
     #[cfg(windows)]
     windows: Option<super::windows::NativeSandbox>,
     outbound: mpsc::Sender<Vec<u8>>,
@@ -1304,7 +1610,7 @@ impl HostChild {
 struct SpawnedHost {
     child: HostChild,
     pid: Option<u32>,
-    tree: Arc<crate::process_tree::ProcessTree>,
+    tree: Arc<codewhale_runtime::process_tree::ProcessTree>,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
@@ -1356,7 +1662,7 @@ fn spawn_host(
             }
         })?;
     let pid = child.id();
-    let tree = match crate::process_tree::ProcessTree::attach_tokio(&child) {
+    let tree = match codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child) {
         Ok(tree) => Arc::new(tree),
         Err(error) => {
             let _ = child.start_kill();
@@ -1386,15 +1692,17 @@ fn spawn_host(
 }
 
 impl HostProcess {
-    #[cfg(windows)]
-    pub(crate) async fn admit_windows_root(
+    pub(crate) async fn admit_native_root(
         &self,
-        authority: crate::plugins::types::PluginAuthority,
+        authority: codewhale_config::PluginAuthority,
     ) -> Result<(), String> {
+        #[cfg(windows)]
         let sandbox = self
             .windows
             .clone()
             .ok_or("Native host has no verified LPAC plan")?;
+        #[cfg(not(windows))]
+        let snapshot_roots = self.native_snapshot_roots.clone();
         let policy = crate::plugins::activation::extension_host_policy_enabled();
         if !policy {
             return Err("Native extensions are disabled".into());
@@ -1410,11 +1718,23 @@ impl HostProcess {
             let root =
                 crate::plugins::agent_plugin::plugin_root_for_manifest(&authority.staged_manifest)
                     .ok_or("reviewed runtime manifest has no bundle root")?;
+            #[cfg(windows)]
             sandbox.admit_root(root)?;
+            #[cfg(not(windows))]
+            {
+                let canonical = root.canonicalize().map_err(|error| error.to_string())?;
+                if !snapshot_roots.iter().any(|grant| canonical.starts_with(grant) && canonical != *grant) {
+                    return Err("Native snapshot store was not granted to this host; restart Codewhale to admit this store".into());
+                }
+                let current = native_snapshot_roots(&[authority.state_path.clone()])?;
+                if !current.iter().any(|grant| snapshot_roots.contains(grant) && canonical.starts_with(grant)) {
+                    return Err("Native snapshot store changed after host launch".into());
+                }
+            }
             crate::plugins::registry::verify_plugin_component_authority(&authority, capability)
         })
         .await
-        .map_err(|error| format!("Windows bundle admission worker failed: {error}"))?
+        .map_err(|error| format!("Native bundle admission worker failed: {error}"))?
     }
 
     /// Spawn the host and complete the handshake. `expected_sha256` is the
@@ -1428,7 +1748,7 @@ impl HostProcess {
         events: Arc<dyn HostEvents>,
     ) -> Result<Arc<Self>, String> {
         let mut command = tokio::process::Command::new(&launch.program);
-        crate::utils::suppress_tokio_console_window(&mut command);
+        codewhale_util::utils::suppress_tokio_console_window(&mut command);
         command
             .args(&launch.args)
             .current_dir(&launch.cwd)
@@ -1459,8 +1779,10 @@ impl HostProcess {
                 ("CODEWHALE_HOST_PARENT_PID", parent_pid.as_str()),
                 ("CODEWHALE_HOST_PROCESS_GROUP", own_group),
             ]);
-        let environment =
-            crate::child_env::sanitized_plugin_mcp_env_from(std::env::vars_os(), overrides);
+        let environment = codewhale_runtime::child_env::sanitized_plugin_mcp_env_from(
+            std::env::vars_os(),
+            overrides,
+        );
         command.envs(environment.iter().map(|(key, value)| (key, value)));
         #[cfg(unix)]
         command.process_group(0);
@@ -1613,6 +1935,7 @@ impl HostProcess {
             memory_cap: launch.memory_cap,
             memory,
             sandbox: launch.sandbox.clone(),
+            native_snapshot_roots: launch.native_snapshot_roots.clone(),
             tree,
             #[cfg(windows)]
             windows: launch.windows.clone(),
@@ -2658,8 +2981,8 @@ mod tests {
         }
     }
 
-    fn owner(plugin: &str) -> protocol::OwnerRef {
-        protocol::OwnerRef {
+    fn owner(plugin: &str) -> codewhale_config::OwnerRef {
+        codewhale_config::OwnerRef {
             plugin_id: plugin.to_string(),
             generation: 1,
             owner_token: "t".repeat(32),

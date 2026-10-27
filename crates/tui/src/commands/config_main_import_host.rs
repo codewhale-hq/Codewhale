@@ -14,8 +14,8 @@ use std::path::Path;
 /// Build the import plan from the host's home/workspace; `None` when nothing
 /// was found.
 pub(in crate::commands) fn build_plan(app: &mut App) -> Option<CommandClaudePlan> {
-    let home = crate::config::effective_home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let (sources, claude, settings) = crate::import_claude::read_sources(&home);
+    let home = codewhale_paths::user_home().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (sources, claude, settings) = codewhale_net::import_claude::read_sources(&home);
 
     // MCP candidates come from the same discovery the `/mcp import` consent
     // flow uses, filtered to the Claude sources: provenance stays single-sourced.
@@ -36,7 +36,8 @@ pub(in crate::commands) fn build_plan(app: &mut App) -> Option<CommandClaudePlan
             })
             .collect::<Vec<_>>();
 
-    let plan = crate::import_claude::build_plan(sources, claude, settings, &home, mcp_candidates);
+    let plan =
+        codewhale_net::import_claude::build_plan(sources, claude, settings, &home, mcp_candidates);
     if plan.is_empty() { None } else { Some(plan) }
 }
 
@@ -85,14 +86,14 @@ pub(in crate::commands) fn apply_plan(
         match codewhale_config::codewhale_home() {
             Ok(home) => {
                 let destination = home.join("instructions.md");
-                let source = crate::config::effective_home_dir()
+                let source = codewhale_paths::user_home()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join(".claude")
                     .join("CLAUDE.md");
                 if destination.exists() {
                     manual.push(CommandImportFollowUp::InstructionsKeptExisting {
-                        destination: crate::utils::display_path(&destination).to_string(),
-                        source: crate::utils::display_path(&source).to_string(),
+                        destination: codewhale_util::utils::display_path(&destination).to_string(),
+                        source: codewhale_util::utils::display_path(&source).to_string(),
                     });
                 } else {
                     let copy_source = source.clone();
@@ -145,12 +146,14 @@ pub(in crate::commands) fn apply_plan(
                     };
                     if copied {
                         done.push(CommandImportFollowUp::InstructionsCopied {
-                            destination: crate::utils::display_path(&destination).to_string(),
+                            destination: codewhale_util::utils::display_path(&destination)
+                                .to_string(),
                         });
                     } else {
                         manual.push(CommandImportFollowUp::InstructionsCopyFailed {
-                            source: crate::utils::display_path(&source).to_string(),
-                            destination: crate::utils::display_path(&destination).to_string(),
+                            source: codewhale_util::utils::display_path(&source).to_string(),
+                            destination: codewhale_util::utils::display_path(&destination)
+                                .to_string(),
                         });
                     }
                 }
@@ -197,8 +200,8 @@ pub(in crate::commands) fn apply_plan(
 mod tests {
     use super::*;
     use crate::commands::CommandResult;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use std::fs;
     use tempfile::TempDir;
 

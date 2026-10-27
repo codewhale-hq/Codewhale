@@ -28,7 +28,6 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::settings::DEFAULT_TUI_THEME;
 use crate::tui::menu_style;
 use crate::tui::settings_picker::{
     PickerNavResult, SettingAvailability, SettingOption, SettingValues, SettingsPickerController,
@@ -38,6 +37,7 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
+use codewhale_config::settings_schema::DEFAULT_TUI_THEME;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::{SELECTABLE_THEMES, ThemeId, UiTheme};
 

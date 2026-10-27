@@ -1,13 +1,13 @@
 //! Native definition admission joins Rust's existing MCP pool; no transport here.
 use super::ManagerShared;
 use super::composition_scope::SelectionRevision;
-use super::protocol::{EntryRef, OwnerRef, RegisterKind, RegisterParams, RegisterResult};
+use super::protocol::{RegisterKind, RegisterParams, RegisterResult};
 use super::supervisor::HostRequestContext;
 use super::tier::HostTier;
 use crate::mcp::McpServerConfig;
-use crate::plugins::{
-    PluginRegistry, activation::PluginActivationCapability, types::PluginAuthority,
-};
+use crate::plugins::{PluginRegistry, activation::PluginActivationCapability};
+use codewhale_config::PluginAuthority;
+use codewhale_config::{EntryRef, OwnerRef};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 

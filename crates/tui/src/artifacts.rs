@@ -203,7 +203,7 @@ pub(crate) fn open_session_relative(
     session_id: &str,
     relative_path: &Path,
     create: bool,
-) -> io::Result<crate::fleet::files::WorkspaceFile> {
+) -> io::Result<codewhale_util::files::WorkspaceFile> {
     session_artifact_absolute_path(session_id, relative_path).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "invalid session artifact path")
     })?;
@@ -215,7 +215,7 @@ pub(crate) fn open_session_relative(
     // The sessions root is the application's own state, which a user may have
     // relocated behind a link (on Windows, a junction to another volume).
     // Resolve the root once; everything below it stays link-refusing.
-    crate::fleet::files::WorkspaceFile::open_resolved_root(
+    codewhale_util::files::WorkspaceFile::open_resolved_root(
         &root,
         &PathBuf::from(session_id).join(relative_path),
         create,

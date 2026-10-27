@@ -224,8 +224,12 @@ impl PastedImage {
 /// Clipboard payloads supported by the TUI.
 #[cfg_attr(
     all(
-        any(target_env = "ohos", target_os = "android", target_os = "netbsd"),
-        not(test)
+        not(test),
+        not(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))
     ),
     allow(dead_code)
 )]
@@ -953,12 +957,24 @@ fn osc52_sequence(text: &str) -> Result<String> {
 fn clipboard_image_target(
     dir: &Path,
     file_name: &str,
-) -> Result<crate::fleet::files::WorkspaceFile> {
+) -> Result<codewhale_util::files::WorkspaceFile> {
     let root = dir.parent().context("clipboard-images dir has no parent")?;
     let name = dir
         .file_name()
         .context("clipboard-images dir has no name")?;
-    crate::fleet::files::WorkspaceFile::open(root, &Path::new(name).join(file_name), true)
+    let relative = Path::new(name).join(file_name);
+    // `dir` sits under the user's own state root unless no home was available
+    // and it fell back to the workspace (`clipboard_images_dir_for_home`). Only
+    // the state root may be a link the user made to relocate `~/.codewhale`; a
+    // caller-supplied workspace root keeps the strict rule.
+    let state_root = codewhale_paths::user_home()
+        .is_some_and(|home| root == home.join(codewhale_paths::CODEWHALE_APP_DIR));
+    let open = if state_root {
+        codewhale_util::files::WorkspaceFile::open_resolved_root
+    } else {
+        codewhale_util::files::WorkspaceFile::open
+    };
+    open(root, &relative, true)
         .context("open clipboard-images destination (links are not followed)")
 }
 
@@ -970,7 +986,10 @@ fn clipboard_image_target(
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 fn save_image_as_png(workspace: &Path, image: &ImageData) -> Result<PastedImage> {
-    save_image_as_png_in(&crate::config::clipboard_images_dir(workspace), image)
+    save_image_as_png_in(
+        &codewhale_runtime::config::clipboard_images_dir(workspace),
+        image,
+    )
 }
 
 /// Lower-level variant that writes into an explicit directory. Exposed so the
@@ -1272,7 +1291,10 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            crate::config::clipboard_images_dir_for_home(workspace.path(), Some(home.path())),
+            codewhale_runtime::config::clipboard_images_dir_for_home(
+                workspace.path(),
+                Some(home.path())
+            ),
             home.path().join(".codewhale").join("clipboard-images")
         );
     }
@@ -1282,7 +1304,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            crate::config::clipboard_images_dir_for_home(workspace.path(), None),
+            codewhale_runtime::config::clipboard_images_dir_for_home(workspace.path(), None),
             workspace.path().join("clipboard-images")
         );
     }

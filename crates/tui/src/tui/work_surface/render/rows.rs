@@ -115,19 +115,28 @@ pub(super) fn agent_identity_cap(width: usize) -> usize {
 /// Which spelling of a sub-agent's identity fits the column: its nickname
 /// first, then its fleet role, then nothing.
 ///
-/// Identities are never truncated, only dropped. `Fluke the Deep…` and
+/// Names are never truncated, only dropped. `Fluke the Deep…` and
 /// `general-purpo…` both misidentify an agent, and roles that share a prefix
-/// would become indistinguishable.
-pub(super) fn agent_identity(row: &WorkRow, cap: usize) -> &str {
+/// would become indistinguishable. A shell row's label is a command rather
+/// than a name, so it is truncated instead of dropped: falling back to the
+/// bare `shell` role would label every command row the same (#6931).
+pub(super) fn agent_identity(row: &WorkRow, cap: usize) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
     let Some(facts) = row.agent.as_ref() else {
-        return "";
+        return Cow::Borrowed("");
     };
+    if row.id.0.starts_with("shell:")
+        && !row.label.is_empty()
+        && UnicodeWidthStr::width(row.label.as_str()) > cap
+    {
+        return Cow::Owned(truncate_line_to_width(&row.label, cap));
+    }
     for candidate in [row.label.as_str(), facts.role_label.as_str()] {
         if !candidate.is_empty() && UnicodeWidthStr::width(candidate) <= cap {
-            return candidate;
+            return Cow::Borrowed(candidate);
         }
     }
-    ""
+    Cow::Borrowed("")
 }
 
 /// Shared width of the identity column across the rows painted this frame, so
@@ -137,7 +146,7 @@ pub(super) fn agent_identity(row: &WorkRow, cap: usize) -> &str {
 pub(super) fn agent_identity_column(rows: &[&WorkRow], cap: usize) -> usize {
     rows.iter()
         .filter(|row| row.agent.is_some())
-        .map(|row| UnicodeWidthStr::width(agent_identity(row, cap)))
+        .map(|row| UnicodeWidthStr::width(agent_identity(row, cap).as_ref()))
         .max()
         .unwrap_or(0)
 }

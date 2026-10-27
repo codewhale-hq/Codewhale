@@ -171,14 +171,17 @@ pub(crate) fn record_presented() {
 /// A missing preference defaults on. An existing
 /// unreadable record may contain an opt-out, so the Settings row fails closed
 /// and shows Off rather than guessing.
-pub(crate) fn saved_preference_enabled(config: &crate::config::Config) -> bool {
+pub(crate) fn saved_preference_enabled(config: &codewhale_runtime::config::Config) -> bool {
     let Ok(path) = SetupState::path() else {
         return false;
     };
     saved_preference_enabled_at(config, &path)
 }
 
-fn saved_preference_enabled_at(config: &crate::config::Config, setup_state_path: &Path) -> bool {
+fn saved_preference_enabled_at(
+    config: &codewhale_runtime::config::Config,
+    setup_state_path: &Path,
+) -> bool {
     if config.telemetry == Some(false) {
         return false;
     }
@@ -457,9 +460,12 @@ mod tests {
     fn settings_preference_defaults_on_and_preserves_old_declines() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state_path = dir.path().join("setup_state.json");
-        let config = crate::config::Config {
-            telemetry: Some(true),
-            ..crate::config::Config::default()
+        let config = {
+            let __cw_config_init_0_0 = Some(true);
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+                codewhale_runtime::config::Config::default();
+            __cw_config_init_0_value.telemetry = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
 
         assert!(
@@ -478,7 +484,7 @@ mod tests {
         state.save_to(&state_path).expect("seed current acceptance");
         assert!(saved_preference_enabled_at(&config, &state_path));
         assert!(saved_preference_enabled_at(
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
             &state_path
         ));
 
@@ -488,9 +494,12 @@ mod tests {
             "an unreadable privacy record may contain an opt-out"
         );
 
-        let explicitly_off = crate::config::Config {
-            telemetry: Some(false),
-            ..crate::config::Config::default()
+        let explicitly_off = {
+            let __cw_config_init_1_0 = Some(false);
+            let mut __cw_config_init_1_value: codewhale_runtime::config::Config =
+                codewhale_runtime::config::Config::default();
+            __cw_config_init_1_value.telemetry = __cw_config_init_1_0;
+            __cw_config_init_1_value
         };
         assert!(!saved_preference_enabled_at(&explicitly_off, &state_path));
     }

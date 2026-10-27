@@ -33,7 +33,7 @@ pub fn approval_summary_in(
     input: &Value,
     workspace: Option<&Path>,
 ) -> String {
-    let name = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let name = codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     let text = |key: &str| {
         input
             .get(key)
@@ -473,7 +473,7 @@ fn web_run_summary(locale: Locale, input: &Value) -> String {
 
 fn patch_summary(locale: Locale, input: &Value, workspace: Option<&Path>) -> String {
     let apply_patch = || tr(locale, MessageId::ApprovalSummaryApplyPatch).into_owned();
-    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(input) else {
+    let Ok(preflight) = codewhale_tools::patch_preflight::preflight_apply_patch(input) else {
         return apply_patch();
     };
     let mut paths: Vec<String> = preflight

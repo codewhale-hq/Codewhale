@@ -44,6 +44,13 @@
    ]
   },
   {
+   "login": "8sero",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
    "login": "A-Corner",
    "credited_for": [
     "changelog credit"
@@ -254,7 +261,9 @@
   {
    "login": "Asteria1028",
    "credited_for": [
+    "changelog credit",
     "commit",
+    "contributor record",
     "merged pull request"
    ]
   },
@@ -637,6 +646,12 @@
    ]
   },
   {
+   "login": "Dev-next-gen",
+   "credited_for": [
+    "commit"
+   ]
+  },
+  {
    "login": "dfwqdyl-ui",
    "credited_for": [
     "contributor record"
@@ -880,17 +895,6 @@
    ]
   },
   {
-   "login": "FluxForgeLab",
-   "credited_for": [
-    "changelog credit",
-    "co-author",
-    "commit",
-    "contributor record",
-    "harvested pull request",
-    "merged pull request"
-   ]
-  },
-  {
    "login": "formp3",
    "credited_for": [
     "changelog credit",
@@ -1077,7 +1081,8 @@
   {
    "login": "harryvizcaino-oss",
    "credited_for": [
-    "changelog credit"
+    "changelog credit",
+    "contributor record"
    ]
   },
   {
@@ -1130,15 +1135,6 @@
    "credited_for": [
     "changelog credit",
     "contributor record"
-   ]
-  },
-  {
-   "login": "hoclaptrinh33",
-   "credited_for": [
-    "changelog credit",
-    "commit",
-    "contributor record",
-    "merged pull request"
    ]
   },
   {
@@ -1541,6 +1537,13 @@
    ]
   },
   {
+   "login": "LeoCa",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
    "login": "LeoLin990405",
    "credited_for": [
     "changelog credit",
@@ -1706,7 +1709,8 @@
   {
    "login": "luestr",
    "credited_for": [
-    "changelog credit"
+    "changelog credit",
+    "contributor record"
    ]
   },
   {
@@ -2172,7 +2176,8 @@
   {
    "login": "rafacouto",
    "credited_for": [
-    "changelog credit"
+    "changelog credit",
+    "contributor record"
    ]
   },
   {
@@ -2308,6 +2313,24 @@
    ]
   },
   {
+   "login": "SakuraNeko",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
+   "login": "SamhandsomeLee",
+   "credited_for": [
+    "changelog credit",
+    "co-author",
+    "commit",
+    "contributor record",
+    "harvested pull request",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "sandofree",
    "credited_for": [
     "changelog credit",
@@ -2357,7 +2380,8 @@
   {
    "login": "SergiuSSoluS",
    "credited_for": [
-    "changelog credit"
+    "changelog credit",
+    "contributor record"
    ]
   },
   {
@@ -3123,6 +3147,7 @@
   "liuhq",
   "liushiao",
   "liuyang",
+  "Lê Hải Đăng",
   "markchang",
   "ningjingkun",
   "ornn.ban",

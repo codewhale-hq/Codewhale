@@ -101,18 +101,33 @@ def is_ui(module: str) -> bool:
 
 _RAW_STR = re.compile(r'b?r(#*)"')
 _CHAR = re.compile(r"'(\\.[^']*|[^\\'])'")
+_START = re.compile(r'//|/\*|b?r#*"|b?"|\'')
+_BLOCK = re.compile(r'/\*|\*/')
+_STR_STOP = re.compile(r'[\\"]')
+_NOT_NL = re.compile(r'[^\n]')
 
 
 def lex_mask(src: str) -> str:
-    out = list(src)
-    i, n = 0, len(src)
+    n = len(src)
+    out = []
+    last = 0
+    i = 0
 
-    def blank(a: int, b: int) -> None:
-        for k in range(a, min(b, n)):
-            if out[k] != "\n":
-                out[k] = " "
+    def blank(a, b):
+        nonlocal last
+        b = min(b, n)
+        if a >= b:
+            return
+        out.append(src[last:a])
+        out.append(_NOT_NL.sub(" ", src[a:b]))
+        last = b
 
-    while i < n:
+    search = _START.search
+    while True:
+        m = search(src, i)
+        if not m:
+            break
+        i = m.start()
         c = src[i]
         if src.startswith("//", i):
             j = src.find("\n", i)
@@ -123,22 +138,23 @@ def lex_mask(src: str) -> str:
         if src.startswith("/*", i):
             depth, j = 1, i + 2
             while j < n and depth:
-                if src.startswith("/*", j):
+                mm = _BLOCK.search(src, j)
+                if not mm:
+                    j = n
+                    break
+                if mm.group(0) == "/*":
                     depth += 1
-                    j += 2
-                elif src.startswith("*/", j):
-                    depth -= 1
-                    j += 2
                 else:
-                    j += 1
+                    depth -= 1
+                j = mm.end()
             blank(i, j)
             i = j
             continue
         prev_ident = i > 0 and (src[i - 1].isalnum() or src[i - 1] == "_")
-        m = _RAW_STR.match(src, i, i + 10)
-        if m and not prev_ident:
-            end = '"' + m.group(1)
-            j = src.find(end, i + len(m.group(0)))
+        rm = _RAW_STR.match(src, i, i + 10)
+        if rm and not prev_ident:
+            end = '"' + rm.group(1)
+            j = src.find(end, i + len(rm.group(0)))
             j = n if j < 0 else j + len(end)
             blank(i + 1, j - 1)
             i = j
@@ -146,17 +162,24 @@ def lex_mask(src: str) -> str:
         if c == '"' or (c == "b" and i + 1 < n and src[i + 1] == '"' and not prev_ident):
             j = i + (2 if c == "b" else 1)
             while j < n and src[j] != '"':
-                j += 2 if src[j] == "\\" else 1
+                sm = _STR_STOP.search(src, j)
+                if not sm:
+                    j = n
+                    break
+                j = sm.start()
+                if src[j] == "\\":
+                    j += 2
             blank(i + 1, j)
             i = j + 1
             continue
         if c == "'":
-            m = _CHAR.match(src, i, i + 12)
-            if m:
-                blank(i + 1, i + len(m.group(0)) - 1)
-                i += len(m.group(0))
+            cm = _CHAR.match(src, i, i + 12)
+            if cm:
+                blank(i + 1, i + len(cm.group(0)) - 1)
+                i += len(cm.group(0))
                 continue
         i += 1
+    out.append(src[last:])
     return "".join(out)
 
 
@@ -695,9 +718,11 @@ def main(argv: list[str] | None = None) -> int:
         "--baseline-ref",
         help="git revision whose committed baseline the current one may not exceed (CI: the PR base)",
     )
+    parser.add_argument("--tui-src", type=Path, default=TUI_SRC, help="source directory of the crate being split")
+    parser.add_argument("--runtime-src", type=Path, default=RUNTIME_SRC, help="source directory of the destination crate")
     args = parser.parse_args(argv)
 
-    report = build_report()
+    report = build_report(args.tui_src.resolve(), args.runtime_src.resolve())
     if args.report:
         json.dump(
             {"closure": report.closure, "totals": totals(report.counts), "counts": report.counts,

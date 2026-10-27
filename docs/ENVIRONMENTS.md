@@ -65,6 +65,17 @@ diverging from monotonic elapsed by more than the suspend threshold — reports
 `System sleep detected; connection lost — retrying request`, and re-issues the
 request instead of failing the turn (#2990).
 
+## Linux sandboxed terminals
+
+Sandboxed PTYs require bubblewrap and util-linux `setsid` at `/usr/bin/setsid`
+or `/bin/setsid`. Codewhale assigns the controlling terminal inside bubblewrap's
+PID namespace so Ctrl-C reaches the foreground program without killing its
+wrapper. A program that handles SIGINT can continue accepting input. Both
+`exec_shell` PTY jobs and persistent terminal sessions use this path. Missing
+`setsid` fails the PTY launch; it does not remove the sandbox. Non-PTY commands
+do not require this helper. Namespace isolation, read-only mounts and
+`--die-with-parent` cleanup remain in force.
+
 ## Windows support and release qualification
 
 Windows compatibility depends on the runtime architecture and terminal. The

@@ -5,9 +5,9 @@
 //!
 //! These tests exercise the full validation pipeline against a tiny in-process
 //! HTTP server, so the network gate, download cap, tarball validation, atomic
-//! rename, and `.installed-from` marker all run end-to-end. The module is
-//! pulled in via `#[path]` includes (matching `integration_mock_llm.rs`) so we
-//! get access to private helpers without a separate library crate.
+//! rename, and `.installed-from` marker all run end-to-end through the public
+//! `codewhale-skill-install` surface (its `test-support` feature is a tui
+//! dev-dependency only).
 
 use std::io::Write;
 use std::path::Path;
@@ -17,20 +17,8 @@ use flate2::write::GzEncoder;
 use tempfile::TempDir;
 use tiny_http::{Method, Response, Server};
 
-// Pull the production source files into this test binary so the test can
-// reach `install`'s public surface without a dedicated library crate.
-//
-// `install.rs` references `crate::network_policy` and `super::package_digest`
-// (sibling under `skills::`), so both are pulled in alongside `install`.
-
-// Both `network_policy` and `install` resolve the home directory through
-// `crate::config::effective_home_dir()` (#4757). `config/home.rs` is a leaf
-// over `std`/`codewhale-paths` with no `crate::` references, so including it
-// here gives this binary the real implementation; naming it `config` matches
-// how those two files address it in the lib.
-
-use crate::install::{InstallOutcome, InstallSource, UpdateResult};
-use crate::network_policy::{DecisionToml, NetworkPolicy};
+use codewhale_net::network_policy::{DecisionToml, NetworkPolicy};
+use codewhale_skill_install::install::{InstallOutcome, InstallSource, UpdateResult};
 
 /// Construct a gzipped tarball from `(path, body)` pairs. Permissions are set
 /// to 0o644 so umask differences across platforms don't perturb the bytes.
@@ -149,10 +137,10 @@ async fn install_happy_path_writes_skill_and_marker() {
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
 
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -174,12 +162,14 @@ async fn install_happy_path_writes_skill_and_marker() {
     );
     assert!(
         installed_dir
-            .join(crate::install::INSTALLED_FROM_MARKER)
+            .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER)
             .is_file(),
         ".installed-from marker present"
     );
-    let marker = std::fs::read_to_string(installed_dir.join(crate::install::INSTALLED_FROM_MARKER))
-        .expect("read marker");
+    let marker = std::fs::read_to_string(
+        installed_dir.join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
+    )
+    .expect("read marker");
     assert!(
         marker.contains("\"schema_version\": 2") || marker.contains("\"schema_version\":2"),
         "install must write metadata v2: {marker}"
@@ -227,10 +217,10 @@ async fn install_rejects_path_traversal() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -266,7 +256,7 @@ async fn install_rejects_oversized_tarball() {
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
     let small_cap = 1024 * 1024;
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
         small_cap,
@@ -291,10 +281,10 @@ async fn install_rejects_missing_skill_md() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -322,10 +312,10 @@ async fn install_accepts_claude_compatible_skill_directory_archive() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -360,10 +350,10 @@ async fn install_accepts_nested_workflow_pack_skill_directory() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -401,10 +391,10 @@ async fn install_rejects_multi_skill_claude_plugin_archive() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -437,10 +427,10 @@ async fn install_accepts_single_skill_subdirectory_archive() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -466,10 +456,10 @@ async fn install_rejects_missing_required_frontmatter() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -489,10 +479,10 @@ async fn install_idempotent_then_uninstall_then_reinstall() {
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
 
-    crate::install::install(
+    codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url.clone()),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -500,10 +490,10 @@ async fn install_idempotent_then_uninstall_then_reinstall() {
     .expect("first install ok");
 
     // Second install with `update = false` must reject.
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url.clone()),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -516,13 +506,13 @@ async fn install_idempotent_then_uninstall_then_reinstall() {
     );
 
     // Uninstall then reinstall.
-    crate::install::uninstall("idem-skill", tmp.path()).expect("uninstall ok");
+    codewhale_skill_install::install::uninstall("idem-skill", tmp.path()).expect("uninstall ok");
     assert!(!tmp.path().join("idem-skill").exists());
 
-    crate::install::install(
+    codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -541,10 +531,10 @@ async fn update_no_change_returns_nochange_without_overwriting() {
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
 
-    crate::install::install(
+    codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url.clone()),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -555,7 +545,7 @@ async fn update_no_change_returns_nochange_without_overwriting() {
     let marker_path = tmp
         .path()
         .join("upd-skill")
-        .join(crate::install::INSTALLED_FROM_MARKER);
+        .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER);
     let marker_body = std::fs::read_to_string(&marker_path).unwrap();
     let mut marker_json: serde_json::Value = serde_json::from_str(&marker_body).unwrap();
     marker_json["spec"] = serde_json::Value::String(url);
@@ -568,10 +558,10 @@ async fn update_no_change_returns_nochange_without_overwriting() {
         .modified()
         .unwrap();
 
-    let result = crate::install::update(
+    let result = codewhale_skill_install::install::update(
         "upd-skill",
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
     )
     .await
@@ -590,10 +580,10 @@ async fn update_no_change_returns_nochange_without_overwriting() {
 async fn install_with_deny_policy_returns_network_denied() {
     let tmp = TempDir::new().unwrap();
     let policy = deny_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl("https://example.invalid/skill.tar.gz".to_string()),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -617,10 +607,10 @@ async fn install_with_deny_policy_returns_network_denied() {
 async fn install_with_prompt_policy_returns_needs_approval() {
     let tmp = TempDir::new().unwrap();
     let policy = prompt_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl("https://example.invalid/skill.tar.gz".to_string()),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -667,10 +657,10 @@ async fn install_rejects_symlink_entry() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let err = crate::install::install(
+    let err = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -728,10 +718,10 @@ async fn install_ignores_symlink_outside_selected_skill_root() {
 
     let tmp = TempDir::new().unwrap();
     let policy = allow_all_policy();
-    let outcome = crate::install::install(
+    let outcome = codewhale_skill_install::install::install(
         InstallSource::DirectUrl(url),
         tmp.path(),
-        crate::install::DEFAULT_MAX_SIZE_BYTES,
+        codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES,
         &policy,
         false,
     )
@@ -760,7 +750,8 @@ fn uninstall_refuses_system_skill() {
         .unwrap();
     // No `.installed-from` marker — looks like a system skill.
 
-    let err = crate::install::uninstall("system-skill", tmp.path()).expect_err("must refuse");
+    let err = codewhale_skill_install::install::uninstall("system-skill", tmp.path())
+        .expect_err("must refuse");
     assert!(format!("{err:#}").contains("not installed via"));
     assert!(dir.exists(), "directory must be left alone");
 }

@@ -364,10 +364,11 @@ Forwarded serve options:
       --cors-origin <URL>   Additional CORS origin to allow (repeatable)
       --auth-token <TOKEN>  Require this bearer token for /v1/* runtime API routes
       --insecure            Disable runtime API auth when no token is configured
+      --full-access         Run with Full Access: no approval prompts, no Codewhale sandbox (alias: --yolo)
 
 `codewhale serve --http` and `codewhale serve --mobile` remain compatibility
 aliases for `codewhale app-server --http` and `codewhale app-server --mobile`.
-New integrations should prefer `codewhale app-server`.")]
+New integrations should prefer `codewhale app-server --http` for the full Engine API.")]
     Serve(TuiPassthroughArgs),
     /// Open the first-class local browser client over the canonical Runtime API.
     #[command(
@@ -387,7 +388,7 @@ New integrations should prefer `codewhale app-server`.")]
     /// Manage an existing Codewhale account; new accounts are not open.
     #[command(visible_alias = "cloud")]
     Account(cloud::CloudArgs),
-    /// Run a task on a Codewhale cloud computer (not available: cloud computers and accounts are paused for new users).
+    /// Run a task on a Codewhale cloud computer using your configured model.
     Dispatch(dispatch::DispatchArgs),
     /// Run MCP server mode over stdio.
     McpServer,
@@ -399,17 +400,20 @@ New integrations should prefer `codewhale app-server`.")]
     Thread(ThreadArgs),
     /// Evaluate sandbox/approval policy decisions.
     Sandbox(SandboxArgs),
-    /// Run the canonical runtime API / control plane (HTTP/SSE, mobile, stdio).
+    /// Expose the full Engine API with --http, or smaller compatibility controls.
     #[command(after_help = "\
 Transports:
   codewhale app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
   codewhale app-server --mobile            Runtime API + phone control page (127.0.0.1 only)
-  codewhale app-server --stdio             JSON-RPC control transport over stdio
+  codewhale app-server --stdio             Compatibility JSON-RPC controls and tool-free turns
   codewhale app-server                     Compatibility HTTP routes on the canonical owner at 127.0.0.1:8787
 
 `--http` and `--mobile` serve the same mature runtime API as `codewhale serve
 --http`/`--mobile`, which remain as compatibility aliases. The runtime API token
 is read from --auth-token, CODEWHALE_RUNTIME_TOKEN, or DEEPSEEK_RUNTIME_TOKEN.
+
+Compatibility turns require explicit allowed_tools: []; use --http for tools,
+approvals, clarification and the full event journal.
 
 See docs/RUNTIME_API.md.")]
     AppServer(AppServerArgs),
@@ -461,6 +465,21 @@ The command prints the completion script to stdout; redirect it to a path your s
         after_help = "GitHub Releases is the default source. Supported mirrors are explicit overrides or manifest-failure fallbacks. Checksums are required; older releases never replace a newer build.\n\nThe command prints the executable it will update. If you have multiple installs, run the intended binary by its full path.\n\nNew macOS/Linux install: curl -fsSL https://codewhale.net/install.sh | sh\nInstallation and PATH help: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md"
     )]
     Update(UpdateArgs),
+    #[command(
+        about = "Remove this receipt-owned release install, or print its package manager's removal command; user data is kept unless --purge-data"
+    )]
+    Uninstall {
+        #[arg(
+            long,
+            help = "Remove the preflighted files; without this flag, print the plan"
+        )]
+        yes: bool,
+        #[arg(
+            long,
+            help = "Also delete Codewhale's own data directory (config, secrets file, sessions); previewed unless --yes"
+        )]
+        purge_data: bool,
+    },
     /// Export the route catalog (`providers export --json`).
     Providers(ProvidersArgs),
 }
@@ -2001,8 +2020,8 @@ struct AppServerArgs {
     /// Equivalent to the legacy `codewhale serve --mobile`.
     #[arg(long, conflicts_with = "stdio")]
     mobile: bool,
-    /// Run the app-server JSON-RPC control transport over stdio.
-    /// Used by local SDKs and JSON-RPC integrations.
+    /// Run the smaller compatibility JSON-RPC control transport over stdio.
+    /// Tool-free turns require allowed_tools: []; use --http for interactive work.
     #[arg(long, default_value_t = false)]
     stdio: bool,
     /// Run as the desktop daemon: the same JSON-RPC control transport as
@@ -2051,6 +2070,7 @@ pub fn run_cli() -> std::process::ExitCode {
     install_rustls_crypto_provider();
 
     let outcome = run();
+    codewhale_tui::discard_runtime_listener_handoff();
     // A config write may have moved legacy top-level `base_url` / `api_key`
     // into their provider tables (#6394); say so once, off stdout.
     for notice in codewhale_config::legacy_root::take_notices() {
@@ -2266,12 +2286,31 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
 }
 
 fn run() -> Result<()> {
+    let inherited_listener = codewhale_tui::prepare_runtime_listener_handoff()?;
     let argv: Vec<_> = std::env::args_os().collect();
     let matches = Cli::command().get_matches_from(&argv);
     let project_bundle_scope = config_command_targets_project(&matches);
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    anyhow::ensure!(
+        !inherited_listener
+            || matches!(cli.command.as_ref(), Some(Commands::Serve(_)))
+            || matches!(cli.command.as_ref(), Some(Commands::AppServer(args)) if args.http),
+        "An inherited Runtime listener requires serve --http or app-server --http"
+    );
+    if let Some(Commands::Uninstall { yes, purge_data }) = cli.command.as_ref() {
+        #[cfg(any(all(unix, not(target_env = "ohos")), windows))]
+        return update::uninstall::run(*yes, *purge_data);
+        #[cfg(not(any(all(unix, not(target_env = "ohos")), windows)))]
+        {
+            let _ = (yes, purge_data);
+            bail!(
+                "Automatic uninstall is supported for receipt-owned macOS, Linux and Windows release installs. Use the installer or package manager that owns this copy; user data is preserved."
+            );
+        }
+    }
     preserve_exec_separator(&mut cli, &argv);
     capture_exec_startup_options(&mut cli)?;
+    capture_serve_full_access(&mut cli);
 
     // The detached log proxy must not depend on user config parsing: its job
     // is to frame child output and publish a terminal receipt even when the
@@ -2760,6 +2799,9 @@ fn run() -> Result<()> {
             finish_cli_telemetry(session, &outcome, cli.verbose);
             outcome
         }
+        Some(Commands::Uninstall { .. }) => {
+            unreachable!("uninstall dispatches before config loading")
+        }
         Some(Commands::Providers(args)) => run_providers_command(args),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -2972,6 +3014,26 @@ fn preserve_exec_separator(cli: &mut Cli, argv: &[impl AsRef<std::ffi::OsStr>]) 
             .all(|(raw, parsed)| raw.as_ref() == std::ffi::OsStr::new(parsed))
     {
         args.args.insert(0, "--".to_string());
+    }
+}
+
+fn capture_serve_full_access(cli: &mut Cli) {
+    let Some(Commands::Serve(args)) = cli.command.as_mut() else {
+        return;
+    };
+    let before = args.args.len();
+    let separator = args
+        .args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(before);
+    let mut index = 0;
+    args.args.retain(|arg| {
+        index += 1;
+        index > separator || !matches!(arg.as_str(), "--full-access" | "--yolo")
+    });
+    if args.args.len() != before {
+        cli.runtime_options.yolo = true;
     }
 }
 
@@ -4371,7 +4433,7 @@ fn owned_oauth_account(store: &ConfigStore, provider: ProviderKind) -> Result<Op
     .oauth_credential_generation
     .as_deref()
     .context("no sign-in generation configured")?;
-    codewhale_tui::owned_oauth_account_label(provider, generation)
+    codewhale_runtime::oauth::owned_oauth_account_label(provider, generation)
 }
 
 #[cfg(test)]
@@ -5382,8 +5444,8 @@ fn run_config_command(
             }
             // A settings.toml key is answered from settings.toml, even when a
             // stale config.toml copy that nothing reads is still present.
-            if codewhale_tui::config_keys::config_key_home(&key)
-                == codewhale_tui::config_keys::ConfigKeyHome::SettingsToml
+            if codewhale_runtime::config_keys::config_key_home(&key)
+                == codewhale_runtime::config_keys::ConfigKeyHome::SettingsToml
             {
                 let value = settings_key_value(store, &key)?;
                 note_unread_config_copy(store, &key);
@@ -5391,7 +5453,7 @@ fn run_config_command(
                 return Ok(());
             }
             if key == "stream" || key.starts_with("stream.") {
-                let stream = codewhale_tui::config_keys::resolved_stream_config(&store.config)?;
+                let stream = codewhale_runtime::config_keys::resolved_stream_config(&store.config)?;
                 let value = if key == "stream" {
                     &stream
                 } else {
@@ -5433,11 +5495,11 @@ fn run_config_command(
             }
             // Refuse a key nothing reads, and send settings.toml keys to
             // settings.toml, before config.toml is touched (#6563).
-            match codewhale_tui::config_keys::config_key_home(&key) {
-                codewhale_tui::config_keys::ConfigKeyHome::ConfigToml => {
+            match codewhale_runtime::config_keys::config_key_home(&key) {
+                codewhale_runtime::config_keys::ConfigKeyHome::ConfigToml => {
                     // A value typed or validated by its config.toml reader.
                     if let Some(typed) =
-                        codewhale_tui::config_keys::config_toml_value(&key, &value)?
+                        codewhale_runtime::config_keys::config_toml_value(&key, &value)?
                     {
                         store.config.extras.insert(key.trim().to_string(), typed);
                         store.save()?;
@@ -5445,15 +5507,17 @@ fn run_config_command(
                         return Ok(());
                     }
                 }
-                codewhale_tui::config_keys::ConfigKeyHome::SettingsToml => {
+                codewhale_runtime::config_keys::ConfigKeyHome::SettingsToml => {
                     refuse_workspace_scoped_settings_key(store, &key)?;
-                    let path = codewhale_tui::config_keys::set_settings_value(&key, &value)?;
+                    let path = codewhale_runtime::config_keys::set_settings_value(&key, &value)?;
                     println!("set {key} in {}", path.display());
                     note_unread_config_copy(store, &key);
                     return Ok(());
                 }
-                codewhale_tui::config_keys::ConfigKeyHome::Unknown => {
-                    bail!(codewhale_tui::config_keys::unknown_config_key_message(&key));
+                codewhale_runtime::config_keys::ConfigKeyHome::Unknown => {
+                    bail!(codewhale_runtime::config_keys::unknown_config_key_message(
+                        &key
+                    ));
                 }
             }
             store.config.set_value(&key, &value)?;
@@ -5562,7 +5626,7 @@ fn run_config_command(
                 .context("config must be a TOML table")?
                 .insert(
                     "stream".to_string(),
-                    codewhale_tui::config_keys::resolved_stream_config(&store.config)?,
+                    codewhale_runtime::config_keys::resolved_stream_config(&store.config)?,
                 );
             print!("{}", toml::to_string_pretty(&document)?);
             Ok(())
@@ -5652,7 +5716,8 @@ fn refuse_workspace_scoped_settings_key(store: &ConfigStore, key: &str) -> Resul
 /// never a config.toml copy that nothing reads.
 fn settings_key_value(store: &ConfigStore, key: &str) -> Result<String> {
     refuse_workspace_scoped_settings_key(store, key)?;
-    codewhale_tui::config_keys::settings_value(key)?.ok_or_else(|| anyhow!("key not found: {key}"))
+    codewhale_runtime::config_keys::settings_value(key)?
+        .ok_or_else(|| anyhow!("key not found: {key}"))
 }
 
 /// Point at a config.toml copy of a settings.toml key: nothing reads it.
@@ -5691,7 +5756,7 @@ fn apply_per_run_overrides(store: &mut ConfigStore, specs: &[String]) -> Result<
 fn run_config_doctor(store: &ConfigStore) -> Result<()> {
     println!("# {}", store.path().display());
     let mut errors: Vec<String> = Vec::new();
-    let unread = codewhale_tui::config_keys::unread_config_keys(
+    let unread = codewhale_runtime::config_keys::unread_config_keys(
         store.config.extras.keys().map(String::as_str),
     );
     for finding in &unread {
@@ -5924,6 +5989,12 @@ fn run_model_command(
                             "capabilities: {}",
                             serde_json::to_string(&route.capabilities())?
                         );
+                        if !route.applied_limit_overrides().is_empty() {
+                            println!(
+                                "limit_overrides: {}",
+                                serde_json::to_string(route.applied_limit_overrides())?
+                            );
+                        }
                     }
                     Err(error) => println!("route_error: {error}"),
                 }
@@ -5989,6 +6060,12 @@ fn run_model_command(
                 "capabilities: {}",
                 serde_json::to_string(&candidate.capabilities())?
             );
+            if !candidate.applied_limit_overrides().is_empty() {
+                println!(
+                    "limit_overrides: {}",
+                    serde_json::to_string(candidate.applied_limit_overrides())?
+                );
+            }
             println!(
                 "provider_source: {}",
                 if subcommand_provider.is_some() {
@@ -6346,6 +6423,9 @@ fn run_app_server_command(
             path: args.socket_path.clone(),
         })
     } else if !args.http && !args.mobile {
+        eprintln!(
+            "note: bare app-server selects the compatibility API on port 8787 by default; use codewhale app-server --http for the full /v1/* API, approvals and SSE events"
+        );
         Some(RuntimeControlFrontend::LegacyHttp)
     } else {
         None
@@ -7177,7 +7257,7 @@ mod tests {
             &overlays,
         )
         .unwrap();
-        let stream = codewhale_tui::config_keys::resolved_stream_config(&store.config).unwrap();
+        let stream = codewhale_runtime::config_keys::resolved_stream_config(&store.config).unwrap();
         assert_eq!(stream["open_timeout_secs"].as_integer(), Some(120));
         assert_eq!(stream["max_resumes"].as_integer(), Some(6));
         assert_eq!(
@@ -7199,7 +7279,7 @@ mod tests {
             "zzz_unknown = 1\ncalm_mode = \"false\"\nmax_subagents = 4\n",
         );
         let store = ConfigStore::load(Some(path)).expect("load fixture");
-        let unread = codewhale_tui::config_keys::unread_config_keys(
+        let unread = codewhale_runtime::config_keys::unread_config_keys(
             store.config.extras.keys().map(String::as_str),
         );
         assert_eq!(unread.len(), 2, "{unread:#?}");

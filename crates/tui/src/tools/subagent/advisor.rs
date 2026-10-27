@@ -26,12 +26,12 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::client::CodewhaleClient;
-use crate::config::Config;
 use crate::core::events::Event;
 use crate::llm_client::LlmClient;
-use crate::utils::truncate_with_ellipsis;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use codewhale_runtime::config::Config;
+use codewhale_util::utils::truncate_with_ellipsis;
 
 /// Maximum tokens the advisor may generate. Kept short so the note stays
 /// concise and does not compete with the parent turn's billing budget.
@@ -535,7 +535,7 @@ fn hash_str(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ProviderConfig, ProvidersConfig};
+    use codewhale_runtime::config::{ProviderConfig, ProvidersConfig};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -876,9 +876,9 @@ mod tests {
 
     #[test]
     fn advisor_model_override_builds_the_owning_provider_client() {
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
                     model: Some("deepseek-chat".to_string()),
@@ -886,33 +886,41 @@ mod tests {
                 },
                 zai: ProviderConfig {
                     api_key: Some("zai-advisor-test-key".to_string()),
-                    model: Some(crate::config::DEFAULT_ZAI_MODEL.to_string()),
+                    model: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL.to_string(),
+                    ),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let parent = CodewhaleClient::new(&config).expect("parent client");
         let (advisor, resolved_model) = exact_advisor_client(
             &config,
             parent,
             "deepseek-chat",
-            crate::config::DEFAULT_ZAI_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL,
         )
         .expect("cross-provider advisor route");
         let route = advisor.effective_route_envelope(&resolved_model, chrono::Utc::now());
 
-        assert_eq!(route.provider, crate::config::ProviderKind::Zai);
+        assert_eq!(route.provider, codewhale_config::ProviderKind::Zai);
         assert_eq!(route.provider_identity, "zai");
-        assert_eq!(route.model, crate::config::DEFAULT_ZAI_MODEL);
+        assert_eq!(
+            route.model,
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
+        );
     }
 
     #[test]
     fn advisor_foreign_custom_override_fails_closed_without_exact_identity() {
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("deepseek".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
                     model: Some("deepseek-chat".to_string()),
@@ -930,8 +938,11 @@ mod tests {
                 .into_iter()
                 .collect(),
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let parent = CodewhaleClient::new(&config).expect("parent client");
         let error =
@@ -947,9 +958,9 @@ mod tests {
 
     #[test]
     fn advisor_named_custom_a_cannot_route_model_owned_by_custom_b() {
-        let config = Config {
-            provider: Some("custom-a".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("custom-a".to_string());
+            let __cw_config_init_2_1 = Some(ProvidersConfig {
                 custom: [
                     (
                         "custom-a".to_string(),
@@ -975,8 +986,11 @@ mod tests {
                 .into_iter()
                 .collect(),
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
         let parent = CodewhaleClient::new(&config).expect("active custom-a client");
         let error = match exact_advisor_client(&config, parent, "custom-a-model", "custom-b-model")
@@ -1020,17 +1034,20 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let route_config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(ProvidersConfig {
+        let route_config = {
+            let __cw_config_init_3_0 = Some("deepseek".to_string());
+            let __cw_config_init_3_1 = Some(ProvidersConfig {
                 deepseek: ProviderConfig {
                     api_key: Some("sk-deepseek-advisor-test".to_string()),
                     model: Some("deepseek-chat".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
         let mut client = CodewhaleClient::new(&route_config).expect("advisor client");
         client.set_test_chat_transport_base_url(server.uri());

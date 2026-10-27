@@ -11,13 +11,11 @@ use super::managed_policy::{
     ManagedPluginPolicy, ManagedPolicyOutcome, load_managed_policy, resolve_managed_policy_path,
 };
 use super::manifest::PluginInventory;
-use super::path_identity::metadata_is_link_or_reparse;
+use super::types::{LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel, PluginTrustStatus};
+use codewhale_config::{PluginAuthority, PluginId};
+use codewhale_util::path_identity::metadata_is_link_or_reparse;
 #[cfg(windows)]
-use super::path_identity::windows_file_identity;
-use super::types::{
-    LoadedPlugin, PluginAuthority, PluginDiagnostic, PluginDiagnosticLevel, PluginId,
-    PluginTrustStatus,
-};
+use codewhale_util::path_identity::windows_file_identity;
 
 pub(crate) mod gc;
 
@@ -162,7 +160,7 @@ impl PluginRegistry {
         if let Some(problem) = super::runtime::native_entry_problem(&source.path, true) {
             return Err(problem.into());
         }
-        let file = super::manifest::open_bundle_file(&source.path)
+        let file = codewhale_util::bundle_file::open_bundle_file(&source.path)
             .map_err(|_| "Native preset cannot be opened")?;
         let mut bytes = Vec::new();
         file.take(64 * 1024 * 1024 + 1)
@@ -171,7 +169,7 @@ impl PluginRegistry {
         if bytes.len() > 64 * 1024 * 1024 {
             return Err("Native preset entry exceeds the bundle limit".into());
         }
-        if crate::hashing::sha256_hex(&bytes) != selected.entry.sha256 {
+        if codewhale_runtime::hashing::sha256_hex(&bytes) != selected.entry.sha256 {
             return Err("Native preset bytes changed".into());
         }
         let mut view = self.clone();
@@ -215,24 +213,25 @@ impl PluginRegistry {
             .as_ref()
             .map(|context| context.catalog_stamp_for_workspace(&workspace))
             .unwrap_or_default();
-        let host_environment = discovery_context
-            .as_ref()
-            .map(|context| context.host_environment());
-        let policy_path = resolve_managed_policy_path(&state_path, host_environment.as_deref());
-        let (managed_policy, managed_policy_error) = match load_managed_policy(&policy_path) {
-            ManagedPolicyOutcome::Absent => (None, None),
-            ManagedPolicyOutcome::Loaded(policy) => (Some(policy), None),
-            ManagedPolicyOutcome::Invalid(error) => {
-                diagnostics.push(PluginDiagnostic::error(
-                    "policy-invalid",
-                    format!(
-                        "Managed plugin policy is fail-closed; no plugin may stay enabled until it is repaired or removed: {error}"
-                    ),
-                    Some(policy_path.clone()),
-                ));
-                (None, Some(error))
-            }
+        let source = discovery_context.as_ref().map_or_else(
+            || resolve_managed_policy_path(&state_path, None),
+            |context| context.managed_policy_source(),
+        );
+        let (policy_path, managed_policy, managed_policy_error) = match source {
+            Ok(path) => match load_managed_policy(&path) {
+                ManagedPolicyOutcome::Absent => (Some(path), None, None),
+                ManagedPolicyOutcome::Loaded(policy) => (Some(path), Some(policy), None),
+                ManagedPolicyOutcome::Invalid(error) => (Some(path), None, Some(error)),
+            },
+            Err(error) => (None, None, Some(error)),
         };
+        if let Some(error) = managed_policy_error.as_ref() {
+            diagnostics.push(PluginDiagnostic::error(
+                "policy-invalid",
+                format!("Managed plugin policy is fail-closed; no plugin may stay enabled until it is repaired or removed: {error}"),
+                policy_path.clone(),
+            ));
+        }
         let mut registry = Self {
             plugins: BTreeMap::new(),
             names: BTreeMap::new(),
@@ -241,7 +240,7 @@ impl PluginRegistry {
             state_path: Some(state_path),
             state_error,
             managed_policy,
-            managed_policy_path: Some(policy_path),
+            managed_policy_path: policy_path,
             managed_policy_error,
             workspace,
             discovery_context,
@@ -394,8 +393,13 @@ impl PluginRegistry {
 
     #[must_use]
     pub fn authority_for(&self, selector: &str) -> Option<PluginAuthority> {
-        self.get(selector)
-            .and_then(|plugin| plugin.authority(self.state_path.clone()?, self.workspace.clone()))
+        self.get(selector).and_then(|plugin| {
+            plugin.authority(
+                self.state_path.clone()?,
+                self.workspace.clone(),
+                self.managed_policy_path.clone()?,
+            )
+        })
     }
 
     #[must_use]
@@ -421,21 +425,6 @@ impl PluginRegistry {
         self.list()
             .into_iter()
             .filter(|plugin| plugin.active())
-            .collect()
-    }
-
-    /// Compatibility name retained for the MCP adapter. Unlike the old
-    /// registry this returns only trusted, active bundles.
-    #[must_use]
-    pub fn list_enabled(&self) -> Vec<&LoadedPlugin> {
-        self.active_plugins()
-    }
-
-    #[must_use]
-    pub fn enabled_plugins(&self) -> Vec<&LoadedPlugin> {
-        self.list()
-            .into_iter()
-            .filter(|plugin| plugin.enabled)
             .collect()
     }
 
@@ -1012,7 +1001,7 @@ fn persist_plugin_state(mut temporary: tempfile::TempPath, path: &Path) -> Resul
         // MoveFileExW reports an HRESULT; the shared classifier reads the
         // Win32 code it wraps.
         let backoff = WIN32_ERROR::from_error(&error).and_then(|code| {
-            crate::utils::windows_publish_retry_delay(
+            codewhale_util::utils::windows_publish_retry_delay(
                 &std::io::Error::from_raw_os_error(code.0 as i32),
                 attempt,
             )
@@ -1639,7 +1628,7 @@ fn copy_bundle_tree_bounded(
             if budget.files > 4_096 {
                 return Err("Plugin content exceeded the staging file limit".to_string());
             }
-            let mut source_file = super::manifest::open_bundle_file(&source_path)
+            let mut source_file = codewhale_util::bundle_file::open_bundle_file(&source_path)
                 .map_err(|e| format!("failed to open plugin file without following links: {e}"))?;
             #[cfg(windows)]
             ensure_windows_registry_path_still_opened(&source_path, &source_file)?;
@@ -1721,7 +1710,7 @@ fn ensure_windows_registry_path_still_opened(path: &Path, opened: &fs::File) -> 
     } else {
         return Err("Plugin path changed into an unsupported object during staging".to_string());
     };
-    let current = super::manifest::open_bundle_identity_probe(path, expect_directory)
+    let current = codewhale_util::bundle_file::open_bundle_identity_probe(path, expect_directory)
         .map_err(|e| format!("failed to reopen staged source path safely: {e}"))?;
     let opened = windows_file_identity(opened)
         .map_err(|e| format!("failed to identify retained plugin handle: {e}"))?;
@@ -2406,8 +2395,34 @@ pub fn verify_plugin_authority(authority: &PluginAuthority) -> Result<(), String
 
 /// Cheap cross-process revocation probe used while an established MCP request
 /// is in flight. Full source/stage hashing is intentionally done before each
-/// dispatch; the watcher only needs to notice the locked state transition.
+/// dispatch; the watcher rechecks the trusted policy source and locked state.
 pub fn verify_plugin_state_authority(authority: &PluginAuthority) -> Result<(), String> {
+    let policy_path = authority
+        .managed_policy_source
+        .as_deref()
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            "Plugin authority has no managed policy source; reload the plugin before executing it"
+                .to_string()
+        })?;
+    if authority.managed_policy_path.as_deref() != Some(policy_path) {
+        return Err("Plugin authority does not match its trusted managed policy source; reload the plugin before executing it".to_string());
+    }
+    match load_managed_policy(policy_path) {
+        ManagedPolicyOutcome::Absent => {}
+        ManagedPolicyOutcome::Loaded(policy) if policy.allows(&authority.plugin_id) => {}
+        ManagedPolicyOutcome::Loaded(_) => {
+            return Err(format!(
+                "Plugin bundle `{}` is blocked by managed plugin policy",
+                authority.plugin_name
+            ));
+        }
+        ManagedPolicyOutcome::Invalid(_) => {
+            return Err(
+                "Managed plugin policy is invalid; the bundle is disabled fail-closed".to_string(),
+            );
+        }
+    }
     let state_parent = authority
         .state_path
         .parent()

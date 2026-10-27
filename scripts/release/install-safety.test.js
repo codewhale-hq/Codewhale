@@ -75,6 +75,11 @@ for (const kind of ["website", "archive"]) {
       assert.equal(fs.readFileSync(installed, "utf8"), bytes);
       assert.ok(fs.statSync(installed).mode & 0o111);
     }
+    const receipt = fs.readFileSync(path.join(f.destination, ".codewhale-install.sha256"), "utf8");
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    assert.equal(receipt, `${hash}  codewhale
+${hash}  codew
+`);
     assert.match(result.stdout, /PATH selects/);
     assert.ok(result.stdout.includes(`"${fs.realpathSync(f.destination)}/codewhale" update`), result.stdout);
     if (kind === "website") {
@@ -112,15 +117,20 @@ for (const kind of ["website", "archive"]) {
   });
 
   for (const name of ["codew", "codewhale-tui"]) {
-    test(`${kind}: conflicting ${name} prevents the first install write`, t => {
+    test(`${kind}: existing ${name} follows current command ownership`, t => {
       const f = fixture(t, kind); f.prepare();
       const file = path.join(f.destination, name);
       executable(file, "unrelated bytes");
       const result = f.run();
-      assert.notEqual(result.status, 0);
-      assert.ok(result.stderr.includes(file), result.stderr);
       assert.equal(fs.readFileSync(file, "utf8"), "unrelated bytes");
-      assert.equal(fs.existsSync(path.join(f.destination, "codewhale")), false);
+      if (name === "codewhale-tui") {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(fs.readFileSync(path.join(f.destination, "codewhale"), "utf8"), bytes);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.ok(result.stderr.includes(file), result.stderr);
+        assert.equal(fs.existsSync(path.join(f.destination, "codewhale")), false);
+      }
       f.untouched();
     });
   }

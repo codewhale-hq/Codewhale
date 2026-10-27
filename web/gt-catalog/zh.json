@@ -2050,7 +2050,7 @@
     "metaTitle": "Computer Use · 预览 · Codewhale",
     "metaDescription": "预览功能：下载并设置 Mac 版 Codewhale Computer Use。提供应用后台操作、权限设置，以及由用户控制的暂停和停止功能。",
     "title": "Computer Use",
-    "lead": "让 Codewhale 在应用中完成操作，你也可以继续工作。Mac 助手将权限设置、应用后台操作，以及暂停或停止输入的控制集中在菜单栏中。",
+    "lead": "你继续自己的工作，让 Codewhale 在各个应用间帮你操作。在这台 Mac 上授权一次，随时都能停止电脑操作。",
     "publisher": "由 Codewhale 开发",
     "download": "下载 Mac 版",
     "downloadZip": "ZIP 压缩包（供应用内更新使用）",
@@ -2073,16 +2073,12 @@
         "body": "通过设置按钮打开系统设置中的“辅助功能”和“屏幕录制”。由你决定授予哪些权限。"
       },
       {
-        "title": "运行后台检查",
-        "body": "助手会打开一个临时练习窗口，输入文本并截取该窗口，同时检查运行期间指针或前台应用是否发生变化。"
-      },
-      {
-        "title": "连接 Codewhale",
-        "body": "在 Codewhale 插件市场中审查、信任并启用 Computer Use。请使用插件 0.3.1 或更高版本，确保本地操作受助手的暂停和停止控制。"
+        "title": "启用 Computer Use",
+        "body": "在 Codewhale 的 Connectors 设置中安装或更新 Computer Use，然后审查并启用它。请它在应用中执行任务。首次使用时，在原生助手中选择 Trust until revoked；之后切换应用、模型或任务时，这份信任都会继续有效。"
       }
     ],
-    "controlsTitle": "暂停或停止应用控制",
-    "controlsBody": "受支持的操作可在选定应用的后台完成。需要前台控制的应用或手势必须得到你的授权。菜单会显示目标应用与输入模式；Pause 暂停助手输入，Stop 结束助手的现有会话。",
+    "controlsTitle": "随时掌握控制权",
+    "controlsBody": "操作目标应用旁会显示小巧的 Codewhale 控件。Pause 暂停电脑操作，Stop computer use 结束所有当前电脑会话。在 Settings 的 Remembered access 中选择 Turn off，即可撤销 Codewhale 的访问权限。想观看操作过程时，再请求打开实时预览。",
     "updateTitle": "由你决定何时更新",
     "updateBody": "在应用中选择 Check for updates。安装更新前，助手会校验下载文件、Codewhale 签名和 Apple 公证，并保留旧版应用以便恢复。",
     "help": "设置与故障排查",

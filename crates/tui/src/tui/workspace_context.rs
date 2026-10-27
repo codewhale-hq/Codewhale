@@ -8,7 +8,7 @@
 //! and only probes when that snapshot is stale.
 
 #[cfg(test)]
-use crate::dependencies::{ExternalTool, Git};
+use codewhale_dependencies::{ExternalTool, Git};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -280,7 +280,7 @@ mod tests {
 
         let mut app = crate::tui::app::App::new(
             crate::tui::test_support::test_tui_options(dir.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
         );
         app.use_memory = true;
         app.memory_path = memory.clone();

@@ -51,7 +51,8 @@ use crate::plugins::builtin::{
     EmbeddedBundle, STAMP_NAME, embedded_bundles, parse_snapshot_dir_name, snapshots_dir,
 };
 use crate::plugins::discovery::{plugin_id, plugin_root_hash};
-use crate::plugins::types::{PluginId, PluginScope};
+use crate::plugins::types::PluginScope;
+use codewhale_config::PluginId;
 
 /// How long a snapshot or stage must sit untouched before it may be removed.
 /// Every start of a build re-stamps its snapshot, so this is "not started by

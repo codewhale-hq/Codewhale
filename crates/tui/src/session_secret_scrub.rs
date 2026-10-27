@@ -186,7 +186,7 @@ pub(crate) fn configured_secrets(
     config_path: Option<PathBuf>,
     profile: Option<&str>,
 ) -> anyhow::Result<Vec<String>> {
-    let config = crate::config::Config::load(config_path, profile)?;
+    let config = crate::plugins::providers::load_config(config_path, profile)?;
     Ok(crate::client::active_model_bound_secret_values(&config))
 }
 

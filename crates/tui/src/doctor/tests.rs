@@ -10,11 +10,11 @@ fn default_probe_request_is_fully_offline() {
     assert!(!request.should_probe_search());
 }
 
-fn ds4_config() -> crate::config::Config {
-    let mut providers = crate::config::ProvidersConfig::default();
+fn ds4_config() -> codewhale_runtime::config::Config {
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.custom.insert(
         "ds4".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:8000/v1".to_string()),
             model: Some("deepseek-v4-flash".to_string()),
@@ -22,10 +22,13 @@ fn ds4_config() -> crate::config::Config {
             ..Default::default()
         },
     );
-    crate::config::Config {
-        provider: Some("ds4".to_string()),
-        providers: Some(providers),
-        ..Default::default()
+    {
+        let __cw_config_init_0_0 = Some("ds4".to_string());
+        let __cw_config_init_0_1 = Some(providers);
+        let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
 }
 
@@ -156,14 +159,16 @@ async fn search_probe_counts_any_http_response_as_transport_only() {
         .expect(1)
         .mount(&server)
         .await;
-    let config = crate::config::Config {
-        search: Some(crate::config::SearchConfig {
-            provider: Some(crate::config::SearchProvider::DuckDuckGo),
+    let config = {
+        let __cw_config_init_1_0 = Some(codewhale_runtime::config::SearchConfig {
+            provider: Some(codewhale_runtime::config::SearchProvider::DuckDuckGo),
             base_url: Some(server.uri()),
             api_key: None,
             native: None,
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_1_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_1_value.search = __cw_config_init_1_0;
+        __cw_config_init_1_value
     };
 
     let report = doctor_search_probe(
@@ -211,14 +216,16 @@ async fn search_probe_does_not_follow_redirects() {
         .expect(0)
         .mount(&server)
         .await;
-    let config = crate::config::Config {
-        search: Some(crate::config::SearchConfig {
-            provider: Some(crate::config::SearchProvider::Searxng),
+    let config = {
+        let __cw_config_init_2_0 = Some(codewhale_runtime::config::SearchConfig {
+            provider: Some(codewhale_runtime::config::SearchProvider::Searxng),
             base_url: Some(server.uri()),
             api_key: None,
             native: None,
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_2_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_2_value.search = __cw_config_init_2_0;
+        __cw_config_init_2_value
     };
 
     let report = doctor_search_probe(
@@ -238,19 +245,22 @@ async fn search_probe_does_not_follow_redirects() {
 
 #[tokio::test]
 async fn search_probe_respects_network_policy_without_contacting_the_authority() {
-    let config = crate::config::Config {
-        search: Some(crate::config::SearchConfig {
-            provider: Some(crate::config::SearchProvider::Searxng),
+    let config = {
+        let __cw_config_init_3_0 = Some(codewhale_runtime::config::SearchConfig {
+            provider: Some(codewhale_runtime::config::SearchProvider::Searxng),
             base_url: Some("https://search.example/private?token=secret".to_string()),
             api_key: None,
             native: None,
-        }),
-        network: Some(crate::config::NetworkPolicyToml {
+        });
+        let __cw_config_init_3_1 = Some(codewhale_config::NetworkPolicyToml {
             default: "allow".to_string(),
             deny: vec!["search.example".to_string()],
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        let mut __cw_config_init_3_value: codewhale_runtime::config::Config = Default::default();
+        __cw_config_init_3_value.search = __cw_config_init_3_0;
+        __cw_config_init_3_value.network = __cw_config_init_3_1;
+        __cw_config_init_3_value
     };
 
     let report = doctor_search_probe(
@@ -276,7 +286,7 @@ async fn search_probe_respects_network_policy_without_contacting_the_authority()
 
 #[tokio::test]
 async fn search_probe_skips_the_default_provider_when_web_search_is_disabled() {
-    let mut config = crate::config::Config::default();
+    let mut config = codewhale_runtime::config::Config::default();
     config
         .set_feature("web_search", false)
         .expect("known feature");
@@ -432,14 +442,14 @@ fn structural_url_authority_omits_every_secret_capable_component() {
         sentinels[0], sentinels[1], sentinels[2], sentinels[3], sentinels[4], sentinels[5]
     );
 
-    let authority = structural_url_authority(&raw);
+    let authority = codewhale_config::structural_url_authority(&raw);
 
     assert_eq!(authority, "https://example.invalid:8443");
     for sentinel in sentinels {
         assert!(!authority.contains(sentinel));
     }
     assert_eq!(
-        structural_url_authority("http://[::1]:9000/private?token=review-secret"),
+        codewhale_config::structural_url_authority("http://[::1]:9000/private?token=review-secret"),
         "http://[::1]:9000"
     );
 }

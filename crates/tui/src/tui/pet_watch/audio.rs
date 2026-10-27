@@ -175,11 +175,13 @@ impl Drop for Output {
 }
 
 /// The pet's PCM player: `ffplay` from a fixed install prefix, never from the
-/// ambient `PATH` (see [`crate::notify::audio::trusted_system_executable`]). A player
+/// ambient `PATH` (see [`codewhale_notify::audio::trusted_system_executable`]). A player
 /// that is not installed there fails the start and Watch reports audio as
 /// unavailable.
 fn player_command() -> io::Result<Command> {
-    let mut command = Command::new(crate::notify::audio::trusted_system_executable("ffplay")?);
+    let mut command = Command::new(codewhale_notify::audio::trusted_system_executable(
+        "ffplay",
+    )?);
     command.args([
         "-nodisp",
         "-autoexit",

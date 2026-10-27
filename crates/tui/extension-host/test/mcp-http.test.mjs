@@ -9,6 +9,7 @@ import { validateMessage } from '../dist/protocol.mjs'
 
 const owner = { plugin_id: 'host:mcp', generation: 1, owner_token: 'builtin-test-token' }
 const initParams = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codewhale-tui', version: '0.10.1' } }
+const metadata = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': initParams.clientInfo, 'io.modelcontextprotocol/clientCapabilities': {} }
 class FakeFetchProxy {
   session = randomUUID()
   grants = new Map()
@@ -16,12 +17,14 @@ class FakeFetchProxy {
   frames = []
   fetches = []
   closed = false
+  modern = false
   sequence = 0
   failWrite = false
   status = undefined
   silent = false
   constructor(legacy = false, ssePost = false) { this.legacy = legacy; this.ssePost = ssePost }
   grant(method, params) {
+    if (this.modern && !['initialize', 'notifications/initialized'].includes(method)) params = { ...params, _meta: metadata }
     const grant = { ticket: randomUUID(), operation_id: randomUUID(), method, ...(method.startsWith('notifications/') ? {} : { wire_id: String(this.sequence++) }), params: structuredClone(params) }
     this.grants.set(grant.ticket, structuredClone(grant)); return grant
   }
@@ -45,7 +48,7 @@ class FakeFetchProxy {
     assert.equal(method, 'net/fetch')
     this.fetches.push(structuredClone(params))
     assert.equal(new URL(params.url).origin, 'https://mcp-proxy.invalid')
-    assert.ok(Object.keys(params.headers).every(key => ['accept', 'content_type', 'mcp_session_id', 'mcp_protocol_version'].includes(key)))
+    assert.ok(Object.keys(params.headers).every(key => ['accept', 'content_type', 'mcp_session_id', 'mcp_protocol_version', 'mcp_method', 'mcp_name'].includes(key)))
     if (params.method === 'GET') {
       assert.equal(params.url, `https://mcp-proxy.invalid/${this.session}`)
       if (!this.legacy) return { status: 405, headers: {} }
@@ -71,10 +74,10 @@ class FakeFetchProxy {
     if (this.status !== undefined && frame.method !== 'initialize') return { status: this.status, headers: {} }
     if (!Object.hasOwn(frame, 'id')) return { status: 202, headers: {} }
     assert.equal(typeof frame.id, 'string', 'real numeric SDK IDs must not reach the peer')
-    const result = this.customResult?.(frame.method) ?? (frame.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'fetch-fixture', version: '1' } }
-      : frame.method === 'tools/list' ? { tools: [{ name: 'echo', inputSchema: { type: 'object' } }], nextCursor: 'next-page' }
+    const result = this.customResult?.(frame.method) ?? (frame.method === 'server/discover' ? { resultType: 'complete', ttlMs: 0, cacheScope: 'private', supportedVersions: ['2026-07-28'], capabilities: { tools: {} } } : frame.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'fetch-fixture', version: '1' } }
+      : frame.method === 'tools/list' ? { ...(this.modern ? { ttlMs: 0, cacheScope: 'private' } : {}), tools: [{ name: 'echo', inputSchema: { type: 'object' } }], nextCursor: 'next-page' }
       : { content: [{ type: 'text', text: 'ok' }] })
-    const response = JSON.stringify({ jsonrpc: '2.0', id: frame.id, result })
+    const response = JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: this.modern ? { resultType: 'complete', ...result } : result })
     if (this.legacy) {
       if (!this.silent) this.append(this.stream, `event: message\ndata: ${response}\n\n`)
       return { status: 202, headers: {} }
@@ -83,15 +86,17 @@ class FakeFetchProxy {
     return { status: 200, headers, response_id: this.body(this.silent ? '' : this.ssePost ? `event: message\ndata: ${response}\n\n` : response, this.silent) }
   }
 }
-async function fixture(legacy = false, ssePost = false) {
+async function fixture(legacy = false, ssePost = false, modern = false) {
   const broker = new FakeFetchProxy(legacy, ssePost), module = createMcpModule(broker, owner)
+  broker.modern = modern
   const open = { owner, session_id: broker.session, transport: legacy ? 'sse' : 'http', launch_ticket: 'launch-once', initialize_grant: broker.grant('initialize', initParams), initialized_grant: broker.grant('notifications/initialized', {}), client_version: '0.10.1', deadline_ms: 1000 }
+  if (modern) open.discover_grant = broker.grant('server/discover', {})
   const signal = new AbortController().signal
   await module.open(open, signal); return { broker, module, open, signal }
 }
-for (const [name, legacy, ssePost] of [['HTTP JSON', false, false], ['HTTP SSE response', false, true], ['legacy SSE', true, false]]) {
+for (const [name, legacy, ssePost, modern] of [['modern HTTP JSON', false, false, true], ['HTTP SSE response', false, true, false], ['legacy SSE', true, false, false]]) {
   test(`official ${name} transport uses opaque FetchProxy and one exact per-page Rust wire ID`, async () => {
-    const f = await fixture(legacy, ssePost)
+    const f = await fixture(legacy, ssePost, modern)
     try {
       const grant = f.broker.grant('tools/list', { cursor: 'one-page' })
       const result = await f.module.request({ owner, session_id: f.open.session_id, grant, deadline_ms: 1000 }, f.signal)
@@ -99,7 +104,18 @@ for (const [name, legacy, ssePost] of [['HTTP JSON', false, false], ['HTTP SSE r
       assert.equal(f.broker.frames.filter(frame => frame.method === 'tools/list').length, 1)
       assert.equal(f.broker.frames.find(frame => frame.method === 'tools/list').id, grant.wire_id)
       assert.ok(f.broker.frames.filter(frame => Object.hasOwn(frame, 'id')).every(frame => typeof frame.id === 'string'))
-      if (!legacy) assert.equal(f.broker.fetches.find(params => params.frame?.method === 'tools/list').headers.mcp_session_id, 'rust-observed-session')
+      if (!legacy && !modern) assert.equal(f.broker.fetches.find(params => params.frame?.method === 'tools/list').headers.mcp_session_id, 'rust-observed-session')
+      if (modern) {
+        assert.equal(f.broker.frames.some(frame => frame.method === 'initialize'), false)
+        await f.module.request({ owner, session_id: f.open.session_id, grant: f.broker.grant('tools/call', { name: 'echo', arguments: {} }), deadline_ms: 1000 }, f.signal)
+        for (const request of f.broker.fetches.filter(p => p.frame)) {
+          assert.deepEqual(request.frame.params._meta, metadata)
+          assert.equal(request.headers.mcp_protocol_version, '2026-07-28')
+          assert.equal(request.headers.mcp_method, request.frame.method)
+          assert.equal(request.headers.mcp_name, request.frame.method === 'tools/call' ? 'echo' : undefined)
+          assert.equal(request.headers.mcp_session_id, undefined)
+        }
+      }
     } finally { await f.module.dispose() }
     assert.equal(f.broker.closed, true)
   })

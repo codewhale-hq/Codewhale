@@ -11,8 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::skills::install::{RegistryDocument, RegistryEntry};
 use crate::skills::recommend::recommend_remote_skills;
+use codewhale_skill_install::install::{RegistryDocument, RegistryEntry};
 
 use super::marketplace::types::MarketplaceCandidate;
 use super::registry::PluginRegistry;

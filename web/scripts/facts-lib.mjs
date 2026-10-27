@@ -5,7 +5,7 @@
  *
  * Sources of truth:
  *   - <repo>/Cargo.toml                         → version, workspace crates
- *   - <repo>/crates/tui/src/sandbox/mod.rs      → enforced sandbox markers
+ *   - <repo>/crates/sandbox/src/lib.rs           → enforced sandbox markers
  * *   - <repo>/crates/config/assets/provider_descriptors.json → provider labels and default model
  *   - <repo>/npm/codewhale/package.json         → node engines
  *   - <repo>/crates/tui/src/tools/*.rs          → tool count (ToolSpec impls)
@@ -46,7 +46,7 @@ export function deriveCrates() {
 }
 
 export function deriveSandboxBackends() {
-  const source = read("crates/tui/src/sandbox/mod.rs");
+  const source = read("crates/sandbox/src/lib.rs");
   return source ? deriveSandboxBackendsFromSource(source) : [];
 }
 

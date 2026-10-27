@@ -11,37 +11,15 @@ use codewhale_config::pricing::{
     PricingQuoteError, TokenClass, TokenUsage,
 };
 
+use codewhale_config::ProviderKind;
 #[cfg(test)]
-use crate::config::DEFAULT_STEPFUN_MODEL;
-use crate::config::{
-    DEEPSEEK_ALIAS_RETIREMENT_UTC, DEFAULT_STEPFUN_BASE_URL, DEFAULT_STEPFUN_PLAN_BASE_URL,
-    ProviderKind, canonical_model_id_for_provider,
+use codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_MODEL;
+use codewhale_config::descriptors::defaults::{
+    DEFAULT_STEPFUN_BASE_URL, DEFAULT_STEPFUN_PLAN_BASE_URL,
 };
+use codewhale_config::pricing::CostCurrency;
 use codewhale_models::{Usage, has_date_snapshot_suffix};
-
-/// Cost display currency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CostCurrency {
-    Usd,
-    Cny,
-}
-
-impl CostCurrency {
-    pub fn from_setting(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "usd" | "dollar" | "dollars" | "$" => Some(Self::Usd),
-            "cny" | "rmb" | "yuan" | "¥" => Some(Self::Cny),
-            _ => None,
-        }
-    }
-
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Usd => "$",
-            Self::Cny => "¥",
-        }
-    }
-}
+use codewhale_runtime::config::{DEEPSEEK_ALIAS_RETIREMENT_UTC, canonical_model_id_for_provider};
 
 /// Cost estimate in displayable currencies.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -2269,7 +2247,7 @@ fn reviewed_provider_live_route_is_metered(
                 && endpoint_fingerprint.is_some_and(|fingerprint| {
                     fingerprint
                         == codewhale_config::catalog::base_url_fingerprint(
-                            crate::config::DEFAULT_OPENROUTER_BASE_URL,
+                            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
                         )
                 })
         }
@@ -2865,14 +2843,14 @@ mod tests {
         // rate.
         let stepfun = pricing_for_billing_surface(
             ProviderKind::Stepfun,
-            DEFAULT_STEPFUN_MODEL,
+            "step-3.7-flash",
             Some(STEPFUN_PAYG_BILLING_SURFACE),
         )
         .expect("StepFun PAYG row");
         assert_eq!(stepfun.usd.cache_write, CacheWritePolicy::Unpublished);
         let failed = audit_turn_cost_for_route_at(
             ProviderKind::Stepfun,
-            DEFAULT_STEPFUN_MODEL,
+            "step-3.7-flash",
             Some(STEPFUN_PAYG_BILLING_SURFACE),
             &write_heavy,
             now,
@@ -2893,7 +2871,7 @@ mod tests {
         assert!(
             audit_turn_cost_for_route_at(
                 ProviderKind::Stepfun,
-                DEFAULT_STEPFUN_MODEL,
+                "step-3.7-flash",
                 Some(STEPFUN_PAYG_BILLING_SURFACE),
                 &no_write,
                 now,
@@ -2961,7 +2939,7 @@ mod tests {
             ),
             (
                 ProviderKind::Moonshot,
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
                 MOONSHOT_KIMI_CODE_BILLING_SURFACE,
                 EndpointMetering::ExactSubscription,
             ),
@@ -2973,13 +2951,13 @@ mod tests {
             ),
             (
                 ProviderKind::XiaomiMimo,
-                crate::config::XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL,
+                codewhale_runtime::config::XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL,
                 XIAOMI_PAYG_BILLING_SURFACE,
                 EndpointMetering::Money,
             ),
             (
                 ProviderKind::XiaomiMimo,
-                crate::config::DEFAULT_XIAOMI_MIMO_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_XIAOMI_MIMO_BASE_URL,
                 XIAOMI_TOKEN_PLAN_BILLING_SURFACE,
                 EndpointMetering::ExactSubscription,
             ),
@@ -3186,7 +3164,7 @@ mod tests {
         assert_eq!(
             billing_surface_for_route(
                 ProviderKind::Moonshot,
-                Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL)
+                Some(codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL)
             ),
             Some(MOONSHOT_KIMI_CODE_BILLING_SURFACE)
         );
@@ -3521,7 +3499,7 @@ mod tests {
         };
         let payg = calculate_turn_cost_estimate_for_billing_surface(
             ProviderKind::Stepfun,
-            DEFAULT_STEPFUN_MODEL,
+            "step-3.7-flash",
             Some(STEPFUN_PAYG_BILLING_SURFACE),
             &usage,
         )
@@ -3534,7 +3512,7 @@ mod tests {
         assert!(
             calculate_turn_cost_estimate_for_provider(
                 ProviderKind::Stepfun,
-                DEFAULT_STEPFUN_MODEL,
+                "step-3.7-flash",
                 &usage,
             )
             .is_none()
@@ -3542,7 +3520,7 @@ mod tests {
         assert!(
             calculate_turn_cost_estimate_for_provider_at(
                 ProviderKind::Stepfun,
-                DEFAULT_STEPFUN_MODEL,
+                "step-3.7-flash",
                 &usage,
                 Utc::now(),
             )
@@ -3550,14 +3528,14 @@ mod tests {
         );
         assert!(!has_pricing_for_provider(
             ProviderKind::Stepfun,
-            DEFAULT_STEPFUN_MODEL
+            "step-3.7-flash"
         ));
 
         for surface in [None, Some(STEPFUN_PLAN_BILLING_SURFACE)] {
             assert!(
                 calculate_turn_cost_estimate_for_billing_surface(
                     ProviderKind::Stepfun,
-                    DEFAULT_STEPFUN_MODEL,
+                    "step-3.7-flash",
                     surface,
                     &usage,
                 )
@@ -3581,7 +3559,7 @@ mod tests {
             assert!(
                 calculate_turn_cost_estimate_for_billing_surface(
                     provider,
-                    DEFAULT_STEPFUN_MODEL,
+                    "step-3.7-flash",
                     Some(STEPFUN_PAYG_BILLING_SURFACE),
                     &usage,
                 )
@@ -3589,14 +3567,14 @@ mod tests {
                 "{provider:?}"
             );
             assert!(
-                calculate_turn_cost_estimate_for_provider(provider, DEFAULT_STEPFUN_MODEL, &usage,)
+                calculate_turn_cost_estimate_for_provider(provider, "step-3.7-flash", &usage,)
                     .is_none(),
                 "{provider:?}"
             );
             assert!(
                 calculate_turn_cost_estimate_for_provider_at(
                     provider,
-                    DEFAULT_STEPFUN_MODEL,
+                    "step-3.7-flash",
                     &usage,
                     Utc::now(),
                 )
@@ -3604,14 +3582,14 @@ mod tests {
                 "{provider:?}"
             );
             assert!(
-                !has_pricing_for_provider(provider, DEFAULT_STEPFUN_MODEL),
+                !has_pricing_for_provider(provider, "step-3.7-flash"),
                 "{provider:?}"
             );
         }
 
         let recorded = calculate_turn_cost_estimate_for_route_at(
             ProviderKind::Stepfun,
-            DEFAULT_STEPFUN_MODEL,
+            "step-3.7-flash",
             Some(STEPFUN_PAYG_BILLING_SURFACE),
             &usage,
             Utc::now(),
@@ -5486,7 +5464,7 @@ mod tests {
         let now = Utc::now();
         let fetched_at = u64::try_from(now.timestamp()).expect("timestamp");
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
-            crate::config::DEFAULT_FIREWORKS_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_FIREWORKS_BASE_URL,
         );
         crate::provider_lake::set_live_snapshot(
             codewhale_config::catalog::CatalogSnapshot {
@@ -5539,7 +5517,7 @@ mod tests {
             .expect("timestamp")
             .saturating_add(1);
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
-            crate::config::DEFAULT_FIREWORKS_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_FIREWORKS_BASE_URL,
         );
         crate::provider_lake::set_live_snapshot(
             codewhale_config::catalog::CatalogSnapshot {
@@ -5676,7 +5654,7 @@ mod tests {
         let now = Utc::now();
         let fetched_at = u64::try_from(now.timestamp()).expect("timestamp");
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
-            crate::config::DEFAULT_CONCENTRATE_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_CONCENTRATE_BASE_URL,
         );
         crate::provider_lake::set_live_snapshot(
             codewhale_config::catalog::CatalogSnapshot {
@@ -5704,7 +5682,7 @@ mod tests {
         let usage = million_input_usage();
         let surface = billing_surface_for_route(
             ProviderKind::Concentrate,
-            Some(crate::config::DEFAULT_CONCENTRATE_BASE_URL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_CONCENTRATE_BASE_URL),
         );
         let scoped = audit_turn_cost_for_route_on_endpoint_at(
             ProviderKind::Concentrate,

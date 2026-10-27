@@ -1226,7 +1226,7 @@ mod transcript_legacy;
 #[cfg(test)]
 mod mounted_transcript_acceptance {
     use super::*;
-    use crate::config::Config;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn fixture() -> App {

@@ -38,12 +38,13 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-10-19T08:05:41.018Z",
+  "generatedAt": "2026-10-27T20:10:16.080Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.2",
   "crates": [
     "agent",
+    "agent-contract",
     "app-server",
     "build-support",
     "cli",
@@ -52,24 +53,33 @@ export const FACTS: RepoFacts = {
     "commands",
     "config",
     "core",
+    "dependencies",
     "execpolicy",
     "hooks",
     "lane",
     "localization",
+    "lsp",
     "mcp",
     "memory",
     "models",
+    "net",
+    "notify",
     "palette",
     "paths",
     "protocol",
     "release",
+    "repl",
     "runtime",
+    "sandbox",
     "sanitize",
     "secrets",
+    "skill-install",
+    "snapshot",
     "state",
     "telemetry",
     "tools",
     "tui",
+    "util",
     "workflow",
     "workflow-js"
   ],
@@ -847,7 +857,7 @@ export const FACTS: RepoFacts = {
       "provider": "Anthropic",
       "contextWindow": 200000,
       "maxOutput": 64000,
-      "reasoning": false,
+      "reasoning": true,
       "addedAt": "2026-06-14"
     },
     {
@@ -1062,12 +1072,12 @@ export const FACTS: RepoFacts = {
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=18",
   "toolCount": 79,
-  "contributorCount": 390,
+  "contributorCount": 393,
   "license": "MIT",
   "latestPublishedRelease": {
-    "tag": "v0.10.1",
-    "version": "0.10.1",
-    "publishedAt": "2026-10-08T01:47:44Z",
-    "url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.1"
+    "tag": "v0.10.2",
+    "version": "0.10.2",
+    "publishedAt": "2026-10-24T17:31:14Z",
+    "url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.2"
   }
 };

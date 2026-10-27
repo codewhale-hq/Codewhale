@@ -458,9 +458,8 @@ mod tests {
 
     #[test]
     fn pending_agents_are_labelled_by_the_name_they_were_dispatched_under() {
-        use crate::tools::subagent::{
-            FleetRole, SubAgentAssignment, SubAgentResult, SubAgentStatus,
-        };
+        use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus};
+        use codewhale_agent_contract::role::FleetRole;
         let options = crate::tui::test_support::test_tui_options(std::path::PathBuf::from("."));
         let mut app = crate::tui::test_support::test_app_with_options(options);
         let running = |agent_id: &str, name: &str| SubAgentResult {

@@ -22,9 +22,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::install::PluginInstallSource;
 use super::super::manifest::{PluginCompatibility, PluginInventory, PluginWhen};
-use super::super::types::{PluginDiagnosticLevel, PluginId};
+use super::super::types::PluginDiagnosticLevel;
+use codewhale_config::PluginId;
 
 /// Which real catalog format a document follows.
 ///
@@ -248,14 +248,6 @@ impl MarketplaceInstallPlan {
         match self {
             Self::Supported { .. } => None,
             Self::Unsupported { reason, .. } => Some(reason.as_str()),
-        }
-    }
-
-    #[must_use]
-    pub fn to_install_source(&self) -> Option<PluginInstallSource> {
-        match self {
-            Self::Supported { spec, .. } => PluginInstallSource::parse(spec).ok(),
-            Self::Unsupported { .. } => None,
         }
     }
 }

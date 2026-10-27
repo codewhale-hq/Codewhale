@@ -28,6 +28,19 @@ pub const ACTIVATION_POLICY_VERSION: u32 = 5;
 /// either direction re-reviews every plugin. That is intended.
 pub const EXTENSION_HOST_POLICY_VERSION: u32 = 6;
 
+pub(crate) const DSH_COMPATIBILITY: &[u8] =
+    include_bytes!("../../extension-host/dist/dsh-compatibility.json");
+
+pub(crate) fn dsh_row_bridge(name: &str) -> bool {
+    static TABLE: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+    TABLE
+        .get_or_init(|| serde_json::from_slice(DSH_COMPATIBILITY).ok())
+        .as_ref()
+        .and_then(|table| table.get("row_bridges"))
+        .and_then(|bridges| bridges.get(name))
+        .is_some_and(serde_json::Value::is_string)
+}
+
 /// Process-wide policy selection, set once at boot from config
 /// (`install_extension_host_policy`). A config reload never flips it
 /// mid-process; unset means the shipping v5 policy, which also covers tests.
@@ -158,6 +171,7 @@ pub struct PluginActivationPolicy {
     pub version: u32,
     pub supported: &'static [PluginActivationCapability],
     pub inactive: &'static [PluginActivationCapability],
+    pub dsh_compatibility: &'static [u8],
 }
 
 impl PluginActivationPolicy {
@@ -177,6 +191,7 @@ impl PluginActivationPolicy {
     pub const fn extension_host() -> Self {
         Self {
             version: EXTENSION_HOST_POLICY_VERSION,
+            dsh_compatibility: DSH_COMPATIBILITY,
             supported: &[
                 PluginActivationCapability::Skills,
                 PluginActivationCapability::McpStdio,
@@ -201,6 +216,7 @@ impl PluginActivationPolicy {
     pub const fn v3() -> Self {
         Self {
             version: ACTIVATION_POLICY_VERSION,
+            dsh_compatibility: &[],
             supported: &[
                 PluginActivationCapability::Skills,
                 PluginActivationCapability::McpStdio,
@@ -238,6 +254,11 @@ impl PluginActivationPolicy {
             hasher.update(b"inactive\0");
             hasher.update(capability.as_str().as_bytes());
             hasher.update(b"\0");
+        }
+        if !self.dsh_compatibility.is_empty() {
+            hasher.update(b"dsh-compatibility\0");
+            hasher.update((self.dsh_compatibility.len() as u64).to_le_bytes());
+            hasher.update(self.dsh_compatibility);
         }
     }
 }
@@ -293,6 +314,15 @@ mod tests {
             policy_digest(current),
             policy_digest(PluginActivationPolicy::v3())
         );
+        let changed = PluginActivationPolicy {
+            dsh_compatibility: b"{\"provided_services\":[\"new-service\"]}",
+            ..current
+        };
+        assert_ne!(policy_digest(current), policy_digest(changed));
+        let table: serde_json::Value = serde_json::from_slice(DSH_COMPATIBILITY).unwrap();
+        assert_eq!(table["version"], 2);
+        assert!(dsh_row_bridge("@deepseek-ai/dsh-persona"));
+        assert!(!dsh_row_bridge("@deepseek-ai/dsh-agent-loop"));
         for capability in PluginActivationCapability::ALL {
             assert_ne!(
                 current.supported.contains(capability),

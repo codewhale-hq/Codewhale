@@ -8,12 +8,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 
 use crate::client::CodewhaleClient;
-use crate::config::ProviderKind;
-use crate::config::VisionModelConfig;
 use crate::llm_client::{LlmError, RetryConfig, sanitize_http_error_body, with_retry};
 use crate::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::VisionModelConfig;
 
 pub struct ImageAnalyzeTool {
     config: VisionModelConfig,
@@ -29,7 +29,7 @@ pub struct ImageAnalyzeTool {
 /// generation — precisely the healthy work a 120s cap used to kill. The
 /// client therefore bounds only the connect handshake, and this envelope
 /// (the same 30-minute wall clock as engine streaming,
-/// `STREAM_MAX_DURATION_SECS`) is the sole total bound; a stalled
+/// `DEFAULT_STREAM_MAX_DURATION_SECS`) is the sole total bound; a stalled
 /// connection errors out through it instead of hanging.
 const VISION_REQUEST_ENVELOPE: Duration = Duration::from_secs(1800);
 
@@ -53,7 +53,7 @@ impl ImageAnalyzeTool {
         config: VisionModelConfig,
         route_client: Option<CodewhaleClient>,
     ) -> Self {
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             // Bound only the connect handshake. A client- or request-level
             // `read_timeout` would start counting at `send()` and never
             // reset before the response headers, quietly re-introducing a
@@ -178,7 +178,7 @@ impl ImageAnalyzeTool {
         if !Self::is_xiaomi_mimo_model(model) || model.contains('/') {
             return self.config.model.clone();
         }
-        crate::config::canonical_xiaomi_mimo_model_id(model)
+        codewhale_runtime::config::canonical_xiaomi_mimo_model_id(model)
             .map_or_else(|| self.config.model.clone(), str::to_string)
     }
 
@@ -526,10 +526,10 @@ mod tests {
     fn vision_vendor_pin_requires_the_matching_bound_route() {
         let _lock = crate::test_support::lock_test_env();
         let base_url = "http://127.0.0.1:18080/v1";
-        let client = CodewhaleClient::new(&crate::config::Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openrouter: crate::config::ProviderConfig {
+        let client = CodewhaleClient::new(&{
+            let __cw_config_init_0_0 = Some("openrouter".to_string());
+            let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("fixture-openrouter-key".to_string()),
                     base_url: Some(base_url.to_string()),
                     model: Some("fixture/vision".to_string()),
@@ -537,8 +537,12 @@ mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         })
         .unwrap();
         for (vision_base, matched_client, pinned) in [
@@ -575,18 +579,22 @@ mod tests {
             crate::test_support::EnvVarGuard::set("CODEWHALE_MAX_OUTPUT_TOKENS", "384000");
         let base_url = "http://127.0.0.1:18080/v1".to_string();
         let model = "DeepSeek-V4-Flash".to_string();
-        let client = CodewhaleClient::new(&crate::config::Config {
-            provider: Some("vllm".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                vllm: crate::config::ProviderConfig {
+        let client = CodewhaleClient::new(&{
+            let __cw_config_init_1_0 = Some("vllm".to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                vllm: codewhale_runtime::config::ProviderConfig {
                     base_url: Some(base_url.clone()),
                     model: Some(model.clone()),
                     context_window: Some(327_680),
-                    ..crate::config::ProviderConfig::default()
+                    ..codewhale_runtime::config::ProviderConfig::default()
                 },
-                ..crate::config::ProvidersConfig::default()
-            }),
-            ..crate::config::Config::default()
+                ..codewhale_runtime::config::ProvidersConfig::default()
+            });
+            let mut __cw_config_init_1_value: codewhale_runtime::config::Config =
+                codewhale_runtime::config::Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         })
         .expect("bound vLLM client");
         let tool = ImageAnalyzeTool::new_with_route_client(

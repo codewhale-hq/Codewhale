@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use super::PluginRegistry;
 use super::activation::PluginActivationCapability;
 use super::registry::verify_plugin_component_authority;
-use super::types::{LoadedPlugin, PluginAuthority, PluginScope};
+use super::types::{LoadedPlugin, PluginScope};
+use codewhale_config::PluginAuthority;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginComponentSource {

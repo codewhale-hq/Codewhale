@@ -632,7 +632,7 @@ function report(input) {
       if (replacement !== void 0 && trim(replacement).length) {
         const codeFence = fence(replacement);
         out += `
-  ${codeFence}${posted ? "text" : "suggestion"}
+  ${codeFence}${posted ? "diff" : "suggestion"}
 `;
         for (const line of replacement.split("\n")) out += `  ${line}
 `;
@@ -643,6 +643,17 @@ function report(input) {
     out += "\n";
   }
   if (assessment.length) out += "### Assessment\n\n" + trim(assessment) + "\n\n";
+  const tally = { blocker: 0, concern: 0, nit: 0, introduced: 0, preexisting: 0 };
+  for (const item of issues) {
+    const issue = row3(item), severity = text3(issue.severity);
+    if (severity === "blocker") tally.blocker += 1;
+    else if (severity === "concern") tally.concern += 1;
+    else if (severity === "nit") tally.nit += 1;
+    if (optional(issue.authorship) === "preexisting") tally.preexisting += 1;
+    else tally.introduced += 1;
+  }
+  out += `<!-- codewhale-review: {"blocker":${tally.blocker},"concern":${tally.concern},"nit":${tally.nit},"introduced":${tally.introduced},"preexisting":${tally.preexisting}} -->
+`;
   return out;
 }
 function transformReviewSnapshot(operation, value) {

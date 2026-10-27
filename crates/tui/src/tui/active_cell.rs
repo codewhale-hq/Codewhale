@@ -175,12 +175,9 @@ impl ActiveCell {
         entries
     }
 
-    /// Mark every still-running tool entry as `Failed` (used when the turn is
-    /// cancelled mid-flight). Entries that already completed are left alone.
-    ///
-    /// `Failed` is the closest existing variant for "interrupted"; the cell's
-    /// surrounding context (turn-status banner) tells the user it was a
-    /// cancellation rather than a tool error.
+    /// Mark every still-running tool entry as `Stopped` (used when the turn is
+    /// cancelled or the provider ends it mid-flight). Entries that already
+    /// completed are left alone.
     pub fn mark_in_progress_as_interrupted(&mut self) {
         for cell in &mut self.entries {
             mark_running_as_interrupted(cell);
@@ -208,32 +205,32 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
     };
     match tool_cell {
         ToolCell::Exec(exec) if exec.status == ToolStatus::Running => {
-            exec.status = ToolStatus::Failed;
+            exec.status = ToolStatus::Stopped;
         }
         ToolCell::Exploring(explore) => {
             for entry in &mut explore.entries {
                 if entry.status == ToolStatus::Running {
-                    entry.status = ToolStatus::Failed;
+                    entry.status = ToolStatus::Stopped;
                 }
             }
         }
         ToolCell::PlanUpdate(plan) if plan.status == ToolStatus::Running => {
-            plan.status = ToolStatus::Failed;
+            plan.status = ToolStatus::Stopped;
         }
         ToolCell::PatchSummary(patch) if patch.status == ToolStatus::Running => {
-            patch.status = ToolStatus::Failed;
+            patch.status = ToolStatus::Stopped;
         }
         ToolCell::Review(review) if review.status == ToolStatus::Running => {
-            review.status = ToolStatus::Failed;
+            review.status = ToolStatus::Stopped;
         }
         ToolCell::Mcp(mcp) if mcp.status == ToolStatus::Running => {
-            mcp.status = ToolStatus::Failed;
+            mcp.status = ToolStatus::Stopped;
         }
         ToolCell::WebSearch(search) if search.status == ToolStatus::Running => {
-            search.status = ToolStatus::Failed;
+            search.status = ToolStatus::Stopped;
         }
         ToolCell::Generic(generic) if generic.status == ToolStatus::Running => {
-            generic.status = ToolStatus::Failed;
+            generic.status = ToolStatus::Stopped;
         }
         _ => {}
     }
@@ -330,14 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_marks_running_entries_failed() {
+    fn interrupt_marks_running_entries_stopped() {
         let mut cell = ActiveCell::new();
         cell.push_tool("a", exec_cell("ls"));
         cell.mark_in_progress_as_interrupted();
         let HistoryCell::Tool(ToolCell::Exec(exec)) = &cell.entries()[0] else {
             panic!("expected exec")
         };
-        assert_eq!(exec.status, ToolStatus::Failed);
+        assert_eq!(exec.status, ToolStatus::Stopped);
     }
 
     fn thinking_cell(content: &str, streaming: bool) -> HistoryCell {

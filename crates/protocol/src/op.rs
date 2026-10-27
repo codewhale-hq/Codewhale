@@ -174,6 +174,31 @@ pub struct TurnSpec {
     pub verbosity: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOperationIntent {
+    pub title: String,
+    pub description: String,
+    pub commits: String,
+    pub linked_issue: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOperation {
+    pub version: u32,
+    pub repository: String,
+    pub pr_number: u64,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub diff: String,
+    pub intent: ReviewOperationIntent,
+    pub guidance: String,
+    pub max_claims: usize,
+    pub max_nits: usize,
+    pub max_chars: usize,
+}
+
 /// Operations that can be submitted to the core engine. This is the
 /// protocol view of `crates/tui/src/core/ops::Op` — same lifecycle,
 /// same provenance gate — but serializable and free of `mpsc` / `oneshot`
@@ -182,6 +207,10 @@ pub struct TurnSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Op {
+    Review {
+        turn: TurnSpec,
+        request: ReviewOperation,
+    },
     /// Drive one model turn: `role=user` content plus the resolved route
     /// receipt the engine will freeze at the client-freeze boundary. Headless
     /// and TUI must produce byte-identical `MessageRequest`s for identical
@@ -304,6 +333,9 @@ pub enum Op {
     FollowUpSubAgent {
         agent_id: String,
         text: String,
+    },
+    StartFleetMember {
+        member_id: String,
     },
 
     ChangeMode {
@@ -447,6 +479,7 @@ fn default_approval_mode() -> String {
 
 /// Every wire tag `Op` can carry, in declaration order.
 pub const OP_KINDS: &[&str] = &[
+    "review",
     "send_message",
     "steer",
     "continue_goal",
@@ -460,6 +493,7 @@ pub const OP_KINDS: &[&str] = &[
     "get_sub_agent_settlement",
     "cancel_sub_agent",
     "follow_up_sub_agent",
+    "start_fleet_member",
     "change_mode",
     "set_model",
     "set_compaction",
@@ -492,6 +526,7 @@ impl Op {
     #[must_use]
     pub fn kind_str(&self) -> &'static str {
         match self {
+            Self::Review { .. } => "review",
             Self::SendMessage(_) => "send_message",
             Self::Steer { .. } => "steer",
             Self::ContinueGoal { .. } => "continue_goal",
@@ -505,6 +540,7 @@ impl Op {
             Self::GetSubAgentSettlement => "get_sub_agent_settlement",
             Self::CancelSubAgent { .. } => "cancel_sub_agent",
             Self::FollowUpSubAgent { .. } => "follow_up_sub_agent",
+            Self::StartFleetMember { .. } => "start_fleet_member",
             Self::ChangeMode { .. } => "change_mode",
             Self::SetModel { .. } => "set_model",
             Self::SetCompaction { .. } => "set_compaction",
@@ -588,7 +624,31 @@ mod tests {
 
     /// One instance of every variant, in declaration order.
     fn every_variant() -> Vec<Op> {
+        let Op::SendMessage(turn) = headless_send_message_op(ThreadId::new(), "review").op else {
+            unreachable!()
+        };
         vec![
+            Op::Review {
+                turn,
+                request: ReviewOperation {
+                    version: 1,
+                    repository: "owner/repo".into(),
+                    pr_number: 1,
+                    head_sha: "a".repeat(40),
+                    base_sha: "b".repeat(40),
+                    diff: "diff".into(),
+                    intent: ReviewOperationIntent {
+                        title: String::new(),
+                        description: String::new(),
+                        commits: String::new(),
+                        linked_issue: String::new(),
+                    },
+                    guidance: String::new(),
+                    max_claims: 40,
+                    max_nits: 3,
+                    max_chars: 60_000,
+                },
+            },
             headless_send_message_op(ThreadId::new(), "hello").op,
             Op::Steer {
                 content: "more".into(),
@@ -645,6 +705,9 @@ mod tests {
             Op::FollowUpSubAgent {
                 agent_id: "a1".into(),
                 text: "go".into(),
+            },
+            Op::StartFleetMember {
+                member_id: "m1".into(),
             },
             Op::ChangeMode {
                 mode: "operate".into(),

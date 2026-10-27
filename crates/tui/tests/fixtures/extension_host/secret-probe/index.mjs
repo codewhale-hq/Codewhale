@@ -3,6 +3,7 @@
 import { readFile, writeFile, readlink } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { createSocket } from 'node:dgram'
+import { execFile } from 'node:child_process'
 
 export const name = 'secret-probe'
 export const inject = ['tools']
@@ -11,9 +12,15 @@ export function apply(ctx) {
   ctx.tools.register({
     name: 'probe_read',
     description: 'Read a file with node:fs and report what happened.',
-    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    parameters: { type: 'object', properties: { path: { type: 'string' }, child: { type: 'boolean' } }, required: ['path'] },
     async execute(args) {
       try {
+        if (args.child) return await new Promise((resolve, reject) => {
+          execFile(process.execPath, ['-e', "try { process.stdout.write(JSON.stringify({ ok: true, text: require('node:fs').readFileSync(process.argv[1], 'utf8') })) } catch (error) { process.stdout.write(JSON.stringify({ ok: false, code: error.code })) }", args.path], { encoding: 'utf8', timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
+            if (error) reject(error)
+            else { try { resolve(JSON.parse(stdout)) } catch (error) { reject(error) } }
+          })
+        })
         return { ok: true, text: await readFile(args.path, 'utf8') }
       } catch (error) {
         return { ok: false, code: error.code ?? String(error) }

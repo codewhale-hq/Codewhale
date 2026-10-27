@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 fn test_http_client() -> reqwest::Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    crate::tls::reqwest_client()
+    codewhale_release::tls::reqwest_client()
 }
 
 async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
@@ -155,52 +155,6 @@ fn reviewed_plugin_redirects_are_exact_normalized_origin_only() {
 }
 
 #[test]
-fn reviewed_plugin_remote_proxy_policy_never_reads_ambient_environment() {
-    let reads = std::cell::Cell::new(0_u32);
-    let proxy = configured_mcp_proxy(
-        &reqwest::Url::parse("https://example.com/mcp").unwrap(),
-        true,
-        |_| {
-            reads.set(reads.get() + 1);
-            Ok("http://127.0.0.1:9999".to_string())
-        },
-    );
-
-    assert_eq!(
-        reads.get(),
-        0,
-        "reviewed remotes must not read proxy values"
-    );
-    assert!(proxy.unwrap().is_none());
-}
-
-#[test]
-fn user_authored_mcp_proxy_policy_keeps_environment_support() {
-    let requested = std::cell::RefCell::new(Vec::new());
-    let proxy = configured_mcp_proxy(
-        &reqwest::Url::parse("https://example.com/mcp").unwrap(),
-        false,
-        |name| {
-            requested.borrow_mut().push(name.to_string());
-            match name {
-                "HTTPS_PROXY" => Ok("http://127.0.0.1:8080".to_string()),
-                _ => Err(std::env::VarError::NotPresent),
-            }
-        },
-    );
-
-    assert_eq!(
-        requested.into_inner(),
-        vec![
-            "HTTPS_PROXY".to_string(),
-            "NO_PROXY".to_string(),
-            "no_proxy".to_string(),
-        ]
-    );
-    assert!(proxy.unwrap().is_some());
-}
-
-#[test]
 fn test_mcp_config_parse() {
     let json = r#"{
         "timeouts": {
@@ -239,7 +193,7 @@ fn mcp_pool_parse_prefixed_name_rejects_ambiguous_configured_server_prefixes() {
         }"#,
     )
     .unwrap();
-    let pool = McpPool::new(config);
+    let pool = McpPool::new(config).with_backend(McpBackend::Rust);
 
     let error = pool
         .parse_prefixed_name("mcp_my_db_execute_sql")
@@ -281,7 +235,9 @@ fn mcp_server_config_parses_remote_auth_fields() {
                 "bearer_token_env_var": "REMOTE_MCP_TOKEN",
                 "scopes": ["tools/read", "tools/write"],
                 "oauth": {
-                    "client_id": "client-123"
+                    "client_id": "client-123",
+                    "issuer": "https://issuer.invalid",
+                    "client_metadata_url": "https://client.invalid/oauth.json"
                 },
                 "oauth_resource": "https://example.invalid"
             }
@@ -299,6 +255,14 @@ fn mcp_server_config_parses_remote_auth_fields() {
     );
     assert_eq!(remote.scopes, vec!["tools/read", "tools/write"]);
     assert_eq!(remote.oauth_client_id(), Some("client-123"));
+    let oauth = remote.oauth.as_ref().unwrap();
+    assert_eq!(oauth.issuer.as_deref(), Some("https://issuer.invalid"));
+    assert_eq!(
+        oauth.client_metadata_url.as_deref(),
+        Some("https://client.invalid/oauth.json")
+    );
+    let roundtrip: McpConfig = serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+    assert_eq!(roundtrip.servers["remote"].oauth, remote.oauth);
     assert_eq!(
         remote.oauth_resource.as_deref(),
         Some("https://example.invalid")
@@ -492,9 +456,9 @@ fn static_mcp_command_uses_expanded_sanitized_stdio_path() {
 
     let expanded_env = expand_env_placeholders_map(&server.env, "env").expect("expanded env");
     let mut old_spawn_command = tokio::process::Command::new("unused-test-command");
-    crate::child_env::apply_to_tokio_command_mcp(
+    codewhale_runtime::child_env::apply_to_tokio_command_mcp(
         &mut old_spawn_command,
-        crate::child_env::string_map_env(&expanded_env),
+        codewhale_runtime::child_env::string_map_env(&expanded_env),
     );
     let old_spawn_env = old_spawn_command
         .as_std()
@@ -816,7 +780,7 @@ async fn streamable_http_transport_prepares_configured_headers() {
 
 #[test]
 fn mcp_auth_required_error_item_is_model_visible() {
-    let pool = McpPool::new(McpConfig::default());
+    let pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     let item = pool.mcp_auth_required_error_item("nordic-mcp");
     assert_eq!(item["error"], "authentication_required");
     assert_eq!(item["server"], "nordic-mcp");
@@ -1132,7 +1096,7 @@ connect_timeout = 2
         vec![("node-esm".to_string(), active, authority)],
     )
     .unwrap();
-    let mut pool = McpPool::new(merged);
+    let mut pool = McpPool::new(merged).with_backend(McpBackend::Rust);
 
     let connection = pool
         .get_or_connect("plugin-8-node-esm-local")
@@ -1267,7 +1231,7 @@ connect_timeout = 2
             vec![("node-esm-multi".to_string(), active, authority)],
         )
         .unwrap();
-        let mut pool = McpPool::new(merged);
+        let mut pool = McpPool::new(merged).with_backend(McpBackend::Rust);
 
         let connection = pool
             .get_or_connect("plugin-14-node-esm-multi-local")
@@ -1730,7 +1694,7 @@ connect_timeout = 1
             .is_some(),
         "plugin provenance must survive through MCP pool construction"
     );
-    let mut pool = McpPool::new(merged);
+    let mut pool = McpPool::new(merged).with_backend(McpBackend::Rust);
 
     // Adversarial mutation after trust, enablement, merge, and pool
     // construction. If the lazy child executes, it creates this marker before
@@ -1831,7 +1795,7 @@ CALL_MARKER = "${CODEWHALE_TEST_PLUGIN_CALL_MARKER}"
         vec![("revoked".to_string(), active, authority)],
     )
     .unwrap();
-    let mut pool = McpPool::new(merged);
+    let mut pool = McpPool::new(merged).with_backend(McpBackend::Rust);
     pool.get_or_connect("plugin-7-revoked-local").await.unwrap();
 
     let call = tokio::spawn(async move {
@@ -2113,7 +2077,7 @@ async fn revoked_plugin_mcp_denies_catalog_tool_resource_and_prompt_operations()
     let mut server = test_server_config();
     server.reviewed_plugin = Some(source);
     config.servers.insert("guarded".to_string(), server);
-    let mut pool = McpPool::new(config);
+    let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
     pool.connections.insert("guarded".to_string(), connection);
     assert_eq!(pool.all_tools().len(), 1);
     assert_eq!(pool.all_resources().len(), 1);
@@ -2220,7 +2184,7 @@ fn cached_reviewed_plugin_catalog_fixture() -> (tempfile::TempDir, PathBuf, Path
     let mut server = test_server_config();
     server.reviewed_plugin = Some(source);
     config.servers.insert("guarded".to_string(), server);
-    let mut pool = McpPool::new(config);
+    let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
     pool.connections.insert("guarded".to_string(), connection);
     assert_eq!(pool.all_tools().len(), 1);
     assert_eq!(pool.all_resources().len(), 1);
@@ -2340,7 +2304,7 @@ fn active_plugin_fixture(
     plugin_base: &Path,
 ) -> (
     crate::plugins::types::LoadedPlugin,
-    crate::plugins::types::PluginAuthority,
+    codewhale_config::PluginAuthority,
 ) {
     let plugins_root = plugin_base.parent().expect("plugin parent").to_path_buf();
     // Callers use both `<temp>/plugins/<name>` and `<temp>/<name>` layouts.
@@ -2585,7 +2549,9 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_creation() {
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
+    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     assert_eq!(pool.server_names(), vec!["global".to_string()]);
 
     fs::create_dir_all(&project_dir).unwrap();
@@ -2623,7 +2589,9 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_after_workspace_trust
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
+    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     assert_eq!(pool.server_names(), vec!["global".to_string()]);
 
     write_workspace_trust_config(&trust_env.config_path, &workspace);
@@ -2656,7 +2624,9 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_workspace_trust_re
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
+    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
     let expected: std::collections::BTreeSet<String> =
         ["global".to_string(), "project".to_string()]
@@ -2690,7 +2660,9 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_deletion() {
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
+    let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
     let expected: std::collections::BTreeSet<String> =
         ["global".to_string(), "project".to_string()]
@@ -3078,6 +3050,8 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         resources: Vec::new(),
         resource_templates: Vec::new(),
         prompts: Vec::new(),
+        skills: Vec::new(),
+        skills_extension: false,
         request_id: AtomicU64::new(1),
         state: ConnectionState::Ready,
         config: test_server_config(),
@@ -3089,6 +3063,9 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         authority_revocation_reason: Arc::new(std::sync::Mutex::new(None)),
         authority_watch: None,
         catalog_generation: 0,
+        catalog_revision: 0,
+        catalog_fresh_until: None,
+        catalog_stale: false,
         decision_key: None,
     }
 }
@@ -3489,7 +3466,9 @@ async fn pool_stops_advertising_a_server_whose_write_side_died() {
         }"#,
     )
     .unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let mut conn = test_connection(Box::new(FailingSendTransport));
     conn.tools.push(McpTool {
         name: "echo".to_string(),
@@ -3544,7 +3523,9 @@ async fn failed_reconnect_restores_last_good_catalog() {
         }"#,
     )
     .unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let mut conn = test_connection(Box::new(HangingValueTransport {
         sent: Arc::new(Mutex::new(Vec::new())),
     }));
@@ -3596,7 +3577,7 @@ async fn failed_reconnect_restores_last_good_catalog() {
 
 #[tokio::test]
 async fn test_mcp_pool_empty_config() {
-    let pool = McpPool::new(McpConfig::default());
+    let pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     assert!(pool.server_names().is_empty());
     assert!(pool.all_tools().is_empty());
 }
@@ -3606,7 +3587,7 @@ async fn test_mcp_pool_empty_config() {
 /// to stat `/`.
 #[tokio::test]
 async fn reload_if_config_changed_is_noop_without_source_path() {
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     let reloaded = pool.reload_if_config_changed().await.unwrap();
     assert!(!reloaded, "no source path → no reload");
 }
@@ -3620,7 +3601,9 @@ async fn reload_if_config_changed_skips_when_content_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     // Force the mtime to advance without changing content.
     std::thread::sleep(std::time::Duration::from_millis(10));
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
@@ -3641,7 +3624,9 @@ async fn reload_if_config_changed_swaps_config_on_content_change() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     assert!(pool.server_names().is_empty());
     // Mutate the file so both the mtime and the hash change.
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3664,7 +3649,9 @@ async fn stale_handshake_cannot_be_restamped_after_config_reload() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, r#"{"servers":{"local":{"command":"node"}}}"#).unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let drops = Arc::new(AtomicUsize::new(0));
     let mut connection = test_connection(Box::new(DropCountingTransport {
         drops: drops.clone(),
@@ -3689,7 +3676,9 @@ async fn reload_if_config_changed_drops_live_connections() {
         r#"{"servers":{"local":{"command":"node","args":["server.js"]}}}"#,
     )
     .unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let drops = Arc::new(AtomicUsize::new(0));
     let mut conn = test_connection(Box::new(DropCountingTransport {
         drops: Arc::clone(&drops),
@@ -3727,7 +3716,9 @@ async fn connect_all_reloads_before_snapshotting_new_server_names() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
 
     std::fs::write(
         &path,
@@ -3757,7 +3748,9 @@ async fn explicit_reload_reconnects_unchanged_config_and_preserves_dynamic_serve
         r#"{"servers":{"local":{"command":"node","disabled":true}}}"#,
     )
     .unwrap();
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let drops = Arc::new(AtomicUsize::new(0));
     let mut conn = test_connection(Box::new(DropCountingTransport {
         drops: Arc::clone(&drops),
@@ -3809,7 +3802,8 @@ async fn config_source_switch_preserves_dynamic_servers_in_the_shared_pool() {
         &workspace,
         Arc::clone(&plugins),
     )
-    .unwrap();
+    .unwrap()
+    .with_backend(McpBackend::Rust);
     let mut runtime_config = test_server_config();
     runtime_config.command = Some("runtime-server".to_string());
     pool.add_runtime_server_config("runtime".to_string(), runtime_config)
@@ -4234,7 +4228,7 @@ fn manager_snapshot_preserves_advertised_and_legacy_capability_provenance() {
         ]),
         ..McpConfig::default()
     };
-    let mut pool = McpPool::new(config.clone());
+    let mut pool = McpPool::new(config.clone()).with_backend(McpBackend::Rust);
     let drops = Arc::new(AtomicUsize::new(0));
 
     let mut advertised = test_connection(Box::new(DropCountingTransport {
@@ -4301,7 +4295,8 @@ async fn mcp_pool_call_tool_preserves_tool_names_with_dashes() {
     let mut pool = McpPool::new(McpConfig {
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
-    });
+    })
+    .with_backend(McpBackend::Rust);
     pool.connections.insert("dephy".to_string(), conn);
 
     let result = pool
@@ -4341,7 +4336,7 @@ async fn mcp_pool_rejects_unadvertised_tool_without_sending_tools_call() {
         input_schema: serde_json::json!({}),
         annotations: None,
     }];
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     pool.connections.insert("spy".to_string(), conn);
 
     let error = pool
@@ -4380,7 +4375,7 @@ async fn mcp_pool_binds_prompts_and_resources_to_advertised_catalog() {
         description: None,
         mime_type: None,
     }];
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     pool.connections.insert("catalog".to_string(), conn);
 
     pool.get_prompt("catalog", "hidden", serde_json::json!({}))
@@ -4425,7 +4420,8 @@ async fn mcp_pool_call_tool_preserves_server_names_with_underscores() {
     let mut pool = McpPool::new(McpConfig {
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
-    });
+    })
+    .with_backend(McpBackend::Rust);
     pool.connections.insert("my_db".to_string(), conn);
 
     let result = pool
@@ -4487,7 +4483,8 @@ async fn mcp_pool_hides_and_rejects_ambiguous_model_tool_names() {
     let mut pool = McpPool::new(McpConfig {
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
-    });
+    })
+    .with_backend(McpBackend::Rust);
     pool.connections.insert("my".to_string(), short_conn);
     pool.connections.insert("my_db".to_string(), long_conn);
 
@@ -4823,7 +4820,9 @@ async fn connect_all_reports_one_error_per_failed_required_server() {
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let errors = pool.connect_all().await;
     let for_broken: Vec<_> = errors.iter().filter(|(name, _)| name == "broken").collect();
     assert_eq!(
@@ -4866,7 +4865,9 @@ async fn a_failed_server_waits_out_a_cooldown_instead_of_redialing_every_turn() 
     )
     .unwrap();
 
-    let mut pool = McpPool::from_config_path(&path).unwrap();
+    let mut pool = McpPool::from_config_path(&path)
+        .unwrap()
+        .with_backend(McpBackend::Rust);
     let first = pool.connect_all().await;
     assert_eq!(first.len(), 1, "first pass should dial and fail once");
 
@@ -4916,7 +4917,8 @@ fn lazy_boot_scopes_pending_connects_and_tracks_in_flight() {
             ("selected".to_string(), selected_cfg),
             ("lazy".to_string(), lazy_cfg),
         ]),
-    });
+    })
+    .with_backend(McpBackend::Rust);
     let requested = vec!["mcp_selected_read".to_string()];
 
     let eager = pool.eager_boot_server_names(&requested);
@@ -5252,42 +5254,6 @@ fn redact_body_preview_masks_bearer_token() {
         !redacted.contains("abc.def.ghi") && !redacted.contains("second-token"),
         "leaked: {redacted}"
     );
-}
-
-#[test]
-fn redact_proxy_userinfo_strips_password() {
-    // Corporate-style proxy URL with embedded creds — the
-    // password must never reach the on-disk log file. URL strings
-    // are assembled from placeholder constants via `format!` so the
-    // literal source never contains a scheme-prefixed username +
-    // password pair (colon-separated, `@`-terminated) that
-    // GitGuardian's "Basic Auth String" detector would flag as a
-    // committed credential.
-    let (placeholder_user, placeholder_pass) = ("PLACEHOLDER_USER", "PLACEHOLDER_PASS");
-    let with_creds = format!("http://{placeholder_user}:{placeholder_pass}@proxy.example/");
-    let redacted = redact_proxy_userinfo(&with_creds);
-    assert_eq!(redacted, "http://***@proxy.example/");
-    assert!(!redacted.contains(placeholder_pass));
-    assert!(!redacted.contains(placeholder_user));
-
-    // User only (no password) — still redacted.
-    let with_user_only = format!("https://{placeholder_user}@proxy.example:8080");
-    let redacted = redact_proxy_userinfo(&with_user_only);
-    assert_eq!(redacted, "https://***@proxy.example:8080");
-
-    // No userinfo segment — pass through.
-    let redacted = redact_proxy_userinfo("http://proxy.example:3128/");
-    assert_eq!(redacted, "http://proxy.example:3128/");
-
-    // `@` appears only in the path, not as userinfo separator —
-    // must not be mistaken for credentials.
-    let redacted = redact_proxy_userinfo("http://proxy.example/path@thing");
-    assert_eq!(redacted, "http://proxy.example/path@thing");
-
-    // Garbage input (no `://`) returned unchanged — the
-    // surrounding warning log is the only caller and is already
-    // handling the malformed-URL case.
-    assert_eq!(redact_proxy_userinfo("not-a-url"), "not-a-url");
 }
 
 #[test]
@@ -6179,7 +6145,7 @@ async fn streamable_http_stale_session_reconnects_and_retries_tool_call() {
             allow_private_network: false,
         },
     );
-    let mut pool = McpPool::new(cfg);
+    let mut pool = McpPool::new(cfg).with_backend(McpBackend::Rust);
 
     let result = pool
         .call_tool("mcp_dephy_search", serde_json::json!({ "query": "dephy" }))
@@ -6469,7 +6435,7 @@ async fn legacy_sse_closed_stream_reports_unknown_outcome_and_reconnects_without
             allow_private_network: false,
         },
     );
-    let mut pool = McpPool::new(cfg);
+    let mut pool = McpPool::new(cfg).with_backend(McpBackend::Rust);
 
     // The server received the call and then closed the stream: it may have
     // run the tool, so the call must fail as unknown instead of replaying.
@@ -6609,7 +6575,7 @@ async fn fallback_sse_stream_closed_while_idle_reconnects_before_dispatch() {
     server_config.connect_timeout = Some(10);
     server_config.execute_timeout = Some(10);
     cfg.servers.insert("fallback".to_string(), server_config);
-    let mut pool = McpPool::new(cfg);
+    let mut pool = McpPool::new(cfg).with_backend(McpBackend::Rust);
     let ok = serde_json::json!({ "content": [{ "type": "text", "text": "ok" }] });
 
     let result = pool
@@ -6804,7 +6770,7 @@ fn add_runtime_server_config_rejects_static_conflict() {
     }"#,
     )
     .unwrap();
-    let pool = McpPool::new(config);
+    let pool = McpPool::new(config).with_backend(McpBackend::Rust);
 
     let err = pool
         .add_runtime_server_config(
@@ -6817,7 +6783,7 @@ fn add_runtime_server_config_rejects_static_conflict() {
 
 #[test]
 fn add_runtime_server_config_rejects_dynamic_duplicate() {
-    let pool = McpPool::new(McpConfig::default());
+    let pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
 
     pool.add_runtime_server_config(
         "my_server".to_string(),
@@ -6836,7 +6802,7 @@ fn add_runtime_server_config_rejects_dynamic_duplicate() {
 
 #[test]
 fn add_runtime_server_config_accepts_new_name() {
-    let pool = McpPool::new(McpConfig::default());
+    let pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
 
     pool.add_runtime_server_config(
         "brand_new".to_string(),
@@ -6889,7 +6855,7 @@ fn mcp_model_tool_names_and_server_attribution_share_one_definition() {
 
 #[test]
 fn removed_runtime_server_config_can_be_retried_with_same_name() {
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     let config: McpServerConfig = serde_json::from_str(r#"{"command": "node a.js"}"#).unwrap();
 
     pool.add_runtime_server_config("retryable".to_string(), config.clone())
@@ -7044,7 +7010,7 @@ fn expired_aws_login_with_401_wording_never_reaches_oauth_needs_auth() {
     let mut server = test_server_config();
     server.args = vec!["--profile".to_string(), "work".to_string()];
     config.servers.insert("aws".to_string(), server);
-    let mut pool = McpPool::new(config);
+    let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
 
     // Not the initialize branch: no hint was appended to this error.
     let error = anyhow::anyhow!("UnauthorizedException (401): AWS token has expired");
@@ -7087,7 +7053,7 @@ async fn live_aws_expiry_retires_the_catalog_and_lists_external_recovery() {
         let mut config = McpConfig::default();
         let server = test_server_config();
         config.servers.insert("aws".to_string(), server.clone());
-        let mut pool = McpPool::new(config);
+        let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
         let sent = Arc::new(Mutex::new(Vec::new()));
         let mut connection = test_connection(Box::new(ScriptedValueTransport {
             sent: Arc::clone(&sent),
@@ -7210,7 +7176,7 @@ fn sso_wording_on_an_oauth_capable_server_stays_on_the_oauth_route() {
     // Automatic OAuth discovery works without explicit scopes/client config.
     assert!(mcp_server_oauth_capable(&server));
     config.servers.insert("corp".to_string(), server);
-    let mut pool = McpPool::new(config);
+    let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
     pool.note_connect_failure(
         "corp",
         &anyhow::anyhow!("401 Unauthorized: SSO token expired"),
@@ -7523,11 +7489,14 @@ impl OAuthMcpMock {
                             "token_endpoint": format!("http://{addr}/token"),
                             "registration_endpoint": format!("http://{addr}/register"),
                             "response_types_supported": ["code"],
+                            "authorization_response_iss_parameter_supported": true,
                         });
                         write_json(&mut socket, "200 OK", &metadata.to_string()).await;
                     } else if method == "GET" && path_only.starts_with("/.well-known/") {
                         write_empty(&mut socket, "404 Not Found").await;
                     } else if method == "POST" && path_only == "/register" {
+                        let registration: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(registration["application_type"], "native");
                         write_json(
                             &mut socket,
                             "200 OK",
@@ -7535,6 +7504,11 @@ impl OAuthMcpMock {
                         )
                         .await;
                     } else if method == "POST" && path_only == "/token" {
+                        let resources: Vec<String> = url::form_urlencoded::parse(body.as_bytes())
+                            .filter(|(key, _)| key == "resource")
+                            .map(|(_, value)| value.into_owned())
+                            .collect();
+                        assert_eq!(resources, vec![format!("http://{addr}/mcp")]);
                         token_requests.fetch_add(1, AtomicOrdering::SeqCst);
                         if revoked || body.contains("refresh_token=rt-stale") {
                             write_json(
@@ -7629,6 +7603,7 @@ fn seed_oauth_tokens(
         "server_name": server_name,
         "url": url,
         "client_id": "cw-test-client",
+        "binding": {"issuer": reqwest::Url::parse(url).unwrap().origin().ascii_serialization(), "resource": reqwest::Url::parse(url).unwrap().to_string()},
         "token_response": {
             "access_token": access_token,
             "token_type": "Bearer",
@@ -7674,7 +7649,7 @@ async fn model_reconnect_reuses_configured_credentials_without_restarting_siblin
         "rt-fresh",
         Some(millis_from_now(3_600_000)),
     );
-    let mut pool = McpPool::new(config);
+    let mut pool = McpPool::new(config).with_backend(McpBackend::Rust);
     pool.get_or_connect("healthy").await.unwrap();
     let sibling_cancel = pool.connections["healthy"].cancel_token.clone();
     assert!(
@@ -7764,7 +7739,7 @@ async fn needs_auth_server_advertises_synthetic_authenticate_tool() {
     mcp_config
         .servers
         .insert("beareronly".to_string(), bearer_config);
-    let mut pool = McpPool::new(mcp_config);
+    let mut pool = McpPool::new(mcp_config).with_backend(McpBackend::Rust);
 
     let errors = pool.connect_all().await;
     assert_eq!(errors.len(), 2, "{errors:?}");
@@ -7916,7 +7891,7 @@ async fn dead_refresh_grant_flips_server_to_auth_required_and_offers_login_tool(
 
     let mut mcp_config = McpConfig::default();
     mcp_config.servers.insert("wikiserver".to_string(), config);
-    let mut pool = McpPool::new(mcp_config);
+    let mut pool = McpPool::new(mcp_config).with_backend(McpBackend::Rust);
     let errors = pool.connect_all().await;
     let (_, err) = errors
         .iter()
@@ -7978,7 +7953,7 @@ async fn selfserve_auth_flow_persists_tokens_and_swaps_real_tools_back() {
     mcp_config
         .servers
         .insert("wikiserver".to_string(), config.clone());
-    let mut pool = McpPool::new(mcp_config);
+    let mut pool = McpPool::new(mcp_config).with_backend(McpBackend::Rust);
     let errors = pool.connect_all().await;
     assert!(
         errors
@@ -8000,6 +7975,11 @@ async fn selfserve_auth_flow_persists_tokens_and_swaps_real_tools_back() {
             .await
             .unwrap();
     let auth_url = reqwest::Url::parse(login.authorization_url()).unwrap();
+    let state = auth_url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
     let redirect_uri = auth_url
         .query_pairs()
         .find(|(key, _)| key == "redirect_uri")
@@ -8008,7 +7988,7 @@ async fn selfserve_auth_flow_persists_tokens_and_swaps_real_tools_back() {
     let flow = tokio::spawn(login.finish());
     test_http_client()
         .get(format!(
-            "{redirect_uri}?error=access_denied&error_description=not-today"
+            "{redirect_uri}?error=access_denied&error_description=not-today&state={state}&iss=http://{}", mock.addr
         ))
         .send()
         .await
@@ -8043,7 +8023,10 @@ async fn selfserve_auth_flow_persists_tokens_and_swaps_real_tools_back() {
         .expect("authorization URL carries redirect_uri");
     let flow = tokio::spawn(login.finish());
     test_http_client()
-        .get(format!("{redirect_uri}?code=cw-test-code&state={state}"))
+        .get(format!(
+            "{redirect_uri}?code=cw-test-code&state={state}&iss=http://{}",
+            mock.addr
+        ))
         .send()
         .await
         .unwrap();
@@ -8055,6 +8038,19 @@ async fn selfserve_auth_flow_persists_tokens_and_swaps_real_tools_back() {
     assert_eq!(
         stored.token_response.0.access_token().secret(),
         "cw-test-access"
+    );
+    assert_eq!(
+        stored.binding.as_ref().unwrap().issuer,
+        format!("http://{}", mock.addr)
+    );
+    assert_eq!(stored.binding.as_ref().unwrap().resource, url);
+    assert_eq!(
+        auth_url
+            .query_pairs()
+            .filter(|(key, _)| key == "resource")
+            .map(|(_, value)| value.into_owned())
+            .collect::<Vec<_>>(),
+        vec![url.clone()]
     );
 
     // The synthetic tool now adopts the completed login and swaps the real
@@ -8472,7 +8468,9 @@ async fn authenticate_tool_via_pool_releases_the_lock_during_the_browser_wait() 
         "wikiserver".to_string(),
         mock_oauth_server_config(mock.addr),
     );
-    let pool = Arc::new(tokio::sync::Mutex::new(McpPool::new(mcp_config)));
+    let pool = Arc::new(tokio::sync::Mutex::new(
+        McpPool::new(mcp_config).with_backend(McpBackend::Rust),
+    ));
     let errors = pool.lock().await.connect_all().await;
     assert!(
         errors
@@ -8522,7 +8520,10 @@ async fn authenticate_tool_via_pool_releases_the_lock_during_the_browser_wait() 
         .map(|(_, value)| value.into_owned())
         .expect("authorization URL carries redirect_uri");
     test_http_client()
-        .get(format!("{redirect_uri}?code=cw-test-code&state={state}"))
+        .get(format!(
+            "{redirect_uri}?code=cw-test-code&state={state}&iss=http://{}",
+            mock.addr
+        ))
         .send()
         .await
         .unwrap();
@@ -8596,7 +8597,7 @@ async fn plugin_contributed_server_auth_required_names_its_env_credential_not_oa
     );
     let mut mcp_config = McpConfig::default();
     mcp_config.servers.insert("wikiplugin".to_string(), server);
-    let mut pool = McpPool::new(mcp_config);
+    let mut pool = McpPool::new(mcp_config).with_backend(McpBackend::Rust);
 
     let errors = pool.connect_all().await;
     let (_, err) = errors
@@ -8730,6 +8731,7 @@ async fn mcp_ceiling_denied_server_is_absent_across_cached_boot_meta_auth_and_ru
         servers: HashMap::from([("private_a".to_string(), config.clone())]),
         timeouts: McpTimeouts::default(),
     })
+    .with_backend(McpBackend::Rust)
     .with_disallowed_tools(vec!["MCP_PRIVATE_A_*".to_string()]);
     // A previously connected or auth-failed entry must not become reachable.
     pool.connections.insert("private_a".to_string(), connection);
@@ -8805,7 +8807,7 @@ async fn mcp_ceiling_denied_server_is_absent_across_cached_boot_meta_auth_and_ru
         .err()
         .unwrap()
         .to_string();
-    let mut absent = McpPool::new(McpConfig::default());
+    let mut absent = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     let missing = absent
         .get_or_connect("private_a")
         .await
@@ -8826,6 +8828,7 @@ async fn mcp_ceiling_individual_tool_denial_preserves_server_resources_and_sibli
     let sent = Arc::new(Mutex::new(Vec::new()));
     let connection = ceiling_test_connection("private_a", Arc::clone(&sent));
     let mut pool = McpPool::new(McpConfig::default())
+        .with_backend(McpBackend::Rust)
         .with_disallowed_tools(vec!["MCP_PRIVATE_A_DELETE".to_string()]);
     pool.connections.insert("private_a".to_string(), connection);
     assert_eq!(
@@ -8872,7 +8875,8 @@ async fn mcp_ceiling_child_scoped_meta_calls_do_not_widen_or_mutate_sibling_poli
             ("public".to_string(), public.config.clone()),
         ]),
         timeouts: McpTimeouts::default(),
-    });
+    })
+    .with_backend(McpBackend::Rust);
     pool.connections.insert("private_a".to_string(), private);
     pool.connections.insert("public".to_string(), public);
     let child_rules = vec!["mcp_private_a_*".to_string()];
@@ -8928,6 +8932,7 @@ async fn mcp_ceiling_survives_source_reload_and_blocks_new_runtime_names() {
     fs::write(&source, r#"{"mcpServers": {}}"#).unwrap();
     let mut pool = McpPool::from_config_path(&source)
         .unwrap()
+        .with_backend(McpBackend::Rust)
         .with_disallowed_tools(vec!["mcp_private*".to_string()]);
     fs::write(&source, r#"{"mcpServers":{"private":{"command":"must-not-execute-private","required":true},"private_a":{"command":"must-not-execute-private"}}}"#).unwrap();
     pool.force_reload_config_sources().unwrap();
@@ -8983,7 +8988,7 @@ async fn mcp_ceiling_preserves_ordinary_tool_result_tools_field() {
             serde_json::json!({"jsonrpc":"2.0","id":1,"result":expected}),
         )]),
     });
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     pool.connections.insert("public".to_string(), connection);
     assert_eq!(
         pool.call_tool_with_disallowed(
@@ -9074,6 +9079,7 @@ fn supervised_pool(name: &str) -> McpPool {
         timeouts: McpTimeouts::default(),
         servers,
     })
+    .with_backend(McpBackend::Rust)
 }
 
 /// #6187: a dead connection is planned for reconnect, and a failed attempt
@@ -9291,7 +9297,7 @@ fn counting_stdio_pool(dir: &Path, first_call: &str) -> (McpPool, PathBuf) {
     server.execute_timeout = Some(10);
     let mut cfg = McpConfig::default();
     cfg.servers.insert("counter".to_string(), server);
-    (McpPool::new(cfg), call_log)
+    (McpPool::new(cfg).with_backend(McpBackend::Rust), call_log)
 }
 
 #[cfg(unix)]
@@ -9421,7 +9427,11 @@ fn deadline_stdio_pool(
     configure(&mut server);
     let mut cfg = McpConfig::default();
     cfg.servers.insert("deadline".to_string(), server);
-    (McpPool::new(cfg), call_log, init_log)
+    (
+        McpPool::new(cfg).with_backend(McpBackend::Rust),
+        call_log,
+        init_log,
+    )
 }
 
 #[cfg(unix)]
@@ -9720,7 +9730,7 @@ async fn streamable_http_reset_after_tool_call_post_is_not_replayed() {
     server_config.execute_timeout = Some(10);
     let mut cfg = McpConfig::default();
     cfg.servers.insert("remote".to_string(), server_config);
-    let mut pool = McpPool::new(cfg);
+    let mut pool = McpPool::new(cfg).with_backend(McpBackend::Rust);
 
     let err = pool
         .call_tool("mcp_remote_act", serde_json::json!({}))
@@ -10243,6 +10253,7 @@ async fn initialize_ignores_non_string_instructions_without_failing_the_handshak
 #[tokio::test]
 async fn mcp_server_instructions_exclude_servers_whose_tools_are_all_denied() {
     let mut pool = McpPool::new(McpConfig::default())
+        .with_backend(McpBackend::Rust)
         .with_disallowed_tools(vec!["mcp_denied_write".to_string()]);
     pool.insert_test_connection("guided", &["search"], Some("Use search."));
     pool.insert_test_connection("denied", &["write"], Some("Denied guidance."));
@@ -10314,7 +10325,7 @@ async fn computer_use_call_carries_an_attested_decision_only_when_a_person_appro
 async fn copied_human_decision_cannot_authorize_another_mcp_call() {
     let input = serde_json::json!({"action": "allow", "app": "Safari"});
     let decision = crate::core::engine::HumanDecision::for_test("mcp_fixture_consent", &input);
-    let mut pool = McpPool::new(McpConfig::default());
+    let mut pool = McpPool::new(McpConfig::default()).with_backend(McpBackend::Rust);
     for (name, arguments) in [
         (
             "mcp_fixture_consent",
@@ -10336,8 +10347,6 @@ async fn copied_human_decision_cannot_authorize_another_mcp_call() {
     assert!(decision.authorizes("mcp_fixture_consent", &input));
 }
 
-/// Actual shipped plugin, reviewed and staged by the normal plugin authority.
-/// Every backend and state path is isolated; this fixture never drives a real app.
 pub(crate) fn computer_use_test_fixture() -> (
     tempfile::TempDir,
     Arc<crate::plugins::PluginRegistry>,
@@ -10348,34 +10357,59 @@ pub(crate) fn computer_use_test_fixture() -> (
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).unwrap();
     let plugin_base = root.path().join("plugins/computer-use");
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/computer-use");
-    let mut pending = vec![(source, plugin_base.clone())];
-    while let Some((from, to)) = pending.pop() {
-        fs::create_dir_all(&to).unwrap();
-        for entry in fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
-            let destination = to.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                pending.push((entry.path(), destination));
-            } else {
-                fs::copy(entry.path(), destination).unwrap();
-            }
-        }
-    }
-    let state = root.path().join("cu-state");
-    let recordings = root.path().join("recordings");
-    let fake = plugin_base.join("tests/fixtures/fake-backend.mjs");
+    fs::create_dir_all(&plugin_base).unwrap();
+    fs::write(
+        plugin_base.join("server.mjs"),
+        r#"import readline from 'node:readline';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+let first = true, key;
+const used = new Set();
+function approved(name, args, meta) {
+  const tag = meta?.['codewhale/user_decision'];
+  if (!key || !tag || typeof tag.args_json !== 'string' ||
+      typeof tag.nonce !== 'string' || !/^[0-9a-f]{16,128}$/i.test(tag.nonce) ||
+      used.has(tag.nonce) || typeof tag.mac !== 'string' || !/^[0-9a-f]{64}$/i.test(tag.mac)) return false;
+  const expected = createHmac('sha256', key).update(Buffer.concat([
+    Buffer.from(name), Buffer.from([0]), Buffer.from(tag.args_json), Buffer.from([0]), Buffer.from(tag.nonce)
+  ])).digest();
+  if (!timingSafeEqual(Buffer.from(tag.mac, 'hex'), expected)) return false;
+  try { if (!isDeepStrictEqual(JSON.parse(tag.args_json), args)) return false; } catch { return false; }
+  used.add(tag.nonce);
+  return true;
+}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (first && request.method === 'codewhale/host_keys' &&
+      typeof request.params?.decision_key === 'string' && /^[0-9a-f]{64}$/i.test(request.params.decision_key)) {
+    key = Buffer.from(request.params.decision_key, 'hex');
+  }
+  first = false;
+  if (request.id === undefined) return;
+  let result;
+  if (request.method === 'initialize') {
+    result = { protocolVersion: '2025-06-18', serverInfo: { name: 'host-decision-fixture', version: '1' }, capabilities: { tools: {} } };
+  } else if (request.method === 'tools/list') {
+    result = { tools: ['consent', 'consent_allow', 'consent_revoke'].map(name => ({ name, description: 'Synthetic host decision receipt', inputSchema: { type: 'object' } })) };
+  } else if (request.method === 'tools/call') {
+    const params = request.params ?? {};
+    const ok = approved(params.name, params.arguments ?? {}, params._meta);
+    result = { content: [{ type: 'text', text: JSON.stringify(ok ? { ok: true } : { ok: false, error: { code: 'consent_needs_user' } }) }], isError: !ok };
+  } else if (request.method === 'ping') {
+    result = {};
+  } else {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found' } }) + '\n');
+    return;
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+});
+"#,
+    )
+    .unwrap();
     fs::write(
         plugin_base.join("plugin.toml"),
-        format!(
-            "schema_version = 1\n[plugin]\nname = \"computer-use\"\nversion = \"1.0.0\"\n\
-             [mcp_servers.local]\ncommand = \"node\"\nargs = [\"mcp/server.mjs\"]\nconnect_timeout = 5\n\
-             [mcp_servers.local.env]\nCODEWHALE_CU_APP = \"off\"\n\
-             CODEWHALE_CU_STATE_DIR = {}\nCODEWHALE_CU_RECORDINGS_DIR = {}\nCODEWHALE_CU_TEST_BACKEND = {}\n",
-            serde_json::to_string(&state.to_string_lossy()).unwrap(),
-            serde_json::to_string(&recordings.to_string_lossy()).unwrap(),
-            serde_json::to_string(&fake.to_string_lossy()).unwrap(),
-        ),
+        "schema_version = 1\n[plugin]\nname = \"computer-use\"\nversion = \"1.0.0\"\n\
+         [mcp_servers.local]\ncommand = \"node\"\nargs = [\"server.mjs\"]\nconnect_timeout = 5\n",
     )
     .unwrap();
     let discovery = crate::plugins::discovery::DiscoveryConfig {
@@ -10401,13 +10435,16 @@ pub(crate) fn computer_use_test_fixture() -> (
         .next()
         .expect("plugin MCP server")
         .clone();
-    (root, Arc::new(registry), McpPool::new(config), server)
+    (
+        root,
+        Arc::new(registry),
+        McpPool::new(config).with_backend(McpBackend::Rust),
+        server,
+    )
 }
 
 #[tokio::test]
-async fn computer_use_real_plugin_host_handshake_rejects_tamper_replay_and_late_keys() {
-    // The bundled Computer Use plugin applies only to macOS hosts; elsewhere
-    // there is no live plugin to start.
+async fn computer_use_protocol_host_handshake_rejects_tamper_replay_and_late_keys() {
     if !cfg!(target_os = "macos") {
         return;
     }
@@ -10418,7 +10455,7 @@ async fn computer_use_real_plugin_host_handshake_rejects_tamper_replay_and_late_
     let connection = pool
         .get_or_connect(&server)
         .await
-        .expect("actual reviewed Node plugin");
+        .expect("reviewed protocol fixture");
     let key = connection
         .decision_key
         .expect("first-message key from the host");
@@ -10688,16 +10725,23 @@ async fn http_backend_parity_reactive_refresh_reuses_exact_facade_id_once() {
         assert!(pool.connect_all().await.is_empty(), "{backend:?}");
         assert_eq!(mock.token_requests.load(AtomicOrdering::SeqCst), 1);
         let frames = mock.frames.lock().unwrap().clone();
+        let opening = if backend == McpBackend::Host {
+            "server/discover"
+        } else {
+            "initialize"
+        };
         let initializes: Vec<_> = frames
             .iter()
-            .filter(|frame| frame["method"] == "initialize")
+            .filter(|frame| frame["method"] == opening)
             .collect();
         assert_eq!(initializes.len(), 2);
         assert_eq!(
             initializes[0], initializes[1],
             "same admitted frame, exact original Rust ID and params"
         );
-        assert_eq!(initializes[0]["id"], "1");
+        if backend == McpBackend::Rust {
+            assert_eq!(initializes[0]["id"], "1");
+        }
         assert_eq!(
             frames
                 .iter()
@@ -10804,7 +10848,7 @@ fn configured_mcp_search_matches_real_names_and_bounds_the_admitted_set() {
             serde_json::from_value(json!({"command":"unused"})).unwrap(),
         );
     }
-    let pool = McpPool::new(config);
+    let pool = McpPool::new(config).with_backend(McpBackend::Rust);
     assert!(
         pool.configured_servers_for_search(".*", "regex", |_| true)
             .unwrap()
@@ -10847,7 +10891,9 @@ fn configured_mcp_search_excludes_disabled_and_namespace_denied_servers() {
         "denied".into(),
         serde_json::from_value(json!({"command":"unused"})).unwrap(),
     );
-    let pool = McpPool::new(config).with_disallowed_tools(vec!["mcp_denied_*".into()]);
+    let pool = McpPool::new(config)
+        .with_backend(McpBackend::Rust)
+        .with_disallowed_tools(vec!["mcp_denied_*".into()]);
     assert_eq!(
         pool.configured_servers_for_search("mcp_.*", "regex", |_| true)
             .unwrap(),

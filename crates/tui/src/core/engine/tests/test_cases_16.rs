@@ -13,7 +13,7 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
         &Config::default(),
     );
     let context = engine.installed_next_turn_prompt_context();
-    engine.refresh_pinned_header_for_turn(&context);
+    engine.refresh_pinned_header_for_turn(&context).unwrap();
     let frozen = engine.session.system_prompt.clone();
     let warning = engine
         .session
@@ -25,9 +25,7 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     assert!(crate::runtime_handoff::is_internal_runtime_handoff(
         &warning
     ));
-    assert!(crate::runtime_handoff::is_runtime_owned_user_message(
-        &warning
-    ));
+    assert!(codewhale_models::turn_classify::is_runtime_owned_user_message(&warning));
     // The transcript side (no history cell for it) is pinned in
     // `tui::history::tests`, keeping this runtime test off the UI crate path.
     assert!(
@@ -52,16 +50,14 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     assert!(!crate::runtime_handoff::is_internal_runtime_handoff(
         &quoted
     ));
-    assert!(!crate::runtime_handoff::is_runtime_owned_user_message(
-        &quoted
-    ));
+    assert!(!codewhale_models::turn_classify::is_runtime_owned_user_message(&quoted));
     engine.session.add_message(prompt.clone());
     let initial = engine.session.messages.len();
-    engine.refresh_pinned_header_for_turn(&context);
+    engine.refresh_pinned_header_for_turn(&context).unwrap();
     assert_eq!(engine.session.messages.len(), initial);
 
-    crate::config::save_workspace_trust(tmp.path()).unwrap();
-    engine.refresh_pinned_header_for_turn(&context);
+    codewhale_runtime::config::save_workspace_trust(tmp.path()).unwrap();
+    engine.refresh_pinned_header_for_turn(&context).unwrap();
     let resolved = engine.session.messages.last().unwrap().clone();
     assert_ne!(resolved, warning);
     assert!(crate::runtime_handoff::is_internal_runtime_handoff(
@@ -70,10 +66,10 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     assert!(
         matches!(&resolved.content[0], ContentBlock::Text { text, .. } if text.contains("no longer applies"))
     );
-    engine.refresh_pinned_header_for_turn(&context);
+    engine.refresh_pinned_header_for_turn(&context).unwrap();
     assert_eq!(engine.session.messages.len(), initial + 1);
-    crate::config::set_workspace_trust(tmp.path(), false).unwrap();
-    engine.refresh_pinned_header_for_turn(&context);
+    codewhale_runtime::config::set_workspace_trust(tmp.path(), false).unwrap();
+    engine.refresh_pinned_header_for_turn(&context).unwrap();
     assert_eq!(engine.session.messages.last(), Some(&warning));
     assert_eq!(
         engine.session.messages.len(),
@@ -129,13 +125,19 @@ fn workspace_drift_arrives_as_one_context_update_and_never_moves_the_header() {
     let context = engine.installed_next_turn_prompt_context();
 
     // Turn 1: establishes the pin key; nothing to report.
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
     let pinned = engine.session.system_prompt.clone();
     let pinned_hash = engine.session.last_system_prompt_hash;
     engine.session.pending_prefix_change_reason = None;
 
     // No change → no snapshot.
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
 
     // The agent writes a file "mid-turn"; nothing moves until the next user turn.
     fs::write(tmp.path().join("NEWFILE.md"), "brand new content").expect("write");
@@ -144,6 +146,7 @@ fn workspace_drift_arrives_as_one_context_update_and_never_moves_the_header() {
     // Next user turn: header byte-identical, exactly one snapshot with the delta.
     let update = engine
         .refresh_pinned_header_for_turn(&context)
+        .unwrap()
         .expect("workspace drift produces a context update");
     assert!(update.starts_with("<context_update>"), "{update}");
     assert!(update.contains("NEWFILE.md"), "{update}");
@@ -161,7 +164,10 @@ fn workspace_drift_arrives_as_one_context_update_and_never_moves_the_header() {
     );
 
     // The same delta is not re-sent on the following turn.
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -175,7 +181,10 @@ fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
     let context = engine.installed_next_turn_prompt_context();
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
     let pinned = engine.session.system_prompt.clone();
 
     fs::write(
@@ -185,6 +194,7 @@ fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
     .expect("write");
     let update = engine
         .refresh_pinned_header_for_turn(&context)
+        .unwrap()
         .expect("AGENTS.md edit produces a context update");
     assert!(update.contains("+ Never push to main."), "{update}");
     assert_eq!(engine.session.system_prompt, pinned);
@@ -200,12 +210,15 @@ fn explicit_input_change_repins_instead_of_snapshotting() {
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
     let context = engine.installed_next_turn_prompt_context();
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
     engine.session.pending_prefix_change_reason = None;
 
     let mut next = context.clone();
     next.goal_objective = Some("ship 0.9.8".to_string());
-    assert_eq!(engine.refresh_pinned_header_for_turn(&next), None);
+    assert_eq!(engine.refresh_pinned_header_for_turn(&next).unwrap(), None);
     assert_eq!(
         engine.session.pending_prefix_change_reason.as_deref(),
         Some("goal")
@@ -225,12 +238,18 @@ async fn submitted_turn_appends_context_update_before_the_user_message() {
     let (mut engine, _handle) = Engine::new(config, &Config::default());
     // Seed the pin key exactly as the first turn would.
     let context = engine.installed_next_turn_prompt_context();
-    assert_eq!(engine.refresh_pinned_header_for_turn(&context), None);
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
     fs::write(tmp.path().join("NEWFILE.md"), "brand new content").expect("write");
 
     // Drive the real submit path (no client → it stops before any request,
     // but only after history is assembled) and inspect the order.
-    let update = engine.refresh_pinned_header_for_turn(&context).unwrap();
+    let update = engine
+        .refresh_pinned_header_for_turn(&context)
+        .unwrap()
+        .unwrap();
     engine.session.add_message(Message {
         role: Role::User,
         content: vec![ContentBlock::Text {
@@ -823,8 +842,8 @@ async fn dropped_operation_span_completes_as_cancelled() {
 
 #[tokio::test]
 async fn code_execution_does_not_inherit_parent_secret_env() {
-    use crate::dependencies::ExternalTool as _;
-    if !crate::dependencies::Python::available() {
+    use codewhale_dependencies::ExternalTool as _;
+    if !codewhale_dependencies::Python::available() {
         // `dependencies::tests::runtime_commands_do_not_inherit_parent_secret_env`
         // still covers the scrubbed Python constructor without Python.
         return;
@@ -891,8 +910,8 @@ async fn code_execution_scenario() {
 
 #[tokio::test]
 async fn interpreter_execution_policy_preserves_readonly_and_exact_call_elevation() {
-    use crate::sandbox::SandboxPolicy;
     use crate::tools::spec::ToolContext;
+    use codewhale_sandbox::SandboxPolicy;
     for tool in [CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME] {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside workspace");
@@ -940,9 +959,11 @@ async fn interpreter_execution_policy_preserves_readonly_and_exact_call_elevatio
 async fn interpreter_execution_policy_refuses_external_backend_local_fallback() {
     use crate::tools::spec::ToolContext;
     let workspace = tempdir().expect("workspace");
-    let backend = crate::sandbox::backend::create_backend(&Config {
-        sandbox_backend: Some("unsupported-regression-backend".to_string()),
-        ..Config::default()
+    let backend = codewhale_sandbox::backend::create_backend(&{
+        let __cw_config_init_0_0 = Some("unsupported-regression-backend".to_string());
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.sandbox_backend = __cw_config_init_0_0;
+        __cw_config_init_0_value
     })
     .expect("backend policy")
     .expect("external boundary");
@@ -1556,7 +1577,7 @@ fn stream_retry_scenario() {
             super::should_transparently_retry_stream(
                 false,
                 0,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 false
             ),
             "first attempt with no content must be eligible for transparent retry"
@@ -1565,7 +1586,7 @@ fn stream_retry_scenario() {
             super::should_transparently_retry_stream(
                 false,
                 1,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 false
             ),
             "second attempt (one prior retry) with no content must still be eligible"
@@ -1581,7 +1602,7 @@ fn stream_retry_scenario() {
             !super::should_transparently_retry_stream(
                 true,
                 0,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 false
             ),
             "any content received → no transparent retry, even with full budget"
@@ -1590,7 +1611,7 @@ fn stream_retry_scenario() {
             !super::should_transparently_retry_stream(
                 true,
                 1,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 false
             ),
             "any content received → no transparent retry on subsequent attempts"
@@ -1604,7 +1625,7 @@ fn stream_retry_scenario() {
             !super::should_transparently_retry_stream(
                 false,
                 0,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 true
             ),
             "cancelled turn must not be transparently retried"
@@ -1613,7 +1634,7 @@ fn stream_retry_scenario() {
             !super::should_transparently_retry_stream(
                 false,
                 1,
-                super::MAX_TRANSPARENT_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
                 true
             ),
             "cancelled turn must not be transparently retried even with budget"
@@ -1623,7 +1644,7 @@ fn stream_retry_scenario() {
     {
         // "At most one bounded retry per drop" is enforced by types, not by a
         // comment: `authorize()` is the only way to spend a resume and it refuses
-        // once MAX_STREAM_RETRIES resumes have been issued, whatever the guard
+        // once DEFAULT_STREAM_MAX_RESUMES resumes have been issued, whatever the guard
         // predicates say. A healthy round resets the chain.
         let mut budget = super::StreamRetryBudget::default();
         assert_eq!(budget.spent(), 0);
@@ -1633,10 +1654,10 @@ fn stream_retry_scenario() {
         assert_eq!(
             budget.authorize(),
             None,
-            "authorize() must refuse past MAX_STREAM_RETRIES"
+            "authorize() must refuse past DEFAULT_STREAM_MAX_RESUMES"
         );
         assert_eq!(budget.authorize(), None, "and keep refusing");
-        assert_eq!(budget.spent(), super::MAX_STREAM_RETRIES);
+        assert_eq!(budget.spent(), super::DEFAULT_STREAM_MAX_RESUMES);
         budget.reset();
         assert_eq!(budget.spent(), 0);
         assert_eq!(budget.authorize(), Some(1));
@@ -1648,14 +1669,14 @@ fn stream_retry_scenario() {
         // HTTP/2 keepalive defaults make spurious decode errors rarer.
         // This test pins the constant so a future regression to 3 fails loudly.
         assert_eq!(
-            super::MAX_STREAM_ERRORS_BEFORE_FAIL,
+            super::DEFAULT_STREAM_MAX_ERRORS,
             5,
             "the consecutive-stream-error threshold should be 5; \
              lowering it back to 3 will fail mid-turn under transient flakiness"
         );
         // And a regression guard on the transparent-retry cap.
         assert_eq!(
-            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
             2,
             "transparent-retry cap should be 2; raising it risks hammering the \
              provider on real outages"
@@ -1664,7 +1685,7 @@ fn stream_retry_scenario() {
 }
 
 #[test]
-fn mode_notice_is_recorded_on_entering_plan_and_on_leaving_it() {
+fn mode_notice_is_recorded_on_entering_plan_or_operate_and_on_leaving_it() {
     let _lock = lock_test_env();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -1697,4 +1718,25 @@ fn mode_notice_is_recorded_on_entering_plan_and_on_leaving_it() {
     let recorded = notices(&engine);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
     assert!(recorded[1].starts_with("Mode: Work."), "{recorded:?}");
+
+    engine.session.messages.clear();
+    engine.record_mode_notice(AppMode::Operate);
+    engine.record_mode_notice(AppMode::Operate);
+    assert_eq!(notices(&engine).len(), 1);
+    engine
+        .session
+        .add_message(crate::runtime_handoff::operate_contract_runtime_message());
+    engine.record_mode_notice(AppMode::Operate);
+    assert_eq!(notices(&engine).len(), 1);
+    engine.record_mode_notice(AppMode::Agent);
+    let recorded = notices(&engine);
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[1].starts_with("Mode: Work."));
+
+    engine.session.messages.clear();
+    engine
+        .session
+        .add_message(crate::runtime_handoff::legacy_operate_contract_runtime_message());
+    engine.record_mode_notice(AppMode::Agent);
+    assert!(notices(&engine)[0].starts_with("Mode: Work."));
 }

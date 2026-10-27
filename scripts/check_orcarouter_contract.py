@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-OAUTH = REPO / "crates" / "tui" / "src" / "oauth.rs"
+OAUTH = REPO / "crates" / "runtime" / "src" / "oauth.rs"
 CLIENT = REPO / "crates" / "tui" / "src" / "client.rs"
 PAGE = REPO / "crates" / "tui" / "src" / "runtime_web" / "orca-evidence.html"
 

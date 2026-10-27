@@ -17,11 +17,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::{Config, ProviderKind};
     use crate::tui::app::TuiOptions;
     use crate::tui::history::HistoryCell;
     use codewhale_config::AppMode;
+    use codewhale_config::ProviderKind;
     use codewhale_models::{ContentBlock, Message};
+    use codewhale_runtime::config::Config;
 
     #[test]
     fn status_keeps_current_session_snapshot_remedy_after_notice_delivery() {
@@ -98,8 +99,11 @@ mod tests {
             "no fresh roster, no claim"
         );
 
-        let config = Config::load(app.config_path.clone(), app.config_profile.as_deref())
-            .unwrap_or_default();
+        let config = crate::plugins::providers::load_config(
+            app.config_path.clone(),
+            app.config_profile.as_deref(),
+        )
+        .unwrap_or_default();
         let base_url = config.base_url_for_route(
             &config
                 .resolve_provider_selection_identity("deepseek")
@@ -313,7 +317,7 @@ mod tests {
         let tmpdir = TempDir::new().expect("temp dir");
         let mut app = create_test_app(tmpdir.path().to_path_buf());
         app.set_provider_identity_record(
-            crate::config::Config::default()
+            codewhale_runtime::config::Config::default()
                 .resolve_provider_identity(ProviderKind::Moonshot.as_str())
                 .expect("captured fixture provider"),
         );

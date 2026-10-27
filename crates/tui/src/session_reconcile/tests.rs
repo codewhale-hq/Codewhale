@@ -1,5 +1,4 @@
 use super::*;
-use crate::config::Config;
 use crate::runtime_threads::{
     CreateThreadRequest, RuntimeProcessOwnerLock, RuntimeThreadManager, RuntimeThreadManagerConfig,
     RuntimeThreadStore,
@@ -7,6 +6,7 @@ use crate::runtime_threads::{
 use crate::session_manager::create_saved_session_with_id_and_mode;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use codewhale_models::{ContentBlock, Message, Role};
+use codewhale_runtime::config::Config;
 
 fn text(role: Role, text: &str) -> Message {
     Message {
@@ -474,7 +474,7 @@ fn reconcile_is_bounded_and_single_flight() {
         .write(true)
         .open(fx.dir().join(RECONCILE_LOCK_FILE))
         .unwrap();
-    assert!(crate::runtime_threads::try_lock_file_exclusive(&lock).unwrap());
+    assert!(codewhale_util::lock::try_lock_file_exclusive(&lock).unwrap());
     let skipped = fx.run();
     assert!(skipped.skipped_concurrent);
 }

@@ -140,7 +140,7 @@ impl ToolSpec for RetrieveToolResultTool {
         if let Some(ownership) = legacy_ownership {
             let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
             if ownership.size_bytes != size
-                || ownership.digest != crate::hashing::sha256_hex(&bytes)
+                || ownership.digest != codewhale_runtime::hashing::sha256_hex(&bytes)
             {
                 return Err(ToolError::execution_failed(
                     "legacy evidence content is corrupt",
@@ -268,7 +268,7 @@ fn validate_evidence_if_present(
         ));
     }
     if metadata.size_bytes != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        || metadata.digest != crate::hashing::sha256_hex(bytes)
+        || metadata.digest != codewhale_runtime::hashing::sha256_hex(bytes)
     {
         return Err(ToolError::execution_failed("evidence content is corrupt"));
     }
@@ -851,7 +851,7 @@ mod tests {
         let now = crate::tools::large_output_router::unix_millis_now();
         let artifact = crate::tools::large_output_router::EvidenceArtifact {
             handle: handle.to_string(),
-            digest: crate::hashing::sha256_hex(bytes),
+            digest: codewhale_runtime::hashing::sha256_hex(bytes),
             size_bytes: bytes.len() as u64,
             content_type: "application/octet-stream".to_string(),
             tool_name: "exec_shell".to_string(),
@@ -886,7 +886,7 @@ mod tests {
     }
 
     fn write_owned_sha(content: &str, session_id: &str) -> (String, PathBuf) {
-        let sha = crate::hashing::sha256_hex(content.as_bytes());
+        let sha = codewhale_runtime::hashing::sha256_hex(content.as_bytes());
         let path = crate::tools::truncate::write_sha_spillover(&sha, content).unwrap();
         crate::tools::truncate::publish_legacy_spillover_ownership(
             &path,

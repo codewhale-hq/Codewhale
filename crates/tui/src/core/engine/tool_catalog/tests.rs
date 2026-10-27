@@ -1,3 +1,4 @@
+use super::prepare_tools_for_strict_mode;
 use super::{
     CODE_EXECUTION_DESCRIPTION, DEFAULT_ACTIVE_NATIVE_TOOLS, ToolMode,
     allowlist_is_native_file_and_shell_only, apply_mcp_tool_deferral, apply_native_tool_deferral,
@@ -37,11 +38,11 @@ fn code_execution_description_does_not_claim_process_sandboxing() {
 /// Python output must match our UTF-8 decoder even with non-UTF-8 parent stdio.
 #[tokio::test]
 async fn code_execution_returns_utf8_stdout_and_stderr() {
-    use crate::dependencies::ExternalTool as _;
     use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_dependencies::ExternalTool as _;
 
     let _env_lock = lock_test_env();
-    if !crate::dependencies::Python::available() {
+    if !codewhale_dependencies::Python::available() {
         return;
     }
     let _encoding = EnvVarGuard::set("PYTHONIOENCODING", "gbk");
@@ -91,7 +92,7 @@ fn published_synthetic_names_agree_with_the_synthetic_predicate() {
     assert!(
         !names
             .iter()
-            .any(|name| name == super::MULTI_TOOL_PARALLEL_NAME)
+            .any(|name| name == codewhale_tools::names::MULTI_TOOL_PARALLEL_NAME)
     );
 }
 
@@ -279,7 +280,7 @@ fn searching_for_an_eager_tool_is_not_reported_as_cache_rejected() {
     let mut cache = ToolActivationCache::default();
 
     let result = execute_tool_search_with_cache(
-        super::TOOL_SEARCH_NAME,
+        codewhale_tools::names::TOOL_SEARCH_NAME,
         &json!({"query": "read"}),
         &catalog,
         &mut active,
@@ -416,7 +417,7 @@ fn catalog_build_does_not_append_registry_guidance_to_the_shell_tool() {
 
 #[test]
 fn requested_tool_mode_prefers_model_hint_then_flag_then_direct() {
-    use crate::features::{Feature, Features};
+    use codewhale_runtime::features::{Feature, Features};
 
     // #6562: code mode is the default; `[features] code_mode = false` is the
     // escape hatch back to Direct.
@@ -470,7 +471,7 @@ fn execute_tools_is_eager_in_code_mode_and_deferred_in_direct() {
 #[cfg(unix)]
 #[tokio::test]
 async fn dropped_code_execution_kills_the_interpreter_tree() {
-    if crate::dependencies::resolve_python_interpreter().is_none() {
+    if codewhale_dependencies::resolve_python_interpreter().is_none() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -482,9 +483,152 @@ async fn dropped_code_execution_kills_the_interpreter_tree() {
     let input = json!({ "code": code });
     let context = crate::tools::spec::ToolContext::new(tmp.path());
     let run = super::execute_code_execution_tool(&input, tmp.path(), &context);
-    let grandchild = crate::process_tree::drop_once_pid_written(run, &pid_file).await;
+    let grandchild = codewhale_runtime::process_tree::drop_once_pid_written(run, &pid_file).await;
     assert!(
-        crate::process_tree::wait_for_pid_exit(grandchild, std::time::Duration::from_secs(5)),
+        codewhale_runtime::process_tree::wait_for_pid_exit(
+            grandchild,
+            std::time::Duration::from_secs(5)
+        ),
         "a process the script started outlived the dropped code_execution call"
     );
+}
+
+fn test_tool(name: &str, input_schema: serde_json::Value) -> Tool {
+    Tool {
+        input_schema,
+        ..tool(name)
+    }
+}
+
+#[test]
+fn strict_mode_applies_per_tool_in_mixed_catalog() {
+    let mut tools = vec![
+        test_tool(
+            "lookup",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": []
+            }),
+        ),
+        test_tool(
+            "either",
+            json!({
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string"},
+                    "b": {"type": "string"}
+                },
+                "anyOf": [
+                    {"required": ["a"]},
+                    {"required": ["b"]}
+                ]
+            }),
+        ),
+        test_tool(
+            "nested",
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "integer"}
+                        ]
+                    }
+                }
+            }),
+        ),
+    ];
+
+    assert!(!prepare_tools_for_strict_mode(&mut tools));
+    assert_eq!(tools[0].strict, Some(true));
+    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
+    assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    assert_eq!(tools[1].strict, None);
+    assert!(tools[1].input_schema.get("anyOf").is_some());
+    assert_eq!(tools[2].strict, None);
+    assert!(
+        tools[2].input_schema["properties"]["value"]
+            .get("oneOf")
+            .is_some()
+    );
+}
+
+#[test]
+fn strict_mode_rejects_nested_unsupported_composition() {
+    let mut tools = vec![Tool {
+        tool_type: None,
+        name: "nested".to_string(),
+        description: "Nested oneOf".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "integer"}
+                    ]
+                }
+            }
+        }),
+        allowed_callers: None,
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    assert!(!prepare_tools_for_strict_mode(&mut tools));
+    assert_eq!(tools[0].strict, None);
+}
+
+#[test]
+fn strict_mode_leaves_dependent_schema_tools_non_strict() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "action": {"type": "string"},
+            "message": {"type": "string"}
+        },
+        "dependentSchemas": {
+            "action": {
+                "properties": {"message": {}},
+                "required": ["message"]
+            }
+        }
+    });
+    let mut tools = vec![test_tool("agent", schema.clone())];
+
+    assert!(!prepare_tools_for_strict_mode(&mut tools));
+    assert_eq!(tools[0].strict, None);
+    assert_eq!(tools[0].input_schema, schema);
+}
+
+#[test]
+fn strict_mode_marks_compatible_tools_strict() {
+    let mut tools = vec![Tool {
+        tool_type: None,
+        name: "lookup".to_string(),
+        description: "Lookup".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            },
+            "required": []
+        }),
+        allowed_callers: None,
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    assert!(prepare_tools_for_strict_mode(&mut tools));
+    assert_eq!(tools[0].strict, Some(true));
+    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
+    assert_eq!(tools[0].input_schema["additionalProperties"], false);
 }

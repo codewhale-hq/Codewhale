@@ -111,7 +111,7 @@ impl FleetDenialGuard {
         output: &ToolResult,
     ) -> Option<[u8; 32]> {
         use sha2::{Digest, Sha256};
-        let action = crate::tools::canonical_action::canonical_action_alias(name, input);
+        let action = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         (output.success
             && matches!(
                 action,
@@ -125,7 +125,7 @@ impl FleetDenialGuard {
         name: &str,
         input: &serde_json::Value,
     ) -> Option<ToolError> {
-        let action = crate::tools::canonical_action::canonical_action_alias(name, input);
+        let action = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         if self.report_only {
             Some(ToolError::permission_denied(
                 "Fleet no-progress final report: no tools may execute in this response. Report completed work, evidence and the remaining blocker; do not change permission mode or retry tools.",
@@ -150,7 +150,7 @@ impl FleetDenialGuard {
     ) {
         use crate::tools::spec::ToolTerminalStatus;
 
-        let action = crate::tools::canonical_action::canonical_action_alias(name, input);
+        let action = codewhale_execpolicy::canonical_action::canonical_action_alias(name, input);
         if status == ToolTerminalStatus::Denied
             && matches!(result, Err(ToolError::PermissionDenied { .. }))
         {
@@ -203,7 +203,7 @@ impl FleetDenialGuard {
             hasher.update([0]);
             // Tool JSON preserves insertion order; reordered equivalent keys
             // must not manufacture a new read request.
-            hasher.update(crate::client::canonical_json(&semantic_input).as_bytes());
+            hasher.update(codewhale_runtime::hashing::canonical_json(&semantic_input).as_bytes());
             let key: [u8; 32] = hasher.finalize().into();
             let contents = original_content_digest
                 .unwrap_or_else(|| Sha256::digest(output.content.as_bytes()).into());

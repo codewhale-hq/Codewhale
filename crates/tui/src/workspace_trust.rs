@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::write_atomic;
+use codewhale_util::utils::write_atomic;
 
 const TRUST_FILE_NAME: &str = "workspace-trust.json";
 

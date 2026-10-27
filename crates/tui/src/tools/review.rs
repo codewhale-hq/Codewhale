@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 
 use crate::client::CodewhaleClient;
 #[cfg(test)]
-use crate::dependencies::ExternalTool;
-use crate::utils::truncate_with_ellipsis;
+use codewhale_dependencies::ExternalTool;
 use codewhale_models::Usage;
+use codewhale_util::utils::truncate_with_ellipsis;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -68,6 +68,8 @@ fn reasoning_effort_from_rank(rank: u8) -> crate::reasoning_preference::Reasonin
 /// `reasoning_tokens == output_tokens == 65536`, stop reason `length`, zero
 /// visible text, and a PR blocked with no findings shown. The cap scales with
 /// the reserve the model actually needs and never raises the caller's request.
+/// An allowance of 8K or less on a reasoning model caps at Low, because a
+/// medium-or-higher pass can spend that whole allowance reasoning (#7067).
 ///
 /// What this does not do: it cannot separate reasoning from text on a route
 /// that exposes no effort knob, and it does not re-request a pass that already
@@ -76,8 +78,9 @@ fn reasoning_effort_from_rank(rank: u8) -> crate::reasoning_preference::Reasonin
 pub(crate) fn bounded_review_reasoning_effort(
     requested: crate::reasoning_preference::ReasoningEffort,
     reserve_percent: u32,
+    allowance: u32,
 ) -> crate::reasoning_preference::ReasoningEffort {
-    let ceiling = match reserve_percent {
+    let mut ceiling = match reserve_percent {
         // Nothing reserved: the model does not reason, so nothing to bound.
         0 => u8::MAX,
         // A quarter of the allowance must survive as text.
@@ -85,6 +88,9 @@ pub(crate) fn bounded_review_reasoning_effort(
         // Half the allowance must survive as text.
         _ => 2,
     };
+    if reserve_percent > 0 && allowance <= super::review_triage::REASONING_ROUTE_MIN_OUTPUT_TOKENS {
+        ceiling = ceiling.min(2);
+    }
     reasoning_effort_from_rank(reasoning_effort_rank(requested).min(ceiling))
 }
 
@@ -1410,7 +1416,7 @@ fn review_receipt_check_status_passes(status: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    crate::hashing::sha256_hex(bytes)
+    codewhale_runtime::hashing::sha256_hex(bytes)
 }
 
 fn valid_sha256_fingerprint(value: &str) -> bool {
@@ -1544,7 +1550,7 @@ impl ToolSpec for ReviewTool {
             validate_review_source_size(&source, max_chars)?;
             vec![if context
                 .features
-                .enabled(crate::features::Feature::ReviewHost)
+                .enabled(codewhale_runtime::features::Feature::ReviewHost)
             {
                 super::review_host::source_prompt(review_source_snapshot(&source), context).await?
             } else {
@@ -1568,7 +1574,29 @@ impl ToolSpec for ReviewTool {
             _ => super::review_core::repository_tool_workspace(&context.workspace, None),
         };
         let triage = super::review_triage::triage_review(&review_diff);
-        let budget = super::review_triage::budget_for(&triage);
+        let reserve_percent =
+            crate::route_budget::review_visible_text_reserve_percent(&route.model);
+        let budget = super::review_triage::budget_for(
+            &triage,
+            client.effective_max_output_tokens(&route.model),
+        );
+        let allowance = budget.max_output_tokens;
+        let reasoning_effort =
+            (codewhale_models::model_reasoning_capability(&route.model) == Some(true)).then(|| {
+                bounded_review_reasoning_effort(
+                    crate::reasoning_preference::ReasoningEffort::Max,
+                    reserve_percent,
+                    allowance,
+                )
+                .normalize_for_route_identity(
+                    client.api_provider(),
+                    client.admitted_provider_identity().key.as_str(),
+                    client.base_url(),
+                    &route.model,
+                )
+                .as_setting()
+                .to_string()
+            });
         let mut usage = Usage::default();
         let mut accumulator = plan.as_ref().map(PrReviewAccumulator::new);
         let mut single_output = None;
@@ -1584,11 +1612,8 @@ impl ToolSpec for ReviewTool {
             let mut request = super::review_core::ReviewCoreRequest::new(&review_diff, prompt);
             request.workspace = tool_workspace.clone();
             request.budget = budget.tool_budget();
-            request.max_output_tokens = Some(
-                client
-                    .effective_max_output_tokens(&route.model)
-                    .min(budget.max_output_tokens),
-            );
+            request.max_output_tokens = Some(allowance);
+            request.reasoning_effort = reasoning_effort.clone();
             let result =
                 match super::review_core::run_review_core(&client, &self.model, request).await {
                     Ok(result) => result,
@@ -1627,10 +1652,21 @@ impl ToolSpec for ReviewTool {
                     &route,
                     &usage,
                     format!(
-                        "Review pass {}/{} response incomplete: provider stop reason `{}`; the partial review was not accepted.",
+                        "Review pass {}/{} response incomplete: provider stop reason `{}`; the pass {}. The partial review was not accepted.",
                         index + 1,
                         plan.as_ref().map_or(1, |plan| plan.passes.len()),
-                        codewhale_models::stop_reason_detail(result.stop_reason.as_deref())
+                        codewhale_models::stop_reason_detail(result.stop_reason.as_deref()),
+                        exhausted_pass_clause(&result.usage)
+                    ),
+                ));
+            }
+            if result.outcome == super::review_core::ReviewCoreOutcome::LeakedToolCall {
+                return Ok(review_error_with_usage(
+                    &route,
+                    &usage,
+                    leaked_tool_call_message(
+                        index + 1,
+                        plan.as_ref().map_or(1, |plan| plan.passes.len()),
                     ),
                 ));
             }
@@ -1691,6 +1727,7 @@ impl ToolSpec for ReviewTool {
             super::review_core::ReviewCoreOutcome::Completed => "completed",
             super::review_core::ReviewCoreOutcome::NoFinalAnswer => "no_final_answer",
             super::review_core::ReviewCoreOutcome::StepBudgetExhausted => "step_budget_exhausted",
+            super::review_core::ReviewCoreOutcome::LeakedToolCall => "leaked_tool_call",
         });
         if let Some(plan) = &plan {
             metadata["review_passes"] = json!(plan.passes.len());
@@ -1709,6 +1746,25 @@ impl ToolSpec for ReviewTool {
             }
         };
         Ok(result.with_metadata(metadata))
+    }
+}
+
+pub(crate) fn leaked_tool_call_message(pass: usize, passes: usize) -> String {
+    format!(
+        "Review pass {pass}/{passes} returned tool-call markup instead of a review: the model tried to call tools this pass did not offer. This is not a review result, and the response was not accepted or posted."
+    )
+}
+
+pub(crate) fn exhausted_pass_clause(usage: &Usage) -> String {
+    let visible_tokens = usage
+        .output_tokens
+        .saturating_sub(usage.reasoning_tokens.unwrap_or(0));
+    if visible_tokens > 0 {
+        format!(
+            "was cut off before the review finished ({visible_tokens} visible tokens came back)"
+        )
+    } else {
+        "produced no review text".to_string()
     }
 }
 
@@ -1876,7 +1932,7 @@ async fn resolve_diff_target(
     };
 
     let mut args = vec!["diff".to_string()];
-    args.extend(crate::dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
+    args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
     if staged {
         args.push("--cached".to_string());
         if let Some(base_commit) = base_commit {
@@ -1932,7 +1988,7 @@ async fn run_review_git(
 ) -> Result<std::process::Output, ToolError> {
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let mut cmd = crate::dependencies::Git::review_command(&workspace)
+        let mut cmd = codewhale_dependencies::Git::review_command(&workspace)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         cmd.args(args).output().map_err(|e| {
             ToolError::execution_failed(format!("Failed to {operation} with git: {e}"))
@@ -2213,25 +2269,29 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let client = CodewhaleClient::new(&crate::config::Config {
-            provider: Some("moonshot".into()),
-            providers: Some(crate::config::ProvidersConfig {
-                moonshot: crate::config::ProviderConfig {
+        let client = CodewhaleClient::new(&{
+            let __cw_config_init_0_0 = Some("moonshot".into());
+            let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("local-fixture-key".into()),
                     base_url: Some(base),
                     model: Some("kimi-k2.5".into()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         })
         .unwrap();
         let tool = ReviewTool::new(Some(client), "kimi-k2.5".into());
         for host in [false, true] {
-            let mut features = crate::features::Features::with_defaults();
+            let mut features = codewhale_runtime::features::Features::with_defaults();
             if host {
-                features.enable(crate::features::Feature::ReviewHost);
+                features.enable(codewhale_runtime::features::Feature::ReviewHost);
             }
             let context = ToolContext::new(root.path()).with_features(features);
             let error = tokio::time::timeout(
@@ -2842,7 +2902,7 @@ mod tests {
         .unwrap();
         let route = crate::cost_status::EffectiveRouteEnvelope::capture(
             None,
-            crate::config::ProviderKind::Custom,
+            codewhale_config::ProviderKind::Custom,
             "test",
             "test-model",
             None,
@@ -2905,7 +2965,7 @@ mod tests {
     }
 
     fn fixture_git(workspace: &Path, args: &[&str]) -> std::process::Output {
-        let mut command = crate::dependencies::Git::command().expect("git test dependency");
+        let mut command = codewhale_dependencies::Git::command().expect("git test dependency");
         let output = command
             .args(args)
             .current_dir(workspace)
@@ -3083,7 +3143,7 @@ mod tests {
     fn review_usage_metadata_reports_child_tokens_for_cost_accrual() {
         let route = crate::cost_status::EffectiveRouteEnvelope::capture(
             None,
-            crate::config::ProviderKind::Deepseek,
+            codewhale_config::ProviderKind::Deepseek,
             "deepseek",
             "deepseek-v4-flash",
             Some("https://api.deepseek.com/v1"),
@@ -3460,31 +3520,31 @@ mod tests {
 
         // Half the allowance must survive as text: reasoning capped to Low.
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Max, 50),
+            bounded_review_reasoning_effort(ReasoningEffort::Max, 50, 65_536),
             ReasoningEffort::Low
         );
         // A quarter reserved: capped to Medium.
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Max, 25),
+            bounded_review_reasoning_effort(ReasoningEffort::Max, 25, 65_536),
             ReasoningEffort::Medium
         );
         // Nothing reserved (non-reasoning model): request untouched.
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Max, 0),
+            bounded_review_reasoning_effort(ReasoningEffort::Max, 0, 65_536),
             ReasoningEffort::Max
         );
         // The cap never raises a lower request.
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Low, 50),
+            bounded_review_reasoning_effort(ReasoningEffort::Low, 50, 65_536),
             ReasoningEffort::Low
         );
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Off, 50),
+            bounded_review_reasoning_effort(ReasoningEffort::Off, 50, 65_536),
             ReasoningEffort::Off
         );
         // Unresolved Auto must not survive as unbounded either.
         assert_eq!(
-            bounded_review_reasoning_effort(ReasoningEffort::Auto, 50),
+            bounded_review_reasoning_effort(ReasoningEffort::Auto, 50, 65_536),
             ReasoningEffort::Low
         );
     }

@@ -333,7 +333,8 @@ async fn completion_usage_counts_real_manifest_only_root_fork() {
     // Exercise real registration without allowing any provider request.
     runtime.cancel_token.cancel();
     let mut guard = manager.write().await;
-    let (canonical, directory) = crate::runtime_api::open_workspace_directory(dir.path()).unwrap();
+    let (canonical, directory) =
+        codewhale_util::workspace_dir::open_workspace_directory(dir.path()).unwrap();
     guard
         .admit_coordination_workspace(dir.path().to_path_buf(), canonical, Arc::new(directory))
         .unwrap();
@@ -528,7 +529,7 @@ fn worker_unknown_usage_promotes_exact_route_once_and_survives_serialization() {
     let id = child(&mut manager, "late-exact", None, None);
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
-        crate::config::ProviderKind::Deepseek,
+        codewhale_config::ProviderKind::Deepseek,
         "deepseek",
         "deepseek-v4-flash",
         Some("https://api.deepseek.com/v1"),
@@ -575,7 +576,7 @@ fn worker_missing_overflow_and_legacy_gap_remain_after_exact_promotions() {
     manager.mark_worker_unreported_usage(&id);
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
-        crate::config::ProviderKind::Deepseek,
+        codewhale_config::ProviderKind::Deepseek,
         "deepseek",
         "deepseek-v4-flash",
         Some("https://api.deepseek.com/v1"),

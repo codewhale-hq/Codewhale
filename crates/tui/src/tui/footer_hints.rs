@@ -6,12 +6,12 @@
 //! beside `behavioral_tip_impressions`, so a learned binding stays learned
 //! across sessions.
 //!
-//! [`Settings`]: crate::settings::Settings
+//! [`Settings`]: codewhale_runtime::settings::Settings
 
 use std::collections::BTreeMap;
 
-use crate::settings::Settings;
 use crate::tui::app::App;
+use codewhale_runtime::settings::Settings;
 
 /// Uses of a binding after which its footer hint retires.
 pub(crate) const USES_TO_RETIRE: u8 = 2;

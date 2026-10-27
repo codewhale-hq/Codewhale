@@ -2050,7 +2050,7 @@
     "metaTitle": "Computer Use · Preview · Codewhale",
     "metaDescription": "Preview: download and set up Codewhale Computer Use for Mac. Background app control, permission setup, and human Pause and Stop controls.",
     "title": "Computer Use",
-    "lead": "Let Codewhale work in your apps while you keep working. The Mac helper brings permissions, background app control, and a way to pause or stop input to your menu bar.",
+    "lead": "Let Codewhale work across your apps while you keep working. Trust it once on this Mac and stop computer use whenever you want.",
     "publisher": "By Codewhale",
     "download": "Download for Mac",
     "downloadZip": "ZIP archive (used by the in-app updater)",
@@ -2073,16 +2073,12 @@
         "body": "Use the setup buttons to open Accessibility and Screen Recording in System Settings. You choose which permissions to grant."
       },
       {
-        "title": "Run the background check",
-        "body": "The helper opens a disposable practice window, enters text, and captures that window. It checks whether the pointer or active app changed during the run."
-      },
-      {
-        "title": "Connect it to Codewhale",
-        "body": "Review, trust, and enable Computer Use in Codewhale’s plugin marketplace. Use plugin 0.3.1 or later so local actions go through the helper’s Pause and Stop controls."
+        "title": "Enable Computer Use",
+        "body": "In Codewhale’s Connectors settings, install or update Computer Use, then review and enable it. Ask it to work in an app. On first use, choose Trust until revoked in the native helper; that trust carries across apps, models, and tasks."
       }
     ],
-    "controlsTitle": "Pause or stop app control",
-    "controlsBody": "Supported actions operate on the selected app in the background. Apps and gestures that need foreground control require your authorization. The menu shows the target and input mode; Pause suspends helper input, and Stop ends its existing sessions.",
+    "controlsTitle": "Stay in control",
+    "controlsBody": "The compact Codewhale control names the app in use. Pause suspends computer use; Stop computer use ends all current computer sessions. In Settings, choose Turn off under Remembered access to remove the connection’s saved access. Ask for a live preview when you want to watch.",
     "updateTitle": "Updates when you choose",
     "updateBody": "Choose Check for updates from the app. Before installing an update, it checks the download, Codewhale signature, and Apple notarization, and keeps the previous app for recovery.",
     "help": "Setup and troubleshooting",

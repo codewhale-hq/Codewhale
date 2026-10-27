@@ -1,93 +1,78 @@
 //! `/hotbar` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::{App, AppAction};
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::{
+    CoreNavigationAction as Action, CoreNavigationCommandResult as CommandResult,
+};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+pub const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "hotbar",
     aliases: &["hotkeys"],
     usage: "/hotbar",
-    description_id: MessageId::CmdHotbarDescription,
+    description_key: "cmd_hotbar_description",
 };
 
-pub(in crate::commands) struct HotbarCmd;
+pub struct HotbarCmd;
 
-impl RegisterCommand for HotbarCmd {
+impl RegisterCommand<CommandResult> for HotbarCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(_app: &mut App, arg: Option<&str>) -> CommandResult {
-        match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
-            None | Some("setup" | "edit" | "configure" | "config") => {
-                CommandResult::action(AppAction::OpenHotbarSetup)
-            }
-            // Hide the Hotbar: persist `hotbar = []` and clear the live slots.
-            Some("off" | "disable" | "hide") => CommandResult::action(AppAction::DisableHotbar),
-            // Restore the default recommended slots (explicit reset).
-            Some("on" | "reset" | "defaults" | "default") => {
-                CommandResult::action(AppAction::RestoreHotbarDefaults)
-            }
-            Some("help" | "?") => CommandResult::message(
-                "Hotbar gives you Alt+1 through Alt+8 shortcuts (Option key on macOS, Alt \
-                 elsewhere). Use `/hotbar` to customize, `/hotbar off` to hide it \
-                 (`hotbar = []`), and `/hotbar on` to restore the default slots. \
-                 Hotbar slots dispatch only when no modal, inline picker, or \
-                 onboarding surface owns input. Bare 1-8 insert text in the \
-                 composer. Cmd-number and F-keys are not Hotbar shortcuts unless \
-                 a future release documents and implements them.",
-            ),
-            Some(other) => CommandResult::error(format!(
-                "Unknown /hotbar target '{other}'. Try `/hotbar`, `/hotbar off`, \
-                 `/hotbar on`, or `/hotbar help`."
-            )),
+    fn handler() -> CommandHandler<CommandResult> {
+        CommandHandler::Pure(hotbar)
+    }
+}
+
+fn hotbar(arg: Option<&str>) -> CommandResult {
+    match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
+        None | Some("setup" | "edit" | "configure" | "config") => {
+            CommandResult::action(Action::OpenHotbarSetup)
         }
+        // Hide the Hotbar: persist `hotbar = []` and clear the live slots.
+        Some("off" | "disable" | "hide") => CommandResult::action(Action::DisableHotbar),
+        // Restore the default recommended slots (explicit reset).
+        Some("on" | "reset" | "defaults" | "default") => {
+            CommandResult::action(Action::RestoreHotbarDefaults)
+        }
+        Some("help" | "?") => CommandResult::message(
+            "Hotbar gives you Alt+1 through Alt+8 shortcuts (Option key on macOS, Alt \
+             elsewhere). Use `/hotbar` to customize, `/hotbar off` to hide it \
+             (`hotbar = []`), and `/hotbar on` to restore the default slots. \
+             Hotbar slots dispatch only when no modal, inline picker, or \
+             onboarding surface owns input. Bare 1-8 insert text in the \
+             composer. Cmd-number and F-keys are not Hotbar shortcuts unless \
+             a future release documents and implements them.",
+        ),
+        Some(other) => CommandResult::error(format!(
+            "Unknown /hotbar target '{other}'. Try `/hotbar`, `/hotbar off`, \
+             `/hotbar on`, or `/hotbar help`."
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::tui::app::TuiOptions;
-    use std::path::PathBuf;
-
-    fn test_app() -> App {
-        let options = TuiOptions {
-            ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
-        };
-        App::new(options, &Config::default())
-    }
 
     #[test]
     fn hotbar_command_opens_setup_view() {
-        let mut app = test_app();
-
-        let result = HotbarCmd::execute(&mut app, None);
-
-        assert_eq!(result.action, Some(AppAction::OpenHotbarSetup));
+        let result = hotbar(None);
+        assert_eq!(result.action, Some(Action::OpenHotbarSetup));
         assert!(result.message.is_none());
     }
 
     #[test]
     fn hotbar_setup_alias_opens_setup_view() {
-        let mut app = test_app();
-
-        let result = HotbarCmd::execute(&mut app, Some("setup"));
-
-        assert_eq!(result.action, Some(AppAction::OpenHotbarSetup));
+        let result = hotbar(Some("setup"));
+        assert_eq!(result.action, Some(Action::OpenHotbarSetup));
         assert!(result.message.is_none());
     }
 
     #[test]
     fn hotbar_help_arg_explains_customize_and_disable() {
-        let mut app = test_app();
-
-        let result = HotbarCmd::execute(&mut app, Some("help"));
-
+        let result = hotbar(Some("help"));
         assert!(!result.is_error);
         assert!(result.action.is_none());
         let message = result
@@ -115,11 +100,10 @@ mod tests {
     #[test]
     fn hotbar_off_and_disable_aliases_return_disable_action() {
         for arg in ["off", "disable", "hide"] {
-            let mut app = test_app();
-            let result = HotbarCmd::execute(&mut app, Some(arg));
+            let result = hotbar(Some(arg));
             assert_eq!(
                 result.action,
-                Some(AppAction::DisableHotbar),
+                Some(Action::DisableHotbar),
                 "`/hotbar {arg}` should disable the hotbar"
             );
             assert!(
@@ -132,11 +116,10 @@ mod tests {
     #[test]
     fn hotbar_on_and_reset_aliases_return_restore_action() {
         for arg in ["on", "reset", "defaults", "default"] {
-            let mut app = test_app();
-            let result = HotbarCmd::execute(&mut app, Some(arg));
+            let result = hotbar(Some(arg));
             assert_eq!(
                 result.action,
-                Some(AppAction::RestoreHotbarDefaults),
+                Some(Action::RestoreHotbarDefaults),
                 "`/hotbar {arg}` should restore default hotbar slots"
             );
             assert!(result.message.is_none());
@@ -145,10 +128,7 @@ mod tests {
 
     #[test]
     fn hotbar_unknown_arg_reports_error() {
-        let mut app = test_app();
-
-        let result = HotbarCmd::execute(&mut app, Some("bogus"));
-
+        let result = hotbar(Some("bogus"));
         assert!(result.is_error);
         assert!(result.action.is_none());
         assert!(

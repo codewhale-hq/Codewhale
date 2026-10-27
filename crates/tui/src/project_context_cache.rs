@@ -19,6 +19,7 @@ const DEFAULT_CAPACITY: usize = 8;
 pub(crate) struct CacheKey {
     workspace: PathBuf,
     signature: ContentSignature,
+    settings: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -29,6 +30,9 @@ struct ContentSignature {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ContentEntry {
     path: PathBuf,
+    read_root: Option<PathBuf>,
+    canonical_path: Option<PathBuf>,
+    symlink_components: Vec<PathBuf>,
     fingerprint: Option<String>,
 }
 
@@ -63,9 +67,8 @@ pub(crate) fn store(key: CacheKey, value: ProjectContext) {
 
 /// Drop every cached entry.
 ///
-/// Used by tests, and by `set_foreign_instruction_imports`: changing which
-/// foreign instruction formats are imported changes what the loader would
-/// return for an otherwise-unchanged workspace, so the cache cannot survive it.
+/// Used by tests.
+#[cfg(test)]
 pub(crate) fn clear() {
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -75,11 +78,26 @@ pub(crate) fn clear() {
 }
 
 #[must_use]
+#[cfg(test)]
 pub(crate) fn compute_cache_key(workspace: &Path, home_dir: Option<&Path>) -> CacheKey {
+    compute_cache_key_with_settings(
+        workspace,
+        &crate::project_context::InstructionSettings {
+            home: home_dir.map(Path::to_path_buf),
+            ..Default::default()
+        },
+    )
+}
+
+pub(crate) fn compute_cache_key_with_settings(
+    workspace: &Path,
+    settings: &crate::project_context::InstructionSettings,
+) -> CacheKey {
     let workspace = canonicalize_or_keep(workspace);
     CacheKey {
-        signature: ContentSignature::for_loader(&workspace, home_dir),
+        signature: ContentSignature::for_loader(&workspace, settings.home.as_deref()),
         workspace,
+        settings: format!("{settings:?}"),
     }
 }
 
@@ -88,26 +106,43 @@ impl ContentSignature {
         let mut entries: Vec<ContentEntry> =
             crate::project_context::project_context_cache_candidate_paths(workspace, home_dir)
                 .into_iter()
-                .map(|path| ContentEntry {
-                    fingerprint: file_fingerprint(&path),
+                .map(|(path, read_root)| ContentEntry {
+                    canonical_path: std::fs::canonicalize(&path).ok(),
+                    symlink_components: path
+                        .ancestors()
+                        .filter(|component| {
+                            std::fs::symlink_metadata(component)
+                                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                        })
+                        .map(Path::to_path_buf)
+                        .collect(),
+                    fingerprint: file_fingerprint(&path, read_root.as_deref()),
                     path,
+                    read_root,
                 })
                 .collect();
 
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        entries.dedup_by(|a, b| a.path == b.path);
+        entries.sort_by(|a, b| (&a.path, &a.read_root).cmp(&(&b.path, &b.read_root)));
+        entries.dedup_by(|a, b| a.path == b.path && a.read_root == b.read_root);
 
         Self { entries }
     }
 }
 
-/// Largest candidate hashed by content. The context loader refuses files
-/// over 100 KiB whatever they hold, so a larger candidate is fingerprinted by
-/// length and mtime instead of being read whole on every prompt refresh.
-const FINGERPRINT_MAX_READ_BYTES: u64 = 1024 * 1024;
+/// Largest candidate hashed by content. The context loader skips files over
+/// its 8 MiB ceiling whatever they hold, so a larger candidate is
+/// fingerprinted by length and mtime instead of being read on every refresh.
+const FINGERPRINT_MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 
-fn file_fingerprint(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
+fn file_fingerprint(path: &Path, read_root: Option<&Path>) -> Option<String> {
+    let file = match read_root.map_or_else(
+        || codewhale_util::fs_confined::open_user_read(path),
+        |root| codewhale_util::fs_confined::open_read(root, path),
+    ) {
+        Ok(file) => file,
+        Err(error) => return Some(format!("unreadable:{error}")),
+    };
+    let metadata = file.metadata().ok()?;
     if !metadata.is_file() {
         return Some("non-file".to_string());
     }
@@ -123,19 +158,22 @@ fn file_fingerprint(path: &Path) -> Option<String> {
         return Some(format!("oversize:{}:{}", metadata.len(), modified()));
     }
 
-    let read = std::fs::File::open(path).and_then(|file| {
+    let read: std::io::Result<_> = (|| {
         use std::io::Read as _;
-        let mut bytes = Vec::new();
-        file.take(FINGERPRINT_MAX_READ_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-    });
-    match read {
-        Ok(bytes) => {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            Some(format!("sha256:{}", to_hex(&hasher.finalize())))
+        let mut hasher = Sha256::new();
+        let mut limited = file.take(FINGERPRINT_MAX_READ_BYTES + 1);
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = limited.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
         }
+        Ok(hasher.finalize())
+    })();
+    match read {
+        Ok(digest) => Some(format!("sha256:{}", to_hex(&digest))),
         Err(error) => Some(format!(
             "unreadable:{}:{}:{error}",
             metadata.len(),
@@ -169,6 +207,7 @@ mod tests {
         let key = CacheKey {
             workspace: PathBuf::from("/tmp/context-cache-round-trip"),
             signature: ContentSignature::default(),
+            settings: String::new(),
         };
         let ctx = ProjectContext::empty(PathBuf::from("/tmp/context-cache-round-trip"));
 
@@ -185,6 +224,7 @@ mod tests {
             let key = CacheKey {
                 workspace: PathBuf::from(format!("/tmp/workspace-{i}")),
                 signature: ContentSignature::default(),
+                settings: String::new(),
             };
             store(key, ProjectContext::empty(PathBuf::from("/tmp")));
         }

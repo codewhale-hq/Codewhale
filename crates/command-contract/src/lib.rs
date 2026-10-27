@@ -9,6 +9,7 @@ pub mod elapsed;
 pub mod facets;
 pub mod handler;
 pub mod metadata;
+pub mod navigation;
 pub mod outcome;
 pub mod types;
 

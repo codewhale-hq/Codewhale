@@ -6,21 +6,24 @@ async fn host_managed_engine_defers_idle_subagent_completion_to_explicit_turn() 
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_0_0 = Some("custom-a".to_string());
+        let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     };
     let runtime_services = crate::tools::spec::RuntimeToolServices {
         active_thread_id: Some("thr_host_managed".to_string()),
@@ -423,9 +426,7 @@ async fn idle_subagent_delivery_releases_claim_when_route_fails_before_recording
     use crate::tools::subagent::SubAgentCompletion;
 
     let workspace = tempdir().expect("tempdir");
-    let api_config = Config {
-        ..Config::default()
-    }
+    let api_config = Config::default()
     .with_legacy_root(
         Some("test-key".to_string()),
         Some("http://127.0.0.1:1/v1".to_string()),
@@ -491,7 +492,7 @@ fn subagent_mailbox_keeps_lifecycle_events_reliable() {
     ));
 
     assert!(!subagent_mailbox_message_is_best_effort(
-        &MailboxMessage::started("agent_a", crate::tools::subagent::FleetRole::Scout)
+        &MailboxMessage::started("agent_a", codewhale_agent_contract::role::FleetRole::Scout)
     ));
     assert!(!subagent_mailbox_message_is_best_effort(
         &MailboxMessage::Completed {
@@ -579,7 +580,8 @@ fn subagent_mailbox_samples_best_effort_events_per_agent() {
 
 #[test]
 fn subagent_mailbox_never_samples_lifecycle_or_usage_events() {
-    use crate::tools::subagent::{FleetRole, MailboxMessage};
+    use crate::tools::subagent::MailboxMessage;
+    use codewhale_agent_contract::role::FleetRole;
     use codewhale_models::Usage;
 
     let mut last_sent_at = HashMap::new();
@@ -751,7 +753,7 @@ fn shell_denial_preserves_task_reads_and_bounded_verification_actions() {
 
 #[test]
 fn shell_denial_applies_to_new_durable_execution_without_hiding_management() {
-    use super::tool_catalog::tool_call_denied;
+    use crate::tools::execution_envelope::tool_call_denied;
     let rules = vec!["Bash".to_string()];
     for (family, actions) in [
         ("tasks", vec!["create", "gate_run"]),
@@ -1001,80 +1003,201 @@ async fn healthy_owned_children_do_not_force_another_parent_model_turn() {
 
 #[tokio::test]
 async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_children() {
+    use crate::core::model_client::ModelClient;
     use crate::llm_client::mock::{MockLlmClient, canned};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let workspace = tempdir().expect("tempdir");
-    fs::write(workspace.path().join("state.txt"), "steer-proof\n").expect("fixture");
-    let mock = Arc::new(MockLlmClient::new(Vec::new()));
-    let client: crate::core::model_client::SharedModelClient = mock.clone();
-    let (mut engine, handle) = Engine::new_with_model_client(
-        deterministic_engine_config(workspace.path()),
-        &Config::default(),
-        client,
-    );
-    mock.push_factory(move |_request| {
-        let turn_id = handle
-            .turn_controls
-            .lock()
-            .unwrap()
-            .active
-            .as_ref()
-            .map(|control| control.id);
-        handle
-            .tx_steer
-            .try_send(handle::SteerInput {
-                replace_pending: false,
-                turn_id,
-                content: "Also read state.txt and include its evidence.".to_string(),
-                outcome: None,
-            })
-            .expect("steer channel open");
-        canned::simple_text_turn("The workflow is still running.")
-    });
-    mock.push_turn(canned::tool_call_turn(
-        "call-steer-read",
-        "read_file",
-        r#"{"path":"state.txt"}"#,
-    ));
-    mock.push_turn(canned::simple_text_turn(
-        "The user-requested evidence is steer-proof.",
-    ));
-    let mut registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
-        workspace.path().to_path_buf(),
-    ));
-    registry.register(Arc::new(crate::tools::file::ReadFileTool));
-    let tools = Some(registry.to_api_tools_with_cache(true));
-    let surface = test_tool_surface(&engine, registry, tools, AppMode::Agent);
-    let children = Arc::new(ForegroundChildRegistry::new());
-    let child_cancel = CancellationToken::new();
-    let registration = children
-        .register(child_cancel.clone(), "agent_child")
-        .expect("child registered");
-    let mut turn = crate::core::turn::TurnContext::new(8);
+    struct SteeredClient {
+        mock: Arc<MockLlmClient>,
+        requests: StdMutex<Vec<codewhale_models::MessageRequest>>,
+        calls: AtomicUsize,
+        opening: bool,
+        first_events: Vec<StreamEvent>,
+        entered: Arc<tokio::sync::Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl ModelClient for SteeredClient {
+        fn provider_name(&self) -> &str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "mock-model"
+        }
+        async fn create_message(
+            &self,
+            request: codewhale_models::MessageRequest,
+        ) -> anyhow::Result<codewhale_models::MessageResponse> {
+            ModelClient::create_message(self.mock.as_ref(), request).await
+        }
+        async fn create_message_stream(
+            &self,
+            request: codewhale_models::MessageRequest,
+        ) -> anyhow::Result<crate::llm_client::StreamEventBox> {
+            self.requests.lock().unwrap().push(request.clone());
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                let drop_signal = DropSignal(Arc::clone(&self.dropped));
+                if self.opening {
+                    self.entered.notify_one();
+                    let _drop_signal = drop_signal;
+                    return std::future::pending().await;
+                }
+                let events = self.first_events.clone();
+                let entered = Arc::clone(&self.entered);
+                return Ok(Box::pin(async_stream::try_stream! {
+                    let _drop_signal = drop_signal;
+                    for event in events { yield event; }
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }));
+            }
+            ModelClient::create_message_stream(self.mock.as_ref(), request).await
+        }
+        async fn health_check(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
 
-    let (status, error) = engine
-        .run_turn(&mut turn, surface, Some(Arc::clone(&children)), None)
-        .await;
-
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-    assert_eq!(mock.call_count(), 3);
-    let requests = mock.captured_requests();
-    assert!(requests[1].messages.iter().any(|message| {
-        message.content.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text, .. }
-                if text.contains("Also read state.txt and include its evidence."))
+    for phase in ["opening", "silent", "reasoning", "text", "partial_tool"] {
+        let workspace = tempdir().expect("tempdir");
+        fs::write(workspace.path().join("state.txt"), "steer-proof\n").expect("fixture");
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call-steer-read", "read_file", r#"{"path":"state.txt"}"#),
+            canned::simple_text_turn("The user-requested evidence is steer-proof."),
+        ]));
+        let first_events = match phase {
+            "reasoning" => vec![
+                canned::message_start("interrupted"),
+                StreamEvent::ContentBlockStart {
+                    index: 0,
+                    content_block: codewhale_models::ContentBlockStart::Thinking {
+                        thinking: String::new(),
+                    },
+                },
+                canned::thinking_delta(0, "unfinished reasoning"),
+            ],
+            "text" => vec![
+                canned::message_start("interrupted"),
+                canned::text_block_start(0),
+                canned::text_delta(0, "The workflow is still running."),
+            ],
+            "partial_tool" => vec![
+                canned::message_start("interrupted"),
+                canned::tool_use_block_start(0, "call-must-not-run", "read_file"),
+                canned::tool_input_delta(0, r#"{"path":"state.txt""#),
+            ],
+            _ => Vec::new(),
+        };
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let client = Arc::new(SteeredClient {
+            mock: Arc::clone(&mock),
+            requests: StdMutex::new(Vec::new()),
+            calls: AtomicUsize::new(0),
+            opening: phase == "opening",
+            first_events,
+            entered: Arc::clone(&entered),
+            dropped: Arc::clone(&dropped),
+        });
+        let (mut engine, handle) = Engine::new_with_model_client(
+            deterministic_engine_config(workspace.path()),
+            &Config::default(),
+            client.clone(),
+        );
+        let mut registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
+            workspace.path().to_path_buf(),
+        ));
+        registry.register(Arc::new(crate::tools::file::ReadFileTool));
+        let tools = Some(registry.to_api_tools_with_cache(true));
+        let surface = test_tool_surface(&engine, registry, tools, AppMode::Agent);
+        let children = Arc::new(ForegroundChildRegistry::new());
+        let child_cancel = CancellationToken::new();
+        let registration = children
+            .register(child_cancel.clone(), "agent_child")
+            .expect("child registered");
+        let mut turn = crate::core::turn::TurnContext::new(8);
+        let steer = async {
+            entered.notified().await;
+            let turn_id = handle
+                .turn_controls
+                .lock()
+                .unwrap()
+                .active
+                .as_ref()
+                .map(|control| control.id);
+            let (outcome, accepted) = tokio::sync::oneshot::channel();
+            handle
+                .tx_steer
+                .send(handle::SteerInput {
+                    replace_pending: false,
+                    turn_id,
+                    content: "Also read state.txt and include its evidence.".to_string(),
+                    outcome: Some(outcome),
+                })
+                .await
+                .expect("steer channel open");
+            assert_eq!(accepted.await.unwrap(), handle::SteerOutcome::Accepted);
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "{phase}: obsolete request must close before steer acceptance"
+            );
+        };
+        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                engine.run_turn(&mut turn, surface, Some(Arc::clone(&children)), None),
+                steer
+            )
         })
-    }));
-    assert!(requests[2].messages.iter().any(|message| {
-        message.content.iter().any(|block| {
-            matches!(block, ContentBlock::ToolResult { tool_use_id, .. }
-                if tool_use_id == "call-steer-read")
-        })
-    }));
-    assert_eq!(children.active_count(), 1);
-    assert!(!child_cancel.is_cancelled());
-    assert_eq!(mock.remaining_turns(), 0);
-    drop(registration);
+        .await
+        .expect("steering must preempt an indefinitely silent request");
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{phase}: {error:?}");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3, "{phase}");
+        let requests = client.requests.lock().unwrap();
+        assert!(requests[1].messages.iter().any(|message| message.content.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text.contains("Also read state.txt and include its evidence."))
+        })), "{phase}");
+        assert!(requests[2].messages.iter().any(|message| message.content.iter().any(|block| {
+            matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call-steer-read")
+        })), "{phase}");
+        assert!(
+            requests.iter().all(|request| {
+                request.messages.iter().all(|message| {
+                    message.content.iter().all(|block| {
+                    !matches!(block, ContentBlock::ToolUse { id, .. } if id == "call-must-not-run")
+                })
+                })
+            }),
+            "{phase}"
+        );
+        assert!(
+            !serde_json::to_string(&requests[1])
+                .unwrap()
+                .contains("unfinished reasoning"),
+            "{phase}"
+        );
+        assert_eq!(
+            requests[0].system, requests[1].system,
+            "{phase}: pinned system prefix changed"
+        );
+        drop(requests);
+        let mut events = handle.rx_event.write().await;
+        let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().all(|event| !matches!(event, Event::ToolCallStarted { model_call: Some(call), .. } if call.provider_id == "call-must-not-run")), "{phase}");
+        assert!(events.iter().any(|event| matches!(event, Event::ProviderRequestReceipt { receipt } if receipt["outcome"] == if phase == "opening" { "steered_before_stream" } else { "steered" })), "{phase}");
+        if phase == "text" {
+            assert!(
+                engine
+                    .session
+                    .messages
+                    .iter()
+                    .any(|message| message.role == Role::InterruptedAssistant)
+            );
+        }
+        assert_eq!(children.active_count(), 1);
+        assert!(!child_cancel.is_cancelled());
+        assert_eq!(mock.remaining_turns(), 0);
+        drop(registration);
+    }
 }
 
 /// Compose one assistant turn that proposes `calls` as a single parallel

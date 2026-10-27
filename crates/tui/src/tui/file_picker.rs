@@ -36,9 +36,11 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
-use crate::workspace_discovery::{DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::workspace_discovery::{
+    DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery,
+};
 
 /// Maximum number of candidates collected from the initial walk. Keeps memory
 /// bounded for very large monorepos; matches the limits codex-rs uses for the
@@ -250,7 +252,7 @@ impl FilePickerView {
         let loading_cell = Arc::new(Mutex::new(None));
         let cell = loading_cell.clone();
         let root = workspace_root.to_path_buf();
-        crate::utils::spawn_blocking_supervised("file-picker-scan", move || {
+        codewhale_util::utils::spawn_blocking_supervised("file-picker-scan", move || {
             let walk = collect_candidates_limited(&root, max_depth, MAX_CANDIDATES);
             let scan = PickerScan::Initial(WorkspaceScan {
                 candidates: walk.paths,
@@ -446,7 +448,7 @@ impl FilePickerView {
         let root = self.workspace_root.clone();
         let max_depth = self.max_depth;
         let query_for_scan = query.clone();
-        crate::utils::spawn_blocking_supervised("file-picker-rescan", move || {
+        codewhale_util::utils::spawn_blocking_supervised("file-picker-rescan", move || {
             let hits = collect_query_matches(&root, max_depth, &query_for_scan, MAX_RESCAN_HITS);
             if let Ok(mut guard) = cell.lock() {
                 *guard = Some(PickerScan::Targeted {

@@ -13,7 +13,7 @@
 //!    route, and no re-derivation of prompt or tool selection here.
 //! 2. **Typed, allowlisted disclosure.** The manifest is a fixed set of
 //!    counts, hashes, enums, and short provenance labels, and every free-form
-//!    string crosses [`crate::safe_label`] first. Prompt text, project
+//!    string crosses [`codewhale_runtime::safe_label`] first. Prompt text, project
 //!    instructions, memory, skill bodies, tool results, message content,
 //!    credentials, URL paths, and absolute workspace paths have no field to
 //!    occupy — and a hostile model or route id gets a fingerprint instead of
@@ -45,7 +45,7 @@
 use serde::Serialize;
 
 use crate::client::PreparedOutboundRequest;
-use crate::safe_label::SafeLabel;
+use codewhale_runtime::safe_label::SafeLabel;
 
 /// Bytes-per-token divisor for the offline estimator.
 const BYTES_PER_TOKEN: usize = 4;
@@ -101,7 +101,7 @@ impl<T> Availability<T> {
     pub(crate) fn unavailable_with(reason: UnavailableReason, detail: String) -> Self {
         Self::Unavailable(Unavailable {
             reason,
-            detail: Some(crate::safe_label::safe_error_text(&detail)),
+            detail: Some(codewhale_runtime::safe_label::safe_error_text(&detail)),
         })
     }
 
@@ -625,7 +625,7 @@ impl RequestManifest {
             // their digests rather than claiming they form one contiguous
             // provider-cache prefix or a route-scoped cache key.
             let local_system_tools_component_sha256 = inputs.tool_surface_is_exact.then(|| {
-                crate::hashing::sha256_hex(
+                codewhale_runtime::hashing::sha256_hex(
                     format!(
                         "system={}\ntools={}\n",
                         view.system_sha256, view.tool_schema_sha256
@@ -1148,7 +1148,7 @@ pub(crate) mod test_support {
             base_prompt: BasePromptProvenance {
                 origin: "bundled in this codewhale-tui build".to_string(),
                 bytes: 11,
-                sha256: crate::hashing::sha256_hex(b"BASE PROMPT"),
+                sha256: codewhale_runtime::hashing::sha256_hex(b"BASE PROMPT"),
             },
         }
     }
@@ -1161,7 +1161,7 @@ pub(crate) mod test_support {
             dialect: "chat-completions".to_string(),
             route_shape: "standard".to_string(),
             endpoint_host_class: "https remote sha256:0123456789ab".to_string(),
-            endpoint_fingerprint: crate::hashing::sha256_hex(b"endpoint"),
+            endpoint_fingerprint: codewhale_runtime::hashing::sha256_hex(b"endpoint"),
             wire_model: SafeLabel::identifier("glm-5.2"),
             caller_entrypoint: "streaming".to_string(),
             body_stream_field: Some(true),
@@ -1180,7 +1180,7 @@ pub(crate) mod test_support {
             catalog_tool_count: 4,
             deferred_tool_count: 2,
             active_tool_count: 2,
-            active_tool_catalog_sha256: crate::hashing::sha256_hex(b"tools"),
+            active_tool_catalog_sha256: codewhale_runtime::hashing::sha256_hex(b"tools"),
             tool_surface_budget: "Standard".to_string(),
             standard_and_full_surfaces_collapsed: true,
             mcp_server_count: 0,
@@ -1192,7 +1192,7 @@ pub(crate) mod test_support {
         PromptProvenance {
             assembly: SystemPromptAssembly::BaseOnly,
             effective_system_canonical_json_bytes: 11,
-            effective_system_sha256: crate::hashing::sha256_hex(b"BASE PROMPT"),
+            effective_system_sha256: codewhale_runtime::hashing::sha256_hex(b"BASE PROMPT"),
         }
     }
 }

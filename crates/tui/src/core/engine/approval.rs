@@ -60,7 +60,7 @@ pub(super) enum ApprovalDecision {
     /// Retry a tool with an elevated sandbox policy.
     RetryWithPolicy {
         id: String,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_sandbox::SandboxPolicy,
         by: ApprovalDecider,
     },
 }
@@ -134,7 +134,7 @@ pub(super) enum ApprovalResult {
     /// is reported as a timeout — never as "denied by user".
     TimedOut,
     /// User requested retry with an elevated sandbox policy.
-    RetryWithPolicy(crate::sandbox::SandboxPolicy),
+    RetryWithPolicy(codewhale_sandbox::SandboxPolicy),
 }
 
 impl Engine {
@@ -575,18 +575,18 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::compaction::{CompactionConfig, PreparedCompactionEnvelope, compact_messages_safe};
-    use crate::config::Config;
     use crate::core::engine::EngineConfig;
     use crate::core::engine::tool_catalog::ToolSurfacePolicy;
     use crate::core::turn::TurnContext;
     use crate::llm_client::mock::{MockLlmClient, canned};
-    use crate::sandbox::SandboxPolicy;
     use crate::tools::spec::{
         ApprovalRequirement, ToolCapability, ToolContext, ToolResult, ToolSpec,
     };
     use codewhale_config::AppMode;
     use codewhale_execpolicy::ApprovalMode;
     use codewhale_models::{ContentBlock, Message, Role, StreamEvent, Usage};
+    use codewhale_runtime::config::Config;
+    use codewhale_sandbox::SandboxPolicy;
     use serde_json::{Value, json};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1766,15 +1766,15 @@ mod tests {
     #[tokio::test]
     async fn execute_tools_nested_call_keeps_before_hook_context() {
         let tmp = tempfile::tempdir().expect("hook directory");
-        let hook = crate::hooks::Hook::new(
-            crate::hooks::HookEvent::ToolCallBefore,
+        let hook = codewhale_config::hooks::Hook::new(
+            codewhale_config::hooks::HookEvent::ToolCallBefore,
             r#"printf '{"additionalContext":"nested hook note"}'"#,
         );
         let executor = crate::hooks::HookExecutor::new(
-            crate::hooks::HooksConfig {
+            codewhale_config::hooks::HooksConfig {
                 enabled: true,
                 hooks: vec![hook],
-                ..crate::hooks::HooksConfig::default()
+                ..codewhale_config::hooks::HooksConfig::default()
             },
             tmp.path().to_path_buf(),
         );
@@ -1852,12 +1852,15 @@ mod tests {
         crate::approval_log::ApprovalReceiptStore,
     ) {
         let tmp = tempfile::tempdir().expect("approval deadline fixture");
-        let api = Config {
-            approval: seconds.map(|seconds| crate::config::ApprovalConfig {
-                timeout_seconds: Some(seconds),
-                ..Default::default()
-            }),
-            ..Default::default()
+        let api = {
+            let __cw_config_init_0_0 =
+                seconds.map(|seconds| codewhale_runtime::config::ApprovalConfig {
+                    timeout_seconds: Some(seconds),
+                    ..Default::default()
+                });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.approval = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let (mut engine, handle) = Engine::new(EngineConfig::default(), &api);
         let store = crate::approval_log::ApprovalReceiptStore::new(tmp.path().join("sessions"));

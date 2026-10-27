@@ -95,7 +95,10 @@ impl ToolSpec for ValidateDataTool {
         let requested_format = DataFormat::from_input(optional_str(&input, "format")?)?;
 
         let (source_name, raw_content, extension) = load_input_source(path, content, context)?;
-        if context.features.enabled(crate::features::Feature::DataHost) {
+        if context
+            .features
+            .enabled(codewhale_runtime::features::Feature::DataHost)
+        {
             return validate_host(
                 &raw_content,
                 &source_name,
@@ -126,7 +129,10 @@ fn load_input_source(
         (Some(path), None) => {
             let resolved =
                 crate::tools::file::resolve_guarded_read_path(context, path, "validate_data")?;
-            let raw_content = if context.features.enabled(crate::features::Feature::DataHost) {
+            let raw_content = if context
+                .features
+                .enabled(codewhale_runtime::features::Feature::DataHost)
+            {
                 use std::io::Read;
                 let mut content = String::new();
                 fs::File::open(&resolved)

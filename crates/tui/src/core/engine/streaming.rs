@@ -81,6 +81,7 @@ impl super::Engine {
         let cancel = self.cancel_token.clone();
         let quiet = self.api_config.notifications_config().quiet;
         crate::llm_client::RequestRetryObservation {
+            wire_observations: Default::default(),
             retries: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             emit: std::sync::Arc::new(move |message| {
                 let tx = tx.clone();
@@ -105,9 +106,18 @@ impl super::Engine {
             TurnOutcomeStatus::Failed => ("Retry stopped", "turn failed"),
             TurnOutcomeStatus::Interrupted => ("Retry interrupted", "turn interrupted"),
         };
+        let reasoning_kind = if self.config.reasoning_only_on_output_limit {
+            codewhale_localization::tr(
+                codewhale_localization::resolve_locale(&self.config.locale_tag),
+                codewhale_localization::MessageId::AnswerRetryCounter,
+            )
+            .into_owned()
+        } else {
+            "reasoning-only".to_string()
+        };
         for (kind, retries, limit) in [
             (
-                "reasoning-only",
+                reasoning_kind.as_str(),
                 diagnostics.reasoning_only_reprompts,
                 self.config.reasoning_only_max_reprompts,
             ),
@@ -120,7 +130,7 @@ impl super::Engine {
             if retries > 0 {
                 let _ = self
                     .send_retry_status(format!(
-                        "{prefix}: {kind} used {retries}/{limit} retries; {outcome}"
+                        "{prefix}: per-kind counter {kind} used {retries}/{limit} retries; {outcome}"
                     ))
                     .await;
             }
@@ -210,8 +220,6 @@ impl ToolUseState {
     }
 }
 
-/// Maximum total bytes of text, reasoning and tool-argument content before aborting the stream.
-pub(super) const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 /// A response can contain many empty tool starts without spending the byte
 /// budget. Bound that batch before any call is retained or admitted. A lower
 /// configured per-turn tool budget remains authoritative at execution.
@@ -229,31 +237,6 @@ pub(super) fn tool_call_limit_error() -> crate::error_taxonomy::ErrorEnvelope {
     )
 }
 
-/// Sanity backstop for total stream wall-clock duration. **Not** a routine
-/// kill switch — the stream chunk idle timeout is the primary stall
-/// detector. The wall-clock cap is here only to bound pathological cases
-/// (e.g. a server that keeps sending heartbeats forever without progress).
-///
-/// History: this used to be 300s (5 min) which was too aggressive — V4
-/// thinking turns on hard prompts legitimately exceed 5 minutes wall-clock
-/// while still emitting reasoning_content chunks the whole way. Bumped to
-/// 30 min in v0.6.6 after long-reasoning turns hit the old cap. Codex defaults to a
-/// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
-/// give the wall-clock a generous window so it never fires in practice.
-pub(super) const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
-/// Hard cap on consecutive recoverable stream errors before we surface a turn
-/// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
-/// (#103) — keepalive should make spurious decode errors rarer, so we can
-/// tolerate a longer streak before giving up on the turn. This is the
-/// default; `[tui].stream_max_errors` overrides it (#6700).
-pub(super) const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;
-/// Cap on transparent stream-level retries — these only happen when the wire
-/// dies before any content was streamed. The user has seen nothing, but
-/// provider usage or billing may already exist. Two attempts can ride out a
-/// flaky edge node without amplifying real outages (#103). This is the
-/// default; `[tui].stream_max_transparent_retries` overrides it (#6700).
-pub(super) const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
-
 /// Decide whether a stream error is eligible for a transparent retry.
 ///
 /// True only when ALL three conditions hold:
@@ -262,7 +245,7 @@ pub(super) const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
 ///    check is not evidence that the provider consumed or billed zero tokens.
 /// 2. We still have transparent-retry budget remaining (`max_attempts`,
 ///    `[tui].stream_max_transparent_retries`, default
-///    [`MAX_TRANSPARENT_STREAM_RETRIES`]).
+///    [`codewhale_runtime::turn_budget::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES`]).
 /// 3. The turn has not been cancelled.
 ///
 /// Extracted as a pure function so the four #103 retry cases can be exercised
@@ -275,12 +258,6 @@ pub(super) fn should_transparently_retry_stream(
 ) -> bool {
     !any_content_received && transparent_attempts < max_attempts && !cancelled
 }
-
-/// Default budget for re-issuing the whole request after a dead stream.
-/// Shared by the nothing-streamed outer retry (#103 Phase 3), the
-/// sleep-resume retry (#2990), the network-drop resumes, and stream-open
-/// failures (#6699). Overridable via `[tui].stream_max_resumes` (#6700).
-pub(super) const MAX_STREAM_RETRIES: u32 = 3;
 
 /// Typed, engine-internal state for one mid-stream drop recovery.
 ///
@@ -320,7 +297,7 @@ pub(super) enum StreamResume {
 ///
 /// Mechanism, not comment: [`StreamRetryBudget::authorize`] is the only way
 /// to spend a resume and it returns `None` once `limit` resumes (default
-/// [`MAX_STREAM_RETRIES`]) have been issued, so no call site can loop past
+/// [`DEFAULT_STREAM_MAX_RESUMES`]) have been issued, so no call site can loop past
 /// the budget even if a guard predicate is relaxed. A healthy stream round
 /// resets it.
 #[derive(Debug)]
@@ -331,7 +308,7 @@ pub(super) struct StreamRetryBudget {
 
 impl Default for StreamRetryBudget {
     fn default() -> Self {
-        Self::with_limit(MAX_STREAM_RETRIES)
+        Self::with_limit(codewhale_runtime::turn_budget::DEFAULT_STREAM_MAX_RESUMES)
     }
 }
 
@@ -532,7 +509,7 @@ pub(super) fn should_resume_after_network_drop(
 /// thinking-only fragment preserves nothing and must not be described as a
 /// preserved reply. Tool calls are never resumed because an incomplete tool
 /// call could be re-issued and duplicate side effects. Bounded by
-/// `MAX_STREAM_RETRIES` and gated on a network/timeout-class error so
+/// `DEFAULT_STREAM_MAX_RESUMES` and gated on a network/timeout-class error so
 /// model/parse/auth failures still surface normally.
 pub(super) fn should_resume_interactive_after_network_drop(
     terminal_chrome_enabled: bool,

@@ -109,7 +109,7 @@ fn required_progress(app: &App) -> Option<(usize, usize)> {
 }
 
 fn trust_decision_required(app: &App) -> bool {
-    !app.trust_mode && crate::config::needs_trust(&app.workspace)
+    !app.trust_mode && codewhale_runtime::config::needs_trust(&app.workspace)
 }
 
 fn action_hints(app: &App) -> Vec<ActionHint> {
@@ -393,7 +393,7 @@ fn mark_onboarded_at_path(path: PathBuf) -> std::io::Result<PathBuf> {
 }
 
 pub fn mark_trusted(workspace: &Path) -> anyhow::Result<PathBuf> {
-    crate::config::save_workspace_trust(workspace)
+    codewhale_runtime::config::save_workspace_trust(workspace)
 }
 
 /// Whether the UI locale can be trusted without asking. An explicit settings
@@ -531,9 +531,9 @@ pub fn finish_ready_and_open_composer(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
     use codewhale_localization::{Locale, MessageId, tr};
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     /// A first-run app with the onboarding decision reset to "nothing asked

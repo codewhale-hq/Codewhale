@@ -46,12 +46,12 @@ use super::CommandResult;
 
 /// Path to the global user commands directory: `~/.codewhale/commands/`.
 fn global_commands_dir() -> PathBuf {
-    let home = crate::config::effective_home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let home = codewhale_paths::user_home().unwrap_or_else(|| PathBuf::from("~"));
     home.join(".codewhale").join("commands")
 }
 
 fn legacy_global_commands_dir() -> PathBuf {
-    let home = crate::config::effective_home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let home = codewhale_paths::user_home().unwrap_or_else(|| PathBuf::from("~"));
     home.join(".deepseek").join("commands")
 }
 
@@ -59,7 +59,7 @@ fn legacy_global_commands_dir() -> PathBuf {
 /// only a trusted one. A cloned repository's `.claude/commands/*.md` is text
 /// the user never reviewed, sent to the model as the user's own message.
 fn trusted_workspace(workspace: Option<&Path>) -> Option<&Path> {
-    workspace.filter(|ws| crate::config::is_workspace_trusted(ws))
+    workspace.filter(|ws| codewhale_runtime::config::is_workspace_trusted(ws))
 }
 
 /// Workspace-local command directories, trusted or not, in precedence order.
@@ -87,7 +87,7 @@ pub(crate) fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
 /// Whether `path` came from the user's own global command or workflow store,
 /// as opposed to a workspace (repository) directory.
 pub(crate) fn is_user_global_command_source(path: &Path) -> bool {
-    let home = crate::config::effective_home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let home = codewhale_paths::user_home().unwrap_or_else(|| PathBuf::from("~"));
     [
         global_commands_dir(),
         legacy_global_commands_dir(),
@@ -106,7 +106,7 @@ pub(crate) fn workflow_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     if let Some(ws) = trusted_workspace(workspace) {
         dirs.push(ws.join(".codewhale").join("workflows"));
     }
-    let home = crate::config::effective_home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let home = codewhale_paths::user_home().unwrap_or_else(|| PathBuf::from("~"));
     dirs.push(home.join(".codewhale").join("workflows"));
     dirs
 }
@@ -399,7 +399,7 @@ mod tests {
     /// Workspace commands load only in a trusted workspace.
     fn trusted_workspace() -> TempDir {
         let tmp = TempDir::new().unwrap();
-        crate::config::save_workspace_trust(tmp.path()).expect("trust test workspace");
+        codewhale_runtime::config::save_workspace_trust(tmp.path()).expect("trust test workspace");
         tmp
     }
 
@@ -428,8 +428,8 @@ mod tests {
 
     #[test]
     fn test_try_dispatch_nonexistent_command() {
-        use crate::config::Config;
         use crate::tui::app::TuiOptions;
+        use codewhale_runtime::config::Config;
 
         let options = TuiOptions {
             ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
@@ -506,7 +506,7 @@ mod tests {
             "workspace version",
         );
         // Global version — simulate by putting it in a "global" temp dir.
-        // Paths resolve via effective_home_dir (HOME/USERPROFILE-aware). We test the
+        // Paths resolve via codewhale_paths::user_home (HOME/USERPROFILE-aware). We test the
         // first-match-wins semantics by putting the same name in both
         // workspace-scanned dirs. The first dir in precedence order wins.
         write_command(
@@ -538,8 +538,8 @@ mod tests {
 
     #[test]
     fn try_dispatch_uses_workspace_local_command() {
-        use crate::config::Config;
         use crate::tui::app::TuiOptions;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn frontmatter_is_stripped_before_dispatch() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn allowed_tools_frontmatter_sets_app_state() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn pausable_frontmatter_sets_app_state_without_worktree_mutation() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         if std::process::Command::new("git")
             .arg("--version")
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn new_user_command_clears_stale_paused_state() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -720,9 +720,9 @@ mod tests {
 
     #[test]
     fn new_user_command_clears_previous_todos_and_plan() {
-        use crate::config::Config;
         use crate::tools::plan::UpdatePlanArgs;
         use crate::tools::todo::TodoStatus;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn review_regression_empty_allowed_tools_blocks_all_tools() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn review_regression_allowed_tools_accepts_per_item_quotes() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn review_regression_dispatch_without_frontmatter_resets_previous_command_state() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn description_frontmatter_sets_work_objective_and_autocomplete_description() {
-        use crate::config::Config;
+        use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
         let ws = tmp.path().to_path_buf();

@@ -180,7 +180,7 @@ pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
 
 /// Serialize one complete history cell for Copy Message.
 ///
-/// User and assistant cells have canonical source text. Returning it directly
+/// User, assistant and system cells have canonical source text. Returning it directly
 /// preserves authored Markdown and hard line breaks while keeping role glyphs,
 /// continuation rails, and visual wrapping out of the clipboard. Transcript
 /// drag selections reuse this same projection per intersected cell
@@ -193,7 +193,9 @@ pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
 /// output that can differ from the capped or folded live cache.
 pub(super) fn history_cell_to_clipboard_text(cell: &HistoryCell, width: u16) -> String {
     match cell {
-        HistoryCell::User { content } | HistoryCell::Assistant { content, .. } => content.clone(),
+        HistoryCell::User { content }
+        | HistoryCell::Assistant { content, .. }
+        | HistoryCell::System { content } => content.clone(),
         _ => history_cell_to_text(cell, width),
     }
 }
@@ -695,6 +697,17 @@ After code."#;
         };
 
         assert_eq!(history_cell_to_clipboard_text(&cell, 16), content);
+        let diagnostic = serde_json::json!({"prompt": "Use \"quoted\" input\nwith a second line"});
+        let source = serde_json::to_string_pretty(&diagnostic).unwrap();
+        let cell = HistoryCell::System {
+            content: source.clone(),
+        };
+        let copied = history_cell_to_clipboard_text(&cell, 16);
+        assert_eq!(copied, source);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&copied).unwrap(),
+            diagnostic
+        );
     }
 
     #[test]

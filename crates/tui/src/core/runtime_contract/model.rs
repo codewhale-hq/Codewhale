@@ -3,8 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::llm_client::LlmClient;
-use crate::llm_client::StreamEventBox;
+use crate::llm_client::{LlmClient, StreamEventBox, ToolWireMeasurement};
 use codewhale_models::{MessageRequest, MessageResponse};
 
 /// Object-safe model boundary for Engine dependency injection.
@@ -22,6 +21,12 @@ pub trait ModelClient: Send + Sync {
     }
     fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
         None
+    }
+    fn measure_outbound_tools(
+        &self,
+        _request: MessageRequest,
+    ) -> Result<Option<ToolWireMeasurement>> {
+        Ok(None)
     }
     /// Concrete route base for billing classification, when this client can
     /// prove one. Provider-neutral injected clients leave it unknown.
@@ -44,8 +49,8 @@ pub trait ModelClient: Send + Sync {
         requested_model: &str,
         dispatched_at: chrono::DateTime<chrono::Utc>,
     ) -> crate::cost_status::EffectiveRouteEnvelope {
-        let provider = crate::config::ProviderKind::parse(self.provider_name())
-            .unwrap_or(crate::config::ProviderKind::Custom);
+        let provider = codewhale_config::ProviderKind::parse(self.provider_name())
+            .unwrap_or(codewhale_config::ProviderKind::Custom);
         crate::cost_status::EffectiveRouteEnvelope::capture_observed(
             provider,
             self.provider_name(),
@@ -87,6 +92,12 @@ where
     }
     fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
         LlmClient::cache_route_receipt(self)
+    }
+    fn measure_outbound_tools(
+        &self,
+        request: MessageRequest,
+    ) -> Result<Option<ToolWireMeasurement>> {
+        LlmClient::measure_outbound_tools(self, request)
     }
 
     fn billing_base_url(&self) -> Option<&str> {

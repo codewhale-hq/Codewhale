@@ -346,10 +346,17 @@ mod tests {
             else {
                 panic!("uninstallable candidate")
             };
-            assert!(spec.starts_with(
-                "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/"
-            ));
-            assert!(spec.contains("#path="));
+            if candidate.name == "computer-use" {
+                assert_eq!(
+                    spec,
+                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/latest/download/computer-use.tar.gz"
+                );
+            } else {
+                assert!(spec.starts_with(
+                    "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/"
+                ));
+                assert!(spec.contains("#path="));
+            }
         }
         assert!(!store.path().exists(), "browsing must not write or fetch");
         assert!(store.remove("codewhale").unwrap());

@@ -37,6 +37,7 @@ if [[ -z "${summary//[[:space:]]/}" ]]; then
   details=""
 fi
 
+render_body() {
 printf "## What's in %s\n\n" "${tag}"
 if [[ -n "${summary}" ]]; then
   printf '%s\n' "${summary}"
@@ -181,3 +182,15 @@ cat <<EOF
 
 See [CHANGELOG.md](https://github.com/codewhale-hq/CodeWhale/blob/main/CHANGELOG.md) for full notes and [docs/CHANGELOG_ARCHIVE.md](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/CHANGELOG_ARCHIVE.md) for older releases.
 EOF
+}
+
+body="$(render_body)"
+if (( ${#body} >= 125000 )); then
+  details="The full notes exceed GitHub's release-description limit. Read the [complete changelog for ${tag}](https://github.com/codewhale-hq/CodeWhale/blob/${tag}/CHANGELOG.md)."
+  body="$(render_body)"
+fi
+if (( ${#body} >= 125000 )); then
+  echo "Release summary, installation instructions and contributor credits exceed GitHub's 125000-character limit." >&2
+  exit 1
+fi
+printf '%s\n' "${body}"

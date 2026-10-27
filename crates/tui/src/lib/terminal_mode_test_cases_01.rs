@@ -73,13 +73,15 @@
 
     #[test]
     fn headless_consultant_authority_overrides_network_allow_and_disables_web_search() {
-        let config = Config {
-            network: Some(crate::config::NetworkPolicyToml {
+        let config = {
+            let __cw_config_init_0_0 = Some(codewhale_config::NetworkPolicyToml {
                 default: "allow".to_string(),
                 audit: false,
-                ..crate::config::NetworkPolicyToml::default()
-            }),
-            ..Config::default()
+                ..codewhale_config::NetworkPolicyToml::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.network = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let authority = crate::tools::spec::ToolAuthorityEnvelope {
             schema_version: 1,
@@ -99,25 +101,25 @@
             .expect("explicit network=false always installs a policy");
         assert_eq!(
             policy.evaluate("example.com", "web_search"),
-            crate::network_policy::Decision::Deny,
+            codewhale_net::network_policy::Decision::Deny,
             "the permissive user config must not widen Consultant network authority"
         );
-        let mut features = crate::features::Features::default();
-        features.enable(crate::features::Feature::ShellTool);
-        features.enable(crate::features::Feature::WebSearch);
+        let mut features = codewhale_runtime::features::Features::default();
+        features.enable(codewhale_runtime::features::Feature::ShellTool);
+        features.enable(codewhale_runtime::features::Feature::WebSearch);
         apply_fleet_engine_feature_caps(
             &mut features,
             true,
             authority.network_access,
             authority.shell,
         );
-        assert!(!features.enabled(crate::features::Feature::WebSearch));
-        assert!(!features.enabled(crate::features::Feature::ShellTool));
+        assert!(!features.enabled(codewhale_runtime::features::Feature::WebSearch));
+        assert!(!features.enabled(codewhale_runtime::features::Feature::ShellTool));
 
         let worker_policy = exec_network_policy(&config, Some(true)).expect("configured policy");
         assert_eq!(
             worker_policy.evaluate("example.com", "web_search"),
-            crate::network_policy::Decision::Allow,
+            codewhale_net::network_policy::Decision::Allow,
             "a network-capable role keeps the configured policy"
         );
     }
@@ -168,13 +170,13 @@
             (
                 "custom-a",
                 "http://127.0.0.1:18181/v1",
-                crate::config::ZAI_GLM_5_2_MODEL,
+                codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
             ),
             ("custom-b", "http://127.0.0.1:18182/v1", "model-b"),
         ] {
             custom.insert(
                 name.to_string(),
-                crate::config::ProviderConfig {
+                codewhale_runtime::config::ProviderConfig {
                     kind: Some("openai-compatible".to_string()),
                     base_url: Some(base_url.to_string()),
                     model: Some(model.to_string()),
@@ -183,13 +185,16 @@
                 },
             );
         }
-        Config {
-            provider: Some(active.to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        {
+            let __cw_config_init_1_0 = Some(active.to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         }
     }
 
@@ -300,11 +305,13 @@
                         )
                         .expect("fleet file");
 
-        let config = Config {
-            provider: Some("deepseek".to_string()),
+        let config = {
+            let __cw_config_init_2_0 = Some("deepseek".to_string());
             // A fresh one-row roster must not replace the normal DeepSeek
             // endpoint's process-wide catalog for unrelated route tests.
-            ..Default::default()
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value
         }
         .with_legacy_root(
             None,
@@ -373,10 +380,10 @@
             None,
             Some("exec"),
         );
-        let kind = crate::config::ProviderKind::parse(provider)
-            .unwrap_or(crate::config::ProviderKind::Custom)
+        let kind = codewhale_config::ProviderKind::parse(provider)
+            .unwrap_or(codewhale_config::ProviderKind::Custom)
             .as_str();
-        let exact_id = (!provider.eq_ignore_ascii_case(crate::config::ProviderKind::Custom.as_str()))
+        let exact_id = (!provider.eq_ignore_ascii_case(codewhale_config::ProviderKind::Custom.as_str()))
             .then_some(provider);
         saved.metadata.set_model_provider_route(kind, exact_id);
         saved
@@ -469,27 +476,31 @@
         use crate::tools::spec::ToolSpec;
 
         let workspace = tempfile::tempdir().expect("workspace");
-        let config = Config {
-            provider: Some("vllm".to_string()),
-            mcp_config_path: Some(
+        let config = {
+            let __cw_config_init_3_0 = Some("vllm".to_string());
+            let __cw_config_init_3_1 = Some(
                 workspace
                     .path()
                     .join("missing-mcp.json")
                     .display()
                     .to_string(),
-            ),
-            providers: Some(crate::config::ProvidersConfig {
-                vllm: crate::config::ProviderConfig {
+            );
+            let __cw_config_init_3_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                vllm: codewhale_runtime::config::ProviderConfig {
                     base_url: Some("http://127.0.0.1:9/v1".to_string()),
                     model: Some("offline-test-model".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.mcp_config_path = __cw_config_init_3_1;
+            __cw_config_init_3_value.providers = __cw_config_init_3_2;
+            __cw_config_init_3_value
         };
         let route = CliAutoRoute {
-            provider: config.test_identity_for_kind(crate::config::ProviderKind::Vllm),
+            provider: config.test_identity_for_kind(codewhale_config::ProviderKind::Vllm),
             model: "offline-test-model".to_string(),
             reasoning_effort: None,
             auto_controls_reasoning: false,
@@ -526,11 +537,11 @@
         assert!(!context.trust_mode);
         assert_eq!(
             context.shell_policy,
-            crate::worker_profile::ShellPolicy::None
+            codewhale_agent_contract::worker_profile::ShellPolicy::None
         );
         assert!(matches!(
             context.elevated_sandbox_policy,
-            Some(crate::sandbox::SandboxPolicy::WorkspaceWrite { .. })
+            Some(codewhale_sandbox::SandboxPolicy::WorkspaceWrite { .. })
         ));
         let mut event_types = Vec::new();
         while let Ok(event) = event_rx.try_recv() {
@@ -557,13 +568,15 @@
                             }"#,
         )
         .expect("write MCP config");
-        let config = Config {
-            mcp_config_path: Some(mcp_path.display().to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_4_0 = Some(mcp_path.display().to_string());
+            let mut __cw_config_init_4_value: Config = Default::default();
+            __cw_config_init_4_value.mcp_config_path = __cw_config_init_4_0;
+            __cw_config_init_4_value
         };
-        let policy = crate::network_policy::NetworkPolicyDecider::new(
-            crate::network_policy::NetworkPolicy {
-                default: crate::network_policy::DecisionToml::Deny,
+        let policy = codewhale_net::network_policy::NetworkPolicyDecider::new(
+            codewhale_net::network_policy::NetworkPolicy {
+                default: codewhale_net::network_policy::DecisionToml::Deny,
                 allow: Vec::new(),
                 deny: Vec::new(),
                 proxy: Vec::new(),
@@ -588,17 +601,21 @@
         let _env_lock = crate::test_support::lock_test_env();
         let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
         let _deepseek_model = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MODEL");
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openrouter: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_5_0 = Some("openrouter".to_string());
+            let __cw_config_init_5_1 = Some("deepseek/deepseek-v4-pro".to_string());
+            let __cw_config_init_5_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     model: Some("arcee-ai/trinity-large-thinking".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value.default_text_model = __cw_config_init_5_1;
+            __cw_config_init_5_value.providers = __cw_config_init_5_2;
+            __cw_config_init_5_value
         };
 
         assert_eq!(
@@ -617,9 +634,11 @@
         let _codewhale_model = crate::test_support::EnvVarGuard::set("CODEWHALE_MODEL", " auto ");
         let _deepseek_model =
             crate::test_support::EnvVarGuard::set("DEEPSEEK_MODEL", "stale-deepseek-model");
-        let config = Config {
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_6_0 = Some("deepseek/deepseek-v4-pro".to_string());
+            let mut __cw_config_init_6_value: Config = Default::default();
+            __cw_config_init_6_value.default_text_model = __cw_config_init_6_0;
+            __cw_config_init_6_value
         };
 
         assert_eq!(resolve_exec_model(&config, None), "auto");
@@ -630,9 +649,11 @@
         let _env_lock = crate::test_support::lock_test_env();
         let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
         let _deepseek_model = crate::test_support::EnvVarGuard::set("DEEPSEEK_MODEL", " auto ");
-        let config = Config {
-            default_text_model: Some("deepseek/deepseek-v4-pro".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_7_0 = Some("deepseek/deepseek-v4-pro".to_string());
+            let mut __cw_config_init_7_value: Config = Default::default();
+            __cw_config_init_7_value.default_text_model = __cw_config_init_7_0;
+            __cw_config_init_7_value
         };
 
         assert_eq!(resolve_exec_model(&config, None), "auto");
@@ -643,15 +664,19 @@
         let _env_lock = crate::test_support::lock_test_env();
         let _codewhale_model = crate::test_support::EnvVarGuard::remove("CODEWHALE_MODEL");
         let _deepseek_model = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MODEL");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_8_0 = Some("zai".to_string());
+            let __cw_config_init_8_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_8_value: Config = Default::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value.default_text_model = __cw_config_init_8_1;
+            __cw_config_init_8_value
         };
 
         assert_eq!(
             resolve_exec_model(&config, None),
-            crate::config::DEFAULT_ZAI_MODEL
+            codewhale_config::descriptors::defaults::DEFAULT_ZAI_MODEL
         );
     }
 
@@ -675,10 +700,13 @@
         )
         .expect("fleet file");
 
-        let base = Config {
-            provider: Some("openrouter".to_string()),
-            reasoning_effort: Some("off".to_string()),
-            ..Default::default()
+        let base = {
+            let __cw_config_init_9_0 = Some("openrouter".to_string());
+            let __cw_config_init_9_1 = Some("off".to_string());
+            let mut __cw_config_init_9_value: Config = Default::default();
+            __cw_config_init_9_value.provider = __cw_config_init_9_0;
+            __cw_config_init_9_value.reasoning_effort = __cw_config_init_9_1;
+            __cw_config_init_9_value
         }
         .with_legacy_root(Some("test-key".to_string()), None);
         let mut explicit = base.clone();
@@ -688,7 +716,7 @@
         );
         assert_eq!(
             explicit.active_provider_identity().unwrap().provider,
-            crate::config::ProviderKind::Openrouter
+            codewhale_config::ProviderKind::Openrouter
         );
 
         let mut selected = base;
@@ -698,16 +726,18 @@
         );
         assert_eq!(
             selected.active_provider_identity().unwrap().provider,
-            crate::config::ProviderKind::Deepseek
+            codewhale_config::ProviderKind::Deepseek
         );
         assert_eq!(selected.default_model(), "deepseek-v4-flash-vision-exp");
         assert_eq!(selected.reasoning_effort(), Some("high"));
         assert!(selected.fleet_operator_route_applied);
         assert!(selected.fleet_operator_reasoning_applied);
 
-        let mut reasoning_override = Config {
-            reasoning_effort: Some("off".to_string()),
-            ..Default::default()
+        let mut reasoning_override = {
+            let __cw_config_init_10_0 = Some("off".to_string());
+            let mut __cw_config_init_10_value: Config = Default::default();
+            __cw_config_init_10_value.reasoning_effort = __cw_config_init_10_0;
+            __cw_config_init_10_value
         }
         .with_legacy_root(Some("test-key".to_string()), None);
         apply_selected_fleet_operator_for_launch(
@@ -758,18 +788,22 @@
         let _env_lock = crate::test_support::lock_test_env();
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
         let _openrouter = crate::test_support::EnvVarGuard::remove("OPENROUTER_API_KEY");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_11_0 = Some("deepseek".to_string());
+            let __cw_config_init_11_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_11_value: Config = Default::default();
+            __cw_config_init_11_value.provider = __cw_config_init_11_0;
+            __cw_config_init_11_value.default_text_model = __cw_config_init_11_1;
+            __cw_config_init_11_value
         };
 
-        let route = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong")
+        let route = resolve_cli_auto_route(&config, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL, "pong")
             .await
             .expect("explicit GLM should route to the configured Z.ai provider");
 
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Zai);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Zai);
+        assert_eq!(route.model, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
         assert!(!route.auto_model);
     }
 
@@ -779,13 +813,17 @@
         let _env_lock = crate::test_support::lock_test_env();
         let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
         let _openrouter = crate::test_support::EnvVarGuard::set("OPENROUTER_API_KEY", "or-key");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_12_0 = Some("deepseek".to_string());
+            let __cw_config_init_12_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_12_value: Config = Default::default();
+            __cw_config_init_12_value.provider = __cw_config_init_12_0;
+            __cw_config_init_12_value.default_text_model = __cw_config_init_12_1;
+            __cw_config_init_12_value
         };
 
-        let err = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong")
+        let err = resolve_cli_auto_route(&config, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL, "pong")
             .await
             .expect_err("ambiguous GLM route should ask for an explicit provider");
         let message = err.to_string();
@@ -801,18 +839,22 @@
 
     #[tokio::test]
     async fn cli_auto_model_honors_a_fixed_reasoning_preference() {
-        let config = Config {
-            provider: Some("vllm".to_string()),
-            reasoning_effort: Some("low".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                vllm: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_13_0 = Some("vllm".to_string());
+            let __cw_config_init_13_1 = Some("low".to_string());
+            let __cw_config_init_13_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                vllm: codewhale_runtime::config::ProviderConfig {
                     base_url: Some("http://127.0.0.1:18190/v1".to_string()),
                     model: Some("local-auto-model".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_13_value: Config = Default::default();
+            __cw_config_init_13_value.provider = __cw_config_init_13_0;
+            __cw_config_init_13_value.reasoning_effort = __cw_config_init_13_1;
+            __cw_config_init_13_value.providers = __cw_config_init_13_2;
+            __cw_config_init_13_value
         };
 
         let route = resolve_cli_auto_route(&config, "auto", "debug a failing test")
@@ -832,15 +874,18 @@
 
     #[test]
     fn cli_route_execution_config_stamps_routed_model_into_provider_slot() {
-        let mut providers = crate::config::ProvidersConfig::default();
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
         providers.deepseek.model = Some("deepseek-v4-pro".to_string());
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(providers),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_14_0 = Some("deepseek".to_string());
+            let __cw_config_init_14_1 = Some(providers);
+            let mut __cw_config_init_14_value: Config = Default::default();
+            __cw_config_init_14_value.provider = __cw_config_init_14_0;
+            __cw_config_init_14_value.providers = __cw_config_init_14_1;
+            __cw_config_init_14_value
         };
         let route = CliAutoRoute {
-            provider: Config::default().test_identity_for_kind(crate::config::ProviderKind::Deepseek),
+            provider: Config::default().test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
             model: "deepseek-v4-flash".to_string(),
             reasoning_effort: None,
             auto_controls_reasoning: true,
@@ -853,7 +898,7 @@
         assert_eq!(
             execution_config
                 .provider_config_for(
-                    &execution_config.test_identity_for_kind(crate::config::ProviderKind::Deepseek)
+                    &execution_config.test_identity_for_kind(codewhale_config::ProviderKind::Deepseek)
                 )
                 .and_then(|entry| entry.model.as_deref()),
             Some("deepseek-v4-flash")
@@ -865,10 +910,13 @@
         let _lock = crate::test_support::lock_test_env();
         let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
         let _cli_key = crate::test_support::EnvVarGuard::remove("CODEWHALE_CLI_API_KEY");
-        let config = Config {
-            provider: Some("custom".to_string()),
-            default_text_model: Some("legacy-model".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_15_0 = Some("custom".to_string());
+            let __cw_config_init_15_1 = Some("legacy-model".to_string());
+            let mut __cw_config_init_15_value: Config = Default::default();
+            __cw_config_init_15_value.provider = __cw_config_init_15_0;
+            __cw_config_init_15_value.default_text_model = __cw_config_init_15_1;
+            __cw_config_init_15_value
         }
         .with_legacy_root(
             Some("legacy-root-key".to_string()),
@@ -1133,8 +1181,8 @@
         // The threaded id round-trips through the provider vocabulary the exec
         // handler validates against — never a model-id sniff (EPIC #2608).
         assert_eq!(
-            crate::config::ProviderKind::parse(args.provider.as_deref().unwrap()),
-            Some(crate::config::ProviderKind::Openrouter)
+            codewhale_config::ProviderKind::parse(args.provider.as_deref().unwrap()),
+            Some(codewhale_config::ProviderKind::Openrouter)
         );
     }
 
@@ -1143,7 +1191,7 @@
         let mut custom = std::collections::HashMap::new();
         custom.insert(
             "lm-studio".to_string(),
-            crate::config::ProviderConfig {
+            codewhale_runtime::config::ProviderConfig {
                 kind: Some("openai-compatible".to_string()),
                 base_url: Some("http://127.0.0.1:1234/v1".to_string()),
                 model: Some("qwen-2.5-7b".to_string()),
@@ -1151,13 +1199,16 @@
                 ..Default::default()
             },
         );
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let mut config = {
+            let __cw_config_init_16_0 = Some("deepseek".to_string());
+            let __cw_config_init_16_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom,
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_16_value: Config = Default::default();
+            __cw_config_init_16_value.provider = __cw_config_init_16_0;
+            __cw_config_init_16_value.providers = __cw_config_init_16_1;
+            __cw_config_init_16_value
         };
 
         apply_exec_provider_override(&mut config, "lm-studio")
@@ -1166,18 +1217,18 @@
         assert_eq!(config.provider.as_deref(), Some("lm-studio"));
         assert_eq!(
             config.active_provider_identity().unwrap().provider,
-            crate::config::ProviderKind::Custom
+            codewhale_config::ProviderKind::Custom
         );
     }
 
     #[test]
     fn exec_provider_override_prefers_exact_case_colliding_custom_key() {
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let mut config = {
+            let __cw_config_init_17_0 = Some("deepseek".to_string());
+            let __cw_config_init_17_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "CUSTOM".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         base_url: Some("http://127.0.0.1:5678/v1".to_string()),
                         model: Some("case-model".to_string()),
@@ -1186,8 +1237,11 @@
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_17_value: Config = Default::default();
+            __cw_config_init_17_value.provider = __cw_config_init_17_0;
+            __cw_config_init_17_value.providers = __cw_config_init_17_1;
+            __cw_config_init_17_value
         };
 
         apply_exec_provider_override(&mut config, "CUSTOM")
@@ -1195,7 +1249,7 @@
         assert_eq!(config.provider.as_deref(), Some("CUSTOM"));
         assert_eq!(
             config.active_provider_identity().unwrap().provider,
-            crate::config::ProviderKind::Custom
+            codewhale_config::ProviderKind::Custom
         );
         assert_eq!(
             config.active_provider_identity().unwrap().key.as_str(),
@@ -1203,7 +1257,7 @@
         );
         let route = crate::route_runtime::resolve_runtime_route(
             &config,
-            crate::config::ProviderKind::Custom,
+            codewhale_config::ProviderKind::Custom,
             Some("case-model"),
         )
         .expect("resolve exact case-colliding route")
@@ -1215,9 +1269,11 @@
 
     #[test]
     fn exec_provider_override_rejects_unknown_provider() {
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_18_0 = Some("deepseek".to_string());
+            let mut __cw_config_init_18_value: Config = Default::default();
+            __cw_config_init_18_value.provider = __cw_config_init_18_0;
+            __cw_config_init_18_value
         };
 
         let err = apply_exec_provider_override(&mut config, "lm-studio")
@@ -1231,13 +1287,13 @@
 
     #[test]
     fn exec_resume_route_matrix_preserves_or_overrides_exact_provider_deliberately() {
-        let saved = saved_exec_session("custom-a", crate::config::ZAI_GLM_5_2_MODEL);
+        let saved = saved_exec_session("custom-a", codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
 
         let mut restored = custom_exec_config("custom-b");
         let model = resolve_exec_resume_route(&mut restored, &saved, false, None)
             .expect("plain resume restores saved route");
         assert_eq!(restored.provider.as_deref(), Some("custom-a"));
-        assert_eq!(model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(model, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
 
         let mut explicit_provider = custom_exec_config("custom-a");
         apply_exec_provider_override(&mut explicit_provider, "custom-b").expect("custom B");
@@ -1310,7 +1366,7 @@
             (false, None)
         );
 
-        let saved = saved_exec_session("custom-a", crate::config::ZAI_GLM_5_2_MODEL);
+        let saved = saved_exec_session("custom-a", codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
         let mut launch_model_only = custom_exec_config("custom-b");
         let (explicit_provider, explicit_model) =
             exec_resume_route_overrides(None, None, None, Some("override-model"));
@@ -1367,7 +1423,7 @@
         )
         .expect("write config");
 
-        let mut config = Config::load(Some(config_path), None).expect("load launch config");
+        let mut config = crate::plugins::providers::load_config(Some(config_path), None).expect("load launch config");
         assert_eq!(config.provider.as_deref(), Some("launch-route"));
         assert_eq!(config.default_model(), "dispatcher-model");
 
@@ -1387,8 +1443,8 @@
         let (explicit_provider, explicit_model) = exec_resume_route_overrides(
             None,
             None,
-            crate::config::explicit_launch_provider_override().as_deref(),
-            crate::config::explicit_launch_model_override().as_deref(),
+            codewhale_runtime::config::explicit_launch_provider_override().as_deref(),
+            codewhale_runtime::config::explicit_launch_model_override().as_deref(),
         );
         assert!(explicit_provider);
         assert_eq!(explicit_model.as_deref(), Some("dispatcher-model"));
@@ -1443,13 +1499,13 @@
     async fn forced_exec_route_keeps_custom_provider_when_model_matches_builtin_catalog() {
         let config = custom_exec_config("custom-a");
 
-        let route = resolve_cli_exec_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "audit", true)
+        let route = resolve_cli_exec_route(&config, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL, "audit", true)
             .await
             .expect("forced route");
         let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
 
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Custom);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Custom);
+        assert_eq!(route.model, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
         assert_eq!(execution.provider.as_deref(), Some("custom-a"));
     }
 
@@ -1463,7 +1519,7 @@
             .custom
             .get_mut("custom-a")
             .expect("custom A")
-            .model = Some(crate::config::ZAI_GLM_5_2_MODEL.to_string());
+            .model = Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string());
         let model = resolve_exec_model(&config, None);
         let force = should_force_configured_exec_route(false, None, None);
 
@@ -1471,12 +1527,12 @@
         assert!(!should_force_configured_exec_route(
             false,
             None,
-            Some(crate::config::ZAI_GLM_5_2_MODEL)
+            Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL)
         ));
         assert!(should_force_configured_exec_route(
             false,
             Some("custom-a"),
-            Some(crate::config::ZAI_GLM_5_2_MODEL)
+            Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL)
         ));
         assert!(should_force_configured_exec_route(
             true,
@@ -1488,8 +1544,8 @@
             .await
             .expect("no-flag configured route");
         let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Custom);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Custom);
+        assert_eq!(route.model, codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL);
         assert_eq!(execution.provider.as_deref(), Some("custom-a"));
     }
 
@@ -1519,7 +1575,7 @@
         let identity = execution.active_provider_identity().unwrap();
         let provider = identity.key.as_str();
 
-        assert_eq!(route.provider.provider, crate::config::ProviderKind::Custom);
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Custom);
         assert_eq!(provider, "custom-a");
         assert_eq!(
             execution.active_route_base_url(),
@@ -1569,8 +1625,8 @@
         // The threaded id round-trips through the provider vocabulary the
         // override validates against — never a model-id sniff.
         assert_eq!(
-            crate::config::ProviderKind::parse(args.provider.as_deref().unwrap()),
-            Some(crate::config::ProviderKind::Zai)
+            codewhale_config::ProviderKind::parse(args.provider.as_deref().unwrap()),
+            Some(codewhale_config::ProviderKind::Zai)
         );
     }
 

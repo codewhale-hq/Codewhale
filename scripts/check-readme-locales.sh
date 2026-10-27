@@ -23,15 +23,16 @@ echo "[check-readme-locales] Main: $MAIN"
 
 # ---- Extract locale links from main README -------------------------
 
-# Match patterns like: [简体中文 README](README.zh-CN.md)
+# Translations live in docs/i18n/. Match the whole link target so a link that
+# points outside that directory is caught rather than read as a bare filename.
+LOCALES_DIR="docs/i18n"
 linked_locales=()
 while IFS= read -r link; do
-  # Extract the filename from the markdown link
-  file=$(echo "$link" | sed -n 's/.*\](\(README\.[^)]*\.md\)).*/\1/p')
+  file=$(echo "$link" | sed -n 's/.*\](\([^)]*README\.[^)]*\.md\)).*/\1/p')
   if [[ -n "$file" && "$file" != "README.md" ]]; then
     linked_locales+=("$file")
   fi
-done < <(grep -oE '\[[^]]*\]\(README\.[^)]+\.md\)' "$MAIN" 2>/dev/null || true)
+done < <(grep -oE '\[[^]]*\]\([^)]*README\.[^)]+\.md\)' "$MAIN" 2>/dev/null || true)
 
 echo "[check-readme-locales] Linked from main README: ${linked_locales[*]:-(none)}"
 
@@ -56,7 +57,7 @@ echo "[check-readme-locales] OK — all linked locale READMEs exist"
 existing_locales=()
 while IFS= read -r f; do
   existing_locales+=("$(basename "$f")")
-done < <(find "$ROOT" -maxdepth 1 -name 'README.*.md' -not -name 'README.md' 2>/dev/null | sort)
+done < <(find "$ROOT/$LOCALES_DIR" -maxdepth 1 -name 'README.*.md' 2>/dev/null | sort)
 
 echo "[check-readme-locales] Existing locale READMEs: ${existing_locales[*]:-(none)}"
 
@@ -64,7 +65,7 @@ orphans=()
 for file in "${existing_locales[@]}"; do
   found=0
   for linked in "${linked_locales[@]}"; do
-    if [[ "$linked" == "$file" ]]; then
+    if [[ "$(basename "$linked")" == "$file" ]]; then
       found=1
       break
     fi

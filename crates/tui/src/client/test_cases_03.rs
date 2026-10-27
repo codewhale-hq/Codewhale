@@ -77,9 +77,9 @@
     }
 
     fn opencode_zen_client(server: &MockServer, model: &str) -> CodewhaleClient {
-        let config = Config {
-            provider: Some("opencode-zen".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("opencode-zen".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 opencode_zen: ProviderConfig {
                     api_key: Some("zen-test-key".to_string()),
                     base_url: Some(server.uri()),
@@ -87,8 +87,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         CodewhaleClient::new(&config).expect("OpenCode Zen client should resolve its model route")
     }
@@ -177,9 +180,9 @@
                 .expect(1)
                 .mount(&server)
                 .await;
-            let mut client = CodewhaleClient::new(&Config {
-                provider: Some("opencode-go".into()),
-                providers: Some(ProvidersConfig {
+            let mut client = CodewhaleClient::new(&{
+                let __cw_config_init_1_0 = Some("opencode-go".into());
+                let __cw_config_init_1_1 = Some(ProvidersConfig {
                     opencode_go: ProviderConfig {
                         api_key: Some("go-test-key".into()),
                         base_url: Some(format!("{}/zen/go/v1", server.uri())),
@@ -187,8 +190,11 @@
                         ..ProviderConfig::default()
                     },
                     ..ProvidersConfig::default()
-                }),
-                ..Config::default()
+                });
+                let mut __cw_config_init_1_value: Config = Config::default();
+                __cw_config_init_1_value.provider = __cw_config_init_1_0;
+                __cw_config_init_1_value.providers = __cw_config_init_1_1;
+                __cw_config_init_1_value
             })
             .expect("Go client resolves the model protocol");
             client.retry.enabled = false;
@@ -405,24 +411,26 @@
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &root);
         let _ambient =
             crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "external-token");
-        let mut config = Config {
-            provider: Some("openai-codex".to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_2_0 = Some("openai-codex".to_string());
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value
         };
-        crate::external_credentials::reset_side_effect_trap();
+        codewhale_runtime::external_credentials::reset_side_effect_trap();
         assert!(CodewhaleClient::new(&config).is_err());
         assert_eq!(
-            crate::external_credentials::complete_side_effect_trap_counts(),
+            codewhale_runtime::external_credentials::complete_side_effect_trap_counts(),
             (0, 0, 0, 0, 0)
         );
         let token =
-            crate::oauth::install_test_chatgpt_registration(&mut config).expect("owned registration");
-        crate::external_credentials::reset_side_effect_trap();
+            codewhale_runtime::oauth::install_test_chatgpt_registration(&mut config).expect("owned registration");
+        codewhale_runtime::external_credentials::reset_side_effect_trap();
         let client = CodewhaleClient::new(&config).expect("official ChatGPT client");
         assert_eq!(client.api_key, token);
         assert_eq!(client.base_url, "https://api.openai.com/v1");
         assert_eq!(
-            crate::external_credentials::complete_side_effect_trap_counts(),
+            codewhale_runtime::external_credentials::complete_side_effect_trap_counts(),
             (0, 0, 0, 0, 0)
         );
     }
@@ -436,9 +444,11 @@
             .canonicalize()
             .expect("canonical credential home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &root);
-        let mut config = Config {
-            provider: Some("openai-codex".into()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_3_0 = Some("openai-codex".into());
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value
         };
         let mut scopes = Vec::new();
         for (subject, client_id) in [
@@ -446,7 +456,7 @@
             ("account-b", "oaiapp_workspace_a"),
             ("account-a", "oaiapp_workspace_b"),
         ] {
-            crate::oauth::install_test_chatgpt_registration_for(&mut config, subject, client_id)
+            codewhale_runtime::oauth::install_test_chatgpt_registration_for(&mut config, subject, client_id)
                 .unwrap();
             let client = CodewhaleClient::new(&config).unwrap();
             assert_eq!(
@@ -514,9 +524,9 @@
     fn client_with_config_secret_sentinels() -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
         CodewhaleClient::new(
-            &Config {
-                provider: Some("zai".to_string()),
-                providers: Some(ProvidersConfig {
+            &{
+                let __cw_config_init_4_0 = Some("zai".to_string());
+                let __cw_config_init_4_1 = Some(ProvidersConfig {
                     arcee: ProviderConfig {
                         api_key: Some(CONFIG_SECRET_SENTINELS[1].to_string()),
                         ..ProviderConfig::default()
@@ -546,8 +556,11 @@
                         ..ProviderConfig::default()
                     },
                     ..ProvidersConfig::default()
-                }),
-                ..Config::default()
+                });
+                let mut __cw_config_init_4_value: Config = Config::default();
+                __cw_config_init_4_value.provider = __cw_config_init_4_0;
+                __cw_config_init_4_value.providers = __cw_config_init_4_1;
+                __cw_config_init_4_value
             }
             .with_legacy_root(Some(CONFIG_SECRET_SENTINELS[0].to_string()), None),
         )
@@ -736,20 +749,25 @@
         .expect("record opt-out confirmation");
 
         let client = CodewhaleClient::new(
-            &Config {
-                loaded_config_path: Some(codewhale_home.join("config.toml")),
-                provider: Some("zai".to_string()),
-                providers: Some(ProvidersConfig {
+            &{
+                let __cw_config_init_5_0 = Some(codewhale_home.join("config.toml"));
+                let __cw_config_init_5_1 = Some("zai".to_string());
+                let __cw_config_init_5_2 = Some(ProvidersConfig {
                     zai: ProviderConfig {
                         api_key: Some(CONFIG_SECRET_SENTINELS[6].to_string()),
                         ..ProviderConfig::default()
                     },
                     ..ProvidersConfig::default()
-                }),
-                redaction: Some(codewhale_config::redaction::RedactionToml {
+                });
+                let __cw_config_init_5_3 = Some(codewhale_config::redaction::RedactionToml {
                     model_bound: Some(codewhale_config::redaction::ModelBoundMasking::Disabled),
-                }),
-                ..Config::default()
+                });
+                let mut __cw_config_init_5_value: Config = Config::default();
+                __cw_config_init_5_value.loaded_config_path = __cw_config_init_5_0;
+                __cw_config_init_5_value.provider = __cw_config_init_5_1;
+                __cw_config_init_5_value.providers = __cw_config_init_5_2;
+                __cw_config_init_5_value.redaction = __cw_config_init_5_3;
+                __cw_config_init_5_value
             }
             .with_legacy_root(Some(CONFIG_SECRET_SENTINELS[0].to_string()), None),
         )
@@ -787,7 +805,7 @@
         let _legacy_config = EnvVarGuard::remove("DEEPSEEK_CONFIG_PATH");
         let tool_output = format!("api_key = \"{}\"", CONFIG_SECRET_SENTINELS[6]);
         for explicit in [Some(custom.clone()), None] {
-            let config = Config::load(explicit, None).unwrap();
+            let config = crate::plugins::providers::load_config(explicit, None).unwrap();
             assert_eq!(
                 config
                     .loaded_config_path
@@ -803,10 +821,10 @@
                 client.prepare_model_bound_request(request_with_tool_result(tool_output.clone()));
             assert!(!tool_result_content(&prepared).contains(CONFIG_SECRET_SENTINELS[6]));
         }
-        let config = Config::load(None, None).unwrap();
+        let config = crate::plugins::providers::load_config(None, None).unwrap();
         config.record_redaction_confirmation().unwrap();
         for explicit in [Some(custom.clone()), None] {
-            let config = Config::load(explicit, None).unwrap();
+            let config = crate::plugins::providers::load_config(explicit, None).unwrap();
             assert!(!config.redaction_confirmation_required());
             let client = CodewhaleClient::new(&config).unwrap();
             let prepared =
@@ -833,19 +851,23 @@
         let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
 
         let client = CodewhaleClient::new(
-            &Config {
-                provider: Some("zai".to_string()),
-                providers: Some(ProvidersConfig {
+            &{
+                let __cw_config_init_6_0 = Some("zai".to_string());
+                let __cw_config_init_6_1 = Some(ProvidersConfig {
                     zai: ProviderConfig {
                         api_key: Some(CONFIG_SECRET_SENTINELS[6].to_string()),
                         ..ProviderConfig::default()
                     },
                     ..ProvidersConfig::default()
-                }),
-                redaction: Some(codewhale_config::redaction::RedactionToml {
+                });
+                let __cw_config_init_6_2 = Some(codewhale_config::redaction::RedactionToml {
                     model_bound: Some(codewhale_config::redaction::ModelBoundMasking::Disabled),
-                }),
-                ..Config::default()
+                });
+                let mut __cw_config_init_6_value: Config = Config::default();
+                __cw_config_init_6_value.provider = __cw_config_init_6_0;
+                __cw_config_init_6_value.providers = __cw_config_init_6_1;
+                __cw_config_init_6_value.redaction = __cw_config_init_6_2;
+                __cw_config_init_6_value
             }
             .with_legacy_root(Some(CONFIG_SECRET_SENTINELS[0].to_string()), None),
         )
@@ -891,9 +913,9 @@
             .expect("write isolated inactive provider credential");
 
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = CodewhaleClient::new(&Config {
-            provider: Some("zai".to_string()),
-            providers: Some(ProvidersConfig {
+        let client = CodewhaleClient::new(&{
+            let __cw_config_init_7_0 = Some("zai".to_string());
+            let __cw_config_init_7_1 = Some(ProvidersConfig {
                 zai: ProviderConfig {
                     api_key: Some("active-zai-secret-900".to_string()),
                     ..ProviderConfig::default()
@@ -907,8 +929,11 @@
                     },
                 )]),
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_7_value: Config = Config::default();
+            __cw_config_init_7_value.provider = __cw_config_init_7_0;
+            __cw_config_init_7_value.providers = __cw_config_init_7_1;
+            __cw_config_init_7_value
         })
         .expect("client with inactive file-store credential");
         let prepared = client.prepare_model_bound_request(request_with_tool_result(format!(
@@ -1090,10 +1115,10 @@
             "tail ".repeat(80)
         );
         assert!(raw.len() > 1024, "fixture must enter wire dedup size class");
-        let raw_sha = crate::hashing::sha256_hex(raw.as_bytes());
+        let raw_sha = codewhale_runtime::hashing::sha256_hex(raw.as_bytes());
         let prepared = client.prepare_model_bound_request(request_with_tool_result(raw));
         let sanitized = tool_result_content(&prepared).to_string();
-        let sanitized_sha = crate::hashing::sha256_hex(sanitized.as_bytes());
+        let sanitized_sha = codewhale_runtime::hashing::sha256_hex(sanitized.as_bytes());
 
         let wire = build_chat_messages_for_request(&prepared);
         let serialized = serde_json::to_string(&wire).expect("serialize chat wire messages");
@@ -1125,10 +1150,13 @@
             },
             ..ProvidersConfig::default()
         };
-        CodewhaleClient::new(&Config {
-            provider: Some("deepseek-anthropic".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        CodewhaleClient::new(&{
+            let __cw_config_init_8_0 = Some("deepseek-anthropic".to_string());
+            let __cw_config_init_8_1 = Some(providers);
+            let mut __cw_config_init_8_value: Config = Config::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value.providers = __cw_config_init_8_1;
+            __cw_config_init_8_value
         })
         .expect("deepseek anthropic client")
     }
@@ -1143,10 +1171,13 @@
             },
             ..ProvidersConfig::default()
         };
-        CodewhaleClient::new(&Config {
-            provider: Some("minimax-anthropic".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        CodewhaleClient::new(&{
+            let __cw_config_init_9_0 = Some("minimax-anthropic".to_string());
+            let __cw_config_init_9_1 = Some(providers);
+            let mut __cw_config_init_9_value: Config = Config::default();
+            __cw_config_init_9_value.provider = __cw_config_init_9_0;
+            __cw_config_init_9_value.providers = __cw_config_init_9_1;
+            __cw_config_init_9_value
         })
         .expect("minimax anthropic client")
     }
@@ -1161,21 +1192,29 @@
             },
             ..ProvidersConfig::default()
         };
-        CodewhaleClient::new(&Config {
-            provider: Some("zai".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        CodewhaleClient::new(&{
+            let __cw_config_init_10_0 = Some("zai".to_string());
+            let __cw_config_init_10_1 = Some(providers);
+            let mut __cw_config_init_10_value: Config = Config::default();
+            __cw_config_init_10_value.provider = __cw_config_init_10_0;
+            __cw_config_init_10_value.providers = __cw_config_init_10_1;
+            __cw_config_init_10_value
         })
         .expect("zai client")
     }
 
     fn runtime_chat_gate_client(isolated: bool, unrelated: bool) -> CodewhaleClient {
-        CodewhaleClient::new(&Config {
-            provider: Some("ollama".to_string()),
-            default_text_model: Some("fixture-local:tag".to_string()),
-            runtime_chat_isolated: isolated,
-            runtime_thread_inference_unrelated: unrelated,
-            ..Config::default()
+        CodewhaleClient::new(&{
+            let __cw_config_init_11_0 = Some("ollama".to_string());
+            let __cw_config_init_11_1 = Some("fixture-local:tag".to_string());
+            let __cw_config_init_11_2 = isolated;
+            let __cw_config_init_11_3 = unrelated;
+            let mut __cw_config_init_11_value: Config = Config::default();
+            __cw_config_init_11_value.provider = __cw_config_init_11_0;
+            __cw_config_init_11_value.default_text_model = __cw_config_init_11_1;
+            __cw_config_init_11_value.runtime_chat_isolated = __cw_config_init_11_2;
+            __cw_config_init_11_value.runtime_thread_inference_unrelated = __cw_config_init_11_3;
+            __cw_config_init_11_value
         })
         .expect("runtime chat gate test client")
     }
@@ -1238,7 +1277,7 @@
             let client = zai_client_for_test();
             assert_eq!(
                 client.provider_request_concurrency_limit(),
-                Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
+                Some(codewhale_runtime::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
             );
 
             let clone = client.clone();

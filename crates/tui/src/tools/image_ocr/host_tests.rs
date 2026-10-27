@@ -3,8 +3,8 @@
 use super::*;
 use crate::extension_host::tests::node_for_tests;
 use crate::extension_host::{ExtensionHostManager, ExtensionHostOptions, TestManagerGuard};
-use crate::features::{Feature, Features};
 use crate::plugins::activation::TestPolicyGuard;
+use codewhale_runtime::features::{Feature, Features};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ fn context(path: &Path, host: bool) -> ToolContext {
 }
 fn new_manager(node: PathBuf, path: &Path) -> Arc<ExtensionHostManager> {
     Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
-        runtime: crate::config::ExtensionHostRuntime::Node,
+        runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
         node_override: Some(node),
         root: Some(path.join("host")),
         ..ExtensionHostOptions::default()
@@ -53,7 +53,7 @@ fn ocr_host_is_independent_and_defaults_to_rust() {
     let mut flags = Features::with_defaults();
     assert!(!flags.enabled(Feature::OcrHost));
     assert_eq!(
-        crate::features::feature_from_key("ocr_host"),
+        codewhale_runtime::features::feature_from_key("ocr_host"),
         Some(Feature::OcrHost)
     );
     flags.enable(Feature::OcrHost);
@@ -351,8 +351,11 @@ async fn real_host_ocr_cancellation_bounds_parser_tree_and_never_replays() {
         .expect("OCR descendant never became ready");
         let pids = tokio::task::spawn_blocking(move || {
             (
-                crate::process_tree::read_pid_file(&parser_pid, Duration::from_secs(5)),
-                crate::process_tree::read_pid_file(&descendant_pid, Duration::from_secs(5)),
+                codewhale_runtime::process_tree::read_pid_file(&parser_pid, Duration::from_secs(5)),
+                codewhale_runtime::process_tree::read_pid_file(
+                    &descendant_pid,
+                    Duration::from_secs(5),
+                ),
             )
         })
         .await
@@ -371,8 +374,9 @@ async fn real_host_ocr_cancellation_bounds_parser_tree_and_never_replays() {
     // Observe that cleanup while allowing the current-thread runtime to run it.
     let stopped = tokio::task::spawn_blocking(move || {
         let descendant_stopped =
-            crate::process_tree::wait_for_pid_exit(descendant, Duration::from_secs(5));
-        let parser_stopped = crate::process_tree::wait_for_pid_exit(parser, Duration::from_secs(5));
+            codewhale_runtime::process_tree::wait_for_pid_exit(descendant, Duration::from_secs(5));
+        let parser_stopped =
+            codewhale_runtime::process_tree::wait_for_pid_exit(parser, Duration::from_secs(5));
         descendant_stopped && parser_stopped
     })
     .await
@@ -449,7 +453,7 @@ async fn ocr_capture_reuses_bounded_anchored_reader_and_content_digest() {
     assert_ne!(first.path, second.path);
     assert_eq!(
         first.digest(),
-        crate::hashing::sha256_hex(b"captured original image")
+        codewhale_runtime::hashing::sha256_hex(b"captured original image")
     );
     assert_eq!(first.digest(), second.digest());
     let staged = first.path.clone();

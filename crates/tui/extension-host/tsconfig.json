@@ -16,7 +16,8 @@
       "@deepseek-ai/cordis-plugin-loader": [
         "./src/dsh/upstream/loader/src/index.ts"
       ]
-    }
+    },
+    "resolveJsonModule": true
   },
   "include": [
     "src/**/*.ts"

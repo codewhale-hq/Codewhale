@@ -897,7 +897,7 @@ must continue to redact or reject them independently of fleet selection.
 ## Child grants: 0.10.1 scope and the 0.11 rework (#6298)
 
 A child's authority is one grant object, `ChildGrant`
-(`crates/tui/src/worker_profile.rs`). It shipped in v0.10.0 (966ef974e1,
+(`crates/agent-contract/src/worker_profile.rs`). It shipped in v0.10.0 (966ef974e1,
 #5633). It has `files` (none / read / write), `shell` (none / inspect /
 verify / full), `network`, `desktop`, a tool `surface`, the caller's explicit
 `scope`, and `spawn`. Roles are presets over it (`ChildGrant::for_role`), and

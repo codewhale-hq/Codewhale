@@ -35,7 +35,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::session_manager::{OfflineQueueLease, OfflineQueueState, SavedSession, SessionManager};
-use crate::utils::spawn_supervised;
+use codewhale_util::utils::spawn_supervised;
 
 // ---------------------------------------------------------------------------
 // Request type
@@ -47,6 +47,10 @@ pub enum PersistRequest {
     /// Write a crash-recovery checkpoint (in-flight turn state) to the
     /// session's own file (`checkpoints/<session_id>.json`).
     SaveCheckpoint { session: SavedSession },
+    AcknowledgedCheckpoint {
+        session: SavedSession,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Write a full session snapshot (completed turn, durable save).
     SessionSnapshot(SavedSession),
     /// Compound completion commit: write the completed session snapshot,
@@ -145,6 +149,7 @@ const ACTOR_COMMAND_CAPACITY: usize = 8;
 /// flushes outside it, so disk I/O never blocks a sender.
 #[derive(Debug, Default)]
 struct SharedPending {
+    closed: bool,
     pending: PendingState,
     /// Whether a `WorkReady` is already queued (or being queued) and no
     /// `take_pending` has observed it since. Reset only by `take_pending` —
@@ -196,6 +201,22 @@ fn persistence_request_channel() -> (PersistRequestSender, PersistRequestReceive
     )
 }
 
+impl Drop for PersistRequestReceiver {
+    fn drop(&mut self) {
+        let mut guard = self
+            .shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.closed = true;
+        guard.notified = false;
+        for (_, reply) in std::mem::take(&mut guard.pending.checkpoint_replies) {
+            let _ = reply.send(Err(
+                "persistence actor shut down before checkpoint write".into()
+            ));
+        }
+    }
+}
+
 impl PersistRequestReceiver {
     /// Await the next actor command. `None` means every sender is gone.
     async fn recv(&mut self) -> Option<ActorCommand> {
@@ -231,8 +252,12 @@ impl PersistActorHandle {
     /// session), so repeated snapshots of one session retain only the
     /// newest. Returns `false` when the actor is already shut down.
     pub fn try_send(&self, mut request: PersistRequest) -> bool {
+        if self.tx.cmd_tx.is_closed() {
+            return false;
+        }
         match &mut request {
             PersistRequest::SaveCheckpoint { session }
+            | PersistRequest::AcknowledgedCheckpoint { session, .. }
             | PersistRequest::SessionSnapshot(session)
             | PersistRequest::CompletedCommit { session } => {
                 session.compact_for_persistence_queue();
@@ -245,6 +270,9 @@ impl PersistActorHandle {
                 .shared
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.closed {
+                return false;
+            }
             guard.pending.absorb(request)
         };
         match control {
@@ -358,6 +386,7 @@ pub(crate) fn flush_before_transition() -> Result<(), String> {
 fn request_label(request: &PersistRequest) -> &'static str {
     match request {
         PersistRequest::SaveCheckpoint { .. } => "SaveCheckpoint",
+        PersistRequest::AcknowledgedCheckpoint { .. } => "AcknowledgedCheckpoint",
         PersistRequest::SessionSnapshot(_) => "SessionSnapshot",
         PersistRequest::CompletedCommit { .. } => "CompletedCommit",
         PersistRequest::OfflineQueue { .. } => "OfflineQueue",
@@ -453,6 +482,7 @@ struct PendingState {
     /// (mirroring `sessions` below) so concurrent sessions can interleave
     /// saves and clears without clobbering each other.
     checkpoints: BTreeMap<String, SavedSession>,
+    checkpoint_replies: BTreeMap<String, oneshot::Sender<Result<(), String>>>,
     /// Session ids whose checkpoint file should be removed.
     checkpoint_clears: BTreeSet<String>,
     /// Latest-wins per session id. Coalescing into one global slot can
@@ -493,7 +523,25 @@ impl PendingState {
     }
 
     fn absorb(&mut self, req: PersistRequest) -> Control {
+        let replaced = match &req {
+            PersistRequest::SaveCheckpoint { session }
+            | PersistRequest::AcknowledgedCheckpoint { session, .. }
+            | PersistRequest::SessionSnapshot(session)
+            | PersistRequest::CompletedCommit { session } => Some(session.metadata.id.as_str()),
+            PersistRequest::ClearCheckpoint { session_id } => Some(session_id.as_str()),
+            _ => None,
+        };
+        if let Some(id) = replaced
+            && let Some(reply) = self.checkpoint_replies.remove(id)
+        {
+            let _ = reply.send(Err("checkpoint superseded before persistence".into()));
+        }
         match req {
+            PersistRequest::AcknowledgedCheckpoint { session, reply } => {
+                let id = session.metadata.id.clone();
+                self.absorb(PersistRequest::SaveCheckpoint { session });
+                self.checkpoint_replies.insert(id, reply);
+            }
             PersistRequest::SaveCheckpoint { session } => {
                 // Last-writer-wins per session: a fresh checkpoint supersedes
                 // a pending clear for the same session so the two never both
@@ -641,10 +689,15 @@ fn flush_inner(
         );
     }
     for (session_id, session) in std::mem::take(&mut pending.checkpoints) {
-        record(
-            format!("checkpoint:{session_id}"),
-            manager.save_checkpoint_owned(session).map(|_| ()),
-        );
+        let reply = pending.checkpoint_replies.remove(&session_id);
+        if reply.as_ref().is_some_and(oneshot::Sender::is_closed) {
+            continue;
+        }
+        let result = manager.save_checkpoint_owned(session).map(|_| ());
+        if let Some(reply) = reply {
+            let _ = reply.send(result.as_ref().map(|_| ()).map_err(ToString::to_string));
+        }
+        record(format!("checkpoint:{session_id}"), result);
     }
     for (_, request) in std::mem::take(&mut pending.offline_queue) {
         match request {
@@ -861,6 +914,27 @@ mod tests {
             None,
             Some("agent"),
         );
+        let (tx, mut receiver) = persistence_request_channel();
+        let retained = PersistActorHandle { tx };
+        assert!(retained.try_send(PersistRequest::Shutdown));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(ActorCommand::Shutdown)
+        ));
+        assert!(receiver.take_pending().is_empty());
+        let (reply, late_checkpoint) = oneshot::channel();
+        assert!(retained.try_send(PersistRequest::AcknowledgedCheckpoint {
+            session: session.clone(),
+            reply,
+        }));
+        drop(receiver);
+        assert!(late_checkpoint.await.expect("shutdown rejection").is_err());
+        let (reply, after_shutdown) = oneshot::channel();
+        assert!(!retained.try_send(PersistRequest::AcknowledgedCheckpoint {
+            session: session.clone(),
+            reply,
+        }));
+        assert!(after_shutdown.await.is_err());
         let session_id = session.metadata.id.clone();
         let (handle, task) = spawn_persistence_actor(manager);
 
@@ -987,12 +1061,38 @@ mod tests {
             None,
             Some("agent"),
         );
+        for replacement in [
+            PersistRequest::SaveCheckpoint {
+                session: session.clone(),
+            },
+            PersistRequest::CompletedCommit {
+                session: session.clone(),
+            },
+            PersistRequest::ClearCheckpoint {
+                session_id: session.metadata.id.clone(),
+            },
+        ] {
+            let mut pending = PendingState::default();
+            let (reply, receiver) = oneshot::channel();
+            pending.absorb(PersistRequest::AcknowledgedCheckpoint {
+                session: session.clone(),
+                reply,
+            });
+            pending.absorb(replacement);
+            assert!(receiver.await.expect("supersession reply").is_err());
+            assert!(pending.checkpoint_replies.is_empty());
+        }
         let (handle, task) = spawn_persistence_actor(manager);
 
-        handle.try_send(PersistRequest::SaveCheckpoint { session });
+        let (checkpoint_reply, checkpoint_result) = oneshot::channel();
+        assert!(handle.try_send(PersistRequest::AcknowledgedCheckpoint {
+            session,
+            reply: checkpoint_reply
+        }));
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         handle.try_send(PersistRequest::FlushAndReport { reply: reply_tx });
         let report = reply_rx.await.expect("flush report reply");
+        assert!(checkpoint_result.await.expect("checkpoint reply").is_ok());
         // Whether the checkpoint was written by an earlier background cycle
         // or by this flush, the accumulated report must count it and show no
         // failures — and the actor keeps running afterwards.
@@ -1076,10 +1176,15 @@ mod tests {
         let session_id = session.metadata.id.clone();
         let (handle, task) = spawn_persistence_actor(manager);
 
-        handle.try_send(PersistRequest::SaveCheckpoint { session });
+        let (checkpoint_reply, checkpoint_result) = oneshot::channel();
+        assert!(handle.try_send(PersistRequest::AcknowledgedCheckpoint {
+            session,
+            reply: checkpoint_reply
+        }));
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         handle.try_send(PersistRequest::FlushAndReport { reply: reply_tx });
         let report = reply_rx.await.expect("flush report reply");
+        assert!(checkpoint_result.await.expect("checkpoint reply").is_err());
 
         assert!(
             report

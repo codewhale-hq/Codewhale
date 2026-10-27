@@ -31,8 +31,8 @@ use super::task_spec::{
     prepare_verification_receipt, validate_task_spec_document, verify_task_result,
 };
 use super::worker_runtime;
-use crate::config::Config;
 use crate::tools::subagent::{AgentWorkerSpec, SharedSubAgentManager, SubAgentManager};
+use codewhale_runtime::config::Config;
 
 const DEFAULT_STALE_AFTER_SECONDS: u64 = 300;
 
@@ -535,6 +535,17 @@ impl FleetManager {
         })
     }
 
+    pub(crate) fn ensure_external_worker_credentials(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self
+                .route_config
+                .as_ref()
+                .is_some_and(|config| config.session_provider_keys_only),
+            "External Fleet workers are unavailable under session-only provider key policy; use in-process subagents"
+        );
+        Ok(())
+    }
+
     /// Activate one durable queued run without leasing work.
     ///
     /// Managed clients use this transition before spawning the executor
@@ -542,6 +553,7 @@ impl FleetManager {
     /// Terminal runs are never reactivated through this method; the existing
     /// explicit worker restart control remains separate.
     pub fn activate_run(&self, run_id: &FleetRunId) -> Result<FleetRunReport> {
+        self.ensure_external_worker_credentials()?;
         let state = self.ledger.rebuild_state()?;
         let run =
             state
@@ -837,7 +849,7 @@ impl FleetManager {
             tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
                 // Created and opened through the pinned no-follow handle, so a
                 // linked `.codewhale` or lock name is refused, not followed.
-                super::files::WorkspaceFile::open(&workspace, &relative, true)
+                codewhale_util::files::WorkspaceFile::open(&workspace, &relative, true)
                     .and_then(|file| file.open_update(true, false))
                     .with_context(|| format!("opening Fleet manager lock {}", path.display()))
             })
@@ -1192,6 +1204,7 @@ impl FleetManager {
     }
 
     pub fn restart_worker(&self, worker_id: &str) -> Result<FleetRestartReport> {
+        self.ensure_external_worker_credentials()?;
         let state = self.ledger.rebuild_state()?;
         let Some(task) = active_task_for_worker(&state, worker_id)
             .or_else(|| latest_task_for_worker(&state, worker_id))
@@ -1330,6 +1343,10 @@ impl FleetManager {
             .as_ref()
             .map(|manifest| manifest.generation)
             .ok_or_else(|| anyhow!("Fleet worker {worker_id} has no persisted launch manifest"))?;
+
+        coordination
+            .ensure_registered_worker_coordination_locks(worker_id)
+            .map_err(anyhow::Error::msg)?;
 
         match registered_generation {
             generation if generation == current_generation => {
@@ -1582,6 +1599,7 @@ impl FleetManager {
         codewhale_binary: &str,
         model: Option<&str>,
     ) -> Result<usize> {
+        self.ensure_external_worker_credentials()?;
         let state = self.ledger.rebuild_state()?;
         let run = state
             .runs
@@ -1612,19 +1630,23 @@ impl FleetManager {
                 .cloned()
                 .unwrap_or_else(|| default_local_worker(worker_id));
             let coordination_record = if let Some(manager) = self.sub_agent_manager.as_ref() {
-                let Ok(guard) = manager.try_read() else {
+                let Ok(mut guard) = manager.try_write() else {
                     continue;
                 };
-                Some(
+                let record = guard
+                    .fleet_worker_records_for_workspace(&self.workspace)
+                    .map_err(anyhow::Error::msg)?
+                    .into_iter()
+                    .find(|record| {
+                        record.spec.worker_id == worker_id
+                            && record.spec.run_id == task.entry.run_id.0
+                    });
+                if record.is_some() {
                     guard
-                        .fleet_worker_records_for_workspace(&self.workspace)
-                        .map_err(anyhow::Error::msg)?
-                        .into_iter()
-                        .find(|record| {
-                            record.spec.worker_id == worker_id
-                                && record.spec.run_id == task.entry.run_id.0
-                        }),
-                )
+                        .ensure_registered_worker_coordination_locks(worker_id)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                Some(record)
             } else {
                 None
             };
@@ -2529,7 +2551,11 @@ fn receipt_summary(receipt: &FleetReceipt) -> String {
         // summary is a one-line status surface.
         summary.push_str(&format!(
             " notes={}",
-            crate::utils::truncate_with_ellipsis(notes, RECEIPT_SUMMARY_NOTES_BYTES, "...")
+            codewhale_util::utils::truncate_with_ellipsis(
+                notes,
+                RECEIPT_SUMMARY_NOTES_BYTES,
+                "..."
+            )
         ));
     }
     summary
@@ -2796,14 +2822,17 @@ mod tests {
     }
 
     fn test_route_config() -> Config {
-        let mut providers = crate::config::ProvidersConfig::default();
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
         providers.deepseek.api_key = Some("test-key".to_string());
         providers.xai.api_key = Some("test-key".to_string());
         providers.zai.api_key = Some("test-key".to_string());
-        Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(providers),
-            ..Config::default()
+        {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some(providers);
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         }
         .with_legacy_root(Some("test-key".to_string()), None)
     }
@@ -2882,7 +2911,7 @@ mod tests {
             let mut owner = coordination.try_write().unwrap();
             for workspace in [&original, &selected] {
                 let (canonical, held) =
-                    crate::runtime_api::open_workspace_directory(workspace).unwrap();
+                    codewhale_util::workspace_dir::open_workspace_directory(workspace).unwrap();
                 owner
                     .admit_coordination_workspace(
                         workspace.clone(),
@@ -5205,12 +5234,12 @@ esac
     fn remote_terminal_route_x_wins_manager_config_y_and_receipt_is_secret_free() {
         let tmp = TempDir::new().unwrap();
         select_test_fleet(tmp.path(), &[("reviewer", "reviewer")]);
-        let manager_config = Config {
-            provider: Some("manager-y".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let manager_config = {
+            let __cw_config_init_1_0 = Some("manager-y".to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "manager-y".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         base_url: Some("https://manager-y.invalid/v1".to_string()),
                         model: Some("manager-model-y".to_string()),
@@ -5219,8 +5248,11 @@ esac
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let manager = test_manager(tmp.path())
             .unwrap()
@@ -5288,12 +5320,12 @@ printf '%s\n' '{"type":"done"}'
         let manager = test_manager(tmp.path())
             .unwrap()
             .with_session_model("manager-model-y")
-            .with_route_config(Config {
-                provider: Some("manager-y".to_string()),
-                providers: Some(crate::config::ProvidersConfig {
+            .with_route_config({
+                let __cw_config_init_2_0 = Some("manager-y".to_string());
+                let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
                     custom: std::collections::HashMap::from([(
                         "manager-y".to_string(),
-                        crate::config::ProviderConfig {
+                        codewhale_runtime::config::ProviderConfig {
                             kind: Some("openai-compatible".to_string()),
                             base_url: Some("https://manager-y.invalid/v1".to_string()),
                             model: Some("manager-model-y".to_string()),
@@ -5302,8 +5334,11 @@ printf '%s\n' '{"type":"done"}'
                         },
                     )]),
                     ..Default::default()
-                }),
-                ..Default::default()
+                });
+                let mut __cw_config_init_2_value: Config = Default::default();
+                __cw_config_init_2_value.provider = __cw_config_init_2_0;
+                __cw_config_init_2_value.providers = __cw_config_init_2_1;
+                __cw_config_init_2_value
             });
         let fake = fake_codewhale(
             &tmp,

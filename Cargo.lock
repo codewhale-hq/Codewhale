@@ -161,7 +161,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -339,7 +339,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -598,7 +598,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -804,7 +804,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -840,6 +840,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-agent-contract"
+version = "0.10.2"
+dependencies = [
+ "codewhale-execpolicy",
+ "codewhale-protocol",
+ "serde",
+]
+
+[[package]]
 name = "codewhale-app-server"
 version = "0.10.2"
 dependencies = [
@@ -859,7 +868,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -892,6 +901,7 @@ dependencies = [
  "codewhale-lane",
  "codewhale-paths",
  "codewhale-release",
+ "codewhale-runtime",
  "codewhale-secrets",
  "codewhale-state",
  "codewhale-telemetry",
@@ -907,7 +917,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
@@ -967,14 +977,16 @@ dependencies = [
  "libc",
  "ring",
  "rust_decimal",
+ "schemars",
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -989,11 +1001,29 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "codewhale-dependencies"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-config",
+ "codewhale-paths",
+ "codewhale-runtime",
+ "codewhale-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -1004,6 +1034,7 @@ dependencies = [
  "codewhale-protocol",
  "regex",
  "serde",
+ "serde_json",
  "shlex 2.0.1",
  "toml 1.1.4+spec-1.1.0",
 ]
@@ -1056,6 +1087,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-lsp"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "codewhale-config",
+ "codewhale-runtime",
+ "codewhale-util",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "codewhale-mcp"
 version = "0.10.2"
 dependencies = [
@@ -1072,7 +1121,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
@@ -1084,8 +1133,47 @@ version = "0.10.2"
 dependencies = [
  "codewhale-config",
  "codewhale-core",
+ "codewhale-sanitize",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "codewhale-net"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codewhale-command-contract",
+ "codewhale-config",
+ "codewhale-release",
+ "codewhale-runtime",
+ "codewhale-tools",
+ "http",
+ "hyper-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
+name = "codewhale-notify"
+version = "0.10.2"
+dependencies = [
+ "codewhale-config",
+ "codewhale-runtime",
+ "codewhale-secrets",
+ "dirs 7.0.0",
+ "regex",
+ "tempfile",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -1115,6 +1203,13 @@ dependencies = [
  "codewhale-protocol",
  "codewhale-sanitize",
  "serde_json",
+]
+
+[[package]]
+name = "codewhale-portable-core-navigation"
+version = "0.10.2"
+dependencies = [
+ "codewhale-command-contract",
 ]
 
 [[package]]
@@ -1168,35 +1263,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-repl"
+version = "0.10.2"
+dependencies = [
+ "codewhale-dependencies",
+ "codewhale-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codewhale-runtime"
 version = "0.10.2"
 dependencies = [
  "ahash",
  "anyhow",
+ "aws-lc-rs",
+ "base64 0.23.1",
  "chrono",
+ "codewhale-cloud-facts",
  "codewhale-command-contract",
  "codewhale-config",
  "codewhale-core",
  "codewhale-execpolicy",
  "codewhale-lane",
+ "codewhale-localization",
  "codewhale-memory",
  "codewhale-models",
  "codewhale-palette",
+ "codewhale-paths",
+ "codewhale-protocol",
+ "codewhale-release",
+ "codewhale-secrets",
  "colored",
+ "dirs 7.0.0",
  "fd-lock",
+ "futures-util",
+ "jsonwebtoken",
  "libc",
  "lru",
  "parking_lot",
+ "portable-pty",
  "regex",
+ "reqwest",
+ "ring",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
+ "shellexpand",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "toml 1.1.4+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "uuid",
+ "wait-timeout",
+ "windows",
+ "windows-sys 0.61.2",
+ "wiremock",
+]
+
+[[package]]
+name = "codewhale-sandbox"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "codewhale-app-server",
+ "codewhale-execpolicy",
+ "codewhale-paths",
+ "codewhale-release",
+ "codewhale-runtime",
+ "dirs 7.0.0",
+ "libc",
+ "portable-pty",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
  "wait-timeout",
 ]
@@ -1223,10 +1375,50 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "codewhale-skill-install"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-net",
+ "codewhale-paths",
+ "codewhale-util",
+ "flate2",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-snapshot"
+version = "0.10.2"
+dependencies = [
+ "codewhale-config",
+ "codewhale-dependencies",
+ "codewhale-paths",
+ "codewhale-runtime",
+ "codewhale-util",
+ "fd-lock",
+ "ignore",
+ "libc",
+ "serde",
+ "sha2 0.11.1",
+ "tempfile",
+ "tracing",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -1288,12 +1480,12 @@ dependencies = [
  "arboard",
  "async-stream",
  "async-trait",
- "aws-lc-rs",
  "axum",
  "base64 0.23.1",
  "chrono",
  "clap",
  "codewhale-agent",
+ "codewhale-agent-contract",
  "codewhale-app-server",
  "codewhale-build-support",
  "codewhale-cloud-facts",
@@ -1301,23 +1493,32 @@ dependencies = [
  "codewhale-commands",
  "codewhale-config",
  "codewhale-core",
+ "codewhale-dependencies",
  "codewhale-execpolicy",
  "codewhale-hooks",
  "codewhale-lane",
  "codewhale-localization",
+ "codewhale-lsp",
  "codewhale-mcp",
  "codewhale-memory",
  "codewhale-models",
+ "codewhale-net",
+ "codewhale-notify",
  "codewhale-palette",
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-ratatui",
  "codewhale-release",
+ "codewhale-repl",
  "codewhale-runtime",
+ "codewhale-sandbox",
  "codewhale-sanitize",
  "codewhale-secrets",
+ "codewhale-skill-install",
+ "codewhale-snapshot",
  "codewhale-telemetry",
  "codewhale-tools",
+ "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
  "colored",
@@ -1331,11 +1532,9 @@ dependencies = [
  "futures-util",
  "globset",
  "htmd",
- "hyper-util",
  "ignore",
  "image",
  "jsonschema",
- "jsonwebtoken",
  "libc",
  "liblzma",
  "lru",
@@ -1360,12 +1559,12 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "shell-words",
  "shellexpand",
  "shlex 2.0.1",
  "similar",
- "syn 3.0.6",
+ "syn 3.0.9",
  "syntect",
  "tar",
  "tempfile",
@@ -1394,12 +1593,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-util"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codewhale-config",
+ "codewhale-models",
+ "codewhale-paths",
+ "codewhale-protocol",
+ "codewhale-runtime",
+ "codewhale-telemetry",
+ "futures-util",
+ "ignore",
+ "libc",
+ "reqwest",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "codewhale-workflow"
 version = "0.10.2"
 dependencies = [
+ "codewhale-protocol",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.1.4+spec-1.1.0",
@@ -1436,7 +1662,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1618,6 +1844,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix",
@@ -1753,7 +1980,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1764,7 +1991,7 @@ checksum = "68f5792fa0d41cd2325ce0ffa64f0a340eaebd4971a3a0c5e1ffd2cc488a355e"
 dependencies = [
  "darling_core",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1931,7 +2158,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2051,7 +2278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2142,7 +2369,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2333,7 +2560,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2728,16 +2955,17 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
  "http",
  "http-body",
+ "httparse",
  "hyper",
  "ipnet",
  "libc",
@@ -2974,7 +3202,7 @@ dependencies = [
  "indoc",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -3888,7 +4116,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.42.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3958,6 +4186,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "peg"
@@ -4577,7 +4811,7 @@ checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4749,17 +4983,20 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.5.1"
+version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350"
+checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
  "indexmap",
+ "libc",
  "oauth2",
+ "pastey",
  "pin-project-lite",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -4768,6 +5005,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -4804,7 +5042,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rquickjs-core",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4872,12 +5110,13 @@ dependencies = [
 
 [[package]]
 name = "rust-i18n-support"
-version = "4.2.2"
+version = "4.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac02dcb9a01ec145d0a5534ea9554a966050ca250b346bb2a9ab0fcdafab5979"
+checksum = "e806c2a9701cbd6043992cd935c30cb1fdb128fa15e7b506f3b46f97045737c0"
 dependencies = [
  "arc-swap",
  "base62",
+ "foldhash 0.2.0",
  "globwalk 0.8.1",
  "itertools 0.11.0",
  "normpath",
@@ -4931,7 +5170,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4987,7 +5226,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5062,6 +5301,7 @@ version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
@@ -5078,7 +5318,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5203,7 +5443,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5214,15 +5454,16 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash 0.2.0",
  "indexmap",
  "itoa",
  "memchr",
@@ -5250,7 +5491,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5329,9 +5570,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -5627,9 +5868,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.6"
+version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5741,10 +5982,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5890,7 +6131,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5976,9 +6217,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5998,7 +6239,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6878,7 +7119,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -421,7 +421,7 @@ impl Inner {
             grants: grants.to_vec(),
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
-        crate::utils::write_atomic(&dir.join(GRANTS_FILE), &bytes)
+        codewhale_util::utils::write_atomic(&dir.join(GRANTS_FILE), &bytes)
     }
 
     fn commit(&mut self, grants: Vec<Grant>, events: Vec<GrantEvent>) -> std::io::Result<()> {

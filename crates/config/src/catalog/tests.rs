@@ -876,8 +876,9 @@ fn bundled_seed_canonical_entries_use_upstream_keys_and_yield_to_provider_rows()
     for model in ["mimo-v2.6-pro", "mimo-v2.6-flash"] {
         let row = find(&rows, "xiaomi-mimo", model);
         assert_eq!(
-            row.canonical_model, None,
-            "{model} comes from the provider row"
+            row.canonical_model.as_deref(),
+            Some(format!("xiaomi/{model}").as_str()),
+            "{model} keeps the canonical join upstream now states on the provider row"
         );
         // The text-only hold is gone (#6396): upstream lists image input,
         // and a wrong claim costs one rejected, retried request.
@@ -1432,7 +1433,7 @@ fn stepfun_bundled_coding_models_preserve_default_and_plan_pricing_boundary() {
             .find(|row| row.default_for_provider)
             .unwrap()
             .wire_model_id,
-        "step-3.7-flash"
+        "step-5-preview"
     );
     for row in &rows {
         assert_eq!(row.reasoning, Some(true));

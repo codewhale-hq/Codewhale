@@ -8,9 +8,9 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use crate::config::{SearchProvider, tavily_env_key, tavily_key_from};
-use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
+use codewhale_net::network_policy::{Decision, NetworkPolicyDecider};
+use codewhale_runtime::config::{SearchProvider, tavily_env_key, tavily_key_from};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -720,7 +720,7 @@ impl WebSearchTool {
         api_key: Option<&str>,
         context: &ToolContext,
     ) -> AdapterResult<(Vec<WebSearchEntry>, String)> {
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
             .build()
@@ -846,7 +846,7 @@ impl WebSearchTool {
         };
         check_policy(context.network_policy.as_ref(), &host)?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
             .build()
@@ -932,7 +932,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1016,7 +1016,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1111,7 +1111,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1190,7 +1190,7 @@ impl WebSearchTool {
                 "DeepSeek search requires an API key. Set `[search] api_key` in config.toml or the DEEPSEEK_API_KEY env var.",
             )
         })?;
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1255,7 +1255,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1354,7 +1354,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1460,7 +1460,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -1570,7 +1570,7 @@ impl WebSearchTool {
 
         let effective_timeout = timeout_ms.max(90_000);
 
-        let client = crate::tls::reqwest_client_builder()
+        let client = codewhale_release::tls::reqwest_client_builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_millis(effective_timeout))
             .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -1818,7 +1818,7 @@ fn search_timeout_budgets(
 fn provider_native_timeout_floor(
     client: &crate::client::ProviderNativeSearchClient,
 ) -> Option<Duration> {
-    let k3_formula = crate::config::is_exact_direct_moonshot_k3_route(
+    let k3_formula = codewhale_runtime::config::is_exact_direct_moonshot_k3_route(
         client.provider(),
         client.base_url(),
         client.model(),
@@ -2012,7 +2012,8 @@ async fn finalize_search_response_for_context(
         .filter(|reason| !initial.contains(reason))
         .cloned()
         .collect::<Vec<_>>();
-    raw.results.truncate(usize::from(query.max_results));
+    let requested_max = usize::from(query.max_results);
+    raw.results.truncate(requested_max);
     rerank(&mut raw.results);
     let synthesis = take_provider_native_synthesis(&mut raw);
     let (unverified, initial): (Vec<_>, Vec<_>) = initial.into_iter().partition(|reason| {
@@ -2047,11 +2048,6 @@ async fn finalize_search_response_for_context(
             .chain(&domain_extra)
             .all(|reason| proposal.degraded.contains(reason))
         || proposal.honored.domains != !query.domains.is_empty()
-        || proposal.honored.max_results
-            != matches!(
-                capabilities.max_results,
-                super::web::contract::CapabilityState::Supported
-            )
         || (proposal.honored.recency
             && (!query.recency.is_some()
                 || !matches!(
@@ -2070,6 +2066,13 @@ async fn finalize_search_response_for_context(
         )));
     }
     let count = raw.results.len();
+    // The host is not told the requested cap, so it can only speak to
+    // capability. Core owns the fulfillment half: a backend that returned
+    // fewer results than asked did not honor the knob, whatever it claimed.
+    let honored = HonoredQueryCapabilities {
+        max_results: proposal.honored.max_results && count >= requested_max,
+        ..proposal.honored
+    };
     let mut message = format!(
         "{}{}{}",
         proposal.prefix,
@@ -2096,7 +2099,7 @@ async fn finalize_search_response_for_context(
             backend_detail: raw.backend_detail,
             requested: query,
             capabilities,
-            honored: proposal.honored,
+            honored,
             degraded: proposal.degraded.into_iter().chain(unverified).collect(),
             latency_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
             cache_hit: false,
@@ -2155,6 +2158,8 @@ fn finalize_search_response(
 
     raw.results.truncate(usize::from(query.max_results));
     rerank(&mut raw.results);
+    honored.max_results =
+        honored.max_results && raw.results.len() >= usize::from(query.max_results);
     let synthesis = take_provider_native_synthesis(&mut raw);
     let latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
     let receipt = SearchReceipt {
@@ -2506,7 +2511,7 @@ async fn run_scrape_search_with_endpoints(
     let started = Instant::now();
     let budget = Duration::from_millis(timeout_ms);
     let decider = context.network_policy.as_ref();
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .timeout(budget)
         .user_agent(USER_AGENT)
         .build()
@@ -3913,20 +3918,20 @@ mod tests {
         baidu_search_payload, bing_locale_was_ignored, bocha_error_message, ddg_locale_was_ignored,
         ddg_region_param, domain_matches, duckduckgo_search_url, extract_search_query,
         finalize_search_response, native_answer_time_budget, optional_search_max_results,
-        parse_baidu_results, parse_bocha_results, parse_metaso_results, parse_searxng_results,
-        parse_serply_results, parse_sofya_results, parse_tavily_results, parse_volcengine_results,
-        prune_fallback_locale_ignored, register_search_citations, rerank,
+        parse_baidu_results, parse_bocha_results, parse_deepseek_results, parse_metaso_results,
+        parse_searxng_results, parse_serply_results, parse_sofya_results, parse_tavily_results,
+        parse_volcengine_results, prune_fallback_locale_ignored, register_search_citations, rerank,
         run_scrape_search_with_endpoints, sanitize_error_body, scrape_accept_language,
         scrape_locale_params, scrape_market, search_probe_target, search_timeout_budgets,
         searxng_score, searxng_search_url, serply_search_url, truncate_error_body,
         volcengine_extract_text,
     };
-    use crate::config::SearchProvider;
     use crate::tools::web::contract::{
         BackendId, BackendSearch, CapabilityState, DegradedReason, QueryCapabilities, QueryKnob,
         Recency, SearchQuery, SearchResult,
     };
     use crate::tools::web::scrape::{decode_html_entities, normalize_bing_url};
+    use codewhale_runtime::config::SearchProvider;
     use serde_json::json;
     use std::time::{Duration, Instant};
 
@@ -3980,10 +3985,10 @@ mod tests {
 
     #[test]
     fn provider_native_floor_follows_what_the_client_requests() {
-        use crate::config::{Config, ProviderConfig, ProvidersConfig};
-        let config = Config {
-            provider: Some("anthropic".to_string()),
-            providers: Some(ProvidersConfig {
+        use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+        let config = {
+            let __cw_config_init_0_0 = Some("anthropic".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 anthropic: ProviderConfig {
                     api_key: Some("anthropic-test-key".to_string()),
                     base_url: Some("https://api.anthropic.com".to_string()),
@@ -3991,8 +3996,11 @@ mod tests {
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let client = crate::client::ProviderNativeSearchClient::new(
             crate::client::CodewhaleClient::new(&config).expect("Anthropic client"),
@@ -4406,6 +4414,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_deepseek_results_reads_title_url_snippet_and_summary_fallback() {
+        let body = json!({
+            "results": [
+                {
+                    "title": "Ratatui",
+                    "url": "https://ratatui.rs/",
+                    "snippet": "Cook up delicious terminal user interfaces in Rust.",
+                    "summary": "ignored when a snippet is present",
+                    "date": "2026-10-21"
+                },
+                {
+                    "title": "Summary only",
+                    "url": "https://example.com/summary",
+                    "snippet": "",
+                    "summary": "Falls back to the summary field."
+                },
+                {
+                    "title": "Missing url",
+                    "snippet": "dropped because there is no url"
+                },
+                {
+                    "url": "https://example.com/no-title",
+                    "snippet": "dropped because there is no title"
+                },
+                "not an object",
+                {
+                    "title": "Beyond the cap",
+                    "url": "https://example.com/beyond",
+                    "snippet": "beyond max_results"
+                }
+            ]
+        });
+
+        let results = parse_deepseek_results(&body, 2);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].rank, 1);
+        assert_eq!(results[0].title, "Ratatui");
+        assert_eq!(results[0].url, "https://ratatui.rs/");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Cook up delicious terminal user interfaces in Rust.")
+        );
+        assert_eq!(results[0].published.as_deref(), Some("2026-10-21"));
+        assert_eq!(results[1].rank, 2);
+        assert_eq!(results[1].url, "https://example.com/summary");
+        assert_eq!(
+            results[1].snippet.as_deref(),
+            Some("Falls back to the summary field.")
+        );
+        assert_eq!(results[1].published, None);
+
+        assert!(parse_deepseek_results(&json!({}), 5).is_empty());
+        assert!(parse_deepseek_results(&json!({"results": []}), 5).is_empty());
+    }
+
+    #[test]
     fn parse_serply_results_reads_link_and_description_and_skips_malformed_rows() {
         let body = json!({
             "results": [
@@ -4668,8 +4733,8 @@ mod tests {
 
     #[tokio::test]
     async fn baidu_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _env = crate::test_support::lock_test_env();
         let _baidu_key = crate::test_support::EnvVarGuard::remove("BAIDU_SEARCH_API_KEY");
@@ -4726,8 +4791,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn serply_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var_os("SERPLY_API_KEY");
@@ -4757,8 +4822,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn sofya_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var_os("SOFYA_API_KEY");
@@ -4788,8 +4853,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn volcengine_provider_without_api_key_lists_supported_env_fallbacks() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _guard = crate::test_support::lock_test_env();
         let prev_volc = std::env::var_os("VOLCENGINE_API_KEY");
@@ -4834,8 +4899,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn metaso_provider_without_api_key_fails_closed_before_fallback() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _guard = crate::test_support::lock_test_env();
         let previous = std::env::var_os("METASO_API_KEY");
@@ -5432,8 +5497,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_provider_requires_base_url() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut ctx = ToolContext::new(tmp.path().to_path_buf());
@@ -5460,8 +5525,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn missing_provider_key_fails_closed_as_not_configured() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolError, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let _guard = crate::test_support::lock_test_env();
         let prev_tavily = std::env::var_os("TAVILY_API_KEY");
@@ -5516,35 +5581,43 @@ mod tests {
 
         unsafe { std::env::set_var("TAVILY_API_KEY", "tvly-a") };
         assert_eq!(
-            crate::config::tavily_key_from(Some("tvly-b")).as_deref(),
+            codewhale_runtime::config::tavily_key_from(Some("tvly-b")).as_deref(),
             Some("tvly-a"),
             "the dedicated env wins over the shared generic slot"
         );
-        assert_eq!(crate::config::tavily_env_key().as_deref(), Some("tvly-a"));
+        assert_eq!(
+            codewhale_runtime::config::tavily_env_key().as_deref(),
+            Some("tvly-a")
+        );
 
         // A dedicated env key is never prefix-checked.
         unsafe { std::env::set_var("TAVILY_API_KEY", "not-a-tvly-prefix") };
         assert_eq!(
-            crate::config::tavily_key_from(None).as_deref(),
+            codewhale_runtime::config::tavily_key_from(None).as_deref(),
             Some("not-a-tvly-prefix")
         );
 
         unsafe { std::env::set_var("TAVILY_API_KEY", "   ") };
-        assert_eq!(crate::config::tavily_env_key(), None);
+        assert_eq!(codewhale_runtime::config::tavily_env_key(), None);
 
         unsafe { std::env::remove_var("TAVILY_API_KEY") };
         assert_eq!(
-            crate::config::tavily_key_from(Some("tvly-b")).as_deref(),
+            codewhale_runtime::config::tavily_key_from(Some("tvly-b")).as_deref(),
             Some("tvly-b")
         );
         assert_eq!(
-            crate::config::tavily_key_from(Some("doctor-offline-search-sentinel")),
+            codewhale_runtime::config::tavily_key_from(Some("doctor-offline-search-sentinel")),
             None,
             "a non-`tvly-` generic key must never autodetect Tavily"
         );
-        assert_eq!(crate::config::tavily_key_from(Some("   ")), None);
-        assert!(crate::config::looks_like_tavily_key(" tvly-x "));
-        assert!(!crate::config::looks_like_tavily_key("fc-live-test"));
+        assert_eq!(
+            codewhale_runtime::config::tavily_key_from(Some("   ")),
+            None
+        );
+        assert!(codewhale_runtime::config::looks_like_tavily_key(" tvly-x "));
+        assert!(!codewhale_runtime::config::looks_like_tavily_key(
+            "fc-live-test"
+        ));
 
         match prev {
             Some(value) => unsafe { std::env::set_var("TAVILY_API_KEY", value) },
@@ -5554,8 +5627,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_search_returns_json_results() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -5607,8 +5680,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_honors_recency_and_locale_and_post_filters_domains() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -5668,6 +5741,43 @@ mod tests {
     }
 
     #[test]
+    fn finalize_reports_a_result_shortfall_instead_of_a_honored_capability() {
+        let query = SearchQuery::new("current release".to_string(), 8, None, Vec::new(), None);
+        let raw = BackendSearch {
+            backend: BackendId::ProviderNative,
+            source: "provider-native/deepseek/deepseek-flash".to_string(),
+            backend_detail: Some("api.deepseek.com".to_string()),
+            results: vec![SearchResult::new(
+                1,
+                "Only source".to_string(),
+                "https://example.com/only".to_string(),
+                None,
+                None,
+            )],
+            degraded: Vec::new(),
+            note: None,
+        };
+        let response = finalize_search_response(
+            query,
+            QueryCapabilities {
+                max_results: CapabilityState::Supported,
+                recency: CapabilityState::Unsupported,
+                domains: CapabilityState::Unsupported,
+                locale: CapabilityState::Unsupported,
+                published_date: CapabilityState::Unknown,
+            },
+            raw,
+            Instant::now(),
+        );
+
+        assert_eq!(response.results.len(), 1);
+        assert!(
+            !response.receipt.honored.max_results,
+            "one result for eight requested is a shortfall, not an honored cap"
+        );
+    }
+
+    #[test]
     fn provider_native_domain_filter_is_reported_as_provider_honored() {
         let query = SearchQuery::new(
             "current release".to_string(),
@@ -5680,13 +5790,29 @@ mod tests {
             backend: BackendId::ProviderNative,
             source: "provider-native/xai/grok-4.5".to_string(),
             backend_detail: Some("api.x.ai".to_string()),
-            results: vec![SearchResult::new(
-                1,
-                "Exact source".to_string(),
-                "https://docs.example.com/release".to_string(),
-                None,
-                None,
-            )],
+            results: vec![
+                SearchResult::new(
+                    1,
+                    "Exact source".to_string(),
+                    "https://docs.example.com/release".to_string(),
+                    None,
+                    None,
+                ),
+                SearchResult::new(
+                    2,
+                    "Second source".to_string(),
+                    "https://docs.example.com/release-notes".to_string(),
+                    None,
+                    None,
+                ),
+                SearchResult::new(
+                    3,
+                    "Third source".to_string(),
+                    "https://docs.example.com/changelog".to_string(),
+                    None,
+                    None,
+                ),
+            ],
             degraded: Vec::new(),
             note: Some("Grounded answer.".to_string()),
         };
@@ -5784,7 +5910,7 @@ mod tests {
 
         let output = crate::tools::spec::ToolResult::json(&response).expect("json");
         let context = crate::core::engine::compact_tool_result_for_route(
-            crate::config::ProviderKind::Deepseek,
+            codewhale_config::ProviderKind::Deepseek,
             "deepseek-v3.2-128k",
             None,
             "web_search",
@@ -5936,8 +6062,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_empty_results_report_backend() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -5971,8 +6097,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_http_errors_are_actionable() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6005,8 +6131,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_rate_limit_error_mentions_configured_instance() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6039,8 +6165,8 @@ mod tests {
 
     #[tokio::test]
     async fn searxng_invalid_json_is_actionable() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6073,8 +6199,8 @@ mod tests {
 
     #[tokio::test]
     async fn custom_duckduckgo_results_report_custom_host_source() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6117,9 +6243,9 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_search_uses_session_cache_and_marks_receipt() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
         use crate::tools::web::cache;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6165,7 +6291,7 @@ mod tests {
         assert_eq!(second["receipt"]["latency_ms"], 0);
         assert_eq!(second["results"], first["results"]);
 
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
         let denied_host = reqwest::Url::parse(&server.uri())
             .expect("mock server URL")
             .host_str()
@@ -6199,8 +6325,8 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_bing_does_not_fall_back_to_duckduckgo() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6240,8 +6366,8 @@ mod tests {
 
     #[tokio::test]
     async fn custom_duckduckgo_challenge_returns_actionable_error() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6275,8 +6401,8 @@ mod tests {
 
     #[tokio::test]
     async fn duckduckgo_challenge_to_bing_success_populates_fallback_receipt() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use std::time::Instant;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -6350,8 +6476,8 @@ mod tests {
     /// non-2xx must still reach the Bing fallback instead of ending the chain.
     #[tokio::test]
     async fn duckduckgo_unreachable_or_non_2xx_falls_back_to_bing() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6453,8 +6579,8 @@ mod tests {
     /// eat the whole budget; Bing answers inside the same total.
     #[tokio::test]
     async fn hanging_duckduckgo_leaves_bing_time_inside_the_total_budget() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6518,8 +6644,8 @@ mod tests {
     /// contacted, whether the endpoint answers late or hangs.
     #[tokio::test]
     async fn custom_base_url_keeps_full_budget_and_never_reaches_bing() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolContext;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -6584,8 +6710,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_base_url_with_non_duckduckgo_provider_is_explicit_error() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
+        use codewhale_runtime::config::SearchProvider;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut ctx = ToolContext::new(tmp.path().to_path_buf());

@@ -7,12 +7,12 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::canonical_action::required_action;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use super::test_runner::RunTestsTool;
 use super::verifier::RunVerifiersTool;
+use codewhale_tools::required_action;
 
 pub struct RunTool {
     name: &'static str,
@@ -153,7 +153,7 @@ impl ToolSpec for RunTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        crate::core::engine::tool_catalog::enforce_tool_denial(context, self.name(), &input)?;
+        crate::tools::execution_envelope::enforce_tool_denial(context, self.name(), &input)?;
         let action = self.required_action(&input)?;
         let input = self.strip_action(input)?;
 

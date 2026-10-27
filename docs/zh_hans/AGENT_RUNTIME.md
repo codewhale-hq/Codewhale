@@ -67,14 +67,11 @@
 
 worker 从 `spawn_depth = 0` 起运行，只要满足 `spawn_depth + 1 ≤ max_spawn_depth` 就可以派生子级，所以预算 `N` 提供 `N` 层嵌套委派。子智能体和 Fleet 选中的 Runtime worker 共用**同一条**轴，其来源是 `codewhale_config`：
 
-- `DEFAULT_SPAWN_DEPTH = 3`：独立子智能体和 Fleet 选中的 Runtime worker 共同的默认预算（这样两者不会漂移成"两个移动靶"）；
-- `MAX_SPAWN_DEPTH_CEILING = 8`：需主动开启的上限，所有配置的 Runtime 值（包括 Fleet 执行配置中的 `max_spawn_depth`）都会被钳制到这个值。
+Runtime 委派默认不设置产品深度上限。操作者显式设置的深度仍约束后代，子级不能扩大权限。0 禁止子级委派，但根 worker 仍可运行。内部 `u32` 表示会拒绝溢出，它不是建议的工作预算。
 
-面向模型的 `agent` schema 有意不包含 `max_depth`。解析器仍然接受 `max_depth`、`maxDepth` 和 `max_spawn_depth`，以兼容已保存的对话记录、ACP/MCP 客户端和内部调用方，并拒绝大于 8 的值。当前由模型发起的调用继承 Runtime 的配置，而不是在工具 schema 里协商递归深度。
+面向模型的 `agent` schema 不提供深度控制。兼容字段 `max_depth`、`maxDepth` 和 `max_spawn_depth` 仍可解析，但模型请求不能用它们给子级设置上限；回执会注明被忽略的字段。Exact Fleet 和保存的 Runtime 权限仍然生效。
 
-Workflow IR 另有一个默认的结构校验上限：最多五层嵌套节点。这个上限约束的是编排文档的形状，既不授予也不消耗 Runtime 的子级委派深度。
-
-根 worker 即使预算为 0 也总会运行；预算限制的是*子级*委派。默认值至少提供三层嵌套。
+Workflow IR 结构与子级委派分开。其 `max_depth` 默认 0（不设上限），正数操作者配置会被遵守。解析器及 VM 的栈、内存边界仍在执行前校验文档。
 
 ## 事件词汇
 

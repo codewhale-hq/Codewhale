@@ -23,7 +23,7 @@ use crate::commands::CommandResult;
 /// FEAT-021 portable dispatch: consumes only the workspace path (supplied
 /// through the `WORKSPACE` facet) and the UI language name (through the
 /// `PRESENTATION` facet); the workspace scan and prompt composition stay
-/// handler-owned (D2). `crate::utils`/`crate::project_context` are leaf,
+/// handler-owned (D2). `codewhale_util::utils`/`crate::project_context` are leaf,
 /// path-parameterized helpers (no App/service state), consistent with D8.
 fn init(workspace: &Path, language: &str) -> CommandResult {
     // Ensure .deepseek/ is gitignored if we're inside a git repo.
@@ -136,7 +136,7 @@ fn gather_project_context(workspace: &Path) -> String {
     let mut ctx = String::new();
 
     // Project type summary (from existing utility).
-    let summary = crate::utils::summarize_project(workspace);
+    let summary = codewhale_util::utils::summarize_project(workspace);
     ctx.push_str("## Project Summary\n\n");
     ctx.push_str(&summary);
     ctx.push_str("\n\n");
@@ -193,7 +193,7 @@ fn gather_project_context(workspace: &Path) -> String {
     }
 
     // Directory tree (from existing utility).
-    let tree = crate::utils::project_tree(workspace, 3, false);
+    let tree = codewhale_util::utils::project_tree(workspace, 3, false);
     ctx.push_str("## Directory Structure (depth 3)\n\n```\n");
     ctx.push_str(&tree);
     ctx.push_str("\n```\n\n");

@@ -12,9 +12,10 @@
 //! registry reloads.
 //!
 //! What a command can return, chosen from what the user-command machinery
-//! already does: text shown to the user (a `System` transcript cell, like a
-//! built-in's message) and/or a prompt submitted as the user's next message
-//! (`AppAction::SendMessage`, like a markdown command's expanded template).
+//! already does: text shown to the user and/or a prompt submitted through the
+//! normal turn path. The terminal uses a `System` transcript cell and
+//! `AppAction::SendMessage`; the native Runtime API persists a command receipt
+//! and admits generated prompts with Runtime provenance.
 //! The host never calls the model or a tool itself: anything the model does
 //! after a `submit` goes through the normal turn, tool approval included.
 //! Invoking a command is the user's own action, so it needs no approval of
@@ -30,11 +31,10 @@
 //! unchecked.
 //!
 //! Known limitations:
-//! * The UI event loop awaits the command (like `/balance`), bounded by
+//! * The terminal event loop awaits the command (like `/balance`), bounded by
 //!   `SupervisionOptions::command_run_deadline` (30 s) and then cancelled with
-//!   `$/cancel`. A keypress does not cancel it earlier.
-//! * Commands are TUI-only: the Runtime API's `GET /v1/commands` omits them
-//!   and cannot run them.
+//!   `$/cancel`. A terminal keypress does not cancel it earlier; the native
+//!   Runtime command endpoint supports explicit cancellation.
 //! * A clash with a user, workspace or manifest (markdown) command is not a
 //!   registration-time refusal, because only the user registry knows the
 //!   workspace: the markdown command wins and the extension command is left
@@ -55,7 +55,7 @@ use super::ManagerShared;
 use super::protocol::{CommandResultWire, CommandRunParams, CoreRequest};
 use super::registry::CommandRegistration;
 use super::supervisor::HostCallError;
-use crate::plugins::types::PluginAuthority;
+use codewhale_config::PluginAuthority;
 
 /// How long the user waits for one command before it is cancelled.
 pub const COMMAND_RUN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -94,8 +94,72 @@ pub struct ExtensionCommandRef {
     /// is told as the place the user ran it.
     pub workspace: std::path::PathBuf,
     pub selection: Option<super::composition_scope::SelectionRevision>,
-    pub scope: Option<super::protocol::EntryRef>,
+    pub scope: Option<codewhale_config::EntryRef>,
     pub content_hash: String,
+}
+
+impl ExtensionCommandRef {
+    pub(crate) fn receipt(&self) -> Value {
+        serde_json::json!({
+            "plugin_id": self.plugin_id,
+            "content_hash": self.content_hash,
+            "entry": self.scope,
+            "generation": self.generation,
+            "selection": self.selection,
+            "handle": self.handle,
+            "origin": self.origin,
+            "boot_id": crate::session_manager::current_session_boot_id(),
+        })
+    }
+
+    pub(crate) fn registration_id(&self, session_id: &str) -> String {
+        codewhale_runtime::hashing::sha256_hex(codewhale_runtime::hashing::canonical_json(
+            &serde_json::json!({
+                "registration": self.receipt(),
+                "workspace": self.workspace,
+                "session_id": session_id,
+            }),
+        ))
+    }
+}
+
+pub(crate) fn validate_selected_registration(
+    command: &ExtensionCommandRef,
+    session_id: &str,
+) -> Result<(), String> {
+    let manager = super::manager();
+    let caller = super::caller_view(&command.workspace, Some(session_id), None)
+        .ok_or_else(|| "Native command caller is no longer available".to_string())?;
+    if command.selection != caller.caller_selection() {
+        return Err("Native command belongs to a different caller; select it again".into());
+    }
+    manager.shared.check_selection(
+        command.selection,
+        Some(caller.as_ref()),
+        &command.plugin_id,
+        &command.content_hash,
+        command.scope.as_ref(),
+    )?;
+    let registry = manager.shared.registry.lock().expect("registry lock");
+    let current = registry
+        .live_command(command.handle, &command.plugin_id, command.generation)
+        .ok_or_else(|| "Native command registration is no longer available".to_string())?;
+    if current.content_hash != command.content_hash || current.scope != command.scope {
+        return Err("Native command registration changed; select it again".into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn validate_reference(
+    command: &ExtensionCommandRef,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_selected_registration(command, session_id)?;
+    super::manager()
+        .shared
+        .live_host_for_command(command)
+        .await?;
+    validate_selected_registration(command, session_id)
 }
 
 /// One live command as the user registry loads it.
@@ -131,7 +195,7 @@ impl ExtensionCommandEntry {
 pub enum CommandOutcome {
     /// Show `text` (possibly empty) to the user.
     Show { text: String },
-    /// Submit `prompt` as the user's next message; show `note` beside it.
+    /// Submit `prompt` through the invoking client's normal turn path; show `note` beside it.
     Submit {
         prompt: String,
         note: Option<String>,

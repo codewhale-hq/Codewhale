@@ -4,25 +4,13 @@ pub mod audit;
 /// Provider-free contract tests for the bundled starter pack (#4698).
 #[cfg(test)]
 mod catalog_matrix;
-mod frontmatter;
-pub(crate) use frontmatter::parse_frontmatter;
-use frontmatter::{SkillValidationMode, parse_frontmatter_bool, validate_skill_frontmatter};
-pub mod install;
+use codewhale_skill_install::frontmatter::{
+    SkillValidationMode, parse_frontmatter, parse_frontmatter_bool, validate_skill_frontmatter,
+};
 pub mod mutation;
-mod package_digest;
 pub mod recommend;
 pub mod roots;
 mod system;
-// Re-exports kept for documentation parity and downstream consumers; the
-// binary itself imports directly from `skills::install`. `#[allow(...)]`
-// silences the dead-code warning that fires because no `bin` source path
-// references these names through `skills::*`.
-#[allow(unused_imports)]
-pub use install::{
-    DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, INSTALLED_FROM_MARKER, InstallOutcome,
-    InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
-    SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
-};
 #[allow(unused_imports)]
 pub use roots::{
     CompatibleHarness, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId,
@@ -42,13 +30,14 @@ use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 
-use crate::logging;
+use codewhale_runtime::logging;
 
 /// Per-entry ceiling for a skill's one-line description in the ambient index.
 /// Split between the summary and its `Use when:` trigger when a description
 /// carries one, so the trigger phrase — the part the model actually routes on
-/// — survives shortening. Over-length descriptions are reported by
-/// `/skills` as a load warning rather than silently cut mid-sentence.
+/// — survives shortening. When the index shortens any row it ends with a
+/// count footer that `/context report` repeats, and `/skills inspect` notes each
+/// description over this cap.
 pub(crate) const MAX_SKILL_DESCRIPTION_CHARS: usize = 400;
 /// Floor for the model-facing skill index budget, in chars. The real budget
 /// scales with the route's context window ([`skills_prompt_budget_chars`]);
@@ -195,7 +184,7 @@ pub fn default_skills_dir() -> PathBuf {
                 .join("skills");
         }
     }
-    crate::config::effective_home_dir().map_or_else(
+    codewhale_paths::user_home().map_or_else(
         || unavailable_home_root().join("skills"),
         |p| p.join(".codewhale").join("skills"),
     )
@@ -223,7 +212,7 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
             );
         }
     }
-    crate::config::effective_home_dir().map(|p| p.join(".agents").join("skills"))
+    codewhale_paths::user_home().map(|p| p.join(".agents").join("skills"))
 }
 
 // === Types ===
@@ -243,7 +232,7 @@ pub enum SkillDiscoveryMode {
 
 impl SkillDiscoveryMode {
     #[must_use]
-    pub fn from_config(config: &crate::config::SkillsConfig) -> Self {
+    pub fn from_config(config: &codewhale_runtime::config::SkillsConfig) -> Self {
         if config.scan_codewhale_only() {
             Self::CodeWhaleOnly
         } else if config.flat_workspace_root() {
@@ -324,7 +313,7 @@ pub enum SkillSource {
     Plugin {
         plugin_id: String,
         plugin_name: String,
-        authority: Box<crate::plugins::types::PluginAuthority>,
+        authority: Box<codewhale_config::PluginAuthority>,
         native_registration: Option<crate::extension_host::skills::NativeSkillRef>,
     },
 }
@@ -335,24 +324,24 @@ pub enum SkillSource {
 #[serde(untagged)]
 pub enum SkillProvenance {
     NativeRoot(NativeSkillProvenance),
-    Plugin(crate::plugins::types::PluginAuthority),
+    Plugin(codewhale_config::PluginAuthority),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeSkillProvenance {
-    pub authority: crate::plugins::types::PluginAuthority,
+    pub authority: codewhale_config::PluginAuthority,
     pub registration: crate::extension_host::skills::NativeSkillRef,
 }
 
-impl From<crate::plugins::types::PluginAuthority> for SkillProvenance {
-    fn from(authority: crate::plugins::types::PluginAuthority) -> Self {
+impl From<codewhale_config::PluginAuthority> for SkillProvenance {
+    fn from(authority: codewhale_config::PluginAuthority) -> Self {
         Self::Plugin(authority)
     }
 }
 
 impl SkillProvenance {
-    pub fn authority(&self) -> &crate::plugins::types::PluginAuthority {
+    pub fn authority(&self) -> &codewhale_config::PluginAuthority {
         match self {
             Self::Plugin(authority) => authority,
             Self::NativeRoot(source) => &source.authority,
@@ -363,36 +352,43 @@ impl SkillProvenance {
         workspace: &Path,
         plugins: Option<&crate::plugins::PluginRegistry>,
     ) -> Result<(), String> {
+        if self.authority().workspace != workspace {
+            return Err("plugin skill belongs to a different workspace".to_string());
+        }
+        let authority = if let Some(plugins) = plugins {
+            let current = plugins.authority_for(self.authority().plugin_id.as_str())
+                .ok_or_else(|| "Plugin skill has no current trusted discovery authority; reload and select the skill again".to_string())?;
+            let mut receipt = self.authority().clone();
+            receipt.managed_policy_source = current.managed_policy_source.clone();
+            if receipt != current {
+                return Err("Plugin skill receipt no longer matches its trusted discovery authority; reload and select the skill again".to_string());
+            }
+            current
+        } else {
+            self.authority().clone()
+        };
         if let Self::NativeRoot(source) = self {
             crate::extension_host::manager().shared.check_selection(
                 source.registration.selection,
                 plugins,
-                source.authority.plugin_id.as_str(),
-                &source.authority.content_hash,
+                authority.plugin_id.as_str(),
+                &authority.content_hash,
                 source.registration.scope.as_ref(),
             )?;
         }
-        self.verify_current(workspace)
+        match self {
+            Self::Plugin(_) => crate::plugins::registry::verify_plugin_component_authority(
+                &authority,
+                crate::plugins::activation::PluginActivationCapability::Skills,
+            ),
+            Self::NativeRoot(source) => {
+                crate::extension_host::skills::verify_native_skill(&authority, &source.registration)
+            }
+        }
     }
     #[cfg(test)]
     pub(crate) fn verify(&self, workspace: &Path) -> Result<(), String> {
         self.verify_for(workspace, None)
-    }
-    fn verify_current(&self, workspace: &Path) -> Result<(), String> {
-        let authority = self.authority();
-        if authority.workspace != workspace {
-            return Err("plugin skill belongs to a different workspace".to_string());
-        }
-        match self {
-            Self::Plugin(authority) => crate::plugins::registry::verify_plugin_component_authority(
-                authority,
-                crate::plugins::activation::PluginActivationCapability::Skills,
-            ),
-            Self::NativeRoot(source) => crate::extension_host::skills::verify_native_skill(
-                &source.authority,
-                &source.registration,
-            ),
-        }
     }
 }
 
@@ -584,7 +580,7 @@ impl SkillRegistry {
         let mut registry = Self::default();
         let mut watched = WatchedPaths::default();
         if let Some(workspace) = confine_to
-            && let Err(error) = crate::fleet::files::reject_linked_path(workspace, dir)
+            && let Err(error) = codewhale_util::files::reject_linked_path(workspace, dir)
         {
             registry.push_warning(format!(
                 "{error}: workspace skills must stay inside the workspace."
@@ -704,9 +700,15 @@ impl SkillRegistry {
                     } else {
                         fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf())
                     };
-                    crate::fs_confined::read_to_string(&root, &skill_path)
+                    codewhale_util::fs_confined::read_to_string(&root, &skill_path)
                 }
-                None => fs::read_to_string(&skill_path),
+                None => match fs::metadata(&skill_path) {
+                    Ok(meta) if !meta.is_file() => Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "SKILL.md is not a regular file",
+                    )),
+                    _ => fs::read_to_string(&skill_path),
+                },
             };
             match read_result {
                 Ok(content) => match Self::parse_verified_content(&skill_path, &content) {
@@ -1013,13 +1015,15 @@ impl SkillRegistry {
     /// this never changes the plugin bundle's trust or MCP lifecycle.
     #[must_use]
     pub(crate) fn into_enabled(self) -> Self {
-        self.into_enabled_with_state(crate::skill_state::SkillStateStore::load_default())
+        self.into_enabled_with_state(
+            codewhale_runtime::skill_state::SkillStateStore::load_default(),
+        )
     }
 
     #[must_use]
     fn into_enabled_with_state(
         mut self,
-        state: anyhow::Result<crate::skill_state::SkillStateStore>,
+        state: anyhow::Result<codewhale_runtime::skill_state::SkillStateStore>,
     ) -> Self {
         match state {
             Ok(state) => self.skills.retain(|skill| {
@@ -1099,7 +1103,7 @@ fn normalize_skill_name_segment(name: &str) -> String {
     }
     // Preserve ASCII identities, but distinguish UTF-8 source names the old
     // slug folded together. No transliteration or Unicode normalization.
-    let digest = crate::hashing::sha256_hex(name.to_ascii_lowercase().as_bytes());
+    let digest = codewhale_runtime::hashing::sha256_hex(name.to_ascii_lowercase().as_bytes());
     let prefix = legacy[..legacy.len().min(31)].trim_end_matches('-');
     format!("{prefix}-{}", &digest[..32])
 }
@@ -1160,7 +1164,7 @@ fn legacy_skill_name_segment(name: &str) -> String {
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
 pub fn skills_directories_for_mode(workspace: &Path, mode: SkillDiscoveryMode) -> Vec<PathBuf> {
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     skills_directories_with_home_and_mode(workspace, home.as_deref(), mode)
 }
 
@@ -1233,7 +1237,7 @@ pub(crate) fn untrusted_project_skills_warning(
     configured_skills_dir: Option<&Path>,
     mode: SkillDiscoveryMode,
 ) -> Option<String> {
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     let skipped = roots::untrusted_project_skill_dirs(
         workspace,
         home.as_deref(),
@@ -1276,7 +1280,7 @@ pub fn skill_directories_for_workspace_and_dir(
     skills_dir: &Path,
     mode: SkillDiscoveryMode,
 ) -> Vec<PathBuf> {
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     let mut dirs = skills_directories_with_home_and_mode(workspace, home.as_deref(), mode);
     insert_configured_skills_dir(&mut dirs, workspace, home.as_deref(), skills_dir);
     dirs
@@ -1285,7 +1289,7 @@ pub fn skill_directories_for_workspace_and_dir(
 /// Whether a resolved or configured skills dir may load for `workspace`; see
 /// [`roots::skills_dir_allowed_by_workspace_trust`].
 pub(crate) fn skills_dir_allowed_by_workspace_trust(workspace: &Path, skills_dir: &Path) -> bool {
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     roots::skills_dir_allowed_by_workspace_trust(workspace, home.as_deref(), skills_dir)
 }
 
@@ -1486,15 +1490,15 @@ fn merge_active_plugin_skills(
     registry: &mut SkillRegistry,
     plugins: &crate::plugins::PluginRegistry,
 ) {
-    let Some(state_path) = plugins.state_path().map(Path::to_path_buf) else {
+    if plugins.state_path().is_none() {
         return;
-    };
+    }
     let plugins = plugins
         .list()
         .into_iter()
         .filter_map(|plugin| {
-            plugin
-                .authority(state_path.clone(), plugins.workspace().to_path_buf())
+            plugins
+                .authority_for(plugin.id.as_str())
                 .map(|authority| (plugin.clone(), authority))
         })
         .collect::<Vec<_>>();
@@ -1506,7 +1510,7 @@ fn merge_plugin_skills_from_plugins(
     plugins: impl IntoIterator<
         Item = (
             crate::plugins::types::LoadedPlugin,
-            crate::plugins::types::PluginAuthority,
+            codewhale_config::PluginAuthority,
         ),
     >,
 ) {
@@ -1537,7 +1541,7 @@ fn merge_plugin_skill_snapshots(
     registry: &mut SkillRegistry,
     plugin_id: &str,
     plugin_name: &str,
-    authority: &crate::plugins::types::PluginAuthority,
+    authority: &codewhale_config::PluginAuthority,
     snapshots: Vec<crate::plugins::types::PluginSkillSnapshot>,
     native_registration: Option<crate::extension_host::skills::NativeSkillRef>,
 ) {
@@ -1670,7 +1674,7 @@ pub fn render_available_skills_context_for_workspace_and_dir_with_mode_and_plugi
         plugins,
     )
     .into_enabled();
-    let home = crate::config::effective_home_dir();
+    let home = codewhale_paths::user_home();
     let configured_skills_root = matches!(
         classify_configured_skills_dir(workspace, home.as_deref(), skills_dir).0,
         SkillRootKind::Configured
@@ -1712,7 +1716,7 @@ fn sanitize_prompt_path_text(
     {
         out = out.replace(ws, ".");
     }
-    if let Some(home) = crate::config::effective_home_dir()
+    if let Some(home) = codewhale_paths::user_home()
         && let Some(home_str) = home.to_str()
         && !home_str.is_empty()
     {
@@ -1841,6 +1845,10 @@ impl IndexRow<'_> {
     fn trigger_len(&self) -> usize {
         self.trigger.as_deref().map_or(0, |t| t.chars().count())
     }
+
+    fn exceeds_index_cap(&self) -> bool {
+        self.summary_len() + self.trigger_len() > MAX_SKILL_DESCRIPTION_CHARS
+    }
 }
 
 /// Split a description into its summary and `Use when:` trigger phrase, so
@@ -1888,6 +1896,17 @@ fn description_split(row: &IndexRow<'_>, cap: usize) -> (usize, usize) {
     }
     let trigger_share = (cap * t / (s + t)).max(cap / 2).min(t);
     (cap.saturating_sub(trigger_share).min(s), trigger_share)
+}
+
+pub(crate) fn description_exceeds_index_cap(description: &str) -> bool {
+    let (summary, trigger) = split_trigger(description);
+    IndexRow {
+        name: "",
+        summary,
+        trigger,
+        source: None,
+    }
+    .exceeds_index_cap()
 }
 
 /// Render the ambient skill index in three tiers, never dropping a skill's
@@ -1960,6 +1979,9 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
     // Reserve using the model-selectable total: an actual omitted count can
     // never exceed it. This remains safe for catalogues above 9,999 entries.
     let skill_omission_reserve = omitted_skills_line(rows.len()).chars().count();
+    let shortened_reserve = shortened_skills_line(rows.len(), rows.len())
+        .chars()
+        .count();
     let warning_omission_reserve = if warnings.is_empty() {
         0
     } else {
@@ -1974,9 +1996,11 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
         (budget_chars / 5).min(8 * (MAX_SKILL_DESCRIPTION_CHARS + 4))
     };
     let index_budget = budget_chars.saturating_sub(fixed + warning_slice);
+    let shortened_budget = index_budget.saturating_sub(shortened_reserve);
 
     let mut out = String::from(HEADER);
     let mut omitted = 0usize;
+    let mut shortened = 0usize;
 
     // Tier 1: full descriptions.
     let full_lines: Vec<String> = rows
@@ -1987,10 +2011,17 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
         })
         .collect();
     let full_total: usize = full_lines.iter().map(|l| l.chars().count()).sum();
-    if full_total <= index_budget {
+    let capped = rows.iter().filter(|row| row.exceeds_index_cap()).count();
+    let full_budget = if capped > 0 {
+        shortened_budget
+    } else {
+        index_budget
+    };
+    if full_total <= full_budget {
         for line in &full_lines {
             out.push_str(line);
         }
+        shortened = capped;
     } else {
         // Tier 2: shorten descriptions proportionally. Fixed cost per row is
         // the name-plus-source scaffolding; whatever remains is shared among
@@ -2006,8 +2037,8 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 s + t + if t > 0 { TRIGGER_JOIN.len() } else { 0 }
             })
             .sum();
-        let desc_avail = index_budget.saturating_sub(scaffold);
-        let shortened: Option<Vec<String>> = (desc_full > 0
+        let desc_avail = shortened_budget.saturating_sub(scaffold);
+        let shortened_lines: Option<Vec<(String, bool)>> = (desc_full > 0
             && desc_avail >= rows.len() * MIN_SHORTENED_DESCRIPTION_CHARS)
             .then(|| {
                 rows.iter()
@@ -2020,21 +2051,29 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                             .max(MIN_SHORTENED_DESCRIPTION_CHARS)
                             .min(natural);
                         let (s, t) = description_split(row, cap);
-                        row.render(s, t)
+                        (
+                            row.render(s, t),
+                            s + t < row.summary_len() + row.trigger_len(),
+                        )
                     })
                     .collect()
             })
-            .filter(|lines: &Vec<String>| {
-                lines.iter().map(|l| l.chars().count()).sum::<usize>() <= index_budget
+            .filter(|lines: &Vec<(String, bool)>| {
+                lines
+                    .iter()
+                    .map(|(line, _)| line.chars().count())
+                    .sum::<usize>()
+                    <= shortened_budget
             });
-        if let Some(lines) = shortened {
-            for line in &lines {
+        if let Some(lines) = shortened_lines {
+            for (line, was_shortened) in &lines {
+                shortened += usize::from(*was_shortened);
                 out.push_str(line);
             }
         } else {
             // Tier 3: names only. Omission is the last resort and only when
             // even the names overflow.
-            let names_budget = index_budget.saturating_sub(skill_omission_reserve);
+            let names_budget = shortened_budget.saturating_sub(skill_omission_reserve);
             let mut used = 0usize;
             for row in &rows {
                 let line = row.render_name_only();
@@ -2044,6 +2083,7 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 } else {
                     used += len;
                     out.push_str(&line);
+                    shortened += usize::from(row.summary_len() + row.trigger_len() > 0);
                 }
             }
         }
@@ -2051,6 +2091,9 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
 
     if omitted > 0 {
         out.push_str(&omitted_skills_line(omitted));
+    }
+    if shortened > 0 {
+        out.push_str(&shortened_skills_line(shortened, rows.len()));
     }
 
     if !warnings.is_empty() {
@@ -2116,6 +2159,22 @@ fn omitted_skills_line(count: usize) -> String {
 
 fn omitted_warnings_line(count: usize) -> String {
     format!("- ... {count} additional warnings omitted; run `/skills` to inspect them.\n")
+}
+
+const SHORTENED_SKILLS_PREFIX: &str = "- ... descriptions shortened for ";
+
+fn shortened_skills_line(shortened: usize, total: usize) -> String {
+    format!(
+        "{SHORTENED_SKILLS_PREFIX}{shortened} of {total} skills; `load_skill` with `name=\"list\"` returns full text.\n"
+    )
+}
+
+pub(crate) fn shortened_skills_note(block: &str) -> Option<String> {
+    block.lines().find_map(|line| {
+        let rest = line.strip_prefix(SHORTENED_SKILLS_PREFIX)?;
+        let (counts, _) = rest.split_once(';')?;
+        Some(format!("descriptions shortened for {counts}"))
+    })
 }
 
 fn truncate_for_prompt(value: &str, max_chars: usize) -> String {

@@ -22,14 +22,14 @@ use crate::compaction::{
     estimate_input_tokens_conservative, estimate_input_tokens_for_pressure,
     estimate_text_tokens_conservative,
 };
-use crate::config::Config;
-#[cfg(test)]
-use crate::context_budget::PressureLevel;
 use crate::prompts::CORE_EXECUTION_PROFILE_PROMPT;
 use crate::route_budget::route_context_window_tokens;
 use crate::tui::app::App;
 use codewhale_config::AppMode;
 use codewhale_models::{CacheControl, ContentBlock, Message, SystemPrompt, Tool};
+use codewhale_runtime::config::Config;
+#[cfg(test)]
+use codewhale_runtime::context_budget::PressureLevel;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptSourceMap {
@@ -282,6 +282,8 @@ pub fn build_context_report(app: &App) -> PromptSourceMap {
         app.mode,
         Some(app.plugin_registry.as_ref()),
         Some(context_window.tokens),
+        app.instruction_assembly.as_deref(),
+        false,
     );
     add_app_runtime_entries(&mut builder, app);
     builder.finish(
@@ -353,7 +355,7 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let identity = config.active_provider_identity().ok();
     let provider = identity
         .as_ref()
-        .map_or(crate::config::ProviderKind::Custom, |identity| {
+        .map_or(codewhale_config::ProviderKind::Custom, |identity| {
             identity.provider
         });
     let provider_identity = identity
@@ -385,6 +387,35 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let global_skills_dir = config.skills_dir();
     let selected_skills_dir =
         crate::tui::app::resolve_skills_dir(workspace, &global_skills_dir, config);
+    let settings = crate::project_context::InstructionSettings::from_config(config);
+    let configured: Vec<_> = config
+        .instructions_paths()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let mut raw =
+        crate::project_context::capture_instruction_context(workspace, &configured, &settings);
+    let limits = route
+        .as_ref()
+        .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits()));
+    let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
+        &settings.budget,
+        context_window.instruction_budget_tokens(),
+        Some(crate::route_budget::effective_max_output_tokens_for_turn(
+            provider,
+            &model,
+            limits,
+            None,
+            crate::core::engine::turn_loop::resolve_auto_effort(
+                config.reasoning_effort(),
+                provider,
+                &config.active_route_base_url(),
+                &model,
+            )
+            .as_deref(),
+        ) as usize),
+    );
+    let assembly = crate::project_context::assemble_instruction_block(&mut raw, &[], &budgets);
     let mut builder = base_source_entries(
         &model,
         workspace,
@@ -395,13 +426,17 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
         AppMode::Agent,
         None,
         Some(context_window.tokens),
+        Some(&assembly),
+        true,
     );
     let memory_path = config.memory_path();
     let memory_enabled = config.memory_enabled();
 
-    if let Some(memory_block) =
-        crate::native_memory::native_prompt_block(memory_enabled, &memory_path, workspace)
-    {
+    if let Some(memory_block) = codewhale_runtime::native_memory::native_prompt_block(
+        memory_enabled,
+        &memory_path,
+        workspace,
+    ) {
         builder.push(SourceEntry::text(
             SourceKind::UserMemory,
             "User memory",
@@ -450,6 +485,13 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     )
 }
 
+fn known_tokens(value: Option<usize>) -> String {
+    value.map_or_else(
+        || "unknown".to_string(),
+        |tokens| format!("{tokens} tokens"),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn base_source_entries(
     model: &str,
@@ -461,6 +503,8 @@ fn base_source_entries(
     mode: AppMode,
     plugin_registry: Option<&crate::plugins::PluginRegistry>,
     context_window_tokens: Option<u32>,
+    instruction_assembly: Option<&crate::project_context::InstructionAssembly>,
+    instruction_preview: bool,
 ) -> ReportBuilder {
     let mut builder = ReportBuilder::new();
 
@@ -489,84 +533,110 @@ fn base_source_entries(
         ));
     }
 
-    let project_context = crate::project_context::load_project_context_with_parents(workspace);
-    if let Some(block) = project_context.constitution_block.as_deref() {
-        builder.push(SourceEntry::text(
-            SourceKind::RepoConstitution,
-            "Repository constitution",
-            project_context
-                .constitution_source_path
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            ActivationReason::FilePresent,
-            block,
-            CountingConfidence::High,
-            Some(4),
-        ));
-    }
-
-    if let Some(content) = project_context.instructions.as_deref() {
-        // Same helper as ProjectContext::as_system_block, so the report's
-        // source token derives from the same label the prompt shows. (The
-        // entry below still displays the absolute source path for operators;
-        // only the prompt label is relativized.)
-        let source = crate::project_context::project_instructions_source_label(
-            project_context.source_path.as_deref(),
-        );
-        let mut block = format!(
-            "<project_instructions source=\"{source}\">\n{content}\n</project_instructions>"
-        );
-        // Include rules in the report when present
-        if let Some(rules) = &project_context.rules_block {
-            block.push('\n');
-            block.push_str(rules);
+    match instruction_assembly {
+        Some(assembly) => {
+            if assembly.constitution_tokens > 0 {
+                let mut entry = SourceEntry::diagnostic(
+                    SourceKind::RepoConstitution,
+                    "Repository constitution",
+                    assembly
+                        .constitution_source_path
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    ActivationReason::FilePresent,
+                    "included in installed instruction block",
+                    assembly.constitution_tokens,
+                    Some(4),
+                );
+                entry.truncation_reason = None;
+                builder.push(entry);
+            }
+            match assembly.block.as_deref() {
+                Some(block) => {
+                    let mut entry = SourceEntry::text(
+                        SourceKind::ProjectContext,
+                        "Project instructions",
+                        assembly
+                            .source_path
+                            .as_ref()
+                            .map(|path| path.display().to_string()),
+                        ActivationReason::FilePresent,
+                        block,
+                        CountingConfidence::High,
+                        Some(5),
+                    );
+                    entry.estimated_tokens = entry
+                        .estimated_tokens
+                        .saturating_sub(assembly.constitution_tokens);
+                    builder.push(entry);
+                }
+                None => builder.push(SourceEntry::omitted(
+                    SourceKind::ProjectContext,
+                    "Project context and repository instructions",
+                    Some(workspace.display().to_string()),
+                    Some(5),
+                    "no project context block available",
+                )),
+            }
+            let budget_label = if instruction_preview {
+                "Instruction budget (preview)"
+            } else {
+                "Instruction budget"
+            };
+            let basis = if instruction_preview {
+                "preview from current files and config; no installed receipt and no tool schemas measured"
+            } else {
+                "installed receipt"
+            };
+            builder.push(SourceEntry::diagnostic(
+                SourceKind::ProjectContext,
+                budget_label,
+                None::<String>,
+                ActivationReason::ConfigEnabled,
+                format!(
+                    "{basis}; global {} / {} estimated tokens; project {} / {} estimated tokens; policy {}; usable window {}; static-prefix guard {}",
+                    assembly.global_tokens,
+                    assembly.budgets.global_tokens,
+                    assembly.project_tokens,
+                    assembly.budgets.project_tokens,
+                    assembly.budgets.policy.as_str(),
+                    known_tokens(assembly.budgets.usable_window_tokens),
+                    known_tokens(assembly.budgets.static_guard_tokens),
+                ),
+                0,
+                Some(5),
+            ));
+            let locale = codewhale_localization::resolve_locale(locale_tag);
+            for notice in assembly.notices.iter().filter(|notice| notice.is_loss()) {
+                builder.push(SourceEntry::diagnostic(
+                    SourceKind::ProjectContextWarning,
+                    format!("Instruction source: {}", notice.label()),
+                    notice.path.as_ref().map(|path| path.display().to_string()),
+                    ActivationReason::RuntimeState,
+                    notice.render(locale),
+                    0,
+                    Some(5),
+                ));
+            }
+            if !assembly.warnings.is_empty() {
+                builder.push(SourceEntry::diagnostic(
+                    SourceKind::ProjectContextWarning,
+                    "Project context warnings",
+                    Some(workspace.display().to_string()),
+                    ActivationReason::RuntimeState,
+                    assembly.warnings.join("\n"),
+                    0,
+                    Some(4),
+                ));
+            }
         }
-        builder.push(SourceEntry::text(
+        None => builder.push(SourceEntry::omitted(
             SourceKind::ProjectContext,
             "Project instructions",
-            project_context
-                .source_path
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            ActivationReason::FilePresent,
-            &block,
-            CountingConfidence::High,
-            Some(5),
-        ));
-    } else if let Some(rules) = &project_context.rules_block {
-        // Rules exist without main instructions
-        builder.push(SourceEntry::text(
-            SourceKind::ProjectContext,
-            "Project rules",
             None::<String>,
-            ActivationReason::FilePresent,
-            rules,
-            CountingConfidence::High,
             Some(5),
-        ));
-    }
-
-    if project_context.constitution_block.is_none() && project_context.instructions.is_none() {
-        builder.push(SourceEntry::omitted(
-            SourceKind::ProjectContext,
-            "Project context and repository instructions",
-            Some(workspace.display().to_string()),
-            Some(5),
-            "no project context block available",
-        ));
-    }
-    if !project_context.warnings.is_empty() {
-        let warnings = project_context.warnings.join("\n");
-        let estimated_tokens = estimate_text_tokens_conservative(&warnings);
-        builder.push(SourceEntry::diagnostic(
-            SourceKind::ProjectContextWarning,
-            "Project context warnings",
-            Some(workspace.display().to_string()),
-            ActivationReason::RuntimeState,
-            warnings,
-            estimated_tokens,
-            Some(4),
-        ));
+            "installed instruction receipt unavailable",
+        )),
     }
 
     if project_pack_enabled {
@@ -611,7 +681,7 @@ fn base_source_entries(
         ),
     };
     if let Some(block) = skills_block {
-        builder.push(SourceEntry::text(
+        let mut entry = SourceEntry::text(
             SourceKind::SkillsBlock,
             "Available skills",
             skills_dir.map(|path| path.display().to_string()),
@@ -619,7 +689,9 @@ fn base_source_entries(
             &block,
             CountingConfidence::High,
             Some(5),
-        ));
+        );
+        entry.truncation_reason = crate::skills::shortened_skills_note(&block);
+        builder.push(entry);
     } else {
         builder.push(SourceEntry::omitted(
             SourceKind::SkillsBlock,
@@ -677,9 +749,11 @@ fn base_source_entries(
 }
 
 fn add_app_runtime_entries(builder: &mut ReportBuilder, app: &App) {
-    if let Some(memory_block) =
-        crate::native_memory::native_prompt_block(app.use_memory, &app.memory_path, &app.workspace)
-    {
+    if let Some(memory_block) = codewhale_runtime::native_memory::native_prompt_block(
+        app.use_memory,
+        &app.memory_path,
+        &app.workspace,
+    ) {
         builder.push(SourceEntry::text(
             SourceKind::UserMemory,
             "User memory",
@@ -904,11 +978,12 @@ mod pressure_fixture_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ProviderKind};
     use crate::route_runtime::{ContextWindowResolution, ContextWindowSource};
+    use codewhale_config::ProviderKind;
     use codewhale_config::route::RouteLimits;
     use codewhale_models::Role;
     use codewhale_models::Tool;
+    use codewhale_runtime::config::Config;
     use std::fs;
     use tempfile::tempdir;
 
@@ -994,7 +1069,7 @@ mod tests {
                         .truncation_reason
                         .as_deref()
                         .is_some_and(|reason| reason.contains("branch_policy appears stale"))
-                    && entry.estimated_tokens > 0
+                    && entry.estimated_tokens == 0
             }),
             "repo constitution warnings should be explicit source-map entries: {:?}",
             report.entries
@@ -1011,20 +1086,58 @@ mod tests {
     }
 
     #[test]
+    fn context_report_shows_actions_and_budgets() {
+        let tmp = tempdir().expect("workspace");
+        std::fs::write(tmp.path().join("AGENTS.md"), "T".repeat(20_000)).expect("write agents");
+        let config = {
+            let __cw_config_init_0_0 = Some(crate::project_context::InstructionBudgetConfig {
+                project_budget_tokens: Some(50),
+                ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.instruction_budget = __cw_config_init_0_0;
+            __cw_config_init_0_value
+        };
+        let report = build_headless_context_report(&config, tmp.path());
+        assert!(
+            report
+                .entries
+                .iter()
+                .any(|entry| entry.label == "Instruction budget (preview)")
+        );
+        assert!(report.entries.iter().any(|entry| {
+            entry.label.starts_with("Instruction source:")
+                && entry
+                    .truncation_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("scope_budget"))
+        }));
+    }
+
+    #[test]
     fn headless_context_report_uses_kimi_code_k3_route_context() {
         let tmp = tempdir().expect("workspace");
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                moonshot: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("moonshot".to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-kimi-key".to_string()),
-                    base_url: Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL.to_string()),
-                    model: Some(crate::config::KIMI_CODE_K3_MODEL.to_string()),
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL
+                            .to_string(),
+                    ),
+                    model: Some(
+                        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL
+                            .to_string(),
+                    ),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
 
         let report = build_headless_context_report(&config, tmp.path());
@@ -1040,19 +1153,28 @@ mod tests {
     #[test]
     fn headless_context_report_honors_kimi_code_k3_context_override() {
         let tmp = tempdir().expect("workspace");
-        let config = Config {
-            provider: Some("moonshot".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                moonshot: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("moonshot".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-kimi-key".to_string()),
-                    base_url: Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL.to_string()),
-                    model: Some(crate::config::KIMI_CODE_K3_MODEL.to_string()),
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL
+                            .to_string(),
+                    ),
+                    model: Some(
+                        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL
+                            .to_string(),
+                    ),
                     context_window: Some(1_048_576),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
 
         let report = build_headless_context_report(&config, tmp.path());
@@ -1062,12 +1184,12 @@ mod tests {
     }
 
     fn private_deployment_config(context_window: Option<u32>) -> Config {
-        Config {
-            provider: Some("custom".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        {
+            let __cw_config_init_3_0 = Some("custom".to_string());
+            let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 custom: std::collections::HashMap::from([(
                     "custom".to_string(),
-                    crate::config::ProviderConfig {
+                    codewhale_runtime::config::ProviderConfig {
                         kind: Some("openai-compatible".to_string()),
                         api_key: Some("test-private-key".to_string()),
                         base_url: Some("https://private.test/v1".to_string()),
@@ -1077,8 +1199,11 @@ mod tests {
                     },
                 )]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: Config = Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         }
     }
 

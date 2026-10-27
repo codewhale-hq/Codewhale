@@ -14,8 +14,8 @@ pub(in crate::commands) struct RemoteEnvCmd;
 
 // ---------------------------------------------------------------------------
 // FEAT-024 Phase 4 (D3/D6/D7): portable contextual registration and handler.
-// `/remote-env` is the only control command with runtime localization and
-// therefore the only one receiving PRESENTATION. The handler translates the
+// `/remote-env` and `/color` receive PRESENTATION for runtime localization.
+// The handler translates the
 // exact stable keys with the baseline placeholder sets; Git/URL machinery and
 // credential-safe target resolution stay behind `resolve_hosted_work_target`.
 // ---------------------------------------------------------------------------

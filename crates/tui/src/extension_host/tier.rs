@@ -147,12 +147,12 @@ impl BuiltinModule {
 pub(crate) const BUILTIN_MODULES: &[BuiltinModule] = &[
     BuiltinModule {
         id: "harness",
-        source_sha256: "782094d964894c91fc74da1704d3a793163e9605cc802dd7760578b5ba83135d",
+        source_sha256: "ad24207f93d963dcffe1967f6863f416117d9acd67cdfccbcef59c12ccb39f92",
         tools: &[],
     },
     BuiltinModule {
         id: "mcp",
-        source_sha256: "3a64805433d63f34822ae71230a432ccdbd956174bc8575d5a0a001fda8c50cf",
+        source_sha256: "50516f554ba8786b3282c8f576a11e86df189ac7fd226176a5d1b618042246ea",
         tools: &[],
     },
 ];

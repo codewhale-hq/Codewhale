@@ -378,6 +378,46 @@ fn outdated_marker_triggers_reinstall_of_existing_skills() {
     }
     let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
     assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
+
+    let old = DELEGATE_BODY
+        .replace("Give each child a concrete outcome and acceptance criteria. Let it continue until the work is complete or it needs input. Do not invent time, turn or token budgets, or tell it to stop early because a percentage of a budget has elapsed. The runtime carries any limits explicitly configured by the owner.\n\n", "")
+        .replace(
+            "Verify with the existing checks that provider-specific API key changes do not restart provider onboarding.",
+            "Add a regression test showing that provider-specific API key changes do not restart provider onboarding.",
+        );
+    assert_eq!(
+        body_sha256(&old),
+        "21e4305ff0784dedad977d0d31257b83772eccc05a6502035ecd9710a8005f62"
+    );
+    for customized in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(skill_dir(&tmp, "delegate")).unwrap();
+        let body = if customized {
+            format!("{old}\nMy instructions.\n")
+        } else {
+            old.clone()
+        };
+        fs::write(skill_file(&tmp, "delegate"), &body).unwrap();
+        fs::write(marker_file(&tmp), "18").unwrap();
+        install_system_skills(tmp.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill_file(&tmp, "delegate")).unwrap(),
+            if customized {
+                body
+            } else {
+                DELEGATE_BODY.to_string()
+            },
+        );
+        assert!(!skill_file(&tmp, "debug").exists());
+        assert_eq!(
+            fs::read_to_string(marker_file(&tmp)).unwrap().trim(),
+            if customized {
+                "18"
+            } else {
+                BUNDLED_SKILL_VERSION
+            }
+        );
+    }
 }
 
 // ── partial previous install ─────────────────────────────────────────────

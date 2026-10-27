@@ -1,5 +1,5 @@
 //! Caller snapshots in AttachmentState. No second registry, store or owner token.
-use super::protocol::EntryRef;
+use codewhale_config::EntryRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -51,14 +51,13 @@ pub(super) fn name_key(owner: &str, name: &str, scope: Option<&EntryRef>) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension_host::protocol::{
-        OwnerRef, RegisterKind, RegisterParams, RegisterSpecWire,
-    };
+    use crate::extension_host::protocol::{RegisterKind, RegisterParams, RegisterSpecWire};
     use crate::extension_host::registry::{MAX_TOOLS_PER_OWNER, OwnerRegistry};
     use crate::extension_host::tests::fake_authority;
     use crate::extension_host::tier::HostTier;
     use crate::extension_host::{ExtensionHostManager, ExtensionHostOptions};
     use crate::plugins::PluginRegistry;
+    use codewhale_config::OwnerRef;
     use std::sync::Arc;
     fn scope(name: &str) -> EntryRef {
         EntryRef {

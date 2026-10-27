@@ -6,13 +6,14 @@ use anyhow::Result;
 use codewhale_config::AppMode;
 
 use crate::commands::{self, CommandInfo, CommandResult};
-use crate::config::{Config, ProviderIdentity, ProviderKind};
 use crate::provider_lake::models_for_provider;
 use crate::tui::app::{App, AppAction};
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
 };
+use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_runtime::config::{Config, ProviderIdentity};
 
 pub const HOTBAR_COMPACT_LABEL_MAX_WIDTH: usize = 7;
 
@@ -771,7 +772,11 @@ impl HotbarActionSource for ConfiguredRouteHotbarActionSource<'_> {
             if identity.provider == ProviderKind::Antigravity {
                 continue;
             }
-            if !crate::config::provider_is_configured_for_active(self.config, &identity, active) {
+            if !crate::provider_readiness::provider_is_configured_for_active(
+                self.config,
+                &identity,
+                active,
+            ) {
                 continue;
             }
             for model in configured_route_models_for_provider(
@@ -1466,10 +1471,11 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::path::PathBuf;
 
-    use crate::config::{Config, ProviderKind};
     use crate::reasoning_preference::ReasoningEffort;
     use crate::tui::app::TuiOptions;
     use crate::tui::views::ModalKind;
+    use codewhale_config::ProviderKind;
+    use codewhale_runtime::config::Config;
 
     use super::*;
 
@@ -2363,9 +2369,11 @@ mod tests {
             "---\nname: hotbar-demo-skill\ndescription: Demo skill for hotbar tests\n---\n\nFollow the demo instructions.\n",
         )
         .expect("write SKILL.md");
-        let config = Config {
-            skills_dir: Some(skills_dir.path().to_string_lossy().into_owned()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_0_0 = Some(skills_dir.path().to_string_lossy().into_owned());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.skills_dir = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let mut app = test_app_with_paths_and_config(
             workspace.path().to_path_buf(),
@@ -2590,7 +2598,7 @@ mod tests {
         let _codewhale_config = crate::test_support::EnvVarGuard::remove("CODEWHALE_CONFIG_PATH");
         let _writes = crate::tui::startup_defaults::allow_writes_in_tests();
 
-        crate::settings::Settings::transact(|settings| {
+        codewhale_runtime::settings::Settings::transact(|settings| {
             settings.reasoning_effort = Some("off".to_string());
             Ok(())
         })
@@ -2613,7 +2621,7 @@ mod tests {
         assert_eq!(app.reasoning_effort, ReasoningEffort::Off);
         assert_eq!(app.startup_defaults.pending_len(), 0);
         assert_eq!(
-            crate::settings::Settings::load()
+            codewhale_runtime::settings::Settings::load()
                 .expect("reload settings")
                 .reasoning_effort
                 .as_deref(),
@@ -2635,7 +2643,7 @@ mod tests {
         let reasoning = registry.get("reasoning.cycle").expect("reasoning action");
         let mut app = test_app();
         app.set_provider_identity_record(
-            crate::config::Config::default()
+            codewhale_runtime::config::Config::default()
                 .resolve_provider_identity(ProviderKind::OpenaiCodex.as_str())
                 .expect("captured fixture provider"),
         );

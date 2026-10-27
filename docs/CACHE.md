@@ -36,8 +36,10 @@ Concretely:
 
 ## What counts as a declared header change
 
-These re-pin the prefix under a logged `change:<what>` reason (an expected,
-one-request miss):
+These re-pin the prefix under a logged `change:<what>` reason. A changed
+tool header can invalidate the remaining conversation prefix, requiring a full
+refill and, for some providers, cache-write charges. A named change does not
+make that cost small or prove a provider cache miss:
 
 | Op | Reason |
 | --- | --- |
@@ -78,20 +80,38 @@ when no secret is configured (the common case), so it does not move the prefix.
 When a configured secret appears in a tool result, redacting it is a security
 requirement that correctly overrides cache stability for that one message.
 
+## Per-request receipts
+
+`provider_request_receipt` in exec stream JSON and `turn.provider_request` in
+Runtime events join the current preparation's logical prefix outcome with
+provider-wire tool bytes and digest, route identity and endpoint fingerprint,
+and that request's reported usage. A prepared wire observation does not prove
+provider delivery. Missing usage or adapter measurements remain
+unknown. Transparent retries settle their own receipt before cumulative usage
+is folded; their preparation is explicitly marked reused. Transport retries are
+counted, but missing per-attempt usage is never presented as free work.
+
+These are observations, not additional billing records. They do not establish
+that eviction caused every cache miss. A cache refill can depend on provider
+retention, routing, message changes and other conditions outside the local pin.
+
 ## Verifying the fix
 
 `/cache stats` reports prefix stability, the pin reason, the last miss reason,
 the undeclared-drift count, and the aggregate provider cache hit rate. In a
-coding session, expect the first turn to be a write and every later step —
-including steps after the agent writes files — to hit.
+coding session, a stable eligible prefix can be reused within the provider's
+retention window. Read reported usage to establish a hit; local stability alone
+does not prove one.
 
 ### Live end-to-end check (manual, key-gated)
 
 With a real `DEEPSEEK_API_KEY`, run a session that makes the agent take at
-least three tool steps in one turn, then open `/cache inspect`. Every request
-after the first should report `prompt_cache_hit_tokens > 0`; the base static
-prefix hash and the tool-catalog hash must not move between steps. If the hit
-drops mid-turn, the pin reason / drift count name the cause.
+least three tool steps in one turn, then open `/cache inspect`. Keep the route
+and tool surface fixed and compare `prompt_cache_hit_tokens`, reported input
+usage and the per-request receipt. Stable prefix and tool-catalog hashes show
+local continuity; provider cache counters establish reported reuse. A local
+re-pin can explain a change, but its absence does not establish the cause of a
+provider miss.
 
 ## KV-cache effect note (for contributors)
 

@@ -39,6 +39,15 @@ CODEWHALE_PROVIDER=vllm VLLM_BASE_URL=http://127.0.0.1:8000/v1 VLLM_MODEL=<id> \
 `--auto` 默认启用 Full Access（完全访问）：没有 Codewhale shell 沙箱，并开启信任模式。
 加上 `--sandbox workspace-write` 可保留 shell 沙箱和文件工具的工作区限制，并关闭信任模式。
 
+## Linux 沙箱终端
+
+沙箱 PTY 需要 bubblewrap，以及位于 `/usr/bin/setsid` 或 `/bin/setsid` 的
+util-linux `setsid`。Codewhale 在 bubblewrap 的 PID 命名空间内分配控制终端，
+让 Ctrl-C 发送到前台程序而不终止包装进程。处理 SIGINT 的程序仍可继续接收输入。
+`exec_shell` PTY 任务和持久终端会话共用此路径。缺少 `setsid` 会拒绝 PTY 启动，
+不会移除沙箱；非 PTY 命令不需要该辅助程序。命名空间隔离、只读挂载和
+`--die-with-parent` 清理仍然生效。
+
 ## 在回合期间让主机保持唤醒
 
 交互式 TUI 回合（turn）进行中时，Codewhale 会持有平台的空闲休眠断言，

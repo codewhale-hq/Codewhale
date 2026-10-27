@@ -135,7 +135,7 @@ mod tests {
 
         // Written where every other audit event goes.
         let home = tempfile::tempdir().expect("tempdir");
-        crate::audit::log_sensitive_event_in(home.path(), "tool.gate.decision", record);
+        codewhale_runtime::audit::log_sensitive_event_in(home.path(), "tool.gate.decision", record);
         let log = std::fs::read_to_string(home.path().join("audit.log")).expect("audit.log");
         assert!(log.contains("\"event\":\"tool.gate.decision\""), "{log}");
         assert!(

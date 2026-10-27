@@ -10,7 +10,7 @@
         let defaulted = exec_max_steps(args.max_turns);
         assert_eq!(
             defaulted,
-            crate::core::engine::turn_budget::DEFAULT_MAX_MODEL_STEPS
+            codewhale_runtime::turn_budget::DEFAULT_MAX_MODEL_STEPS
         );
         assert_eq!(
             crate::core::turn::TurnContext::new(defaulted).step_limit(),
@@ -25,8 +25,8 @@
         assert_eq!(capped.stop_diagnostics.effective_max_steps, Some(7));
         assert_eq!(
             exec_max_steps(Some(u32::MAX)),
-            crate::core::engine::turn_budget::MAX_MAX_MODEL_STEPS,
-            "even the largest override stays finite"
+            codewhale_runtime::turn_budget::DEFAULT_MAX_MODEL_STEPS,
+            "the compatibility sentinel remains unbounded"
         );
     }
 
@@ -1042,8 +1042,8 @@
     #[test]
     fn config_never_selects_the_inline_screen() {
         let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some(codewhale_runtime::config::TuiConfig {
                 alternate_screen: Some("never".to_string()),
                 mouse_capture: None,
                 selection_copy_markdown: None,
@@ -1064,8 +1064,10 @@
                 osc8_links: None,
                 composer_arrows_scroll: None,
                 notification_condition: None,
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.tui = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
 
         assert_eq!(startup_screen_mode(&cli, &config), ScreenMode::Inline);
@@ -1148,8 +1150,8 @@
     #[test]
     fn config_can_disable_default_mouse_capture() {
         let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some(codewhale_runtime::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(false),
                 selection_copy_markdown: None,
@@ -1170,8 +1172,10 @@
                 osc8_links: None,
                 composer_arrows_scroll: None,
                 notification_condition: None,
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.tui = __cw_config_init_1_0;
+            __cw_config_init_1_value
         };
 
         assert!(!should_use_mouse_capture_with(
@@ -1192,8 +1196,8 @@
     #[test]
     fn config_can_enable_mouse_capture() {
         let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some(codewhale_runtime::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(true),
                 selection_copy_markdown: None,
@@ -1214,8 +1218,10 @@
                 osc8_links: None,
                 composer_arrows_scroll: None,
                 notification_condition: None,
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.tui = __cw_config_init_2_0;
+            __cw_config_init_2_value
         };
 
         assert!(should_use_mouse_capture_with(
@@ -1290,8 +1296,8 @@
     #[test]
     fn config_mouse_capture_true_overrides_jetbrains_default() {
         let cli = parse_cli(&["codewhale"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
+        let config = {
+            let __cw_config_init_3_0 = Some(codewhale_runtime::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(true),
                 selection_copy_markdown: None,
@@ -1312,8 +1318,10 @@
                 osc8_links: None,
                 composer_arrows_scroll: None,
                 notification_condition: None,
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.tui = __cw_config_init_3_0;
+            __cw_config_init_3_value
         };
 
         assert!(should_use_mouse_capture_with(

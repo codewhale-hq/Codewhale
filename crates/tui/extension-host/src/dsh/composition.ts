@@ -18,6 +18,7 @@ import {reviewedHookModule} from './shell-hooks.ts'
 import {admitReviewedClosure,importReviewedModule} from './resolve-hooks.ts'
 import { PERSONA, reviewedPersonaModule } from './persona.ts'
 import { AGENT_PRESETS, defineReviewedAgentPresets, type PresetCatalog, type PreparedPreset } from './agent-presets.ts'
+import compatibility from './compatibility.json' with { type: 'json' }
 
 const MAX_LAYERS = 64
 const MAX_SOURCE_BYTES = 1024 * 1024
@@ -173,7 +174,7 @@ export function reviewComposition(spec: ReviewedComposition): CompositionReview 
 const UNSUPPORTED_ROWS = new Map<string,string>()
 
 /** These fixed Core adapters resolve without a package-provided module. */
-export function hasReviewedRowBridge(name:string): boolean { return name==='@deepseek-ai/dsh-mcp-client' || name==='@deepseek-ai/dsh-skill-filesystem' || name==='@deepseek-ai/dsh-hooks-claude-code' || name==='@deepseek-ai/dsh-hooks-codex' || name===PERSONA }
+export function hasReviewedRowBridge(name:string): boolean { return Object.hasOwn(compatibility.row_bridges, name) }
 
 /** Readiness uses the same known Core service boundary as final import. */
 export function compositionRowProblem(name:string): string | undefined { return UNSUPPORTED_ROWS.get(name) }

@@ -29,7 +29,6 @@ use serde_json::Value;
 
 use crate::agent_roster::{AgentRosterRow, RosterState};
 use crate::compaction::CompactionConfig;
-use crate::config::ProviderKind;
 use crate::core::engine::preview::PreviewUnresolved;
 use crate::core::events::{
     Event, RouteBillingEnvelope, ToolGate, ToolGateVerdict, TurnOutcomeStatus, TurnRoute,
@@ -43,6 +42,7 @@ use crate::tools::spec::ToolError;
 use crate::tools::subagent::AgentWorkerStatus;
 use crate::tools::user_input::UserInputRequest;
 use codewhale_config::AppMode;
+use codewhale_config::ProviderKind;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::Usage;
 use codewhale_protocol::ResponseChannel;
@@ -174,7 +174,7 @@ fn billing_to_wire(billing: &RouteBillingEnvelope) -> wire::RouteBillingEnvelope
         openrouter_vendor: billing
             .openrouter_vendor
             .as_deref()
-            .map(crate::cost_status::sanitize_persisted_route_label),
+            .map(codewhale_runtime::safe_label::sanitize_persisted_route_label),
         billing_surface: billing.billing_surface.clone(),
         endpoint_fingerprint: billing.endpoint_fingerprint.clone(),
         provider_live_pricing: billing
@@ -301,7 +301,7 @@ fn mcp_snapshot_to_wire(snapshot: &McpManagerSnapshot) -> wire::McpManagerSnapsh
 /// `EventMsg::McpSessionBoot`, which every SSE and stream-JSON consumer
 /// receives and any frame-retaining log keeps.
 ///
-/// URLs reuse the existing masking in `client::redact_url_for_display`. Stdio
+/// URLs reuse the existing masking in `codewhale_secrets::sanitize::redact_url_for_display`. Stdio
 /// keeps the program name and elides the arguments, because a secret there can
 /// be positional and is not reliably recognizable by key.
 fn redacted_command_or_url(raw: &str) -> String {
@@ -315,7 +315,7 @@ fn redacted_command_or_url(raw: &str) -> String {
     // mentions a URL — `docker run -e TOKEN=… img --url https://…` — would
     // reach the wire with its positional secret intact.
     if !trimmed.is_empty() && !trimmed.contains(char::is_whitespace) && trimmed.contains("://") {
-        return crate::client::redact_url_for_display(trimmed);
+        return codewhale_secrets::sanitize::redact_url_for_display(trimmed);
     }
     if let Some((program, rest)) = trimmed.split_once(char::is_whitespace)
         && !rest.trim().is_empty()
@@ -634,6 +634,11 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
                 .as_ref()
                 .map(|tools| tools.iter().map(to_value).collect()),
             base_url: base_url.clone(),
+        },
+        Event::ProviderRequestReceipt { receipt } => wire::EventMsg::ProviderRequestReceipt {
+            thread_id,
+            session_id,
+            receipt: receipt.clone(),
         },
         Event::TurnUsage {
             max_output_tokens,
@@ -959,9 +964,11 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             request: user_input_to_wire(request),
         },
         Event::SessionUpdated {
+            checkpoint: _,
             session_id: engine_session_id,
             messages,
             system_prompt,
+            instruction_assembly,
             model,
             workspace,
         } => wire::EventMsg::SessionUpdated {
@@ -970,6 +977,9 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             engine_session_id: engine_session_id.clone(),
             messages: messages.iter().map(to_value).collect(),
             system_prompt: system_prompt.as_ref().map(to_value),
+            instruction_assembly: instruction_assembly
+                .as_deref()
+                .map(crate::project_context::InstructionAssembly::receipt_json),
             model: model.clone(),
             workspace: workspace.clone(),
         },
@@ -1063,6 +1073,10 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
 #[must_use]
 pub fn op_to_protocol(op: &Op) -> wire_op::Op {
     match op {
+        Op::Review { turn, request } => wire_op::Op::Review {
+            turn: turn_spec_to_wire(turn),
+            request: request.clone(),
+        },
         Op::SendMessage(spec) => wire_op::Op::SendMessage(turn_spec_to_wire(spec)),
         Op::ContinueGoal {
             dynamic_tools,
@@ -1138,6 +1152,9 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
         Op::FollowUpSubAgent { agent_id, text } => wire_op::Op::FollowUpSubAgent {
             agent_id: agent_id.clone(),
             text: text.clone(),
+        },
+        Op::StartFleetMember { start, tx: _ } => wire_op::Op::StartFleetMember {
+            member_id: start.member_id.clone(),
         },
         Op::ChangeMode {
             mode,
@@ -1550,8 +1567,8 @@ mod tests {
                 base_url: Some("https://example.invalid".into()),
             },
             Event::WorkspaceSnapshotTaken {
-                snapshot: crate::snapshot::WorkspaceSnapshotRef {
-                    kind: crate::snapshot::WorkspaceSnapshotKind::Tool,
+                snapshot: codewhale_snapshot::WorkspaceSnapshotRef {
+                    kind: codewhale_snapshot::WorkspaceSnapshotKind::Tool,
                     snapshot_id: "a".repeat(40),
                     tree_id: "b".repeat(40),
                     session_id: "thr_1".into(),
@@ -1673,6 +1690,7 @@ mod tests {
             model_provider_id: Some("configured-provider".into()),
             workspace: std::path::PathBuf::from("/observed/workspace"),
             system_prompt: None,
+            instruction_assembly: None,
             mode: "agent".into(),
         };
         let (tx, mut receive) = tokio::sync::oneshot::channel();

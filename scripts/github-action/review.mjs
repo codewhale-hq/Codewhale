@@ -2,19 +2,20 @@
 // model routing, anchor validation and the final pre-publication head check.
 // No repository checkout, project configuration, hooks, or PR code is executed.
 // Known limits: review only (mentions use the hosted App); no dollar-budget
-// guarantee, automatic retry, or cross-run publication deduplication.
+// guarantee or automatic retry. Legacy direct publication has no cross-run deduplication.
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { findingsArtifact } from './findings.mjs';
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,199}$/;
 const KEYS = {
   deepseek: 'DEEPSEEK_API_KEY', anthropic: 'ANTHROPIC_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY', zai: 'ZAI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY', orcarouter: 'ORCAROUTER_API_KEY', zai: 'ZAI_API_KEY',
   'modelstudio-token-plan': 'MODELSTUDIO_API_KEY',
 };
 
@@ -32,7 +33,8 @@ function integer(value, fallback, min, max) {
 
 export function settings(env) {
   if (!/^v\d+\.\d+\.\d+$/.test(env.CW_VERSION || '')) stop('configuration_missing', 'exact_release_required');
-  const provider = env.CW_PROVIDER || 'codewhale';
+  const provider = env.CW_PROVIDER || '';
+  if (!provider) stop('configuration_missing', 'provider_required');
   const model = env.CW_MODEL || '';
   if (!MODEL.test(model)) stop('configuration_missing', 'exact_model_required');
   if (env.CODEWHALE_API_KEY && provider !== 'codewhale') stop('configuration_missing', 'account_key_requires_relay');
@@ -124,6 +126,7 @@ function command(program, args, options) {
 export function run(env = process.env, execute = command) {
   const root = mkdtempSync(join(env.RUNNER_TEMP || tmpdir(), 'codewhale-review-'));
   const receiptPath = join(root, 'receipt.json');
+  let findingsPath = '';
   let receipt = { schema_version: 1, outcome: 'failed', reason: 'setup_failed', publication: 'not_attempted' };
   let prUrl = '';
   try {
@@ -178,19 +181,29 @@ export function run(env = process.env, execute = command) {
     if (config.post) args.push('--post');
     const result = execute(cli, args, { cwd: repoDir, env: childEnv, timeout: config.timeout });
     receipt = { ...receipt, ...classify(result, pr.head.sha, config.post, pr.base.sha) };
+    if (!config.post && ['reviewed_clean', 'reviewed_with_findings'].includes(receipt.outcome)) {
+      const data = JSON.parse(result.stdout);
+      if (data.pr?.number !== number || data.pr?.url !== prUrl) stop('failed', 'review_target_mismatch');
+      let artifact;
+      try { artifact = findingsArtifact(data, receipt, env); }
+      catch { stop('failed', 'invalid_review_findings'); }
+      const path = join(root, 'findings.json');
+      writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+      findingsPath = path;
+    }
   } catch (error) {
     receipt = { ...receipt, outcome: error instanceof Stop ? error.outcome : 'failed',
       reason: error instanceof Stop ? error.reason : 'setup_failed' };
   }
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-  if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `outcome=${receipt.outcome}\nreceipt=${receiptPath}\npr-url=${prUrl}\n`);
+  if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `outcome=${receipt.outcome}\nreceipt=${receiptPath}\nfindings=${findingsPath}\npr-url=${prUrl}\n`);
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY,
     `### Codewhale review\n\nOutcome: **${receipt.outcome}**. ${receipt.reason ? `Reason: \`${receipt.reason}\`.` : ''}\n\n` +
     'Only `reviewed_clean` and `reviewed_with_findings` confirm complete model review. Findings are advisory.\n');
   const ok = ['reviewed_clean', 'reviewed_with_findings', 'not_eligible', 'superseded'].includes(receipt.outcome);
   // Constant vocabulary only; model/provider/repository text is never logged.
   console.log(`${ok ? '::notice::' : '::error::'}Codewhale review: ${receipt.outcome} (${receipt.reason || 'complete'}).`);
-  return { exitCode: ok ? 0 : 1, receipt, receiptPath };
+  return { exitCode: ok ? 0 : 1, receipt, receiptPath, findingsPath };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = run().exitCode;

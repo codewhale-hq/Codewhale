@@ -28,11 +28,12 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::config::{ProviderKind, wire_model_for_provider_route};
 use crate::llm_client::StreamEventBox;
-use crate::logging;
-use crate::tools::schema_sanitize;
+use codewhale_config::ProviderKind;
+use codewhale_models::schema_sanitize;
 use codewhale_models::{ContentBlock, MessageRequest, MessageResponse, StreamEvent, Usage};
+use codewhale_runtime::config::wire_model_for_provider_route;
+use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
 use super::prepared::WireDialect;
@@ -121,7 +122,7 @@ impl CodewhaleClient {
         }
 
         if let Some(tool_choice) = request.tool_choice.as_ref() {
-            body["tool_choice"] = anthropic_tool_choice(tool_choice);
+            body["tool_choice"] = anthropic_tool_choice(tool_choice, &model);
         }
 
         // Thinking + effort shaping. MiniMax supports adaptive/disabled but
@@ -137,7 +138,7 @@ impl CodewhaleClient {
             .and_then(|facts| facts.reasoning)
             .unwrap_or_else(|| codewhale_models::model_supports_reasoning(&model));
         let is_minimax_provider = self.api_provider == ProviderKind::MinimaxAnthropic;
-        let is_minimax = crate::config::is_exact_minimax_anthropic_m3_route(
+        let is_minimax = codewhale_runtime::config::is_exact_minimax_anthropic_m3_route(
             self.api_provider,
             &self.base_url,
             &model,
@@ -299,15 +300,10 @@ impl CodewhaleClient {
         .context("Anthropic Messages API request failed")
     }
 
-    /// Open the streaming Messages request through the shared stream-entry
-    /// transport policy: bounded header wait, dual-client selection, and at
-    /// most one HTTP/1.1 fallback retry on a classified H2 header stall.
-    /// Inside each open attempt the provider retry loop
-    /// (`send_stream_open_with_retry`) handles rate limits and transient
-    /// upstream failures before any stream body exists — with no total
-    /// deadline, which would ride on the returned body — as the Chat and
-    /// Responses adapters do. Wire-specific request construction (headers,
-    /// endpoint, body) stays here at the adapter edge.
+    /// Open Messages through the shared provider retry and stream-entry
+    /// policy. Each physical request has its own header wait and at most one
+    /// HTTP/1.1 fallback; provider backoff stays outside that wait. Request
+    /// construction remains at this wire-specific edge.
     async fn open_anthropic_stream_response(
         &self,
         url: &str,
@@ -316,28 +312,19 @@ impl CodewhaleClient {
         let url = self.messages_transport_url(url);
         let request_body =
             serde_json::to_vec(body).context("Failed to serialize Anthropic Messages request")?;
-        let open_req = self.stream_open_request();
-        super::stream_entry::open_sse_response(&open_req, |policy| {
-            let url = url.clone();
-            let request_body = request_body.clone();
-            async move {
-                let client = super::stream_entry::client_for_policy(
-                    &self.http_client,
-                    self.http1_fallback_client(),
-                    policy,
-                );
-                self.send_stream_open_with_retry(|| {
-                    client
-                        .post(&url)
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .header("Accept", "text/event-stream")
-                        .body(request_body.clone())
-                })
-                .await
-                .context("Anthropic Messages API request failed")
-            }
+        self.send_stream_open_with_retry(|policy| {
+            super::stream_entry::client_for_policy(
+                &self.http_client,
+                self.http1_fallback_client(),
+                policy,
+            )
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("Accept", "text/event-stream")
+            .body(request_body.clone())
         })
         .await
+        .context("Anthropic Messages API request failed")
     }
 
     /// Handle a streaming Messages API request.
@@ -742,8 +729,27 @@ fn anthropic_model_rejects_sampling(model: &str) -> bool {
 }
 
 /// Convert the engine's `tool_choice` value (OpenAI-style string or object)
-/// to the Anthropic object form.
-fn anthropic_tool_choice(tool_choice: &Value) -> Value {
+/// to the Anthropic object form. The Messages API tool-use reference lists
+/// Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 as answering `any`/`tool`
+/// with a 400 error, so those models fall back to the server default `auto`
+/// (`none` still works and is passed through unchanged).
+fn anthropic_tool_choice(tool_choice: &Value, model: &str) -> Value {
+    let lower = model.to_ascii_lowercase();
+    let rejects_forced = lower.contains("opus-5-5")
+        || lower.contains("sonnet-5-5")
+        || lower.contains("fable")
+        || lower.contains("mythos");
+    let forced = match tool_choice.as_str() {
+        Some("any" | "required") => true,
+        Some(name) => !matches!(name, "auto" | "none"),
+        None => matches!(
+            tool_choice.get("type").and_then(Value::as_str),
+            Some("any" | "required" | "tool" | "function")
+        ),
+    };
+    if forced && rejects_forced {
+        return json!({ "type": "auto" });
+    }
     match tool_choice.as_str() {
         Some("auto") => json!({ "type": "auto" }),
         Some("none") => json!({ "type": "none" }),
@@ -808,13 +814,13 @@ pub(super) fn message_to_anthropic(message: &codewhale_models::Message) -> Optio
 /// confusing failure this whole path exists to avoid, so the data URL is taken
 /// back apart into `{"type":"base64", media_type, data}`.
 fn anthropic_image_block(url: &str) -> Value {
-    if let Some((media_type, data)) = crate::image_attach::parse_data_url(url) {
+    if let Some((media_type, data)) = codewhale_models::image_window::parse_data_url(url) {
         return json!({
             "type": "image",
             "source": { "type": "base64", "media_type": media_type, "data": data },
         });
     }
-    if crate::image_attach::is_remote_image_url(url) {
+    if codewhale_models::image_window::is_remote_image_url(url) {
         return json!({
             "type": "image",
             "source": { "type": "url", "url": url },
@@ -835,7 +841,7 @@ pub(super) fn anthropic_tool_result_content(
     content_blocks: Option<&[Value]>,
 ) -> Value {
     let (image, omitted) = crate::image_attach::provider_tool_result_image_refs(content_blocks);
-    let content = crate::image_attach::tool_result_text_with_omission(content, omitted);
+    let content = codewhale_models::image_window::tool_result_text_with_omission(content, omitted);
     let Some((mime_type, data)) = image else {
         return json!(content);
     };
@@ -1342,74 +1348,92 @@ mod tests {
 
     fn anthropic_test_client(base_url: Option<&str>) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = crate::config::Config {
-            provider: Some("anthropic".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                anthropic: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("anthropic".to_string());
+            let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                anthropic: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-key".to_string()),
                     base_url: base_url.map(str::to_string),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         CodewhaleClient::new(&config).expect("anthropic client constructs")
     }
 
     fn minimax_test_client() -> CodewhaleClient {
-        minimax_test_client_for(crate::config::DEFAULT_MINIMAX_ANTHROPIC_BASE_URL)
+        minimax_test_client_for(
+            codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_ANTHROPIC_BASE_URL,
+        )
     }
 
     fn minimax_test_client_for(base_url: &str) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = crate::config::Config {
-            provider: Some("minimax-anthropic".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                minimax_anthropic: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_1_0 = Some("minimax-anthropic".to_string());
+            let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                minimax_anthropic: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-key".to_string()),
                     base_url: Some(base_url.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         CodewhaleClient::new(&config).expect("MiniMax Messages client constructs")
     }
 
     fn deepseek_test_client(base_url: &str) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = crate::config::Config {
-            provider: Some("deepseek-anthropic".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek_anthropic: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_2_0 = Some("deepseek-anthropic".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                deepseek_anthropic: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-key".to_string()),
                     base_url: Some(base_url.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         };
         CodewhaleClient::new(&config).expect("DeepSeek Messages client constructs")
     }
 
     fn modelstudio_test_client(base_url: &str) -> CodewhaleClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = crate::config::Config {
-            provider: Some("modelstudio-token-plan-anthropic".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
+        let config = {
+            let __cw_config_init_3_0 = Some("modelstudio-token-plan-anthropic".to_string());
+            let __cw_config_init_3_1 = Some(codewhale_runtime::config::ProvidersConfig {
                 // Durable secret-store keys share a family slot, but a literal
                 // config key belongs to the selected route's own table.
-                modelstudio_token_plan_anthropic: crate::config::ProviderConfig {
+                modelstudio_token_plan_anthropic: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("test-key".to_string()),
                     base_url: Some(base_url.to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_3_value: codewhale_runtime::config::Config =
+                Default::default();
+            __cw_config_init_3_value.provider = __cw_config_init_3_0;
+            __cw_config_init_3_value.providers = __cw_config_init_3_1;
+            __cw_config_init_3_value
         };
         CodewhaleClient::new(&config).expect("Model Studio Messages client constructs")
     }
@@ -1491,9 +1515,12 @@ mod tests {
         assert!(body.get("thinking").is_none(), "off omits thinking: {body}");
         assert!(body.get("output_config").is_none());
 
-        // Haiku is not thinking-capable: no thinking, no effort.
+        // A model the reviewed catalog does not carry is not thinking-capable:
+        // no thinking, no effort. `claude-3-5-haiku-latest` (and Haiku 4.5,
+        // which the reviewed catalog now marks `reasoning: true`) are not
+        // interchangeable here.
         let body = client.build_anthropic_body(
-            &request_with("claude-haiku-4-5", Some("high"), None, None),
+            &request_with("claude-3-5-haiku-latest", Some("high"), None, None),
             true,
         );
         assert!(body.get("thinking").is_none(), "{body}");
@@ -1726,7 +1753,9 @@ mod tests {
 
     #[test]
     fn deepseek_messages_body_retires_aliases_and_keeps_thinking_control() {
-        let client = deepseek_test_client(crate::config::DEFAULT_DEEPSEEK_ANTHROPIC_BASE_URL);
+        let client = deepseek_test_client(
+            codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_ANTHROPIC_BASE_URL,
+        );
 
         let chat = client.build_anthropic_body(
             &request_with("deepseek-chat", Some("off"), None, None),
@@ -1734,7 +1763,7 @@ mod tests {
         );
         assert_eq!(
             chat.get("model").and_then(Value::as_str),
-            Some(crate::config::DEEPSEEK_ALIAS_REPLACEMENT)
+            Some(codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT)
         );
         assert_eq!(
             chat.pointer("/thinking/type").and_then(Value::as_str),
@@ -1747,7 +1776,7 @@ mod tests {
         );
         assert_eq!(
             reasoner.get("model").and_then(Value::as_str),
-            Some(crate::config::DEEPSEEK_ALIAS_REPLACEMENT)
+            Some(codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT)
         );
         assert_eq!(
             reasoner.pointer("/thinking/type").and_then(Value::as_str),
@@ -1777,24 +1806,28 @@ mod tests {
             ("deepseek-chat", "off", "disabled"),
             ("deepseek-reasoner", "high", "adaptive"),
         ] {
-            let mut config = crate::config::Config {
-                provider: Some("deepseek-anthropic".to_string()),
-                providers: Some(crate::config::ProvidersConfig {
-                    deepseek_anthropic: crate::config::ProviderConfig {
+            let mut config = {
+                let __cw_config_init_4_0 = Some("deepseek-anthropic".to_string());
+                let __cw_config_init_4_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                    deepseek_anthropic: codewhale_runtime::config::ProviderConfig {
                         api_key: Some("test-key".to_string()),
                         model: Some(alias.to_string()),
                         ..Default::default()
                     },
                     ..Default::default()
-                }),
-                ..Default::default()
+                });
+                let mut __cw_config_init_4_value: codewhale_runtime::config::Config =
+                    Default::default();
+                __cw_config_init_4_value.provider = __cw_config_init_4_0;
+                __cw_config_init_4_value.providers = __cw_config_init_4_1;
+                __cw_config_init_4_value
             };
             assert!(
                 config.reasoning_effort().is_none(),
                 "fixture must omit effort"
             );
 
-            crate::config::normalize_model_config_for_test(&mut config);
+            codewhale_runtime::config::normalize_model_config_for_test(&mut config);
             let client = CodewhaleClient::new(&config).expect("DeepSeek Messages client");
             let model = config.default_model();
             let body = client.build_anthropic_body(
@@ -1804,7 +1837,7 @@ mod tests {
 
             assert_eq!(
                 body.get("model").and_then(Value::as_str),
-                Some(crate::config::DEEPSEEK_ALIAS_REPLACEMENT),
+                Some(codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT),
                 "{alias}: {body}"
             );
             assert_eq!(config.reasoning_effort(), Some(expected_effort));
@@ -1861,10 +1894,10 @@ mod tests {
         for (base_url, model) in [
             (
                 "https://gateway.example/anthropic",
-                crate::config::DEFAULT_MINIMAX_MODEL,
+                codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_MODEL,
             ),
             (
-                crate::config::DEFAULT_MINIMAX_ANTHROPIC_BASE_URL,
+                codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_ANTHROPIC_BASE_URL,
                 "MiniMax-M2",
             ),
         ] {
@@ -2728,9 +2761,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let dir = tempfile::tempdir().expect("tempdir");
-        crate::core::engine::turn_heartbeat::set_test_stall_record_dir(Some(
-            dir.path().to_path_buf(),
-        ));
+        codewhale_runtime::stall_report::set_test_stall_record_dir(Some(dir.path().to_path_buf()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -2782,7 +2813,7 @@ mod tests {
         assert_eq!(records.len(), 1, "{records:?}");
         assert!(records[0].contains("first byte"), "{}", records[0]);
         server.abort();
-        crate::core::engine::turn_heartbeat::set_test_stall_record_dir(None);
+        codewhale_runtime::stall_report::set_test_stall_record_dir(None);
     }
 
     #[tokio::test]
@@ -2831,8 +2862,9 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
+        for force_http1 in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
             .and(path("/v1/messages"))
             .respond_with(
                 ResponseTemplate::new(429)
@@ -2845,41 +2877,47 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Type", "text/event-stream")
-                    .set_body_string("data: {\"type\":\"message_stop\"}\n\n"),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("Content-Type", "text/event-stream")
+                        .set_body_string("data: {\"type\":\"message_stop\"}\n\n"),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
 
-        let mut client = deepseek_test_client(&server.uri());
-        client.retry.enabled = true;
-        client.retry.max_retries = 2;
-        client.retry.initial_delay = 0.0;
-        client.retry.max_delay = 0.0;
-        let started = std::time::Instant::now();
-        let stream = client
-            .handle_anthropic_stream(
-                &client
-                    .prepare_outbound_request(request_with("deepseek-v4", None, None, None), true)
-                    .expect("anthropic request prepares"),
-            )
-            .await;
-        assert!(
-            stream.is_ok(),
-            "a 429 before the stream body must be retried, not surfaced"
-        );
-        // The backoff is configured to zero, so only the provider's
-        // `Retry-After: 1` can account for the wait before the retry.
-        assert!(
-            started.elapsed() >= std::time::Duration::from_millis(900),
-            "the retry must wait out Retry-After, waited {:?}",
-            started.elapsed()
-        );
+            let mut client = deepseek_test_client(&server.uri());
+            client.force_http1 = force_http1;
+            client.stream_open_timeout = std::time::Duration::from_millis(250);
+            client.retry.enabled = true;
+            client.retry.max_retries = 2;
+            client.retry.initial_delay = 0.0;
+            client.retry.max_delay = 0.0;
+            let started = std::time::Instant::now();
+            let stream = client
+                .handle_anthropic_stream(
+                    &client
+                        .prepare_outbound_request(
+                            request_with("deepseek-v4", None, None, None),
+                            true,
+                        )
+                        .expect("anthropic request prepares"),
+                )
+                .await;
+            assert!(
+                stream.is_ok(),
+                "a 429 before the stream body must be retried, not surfaced"
+            );
+            // The backoff is configured to zero, so only the provider's
+            // `Retry-After: 1` can account for the wait before the retry.
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(900),
+                "the retry must wait out Retry-After, waited {:?}",
+                started.elapsed()
+            );
+        }
     }
 
     /// A `system`-role history message — what a compaction summary, a branch

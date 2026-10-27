@@ -39,9 +39,9 @@ use serde::Serialize;
 use tar::Builder;
 
 use crate::artifacts::{ARTIFACTS_DIR_NAME, is_valid_session_id};
-use crate::fleet::files::WorkspaceFile;
 use crate::session_manager::{SavedSession, SessionMetadata};
-use crate::session_tree::SessionImportContainer;
+use codewhale_runtime::session_tree::SessionImportContainer;
+use codewhale_util::files::WorkspaceFile;
 
 /// Layout version of the exported archive. Bump when members change.
 pub const SESSION_ARCHIVE_FORMAT_VERSION: u32 = 1;
@@ -215,7 +215,7 @@ pub fn write_session_archive(
                 .expect("artifact collection needs a store");
             // Parent directories and the leaf are opened without following links.
             // Stream this handle directly; never reopen a validated path.
-            let mut file = WorkspaceFile::open(root, relative, false)?.open_file()?;
+            let mut file = WorkspaceFile::open_resolved_root(root, relative, false)?.open_file()?;
             append_member(
                 &mut tar,
                 name,
@@ -278,7 +278,11 @@ pub fn session_artifacts_dir(sessions_dir: &Path, session_id: &str) -> io::Resul
     let relative = Path::new(session_id).join(ARTIFACTS_DIR_NAME);
     // Opening a confined file reference pins and validates its parent directory;
     // this checks the artifact root without creating or opening the dummy leaf.
-    match WorkspaceFile::open(sessions_dir, &relative.join(".export-root-check"), false) {
+    match WorkspaceFile::open_resolved_root(
+        sessions_dir,
+        &relative.join(".export-root-check"),
+        false,
+    ) {
         Ok(_) => Ok(Some(sessions_dir.join(relative))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
@@ -287,7 +291,7 @@ pub fn session_artifacts_dir(sessions_dir: &Path, session_id: &str) -> io::Resul
 
 pub(crate) fn export_recovery_hint(session_id: &str) -> String {
     format!(
-        "To keep its history without that provider, run `codewhale sessions export {session_id}`."
+        "To move it to a provider you still have, run `codewhale --provider <name> resume {session_id}`. To keep its history without that provider, run `codewhale sessions export {session_id}`."
     )
 }
 
@@ -392,7 +396,11 @@ fn collect_artifact_files_recursive(
         if file_type.is_dir() {
             // Reject substituted parent directories before descending. The file
             // read repeats confinement checks, so directory races cannot leak bytes.
-            WorkspaceFile::open(sessions_dir, &relative.join(".export-root-check"), false)?;
+            WorkspaceFile::open_resolved_root(
+                sessions_dir,
+                &relative.join(".export-root-check"),
+                false,
+            )?;
             collect_artifact_files_recursive(
                 sessions_dir,
                 &path,
@@ -482,8 +490,8 @@ fn append_member<W: Write>(
 mod tests {
     use super::*;
     use crate::session_manager::create_saved_session;
-    use crate::session_tree::SessionJournal;
     use codewhale_models::{ContentBlock, Message, Role};
+    use codewhale_runtime::session_tree::SessionJournal;
     use std::io::Read;
 
     fn fixture_session() -> SavedSession {

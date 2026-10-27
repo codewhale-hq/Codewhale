@@ -15,7 +15,10 @@
 //! - `CODEWHALE_MODELS_DEV_PATH` — local file path; skips the network.
 //! - `CODEWHALE_DISABLE_MODELS_DEV_FETCH` — when truthy, never hits the network.
 
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use codewhale_runtime::catalog_cache::CACHE_FILE;
+use codewhale_runtime::catalog_cache::cache_path;
+use std::path::Path;
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -34,9 +37,6 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Explicit user-agent; no credentials, no session cookies.
 pub const USER_AGENT: &str = concat!("CodeWhale/", env!("CARGO_PKG_VERSION"), " (+models-dev)");
-
-/// Filename under the CodeWhale `catalog` state dir.
-pub const CACHE_FILE: &str = "models-dev-catalog.json";
 
 /// Env: override Models.dev base URL or full catalog URL.
 pub const ENV_MODELS_DEV_URL: &str = "CODEWHALE_MODELS_DEV_URL";
@@ -70,10 +70,34 @@ pub enum ModelsDevFreshness {
     Failed,
 }
 
+/// Where the rows a caller can currently see were produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelsDevProvenance {
+    #[default]
+    Bundled,
+    Live,
+    Cache,
+    File,
+}
+
+impl ModelsDevProvenance {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled_snapshot",
+            Self::Live => "models_dev_live",
+            Self::Cache => "models_dev_cache",
+            Self::File => "models_dev_file",
+        }
+    }
+}
+
 /// Quiet status snapshot for UI / `/model refresh` feedback.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelsDevStatus {
     pub freshness: ModelsDevFreshness,
+    pub provenance: ModelsDevProvenance,
     pub offering_count: usize,
     pub fetched_at: Option<u64>,
     pub source_label: String,
@@ -82,6 +106,7 @@ pub struct ModelsDevStatus {
 
 static STATUS: RwLock<ModelsDevStatus> = RwLock::new(ModelsDevStatus {
     freshness: ModelsDevFreshness::Bundled,
+    provenance: ModelsDevProvenance::Bundled,
     offering_count: 0,
     fetched_at: None,
     source_label: String::new(),
@@ -142,31 +167,6 @@ impl std::fmt::Display for ModelsDevRefreshError {
             Self::Io(msg) => write!(f, "io: {msg}"),
         }
     }
-}
-
-/// Resolve the on-disk cache path under the CodeWhale `catalog` state dir.
-///
-/// Under `cfg(test)` this is confined the same way settings and config paths
-/// are: `resolve_state_dir` lives in `codewhale-config`, which is compiled as a
-/// plain dependency here and so has no view of this crate's isolated test root.
-/// Without this shield a test that never asked for the developer's catalog read
-/// their real `~/.codewhale/catalog` and rendered against whatever models they
-/// last fetched (#5359).
-#[must_use]
-pub fn cache_path() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        if !crate::test_support::guarded_environment_provides_state_paths() {
-            return Some(
-                crate::test_support::unsealed_test_state_root()
-                    .join("catalog")
-                    .join(CACHE_FILE),
-            );
-        }
-    }
-    codewhale_config::resolve_state_dir("catalog")
-        .ok()
-        .map(|dir| dir.join(CACHE_FILE))
 }
 
 /// Current quiet status (for UI / slash-command feedback).
@@ -254,6 +254,7 @@ pub fn maybe_load_persisted_cache() {
         cache.fetched_at,
         cache.source_label.as_str(),
         freshness,
+        ModelsDevProvenance::Cache,
     ) {
         tracing::debug!(
             target: "models_dev_live",
@@ -265,8 +266,10 @@ pub fn maybe_load_persisted_cache() {
 
 /// Force a refresh: prefer `CODEWHALE_MODELS_DEV_PATH`, else network fetch.
 ///
-/// On success, updates the disk cache and ProviderLake. On failure, keeps any
-/// prior live/bundled rows and records a quiet Failed status.
+/// On success, publishes to ProviderLake and updates the disk cache. On
+/// failure, keeps any prior live/bundled rows and records a quiet Failed
+/// status. A cache write that fails after a successful publish keeps the fresh
+/// rows and reports only the persistence error.
 pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError> {
     if let Ok(path) = std::env::var(ENV_MODELS_DEV_PATH) {
         let trimmed = path.trim();
@@ -301,7 +304,13 @@ pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError
     };
     let fetched_at = now_unix();
     let fingerprint = base_url_fingerprint(&url);
-    let count = publish_from_body(&body, fetched_at, &url, ModelsDevFreshness::Live)?;
+    let count = publish_from_body(
+        &body,
+        fetched_at,
+        &url,
+        ModelsDevFreshness::Live,
+        ModelsDevProvenance::Live,
+    )?;
     if let Some(path) = cache_path() {
         save_cache_file(
             &path,
@@ -313,7 +322,7 @@ pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError
                 body,
             },
         )
-        .inspect_err(|error| mark_failed(error.clone()))?;
+        .inspect_err(note_persistence_error)?;
     }
     Ok(count)
 }
@@ -380,7 +389,13 @@ async fn refresh_from_path(path: &Path) -> Result<usize, ModelsDevRefreshError> 
     let fetched_at = now_unix();
     let label = format!("file:{}", path.display());
     let fingerprint = base_url_fingerprint(&label);
-    let count = publish_from_body(&body, fetched_at, &label, ModelsDevFreshness::Live)?;
+    let count = publish_from_body(
+        &body,
+        fetched_at,
+        &label,
+        ModelsDevFreshness::Live,
+        ModelsDevProvenance::File,
+    )?;
     if let Some(cache) = cache_path() {
         save_cache_file(
             &cache,
@@ -392,13 +407,13 @@ async fn refresh_from_path(path: &Path) -> Result<usize, ModelsDevRefreshError> 
                 body,
             },
         )
-        .inspect_err(|error| mark_failed(error.clone()))?;
+        .inspect_err(note_persistence_error)?;
     }
     Ok(count)
 }
 
 async fn fetch_catalog_body(url: &str) -> Result<String, ModelsDevRefreshError> {
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .timeout(FETCH_TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .user_agent(USER_AGENT)
@@ -473,6 +488,7 @@ fn publish_from_body(
     fetched_at: u64,
     source_label: &str,
     freshness: ModelsDevFreshness,
+    provenance: ModelsDevProvenance,
 ) -> Result<usize, ModelsDevRefreshError> {
     let catalog = ModelsDevCatalog::parse_json(body).map_err(|err| {
         let mapped = ModelsDevRefreshError::InvalidResponse(err.to_string());
@@ -494,12 +510,19 @@ fn publish_from_body(
     );
     set_status(ModelsDevStatus {
         freshness,
+        provenance,
         offering_count: count,
         fetched_at: Some(fetched_at),
         source_label: source_label.to_string(),
         last_error: None,
     });
     Ok(count)
+}
+
+fn note_persistence_error(err: &ModelsDevRefreshError) {
+    let mut next = status();
+    next.last_error = Some(err.to_string());
+    set_status(next);
 }
 
 fn mark_failed(err: ModelsDevRefreshError) {
@@ -592,11 +615,11 @@ pub(crate) fn offerings_from_json_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProviderKind;
     use crate::provider_lake::{
         all_catalog_models_for_provider, clear_live_snapshot, lock_live_snapshot,
     };
     use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_config::ProviderKind;
     use codewhale_config::catalog::CatalogSource;
 
     const FIXTURE: &str = r#"{

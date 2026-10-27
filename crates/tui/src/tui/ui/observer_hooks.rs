@@ -405,7 +405,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn session_state_transitions_dispatch_real_ordered_payloads_without_duplicates() {
-        use crate::hooks::{Hook, HookExecutor, HooksConfig};
+        use crate::hooks::HookExecutor;
+        use codewhale_config::hooks::{Hook, HooksConfig};
         use std::path::{Path, PathBuf};
         use std::time::{Duration, Instant};
 
@@ -497,7 +498,7 @@ mv "$receipt" "$receipt.done"
         .expect("receipt command");
         let mut app = App::new(
             crate::tui::test_support::test_tui_options(dir.path()),
-            &crate::config::Config::default(),
+            &codewhale_runtime::config::Config::default(),
         );
         app.hooks = HookExecutor::new(
             HooksConfig {
@@ -631,7 +632,7 @@ mv "$receipt" "$receipt.done"
     }
 
     fn test_app() -> App {
-        let config = crate::config::Config::default();
+        let config = codewhale_runtime::config::Config::default();
         App::new(
             crate::tui::test_support::test_tui_options(std::env::current_dir().unwrap()),
             &config,
@@ -660,7 +661,7 @@ mv "$receipt" "$receipt.done"
         );
         assert_eq!(
             session_state_transition_event(TurnState::InProgress, turn_state_from_app(&app)),
-            Some(crate::hooks::HookEvent::WaitingForUser)
+            Some(codewhale_config::hooks::HookEvent::WaitingForUser)
         );
         app.pending_user_input_prompt = None;
         assert_eq!(turn_state_from_app(&app), TurnState::InProgress);
@@ -685,7 +686,7 @@ mv "$receipt" "$receipt.done"
                     &app.workspace,
                 ),
                 codewhale_localization::Locale::En,
-                crate::config::ApprovalDefaultSelection::default(),
+                codewhale_runtime::config::ApprovalDefaultSelection::default(),
             ),
         );
         assert_eq!(turn_state_from_app(&app), TurnState::Waiting);

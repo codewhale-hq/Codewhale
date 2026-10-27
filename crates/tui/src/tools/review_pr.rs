@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use wait_timeout::ChildExt;
 
-use crate::dependencies::{ExternalTool, Gh, Git};
+use codewhale_dependencies::{ExternalTool, Gh, Git};
 
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const VIEW_FIELDS: &str =
@@ -465,7 +465,7 @@ fn run_command(workspace: &Path, program: Program, args: &[String]) -> Result<St
         Program::Git => Git::review_command(workspace)?,
     };
     // `gh` shells out to git; give it the same no-prompt environment.
-    crate::dependencies::apply_git_noninteractive_env(&mut command);
+    codewhale_dependencies::apply_git_noninteractive_env(&mut command);
     command
         .args(args)
         .current_dir(workspace)

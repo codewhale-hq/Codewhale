@@ -282,7 +282,8 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         engine.context_pressure_line(
             "cross-route budget",
             &prompt_context,
-            system_prompt.as_ref()
+            system_prompt.as_ref(),
+            &engine.session.messages,
         ),
         None,
         "the planned 123K route must not inherit the installed route's pressure"
@@ -299,7 +300,12 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         None,
     );
     let pressure = engine
-        .context_pressure_line("cross-route budget", &installed_context, None)
+        .context_pressure_line(
+            "cross-route budget",
+            &installed_context,
+            None,
+            &engine.session.messages,
+        )
         .unwrap();
     assert!(pressure.contains("Context pressure: critical"));
     assert!(pressure.contains("Estimated input:"));
@@ -316,6 +322,7 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
             system_prompt: system_prompt.as_ref(),
             approval_mode: ApprovalMode::Suggest,
             working_set: &engine.session.working_set,
+            messages: &engine.session.messages,
             policy_narrowing: None,
         },
     );
@@ -435,7 +442,7 @@ fn context_pressure_delta_matches_clone_and_push_reference() {
     // hypothetical user message, run the full conservative estimator.
     let reference = |engine: &Engine, text: &str| -> usize {
         let mut messages: Vec<Message> =
-            crate::prompt_zones::AppendLog::clone(&engine.session.messages).into();
+            codewhale_runtime::prompt_zones::AppendLog::clone(&engine.session.messages).into();
         if !text.trim().is_empty() {
             messages.push(Message {
                 role: Role::User,
@@ -454,7 +461,8 @@ fn context_pressure_delta_matches_clone_and_push_reference() {
         "short",
         "a much longer composer draft with punctuation…",
     ] {
-        let via_pressure_line_input = engine.active_input_tokens_with_current_text(text, None);
+        let via_pressure_line_input =
+            engine.active_input_tokens_with_current_text(text, None, &engine.session.messages);
         assert_eq!(
             via_pressure_line_input,
             reference(&engine, text),
@@ -670,7 +678,7 @@ async fn auto_route_without_a_prompt_omits_every_final_fact() {
             workspace: tmp.path().to_path_buf(),
             ..Default::default()
         },
-        &crate::config::Config::default(),
+        &codewhale_runtime::config::Config::default(),
     );
 
     let manifest = engine
@@ -712,24 +720,28 @@ async fn auto_route_without_a_prompt_omits_every_final_fact() {
     }
 }
 
-fn deepseek_config() -> crate::config::Config {
-    let providers = crate::config::ProvidersConfig {
-        deepseek: crate::config::ProviderConfig {
+fn deepseek_config() -> codewhale_runtime::config::Config {
+    let providers = codewhale_runtime::config::ProvidersConfig {
+        deepseek: codewhale_runtime::config::ProviderConfig {
             api_key: Some("sk-test-deepseek".to_string()),
             model: Some("deepseek-chat".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
-        ..crate::config::ProvidersConfig::default()
+        ..codewhale_runtime::config::ProvidersConfig::default()
     };
-    crate::config::Config {
-        provider: Some("deepseek".to_string()),
-        providers: Some(providers),
-        ..crate::config::Config::default()
+    {
+        let __cw_config_init_0_0 = Some("deepseek".to_string());
+        let __cw_config_init_0_1 = Some(providers);
+        let mut __cw_config_init_0_value: codewhale_runtime::config::Config =
+            codewhale_runtime::config::Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
 }
 
-fn deepseek_identity() -> crate::config::ProviderIdentity {
-    crate::config::Config::default()
+fn deepseek_identity() -> codewhale_runtime::config::ProviderIdentity {
+    codewhale_runtime::config::Config::default()
         .builtin_provider_identity(ProviderKind::Deepseek)
         .unwrap()
 }
@@ -737,8 +749,8 @@ fn deepseek_identity() -> crate::config::ProviderIdentity {
 /// Run the *production* route planner, provider-free: with `auto_model`
 /// the classifier short-circuits to the inventory heuristic under `cfg!(test)`.
 async fn plan(
-    config: &crate::config::Config,
-    identity: &crate::config::ProviderIdentity,
+    config: &codewhale_runtime::config::Config,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     auto_model: bool,
     prompt: &str,
 ) -> crate::turn_route_plan::PlannedTurnRoute {
@@ -754,8 +766,8 @@ async fn plan(
 }
 
 async fn plan_for(
-    config: &crate::config::Config,
-    identity: &crate::config::ProviderIdentity,
+    config: &codewhale_runtime::config::Config,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     provider: ProviderKind,
     model: &str,
     auto_model: bool,
@@ -781,8 +793,8 @@ async fn plan_for(
 /// exact-route matrix needs `off` to observe a route that normalizes it
 /// (direct Moonshot K3 sends `low`).
 async fn plan_with_reasoning(
-    config: &crate::config::Config,
-    identity: &crate::config::ProviderIdentity,
+    config: &codewhale_runtime::config::Config,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     provider: ProviderKind,
     model: &str,
     auto_model: bool,
@@ -810,7 +822,9 @@ async fn plan_with_reasoning(
     .expect("the shared planner resolves a configured route")
 }
 
-fn preview_engine(config: &crate::config::Config) -> (Engine, EngineHandle, tempfile::TempDir) {
+fn preview_engine(
+    config: &codewhale_runtime::config::Config,
+) -> (Engine, EngineHandle, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (engine, handle) = Engine::new(
         EngineConfig {
@@ -826,7 +840,7 @@ fn preview_engine(config: &crate::config::Config) -> (Engine, EngineHandle, temp
 /// consumer is alive, as in every production embedding, so callers keep the
 /// handle for the engine's lifetime even though these fixtures read no events.
 fn wire_preview_engine(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
 ) -> (Engine, crate::core::engine::EngineHandle, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (mut engine, handle) = Engine::new(
@@ -1004,8 +1018,9 @@ async fn assert_preview_matches_first_wire_body(
     assert_eq!(requests.len(), 1, "the fixture must make one provider call");
     let first_wire_body: serde_json::Value =
         serde_json::from_slice(&requests[0].body).expect("first HTTP body is JSON");
-    let first_wire_hash =
-        crate::hashing::sha256_hex(crate::client::canonical_json(&first_wire_body).as_bytes());
+    let first_wire_hash = codewhale_runtime::hashing::sha256_hex(
+        codewhale_runtime::hashing::canonical_json(&first_wire_body).as_bytes(),
+    );
     assert_eq!(
         preview_hash, first_wire_hash,
         "preview hash must match the body captured at the HTTP boundary"
@@ -1282,18 +1297,22 @@ async fn anthropic_preview_matches_the_first_native_messages_wire_body() {
         .mount(&server)
         .await;
     let model = "claude-sonnet-4-6";
-    let config = crate::config::Config {
-        provider: Some("anthropic".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
-            anthropic: crate::config::ProviderConfig {
+    let config = {
+        let __cw_config_init_1_0 = Some("anthropic".to_string());
+        let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
+            anthropic: codewhale_runtime::config::ProviderConfig {
                 api_key: Some("test-anthropic-key".to_string()),
                 base_url: Some(server.uri()),
                 model: Some(model.to_string()),
-                ..crate::config::ProviderConfig::default()
+                ..codewhale_runtime::config::ProviderConfig::default()
             },
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..crate::config::Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_1_value: codewhale_runtime::config::Config =
+            codewhale_runtime::config::Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
     };
     let identity = config
         .builtin_provider_identity(ProviderKind::Anthropic)
@@ -1362,8 +1381,8 @@ fn glm_5_2_zai_coding() -> MatrixRoute {
         name: "GLM-5.2 @ Z.ai coding",
         provider: ProviderKind::Zai,
         provider_key: "zai",
-        base_url: crate::config::DEFAULT_ZAI_BASE_URL,
-        model: crate::config::ZAI_GLM_5_2_MODEL,
+        base_url: codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
+        model: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
         requested_reasoning: crate::reasoning_preference::ReasoningEffort::High,
         requested_reasoning_label: "high",
         expect_control_keys: &["reasoning_effort", "thinking"],
@@ -1379,8 +1398,8 @@ fn glm_5_turbo_zai() -> MatrixRoute {
         name: "GLM-5-Turbo @ Z.ai",
         provider: ProviderKind::Zai,
         provider_key: "zai",
-        base_url: crate::config::DEFAULT_ZAI_BASE_URL,
-        model: crate::config::ZAI_GLM_5_TURBO_MODEL,
+        base_url: codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
+        model: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL,
         requested_reasoning: crate::reasoning_preference::ReasoningEffort::High,
         requested_reasoning_label: "high",
         // No invented granularity: the toggle ships, the tier does not.
@@ -1397,8 +1416,8 @@ fn kimi_k3_moonshot_direct() -> MatrixRoute {
         name: "kimi-k3 @ api.moonshot.ai",
         provider: ProviderKind::Moonshot,
         provider_key: "moonshot",
-        base_url: crate::config::DEFAULT_MOONSHOT_BASE_URL,
-        model: crate::config::MOONSHOT_KIMI_K3_MODEL,
+        base_url: codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL,
+        model: codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL,
         // The visible normalization: `off` is not a tier this route has.
         requested_reasoning: crate::reasoning_preference::ReasoningEffort::Off,
         requested_reasoning_label: "off",
@@ -1415,8 +1434,8 @@ fn k3_kimi_code() -> MatrixRoute {
         name: "k3 @ api.kimi.com/coding/v1",
         provider: ProviderKind::Moonshot,
         provider_key: "moonshot",
-        base_url: crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-        model: crate::config::KIMI_CODE_K3_MODEL,
+        base_url: codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+        model: codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
         requested_reasoning: crate::reasoning_preference::ReasoningEffort::Off,
         requested_reasoning_label: "off",
         expect_control_keys: &["thinking"],
@@ -1432,8 +1451,8 @@ fn minimax_m3() -> MatrixRoute {
         name: "MiniMax-M3 @ api.minimax.io",
         provider: ProviderKind::Minimax,
         provider_key: "minimax",
-        base_url: crate::config::DEFAULT_MINIMAX_BASE_URL,
-        model: crate::config::DEFAULT_MINIMAX_MODEL,
+        base_url: codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_BASE_URL,
+        model: codewhale_config::descriptors::defaults::DEFAULT_MINIMAX_MODEL,
         requested_reasoning: crate::reasoning_preference::ReasoningEffort::High,
         requested_reasoning_label: "high",
         expect_control_keys: &["thinking", "reasoning_split"],
@@ -1454,28 +1473,32 @@ fn matrix_routes() -> Vec<MatrixRoute> {
     ]
 }
 
-fn matrix_config(route: &MatrixRoute) -> crate::config::Config {
-    let entry = crate::config::ProviderConfig {
+fn matrix_config(route: &MatrixRoute) -> codewhale_runtime::config::Config {
+    let entry = codewhale_runtime::config::ProviderConfig {
         api_key: Some(format!("sk-test-{}-matrix-key", route.provider_key)),
         base_url: Some(route.base_url.to_string()),
         model: Some(route.model.to_string()),
-        ..crate::config::ProviderConfig::default()
+        ..codewhale_runtime::config::ProviderConfig::default()
     };
-    let mut providers = crate::config::ProvidersConfig::default();
+    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     match route.provider {
         ProviderKind::Zai => providers.zai = entry,
         ProviderKind::Moonshot => providers.moonshot = entry,
         ProviderKind::Minimax => providers.minimax = entry,
         other => panic!("{}: unhandled matrix provider {other:?}", route.name),
     }
-    crate::config::Config {
-        provider: Some(route.provider_key.to_string()),
-        providers: Some(providers),
-        ..crate::config::Config::default()
+    {
+        let __cw_config_init_2_0 = Some(route.provider_key.to_string());
+        let __cw_config_init_2_1 = Some(providers);
+        let mut __cw_config_init_2_value: codewhale_runtime::config::Config =
+            codewhale_runtime::config::Config::default();
+        __cw_config_init_2_value.provider = __cw_config_init_2_0;
+        __cw_config_init_2_value.providers = __cw_config_init_2_1;
+        __cw_config_init_2_value
     }
 }
 
-fn matrix_identity(route: &MatrixRoute) -> crate::config::ProviderIdentity {
+fn matrix_identity(route: &MatrixRoute) -> codewhale_runtime::config::ProviderIdentity {
     matrix_config(route)
         .resolve_provider_pin_identity(route.provider_key)
         .unwrap()
@@ -1488,7 +1511,7 @@ fn matrix_identity(route: &MatrixRoute) -> crate::config::ProviderIdentity {
 /// would have received.
 async fn matrix_planned_route(
     route: &MatrixRoute,
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     transport_base_url: Option<&str>,
     prompt: &str,
 ) -> crate::turn_route_plan::PlannedTurnRoute {
@@ -1559,7 +1582,7 @@ async fn assert_matrix_route(route: &MatrixRoute) {
     let planned_provider = planned.route.identity.provider;
     let planned_base_url = planned.route.candidate.endpoint().base_url.clone();
     let planned_model = planned.route.model.clone();
-    let expected_wire_model = crate::config::wire_model_for_provider_route(
+    let expected_wire_model = codewhale_runtime::config::wire_model_for_provider_route(
         planned_provider,
         &planned_base_url,
         &planned_model,
@@ -1600,10 +1623,10 @@ async fn assert_matrix_route(route: &MatrixRoute) {
 
     // --- Body identity, byte accounting, and size estimates ----------
     let facts_body = manifest.body.exact().expect("a prompted body is exact");
-    let canonical = crate::client::canonical_json(&body);
+    let canonical = codewhale_runtime::hashing::canonical_json(&body);
     assert_eq!(
         facts_body.body_sha256,
-        crate::hashing::sha256_hex(canonical.as_bytes()),
+        codewhale_runtime::hashing::sha256_hex(canonical.as_bytes()),
         "{name}: manifest body hash must equal the captured wire body hash"
     );
     assert_eq!(
@@ -1647,7 +1670,9 @@ async fn assert_matrix_route(route: &MatrixRoute) {
     assert_eq!(
         facts_body.tool_schema_wire_sha256,
         body.get("tools").map(|tools| {
-            crate::hashing::sha256_hex(crate::client::canonical_json(tools).as_bytes())
+            codewhale_runtime::hashing::sha256_hex(
+                codewhale_runtime::hashing::canonical_json(tools).as_bytes(),
+            )
         }),
         "{name}: the tool-schema digest must be over the schemas on the wire"
     );
@@ -2112,7 +2137,7 @@ async fn host_supplied_auto_route_receipt_matches_the_production_planner() {
     assert_eq!(planned_identity, "deepseek");
     assert_eq!(
         route.wire_model.as_str(),
-        crate::config::wire_model_for_provider_route(
+        codewhale_runtime::config::wire_model_for_provider_route(
             planned_provider,
             &planned_base_url,
             &planned_model,
@@ -2155,9 +2180,12 @@ async fn host_supplied_auto_route_receipt_matches_the_production_planner() {
 #[tokio::test]
 async fn preview_tool_snapshot_has_no_mcp_or_event_side_effects() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = crate::config::Config {
-        provider: Some("deepseek".to_string()),
-        ..crate::config::Config::default()
+    let config = {
+        let __cw_config_init_3_0 = Some("deepseek".to_string());
+        let mut __cw_config_init_3_value: codewhale_runtime::config::Config =
+            codewhale_runtime::config::Config::default();
+        __cw_config_init_3_value.provider = __cw_config_init_3_0;
+        __cw_config_init_3_value
     };
     let (mut engine, handle) = Engine::new(
         EngineConfig {
@@ -2384,7 +2412,7 @@ async fn the_previewed_tool_gate_applies_without_being_installed() {
 /// otherwise tells the user to pass the flag they just passed.
 #[tokio::test]
 async fn a_failed_plan_still_reports_that_a_prompt_was_supplied() {
-    let (mut engine, _handle, _tmp) = preview_engine(&crate::config::Config::default());
+    let (mut engine, _handle, _tmp) = preview_engine(&codewhale_runtime::config::Config::default());
     let mut failed = inputs(false, None, "");
     failed.unresolved = PreviewUnresolved::PlanFailed(
         "no API key configured for route 'my-gateway' at /home/someone/.config".to_string(),
@@ -2414,10 +2442,12 @@ async fn pending_runtime_injections_make_the_body_unavailable_without_consuming_
     let identity = deepseek_identity();
     let (mut engine, _handle, _tmp) = preview_engine(&config);
     engine.config.features.disable(Feature::Mcp);
-    engine.pending_lsp_blocks.push(crate::lsp::DiagnosticBlock {
-        file: std::path::PathBuf::from("src/lib.rs"),
-        items: Vec::new(),
-    });
+    engine
+        .pending_lsp_blocks
+        .push(codewhale_lsp::DiagnosticBlock {
+            file: std::path::PathBuf::from("src/lib.rs"),
+            items: Vec::new(),
+        });
 
     let manifest = engine
         .build_request_manifest(inputs(

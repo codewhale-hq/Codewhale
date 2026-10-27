@@ -40,7 +40,7 @@ async fn get_v1_workspace_instructions_lists_effective_sources() -> Result<()> {
     else {
         return Ok(());
     };
-    let client = crate::tls::reqwest_client();
+    let client = codewhale_release::tls::reqwest_client();
 
     let body: serde_json::Value = client
         .get(format!("http://{addr}/v1/workspace/instructions"))
@@ -93,7 +93,10 @@ async fn get_v1_workspace_instructions_lists_effective_sources() -> Result<()> {
     );
 
     assert_eq!(body["generated_fallback"], false);
-    assert!(body["aggregate_budget_bytes"].as_u64().unwrap() > 0);
+    // #6526: the per-scope token ceilings replaced the single byte cap.
+    assert!(body["global_budget_tokens"].as_u64().unwrap() > 0);
+    assert!(body["project_budget_tokens"].as_u64().unwrap() > 0);
+    assert!(body["usable_window_tokens"].is_null());
 
     handle.abort();
     Ok(())

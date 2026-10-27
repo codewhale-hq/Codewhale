@@ -2,12 +2,12 @@
 //! policy owners. This endpoint prepares an attempt; it never submits a banner.
 
 use super::*;
-use crate::notify::payload::NotificationPayload;
-use crate::notify::{
-    DeliveryOutcome, Method, NotificationGate, audio as notification_audio, sound_policy,
-};
 use crate::runtime_threads::{RuntimeEventRecord, RuntimeTurnStatus};
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_notify::payload::NotificationPayload;
+use codewhale_notify::{
+    DeliveryOutcome, Method, NotificationGate, audio as notification_audio, sound_policy,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,7 +176,7 @@ fn prepare_payload(
     unfocused_for: Duration,
 ) -> PreparedNotification {
     let notification_config = config.notifications_config();
-    let Some((method, threshold, _)) = crate::notify::settings_projection(&notification_config)
+    let Some((method, threshold, _)) = codewhale_notify::settings_projection(&notification_config)
     else {
         return PreparedNotification::suppressed("suppressed");
     };
@@ -186,8 +186,8 @@ fn prepare_payload(
         _ => return PreparedNotification::suppressed("unsupported_method"),
     };
     let attention =
-        crate::notify::native_attention_allowed(&notification_config, focused, unfocused_for);
-    let threshold = if payload.kind() == crate::notify::payload::NotificationKind::TurnComplete {
+        codewhale_notify::native_attention_allowed(&notification_config, focused, unfocused_for);
+    let threshold = if payload.kind() == codewhale_notify::payload::NotificationKind::TurnComplete {
         threshold
     } else {
         Duration::ZERO
@@ -196,7 +196,7 @@ fn prepare_payload(
     // Capture the shared policy's intended sinks. Neither closure performs IO;
     // the response says prepared, never dispatched/delivered. The native host
     // owns the subsequent permission check and submission receipt.
-    let outcome = crate::notify::delivery::notify_with_sinks(
+    let outcome = codewhale_notify::delivery::notify_with_sinks(
         method,
         false,
         payload,

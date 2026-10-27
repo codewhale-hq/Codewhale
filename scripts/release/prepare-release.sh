@@ -7,7 +7,7 @@
 # codewhale-* dependency pins), npm/codewhale/package.json (version +
 # codewhaleBinaryVersion), npm/runtime-sdk/package.json, the VS Code extension
 # package and lock, the root npm lock workspace records, the remote-smoke default
-# tag, README*.md install-tag examples when present, the public fact matrix's
+# tag, README.md and docs/i18n/README*.md install-tag examples when present, the public fact matrix's
 # source-candidate version, Cargo.lock, crates/tui/CHANGELOG.md (via
 # sync-changelog.sh), web/lib/facts.generated.ts (via derive-facts.mjs), and
 # the two version-stamped contract fixtures
@@ -29,6 +29,7 @@ fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo}"
+readmes=(README.md docs/i18n/README.*.md)
 
 # Release preparation spans generated files and two package managers. Preserve
 # the exact starting bytes so any validation, generator, or downstream gate
@@ -52,11 +53,7 @@ transaction_paths=(
   scripts/remote-smoke/setup-vm.sh
   docs/public-surface-facts.json
   docs/INSTALL.md
-  README.md
-  README.zh-CN.md
-  README.ja-JP.md
-  README.vi.md
-  README.ko-KR.md
+  "${readmes[@]}"
   crates/tui/CHANGELOG.md
   web/lib/facts.generated.ts
   crates/config/src/route/providers-export.golden.json
@@ -102,18 +99,12 @@ fi
 if [[ "${old}" != "${new}" ]]; then
   echo "Bumping ${old} -> ${new}"
 
-  OLD_VERSION="${old}" NEW_VERSION="${new}" python3 - <<'PY'
+  OLD_VERSION="${old}" NEW_VERSION="${new}" python3 - "${readmes[@]}" <<'PY'
 import json, os, pathlib, re, sys
 
 old, new = os.environ["OLD_VERSION"], os.environ["NEW_VERSION"]
 old_re = re.escape(old)
-readmes = [
-    "README.md",
-    "README.zh-CN.md",
-    "README.ja-JP.md",
-    "README.vi.md",
-    "README.ko-KR.md",
-]
+readmes = sys.argv[1:]
 
 def bump(path, pattern, repl, minimum):
     p = pathlib.Path(path)
@@ -193,14 +184,7 @@ for readme in readmes:
 #    Current docs deliberately describe installed output generically, so zero
 #    matches is valid. If numeric forms exist, validate that they agree with
 #    the old workspace version before replacing them.
-version_doc_files = [
-    "README.md",
-    "README.zh-CN.md",
-    "README.ja-JP.md",
-    "README.vi.md",
-    "README.ko-KR.md",
-    "docs/INSTALL.md",
-]
+version_doc_files = [*readmes, "docs/INSTALL.md"]
 for doc in version_doc_files:
     p = pathlib.Path(doc)
     text = p.read_text()

@@ -13,6 +13,39 @@ before/after evidence, not benchmarks.
 > current source audit, target crate map and extraction order. Measurements
 > below are historical; the B3/deferred candidate lists are not an execution queue.
 
+## October 22, 2026: shared Engine future boundary
+
+The 0.10.2 candidate's `crates/tui/src` has 1,040 Rust files and 1,279,727
+physical lines including tests. Filtering test names still compiles the one
+large library-test target. The older measurements below describe an earlier
+source tree and compiler.
+
+Two successive local builds on the 14-core Apple Silicon machine, with Rust
+1.99.0, the same incremental cache, features and development profile:
+
+| Candidate build | Wall time |
+| --- | ---: |
+| Shared Engine loop returned its full concrete future | 29m 31s |
+| `Engine::run_owned` returned a boxed `Send` future | 2m 24s |
+
+A native sample of the first build found recursive trait-obligation work during
+monomorphization and MIR validation on one compiler thread. The existing shared
+loop now erases its future type at that boundary; root and child engines retain
+the same event loop. It adds one allocation per Engine invocation. The second
+build also corrected three existing test assertions and collected Cargo
+`--timings`. These are warm local observations, not an isolated benchmark or a
+cold-build, release-build or cross-platform speedup promise. The 2,172 captured
+inputs stayed unchanged during each build and its focused checks; 58 relevant
+existing checks passed after the boundary change. Final release validation is
+separate.
+
+Keep incremental compilation and the existing line-table debug setting for the
+local edit loop. Finish a coherent batch before compiling, then reuse its test
+binary for relevant filters while inputs stay unchanged. Capture timings on a
+build already needed for validation. The structural follow-up remains the
+[TUI deconstruction](design/TUI_DECONSTRUCTION.md): move implementation and its
+existing tests together so each subsystem can build independently.
+
 ## Where the time goes (baseline, commit 533c530b)
 
 | Step | Wall | Notes |
@@ -359,15 +392,20 @@ TUI-DOG-017) — left as they are.
 6. Then `fleet/`, `tools/`, `core/engine` — each behind the crate boundary
    its tests already respect, measured with the A0 table.
 
-## One build per machine
+## Two builds per machine
 
-`scripts/dev-cargo.sh` and `scripts/dev-test.sh` hold an exclusive machine-wide
-build lock (`<cache root>/build.lock`, via `scripts/build-lock.py`) for the
-whole Cargo invocation. Cargo's own lock is per target directory, so two
-agents building into different target dirs still ran concurrently and exhausted
-memory. A second build waits and prints who holds the lock. Set
-`CODEWHALE_BUILD_LOCK=0` to skip it, or `CODEWHALE_BUILD_LOCK_FILE` to name the
-lock file. A self-hosted CI runner on the same machine joins the lock when its
+`scripts/dev-cargo.sh` and `scripts/dev-test.sh` hold one of
+`CODEWHALE_BUILD_SLOTS` (default 2) machine-wide build slots
+(`<cache root>/build.lock`, then `build.lock.1`, ..., via
+`scripts/build-lock.py`) for the whole Cargo invocation. Cargo's own lock is
+per target directory, so agents building into different target dirs once ran
+unbounded and exhausted memory. Two slots is the founder's 2026-10-25 setting
+for a 36 GB M4 Max: the tui unit-test rustc peaks near 8 GB, and one huge
+crate keeps most cores idle during its front end, so a second build roughly
+doubles throughput. A build beyond the slot count waits and prints every
+holder. Set `CODEWHALE_BUILD_SLOTS=1` on a smaller machine,
+`CODEWHALE_BUILD_LOCK=0` to skip the lock, or `CODEWHALE_BUILD_LOCK_FILE` to
+name the slot-0 lock file. A self-hosted CI runner on the same machine joins the lock when its
 `.env` sets `CODEWHALE_BUILD_LOCK_FILE` to the same path: the macOS Test job
 then holds it from the first test build to the end of the job. The lock is advisory: Cargo started
 directly, outside these scripts, does not take it, and on platforms without

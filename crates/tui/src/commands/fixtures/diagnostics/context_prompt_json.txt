@@ -25,11 +25,11 @@ message:
         "source_kind": "project_context",
         "label": "Project instructions",
         "source_path": null,
-        "activation_reason": "file_present",
-        "estimated_tokens": 160,
+        "activation_reason": "omitted",
+        "estimated_tokens": 0,
         "counting_confidence": "high",
         "authority_tier": 5,
-        "truncation_reason": null
+        "truncation_reason": "installed instruction receipt unavailable"
       },
       {
         "source_kind": "project_context_pack",
@@ -152,7 +152,7 @@ message:
         "truncation_reason": "no API messages yet"
       }
     ],
-    "total_estimated_tokens": 2367,
+    "total_estimated_tokens": 2207,
     "active_context_estimated_tokens": 48,
     "overflow_guard_estimated_tokens": 48,
     "context_window_tokens": 1000000,

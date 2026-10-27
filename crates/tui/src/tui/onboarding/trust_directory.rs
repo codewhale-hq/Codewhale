@@ -75,7 +75,7 @@ pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
     let location = format!(
         "{}{}",
         app.tr(MessageId::OnboardTrustLocationPrefix),
-        crate::utils::display_path(&app.workspace)
+        codewhale_util::utils::display_path(&app.workspace)
     );
     for segment in wrap_on_path_separators(&location, content_width) {
         lines.push(Line::from(Span::styled(
@@ -108,9 +108,9 @@ pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use crate::tui::views::action_footer_lines;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     #[test]
@@ -178,9 +178,9 @@ mod tests {
 #[cfg(test)]
 mod narrow_terminal_tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use codewhale_localization::{Locale, MessageId, tr};
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
     use unicode_width::UnicodeWidthStr;
 

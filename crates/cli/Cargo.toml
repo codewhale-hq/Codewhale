@@ -24,6 +24,7 @@ name = "codewhale"
 path = "src/main.rs"
 
 [dependencies]
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

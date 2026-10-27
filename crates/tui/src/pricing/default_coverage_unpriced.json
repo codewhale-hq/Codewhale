@@ -1,13 +1,12 @@
 [
   {
     "reason": "no_pricing_row",
-    "review": "Source reviewed at 36f11b82; fixture recorded time is 2026-09-08T12:00Z with 1000 input/100 output and no cache usage or live/signed/override price state. Exact default tuples below have no usable provider-owned bundled/hand row (pricing.rs:1639,1674,2282; provider_lake.rs:993). OpenRouter and Together defaults retired from this group: the refreshed bundled seed now prices deepseek/deepseek-v4-pro and deepseek-ai/DeepSeek-V4-Pro. Zen resolves gpt-5.6 to wire gpt-5.6-sol (route/offering.rs:312), while its hand fallback prices only DeepSeek Flash (pricing.rs:2426). Wanjie is not the direct-DeepSeek retired-alias/hand-price owner. No numeric rates or model-owner rates are inferred. ZenMux review: metered OpenAI-compatible aggregator; its deepseek/deepseek-v4.1-flash default has no bundled/hand pricing row and resolves costless until the live catalog prices it. ModelScope review (ba62522a20 omitted this row): same shape — metered default with no bundled/hand row in pricing.rs.",
+    "review": "Source reviewed at 36f11b82; fixture recorded time is 2026-09-08T12:00Z with 1000 input/100 output and no cache usage or live/signed/override price state. Exact default tuples below have no usable provider-owned bundled/hand row (pricing.rs:1639,1674,2282; provider_lake.rs:993). OpenRouter and Together defaults retired from this group: the refreshed bundled seed now prices deepseek/deepseek-v4-pro and deepseek-ai/DeepSeek-V4-Pro. Zen resolves gpt-5.6 to wire gpt-5.6-sol (route/offering.rs:312), while its hand fallback prices only DeepSeek Flash (pricing.rs:2426). Wanjie is not the direct-DeepSeek retired-alias/hand-price owner. No numeric rates or model-owner rates are inferred. ZenMux review: metered OpenAI-compatible aggregator; its deepseek/deepseek-v4.1-flash default has no bundled/hand pricing row and resolves costless until the live catalog prices it. ModelScope review (ba62522a20 omitted this row): same shape — metered default with no bundled/hand row in pricing.rs. Google's gemini-3.1-pro-preview retired from this group on 2026-10-23: the seed now carries google rows and prices it (2/12 per MTok, 4/18 above 200k context).",
     "routes": [
       ["atlascloud", "deepseek-ai/deepseek-v4-flash", "https://api.atlascloud.ai/v1", "chat_completions", "metered"],
       ["codewhale", "deepseek/deepseek-v4-pro", "https://api.codewhale.net/v1", "chat_completions", "metered"],
       ["deepinfra", "deepseek-ai/DeepSeek-V4-Pro", "https://api.deepinfra.com/v1/openai", "chat_completions", "metered"],
       ["edenai", "deepseek/deepseek-v4-pro", "https://api.edenai.run/v3", "chat_completions", "metered"],
-      ["google", "gemini-3.1-pro-preview", "https://generativelanguage.googleapis.com/v1beta/openai", "chat_completions", "metered"],
       ["huggingface", "deepseek-ai/DeepSeek-V4-Pro", "https://router.huggingface.co/v1", "chat_completions", "metered"],
       ["longcat", "LongCat-2.0", "https://api.longcat.chat/openai/v1", "chat_completions", "metered"],
       ["modelscope", "Qwen/Qwen3.5-397B-A17B", "https://api-inference.modelscope.cn/v1", "chat_completions", "metered"],
@@ -15,7 +14,7 @@
       ["nvidia-nim", "deepseek-ai/deepseek-v4-pro", "https://integrate.api.nvidia.com/v1", "chat_completions", "metered"],
       ["opencode-zen", "gpt-5.6-sol", "https://opencode.ai/zen/v1", "responses", "metered"],
       ["openmodel", "deepseek-v4-flash", "https://api.openmodel.ai", "anthropic_messages", "metered"],
-      ["orcarouter", "deepseek/deepseek-v4-pro", "https://api.orcarouter.ai/v1", "chat_completions", "metered"],
+      ["orcarouter", "deepseek/deepseek-v4.1-flash-1017", "https://api.orcarouter.ai/v1", "chat_completions", "metered"],
       ["qianfan", "ernie-4.0-turbo-8k", "https://api.baiduqianfan.ai/v1", "chat_completions", "metered"],
       ["sakana", "fugu", "https://api.sakana.ai/v1", "chat_completions", "metered"],
       ["siliconflow", "deepseek-ai/DeepSeek-V4-Pro", "https://api.siliconflow.com/v1", "chat_completions", "metered"],
@@ -46,7 +45,7 @@
       ["minimax", "MiniMax-M3", "https://api.minimax.io/v1", "chat_completions", "unknown"],
       ["minimax-anthropic", "MiniMax-M3", "https://api.minimax.io/anthropic", "anthropic_messages", "unknown"],
       ["ollama-cloud", "gpt-oss:120b", "https://ollama.com/v1", "chat_completions", "unknown"],
-      ["openai-codex", "gpt-5.6", "https://api.openai.com/v1", "responses", "unknown"],
+      ["openai-codex", "gpt-6.1-sol", "https://api.openai.com/v1", "responses", "unknown"],
       ["sensenova", "deepseek-v4-flash", "https://token.sensenova.cn/v1", "chat_completions", "unknown"],
       ["standardcompute", "standardcompute", "https://api.stdcmpt.com/v1", "chat_completions", "unknown"],
       ["tsubasa", "tsubasa-pro", "https://api.tsubasa.sh/v1", "chat_completions", "unknown"],

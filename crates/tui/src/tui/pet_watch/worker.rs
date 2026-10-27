@@ -29,20 +29,6 @@ pub struct Raster {
     pub lit: f64,
 }
 
-impl Raster {
-    /// A hidden clock advance is not a new picture in reduced motion.
-    pub fn same_picture(&self, other: &Self) -> bool {
-        self.width == other.width
-            && self.height == other.height
-            && self.cells == other.cells
-            && self.channel == other.channel
-            && self.arch == other.arch
-            && self.hollow == other.hollow
-            && self.dozing == other.dozing
-            && self.lit == other.lit
-    }
-}
-
 pub enum Command {
     Export,
     Observe {

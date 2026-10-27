@@ -476,6 +476,8 @@ struct ThreadIdParams {
 
 #[derive(Debug, Deserialize)]
 struct ThreadMessageParams {
+    #[serde(default)]
+    allowed_tools: Option<Vec<String>>,
     #[serde(default, rename = "maxOutputTokens", alias = "max_output_tokens")]
     max_output_tokens: Option<std::num::NonZeroU32>,
     thread_id: String,
@@ -534,10 +536,9 @@ async fn shutdown_signal() {
 /// There is no `/tool`: a direct tool call outside a turn would need its own
 /// tool catalog and approval decision, and the Engine behind the runtime
 /// bridge is the only tool and approval authority. Tools run inside turns
-/// (`/prompt`, `/thread` messages). This server does not surface approvals:
-/// `RuntimeBridge::stream_turn_events` forwards only `item.delta` and the
-/// turn's completion, and there is no decision route, so approval-gated work
-/// belongs on the Runtime API (`/v1/threads/*`, `POST /v1/approvals/{id}`).
+/// (`/prompt`, `/thread` messages). Compatibility turns require an explicit
+/// empty `allowed_tools` list; interactive execution is refused before turn
+/// admission. Tool-enabled work belongs on `app-server --http` and `/v1/*`.
 const ADVERTISED_ROUTES: &[&str] = &["/thread", "/app", "/prompt"];
 
 /// Existing compatibility routes adopted by the canonical host listener.
@@ -1155,6 +1156,7 @@ fn http_error_from_jsonrpc(err: JsonRpcError) -> (StatusCode, Json<Value>) {
                 "code": code,
                 "jsonrpc_code": err.code,
                 "message": err.message,
+                "data": err.data,
             }
         })),
     )
@@ -1167,12 +1169,20 @@ async fn thread_handler(State(state): State<AppState>, Json(req): Json<ThreadReq
     if let ThreadRequest::Message {
         thread_id,
         input,
+        allowed_tools,
         images,
         max_output_tokens,
     } = req
     {
-        return match run_http_thread_message(&state, thread_id, input, images, max_output_tokens)
-            .await
+        return match run_http_thread_message(
+            &state,
+            thread_id,
+            input,
+            allowed_tools,
+            images,
+            max_output_tokens,
+        )
+        .await
         {
             Ok(res) => (StatusCode::OK, Json(res)).into_response(),
             Err(err) => http_error_from_jsonrpc(err).into_response(),
@@ -1468,6 +1478,19 @@ impl JsonRpcError {
         }
     }
 
+    fn unsupported_interactive_execution() -> Self {
+        Self {
+            code: -32602,
+            message: "Compatibility transports cannot answer approvals or clarification requests. Use codewhale app-server --http and /v1/* for interactive turns and goal execution; tool-free turn requests require explicit allowed_tools: [].".to_string(),
+            data: Some(json!({
+                "error": "interactive_execution_unsupported",
+                "entrypoint": "codewhale app-server --http",
+                "allowed_tools_required": [],
+                "goal_execution": false,
+            })),
+        }
+    }
+
     /// Server error (-32000..-32099): the turn engine could not be reached,
     /// or refused to start the turn — either way nothing ran. Distinct from
     /// `internal` because the caller can retry this one once a runtime is up.
@@ -1572,6 +1595,9 @@ async fn handle_thread_request(
     state: &AppState,
     req: ThreadRequest,
 ) -> std::result::Result<ThreadResponse, JsonRpcError> {
+    if matches!(&req, ThreadRequest::GoalSet(_)) {
+        return Err(JsonRpcError::unsupported_interactive_execution());
+    }
     thread_control::handle(state, req).await
 }
 
@@ -1585,6 +1611,7 @@ struct RuntimeTurnInput<'a> {
 }
 
 struct BridgedTurn<'a> {
+    allowed_tools: Option<&'a [String]>,
     max_output_tokens: Option<std::num::NonZeroU32>,
     /// Client-facing thread id; the bridge maps it to a runtime thread.
     thread_key: &'a str,
@@ -1618,6 +1645,9 @@ async fn run_bridged_turn<W: AsyncWrite + Unpin>(
     turn: BridgedTurn<'_>,
     transcript: Option<&mut TurnTranscript>,
 ) -> std::result::Result<Value, JsonRpcError> {
+    if !matches!(turn.allowed_tools, Some([])) {
+        return Err(JsonRpcError::unsupported_interactive_execution());
+    }
     let mut hint = {
         let hints = state.stdio_thread_hints.lock().await;
         hints.get(turn.thread_key).cloned()
@@ -1742,6 +1772,7 @@ async fn run_prompt_turn<W: AsyncWrite + Unpin>(
         state,
         writer,
         BridgedTurn {
+            allowed_tools: req.allowed_tools.as_deref(),
             max_output_tokens: req.max_output_tokens,
             thread_key: &thread_key,
             input: &req.prompt,
@@ -1798,6 +1829,7 @@ async fn run_http_thread_message(
     state: &AppState,
     thread_id: String,
     input: String,
+    allowed_tools: Option<Vec<String>>,
     images: Vec<RuntimeImageInput>,
     max_output_tokens: Option<std::num::NonZeroU32>,
 ) -> std::result::Result<ThreadResponse, JsonRpcError> {
@@ -1807,6 +1839,7 @@ async fn run_http_thread_message(
         state,
         &mut sink,
         BridgedTurn {
+            allowed_tools: allowed_tools.as_deref(),
             max_output_tokens,
             thread_key: &thread_id,
             input: &input,
@@ -1847,6 +1880,7 @@ async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
         state,
         writer,
         BridgedTurn {
+            allowed_tools: parsed.allowed_tools.as_deref(),
             max_output_tokens: parsed.max_output_tokens,
             thread_key: &parsed.thread_id,
             input: &parsed.input,
@@ -2432,7 +2466,7 @@ impl RuntimeBridge {
             max_output_tokens,
             expected_workspace,
         } = input;
-        let mut request = json!({ "prompt": input });
+        let mut request = json!({ "prompt": input, "allowed_tools": [] });
         if let Some(workspace) = expected_workspace {
             request["expected_workspace"] = json!(workspace);
         }
@@ -2485,14 +2519,31 @@ impl RuntimeBridge {
             });
         }
 
-        emit_stdio_event(
+        if let Err(error) = emit_stdio_event(
             writer,
             json!({
                 "type": "response_start",
                 "response_id": response_id,
             }),
         )
-        .await?;
+        .await
+        {
+            let orphan = InFlightTurn {
+                base_url: self.base_url.clone(),
+                auth_token: self.auth_token.clone(),
+                runtime_thread_id: thread_id.to_string(),
+                turn_id: turn_id.clone(),
+            };
+            if let Err(interrupt) = interrupt_turn_request(&orphan).await {
+                tracing::warn!(
+                    thread_id,
+                    turn_id = %turn_id,
+                    "failed to interrupt a turn whose response_start could not be written: {}",
+                    interrupt.message
+                );
+            }
+            return Err(error);
+        }
 
         // Publish the turn only for the streaming window, and take it back
         // before any `?` below: a turn that has already finished must never
@@ -2638,6 +2689,11 @@ impl RuntimeBridge {
                 }
                 let payload = envelope.get("payload").cloned().unwrap_or(Value::Null);
                 match event_name.as_str() {
+                    "approval.required" | "user_input.required" => {
+                        bail!(
+                            "interactive_execution_unsupported: Runtime requested interaction during a tool-free compatibility turn; use codewhale app-server --http and /v1/*"
+                        );
+                    }
                     "item.delta" => {
                         let kind = payload
                             .get("kind")
@@ -2920,6 +2976,10 @@ async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                     "transport": transport.label(),
                     "families": ["thread/*", "app/*", "prompt/*"],
                     "turn_image_inputs": true,
+                    "interactive_execution": false,
+                    "goal_execution": false,
+                    "tool_free_turns": true,
+                    "full_api_entrypoint": "codewhale app-server --http",
                     "methods": methods,
                 }),
                 should_exit: false,
@@ -2928,6 +2988,10 @@ async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
         "thread/capabilities" => StdioDispatchResult {
             result: json!({
                 "turn_image_inputs": true,
+                "interactive_execution": false,
+                "goal_execution": false,
+                "tool_free_turns": true,
+                "full_api_entrypoint": "codewhale app-server --http",
                 "methods": [
                     "thread/request",
                     "thread/create",
@@ -2953,6 +3017,7 @@ async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             if let ThreadRequest::Message {
                 thread_id,
                 input,
+                allowed_tools,
                 images,
                 max_output_tokens,
             } = request
@@ -2963,6 +3028,7 @@ async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                     ThreadMessageParams {
                         thread_id,
                         input,
+                        allowed_tools,
                         images,
                         max_output_tokens,
                     },
@@ -3188,6 +3254,10 @@ async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
         }
         "prompt/capabilities" => StdioDispatchResult {
             result: json!({
+                "interactive_execution": false,
+                "goal_execution": false,
+                "tool_free_turns": true,
+                "full_api_entrypoint": "codewhale app-server --http",
                 "methods": ["prompt/request", "prompt/run"]
             }),
             should_exit: false,
@@ -3241,8 +3311,12 @@ async fn process_app_request(
             ok: true,
             data: json!({
                 "routes": ADVERTISED_ROUTES,
+                "interactive_execution": false,
+                "goal_execution": false,
+                "tool_free_turns": true,
+                "full_api_entrypoint": "codewhale app-server --http",
                 "config": ["get", "set", "unset", "list", "reload"],
-                "events": ["response_start", "response_delta", "response_end", "tool_call_start", "tool_call_result"],
+                "events": ["response_start", "response_delta", "response_end"],
                 "transport": "stdio+http",
                 "config_path": state.config_path.as_ref().map(|p| p.display().to_string()),
             }),
@@ -3671,7 +3745,7 @@ mod tests {
         let refused = dispatch_stdio_request(
             &state,
             "prompt/request",
-            json!({"prompt":"must not dispatch"}),
+            json!({"allowed_tools": [], "prompt":"must not dispatch"}),
         )
         .await
         .expect_err("no captured owner can execute this prompt");
@@ -4392,7 +4466,7 @@ mod tests {
         let result = dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"canonical-1","input":"next"}),
+            json!({"thread_id":"canonical-1","allowed_tools": [], "input":"next"}),
         )
         .await
         .unwrap();
@@ -4406,7 +4480,7 @@ mod tests {
         let error = dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"never-created","input":"hello"}),
+            json!({"thread_id":"never-created","allowed_tools": [], "input":"hello"}),
         )
         .await
         .unwrap_err();
@@ -4415,6 +4489,7 @@ mod tests {
             &state,
             "never-created".into(),
             "hello".into(),
+            Some(Vec::new()),
             Vec::new(),
             None,
         )
@@ -4441,7 +4516,7 @@ mod tests {
         dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"client-1","input":"first"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"first"}),
         )
         .await
         .unwrap();
@@ -4459,7 +4534,7 @@ mod tests {
         dispatch_stdio_request(
             &restarted,
             "thread/message",
-            json!({"thread_id":"client-1","input":"second"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"second"}),
         )
         .await
         .unwrap();
@@ -4501,7 +4576,7 @@ mod tests {
         dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"client-1","input":"hello"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"hello"}),
         )
         .await
         .unwrap();
@@ -4545,7 +4620,7 @@ mod tests {
         dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"client-1","input":"hello"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"hello"}),
         )
         .await
         .unwrap();
@@ -4583,7 +4658,7 @@ mod tests {
         let error = dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"client-1","input":"hello"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"hello"}),
         )
         .await
         .unwrap_err();
@@ -4636,7 +4711,7 @@ mod tests {
         dispatch_stdio_request(
             &state,
             "thread/message",
-            json!({"thread_id":"client-1","input":"retry"}),
+            json!({"thread_id":"client-1","allowed_tools": [], "input":"retry"}),
         )
         .await
         .unwrap();
@@ -5290,11 +5365,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stdio_thread_goal_methods_round_trip_persisted_goal() {
+    async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
         let (state, _tmp, server) = thread_control::compatibility_fixture().await;
         let capabilities = dispatch_stdio_request(&state, "thread/capabilities", json!({}))
             .await
             .unwrap();
+        assert_eq!(capabilities.result["goal_execution"], false);
         assert!(
             capabilities.result["methods"]
                 .as_array()
@@ -5316,9 +5392,17 @@ mod tests {
             json!({"thread_id":id,"objective":"Release 0.10.1","token_budget":59000}),
         )
         .await
+        .unwrap_err();
+        assert_eq!(
+            set.data.unwrap()["error"],
+            "interactive_execution_unsupported"
+        );
+        thread_control::handle(
+            &state,
+            serde_json::from_value(json!({"kind":"goal_set","thread_id":id,"objective":"Release 0.10.1","token_budget":59000})).unwrap(),
+        )
+        .await
         .unwrap();
-        assert_eq!(set.result["goal"]["objective"], "Release 0.10.1");
-        assert_eq!(set.result["goal"]["status"], "active");
         let got = dispatch_stdio_request(&state, "thread/goal/get", json!({"thread_id":id}))
             .await
             .unwrap();
@@ -5489,7 +5573,7 @@ mod tests {
         client_writer
             .write_all(
                 b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"thread/message\",\
-                  \"params\":{\"thread_id\":\"thr_a\",\"input\":\"go\"}}\n",
+                  \"params\":{\"thread_id\":\"thr_a\",\"input\":\"go\",\"allowed_tools\":[]}}\n",
             )
             .await
             .expect("send thread/message");
@@ -5648,7 +5732,7 @@ mod tests {
         let result = dispatch_stdio_request(
             &state,
             "prompt/run",
-            json!({"prompt":"review","maxOutputTokens":1500}),
+            json!({"allowed_tools": [], "prompt":"review","maxOutputTokens":1500}),
         )
         .await;
         assert!(result.unwrap_err().message.contains("does not support"));
@@ -5660,7 +5744,7 @@ mod tests {
                 dispatch_stdio_request(
                     &state,
                     "prompt/run",
-                    json!({"prompt":"review","model":model,"maxOutputTokens":1500})
+                    json!({"allowed_tools": [], "prompt":"review","model":model,"maxOutputTokens":1500})
                 )
                 .await
                 .is_err()
@@ -5673,15 +5757,15 @@ mod tests {
         for (method, params) in [
             (
                 "prompt/run",
-                json!({"prompt":"review","maxOutputTokens":1500}),
+                json!({"allowed_tools": [], "prompt":"review","maxOutputTokens":1500}),
             ),
             (
                 "thread/message",
-                json!({"thread_id":"stdio-cap","input":"review","maxOutputTokens":1500}),
+                json!({"thread_id":"stdio-cap","allowed_tools": [], "input":"review","maxOutputTokens":1500}),
             ),
             (
                 "thread/request",
-                json!({"kind":"message","thread_id":"request-cap","input":"review","maxOutputTokens":1500}),
+                json!({"kind":"message","thread_id":"request-cap","allowed_tools": [], "input":"review","maxOutputTokens":1500}),
             ),
         ] {
             dispatch_stdio_request(&state, method, params)
@@ -5692,6 +5776,7 @@ mod tests {
             &state,
             "http-cap".into(),
             "review".into(),
+            Some(Vec::new()),
             Vec::new(),
             std::num::NonZeroU32::new(1500),
         )
@@ -5716,7 +5801,7 @@ mod tests {
                 dispatch_stdio_request(
                     &state,
                     "prompt/run",
-                    json!({"prompt":"review","maxOutputTokens":invalid})
+                    json!({"allowed_tools": [], "prompt":"review","maxOutputTokens":invalid})
                 )
                 .await
                 .is_err()
@@ -6099,7 +6184,7 @@ mod tests {
             &state,
             &mut writer,
             "prompt/request",
-            json!({ "prompt": "what is 2+2" }),
+            json!({ "allowed_tools": [], "prompt": "what is 2+2" }),
             AppTransport::Stdio,
         )
         .await
@@ -6167,9 +6252,13 @@ mod tests {
         // Port 9 (discard) refuses immediately: no runtime is listening.
         seed_bridge_at(&state, "http://127.0.0.1:9".to_string()).await;
 
-        let err = dispatch_stdio_request(&state, "prompt/run", json!({ "prompt": "hello" }))
-            .await
-            .expect_err("a prompt with no reachable runtime must fail, not echo");
+        let err = dispatch_stdio_request(
+            &state,
+            "prompt/run",
+            json!({ "allowed_tools": [], "prompt": "hello" }),
+        )
+        .await
+        .expect_err("a prompt with no reachable runtime must fail, not echo");
         assert_eq!(err.code, RUNTIME_UNAVAILABLE_CODE);
 
         let (status, Json(body)) = http_error_from_jsonrpc(err);
@@ -6184,9 +6273,13 @@ mod tests {
     #[tokio::test]
     async fn empty_prompt_is_rejected_before_any_runtime_work() {
         let (state, _tmp) = capability_test_state();
-        let err = dispatch_stdio_request(&state, "prompt/request", json!({ "prompt": "   " }))
-            .await
-            .expect_err("an empty prompt must be rejected");
+        let err = dispatch_stdio_request(
+            &state,
+            "prompt/request",
+            json!({ "allowed_tools": [], "prompt": "   " }),
+        )
+        .await
+        .expect_err("an empty prompt must be rejected");
         assert_eq!(err.code, -32602);
         assert!(
             state.runtime_bridge.lock().await.is_none(),
@@ -6205,6 +6298,7 @@ mod tests {
             &state,
             "thr_http".to_string(),
             "go".to_string(),
+            Some(Vec::new()),
             Vec::new(),
             None,
         )
@@ -6237,6 +6331,7 @@ mod tests {
             &state,
             "thr_http".to_string(),
             "go".to_string(),
+            Some(Vec::new()),
             Vec::new(),
             None,
         )
@@ -6248,6 +6343,73 @@ mod tests {
     #[tokio::test]
     async fn submit_user_input_refuses_instead_of_claiming_resolution() {
         let (state, _tmp) = capability_test_state();
+        for (method, params) in [
+            (
+                "thread/goal/set",
+                json!({"thread_id":"unknown","objective":"must not start"}),
+            ),
+            (
+                "thread/request",
+                json!({"kind":"goal_set","thread_id":"unknown","objective":"must not start"}),
+            ),
+        ] {
+            let error = dispatch_stdio_request(&state, method, params)
+                .await
+                .unwrap_err();
+            let (status, Json(body)) = http_error_from_jsonrpc(error);
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body["error"]["data"]["error"],
+                "interactive_execution_unsupported"
+            );
+            assert!(state.runtime_thread_map.lock().await.is_empty());
+            assert!(state.runtime_bridge.lock().await.is_none());
+        }
+        for tools in [Value::Null, json!(["shell"])] {
+            for (method, params) in [
+                (
+                    "thread/message",
+                    json!({"thread_id":"unknown","input":"do work","allowed_tools":tools}),
+                ),
+                (
+                    "thread/request",
+                    json!({"kind":"message","thread_id":"unknown","input":"do work","allowed_tools":tools}),
+                ),
+                (
+                    "prompt/run",
+                    json!({"prompt":"do work","allowed_tools":tools}),
+                ),
+                (
+                    "prompt/request",
+                    json!({"prompt":"do work","allowed_tools":tools}),
+                ),
+            ] {
+                let error = dispatch_stdio_request(&state, method, params)
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, -32602);
+                assert_eq!(
+                    error.data.unwrap()["error"],
+                    "interactive_execution_unsupported"
+                );
+            }
+            let error = run_http_thread_message(
+                &state,
+                "unknown".into(),
+                "do work".into(),
+                serde_json::from_value(tools).unwrap(),
+                Vec::new(),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.data.unwrap()["error"],
+                "interactive_execution_unsupported"
+            );
+            assert!(state.runtime_thread_map.lock().await.is_empty());
+            assert!(state.runtime_bridge.lock().await.is_none());
+        }
         let response = process_app_request(
             &state,
             AppRequest::SubmitUserInput {
@@ -6763,7 +6925,10 @@ mod tests {
             let requests = seen.lock().await;
             assert_eq!(requests.len(), usize::from(supported));
             if supported {
-                assert_eq!(requests[0], json!({"prompt":"look","images":images}));
+                assert_eq!(
+                    requests[0],
+                    json!({"allowed_tools": [], "prompt":"look","images":images})
+                );
             }
             server.abort();
         }
@@ -6773,13 +6938,15 @@ mod tests {
     fn runtime_image_daemon_all_input_families_preserve_images() {
         let image = json!({"mime":"image/png","dataBase64":"AQ=="});
         let thread: ThreadMessageParams = serde_json::from_value(
-            json!({"thread_id":"thr_fixture","input":"look","images":[image.clone()]}),
+            json!({"thread_id":"thr_fixture","allowed_tools": [], "input":"look","images":[image.clone()]}),
         )
         .unwrap();
-        let prompt: PromptRequest =
-            serde_json::from_value(json!({"prompt":"look","images":[image.clone()]})).unwrap();
+        let prompt: PromptRequest = serde_json::from_value(
+            json!({"allowed_tools": [], "prompt":"look","images":[image.clone()]}),
+        )
+        .unwrap();
         let generic: ThreadRequest = serde_json::from_value(
-            json!({"kind":"message","thread_id":"thr_fixture","input":"look","images":[image]}),
+            json!({"kind":"message","thread_id":"thr_fixture","allowed_tools": [], "input":"look","images":[image]}),
         )
         .unwrap();
         assert_eq!(thread.images, prompt.images);

@@ -11,6 +11,7 @@ description = "Typed Workflow IR and validation for Codewhale"
 workspace = true
 
 [dependencies]
+codewhale-protocol = { path = "../protocol", version = "0.10.2" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

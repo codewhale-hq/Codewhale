@@ -8,15 +8,15 @@
 //! [`restore_point_snapshot`] (`pre-turn:`, `tool:`, `post-tool:`) and
 //! [`post_turn_snapshot`] book-end a turn and its tool calls by
 //! taking a workspace-level snapshot into a side git repo (see
-//! `crate::snapshot`). They are intentionally non-blocking and
+//! `codewhale_snapshot`). They are intentionally non-blocking and
 //! non-fatal: any IO error is logged at WARN and swallowed so a busted
 //! filesystem or missing `git` binary never derails the agent loop.
 //! `/restore N` and the `revert_turn` tool both consume these
 //! snapshots.
 
 use crate::core::events::TurnRoute;
-use crate::snapshot::{SnapshotRepo, TakenSnapshot};
 use codewhale_models::Usage;
+use codewhale_snapshot::{SnapshotRepo, TakenSnapshot};
 use std::path::Path;
 use std::time::Instant;
 
@@ -30,7 +30,7 @@ pub enum StepBudgetSource {
 }
 
 impl StepBudgetSource {
-    /// The configuration key named in soft-landing and exhaustion notices.
+    /// The configuration key named in exhaustion notices.
     #[must_use]
     pub const fn key_label(self) -> &'static str {
         match self {
@@ -225,7 +225,7 @@ impl TurnContext {
         self.step_limit().is_some_and(|limit| self.step >= limit)
     }
 
-    /// Model steps consumed so far (for soft-landing and reporting).
+    /// Model steps consumed so far (for reporting).
     #[must_use]
     pub fn steps_used(&self) -> u32 {
         self.step
@@ -708,7 +708,7 @@ pub fn restore_point_snapshot(
     label: &str,
     cap_bytes: u64,
     session_id: Option<&str>,
-    since: Option<&crate::snapshot::SnapshotId>,
+    since: Option<&codewhale_snapshot::SnapshotId>,
 ) -> Option<(TakenSnapshot, Option<Vec<std::path::PathBuf>>)> {
     snapshot_with_label_since(workspace, label, cap_bytes, session_id, since)
 }
@@ -744,7 +744,7 @@ fn snapshot_with_label_since(
     label: &str,
     cap_bytes: u64,
     session_id: Option<&str>,
-    since: Option<&crate::snapshot::SnapshotId>,
+    since: Option<&codewhale_snapshot::SnapshotId>,
 ) -> Option<(TakenSnapshot, Option<Vec<std::path::PathBuf>>)> {
     match SnapshotRepo::open_or_init_with_cap(workspace, cap_bytes) {
         Ok(repo) => {
@@ -817,7 +817,7 @@ fn snapshot_with_label_since(
 }
 
 /// The count cap [`SnapshotRepo::prune_keep_last_n`] applies after each
-/// snapshot: [`crate::snapshot::DEFAULT_MAX_SNAPSHOTS`], which tests can
+/// snapshot: [`codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS`], which tests can
 /// lower per workspace to exercise pruning without taking fifty snapshots.
 fn max_snapshots_for(workspace: &Path) -> usize {
     #[cfg(test)]
@@ -825,7 +825,7 @@ fn max_snapshots_for(workspace: &Path) -> usize {
         return max;
     }
     let _ = workspace;
-    crate::snapshot::DEFAULT_MAX_SNAPSHOTS
+    codewhale_snapshot::DEFAULT_MAX_SNAPSHOTS
 }
 
 #[cfg(test)]
@@ -976,11 +976,11 @@ fn maybe_notify_snapshots_disabled_once(
     let message = error.to_string();
     // The gate markers are declared by the snapshot policy that produces them,
     // so this stays one classifier rather than a second copy of the rules.
-    let scope = if message.contains(crate::snapshot::GATE_TOO_LARGE_MARKER) {
+    let scope = if message.contains(codewhale_snapshot::GATE_TOO_LARGE_MARKER) {
         SnapshotsDisabledScope::WorkspaceTooLarge
-    } else if message.contains(crate::snapshot::GATE_TOO_MANY_ENTRIES_MARKER) {
+    } else if message.contains(codewhale_snapshot::GATE_TOO_MANY_ENTRIES_MARKER) {
         SnapshotsDisabledScope::TooManyFiles
-    } else if message.contains(crate::snapshot::GATE_UNSAFE_LOCATION_MARKER) {
+    } else if message.contains(codewhale_snapshot::GATE_UNSAFE_LOCATION_MARKER) {
         SnapshotsDisabledScope::UnsafeLocation
     } else {
         // A real snapshot/data-loss error, not a gate: say snapshots are
@@ -994,7 +994,9 @@ fn maybe_notify_snapshots_disabled_once(
     };
     let limit = match scope {
         SnapshotsDisabledScope::WorkspaceTooLarge => format_cap_bytes(cap_bytes),
-        SnapshotsDisabledScope::TooManyFiles => crate::snapshot::SIZE_WALK_MAX_ENTRIES.to_string(),
+        SnapshotsDisabledScope::TooManyFiles => {
+            codewhale_snapshot::SIZE_WALK_MAX_ENTRIES.to_string()
+        }
         _ => String::new(),
     };
     record_snapshot_notice(workspace, session_id, scope, limit)
@@ -1242,7 +1244,7 @@ mod snapshot_notice_tests {
             (
                 format!(
                     "{}: over 2 bytes in x",
-                    crate::snapshot::GATE_TOO_MANY_ENTRIES_MARKER
+                    codewhale_snapshot::GATE_TOO_MANY_ENTRIES_MARKER
                 ),
                 SnapshotsDisabledScope::TooManyFiles,
                 0,
@@ -1250,7 +1252,7 @@ mod snapshot_notice_tests {
             (
                 format!(
                     "{} for home directory: x",
-                    crate::snapshot::GATE_UNSAFE_LOCATION_MARKER
+                    codewhale_snapshot::GATE_UNSAFE_LOCATION_MARKER
                 ),
                 SnapshotsDisabledScope::UnsafeLocation,
                 2 * 1024 * 1024 * 1024,
@@ -1279,7 +1281,7 @@ mod snapshot_notice_tests {
                 // Nothing else asserts it reaches the user, so a dropped
                 // placeholder would render "more than  files" silently.
                 assert!(
-                    line.contains(&crate::snapshot::SIZE_WALK_MAX_ENTRIES.to_string()),
+                    line.contains(&codewhale_snapshot::SIZE_WALK_MAX_ENTRIES.to_string()),
                     "the entry ceiling must be stated, not left as a blank limit: {line}"
                 );
             }
@@ -1293,7 +1295,7 @@ mod snapshot_notice_tests {
             std::io::ErrorKind::InvalidInput,
             format!(
                 "{}: over x bytes in y",
-                crate::snapshot::GATE_TOO_LARGE_MARKER
+                codewhale_snapshot::GATE_TOO_LARGE_MARKER
             ),
         );
         assert!(maybe_notify_snapshots_disabled_once(

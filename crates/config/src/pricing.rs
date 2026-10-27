@@ -915,5 +915,31 @@ fn endpoint_fingerprint_from_source(source: &CatalogSource) -> Option<String> {
     }
 }
 
+/// Cost display currency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostCurrency {
+    Usd,
+    Cny,
+}
+
+impl CostCurrency {
+    #[must_use]
+    pub fn from_setting(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "usd" | "dollar" | "dollars" | "$" => Some(Self::Usd),
+            "cny" | "rmb" | "yuan" | "¥" => Some(Self::Cny),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Usd => "$",
+            Self::Cny => "¥",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

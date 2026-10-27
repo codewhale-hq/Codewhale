@@ -70,9 +70,9 @@ fn body(out: &mut Vec<Line<'static>>, app: &App, id: MessageId, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use codewhale_localization::Locale;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn test_app_with_locale(locale: Locale) -> App {
@@ -114,9 +114,9 @@ mod tests {
 #[cfg(test)]
 mod narrow_locale_tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use codewhale_localization::{Locale, MessageId, tr};
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
     use unicode_width::UnicodeWidthStr;
 

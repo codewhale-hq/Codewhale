@@ -14,7 +14,12 @@ async fn extension_prompt_changes_and_retirement_are_recorded_without_rewriting_
         &Config::default(),
     );
     let context = engine.installed_next_turn_prompt_context();
-    assert!(engine.refresh_pinned_header_for_turn(&context).is_none());
+    assert!(
+        engine
+            .refresh_pinned_header_for_turn(&context)
+            .unwrap()
+            .is_none()
+    );
     let pinned =
         codewhale_core::prefix_cache::system_prompt_text(engine.session.system_prompt.as_ref());
     let sections: Vec<_> = (0..3)
@@ -52,10 +57,13 @@ async fn extension_prompt_changes_and_retirement_are_recorded_without_rewriting_
         display.contains(&block),
         "the entire admitted snapshot reaches the model"
     );
-    assert!(crate::runtime_handoff::is_runtime_owned_user_message(
-        recorded
-    ));
-    assert!(engine.refresh_pinned_header_for_turn(&context).is_none());
+    assert!(codewhale_models::turn_classify::is_runtime_owned_user_message(recorded));
+    assert!(
+        engine
+            .refresh_pinned_header_for_turn(&context)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         codewhale_core::prefix_cache::system_prompt_text(engine.session.system_prompt.as_ref()),
         pinned

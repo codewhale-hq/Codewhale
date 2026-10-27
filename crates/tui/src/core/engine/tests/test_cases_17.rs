@@ -33,15 +33,15 @@ fn stream_read_scenario() {
 
 #[test]
 fn stream_retry_budget_caps_transparent_retries_at_two() {
-    // Case 4 from issue #103: after MAX_TRANSPARENT_STREAM_RETRIES attempts
+    // Case 4 from issue #103: after DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES attempts
     // we stop trying transparently and let the outer error path surface.
     // (The outer per-turn `stream_retry_attempts` retry is a separate layer
     // and is still in effect at the whole-turn level.)
     assert!(
         super::should_transparently_retry_stream(
             false,
-            super::MAX_TRANSPARENT_STREAM_RETRIES - 1,
-            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES - 1,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
             false,
         ),
         "one short of the cap should still retry"
@@ -49,8 +49,8 @@ fn stream_retry_budget_caps_transparent_retries_at_two() {
     assert!(
         !super::should_transparently_retry_stream(
             false,
-            super::MAX_TRANSPARENT_STREAM_RETRIES,
-            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
             false,
         ),
         "at the cap, no further transparent retries"
@@ -58,8 +58,8 @@ fn stream_retry_budget_caps_transparent_retries_at_two() {
     assert!(
         !super::should_transparently_retry_stream(
             false,
-            super::MAX_TRANSPARENT_STREAM_RETRIES + 5,
-            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES + 5,
+            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
             false,
         ),
         "well past the cap, definitely no transparent retries"
@@ -102,14 +102,14 @@ fn sleep_resume_scenario() {
         // detected sleep gap retries regardless of streamed content — the
         // partial output predates the sleep and the user was not watching.
         assert!(
-            super::should_resume_after_sleep(true, 0, super::MAX_STREAM_RETRIES, false),
+            super::should_resume_after_sleep(true, 0, super::DEFAULT_STREAM_MAX_RESUMES, false),
             "detected sleep with full budget must resume"
         );
         assert!(
             super::should_resume_after_sleep(
                 true,
-                super::MAX_STREAM_RETRIES - 1,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES - 1,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "detected sleep one short of the budget must still resume"
@@ -121,7 +121,7 @@ fn sleep_resume_scenario() {
         // deliberate no-retry-after-content policy for ordinary flakes (#103)
         // is preserved.
         assert!(
-            !super::should_resume_after_sleep(false, 0, super::MAX_STREAM_RETRIES, false),
+            !super::should_resume_after_sleep(false, 0, super::DEFAULT_STREAM_MAX_RESUMES, false),
             "no sleep gap → never resume via this layer"
         );
     }
@@ -130,14 +130,14 @@ fn sleep_resume_scenario() {
         assert!(
             !super::should_resume_after_sleep(
                 true,
-                super::MAX_STREAM_RETRIES,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "budget exhausted → surface the failure instead of looping"
         );
         assert!(
-            !super::should_resume_after_sleep(true, 0, super::MAX_STREAM_RETRIES, true),
+            !super::should_resume_after_sleep(true, 0, super::DEFAULT_STREAM_MAX_RESUMES, true),
             "cancelled turn must not be resumed behind the user's back"
         );
     }
@@ -150,7 +150,7 @@ fn sleep_resume_scenario() {
 // content): the #103 policy surfaced the warning and failed the turn, and
 // `codewhale exec` exited 1. In a headless host no operator watches the
 // partial deltas and the fragment is never committed, so the turn loop now
-// re-issues the request instead (bounded by MAX_STREAM_RETRIES), exactly
+// re-issues the request instead (bounded by DEFAULT_STREAM_MAX_RESUMES), exactly
 // like the #2990 sleep-resume.
 
 #[test]
@@ -163,7 +163,7 @@ fn network_drop_scenario() {
                 true,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "headless host + network-class drop with budget must resume"
@@ -173,7 +173,7 @@ fn network_drop_scenario() {
                 false,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "interactive sessions keep the #103 surface-the-warning policy: \
@@ -187,7 +187,7 @@ fn network_drop_scenario() {
                 true,
                 false,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "non-network failures (model/parse/auth) must never be replayed"
@@ -199,8 +199,8 @@ fn network_drop_scenario() {
             super::should_resume_after_network_drop(
                 true,
                 true,
-                super::MAX_STREAM_RETRIES - 1,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES - 1,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false,
             ),
             "one short of the budget should still resume"
@@ -209,8 +209,8 @@ fn network_drop_scenario() {
             !super::should_resume_after_network_drop(
                 true,
                 true,
-                super::MAX_STREAM_RETRIES,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "budget exhausted → surface the failure instead of looping"
@@ -220,7 +220,7 @@ fn network_drop_scenario() {
                 true,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 true
             ),
             "cancelled turn must not be resumed behind the operator's back"
@@ -250,7 +250,7 @@ fn interactive_network_scenario() {
                 true,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "interactive TUI + partial text + no tools + budget must resume"
@@ -262,7 +262,7 @@ fn interactive_network_scenario() {
                 true,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "headless hosts must use the headless resume path, not this one"
@@ -277,7 +277,7 @@ fn interactive_network_scenario() {
                 false,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "no streamed content → transparent retry or nothing-streamed path"
@@ -289,7 +289,7 @@ fn interactive_network_scenario() {
                 true,
                 false,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "in-flight tool calls must never be resumed (side-effect duplication)"
@@ -304,7 +304,7 @@ fn interactive_network_scenario() {
                 true,
                 true,
                 0,
-                super::MAX_STREAM_RETRIES,
+                super::DEFAULT_STREAM_MAX_RESUMES,
                 false
             ),
             "non-network failures must surface normally"
@@ -320,8 +320,8 @@ fn interactive_network_drop_resume_respects_budget_and_cancellation() {
             true,
             true,
             true,
-            super::MAX_STREAM_RETRIES - 1,
-            super::MAX_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_RESUMES - 1,
+            super::DEFAULT_STREAM_MAX_RESUMES,
             false,
         ),
         "one short of the budget should still resume"
@@ -332,8 +332,8 @@ fn interactive_network_drop_resume_respects_budget_and_cancellation() {
             true,
             true,
             true,
-            super::MAX_STREAM_RETRIES,
-            super::MAX_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_RESUMES,
+            super::DEFAULT_STREAM_MAX_RESUMES,
             false,
         ),
         "budget exhausted → surface the failure"
@@ -345,7 +345,7 @@ fn interactive_network_drop_resume_respects_budget_and_cancellation() {
             true,
             true,
             0,
-            super::MAX_STREAM_RETRIES,
+            super::DEFAULT_STREAM_MAX_RESUMES,
             true
         ),
         "cancelled turn must not resume"
@@ -399,7 +399,7 @@ impl StreamOpenFailure {
                 let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
                 let addr = listener.local_addr().expect("local addr");
                 drop(listener);
-                let client = crate::tls::reqwest_client_builder()
+                let client = codewhale_release::tls::reqwest_client_builder()
                     .no_proxy()
                     .build()
                     .expect("client");
@@ -550,7 +550,10 @@ async fn run_headless_turn_with_flaky_network(
             content: "solve the task".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: None,
@@ -787,10 +790,10 @@ async fn stream_open_failure_fails_the_turn_once_the_budget_is_spent() {
     assert_eq!(status, TurnOutcomeStatus::Failed);
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1 + super::MAX_STREAM_RETRIES as usize,
+        1 + super::DEFAULT_STREAM_MAX_RESUMES as usize,
         "initial attempt plus the default resume budget, then the turn fails"
     );
-    assert_eq!(terminal.stream_resumes, super::MAX_STREAM_RETRIES);
+    assert_eq!(terminal.stream_resumes, super::DEFAULT_STREAM_MAX_RESUMES);
     assert!(
         error
             .as_deref()
@@ -902,7 +905,10 @@ async fn terminal_output_limit_followed_by_stream_error_is_charged_and_not_retri
             content: "solve the task".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: None,
@@ -996,7 +1002,10 @@ async fn error_frame_turn_events(turns: Vec<Vec<StreamEvent>>) -> (Vec<Event>, u
             content: "solve the task".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: None,
@@ -1202,7 +1211,10 @@ async fn midstream_error_frame_stops_the_stream_and_drops_trailing_deltas() {
             content: "solve the task".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: None,
@@ -1456,7 +1468,10 @@ async fn run_interactive_turn_with_flaky_network(
             content: "solve the task".to_string(),
             images: Vec::new(),
             mode: AppMode::Agent,
-            route: resolved_route_for_test(&config, crate::config::DEFAULT_TEXT_MODEL),
+            route: resolved_route_for_test(
+                &config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
             goal_objective: None,
@@ -1672,7 +1687,7 @@ impl crate::core::model_client::ModelClient for TransportRetryModelClient {
         "custom"
     }
     fn model(&self) -> &str {
-        crate::config::DEFAULT_TEXT_MODEL
+        codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL
     }
     async fn create_message(
         &self,
@@ -1727,12 +1742,14 @@ async fn engine_transport_retry_receipts_and_counts_match_actual_scripted_attemp
             attempts: std::sync::atomic::AtomicUsize::new(0),
             failures,
         });
-        let config = Config {
-            notifications: Some(crate::config::NotificationsConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some(codewhale_config::notifications::NotificationsConfig {
                 quiet,
                 ..Default::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.notifications = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let (mut engine, handle) = Engine::new_with_model_client(
             deterministic_engine_config(workspace.path()),

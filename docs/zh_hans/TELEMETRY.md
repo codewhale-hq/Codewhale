@@ -224,7 +224,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 { "event": "panic", "site": "crates/tui/src/lib.rs:1582:5" }
 ```
 
-`site` 来自 `panic_info.location()`（`crates/tui/src/lib.rs:1597-1600`）或 `Location::caller()`（`crates/tui/src/utils.rs:523`）。**allowlist 缩减，不是可选的：** 仅当 `file()` 以 `crates/` 开头时才原样发送；否则发送字面量 `"<dep>"`。必须匹配 `^crates/[A-Za-z0-9_/.-]+\.rs:\d+:\d+$` 或 `^<dep>$`。本仓库没有 `--remap-path-prefix`（没有 `.cargo/config.toml`；`Cargo.toml:69-74` 只设置 `lto`/`strip`/`codegen-units`），因此注册表依赖内部的 panic 会得到 `/Users/<builder>/.cargo/registry/src/…/ratatui-0.29.0/src/…`——**构建机器的用户名**，从每个用户的二进制里发送出去。
+`site` 来自 `panic_info.location()`（`crates/tui/src/lib.rs:1597-1600`）或 `Location::caller()`（`crates/util/src/utils.rs:523`）。**allowlist 缩减，不是可选的：** 仅当 `file()` 以 `crates/` 开头时才原样发送；否则发送字面量 `"<dep>"`。必须匹配 `^crates/[A-Za-z0-9_/.-]+\.rs:\d+:\d+$` 或 `^<dep>$`。本仓库没有 `--remap-path-prefix`（没有 `.cargo/config.toml`；`Cargo.toml:69-74` 只设置 `lto`/`strip`/`codegen-units`），因此注册表依赖内部的 panic 会得到 `/Users/<builder>/.cargo/registry/src/…/ratatui-0.29.0/src/…`——**构建机器的用户名**，从每个用户的二进制里发送出去。
 
 **panic 消息绝不发送。** `crates/tui/src/lib.rs:1590-1596` 处的 hook 从 payload 构建 `msg`；遥测绝不能读取它。切片（slicing）panic 会嵌入正在被切片的整个字符串，而本代码库在几十处切片用户和模型文本。
 

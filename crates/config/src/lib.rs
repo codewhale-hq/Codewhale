@@ -7,7 +7,10 @@ mod config_document;
 pub mod credentials;
 pub mod descriptors;
 pub mod device_code;
+pub mod extension_host;
 pub mod external_credentials;
+pub mod hooks;
+pub mod instruction_budget;
 pub mod legacy_root;
 pub mod model_reference;
 pub mod models_dev;
@@ -25,6 +28,7 @@ pub mod resolve;
 pub mod route;
 pub mod settings_schema;
 pub mod setup_state;
+pub mod suggest;
 pub mod user_constitution;
 #[cfg(windows)]
 pub mod windows_identity;
@@ -1724,6 +1728,146 @@ pub struct ToolsToml {
     pub extras: BTreeMap<String, toml::Value>,
 }
 
+/// Existing `[workshop]` threshold configuration, retained for compatibility.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkshopConfig {
+    /// Token threshold above which results become handle-only evidence.
+    #[serde(default)]
+    pub large_output_threshold_tokens: Option<usize>,
+
+    /// Per-tool threshold overrides (tool name → token limit). A tool whose
+    /// name appears here uses this limit instead of
+    /// `large_output_threshold_tokens`.
+    #[serde(default)]
+    pub per_tool_thresholds: Option<std::collections::HashMap<String, usize>>,
+
+    /// Optional model-visible byte budget for a single `read` / `read_file`
+    /// result. Absent keeps the compile-time default (#5367).
+    #[serde(default)]
+    pub read_result_max_bytes: Option<usize>,
+
+    /// Optional model-visible byte budget for a generic tool result after
+    /// spillover. Absent keeps the compile-time default (#5367).
+    #[serde(default)]
+    pub tool_result_max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PluginId(pub String);
+
+impl PluginId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Persistable proof of the exact reviewed plugin authority attached to a
+/// Skill or MCP server. Runtime contexts keep this receipt instead of a
+/// pointer to mutable process-global discovery state, and revalidate it at
+/// every side-effect boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginAuthority {
+    pub plugin_id: PluginId,
+    pub plugin_name: String,
+    pub workspace: std::path::PathBuf,
+    pub state_path: std::path::PathBuf,
+    #[serde(default)]
+    pub managed_policy_path: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    pub managed_policy_source: Option<std::path::PathBuf>,
+    pub source_manifest: std::path::PathBuf,
+    pub staged_manifest: std::path::PathBuf,
+    pub content_hash: String,
+    pub capability_hash: String,
+    /// Monotonic generation of this plugin's persisted authority. Any trust,
+    /// enablement, disablement, or revocation transition invalidates receipts
+    /// held by another process immediately, even when hashes are unchanged.
+    pub state_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectHookAuthority {
+    pub workspace: PathBuf,
+    pub digest: String,
+}
+
+/// Identity of one activation. `generation` bumps on every (re)activation;
+/// `owner_token` is 128+ random bits minted by the core and handed over only
+/// in `ext/activate`. It catches bugs and stale fibers; it is not a boundary
+/// against a malicious plugin in the same process (see the design, §4.4).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct OwnerRef {
+    pub plugin_id: String,
+    pub generation: u64,
+    pub owner_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct EntryRef {
+    pub path: String,
+    pub sha256: String,
+}
+
+impl std::fmt::Display for PluginId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Host uses the SDK by default; explicit Rust selection remains available.
+/// A Host refusal never falls back to Rust.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpBackend {
+    Rust,
+    #[default]
+    Host,
+}
+
+/// Return only the non-secret network authority of a configured URL.
+///
+/// Userinfo, path, query keys and values, and fragments are all omitted because
+/// every one of those components can carry credentials. Parse failures also
+/// omit the original input rather than echoing an attacker-controlled value.
+#[must_use]
+pub fn structural_url_authority(url: &str) -> String {
+    let Some(parsed) = url::Url::parse(url).ok() else {
+        return "unparseable (configured value omitted)".to_string();
+    };
+    let Some(host) = parsed.host_str() else {
+        return "unparseable (configured value omitted)".to_string();
+    };
+    // Url::host_str already includes the brackets around an IPv6 address.
+    let mut authority = format!("{}://{host}", parsed.scheme());
+    if let Some(port) = parsed.port() {
+        authority.push(':');
+        authority.push_str(&port.to_string());
+    }
+    authority
+}
+
+/// Default snapshot retention window: 7 days.
+pub const DEFAULT_SNAPSHOT_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Default workspace-size ceiling above which snapshots self-disable
+/// on first use (2 GB of non-excluded content). Reports from users with
+/// multi-hundred-GB project directories — datasets, model weights,
+/// docker image dumps that fall outside the built-in excludes —
+/// surfaced that `git add -A` on first init would hang the TUI for
+/// minutes-to-hours while indexing the workspace. Snapshots are a
+/// rollback safety net, not a backup tool; bailing out on workspaces
+/// that big is the right tradeoff. Users with legitimate large
+/// monorepos can raise `[snapshots] max_workspace_gb` (or set it to
+/// `0` to disable the cap entirely).
+pub const DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT: u64 = 2 * 1024 * 1024 * 1024;
+
 /// On-disk schema for the `[snapshots]` table (#137). See
 /// `config.example.toml` for documentation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1738,12 +1882,12 @@ pub struct SnapshotsToml {
     pub extras: BTreeMap<String, toml::Value>,
 }
 
-fn default_snapshots_enabled() -> bool {
+pub fn default_snapshots_enabled() -> bool {
     true
 }
 
 fn default_snapshot_max_age_days() -> u64 {
-    7
+    DEFAULT_SNAPSHOT_MAX_AGE.as_secs() / (24 * 60 * 60)
 }
 
 impl Default for SnapshotsToml {
@@ -1778,31 +1922,63 @@ pub struct FleetConfigToml {
     pub exec: FleetExecConfig,
 }
 
-/// Canonical recursion-depth policy for the headless worker runtime.
-///
-/// Single source of truth shared by BOTH standalone sub-agents and fleet
-/// workers so the two cannot drift into "two moving targets":
-/// - [`DEFAULT_SPAWN_DEPTH`] is the default recursion budget (the sub-agent
-///   runtime's `DEFAULT_MAX_SPAWN_DEPTH` is defined as this value).
-/// - [`MAX_SPAWN_DEPTH_CEILING`] is the opt-in safety cap; every configured
-///   value (fleet `max_spawn_depth`, the `agent` tool's `max_depth`) clamps to it.
-///
-/// A worker runs at `spawn_depth = 0` and may spawn while
-/// `spawn_depth + 1 <= max_spawn_depth`, so a depth of N affords N nested
-/// delegation levels below the root worker. The default of 3 affords at least
-/// three recursion levels out of the box; the root worker still runs at
-/// depth 0 even when the budget is 0.
-pub const DEFAULT_SPAWN_DEPTH: u32 = 3;
 pub const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 900;
 pub const MIN_STREAM_CHUNK_TIMEOUT_SECS: u64 = 1;
 pub const MAX_STREAM_CHUNK_TIMEOUT_SECS: u64 = 3600;
 
-/// Hard ceiling on recursion depth for any worker/sub-agent. The default stays
-/// conservative at [`DEFAULT_SPAWN_DEPTH`], while explicit config can opt into
-/// deeper trees for direct-API providers that can tolerate the fanout.
-/// Raising this single constant lifts the limit everywhere (the fleet clamp
-/// and `agent` validation both read it).
-pub const MAX_SPAWN_DEPTH_CEILING: u32 = 8;
+/// Default bounded wait for SSE response headers. Intentionally shorter than
+/// the per-chunk idle timeout: it covers connection setup and upstream header
+/// return only, never model thinking time after streaming has started.
+pub const DEFAULT_STREAM_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// Accepted response-header wait range, in seconds.
+pub const MIN_STREAM_OPEN_TIMEOUT_SECS: u64 = 5;
+pub const MAX_STREAM_OPEN_TIMEOUT_SECS: u64 = 300;
+
+/// Resolve the response-header wait shared by every streaming adapter.
+///
+/// A positive `[stream].open_timeout_secs` (legacy `[tui]` fallback) wins; omitted or `0`
+/// falls back to the env override (`CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`,
+/// legacy `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS`), then the 45s default. Every
+/// source clamps to `5..=300`.
+#[must_use]
+pub fn resolve_stream_open_timeout(configured_secs: Option<u64>) -> std::time::Duration {
+    match configured_secs {
+        Some(secs) if secs > 0 => std::time::Duration::from_secs(
+            secs.clamp(MIN_STREAM_OPEN_TIMEOUT_SECS, MAX_STREAM_OPEN_TIMEOUT_SECS),
+        ),
+        _ => stream_open_timeout_from_env(
+            std::env::var("CODEWHALE_STREAM_OPEN_TIMEOUT_SECS")
+                .or_else(|_| std::env::var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS"))
+                .ok()
+                .as_deref(),
+        ),
+    }
+}
+
+pub fn stream_open_timeout_from_env(value: Option<&str>) -> std::time::Duration {
+    let secs = value
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_STREAM_OPEN_TIMEOUT.as_secs())
+        .clamp(MIN_STREAM_OPEN_TIMEOUT_SECS, MAX_STREAM_OPEN_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Returns true when CODEWHALE_FORCE_HTTP1 (legacy alias: DEEPSEEK_FORCE_HTTP1)
+/// is set to a truthy value (`1`, `true`, `yes`, `on`, case-insensitive). Read
+/// only by `Config::force_http1`, which ORs it with the selected stream config flag; every
+/// client builder and stream open takes that resolved value (#103, #6700). Anything else (unset, `0`,
+/// `false`, ...) leaves HTTP/2 on.
+#[must_use]
+pub fn force_http1_from_env() -> bool {
+    std::env::var("CODEWHALE_FORCE_HTTP1")
+        .or_else(|_| std::env::var("DEEPSEEK_FORCE_HTTP1"))
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// Largest representable absolute depth; admission rejects arithmetic overflow.
+pub const MAX_SPAWN_DEPTH_CEILING: u32 = u32::MAX;
 
 /// Headless worker execution constraints (#3027).
 ///
@@ -1822,10 +1998,8 @@ pub struct FleetExecConfig {
     #[serde(default = "default_fleet_max_turns")]
     pub max_turns: u32,
     /// Recursive child-agent budget for headless fleet workers.
-    /// Defaults to [`DEFAULT_SPAWN_DEPTH`] (3) so a fleet worker has the SAME
-    /// recursion budget as a standalone sub-agent — fleet and sub-agents are one
-    /// substrate, not two. Set 0 to block child `agent` calls (the root worker
-    /// still runs); the value is clamped to [`MAX_SPAWN_DEPTH_CEILING`].
+    /// Defaults to [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`], with no product depth cap.
+    /// Set zero to block child delegation while preserving the root worker.
     #[serde(default = "default_fleet_max_spawn_depth")]
     pub max_spawn_depth: u32,
     /// Extra system prompt text appended to every headless worker.
@@ -1849,7 +2023,7 @@ fn default_fleet_max_turns() -> u32 {
 }
 
 fn default_fleet_max_spawn_depth() -> u32 {
-    DEFAULT_SPAWN_DEPTH
+    codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
 }
 
 fn default_fleet_output_format() -> String {
@@ -2220,7 +2394,7 @@ pub struct WorkflowConfigToml {
     /// elevate shell/network, or otherwise leave the read-only envelope.
     #[serde(default = "default_workflow_require_approval_for_writes")]
     pub require_approval_for_writes: bool,
-    /// Hard ceiling on total children in one Workflow run (product: 1000).
+    /// Operator-selected total child limit. Zero leaves total work uncapped.
     #[serde(default = "default_workflow_max_children")]
     pub max_children: u32,
     /// Maximum concurrently live agents inside one Workflow run (product: 16).
@@ -2228,13 +2402,11 @@ pub struct WorkflowConfigToml {
     pub max_concurrent: u32,
     /// Maximum structural nesting depth accepted for Workflow IR.
     ///
-    /// This is independent of Runtime child delegation, whose default is 3
-    /// and whose opt-in hard ceiling is 8.
+    /// Zero leaves structural depth uncapped. Runtime delegation is separate.
     #[serde(default = "default_workflow_max_depth")]
     pub max_depth: u32,
-    /// Default shared token budget for a Workflow run and its children.
-    /// `0` applies no shared cap — the run is advisory-only like the parent
-    /// turn loop — while any positive value is enforced across the run.
+    /// Legacy declared token hint retained in Workflow receipts. The current
+    /// runtime does not meter or enforce this value. Zero omits the hint.
     #[serde(default = "default_workflow_default_token_budget")]
     pub default_token_budget: u64,
 }
@@ -2252,7 +2424,7 @@ fn default_workflow_require_approval_for_writes() -> bool {
 }
 
 fn default_workflow_max_children() -> u32 {
-    1000
+    0
 }
 
 fn default_workflow_max_concurrent() -> u32 {
@@ -2260,14 +2432,10 @@ fn default_workflow_max_concurrent() -> u32 {
 }
 
 fn default_workflow_max_depth() -> u32 {
-    5
+    0
 }
 
 fn default_workflow_default_token_budget() -> u64 {
-    // Off by default: a cap the caller never asked for must not throttle a
-    // run — a 120k default silently killed real fan-outs mid-task (#6189).
-    // Spend discipline stays available as an explicit opt-in (tool
-    // `token_budget`, spec `budget.max_tokens`, or a configured value here).
     0
 }
 
@@ -4262,7 +4430,7 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
             | "deepseek-reasoner" | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
         ) => DEFAULT_OPENROUTER_FLASH_MODEL.to_string(),
         (ProviderKind::Orcarouter, "deepseek-v4-pro" | "deepseek-v4pro") => {
-            DEFAULT_ORCAROUTER_MODEL.to_string()
+            "deepseek/deepseek-v4-pro".to_string()
         }
         (
             ProviderKind::Orcarouter,
@@ -4694,7 +4862,7 @@ fn resolve_deepseek_base_url(
     }
 }
 
-fn xiaomi_mimo_base_url_for_mode(mode: &str) -> Option<&'static str> {
+pub fn xiaomi_mimo_base_url_for_mode(mode: &str) -> Option<&'static str> {
     let normalized = mode.trim().to_ascii_lowercase().replace(['_', ' '], "-");
     if normalized.is_empty() || xiaomi_mimo_mode_uses_standard_endpoint(&normalized) {
         return None;
@@ -4727,7 +4895,7 @@ fn xiaomi_mimo_base_url_for_mode(mode: &str) -> Option<&'static str> {
     })
 }
 
-fn xiaomi_mimo_mode_uses_standard_endpoint(normalized_mode: &str) -> bool {
+pub fn xiaomi_mimo_mode_uses_standard_endpoint(normalized_mode: &str) -> bool {
     matches!(
         normalized_mode,
         "standard" | "default" | "payg" | "paygo" | "pay-as-you-go" | "pay-as-go"
@@ -4774,7 +4942,7 @@ fn xiaomi_mimo_env_api_key_for_runtime(
     env_value(XIAOMI_MIMO_TOKEN_PLAN_ENV_VARS).or_else(|| env_value(XIAOMI_MIMO_STANDARD_ENV_VARS))
 }
 
-fn resolve_xiaomi_mimo_base_url(
+pub fn resolve_xiaomi_mimo_base_url(
     configured: Option<String>,
     api_key: Option<&str>,
     mode: Option<&str>,
@@ -4810,7 +4978,7 @@ fn resolve_xiaomi_mimo_base_url(
     }
 }
 
-fn xiaomi_mimo_api_key_uses_token_plan(api_key: Option<&str>) -> bool {
+pub fn xiaomi_mimo_api_key_uses_token_plan(api_key: Option<&str>) -> bool {
     api_key.is_some_and(|key| key.trim_start().starts_with("tp-"))
 }
 
@@ -5058,7 +5226,7 @@ fn base_url_uses_local_host(base_url: &str) -> bool {
         .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
 }
 
-fn base_url_host(base_url: &str) -> Option<&str> {
+pub fn base_url_host(base_url: &str) -> Option<&str> {
     let without_scheme = base_url
         .split_once("://")
         .map_or(base_url, |(_, rest)| rest);

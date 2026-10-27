@@ -4,8 +4,8 @@
 //! tools can resolve and normalize reasoning effort without depending on
 //! presentation types.
 
-use crate::config::ProviderKind;
-use crate::work_graph::ReasoningEffortTier;
+use codewhale_config::ProviderKind;
+use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
 
 /// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
 ///
@@ -119,21 +119,21 @@ impl ReasoningEffort {
     /// for its compatibility fallback, but a new CLI, settings, or tool input
     /// must reject an unknown value instead of quietly turning it into `max`.
     pub fn parse_strict(value: &str) -> Result<Self, String> {
-        let trimmed = value.trim();
-        match trimmed.to_ascii_lowercase().as_str() {
-            "off" | "disabled" | "none" | "false" => Ok(Self::Off),
-            "minimal" => Ok(Self::Minimal),
-            "low" | "minimum" | "light" => Ok(Self::Low),
-            "medium" | "mid" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "xhigh" => Ok(Self::XHigh),
-            "auto" | "automatic" => Ok(Self::Auto),
-            "ultra" | "ultracode" => Ok(Self::Ultra),
-            "max" | "maximum" => Ok(Self::Max),
-            _ => Err(format!(
-                "Unrecognized reasoning effort {trimmed:?}. Expected one of: auto, off, minimal, low, medium, high, xhigh, ultra, or max."
-            )),
-        }
+        let canonical = codewhale_config::settings_schema::canonical_reasoning_effort(value)?;
+        Ok([
+            Self::Off,
+            Self::Minimal,
+            Self::Low,
+            Self::Medium,
+            Self::High,
+            Self::XHigh,
+            Self::Ultra,
+            Self::Auto,
+            Self::Max,
+        ]
+        .into_iter()
+        .find(|effort| effort.as_setting() == canonical)
+        .unwrap_or_default())
     }
 
     /// Parse a persisted config-file string into an effort tier. Unknown
@@ -253,13 +253,15 @@ impl ReasoningEffort {
         wire_model: &str,
     ) -> Self {
         let normalized = self.normalize_for_provider(provider);
-        if crate::config::is_exact_kimi_code_k3_route(provider, base_url, wire_model) {
+        if codewhale_runtime::config::is_exact_kimi_code_k3_route(provider, base_url, wire_model) {
             return match normalized {
                 Self::Off => Self::Low,
                 other => other,
             };
         }
-        if crate::config::is_exact_direct_moonshot_k3_route(provider, base_url, wire_model) {
+        if codewhale_runtime::config::is_exact_direct_moonshot_k3_route(
+            provider, base_url, wire_model,
+        ) {
             return match normalized {
                 Self::Off => Self::Low,
                 Self::Medium => Self::High,

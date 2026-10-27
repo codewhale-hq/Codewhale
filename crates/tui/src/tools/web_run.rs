@@ -11,12 +11,12 @@ use super::web::extract::{DocumentKind, ExtractedDocument, extract_document};
 #[cfg(test)]
 use super::web::fetch::fetch_readable_with_initial_pin;
 use super::web::fetch::{FetchOptions, HARD_MAX_BYTES, Readable, fetch_readable};
-#[cfg(test)]
-use super::web::guard::DnsPin;
 use super::web::overflow::bound_text as bound_web_text;
 #[cfg(test)]
 use super::web::overflow::inline_char_budget;
 use async_trait::async_trait;
+#[cfg(test)]
+use codewhale_net::guard::DnsPin;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1103,7 +1103,7 @@ async fn run_image_search(
     context: &ToolContext,
 ) -> Result<(Vec<ImageResultEntry>, Option<String>), ToolError> {
     super::web_search::check_policy(context.network_policy.as_ref(), "duckduckgo.com")?;
-    let client = crate::tls::reqwest_client_builder()
+    let client = codewhale_release::tls::reqwest_client_builder()
         .timeout(Duration::from_millis(timeout_ms))
         .user_agent(USER_AGENT)
         .build()
@@ -1131,7 +1131,7 @@ async fn run_image_search(
             .await
             .map_err(ToolError::from)?
     } else {
-        let bytes = crate::utils::read_response_body_capped(seed_resp, HARD_MAX_BYTES)
+        let bytes = codewhale_util::utils::read_response_body_capped(seed_resp, HARD_MAX_BYTES)
             .await
             .map_err(|e| {
                 ToolError::execution_failed(format!("Failed to read image seed response: {e}"))
@@ -1167,7 +1167,7 @@ async fn run_image_search(
             .await
             .map_err(ToolError::from)?
     } else {
-        let bytes = crate::utils::read_response_body_capped(api_resp, HARD_MAX_BYTES)
+        let bytes = codewhale_util::utils::read_response_body_capped(api_resp, HARD_MAX_BYTES)
             .await
             .map_err(|e| {
                 ToolError::execution_failed(format!("Failed to read image response: {e}"))
@@ -1460,7 +1460,7 @@ fn page_from_document(
         }
         DocumentKind::Media => {
             let extension = document.media_extension.unwrap_or("bin");
-            let digest = crate::hashing::sha256_hex(&*payload.bytes);
+            let digest = codewhale_runtime::hashing::sha256_hex(&*payload.bytes);
             let artifact_id = format!("web_media_{}", &digest[..16]);
             let (_absolute, relative) = crate::artifacts::write_session_artifact_bytes(
                 &context.state_namespace,
@@ -1498,7 +1498,7 @@ fn bounded_web_run_result(
         full,
         context,
         |body| {
-            let digest = crate::hashing::sha256_hex(body.as_bytes());
+            let digest = codewhale_runtime::hashing::sha256_hex(body.as_bytes());
             format!("web_run_{}", &digest[..16])
         },
         "web.run result",
@@ -1859,7 +1859,7 @@ fn decode_html_entities(text: &str) -> String {
 }
 
 fn url_encode(input: &str) -> String {
-    crate::utils::url_encode(input)
+    codewhale_util::utils::url_encode(input)
 }
 
 // === Tests ===
@@ -2024,8 +2024,8 @@ mod tests {
 
     #[tokio::test]
     async fn text_search_uses_configured_shared_backend_and_exposes_receipt() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolSpec;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2080,8 +2080,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_ref_ids_resolve_to_their_source_urls_for_open() {
-        use crate::config::SearchProvider;
         use crate::tools::spec::ToolSpec;
+        use codewhale_runtime::config::SearchProvider;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2422,7 +2422,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_policy_denies_direct_open_url() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),

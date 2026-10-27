@@ -6,12 +6,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::config::Config;
 use crate::integrations::dsh::{
     self, CLI_COMMAND, DetectEnv, DshAdapter, DshIntegrationState, DshPaths, DshPlan,
     DshReceiptEvent, DshStatusReport, ProcessRunner, RELATIONSHIP_LABEL,
 };
 use crate::{DshIntegrationCommand, IntegrationsCommand};
+use codewhale_runtime::config::Config;
 
 pub(crate) fn run(config: &Config, workspace: &Path, command: IntegrationsCommand) -> Result<()> {
     match command {

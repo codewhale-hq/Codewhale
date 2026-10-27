@@ -98,8 +98,8 @@ impl RegisterCommand for LaneCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn test_app() -> App {

@@ -10,8 +10,8 @@
 use codewhale_protocol::engine_owner::{OwnerActivityKind, OwnerOperationOutcome};
 use serde_json::Value;
 
-use super::canonical_action::{canonical_action_alias, is_action_family};
 use super::spec::{RichToolResult, ToolError};
+use codewhale_execpolicy::canonical_action::{canonical_action_alias, is_action_family};
 
 /// Activity kind for a resolved (non-MCP) operation name.
 fn kind_for_operation(operation: &str) -> OwnerActivityKind {

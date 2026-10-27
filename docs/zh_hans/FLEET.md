@@ -508,7 +508,7 @@ fleet 不定义项目/工作区信任级别、文件系统或网络可达范围�
 
 ## 子级授权：0.10.1 的范围与 0.11 的重做（#6298）
 
-子级的权限是一个授权对象 `ChildGrant`（`crates/tui/src/worker_profile.rs`）。它随 v0.10.0（966ef974e1，#5633）发布。它包含 `files`（none / read / write）、`shell`（none / inspect / verify / full）、`network`、`desktop`、工具 `surface`、调用方显式的 `scope`，以及 `spawn`。角色是它之上的预设（`ChildGrant::for_role`），而 `ChildGrant::resolve` 会把预设与由父级导出的配置和调用方的范围取交集。子级的工具目录、它的派发拒绝，以及它的能力范围，读取的都是同一个授权，因此子级看得见的工具就是它能调用的工具。`desktop` 不在任何预设里。
+子级的权限是一个授权对象 `ChildGrant`（`crates/agent-contract/src/worker_profile.rs`）。它随 v0.10.0（966ef974e1，#5633）发布。它包含 `files`（none / read / write）、`shell`（none / inspect / verify / full）、`network`、`desktop`、工具 `surface`、调用方显式的 `scope`，以及 `spawn`。角色是它之上的预设（`ChildGrant::for_role`），而 `ChildGrant::resolve` 会把预设与由父级导出的配置和调用方的范围取交集。子级的工具目录、它的派发拒绝，以及它的能力范围，读取的都是同一个授权，因此子级看得见的工具就是它能调用的工具。`desktop` 不在任何预设里。
 
 `ShellGrant::Verify` 也随 v0.10.0 发布：Verifier 预设获得有界的内置验证表面（默认的工作区检查、纯粹的测试选择、有界的 Git fetch 与 merge-tree），而不是 shell 语法。
 

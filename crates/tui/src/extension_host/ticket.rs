@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use super::protocol::OwnerRef;
 use super::tier::HostTier;
+use codewhale_config::OwnerRef;
 
 /// What a ticket is for. A kind says how it is used up, and nothing else; the
 /// row says the rest.

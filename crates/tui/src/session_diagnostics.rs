@@ -180,7 +180,7 @@ fn source_handle(
     SessionFailureSource {
         line,
         event,
-        turn_ref: turn_id.map(crate::utils::redacted_identifier_for_log),
+        turn_ref: turn_id.map(codewhale_util::utils::redacted_identifier_for_log),
         tool_name,
         timestamp: string_field_any(value, &["timestamp", "ts", "created_at", "createdAt"]),
     }

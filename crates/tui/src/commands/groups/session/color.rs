@@ -1,5 +1,7 @@
 use super::CommandResult;
-use codewhale_command_contract::facets::CommandSessionControlContext;
+use codewhale_command_contract::facets::{
+    CommandPresentationContext, CommandSessionControlContext,
+};
 use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{
     CommandInfo as ContractInfo, RegisterCommand as ContractRegisterCommand,
@@ -24,7 +26,8 @@ impl ContractRegisterCommand<CommandResult> for ColorCmd {
     }
     fn handler() -> CommandHandler<CommandResult> {
         CommandHandler::Contextual {
-            capabilities: codewhale_command_contract::handler::CommandCapabilities::SESSION_CONTROL,
+            capabilities: codewhale_command_contract::handler::CommandCapabilities::SESSION_CONTROL
+                .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION),
             handler: color_contextual,
         }
     }
@@ -38,11 +41,15 @@ pub(in crate::commands) fn color_contextual(
     let Some(control) = parts.control.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: session_control".to_string());
     };
-    color_portable(control, arg)
+    let Some(presentation) = parts.presentation.as_deref_mut() else {
+        return CommandResult::error("Command capability unavailable: presentation".to_string());
+    };
+    color_portable(control, presentation, arg)
 }
 
 pub(in crate::commands) fn color_portable(
     control: &mut dyn CommandSessionControlContext,
+    presentation: &dyn CommandPresentationContext,
     arg: Option<&str>,
 ) -> CommandResult {
     let requested = arg
@@ -61,18 +68,27 @@ pub(in crate::commands) fn color_portable(
         Some(name) => match COMPOSER_COLORS.iter().find(|color| **color == name) {
             Some(color) => Some(*color),
             None => {
-                return CommandResult::error(format!(
-                    "Unknown color. Choose one of: {}, or off.",
-                    COMPOSER_COLORS.join(", ")
-                ));
+                return CommandResult::error(
+                    presentation
+                        .translate(
+                            "cmd_color_unknown",
+                            &[("colors", &COMPOSER_COLORS.join(", "))],
+                        )
+                        .unwrap_or_else(std::convert::identity),
+                );
             }
         },
     };
+    let message = match next {
+        Some(color) => presentation.translate("cmd_color_set", &[("color", color)]),
+        None => presentation.translate("cmd_color_reset", &[]),
+    };
+    let message = match message {
+        Ok(message) => message,
+        Err(error) => return CommandResult::error(error),
+    };
     match control.set_composer_color(next.map(str::to_string)) {
-        Ok(()) => CommandResult::message(match next {
-            Some(color) => format!("Composer color for this chat: {color}"),
-            None => "Composer color for this chat reset to the theme default".to_string(),
-        }),
+        Ok(()) => CommandResult::message(message),
         Err(error) => CommandResult::error(error),
     }
 }

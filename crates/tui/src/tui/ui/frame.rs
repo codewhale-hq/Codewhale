@@ -37,7 +37,7 @@ pub(crate) fn session_cost_label(app: &App) -> String {
 /// for flat-priced routes, for other vendors, and while auto routing has not
 /// pinned a concrete model.
 pub(crate) fn billing_tier_label(app: &App, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
-    use crate::config::ProviderKind;
+    use codewhale_config::ProviderKind;
     use codewhale_localization::{MessageId, tr};
     if app.auto_model || !matches!(app.api_provider, ProviderKind::Deepseek) {
         return None;
@@ -77,9 +77,9 @@ fn output_tokens(app: &App) -> Option<u64> {
 /// edits and `tui.status_items` persists. Between 0.9.12 and this change the
 /// row ignored that list entirely and the picker's toggles did nothing.
 pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
-    use crate::config::StatusItem;
     use codewhale_localization::MessageId;
     use codewhale_palette::ChromeInk;
+    use codewhale_runtime::config::StatusItem;
     let mut segments = Vec::new();
     let tier = crate::tui::underwater::ShellTier::for_chrome_width(width);
     let shows = |item: StatusItem| app.status_items.contains(&item);
@@ -476,7 +476,7 @@ fn render_info_row(
     let info = InfoLine::new(&app.ui_theme, &help_hint, &segments)
         .ascii_safe(crate::tui::color_compat::ascii_safe_enabled())
         .hovered(hovered)
-        .compact(app.metrics_line == crate::config::ChromeRowPreset::Compact);
+        .compact(app.metrics_line == codewhale_runtime::config::ChromeRowPreset::Compact);
     let hitboxes = infoline_hitboxes(&info, area);
     let route_area = hitboxes
         .iter()
@@ -599,7 +599,7 @@ fn register_clickable_chrome_for_hover(app: &App) {
     // nothing is the same defect as one that acts without lighting up.
     if let Some(composer) = app.viewport.last_composer_area
         && let Some(submit) = crate::tui::widgets::active_composer_submit_rect(app, composer)
-        && app.composer_enter_would_submit()
+        && app.composer_enter_would_submit(true)
     {
         crate::tui::hover_layer::register_rect(
             crate::tui::hover_hit::HoverTargetKind::Link,
@@ -838,7 +838,7 @@ pub(crate) async fn build_preview_request_inputs(
 
     if app
         .hooks
-        .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
+        .has_hooks_for_event(codewhale_config::hooks::HookEvent::MessageSubmit)
     {
         return posture(None, PreviewUnresolved::MessageSubmitHooksConfigured);
     }
@@ -848,6 +848,7 @@ pub(crate) async fn build_preview_request_inputs(
         display: prompt.clone(),
         skill_instruction: app.active_skill.clone(),
         skill_provenance: app.active_skill_provenance.clone(),
+        extension_command: None,
         history_echoed: false,
     };
     let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
@@ -901,7 +902,7 @@ pub(crate) async fn build_preview_request_inputs(
 
     match planned {
         Ok(planned) => {
-            let prompt_context = crate::core::engine::NextTurnPromptContext::for_planned_turn(
+            let mut prompt_context = crate::core::engine::NextTurnPromptContext::for_planned_turn(
                 planned.route.identity.provider,
                 planned.route.model.clone(),
                 crate::route_budget::known_route_limits(planned.route.candidate.limits()),
@@ -912,6 +913,15 @@ pub(crate) async fn build_preview_request_inputs(
                 app.translation_enabled,
                 app.verbosity.clone(),
             );
+            let effort = planned.effective_reasoning_effort.as_deref();
+            prompt_context.planned_output_tokens =
+                Some(crate::route_budget::effective_max_output_tokens_for_turn(
+                    planned.route.identity.provider,
+                    &planned.route.model,
+                    crate::route_budget::known_route_limits(planned.route.candidate.limits()),
+                    None,
+                    effort,
+                ));
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
@@ -938,8 +948,11 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         .provider_identity
         .as_ref()
         .filter(|identity| config.verify_provider_identity(identity).is_ok());
-    let max_subagents = app.max_subagents.clamp(1, crate::config::MAX_SUBAGENTS);
+    let max_subagents = app
+        .max_subagents
+        .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
     EngineConfig {
+        session_checkpoint_backend: Some(crate::core::events::SessionCheckpointProjection::Exact),
         model: app.model.clone(),
         active_route_limits: app.active_route_limits,
         workspace: app.workspace.clone(),
@@ -979,7 +992,9 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagents_enabled: identity
             .is_some_and(|identity| config.subagents_enabled_for_provider(identity)),
         features: config.features(),
-        auto_review_policy: config.auto_review_policy(),
+        auto_review_policy: crate::core::authority::auto_review::AutoReviewPolicy::from_config(
+            config,
+        ),
         compaction: app.compaction_config(),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
@@ -1004,7 +1019,9 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_tool_calls: None,
         hook_executor: app.runtime_services.hook_executor.clone(),
         network_policy: config.network.clone().map(|toml_cfg| {
-            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+            codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
+                codewhale_net::network_policy::NetworkPolicy::from(toml_cfg),
+            )
         }),
         snapshots_enabled: config.snapshots_config().enabled,
         snapshots_max_workspace_bytes: config
@@ -1014,10 +1031,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         // The TUI records no snapshot receipts; its post-turn snapshot stays
         // off the input path (#234).
         record_restore_points: false,
-        lsp_config: config
-            .lsp
-            .clone()
-            .map(crate::config::LspConfigToml::into_runtime),
+        lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
         fleet_roster: std::sync::Arc::new(crate::fleet::identity::load_effective_roster(
@@ -1040,11 +1054,11 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             |identity| config.subagent_heartbeat_timeout_secs_for_provider(identity),
         )),
         prefer_bwrap: config.prefers_bwrap(),
-        bwrap_extensions: crate::sandbox::BwrapMountExtensions {
+        bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
             read_only_roots: config.bwrap_ro_roots.clone(),
             device_roots: config.bwrap_dev_roots.clone(),
         },
-        read_denylist: config.read_denylist(),
+        read_denylist: codewhale_sandbox::read_guard::ReadDenylist::from_config(config),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         speech_output_dir: config.speech_output_dir(),
@@ -1057,12 +1071,11 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         goal_continuation_delay_seconds: config.goal_continuation_delay_seconds(),
         goal_enforce_token_budget: config.goal_enforce_token_budget(),
         reasoning_only_max_reprompts: config.reasoning_only_max_reprompts(),
+        reasoning_only_on_output_limit: config.reasoning_only_on_output_limit(),
         reasoning_only_reprompt_message: Some(config.reasoning_only_reprompt_message().to_string()),
         locale_tag: app.ui_locale.tag().to_string(),
         workshop: {
-            crate::tools::large_output_router::WorkshopConfig::install_active(
-                config.workshop.as_ref(),
-            );
+            crate::tools::large_output_router::install_active_workshop(config.workshop.as_ref());
             config.workshop.clone()
         },
         search_provider: config.search_provider(),
@@ -1070,7 +1083,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_base_url: config.search.as_ref().and_then(|s| s.base_url.clone()),
         search_native: config.search_native(),
         tools_always_load: config.tools_always_load(),
-        user_input_limits: config.user_input_limits(),
+        user_input_limits: crate::tools::user_input::UserInputLimits::from_config(config),
         user_input_timeout: config.user_input_timeout(),
         goal_max_steps: Some(config.goal_max_steps()),
         tools: config.tools.clone(),
@@ -1096,7 +1109,7 @@ pub(crate) fn build_app_system_prompt_with_goal(
     goal_objective: Option<&str>,
 ) -> SystemPrompt {
     let instructions = configured_instruction_sources(config);
-    let user_memory_block = crate::native_memory::native_prompt_block(
+    let user_memory_block = codewhale_runtime::native_memory::native_prompt_block(
         config.memory_enabled(),
         &config.memory_path(),
         &app.workspace,
@@ -1108,7 +1121,38 @@ pub(crate) fn build_app_system_prompt_with_goal(
         &app.workspace,
         app.current_session_id.as_deref(),
     );
-    prompts::system_prompt_for_mode_with_context_skills_and_session(
+    let settings = crate::project_context::InstructionSettings::from_config(config);
+    let raw = crate::project_context::capture_instruction_context(
+        &app.workspace,
+        &instructions,
+        &settings,
+    );
+    let effort = crate::core::engine::turn_loop::resolve_auto_effort(
+        Some(app.reasoning_effort.as_setting()),
+        app.api_provider,
+        &config.active_route_base_url(),
+        &app.model,
+    );
+    let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
+        &settings.budget,
+        crate::route_runtime::ContextWindowResolution {
+            tokens: crate::route_budget::route_context_window_tokens(
+                app.api_provider,
+                &app.model,
+                app.active_route_limits,
+            ),
+            source: app.active_context_window_source,
+        }
+        .instruction_budget_tokens(),
+        Some(crate::route_budget::effective_max_output_tokens_for_turn(
+            app.api_provider,
+            &app.model,
+            app.active_route_limits,
+            None,
+            effort.as_deref(),
+        ) as usize),
+    );
+    prompts::system_prompt_with_instruction_assembly_for_host(
         &app.workspace,
         None,
         Some(&app.skills_dir),
@@ -1131,7 +1175,10 @@ pub(crate) fn build_app_system_prompt_with_goal(
             plugin_registry: Some(app.extension_plugin_view().as_ref()),
             mode: app.mode,
         },
+        prompts::PromptHost::Interactive,
+        Some((&raw, &settings, budgets)),
     )
+    .0
 }
 
 /// Build the session snapshot every product caller queues into the
@@ -1522,7 +1569,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // session readings until a conversation exists.
     let info_height = if pet_main
         || (mini && !mini_cfg.keep_header)
-        || app.metrics_line == crate::config::ChromeRowPreset::Hidden
+        || app.metrics_line == codewhale_runtime::config::ChromeRowPreset::Hidden
     {
         0
     } else {
@@ -1536,7 +1583,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     let footer_height = if pet_main {
         crate::tui::phase_strip::height()
     } else if (mini && !mini_cfg.keep_footer)
-        || app.posture_bar == crate::config::ChromeRowPreset::Hidden
+        || app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Hidden
     {
         0
     } else {
@@ -1574,6 +1621,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     let body_area = shell_area;
 
     let body_height = body_area.height;
+    let density_rows = crate::tui::widgets::composer_max_height(app.composer_density);
     let composer_max_height = body_height
         .saturating_sub(
             MIN_CHAT_HEIGHT
@@ -1581,7 +1629,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 .saturating_add(info_height)
                 .saturating_add(top_work_strip_height),
         )
-        .max(MIN_COMPOSER_HEIGHT);
+        .max(MIN_COMPOSER_HEIGHT)
+        .min((body_height / 2).max(density_rows));
     let composer_height = if !pet_main && mini && !mini_cfg.keep_input {
         0
     } else {
@@ -1880,7 +1929,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 &app.ui_theme,
                 crate::tui::color_compat::ascii_safe_enabled(),
             )
-            .compact(app.posture_bar == crate::config::ChromeRowPreset::Compact);
+            .compact(app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Compact);
         let buf = f.buffer_mut();
         Block::default()
             .style(Style::default().bg(app.ui_theme.footer_bg))
@@ -2538,9 +2587,9 @@ mod tests {
 
     // ── #5950: the bottom chrome is the user's to compose ─────────────
 
-    use crate::config::StatusItem;
     use crate::tui::app::App;
     use crate::tui::infoline::{InfoLine, InfoSegmentId};
+    use codewhale_runtime::config::StatusItem;
 
     /// A session whose context is `pct` full, by pinning the route's window
     /// to a multiple of what this conversation actually estimates. Nothing
@@ -2603,7 +2652,7 @@ mod tests {
         use crate::reasoning_preference::ReasoningEffort;
 
         let mut app = app_with_context_percent(1);
-        app.api_provider = crate::config::ProviderKind::Openai;
+        app.api_provider = codewhale_config::ProviderKind::Openai;
         app.active_route_base_url = "https://api.openai.com/v1".to_string();
         app.model = "gpt-5.6".to_string();
         app.auto_model = false;
@@ -2736,7 +2785,7 @@ mod tests {
         use crate::tui::underwater::ShellTier;
 
         let mut app = app_with_context_percent(10);
-        app.set_provider_identity(crate::config::ProviderKind::Custom, "my-gateway");
+        app.set_provider_identity(codewhale_config::ProviderKind::Custom, "my-gateway");
         app.auto_model = false;
         app.active_route_base_url = "https://gateway.example/v1".to_string();
         app.model = "vendor-model-x".to_string();
@@ -2782,8 +2831,8 @@ mod tests {
     /// beside the cost; flat routes and other vendors show nothing.
     #[test]
     fn deepseek_tiered_routes_paint_the_billing_tier_beside_the_cost() {
-        use crate::config::ProviderKind;
         use chrono::TimeZone as _;
+        use codewhale_config::ProviderKind;
         let mut app = app_with_context_percent(10);
         app.auto_model = false;
         app.api_provider = ProviderKind::Deepseek;
@@ -2932,7 +2981,7 @@ mod tests {
         let mut app = app_with_context_percent(60);
         app.ui_locale = codewhale_localization::Locale::En;
         app.status_items = StatusItem::default_footer();
-        app.metrics_line = crate::config::ChromeRowPreset::Compact;
+        app.metrics_line = codewhale_runtime::config::ChromeRowPreset::Compact;
         app.session_metrics
             .record_model_call(120, 4_800, Some(1_000), Some(5_000));
         for width in [80, 100, 140] {
@@ -3024,7 +3073,7 @@ mod tests {
         app.workspace = std::path::PathBuf::from("/fixture/checkout");
         app.workspace_context = Some("feature-6112 | clean".to_string());
         app.status_items = vec![StatusItem::Workspace, StatusItem::GitBranch];
-        app.metrics_line = crate::config::ChromeRowPreset::Compact;
+        app.metrics_line = codewhale_runtime::config::ChromeRowPreset::Compact;
         let backend = ratatui::backend::TestBackend::new(100, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal

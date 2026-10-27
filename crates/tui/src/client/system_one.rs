@@ -90,7 +90,9 @@ impl DecisionRouterRoute {
         match self {
             Self::Openrouter => config
                 .builtin_provider_identity(ProviderKind::Openrouter)
-                .is_ok_and(|identity| crate::config::has_api_key_for(config, &identity)),
+                .is_ok_and(|identity| {
+                    crate::provider_readiness::has_api_key_for(config, &identity)
+                }),
             Self::Typesafe => typesafe_api_key(config).is_some(),
         }
     }
@@ -103,7 +105,7 @@ pub(crate) fn typesafe_api_key(config: &Config) -> Option<String> {
     if let Some(key) = std::env::var(TYPESAFE_API_KEY_ENV).ok().and_then(non_empty) {
         return Some(key);
     }
-    if let Some(key) = crate::config::credential_secret_store()
+    if let Some(key) = codewhale_runtime::config::credential_secret_store()
         .and_then(|store| store.get(TYPESAFE_KEY_NAME).ok().flatten())
         .and_then(non_empty)
     {
@@ -302,15 +304,15 @@ impl CodewhaleClient {
                 route_config.provider = Some(TYPESAFE_KEY_NAME.into());
                 route_config
                     .providers
-                    .get_or_insert_with(crate::config::ProvidersConfig::default)
+                    .get_or_insert_with(codewhale_runtime::config::ProvidersConfig::default)
                     .custom
                     .insert(
                         TYPESAFE_KEY_NAME.into(),
-                        crate::config::ProviderConfig {
+                        codewhale_runtime::config::ProviderConfig {
                             kind: Some("openai-compatible".into()),
                             base_url: Some(client.base_url.clone()),
                             api_key: Some(key.clone()),
-                            ..crate::config::ProviderConfig::default()
+                            ..codewhale_runtime::config::ProviderConfig::default()
                         },
                     );
                 client.admitted_identity = route_config
@@ -633,17 +635,20 @@ mod decisions_compatibility_tests {
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let _key =
             crate::test_support::EnvVarGuard::set(TYPESAFE_API_KEY_ENV, "decision-fixture-key");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                deepseek: crate::config::ProviderConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                deepseek: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("chat-fixture-key".into()),
                     max_concurrency: Some(1),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let base = format!("{}/v1", server.uri());
         let ticket = crate::test_support::env_scope_ticket();

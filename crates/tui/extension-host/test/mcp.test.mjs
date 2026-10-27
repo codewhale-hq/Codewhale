@@ -17,6 +17,8 @@ class FakeBroker {
   serverPings = new Set()
   waiting = undefined
   closed = false
+  modern = false
+  inputRequired = false
   failWrite = undefined
   silent = undefined
   grant(method, params) {
@@ -56,15 +58,19 @@ class FakeBroker {
     if (this.failWrite !== undefined && frame.method === this.failWrite) throw new Error('fake partial write failure')
     this.accepted.push(structuredClone(frame))
     if (frame.method === undefined || !Object.hasOwn(frame, 'id') || frame.method === this.silent) return {}
-    const result = frame.method === 'initialize'
+    const result = this.inputRequired && frame.method === 'tools/call'
+      ? { resultType: 'input_required', requestState: 'server-state' }
+      : frame.method === 'server/discover'
+      ? { resultType: 'complete', ttlMs: 0, cacheScope: 'private', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, resources: {}, prompts: {} } }
+      : frame.method === 'initialize'
       ? { protocolVersion: '2025-06-18', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'fixture', version: '1.0' } }
       : frame.method === 'tools/list'
-        ? { tools: [{ name: 'echo', inputSchema: { type: 'object' } }], nextCursor: 'next-page' }
+        ? { ...(this.modern ? { ttlMs: 0, cacheScope: 'private' } : {}), tools: [{ name: 'echo', inputSchema: { type: 'object' } }], nextCursor: 'next-page' }
         : frame.method === 'resources/list' ? { resources: [] }
         : frame.method === 'resources/templates/list' ? { resourceTemplates: [] }
         : frame.method === 'prompts/list' ? { prompts: [] }
         : { content: [{ type: 'text', text: 'ok' }], isError: false }
-    this.push({ jsonrpc: '2.0', id: frame.id, result })
+    this.push({ jsonrpc: '2.0', id: frame.id, result: this.modern ? { resultType: 'complete', ...result } : result })
     return {}
   }
 }
@@ -74,18 +80,27 @@ async function fixture() {
   return { broker, module, open, signal: new AbortController().signal }
 }
 
-test('pinned SDK performs one legacy handshake and preserves per-page cursor without list cache aggregation', async () => {
+test('pinned SDK performs modern discovery and preserves per-page cursor without list cache aggregation', async () => {
   const f = await fixture()
   try {
+    f.broker.modern = true
+    const metadata = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': initParams.clientInfo, 'io.modelcontextprotocol/clientCapabilities': {} }
+    f.open.discover_grant = f.broker.grant('server/discover', { _meta: metadata })
     const ready = await f.module.open(f.open, f.signal)
-    assert.equal(ready.protocolVersion, '2025-06-18')
-    assert.deepEqual(f.broker.accepted.map(f => f.method), ['initialize', 'notifications/initialized'])
-    assert.equal(f.broker.accepted[0].id, f.open.initialize_grant.wire_id)
-    assert.equal(f.broker.accepted[0].id, '1')
-    const result = await f.module.request({ owner, session_id: f.open.session_id, grant: f.broker.grant('tools/list', {}), deadline_ms: 1000 }, f.signal)
+    assert.equal(ready.protocolVersion, '2026-07-28')
+    assert.equal(ready.serverInfo, undefined)
+    assert.deepEqual(ready.capabilities, { tools: {}, resources: {}, prompts: {} })
+    assert.deepEqual(f.broker.accepted.map(f => f.method), ['server/discover'])
+    assert.equal(f.broker.accepted[0].id, f.open.discover_grant.wire_id)
+    const result = await f.module.request({ owner, session_id: f.open.session_id, grant: f.broker.grant('tools/list', { _meta: metadata }), deadline_ms: 1000 }, f.signal)
     assert.equal(result.nextCursor, 'next-page')
     assert.equal(f.broker.accepted.filter(f => f.method === 'tools/list').length, 1)
-    assert.equal(f.broker.accepted.some(f => f.method === 'server/discover'), false)
+    assert.equal(f.broker.accepted.some(f => f.method === 'initialize'), false)
+    f.broker.inputRequired = true
+    const pending = await f.module.request({ owner, session_id: f.open.session_id, grant: f.broker.grant('tools/call', { name: 'echo', arguments: {}, _meta: metadata }), deadline_ms: 1000 }, f.signal)
+    assert.equal(pending.resultType, 'input_required')
+    assert.equal(pending.requestState, 'server-state')
+    assert.equal(f.broker.accepted.filter(f => f.method === 'tools/call').length, 1)
   } finally { await f.module.dispose() }
   assert.equal(f.broker.closed, true)
 })

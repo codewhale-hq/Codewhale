@@ -12,10 +12,10 @@ use super::activation::CAPABILITY_HASH_DOMAIN_V2;
 use super::activation::{
     CAPABILITY_HASH_DOMAIN_V1, PluginActivationCapability, PluginActivationPolicy,
 };
-use super::path_identity::metadata_is_link_or_reparse;
-#[cfg(windows)]
-use super::path_identity::windows_file_identity;
 use crate::mcp::{McpServerConfig, is_relative_stdio_path_arg};
+use codewhale_util::path_identity::metadata_is_link_or_reparse;
+#[cfg(windows)]
+use codewhale_util::path_identity::windows_file_identity;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_PLUGIN_NAME_CHARS: usize = 64;
@@ -165,18 +165,6 @@ pub struct ResolvedPluginComponents {
     pub hooks: Vec<PathBuf>,
     pub lsp: Vec<PathBuf>,
     pub native: Vec<PathBuf>,
-}
-
-impl ResolvedPluginComponents {
-    pub fn all_paths(&self) -> impl Iterator<Item = &PathBuf> {
-        self.skills
-            .iter()
-            .chain(&self.commands)
-            .chain(&self.agents)
-            .chain(&self.hooks)
-            .chain(&self.lsp)
-            .chain(&self.native)
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,7 +457,7 @@ fn read_sibling_mcp_json(root: &Path, name: &str) -> Result<Option<Vec<u8>>, Str
     if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
         return Err("mcp.json must be a regular file, not a symbolic link".to_string());
     }
-    let file = open_bundle_file(&path)
+    let file = codewhale_util::bundle_file::open_bundle_file(&path)
         .map_err(|e| format!("failed to open mcp.json without following links: {e}"))?;
     let mut bytes = Vec::new();
     file.take(MAX_MANIFEST_BYTES + 1)
@@ -1035,7 +1023,7 @@ fn safe_toml_parse_error(error: &toml::de::Error) -> String {
 }
 
 fn read_manifest_bytes(path: &Path, label: &str) -> Result<Vec<u8>, String> {
-    let file = open_bundle_file(path)
+    let file = codewhale_util::bundle_file::open_bundle_file(path)
         .map_err(|e| format!("failed to open {label} without following links: {e}"))?;
     let mut bytes = Vec::new();
     file.take(MAX_MANIFEST_BYTES + 1)
@@ -1480,12 +1468,12 @@ fn hash_path(
     hash_permissions(&metadata, hasher);
     if metadata.is_dir() {
         #[cfg(windows)]
-        let directory_guard = open_bundle_directory(path)
+        let directory_guard = codewhale_util::bundle_file::open_bundle_directory(path)
             .map_err(|e| format!("failed to open component directory safely: {e}"))?;
         #[cfg(windows)]
         ensure_windows_path_still_opened(path, &directory_guard)?;
         hasher.update(b"D\0");
-        super::path_identity::hash_os_path(hasher, b"bundle-relative-directory", relative);
+        codewhale_util::path_identity::hash_os_path(hasher, b"bundle-relative-directory", relative);
         let mut entries = fs::read_dir(path)
             .map_err(|e| format!("failed to read component directory {}: {e}", path.display()))?
             .collect::<Result<Vec<_>, _>>()
@@ -1505,8 +1493,8 @@ fn hash_path(
             ));
         }
         hasher.update(b"F\0");
-        super::path_identity::hash_os_path(hasher, b"bundle-relative-file", relative);
-        let mut file = open_bundle_file(path)
+        codewhale_util::path_identity::hash_os_path(hasher, b"bundle-relative-file", relative);
+        let mut file = codewhale_util::bundle_file::open_bundle_file(path)
             .map_err(|e| format!("failed to read component file {}: {e}", path.display()))?;
         #[cfg(windows)]
         ensure_windows_path_still_opened(path, &file)?;
@@ -1589,123 +1577,6 @@ fn hash_permissions(metadata: &fs::Metadata, hasher: &mut Sha256) {
     hasher.update(b"portable-mode\0");
 }
 
-#[cfg(unix)]
-pub(crate) fn open_bundle_file(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(windows)]
-pub(crate) fn open_bundle_file(path: &Path) -> std::io::Result<fs::File> {
-    open_bundle_file_with_access(
-        path,
-        windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-    )
-}
-
-/// Same protected reader, retaining the right to move this exact opened object.
-#[cfg(windows)]
-pub(crate) fn open_bundle_file_for_retirement(path: &Path) -> std::io::Result<fs::File> {
-    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ};
-    open_bundle_file_with_access(path, FILE_GENERIC_READ | DELETE)
-}
-
-#[cfg(windows)]
-fn open_bundle_file_with_access(path: &Path, access: u32) -> std::io::Result<fs::File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    let file = fs::OpenOptions::new()
-        .access_mode(access)
-        .share_mode(0x0000_0001) // deny concurrent writes and replacement
-        .custom_flags(0x0020_0000) // FILE_FLAG_OPEN_REPARSE_POINT
-        .open(path)?;
-    let metadata = file.metadata()?;
-    let identity = windows_file_identity(&file)?;
-    if !metadata.is_file()
-        || identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        || identity.links != 1
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "plugin file is a reparse point, hard link, or non-regular file",
-        ));
-    }
-    Ok(file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-pub(crate) fn open_bundle_file(path: &Path) -> std::io::Result<fs::File> {
-    fs::File::open(path)
-}
-
-#[cfg(windows)]
-fn open_bundle_directory(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(0x0000_0001)
-        .custom_flags(0x0220_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
-        .open(path)?;
-    let metadata = file.metadata()?;
-    let identity = windows_file_identity(&file)?;
-    if !metadata.is_dir() || identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "plugin directory is a reparse point or non-directory",
-        ));
-    }
-    Ok(file)
-}
-
-/// Reopen a reviewed path only to compare its current handle identity with a
-/// retained authority handle. Desired access is zero and sharing is permissive
-/// because the retained handle remains responsible for denying writes and
-/// replacement throughout the comparison.
-#[cfg(windows)]
-pub(crate) fn open_bundle_identity_probe(
-    path: &Path,
-    expect_directory: bool,
-) -> std::io::Result<fs::File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_SHARE_READ_WRITE_DELETE: u32 = 0x0000_0007;
-    let flags = FILE_FLAG_OPEN_REPARSE_POINT
-        | if expect_directory {
-            FILE_FLAG_BACKUP_SEMANTICS
-        } else {
-            0
-        };
-    let file = fs::OpenOptions::new()
-        .access_mode(0)
-        .share_mode(FILE_SHARE_READ_WRITE_DELETE)
-        .custom_flags(flags)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    let identity = windows_file_identity(&file)?;
-    let expected_kind = if expect_directory {
-        metadata.is_dir()
-    } else {
-        metadata.is_file() && identity.links == 1
-    };
-    if !expected_kind || identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "plugin identity probe found a reparse point, hard link, or unexpected object",
-        ));
-    }
-    Ok(file)
-}
-
 #[cfg(windows)]
 fn ensure_windows_path_still_opened(path: &Path, opened: &fs::File) -> Result<(), String> {
     let after = fs::symlink_metadata(path)
@@ -1720,8 +1591,9 @@ fn ensure_windows_path_still_opened(path: &Path, opened: &fs::File) -> Result<()
     } else {
         return Err("plugin path changed into an unsupported object during validation".to_string());
     };
-    let current = open_bundle_identity_probe(path, expect_directory)
-        .map_err(|e| format!("failed to reopen plugin path for identity validation: {e}"))?;
+    let current =
+        codewhale_util::bundle_file::open_bundle_identity_probe(path, expect_directory)
+            .map_err(|e| format!("failed to reopen plugin path for identity validation: {e}"))?;
     let opened = windows_file_identity(opened)
         .map_err(|e| format!("failed to identify retained plugin handle: {e}"))?;
     let current = windows_file_identity(&current)
@@ -2243,7 +2115,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("reviewed.bin");
         fs::write(&path, b"reviewed").unwrap();
-        let retained = open_bundle_file(&path).unwrap();
+        let retained = codewhale_util::bundle_file::open_bundle_file(&path).unwrap();
 
         ensure_windows_path_still_opened(&path, &retained).unwrap();
         let denied = fs::OpenOptions::new()
@@ -2315,6 +2187,7 @@ mod tests {
         let current = capability_hash_with_policy(&inventory, current_policy);
         let hooks_inactive = PluginActivationPolicy {
             version: current_policy.version,
+            dsh_compatibility: current_policy.dsh_compatibility,
             supported: &[
                 PluginActivationCapability::Skills,
                 PluginActivationCapability::McpStdio,
@@ -2339,6 +2212,7 @@ mod tests {
             version: current_policy.version + 1,
             supported: current_policy.supported,
             inactive: current_policy.inactive,
+            dsh_compatibility: current_policy.dsh_compatibility,
         };
         assert_ne!(
             current,
@@ -2496,49 +2370,6 @@ args = ["server.js", "--mode=worker", "-e", "console.log('ready')"]
             assert!(PluginManifest::validate_from_path(&path).is_err());
         }
     }
-
-    #[test]
-    fn bundled_computer_use_plugin_validates() {
-        use crate::plugins::agent_plugin;
-        let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/computer-use"));
-        let validated = PluginManifest::validate_from_path(&root.join("plugin.json"))
-            .expect("in-repo computer-use bundle must validate");
-        assert_eq!(validated.manifest.plugin.name, "computer-use");
-        // One declared skills *root* (`skills/`), which holds both skills.
-        assert_eq!(validated.inventory.skills, 1);
-        let skills_root = validated.components.skills.first().expect("skills root");
-        let mut skill_dirs: Vec<String> = fs::read_dir(skills_root)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        skill_dirs.sort();
-        assert_eq!(skill_dirs, ["computer-use", "recording"]);
-        for skill in &skill_dirs {
-            assert!(skills_root.join(skill).join("SKILL.md").is_file());
-        }
-        assert_eq!(validated.components.commands.len(), 1);
-        assert!(validated.warnings.is_empty(), "{:?}", validated.warnings);
-
-        let mcp_text = fs::read_to_string(root.join("mcp.json")).unwrap();
-        let servers =
-            agent_plugin::parse_mcp_json(&mcp_text).expect("computer-use mcp.json must parse");
-        let computer = servers.get("computer").expect("computer server");
-        assert_eq!(computer.command.as_deref(), Some("node"));
-        assert!(
-            computer.args.iter().any(|arg| arg.ends_with("server.mjs")),
-            "{:?}",
-            computer.args
-        );
-        // The entrypoint must stay inside the bundle: the engine launches it
-        // with `cwd` set to the plugin root.
-        for arg in &computer.args {
-            assert!(
-                !Path::new(arg).is_absolute() && !arg.split('/').any(|part| part == ".."),
-                "{arg} must stay inside the bundle"
-            );
-            assert!(root.join(arg).is_file(), "{arg} must exist in the bundle");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2548,9 +2379,15 @@ mod icon_tests {
 
     #[test]
     fn artwork_is_inline_bounded_png_only() {
-        let manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../plugins/computer-use/plugin.json")).unwrap();
-        let icon = manifest["extensions"]["net.codewhale"]["icon"]
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/first-party-marketplace.json"))
+                .unwrap();
+        let icon = catalog["catalog"]["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "computer-use")
+            .unwrap()["icon"]
             .as_str()
             .unwrap();
         assert!(validate_icon(icon).is_ok());

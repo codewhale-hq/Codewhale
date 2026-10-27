@@ -51,23 +51,22 @@ Node 是默认运行时，要求 `^22.19 || >=24`。Bun 要求至少 1.4.0，目
 选择 `node`、`bun` 或 `auto`；显式配置的运行时路径失败时，不会默默搜索替代路径。
 `auto` 的回退原因会显示在 `/plugin` 和 doctor 诊断中。
 
-可在 `[extension_host]` 中设置 `mcp_backend = "host"`，不必启用 Native 扩展。
-`[features] extension_host` 只控制可选 Native 扩展；选择 Host MCP 不会激活它们。
-这会让已有的 stdio、HTTP 和旧版 SSE MCP 服务器连接使用固定版本的 MCP SDK，运行于
-独立的内置宿主进程。进程与网络权限、凭据解析、目录接纳、工具批准和取消仍由 Rust
-掌握。HTTP/SSE 请求通过 Rust 的受保护 HTTP 客户端发出；SDK 只收到不含真实地址
-或凭据的会话标识，以及逐次授权的操作。适配器将 SDK 请求编号转换为 Rust 客户端
-原有的字符串编号，并将其绑定到相应操作票据。显式选择 Host 后，失败不会回退到
-Rust，也不会重放结果不明的操作。传输行为完成资格验证前，默认仍为
-`mcp_backend = "rust"`。Host 路径与默认后端共用 Rust 的 GET 会话预检和有界 OAuth
-响应式刷新。只有 HTTP 明确拒绝当前传输协议后，Rust 才会签发新的、精确绑定的单次操作授权，
-允许切换到 SDK 的 SSE 传输；失效会话仍由 Rust 以类型化错误决定恢复方式。凭据、配置中的 URL、
-OAuth 浏览器登录和 Computer Use 决策密钥都保留在 Rust。两个后端接受同一套已记录的 MCP
-基准验证；切换默认后端前，必须通过这些基准和真实代理的验收测试，并满足
-Ops CURRENT_DECISIONS §26 的平台隔离与 Phase 3 实测门槛。正式切换默认后，
-原生 Rust 协议适配器再保留一个版本，然后删除；目录、会话、权限和凭据的权威
-仍留在 Rust。缺少受支持的 Node 时，沿用 doctor 的运行时诊断；Host 失败不会
-自动选择 Rust。
+默认的 `mcp_backend = "host"` 使用固定版本的 MCP SDK，不必启用 Native 扩展。
+`[features] extension_host` 只控制可选 Native 扩展。已有 stdio 和 HTTP 服务器在支持时
+使用现代发现协议；显式配置的旧版 SSE 服务器仍使用旧版握手。进程与网络权限、凭据解析、
+目录接纳、工具批准和取消仍由 Rust 掌握。SDK 只收到不含真实地址或凭据的会话标识和
+精确的逐次操作授权。现代请求携带 Rust 批准的协议元数据和请求头，不使用会话 ID。
+
+只有明确、类型化的发现拒绝才能允许旧版握手；只有握手期间明确的 HTTP 传输拒绝才能
+通过新的精确 Rust 授权切换到旧版 SSE。旧版 HTTP 保留 GET 预检和有界 OAuth 刷新；
+现代 HTTP 不继承这些会话和重发行为。不完整的结果流程会报告错误，不会自动重放操作。
+凭据、配置中的 URL、OAuth 浏览器登录和 Computer Use 决策密钥始终保留在 Rust。
+
+两个后端共享 MCP 语义基准，并分别保留包含发现、认证和会话证据的传输基准。
+Host 默认切换须通过这些基准、实际代理验收，以及 Ops CURRENT_DECISIONS §26 的平台
+隔离与实测门槛。资格验证完成后的一个版本内，仍可显式设置 `mcp_backend = "rust"`，
+之后删除原生协议适配器。缺少受支持的 Node 时沿用 doctor 的运行时诊断；Host 失败
+不会自动选择 Rust。
 
 `.mts` 只支持 Node 能直接擦除的类型语法。enum、decorator、JSX 等需要转换的语法，
 应由作者先构建为 JavaScript。不要依赖 Bun 特有的 tsconfig 路径解析：Node 不读取
@@ -92,8 +91,15 @@ CommonJS 解析也需要 Node；这些情况会明确提示使用
 macOS Seatbelt 与 Linux bubblewrap 限制宿主进程，但不等于对每次插件文件访问执行
 工具审批。不要在描述、日志、配置或结果中保存凭据。
 
+Native 在 macOS 和 Linux 使用文件读取允许列表，只开放运行时及必需系统文件、宿主
+包、Core 管理的已审查快照目录、Native 数据和私有临时目录。普通项目文件（包括
+`.env`）不在授权范围内，子进程继承相同限制。共享 shell 配置中的 Cargo、npm 和
+Darwin 缓存写权限不适用于 Native。快照目录及数据仍属于共享 Native 信任组，
+并不提供插件之间的隔离；直接访问项目的 git 插件需要另行通过受限操作桥接。
+
 Native 扩展启动必须通过操作系统隔离验证。Linux 缺少 bubblewrap 或命名空间探测失败
-时会拒绝激活并显示具体原因；Windows 文件与网络隔离尚不可用时也会拒绝 Native。
+时会拒绝激活并显示具体原因；Windows 使用已有 LPAC 包装器，无法建立文件与网络
+隔离时拒绝 Native。源码支持不等于已完成对应平台及发布产物验证。
 固定摘要的 Builtin 宿主可使用明确标示的未隔离例外，但其所有效果仍须兑换 Rust
 签发的操作凭据。这不能证明 Native 隔离或默认运行时切换已完成。
 
@@ -119,6 +125,15 @@ Rust 在审批前以及发送给宿主前检查 JSON Schema，包括类型、必
 同时生成模型可读的文本输出。`mod_counter` 返回计数及标签。结构化结果不会执行 UI
 代码；自定义工具卡片和 Ratatui/GPUI 控件尚未提供。
 
+DSH 定义若声明 `output`，必须同时提供 `output.schema` 和 `output.render`。
+宿主先验证返回的 JSON，再执行渲染。目前只支持普通文本块；富媒体及额外字段会明确
+报错，不会被静默丢弃。非空注册选项、`projectContent`、`finalizeContent`、
+`timeoutMs` 和延迟加载尚不支持。共享
+[`compatibility.json`](../../crates/tui/extension-host/src/dsh/compatibility.json)
+记录 DSH 0.2.1-rc.2 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
+契约改变后必须重新审查。成功及软失败结果中的 `extension` 元数据由 Rust 写入，
+记录插件、已审查内容、入口、代际、调用方选择、句柄与进程启动身份。
+
 工具调用有 120 秒截止时间，取消通过 `exec.signal` 传递。插件应检查并向自己发起的
 异步工作传递 signal；忽略取消的 JavaScript 仍可能在共享进程中继续运行，直到宿主
 被终止。不要在共享进程中使用 `process.chdir`。
@@ -131,7 +146,7 @@ Rust 在审批前以及发送给宿主前检查 JSON Schema，包括类型、必
 
 handler 只在用户调用时运行，可返回文本、`{kind:'success', text?}`、
 `{kind:'error', text}` 或 `{kind:'submit', prompt, text?}`。`submit` 会明显地把 prompt
-提交为用户下一条消息，后续模型工具仍经普通权限和审批流程。命令不能直接调用模型、
+以 Runtime 来源和插件归属进入原有回合，后续模型工具仍经普通权限和审批流程。命令不能直接调用模型、
 工具或审批，截止时间为 30 秒。输出去除终端转义序列并限制为 64 KiB，超过 128 KiB
 的提交 prompt 会被拒绝。
 
@@ -140,6 +155,43 @@ handler 只在用户调用时运行，可返回文本、`{kind:'success', text?}
 插件自己的 `dataDir` 及只读 `sessionId`、`agentId`、`originTurnId` 字符串。
 Rust 未提供的字段缺省；激活时不缓存会话身份。这些字符串只用于关联，不授予操作
 会话或 agent 的权利。用户命令通常只有已知的 session 标签。
+当 Rust 提供会话和工作区时，工具调用还包含冻结的 `exec.agent.id` 和
+`exec.agent.session.header.cwd`；根身份使用会话 id，子 agent 使用 Core 提供的 id。
+投影本身没有方法；保留该对象不会获得调用结束后的操作权限。
+
+注入 `sessions` 的插件可在直接调用的根工具持有 Engine checkpoint ticket 时调用
+`ctx.sessions.flush(exec.agent.session)`，参数必须是本次调用的原始 session 对象。
+Engine 捕获已提交的前缀，由所属 Runtime、终端或 exec 存储实际写入并确认。
+Runtime 保留现有的回执秘密脱敏规则；成功确认的是持久化投影，不包含当前工具
+未来的结果或插件自己的日志。恢复时保留后续工具结果，不重新执行工具。
+含 checkpoint 的 Runtime turn 使用 schema 5，旧读取器会拒绝，避免静默丢失历史。
+
+只有明确选择无持久化后端的临时宿主返回 `false`。缺少权限、外来或过期对象、
+子 agent checkpoint、被后续请求替代的写入、存储失败、取消及不可用的消费者均拒绝。
+取消可能与磁盘写入竞争，因此拒绝不能证明磁盘完全未写入。其他 `sessions` 方法
+仍未支持。
+
+当 Rust 提供调用者会话时，`invocation.agent` 另外提供只读 id 和
+`followup(message)`。一次调用只接收一条 JSON user 消息，包含有界 id、仅有 kind
+的 source 和一个纯文本块；成功返回时转为相同的 Submit 结果。错误、异常或取消
+不会提交。多条消息、与显式 Submit 混用、附件、空文本及超过 128 KiB 的文本均被
+拒绝，调用结束后句柄失效。Core 决定实际回合标识及来源；这不是通用 agent 服务，
+也不持久化传入的 DSH 消息标识。缺少调用者上下文时拒绝访问。
+
+原生 App 通过 `GET /v1/commands?thread_id=<id>` 获取当前会话的扩展命令及不透明
+`registration_id`。调用 `POST /v1/threads/<id>/commands` 时发送 `name`、`args`、
+`registration_id`、`operation_key` 和 `expected_workspace`。重试只能复用相同
+请求的操作键；已完成操作返回已有结果，结果不明的操作不会再次执行。
+`GET /v1/threads/<id>/commands/<operation_key>` 查询结果；已记录的调用失去执行任务后，
+查询会记录明确的结果不确定状态并找回已接纳的回合，不会重新执行回调。`DELETE`
+请求取消，包括准入前取消及中断关联的活动回合。
+过期注册或工作区变化要求重新选择。命令返回的 prompt 由 Engine 按 Runtime 来源
+通过原有回合流程接纳，客户端不能自行再次提交。TUI 和 App 显示插件来源，
+并排除普通用户输入的回忆、编辑及重试入口。准入、完成及取消收据保存在已有事件
+存储中。插件变更及重连会刷新 App 命令目录，并保留用户修改后的草稿。
+会话快照的 `command_receipts` 从原有事件日志投影最近 100 条未提交回合的终态命令，
+包含稳定身份、完成时间、状态、结果和插件来源。重新打开会话时显示已有结果，不会
+重新执行命令，也不会把这些显示收据加入模型历史。
 
 ## 执行前提议
 

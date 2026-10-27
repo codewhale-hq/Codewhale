@@ -296,7 +296,7 @@ fn decoder_streams_moonshot_multi_chunk_reasoning_as_thinking() {
     ];
 
     let is_reasoning =
-        is_reasoning_model_for_stream(crate::config::ProviderKind::Moonshot, "kimi-k2.6");
+        is_reasoning_model_for_stream(codewhale_config::ProviderKind::Moonshot, "kimi-k2.6");
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
@@ -444,12 +444,12 @@ fn modelstudio_streams_reasoning_content_as_thinking() {
     for (provider, base_url, model) in [
         (
             ProviderKind::ModelstudioTokenPlan,
-            crate::config::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
             "qwen3.8-max",
         ),
         (
             ProviderKind::ModelstudioCodingPlan,
-            crate::config::DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL,
             "qwen3.7-plus",
         ),
     ] {
@@ -516,7 +516,7 @@ fn modelstudio_streams_reasoning_content_as_thinking() {
     // to Thinking (#6501); a model that sends no reasoning field gets none.
     let style = reasoning_stream_style_for_route(
         ProviderKind::ModelstudioTokenPlan,
-        crate::config::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
+        codewhale_config::descriptors::defaults::DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
         "qwen3.8-max-lite-unknown",
         None,
     );
@@ -621,8 +621,8 @@ fn reasoning_style_separate_field_routes_reasoning_to_thinking() {
 fn exact_kimi_code_k3_streams_reasoning_content_as_thinking() {
     let style = reasoning_stream_style_for_route(
         ProviderKind::Moonshot,
-        crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-        crate::config::KIMI_CODE_K3_MODEL,
+        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL,
+        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
         None,
     );
     assert_eq!(style, ReasoningStreamStyle::SeparateField);
@@ -636,8 +636,8 @@ fn exact_kimi_code_k3_streams_reasoning_content_as_thinking() {
 
     let generic_style = reasoning_stream_style_for_route(
         ProviderKind::Moonshot,
-        crate::config::DEFAULT_MOONSHOT_BASE_URL,
-        crate::config::KIMI_CODE_K3_MODEL,
+        codewhale_config::descriptors::defaults::DEFAULT_MOONSHOT_BASE_URL,
+        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
         None,
     );
     assert_eq!(generic_style, ReasoningStreamStyle::SeparateField);
@@ -652,7 +652,7 @@ fn issue_6501_reasoning_field_never_leaks_into_answer_text_on_unlisted_routes() 
     for (provider, base_url, model) in [
         (
             ProviderKind::Xai,
-            crate::config::DEFAULT_XAI_BASE_URL,
+            codewhale_config::descriptors::defaults::DEFAULT_XAI_BASE_URL,
             "grok-4.7",
         ),
         (
@@ -1278,7 +1278,7 @@ fn restored_tool_results_obey_the_active_route_budget() {
     let output = "x".repeat(20_000);
     let recovery = format!(
         "{output}\n{}",
-        crate::tools::truncate::SPILLOVER_RECOVERY_HINT
+        codewhale_tools::names::SPILLOVER_RECOVERY_HINT
     );
     let request = MessageRequest {
         model: "trinity-mini".into(),

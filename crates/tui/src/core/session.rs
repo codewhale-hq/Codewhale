@@ -2,12 +2,12 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
-use crate::project_context::{ProjectContext, load_project_context_with_parents};
-use crate::prompt_zones::{AppendLog, FrozenPrefix};
+use crate::project_context::ProjectContext;
 use crate::working_set::WorkingSet;
 use codewhale_core::prefix_cache::PrefixStabilityManager;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{Message, SystemPrompt, Usage};
+use codewhale_runtime::prompt_zones::{AppendLog, FrozenPrefix};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -17,8 +17,8 @@ use std::path::PathBuf;
 /// permanent `read`/`write`/`edit`/`bash`/`agent`/`tool_search` router surface
 /// is not counted here.
 pub(crate) const TOOL_ACTIVATION_CACHE_MAX_NAMES: usize = 8;
-/// Serialized bytes cached deferred schemas may add to requests, under the
-/// same eviction rule as the name bound.
+/// Added provider-wire schema bytes, under the same soft eviction rule
+/// as the name bound. Unknown adapter measurements remain unknown.
 pub(crate) const TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES: usize = 16 * 1024;
 
 /// Bounded, process-local conversation cache for tools activated by
@@ -43,7 +43,18 @@ pub(crate) struct ToolActivationDelta {
     pub(crate) evicted: Vec<String>,
     pub(crate) rejected: Vec<String>,
     pub(crate) held: Vec<String>,
+    pub(crate) schema_bytes: Option<usize>,
+    pub(crate) exceeds_soft_target: bool,
 }
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolActivationMeasurement {
+    pub(crate) schema_bytes: Option<usize>,
+    pub(crate) unavailable: Vec<String>,
+}
+
+pub(crate) type ToolActivationMeasurer<'a> =
+    dyn FnMut(&[String]) -> Result<ToolActivationMeasurement, crate::tools::spec::ToolError> + 'a;
 
 impl ToolActivationCache {
     /// Forget every deferred tool activated by the current conversation.
@@ -87,6 +98,7 @@ impl ToolActivationCache {
             .find(|tool| tool.name == name && tool.defer_loading.unwrap_or(false))
     }
 
+    #[cfg(test)]
     fn serialized_bytes(tool: &codewhale_models::Tool) -> usize {
         serde_json::to_vec(tool).map_or(usize::MAX, |bytes| bytes.len())
     }
@@ -100,17 +112,16 @@ impl ToolActivationCache {
             .fold(0usize, usize::saturating_add)
     }
 
-    fn exceeds_budget<'a>(
-        catalog: &[codewhale_models::Tool],
-        names: impl IntoIterator<Item = &'a String>,
-    ) -> bool {
-        let (count, bytes) = names
-            .into_iter()
-            .fold((0usize, 0usize), |(count, bytes), name| {
-                let size = Self::catalog_tool(catalog, name).map_or(0, Self::serialized_bytes);
-                (count + 1, bytes.saturating_add(size))
-            });
-        count > TOOL_ACTIVATION_CACHE_MAX_NAMES || bytes > TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES
+    fn exceeds_budget(
+        names: &[String],
+        measure: &mut ToolActivationMeasurer<'_>,
+    ) -> Result<bool, crate::tools::spec::ToolError> {
+        let measured = measure(names)?;
+        Ok(names.len() > TOOL_ACTIVATION_CACHE_MAX_NAMES
+            || measured
+                .schema_bytes
+                .is_some_and(|bytes| bytes > TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES)
+            || !measured.unavailable.is_empty())
     }
 
     fn eviction_candidate(&self, keep: &[String]) -> Option<usize> {
@@ -122,23 +133,66 @@ impl ToolActivationCache {
             .map(|(index, _)| index)
     }
 
-    /// Drop entries that are no longer deferred members of this turn's
-    /// filtered catalog. The size bounds are enforced only when admitting.
-    pub(crate) fn revalidate(&mut self, catalog: &[codewhale_models::Tool]) -> Vec<String> {
+    pub(crate) fn revalidate_measured(
+        &mut self,
+        catalog: &[codewhale_models::Tool],
+        measure: &mut ToolActivationMeasurer<'_>,
+    ) -> Result<Vec<String>, crate::tools::spec::ToolError> {
+        let mut next = self.clone();
         let mut evicted = Vec::new();
-        self.names.retain(|name| {
-            let keep = Self::catalog_tool(catalog, name).is_some_and(|tool| {
-                Self::serialized_bytes(tool) <= TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES
-            });
+        for name in &self.names {
+            let keep = if Self::catalog_tool(catalog, name).is_some() {
+                !Self::exceeds_budget(std::slice::from_ref(name), measure)?
+            } else {
+                false
+            };
             if !keep {
+                next.names.retain(|cached| cached != name);
+                next.last_use.remove(name);
                 evicted.push(name.clone());
             }
-            keep
-        });
-        for name in &evicted {
-            self.last_use.remove(name);
         }
-        evicted
+        *self = next;
+        Ok(evicted)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_measure(
+        catalog: &[codewhale_models::Tool],
+        names: &[String],
+    ) -> Result<ToolActivationMeasurement, crate::tools::spec::ToolError> {
+        Ok(ToolActivationMeasurement {
+            schema_bytes: Some(
+                names
+                    .iter()
+                    .filter_map(|name| Self::catalog_tool(catalog, name))
+                    .map(Self::serialized_bytes)
+                    .fold(0usize, usize::saturating_add),
+            ),
+            unavailable: names
+                .iter()
+                .filter(|name| Self::catalog_tool(catalog, name).is_none())
+                .cloned()
+                .collect(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revalidate(&mut self, catalog: &[codewhale_models::Tool]) -> Vec<String> {
+        self.revalidate_measured(catalog, &mut |names| Self::test_measure(catalog, names))
+            .unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activate(
+        &mut self,
+        catalog: &[codewhale_models::Tool],
+        requested: &[String],
+    ) -> ToolActivationDelta {
+        self.activate_measured(catalog, requested, &mut |names| {
+            Self::test_measure(catalog, names)
+        })
+        .unwrap()
     }
 
     /// Admit requested deferred tools in search-result priority order. An
@@ -147,21 +201,33 @@ impl ToolActivationCache {
     /// used in the current or previous turn are never evicted. When they
     /// leave no room, the best match is admitted over the bounds and the rest
     /// are held. The batch is stored best-match-last.
-    pub(crate) fn activate(
+    pub(crate) fn activate_measured(
         &mut self,
         catalog: &[codewhale_models::Tool],
         requested: &[String],
-    ) -> ToolActivationDelta {
+        measure: &mut ToolActivationMeasurer<'_>,
+    ) -> Result<ToolActivationDelta, crate::tools::spec::ToolError> {
+        let mut next = self.clone();
+        let delta = next.activate_inner(catalog, requested, measure)?;
+        *self = next;
+        Ok(delta)
+    }
+
+    fn activate_inner(
+        &mut self,
+        catalog: &[codewhale_models::Tool],
+        requested: &[String],
+        measure: &mut ToolActivationMeasurer<'_>,
+    ) -> Result<ToolActivationDelta, crate::tools::spec::ToolError> {
         let mut delta = ToolActivationDelta {
-            evicted: self.revalidate(catalog),
+            evicted: self.revalidate_measured(catalog, measure)?,
             ..ToolActivationDelta::default()
         };
         let mut seen = HashSet::new();
         let mut batch: Vec<String> = Vec::new();
         for name in requested.iter().filter(|name| seen.insert(name.as_str())) {
-            let fits_alone = Self::catalog_tool(catalog, name).is_some_and(|tool| {
-                Self::serialized_bytes(tool) <= TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES
-            });
+            let fits_alone = Self::catalog_tool(catalog, name).is_some()
+                && !Self::exceeds_budget(std::slice::from_ref(name), measure)?;
             if !fits_alone {
                 delta.rejected.push(name.clone());
                 continue;
@@ -174,14 +240,16 @@ impl ToolActivationCache {
                 .names
                 .iter()
                 .filter(|cached| batch.contains(*cached) || self.pinned(cached))
-                .chain(std::iter::once(name));
-            if !batch.is_empty() && Self::exceeds_budget(catalog, protected) {
+                .chain(std::iter::once(name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !batch.is_empty() && Self::exceeds_budget(&protected, measure)? {
                 delta.held.push(name.clone());
                 continue;
             }
             batch.push(name.clone());
             self.names.push_back(name.clone());
-            while Self::exceeds_budget(catalog, &self.names) {
+            while Self::exceeds_budget(&self.names.iter().cloned().collect::<Vec<_>>(), measure)? {
                 let Some(index) = self.eviction_candidate(&batch) else {
                     break;
                 };
@@ -209,7 +277,19 @@ impl ToolActivationCache {
         delta.evicted.dedup();
         delta.rejected.sort();
         delta.rejected.dedup();
-        delta
+        let names = self.names.iter().cloned().collect::<Vec<_>>();
+        let measured = measure(&names)?;
+        if !measured.unavailable.is_empty() {
+            return Err(crate::tools::spec::ToolError::not_available(
+                "Provider omitted an active deferred schema; toolbox admission was not changed",
+            ));
+        }
+        delta.schema_bytes = measured.schema_bytes;
+        delta.exceeds_soft_target = names.len() > TOOL_ACTIVATION_CACHE_MAX_NAMES
+            || measured
+                .schema_bytes
+                .is_some_and(|bytes| bytes > TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES);
+        Ok(delta)
     }
 
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
@@ -238,6 +318,7 @@ pub struct Session {
 
     /// System prompt (optional)
     pub system_prompt: Option<SystemPrompt>,
+    pub instruction_assembly: Option<std::sync::Arc<crate::project_context::InstructionAssembly>>,
     /// True when `system_prompt` is a persisted/runtime-supplied prefix that
     /// should not be replaced by mode/context refreshes.
     pub system_prompt_override: bool,
@@ -368,10 +449,6 @@ impl Session {
         notes_path: PathBuf,
         mcp_config_path: PathBuf,
     ) -> Self {
-        // Load project context from AGENTS.md, CLAUDE.md, etc.
-        let project_context = load_project_context_with_parents(&workspace);
-        let has_context = project_context.has_instructions();
-
         Self {
             model,
             reasoning_effort: None,
@@ -379,6 +456,7 @@ impl Session {
             auto_model: false,
             workspace,
             system_prompt: None,
+            instruction_assembly: None,
             system_prompt_override: false,
             compaction_summary_prompt: None,
             messages: AppendLog::new(),
@@ -390,11 +468,7 @@ impl Session {
             notes_path,
             mcp_config_path,
             id: uuid::Uuid::new_v4().to_string(),
-            project_context: if has_context {
-                Some(project_context)
-            } else {
-                None
-            },
+            project_context: None,
             last_system_prompt_hash: None,
             pending_prefix_change_reason: None,
             pinned_prompt_context: None,

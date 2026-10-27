@@ -13,12 +13,12 @@ pub use risk::{RiskLevel, classify_risk};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use crate::sandbox::SandboxPolicy;
-use crate::tools::canonical_action::canonical_action_alias;
 use crate::tools::spec::{ApprovalRequirement, normalize_path};
-use crate::worker_profile::ShellPolicy;
+use codewhale_agent_contract::worker_profile::ShellPolicy;
 use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
+use codewhale_sandbox::SandboxPolicy;
 use serde_json::Value;
 
 use super::ops::UserInputProvenance;
@@ -219,7 +219,7 @@ impl TurnAuthority {
             true,
             false,
             auto_approve,
-            posture_from_auto_approve(auto_approve),
+            ApprovalMode::from_auto_approve(auto_approve),
         )
     }
 
@@ -242,21 +242,6 @@ impl TurnAuthority {
             workspace,
             network_access,
         )
-    }
-}
-
-/// The posture a legacy `auto_approve` bit stands for: a set bit is Full
-/// Access, a cleared bit is Ask.
-///
-/// Every surface that carries the bit without a session posture folds it here —
-/// the per-tool approval gate, a tool context built with only the bit, a
-/// scheduled automation — so none of them can disagree about what it means.
-#[must_use]
-pub(crate) fn posture_from_auto_approve(auto_approve: bool) -> ApprovalMode {
-    if auto_approve {
-        ApprovalMode::Bypass
-    } else {
-        ApprovalMode::Suggest
     }
 }
 
@@ -359,7 +344,9 @@ pub(crate) fn sandbox_policy_for_turn(
 ) -> SandboxPolicy {
     let default = if mode == AppMode::Plan {
         SandboxPolicy::read_only()
-    } else if approval_mode == ApprovalMode::Bypass {
+    } else if approval_mode.agent_baseline_sandbox_mode()
+        == SandboxPolicy::DangerFullAccess.config_value()
+    {
         SandboxPolicy::DangerFullAccess
     } else {
         workspace_write_policy(workspace, network_access)
@@ -641,7 +628,7 @@ fn is_carve_out_excluded_name(name: &str) -> bool {
     // excluded here exactly as the workspace file routes exclude it.
     // `.codewhale` holds session state plus MCP/hook configuration — editing
     // it changes what runs, so it keeps the modal.
-    crate::snapshot::is_git_metadata_name(OsStr::new(name))
+    codewhale_util::git_metadata::is_git_metadata_name(OsStr::new(name))
         || name == ".codewhale"
         || is_credential_file_name(name)
 }

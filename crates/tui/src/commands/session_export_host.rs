@@ -41,7 +41,7 @@ fn write_last_copy_to(exports_dir: &Path, markdown: &str) -> std::io::Result<Pat
     // Reuse the private atomic writer: random same-directory temp names,
     // restrictive creation mode, symlink-safe replacement, and Windows
     // replace retries are all part of the existing persistence contract.
-    crate::utils::write_atomic(&path, markdown.as_bytes())?;
+    codewhale_util::utils::write_atomic(&path, markdown.as_bytes())?;
     Ok(path)
 }
 
@@ -130,7 +130,7 @@ pub(crate) fn write_export_file(path: &Path, contents: &[u8], force: bool) -> Re
     }
 
     if force {
-        crate::utils::write_atomic(path, contents).map_err(|err| err.to_string())?;
+        codewhale_util::utils::write_atomic(path, contents).map_err(|err| err.to_string())?;
         set_owner_only(path).map_err(|err| format!("could not secure file permissions: {err}"))?;
         return Ok(());
     }

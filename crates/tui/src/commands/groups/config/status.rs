@@ -220,12 +220,11 @@ fn format_status(view: &ConfigStatusView, locale: &Messages) -> String {
         MessageId::StatusLabelSessionTokens,
         &session_tokens(view, locale),
     );
-    push_row(
-        &mut out,
-        locale,
-        MessageId::StatusLabelSessionCost,
-        &super::money::format_cost_amount_precise(view.cost, view.currency),
-    );
+    let cost = view
+        .cost_label
+        .clone()
+        .unwrap_or_else(|| super::money::format_cost_amount_precise(view.cost, view.currency));
+    push_row(&mut out, locale, MessageId::StatusLabelSessionCost, &cost);
     // The full, untrimmed session metrics strip (the footer sheds groups to
     // fit; here every group that has evidence is printed). It keeps its own
     // template because the label and metrics form one localized sentence.

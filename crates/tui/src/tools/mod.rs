@@ -14,7 +14,8 @@ pub mod approval_cache;
 pub mod approval_summary;
 pub mod arg_repair;
 pub mod automation;
-pub mod canonical_action;
+#[cfg(test)]
+pub(crate) mod canonical_action_tests;
 pub mod cargo_failure_summary;
 pub mod codemode;
 pub mod dev_server_readiness;
@@ -65,8 +66,8 @@ pub mod rlm;
 pub mod run_tool;
 pub mod runtime_mcp;
 mod rust_format;
-pub mod schema_canonicalize;
-pub mod schema_sanitize;
+#[cfg(test)]
+mod schema_sanitize_apply_patch_tests;
 pub mod search;
 pub mod send_later;
 pub mod session;

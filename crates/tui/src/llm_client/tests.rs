@@ -116,6 +116,9 @@ fn retryability_distinguishes_transient_failures_from_durable_failures() {
 
 #[test]
 fn http_response_boundary_classifies_status_contract() {
+    let body = LlmError::from_http_response(413, "maximum images exceeded model token limit");
+    assert!(matches!(body, LlmError::InvalidRequest { status: 413, .. }));
+    assert!(!body.is_retryable());
     assert!(matches!(
         LlmError::from_http_response(429, "rate limit exceeded"),
         LlmError::RateLimited { .. }
@@ -229,6 +232,19 @@ fn explicit_400_402_and_429_quota_responses_are_typed_and_non_retryable() {
             "You exceeded your current quota. Please check your plan and billing details.",
         ),
         (429, "Account quota exhausted"),
+        (
+            429,
+            "You've reached your weekly usage limit for your plan. Your limit resets at 12:00.",
+        ),
+        (
+            429,
+            "You've reached your 5-hour usage limit. Your limit resets at 12:00.",
+        ),
+        (429, "You exceeded your five-hour usage limit."),
+        (
+            429,
+            "Your plan usage limit has been reached; the limit resets tomorrow.",
+        ),
     ] {
         let error = LlmError::from_http_response(status, body);
         assert!(matches!(error, LlmError::QuotaExhausted(_)));
@@ -281,6 +297,8 @@ fn generic_429_stays_rate_limited_and_retryable() {
         "Too Many Requests",
         "Rate limit on your API quota exceeded",
         "Requests per minute quota exceeded",
+        "usage limit reached",
+        "Requests per minute usage limit reached; limit resets in 1 second.",
         "Quota rate limit exceeded; retry after 10 seconds",
     ] {
         let error = LlmError::from_http_response(429, body);
@@ -371,6 +389,7 @@ fn retry_receipt_observation() -> (
     let captured = receipts.clone();
     (
         RequestRetryObservation {
+            wire_observations: Default::default(),
             retries: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             emit: std::sync::Arc::new(move |message| {
                 let captured = captured.clone();

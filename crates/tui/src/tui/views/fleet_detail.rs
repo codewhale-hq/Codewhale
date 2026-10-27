@@ -23,8 +23,6 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::config::Config;
-use crate::fleet::role::public_role_label;
 use crate::fleet::store::{
     FleetFile, FleetMember, FleetOperator, FleetScope, MemberCapability, load_fleet_in_scope,
     save_fleet, set_selected,
@@ -34,8 +32,10 @@ use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
+use codewhale_agent_contract::role::public_role_label;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_runtime::config::Config;
 
 /// The built-in role vocabulary offered when adding a member, in a useful
 /// order. A Fleet member is a role; the user can name anything, these are the
@@ -1329,9 +1329,9 @@ fn reasoning_tiers_for_provider(provider: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::fleet::store::FleetFile;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_runtime::config::Config;
 
     fn app_in(workspace: PathBuf) -> App {
         let options = TuiOptions {
@@ -1846,9 +1846,11 @@ mod tests {
             .unwrap(),
         );
         save_fleet(&fleet, FleetScope::Workspace, ws.path()).unwrap();
-        let config = Config {
-            provider: Some("deepseek".into()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_0_0 = Some("deepseek".into());
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         }
         .with_legacy_root(Some("test-key".into()), None);
         let mut view = FleetDetailView::open_for_member(

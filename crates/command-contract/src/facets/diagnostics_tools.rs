@@ -111,7 +111,6 @@ pub struct DebugTurnStopDiagnostics {
     pub stream_resumes: u32,
     pub reasoning_only_reprompts: u32,
     pub empty_stop_retries: u32,
-    pub soft_landing_sent: bool,
     pub final_report_requested: bool,
     pub permission_strategy_switches: u32,
     pub permission_denial_rounds_without_progress: u32,

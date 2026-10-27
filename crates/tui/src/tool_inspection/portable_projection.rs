@@ -76,7 +76,6 @@ pub(crate) fn tool_snapshot(
                 stream_resumes: terminal.stream_resumes,
                 reasoning_only_reprompts: terminal.reasoning_only_reprompts,
                 empty_stop_retries: terminal.empty_stop_retries,
-                soft_landing_sent: terminal.soft_landing_sent,
                 final_report_requested: terminal.final_report_requested,
                 permission_strategy_switches: terminal.permission_strategy_switches,
                 permission_denial_rounds_without_progress: terminal

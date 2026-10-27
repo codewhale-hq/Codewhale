@@ -1564,6 +1564,12 @@ mod tests {
     struct PanicConfig;
 
     impl CommandConfigContext for PanicConfig {
+        fn translation_enabled(&self) -> bool {
+            panic!("config facet touched")
+        }
+        fn set_translation_enabled(&mut self, _: bool) {
+            panic!("config facet touched")
+        }
         fn config_path(&self) -> Option<std::path::PathBuf> {
             panic!("config facet touched")
         }

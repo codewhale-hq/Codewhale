@@ -250,17 +250,20 @@
     #[test]
     fn client_route_envelope_freezes_saved_minimax_billing_mode_and_wire_model() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = Config {
-            provider: Some("minimax".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_0_0 = Some("minimax".to_string());
+            let __cw_config_init_0_1 = Some(ProvidersConfig {
                 minimax: ProviderConfig {
                     api_key: Some("test-key".to_string()),
                     mode: Some("pay-as-you-go".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value.providers = __cw_config_init_0_1;
+            __cw_config_init_0_value
         };
         let client = CodewhaleClient::new(&config).expect("MiniMax client");
         let dispatched_at =
@@ -780,7 +783,7 @@
             let _lock = crate::test_support::lock_test_env();
             let _guard = ForceHttp1EnvGuard::capture();
             unsafe { std::env::remove_var("DEEPSEEK_FORCE_HTTP1") };
-            assert!(!force_http1_from_env());
+            assert!(!codewhale_config::force_http1_from_env());
         }
         // from force_http1_truthy_values
         {
@@ -790,7 +793,7 @@
                 // Safety: serialized by lock_test_env; reverted by guard.
                 unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", value) };
                 assert!(
-                    force_http1_from_env(),
+                    codewhale_config::force_http1_from_env(),
                     "{value:?} should be parsed as truthy",
                 );
             }
@@ -802,7 +805,7 @@
             for value in ["0", "false", "no", "off", "", "garbage", "2"] {
                 unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", value) };
                 assert!(
-                    !force_http1_from_env(),
+                    !codewhale_config::force_http1_from_env(),
                     "{value:?} should NOT be parsed as truthy"
                 );
             }
@@ -829,10 +832,13 @@
         base_url: &str,
         model: &str,
     ) -> (Config, crate::route_runtime::ResolvedRuntimeRoute) {
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(model.to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_1_0 = Some("deepseek".to_string());
+            let __cw_config_init_1_1 = Some(model.to_string());
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.default_text_model = __cw_config_init_1_1;
+            __cw_config_init_1_value
         }
         .with_legacy_root(Some("ds-test".to_string()), Some(base_url.to_string()));
         let route =
@@ -879,10 +885,13 @@
     }
 
     fn route_cap_test_client(wire_format: WireFormat, limits: RouteLimits) -> CodewhaleClient {
-        let config = Config {
-            provider: Some("custom".to_string()),
-            default_text_model: Some("DeepSeek-V4-Flash".to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_2_0 = Some("custom".to_string());
+            let __cw_config_init_2_1 = Some("DeepSeek-V4-Flash".to_string());
+            let mut __cw_config_init_2_value: Config = Config::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.default_text_model = __cw_config_init_2_1;
+            __cw_config_init_2_value
         }
         .with_legacy_root(
             Some("route-cap-test".to_string()),
@@ -946,10 +955,13 @@
             };
             let client = if google_route {
                 let base_url = "https://generativelanguage.googleapis.com/v1beta/openai";
-                let config = Config {
-                    provider: Some("custom".to_string()),
-                    default_text_model: Some(model.to_string()),
-                    ..Config::default()
+                let config = {
+                    let __cw_config_init_3_0 = Some("custom".to_string());
+                    let __cw_config_init_3_1 = Some(model.to_string());
+                    let mut __cw_config_init_3_value: Config = Config::default();
+                    __cw_config_init_3_value.provider = __cw_config_init_3_0;
+                    __cw_config_init_3_value.default_text_model = __cw_config_init_3_1;
+                    __cw_config_init_3_value
                 }
                 .with_legacy_root(Some("fixture".to_string()), Some(base_url.to_string()));
                 CodewhaleClient::from_parts(
@@ -1067,9 +1079,11 @@
         crate::provider_catalog_live::reset_cache_for_test();
         crate::provider_lake::clear_live_snapshot();
         let endpoint = "http://127.0.0.1:11452/v1";
-        let mut config = Config {
-            provider: Some("ollama".into()),
-            ..Default::default()
+        let mut config = {
+            let __cw_config_init_4_0 = Some("ollama".into());
+            let mut __cw_config_init_4_value: Config = Default::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value
         };
         config
             .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Ollama))
@@ -1100,6 +1114,7 @@
                         provider: "ollama".into(),
                         wire_model_id: id.into(),
                         endpoint_key: "chat".into(),
+                        default_for_provider: id == "alpha:tag",
                         source: CatalogSource::Live {
                             base_url_fingerprint: fingerprint.clone(),
                             fetched_at,
@@ -1136,9 +1151,9 @@
         let _lock = crate::test_support::lock_test_env();
         let _canonical = crate::test_support::EnvVarGuard::remove("CODEWHALE_MAX_OUTPUT_TOKENS");
         let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        let config = Config {
-            provider: Some("ollama".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_5_0 = Some("ollama".to_string());
+            let __cw_config_init_5_1 = Some(ProvidersConfig {
                 ollama: ProviderConfig {
                     model: Some("qwen2.5:7b".to_string()),
                     context_window: Some(32_768),
@@ -1146,8 +1161,11 @@
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value.providers = __cw_config_init_5_1;
+            __cw_config_init_5_value
         };
         let client = CodewhaleClient::new(&config).unwrap();
         assert_eq!(
@@ -1260,9 +1278,9 @@
     fn same_protocol_model_switch_rebinds_exact_candidate_identity_and_limits() {
         let _lock = crate::test_support::lock_test_env();
         let _canonical = crate::test_support::EnvVarGuard::set("CODEWHALE_MAX_OUTPUT_TOKENS", "384000");
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(ProvidersConfig {
+        let config = {
+            let __cw_config_init_6_0 = Some("openrouter".to_string());
+            let __cw_config_init_6_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     api_key: Some("openrouter-route-cap-test".to_string()),
                     base_url: Some("https://openrouter.ai/api/v1".to_string()),
@@ -1270,8 +1288,11 @@
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_6_value: Config = Config::default();
+            __cw_config_init_6_value.provider = __cw_config_init_6_0;
+            __cw_config_init_6_value.providers = __cw_config_init_6_1;
+            __cw_config_init_6_value
         };
         let client = CodewhaleClient::new(&config).expect("OpenRouter client resolves");
         assert_eq!(client.wire_format, WireFormat::ChatCompletions);
@@ -1339,10 +1360,13 @@
             .mount(&server)
             .await;
         let base_url = format!("{}/v1", server.uri());
-        let config = Config {
-            provider: Some("custom".to_string()),
-            default_text_model: Some("local-fim".to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_7_0 = Some("custom".to_string());
+            let __cw_config_init_7_1 = Some("local-fim".to_string());
+            let mut __cw_config_init_7_value: Config = Config::default();
+            __cw_config_init_7_value.provider = __cw_config_init_7_0;
+            __cw_config_init_7_value.default_text_model = __cw_config_init_7_1;
+            __cw_config_init_7_value
         }
         .with_legacy_root(Some("fim-cap-test".to_string()), Some(base_url.clone()));
         let client = CodewhaleClient::from_parts(
@@ -1497,10 +1521,13 @@
         assert_eq!(candidate.protocol(), WireFormat::Responses);
         assert_eq!(candidate.wire_model_id().as_str(), model);
 
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(model.to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_8_0 = Some("deepseek".to_string());
+            let __cw_config_init_8_1 = Some(model.to_string());
+            let mut __cw_config_init_8_value: Config = Default::default();
+            __cw_config_init_8_value.provider = __cw_config_init_8_0;
+            __cw_config_init_8_value.default_text_model = __cw_config_init_8_1;
+            __cw_config_init_8_value
         }
         .with_legacy_root(
             Some("ds-test".to_string()),

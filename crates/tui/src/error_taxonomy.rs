@@ -132,7 +132,7 @@ impl ErrorEnvelope {
         )
     }
 
-    /// Authentication failure — fatal and blocks the session.
+    /// Authentication failure — fatal for the attempted operation.
     #[must_use]
     pub fn fatal_auth(message: impl Into<String>) -> Self {
         Self::new(

@@ -12,12 +12,11 @@ use serde::Serialize;
 use super::adapter::AdapterResult;
 use super::cache::{self, CachedFetch};
 use super::extract::is_js_shell_error;
-use super::guard::{
-    DnsPin, guarded_reqwest_client_builder, validate_fetch_target, validate_network_policy,
-};
-use crate::features::Feature;
+use super::guard::{validate_fetch_target, validate_network_policy};
 use crate::tools::spec::{ToolContext, ToolError};
-use crate::worker_profile::ShellPolicy;
+use codewhale_agent_contract::worker_profile::ShellPolicy;
+use codewhale_net::guard::{DnsPin, guarded_reqwest_client_builder};
+use codewhale_runtime::features::Feature;
 
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const HARD_MAX_TIMEOUT: Duration = Duration::from_secs(60);
@@ -406,7 +405,7 @@ fn js_shell_message(
 /// Both facts already exist: the web family is feature-gated, and a
 /// network-denied Fleet worker carries `network_access: Some(false)` on the
 /// authority envelope that also removes the web tools from its registry
-/// (`fleet::role::NETWORK_TOOL_DENYLIST`). Nothing new is registered here.
+/// (`codewhale_agent_contract::role::NETWORK_TOOL_DENYLIST`). Nothing new is registered here.
 fn web_tool_available(context: &ToolContext) -> bool {
     context.features.enabled(Feature::WebSearch) && network_authorized(context)
 }
@@ -440,11 +439,11 @@ fn raw_fetch_call(url: &str) -> serde_json::Value {
     serde_json::json!({"action": "fetch", "url": url, "format": "raw"})
 }
 
-/// Honest next steps after a JS shell. `web.run` shares this fetch, its
-/// browser-agent retry and this extractor, and no Codewhale web tool runs
-/// JavaScript, so re-opening the page is never suggested.
+/// The HTTP extractor cannot execute JavaScript. Recovery names any browser
+/// the session is authorized to use.
 fn js_shell_recovery(url: &str, context: &ToolContext) -> String {
-    let same_result = "no Codewhale web tool runs JavaScript (`web.run` shares this fetch and extractor), so opening the URL again returns the same shell.";
+    let same_result =
+        "This HTTP fetch/extraction path does not execute JavaScript (`web.run` shares it).";
     let browser = context
         .browser_tool
         .as_deref()
@@ -1109,10 +1108,12 @@ mod tests {
         let url = format!("http://public.example:{}/pricing", server.address().port());
         let options = FetchOptions::new(Duration::from_secs(5), 65_536, "text/html");
 
+        let mut browser = context("js-shell-browser-role");
+        browser.execution.browser_tool = Some("mcp_playwright_browser_navigate".to_string());
         let readable = fetch_readable_with_initial_pin(
             &url,
             &options,
-            &context("js-shell-browser-role"),
+            &browser,
             "fetch_url",
             pin(),
             extract_html_document,
@@ -1126,8 +1127,10 @@ mod tests {
         let message = partial.note;
         assert_eq!(calls.load(Ordering::SeqCst), 2, "no third request");
         assert!(
-            message.contains("no Codewhale web tool runs JavaScript"),
-            "the recovery must not send the model to a re-open that fails the same way: {message}"
+            message.contains("This HTTP fetch/extraction path does not execute JavaScript")
+                && message.contains("`mcp_playwright_browser_navigate`")
+                && !message.contains("no Codewhale web tool runs JavaScript"),
+            "the recovery must distinguish the HTTP extractor from the available browser: {message}"
         );
         // The suggested call must be one the `Web` tool schema accepts.
         let call = message
@@ -1362,7 +1365,7 @@ mod tests {
 
     #[tokio::test]
     async fn tightened_network_policy_blocks_an_existing_cache_entry() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let url = reqwest::Url::parse("https://example.com/cached").unwrap();
         cache::insert(
@@ -1405,7 +1408,7 @@ mod tests {
 
     #[tokio::test]
     async fn tightened_network_policy_checks_cached_redirect_destination() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let initial_url = reqwest::Url::parse("https://8.8.8.8/cached").unwrap();
         cache::insert(

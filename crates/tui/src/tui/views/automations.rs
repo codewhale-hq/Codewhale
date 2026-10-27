@@ -88,7 +88,7 @@ pub struct AutomationsView {
     problem: Option<String>,
     /// Screen rect of the list body, recorded at render for mouse parity.
     list_body: Cell<Rect>,
-    config: crate::config::Config,
+    config: codewhale_runtime::config::Config,
     workspace: std::path::PathBuf,
     editor: Option<AutomationEditor>,
     notice: Option<String>,
@@ -99,7 +99,7 @@ pub struct AutomationsView {
 impl AutomationsView {
     /// Open the room, optionally focused on one automation id.
     #[must_use]
-    pub fn new(app: &App, config: &crate::config::Config, focus: Option<&str>) -> Self {
+    pub fn new(app: &App, config: &codewhale_runtime::config::Config, focus: Option<&str>) -> Self {
         let mut view = Self {
             rows: Vec::new(),
             row: 0,
@@ -141,7 +141,7 @@ impl AutomationsView {
             last_refresh_at: Instant::now(),
             problem: None,
             list_body: Cell::new(Rect::ZERO),
-            config: crate::config::Config::default(),
+            config: codewhale_runtime::config::Config::default(),
             workspace: std::env::temp_dir(),
             editor: None,
             notice: None,
@@ -865,6 +865,7 @@ mod tests {
     fn record(id: &str, status: AutomationStatus) -> AutomationRecord {
         let at = Utc.with_ymd_and_hms(2026, 9, 4, 17, 0, 0).unwrap();
         AutomationRecord {
+            destination_thread_id: None,
             schema_version: 1,
             execution_scope: Some(crate::task_manager::test_execution_scope("test")),
             id: id.to_string(),

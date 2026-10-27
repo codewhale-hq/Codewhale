@@ -14,7 +14,7 @@
 //! make path discovery resilient to quoting, leading `./`, and
 //! trailing `:line` markers.
 
-use crate::dependencies::{ExternalTool, Git};
+use codewhale_dependencies::{ExternalTool, Git};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

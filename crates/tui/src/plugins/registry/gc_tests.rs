@@ -669,15 +669,42 @@ fn a_state_path_outside_the_standard_layout_gets_record_cleanup_only() {
 
 mod through_the_registry {
     use super::*;
-    use crate::plugins::builtin::{digest, write_bundle};
     use crate::plugins::context::{HostEnvironment, PluginDiscoveryContext};
     use crate::plugins::discovery::DiscoveryConfig;
     use crate::plugins::types::PluginTrustStatus;
+    use sha2::{Digest, Sha256};
 
     const MANIFEST: &[u8] = br#"{"$schema":"https://agent-plugins.org/schemas/plugin.json","name":"fixture","version":"1.0.0"}"#;
     const SKILL: &[u8] = b"---\nname: extra\ndescription: An added skill.\n---\nBody.\n";
 
     type Build = Vec<(&'static str, &'static [u8])>;
+
+    fn digest(files: &[(&str, &[u8])]) -> String {
+        let mut hasher = Sha256::new();
+        for (relative, contents) in files {
+            hasher.update((relative.len() as u64).to_le_bytes());
+            hasher.update(relative.as_bytes());
+            hasher.update((contents.len() as u64).to_le_bytes());
+            hasher.update(contents);
+        }
+        crate::plugins::manifest::hex_digest(hasher.finalize())
+    }
+
+    fn write_bundle(root: &Path, name: &str, files: &[(&str, &[u8])]) -> std::io::Result<PathBuf> {
+        let hash = digest(files);
+        let destination = root.join(format!("{name}-{hash}"));
+        if !destination.exists() {
+            let stage = tempfile::tempdir_in(root)?;
+            for (relative, contents) in files {
+                let path = stage.path().join(name).join(relative);
+                fs::create_dir_all(path.parent().unwrap())?;
+                fs::write(path, contents)?;
+            }
+            fs::write(stage.path().join(STAMP_NAME), hash)?;
+            crate::plugins::builtin::publish_snapshot(stage.path(), &destination)?;
+        }
+        Ok(destination)
+    }
 
     fn same_caps(version: &'static [u8]) -> Build {
         vec![("plugin.json", MANIFEST), ("body.txt", version)]
@@ -714,7 +741,7 @@ mod through_the_registry {
             }
         }
 
-        /// Start "a build" the way startup does: publish, discover, carry.
+        /// Publish a historical fixture, discover it, and carry its review.
         fn boot(&self, files: &Build) -> (PluginRegistry, EmbeddedBundle) {
             let root = write_bundle(&self.h.snapshots(), "fixture", files).unwrap();
             let context = PluginDiscoveryContext::from_config_and_environment(
@@ -853,8 +880,8 @@ mod through_the_registry {
 
 /// Not a regression test: a rehearsal of the real startup path against a COPY
 /// of a real home (`cp -Rp ~/.codewhale/{plugins,builtin-plugins} <copy>/`).
-/// It materializes this build's snapshot and carries trust exactly as startup
-/// does, prints what `/plugin doctor` would report, and with
+/// It discovers historical snapshots, prints what `/plugin doctor` would
+/// report, and with
 /// `CW_GC_REHEARSAL_APPLY=1` applies `--fix` to the copy and re-checks trust.
 #[test]
 #[ignore = "set CW_GC_REHEARSAL_HOME to a copy of a real home"]

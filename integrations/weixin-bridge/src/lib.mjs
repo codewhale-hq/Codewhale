@@ -170,47 +170,7 @@ export function approvalText(approval, code) {
   ].filter(Boolean).join("\n");
 }
 
-export function questionText(request) {
-  const questions = Array.isArray(request?.questions) ? request.questions : [];
-  const lines = ["需要你回答 / Codewhale is asking"];
-  for (const [index, question] of questions.entries()) {
-    const prefix = questions.length > 1 ? `${index + 1}. ` : "";
-    lines.push(`${prefix}${question.header ? `${question.header}: ` : ""}${question.question || ""}`);
-    for (const [optionIndex, option] of (question.options || []).entries()) {
-      lines.push(`  ${optionIndex + 1}) ${option.label}${option.description ? ` - ${clip(option.description, 120)}` : ""}`);
-    }
-  }
-  lines.push(questions.length > 1
-    ? "每行回答一个问题，可回复选项编号或文字。/ Answer one question per line, by option number or in words."
-    : "回复选项编号或文字。/ Reply with an option number or in words.");
-  return lines.join("\n");
-}
-
-export function parseQuestionAnswers(request, text) {
-  const questions = Array.isArray(request?.questions) ? request.questions : [];
-  if (!questions.length) return null;
-  const replies = questions.length > 1
-    ? String(text || "").split(/\n+/).map((line) => line.trim()).filter(Boolean)
-    : [String(text || "").trim()];
-  if (replies.length !== questions.length || replies.some((reply) => !reply)) return null;
-  const answers = [];
-  for (const [index, question] of questions.entries()) {
-    const reply = replies[index];
-    const options = question.options || [];
-    const picks = question.multi_select ? reply.split(/[\s,，、]+/u).filter(Boolean) : [reply];
-    const chosen = picks.every((pick) => /^\d+$/.test(pick) && Number(pick) >= 1 && Number(pick) <= options.length)
-      ? picks.map((pick) => options[Number(pick) - 1])
-      : options.filter((option) => option.label.toLowerCase() === reply.toLowerCase());
-    if (chosen.length) {
-      for (const option of chosen) answers.push({ id: question.id, label: option.label, value: option.label });
-    } else if (question.allow_free_text || !options.length) {
-      answers.push({ id: question.id, label: "Other", value: reply });
-    } else {
-      return null;
-    }
-  }
-  return answers;
-}
+export { questionText, parseQuestionAnswers } from "../../bridge-core/src/lib.mjs";
 
 export function isSessionExpired(response) {
   return response?.ret === -14 || response?.errcode === -14;

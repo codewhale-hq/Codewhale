@@ -543,13 +543,14 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use crate::config::Config;
     use crate::tools::subagent::{
-        AgentWorkerStatus, ChildRouteReceipt, FleetRole, SubAgentAssignment, SubAgentNeedsInput,
+        AgentWorkerStatus, ChildRouteReceipt, SubAgentAssignment, SubAgentNeedsInput,
     };
     use crate::tui::app::{
         AgentCurrentActivity, AgentRecentAction, MAX_AGENT_RECENT_ACTIONS, TuiOptions,
     };
+    use codewhale_agent_contract::role::FleetRole;
+    use codewhale_runtime::config::Config;
 
     fn test_app(workspace: PathBuf) -> App {
         App::new(

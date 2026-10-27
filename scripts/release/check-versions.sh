@@ -284,7 +284,13 @@ if [[ "${facts_version}" != "${workspace_version}" ]]; then
 fi
 
 # 10) README install-tag examples point at the current release.
-for readme in README.md README.zh-CN.md README.ja-JP.md README.vi.md README.ko-KR.md; do
+readmes=(README.md docs/i18n/README.*.md)
+for readme in "${readmes[@]}"; do
+  if [[ ! -f "${readme}" ]]; then
+    echo "::error::Missing release README: ${readme}" >&2
+    fail=1
+    continue
+  fi
   stale_tags="$(grep -nE -- "--tag v[0-9]+\.[0-9]+\.[0-9]+" "${readme}" | grep -v -- "--tag v${workspace_version}" || true)"
   if [[ -n "${stale_tags}" ]]; then
     echo "::error::${readme} has install examples pinned to an old tag (want v${workspace_version}):" >&2
@@ -299,7 +305,7 @@ done
 # pointer ("published at vX.Y.Z"). These drifted while this gate still passed
 # on a prior lane, so guard them explicitly. Narrowly scoped to those two
 # snippet shapes to avoid flagging unrelated prose.
-for doc in README.md README.zh-CN.md README.ja-JP.md README.vi.md README.ko-KR.md docs/INSTALL.md; do
+for doc in "${readmes[@]}" docs/INSTALL.md; do
   [[ -f "${doc}" ]] || continue
   stale_version_comments="$(grep -nE -- "codewhale --version[[:space:]]+#[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+" "${doc}" | grep -vE -- "#[[:space:]]*${workspace_version}([^0-9]|$)" || true)"
   if [[ -n "${stale_version_comments}" ]]; then

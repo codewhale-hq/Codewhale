@@ -7,9 +7,9 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::settings::Settings;
 use crate::tui::app::{App, StatusToast, StatusToastKind, StatusToastLevel};
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_runtime::settings::Settings;
 
 const MAX_TIPS_PER_SESSION: u8 = 1;
 const MAX_LIFETIME_IMPRESSIONS: u8 = 2;

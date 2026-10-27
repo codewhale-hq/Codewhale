@@ -22,9 +22,9 @@
 //! }, None).await;
 //! ```
 
-use crate::config::RetryPolicy;
 use anyhow::Result;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
+use codewhale_runtime::config::RetryPolicy;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -39,6 +39,14 @@ pub mod mock;
 /// Type alias for boxed stream of SSE events
 pub type StreamEventBox =
     Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send + 'static>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ToolWireMeasurement {
+    pub tool_schema_bytes: usize,
+    pub tool_schema_sha256: String,
+    pub tool_count: usize,
+    pub omitted_tool_names: Vec<String>,
+}
 
 /// Unified interface for LLM providers.
 ///
@@ -63,6 +71,12 @@ pub trait LlmClient: Send + Sync {
     }
     fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
         None
+    }
+    fn measure_outbound_tools(
+        &self,
+        _request: MessageRequest,
+    ) -> Result<Option<ToolWireMeasurement>> {
+        Ok(None)
     }
 
     /// Creates a non-streaming message completion
@@ -128,8 +142,8 @@ pub trait LlmClient: Send + Sync {
         requested_model: &str,
         dispatched_at: chrono::DateTime<chrono::Utc>,
     ) -> crate::cost_status::EffectiveRouteEnvelope {
-        let provider = crate::config::ProviderKind::parse(self.provider_name())
-            .unwrap_or(crate::config::ProviderKind::Custom);
+        let provider = codewhale_config::ProviderKind::parse(self.provider_name())
+            .unwrap_or(codewhale_config::ProviderKind::Custom);
         crate::cost_status::EffectiveRouteEnvelope::capture_observed(
             provider,
             self.provider_name(),
@@ -384,7 +398,7 @@ pub enum LlmError {
     /// Authorization or provider-side blocking failed (HTTP 403)
     AuthorizationError(String),
 
-    /// Invalid request parameters (HTTP 400)
+    /// Invalid request parameters or body size (HTTP 4xx)
     InvalidRequest { status: u16, message: String },
 
     /// Model-specific error (model not found, etc.)
@@ -489,6 +503,12 @@ impl LlmError {
         retry_after: Option<Duration>,
         body_retry_after: Option<Duration>,
     ) -> Self {
+        if status == 413 {
+            return LlmError::InvalidRequest {
+                status,
+                message: body.to_string(),
+            };
+        }
         let body_retry_after = body_retry_after.filter(|delay| *delay <= PROVIDER_RETRY_HINT_MAX);
         let quota_code = explicit_quota_code(body).or_else(|| explicit_quota_code_marker(body));
         if let Some(error) = quota_code
@@ -973,7 +993,17 @@ fn has_explicit_quota_phrase(body: &str, bounded_rate_limit_hint: bool) -> bool 
     .into_iter()
     .any(|phrase| lower.contains(phrase));
 
+    let plan_window_exhausted = lower.contains("usage limit")
+        && ["reached", "exceeded", "exhausted"]
+            .iter()
+            .any(|word| lower.contains(word))
+        && (["weekly", "5-hour", "five-hour", "5 hour", "five hour"]
+            .iter()
+            .any(|scope| lower.contains(scope))
+            || (lower.contains("plan") && lower.contains("limit resets")));
+
     credits_exhausted
+        || plan_window_exhausted
         || lower.contains("billing hard limit has been reached")
         || lower.contains("credit balance exhausted")
         || lower.contains("credit balance is exhausted")
@@ -1351,10 +1381,108 @@ pub type RetryCallback = Box<dyn Fn(&LlmError, u32, Duration) + Send + Sync>;
 pub(crate) type RetryStatusEmitter =
     std::sync::Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ImageProjectionReceipt {
+    pub cause: String,
+    pub original_image_blocks: usize,
+    pub omitted_oldest_blocks: usize,
+    pub retained_newest_blocks: usize,
+    pub body_bytes_before: usize,
+    pub body_bytes_after: usize,
+    pub omission_note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OutboundWireObservation {
+    pub provider_id: String,
+    pub route_id: Option<String>,
+    pub endpoint_fingerprint: String,
+    pub wire_model: String,
+    pub wire_dialect: String,
+    pub tools: ToolWireMeasurement,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_projection: Option<ImageProjectionReceipt>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct OutboundWireObservationBatch {
+    pub observations: Vec<OutboundWireObservation>,
+    pub dropped: u64,
+}
+
+#[derive(Debug, Default)]
+struct OutboundWireObservationBuffer {
+    batch: OutboundWireObservationBatch,
+    retained_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OutboundWireObservations {
+    buffer: std::sync::Arc<std::sync::Mutex<OutboundWireObservationBuffer>>,
+}
+
+impl OutboundWireObservations {
+    pub(crate) fn drain(&self) -> OutboundWireObservationBatch {
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        buffer.retained_bytes = 0;
+        std::mem::take(&mut buffer.batch)
+    }
+
+    fn record(&self, observation: OutboundWireObservation) {
+        let retained_bytes = [
+            observation
+                .image_projection
+                .as_ref()
+                .map_or(0, |projection| {
+                    projection.cause.capacity() + projection.omission_note.capacity()
+                }),
+            observation.provider_id.capacity(),
+            observation.route_id.as_ref().map_or(0, String::capacity),
+            observation.endpoint_fingerprint.capacity(),
+            observation.wire_model.capacity(),
+            observation.wire_dialect.capacity(),
+            observation.tools.tool_schema_sha256.capacity(),
+            observation
+                .tools
+                .omitted_tool_names
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+        ]
+        .into_iter()
+        .chain(
+            observation
+                .tools
+                .omitted_tool_names
+                .iter()
+                .map(String::capacity),
+        )
+        .fold(
+            std::mem::size_of::<OutboundWireObservation>(),
+            usize::saturating_add,
+        );
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if buffer.batch.observations.len() >= 32
+            || retained_bytes > (256 * 1024_usize).saturating_sub(buffer.retained_bytes)
+        {
+            buffer.batch.dropped = buffer.batch.dropped.saturating_add(1);
+            return;
+        }
+        buffer.retained_bytes += retained_bytes;
+        buffer.batch.observations.push(observation);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RequestRetryObservation {
     pub(crate) retries: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub(crate) emit: RetryStatusEmitter,
+    pub(crate) wire_observations: OutboundWireObservations,
 }
 
 tokio::task_local! {
@@ -1368,7 +1496,21 @@ pub(crate) async fn observe_request_retries<F: Future>(
     REQUEST_RETRY_OBSERVATION.scope(observation, future).await
 }
 
-async fn observe_transport_status(message: String) {
+pub(crate) fn observe_outbound_wire(observation: impl FnOnce() -> OutboundWireObservation) {
+    let observations = REQUEST_RETRY_OBSERVATION
+        .try_with(|observation| {
+            observation
+                .as_ref()
+                .map(|observation| observation.wire_observations.clone())
+        })
+        .ok()
+        .flatten();
+    if let Some(observations) = observations {
+        observations.record(observation());
+    }
+}
+
+pub(crate) async fn observe_transport_status(message: String) {
     let observation = REQUEST_RETRY_OBSERVATION
         .try_with(Clone::clone)
         .ok()
@@ -1378,7 +1520,7 @@ async fn observe_transport_status(message: String) {
     }
 }
 
-fn observe_transport_attempt() {
+pub(crate) fn observe_transport_attempt() {
     let _ = REQUEST_RETRY_OBSERVATION.try_with(|observation| {
         if let Some(observation) = observation {
             let mut count = observation

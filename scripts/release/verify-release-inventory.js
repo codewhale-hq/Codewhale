@@ -13,8 +13,9 @@
 //
 // release-republish.yml runs it with --manifest: an older tag may predate the
 // current inventory, so there the release's own checksum manifest is the
-// inventory, and the release must carry exactly the manifest's assets plus
-// the manifest itself before any channel is derived from it.
+// inventory, and the release must carry exactly the manifest's assets, each
+// with the SHA-256 digest the manifest lists, plus the manifest itself before
+// any channel is derived from it.
 //
 // Set GH_BIN to choose the GitHub CLI binary (tests use a fake).
 
@@ -74,7 +75,7 @@ function findRelease(repo, tag, { draft }, gh) {
 }
 
 /** Exact names, each fully uploaded, and matching local size and SHA-256. */
-function assertInventory(release, tag, expectedNames, assetDir) {
+function assertInventory(release, tag, expectedNames, assetDir, manifestDigests = null) {
   if (!release || !Array.isArray(release.assets)) {
     throw new Error(`GitHub Release ${tag} did not provide an asset inventory`);
   }
@@ -100,6 +101,9 @@ function assertInventory(release, tag, expectedNames, assetDir) {
     if (asset.state !== "uploaded" || !(asset.size > 0)) {
       throw new Error(`GitHub Release ${tag} asset ${name} is not fully uploaded (state ${asset.state}, ${asset.size} bytes)`);
     }
+    if (manifestDigests && manifestDigests.has(name) && asset.digest !== manifestDigests.get(name)) {
+      throw new Error(`GitHub Release ${tag} asset ${name} has a missing or mismatched SHA-256 digest against ${CHECKSUM_MANIFEST}; refusing a stale manifest`);
+    }
     if (assetDir) {
       const local = fs.statSync(path.join(assetDir, name)).size;
       if (asset.size !== local) {
@@ -114,19 +118,20 @@ function assertInventory(release, tag, expectedNames, assetDir) {
   return expectedNames.length;
 }
 
-/** Names the release's own checksum manifest lists, plus the manifest. */
+/** The SHA-256 digest the release's own checksum manifest lists for each asset, by name. */
 function manifestInventory(repo, tag, gh) {
   const text = gh(["release", "download", tag, "--repo", repo, "--pattern", CHECKSUM_MANIFEST, "--output", "-"]);
-  const names = [];
+  const digests = new Map();
   for (const line of String(text).split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const match = trimmed.match(/^[a-fA-F0-9]{64}\s+\*?(.+)$/);
+    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
     if (!match) throw new Error(`${CHECKSUM_MANIFEST} contains an invalid row: ${trimmed}`);
-    names.push(match[1]);
+    if (digests.has(match[2])) throw new Error(`${CHECKSUM_MANIFEST} lists ${match[2]} twice`);
+    digests.set(match[2], `sha256:${match[1].toLowerCase()}`);
   }
-  if (names.length === 0) throw new Error(`${CHECKSUM_MANIFEST} for ${tag} lists no assets`);
-  return [...names, CHECKSUM_MANIFEST];
+  if (digests.size === 0) throw new Error(`${CHECKSUM_MANIFEST} for ${tag} lists no assets`);
+  return digests;
 }
 
 function run(argv, gh = ghRunner(), log = console.log) {
@@ -151,8 +156,9 @@ function run(argv, gh = ghRunner(), log = console.log) {
     catalog = compiledHosts.parseCatalog(fs.readFileSync(path.join(flags.assetDir, compiledHosts.HOST_CATALOG), "utf8"), tag.replace(/^v/, ""));
     compiledHosts.verifyDirectory(flags.assetDir, catalog);
   }
-  const expected = flags.manifest ? manifestInventory(repo, tag, gh) : allReleaseAssetNames(catalog);
-  const count = assertInventory(release, tag, expected, flags.assetDir);
+  const manifestDigests = flags.manifest ? manifestInventory(repo, tag, gh) : null;
+  const expected = manifestDigests ? [...manifestDigests.keys(), CHECKSUM_MANIFEST] : allReleaseAssetNames(catalog);
+  const count = assertInventory(release, tag, expected, flags.assetDir, manifestDigests);
   log(`Verified ${count} assets on the ${flags.draft ? "draft" : "published"} release ${tag}`);
   if (!flags.publish) return;
   gh(["api", "-X", "PATCH", `repos/${repo}/releases/${release.id}`, "-F", "draft=false"]);

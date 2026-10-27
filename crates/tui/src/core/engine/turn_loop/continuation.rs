@@ -33,30 +33,13 @@ impl Engine {
             stream_errors,
             prepared_output_tokens,
         } = response;
-        if self.child_report() {
-            // Reporting has one logical model step and never authorizes tool,
-            // code-fence, steer, child completion or goal continuation.
-            return if tool_uses.is_empty()
-                && output_limit_truncated.is_none()
-                && !current_text_visible.trim().is_empty()
-                && has_sendable_assistant_content
-            {
-                PhaseResult::Break
-            } else {
-                PhaseResult::Return((
-                    TurnOutcomeStatus::Failed,
-                    Some("bounded Core report did not finish as text".into()),
-                ))
-            };
-        }
         // A truncated response with no tool call cannot continue through
         // tool execution: surface the truncation as a bounded observation
         // and resume the loop so the model can act on it instead of the
         // turn silently ending on a cut-off answer. Resume only when the
         // truncated response actually delivered partial content — a
-        // reasoning-only length stop delivered nothing to continue from,
-        // and re-issuing it would only reproduce the same stop instead of
-        // failing the turn honestly.
+        // reasoning-only length stop delivered nothing to continue from.
+        // The default fails that turn; opt-in answer recovery is handled below.
         if output_limit_truncated.is_some()
             && !fleet_no_progress_report
             && tool_uses.is_empty()
@@ -213,9 +196,12 @@ impl Engine {
                 return PhaseResult::Retry;
             }
 
+            let output_limit_stop = is_output_limit_stop_reason(stop_reason.as_deref());
+            let opted_in_output_limit =
+                self.config.reasoning_only_on_output_limit && output_limit_stop;
             if no_sendable_assistant_content
                 && !zero_tool_text_call
-                && has_provider_reasoning
+                && (has_provider_reasoning || opted_in_output_limit)
                 && should_fail_no_sendable_content(
                     tool_uses.is_empty(),
                     progress.turn_error.is_none(),
@@ -223,48 +209,61 @@ impl Engine {
                     !pending_steers.is_empty(),
                     false,
                 )
-                && !is_output_limit_stop_reason(stop_reason.as_deref())
+                && (!output_limit_stop || opted_in_output_limit)
                 && progress.reasoning_only_reprompts < self.config.reasoning_only_max_reprompts
             {
-                // Reasoning-only, clean stop: recover instead of dead-ending
-                // the turn. Nothing was persisted for this response (a bare
-                // Thinking block is not sendable), so re-issuing the request
-                // is an exact cached-prefix retry — no synthetic message,
-                // no prefix churn. An output-length stop is excluded above
-                // because retrying would only reproduce it.
                 progress.reasoning_only_reprompts += 1;
                 turn.stop_diagnostics.reasoning_only_reprompts = progress.reasoning_only_reprompts;
                 let attempt = progress.reasoning_only_reprompts;
                 let max_reprompts = self.config.reasoning_only_max_reprompts;
-                // Attempt 1 preserves the prefix; a cache hit or lower
-                // cost is not guaranteed. From attempt 2 on,
-                // an identical request has already failed once, so carry
-                // the nudge rather than reproduce the same answerless reply.
-                let nudged = attempt > 1;
-                if nudged {
-                    let text = self
-                        .config
-                        .reasoning_only_reprompt_message
-                        .clone()
-                        .unwrap_or_else(|| {
-                            crate::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE.to_string()
-                        });
-                    if !text.trim().is_empty() {
-                        progress.reasoning_only_nudge = Some(text);
-                    }
-                }
+                progress.reasoning_only_nudge = (attempt > 1 || output_limit_stop)
+                    .then(|| {
+                        self.config
+                            .reasoning_only_reprompt_message
+                            .clone()
+                            .unwrap_or_else(|| {
+                                codewhale_runtime::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE
+                                    .to_string()
+                            })
+                    })
+                    .filter(|text| !text.trim().is_empty());
+                let nudged = progress.reasoning_only_nudge.is_some();
                 let how = if nudged {
                     "re-requesting the answer with a nudge"
                 } else {
                     "re-requesting the answer"
                 };
-                crate::logging::warn(format!(
-                    "Model returned only reasoning with no answer or tool call (attempt {attempt}/{max_reprompts}); {how}"
+                let reason = if output_limit_stop {
+                    "output-limit reply"
+                } else {
+                    "reasoning-only reply"
+                };
+                codewhale_runtime::logging::warn(format!(
+                    "Model returned {reason} with no answer or tool call (attempt {attempt}/{max_reprompts}); {how}"
                 ));
-                let _ = self.send_retry_status(format!(
-                    "Retry attempt: reasoning-only {attempt}/{max_reprompts}; no answer or tool call; {how}"
-                ))
-                .await;
+                let locale = codewhale_localization::resolve_locale(&self.config.locale_tag);
+                let action = codewhale_localization::tr(
+                    locale,
+                    if nudged {
+                        codewhale_localization::MessageId::AnswerRetryActionNudge
+                    } else {
+                        codewhale_localization::MessageId::AnswerRetryActionBare
+                    },
+                );
+                let body = codewhale_localization::tr(
+                    locale,
+                    if output_limit_stop {
+                        codewhale_localization::MessageId::OutputLimitAnswerRetryBody
+                    } else {
+                        codewhale_localization::MessageId::ReasoningOnlyRetryBody
+                    },
+                )
+                .replace("{attempt}", &attempt.to_string())
+                .replace("{limit}", &max_reprompts.to_string())
+                .replace("{action}", action.as_ref());
+                let _ = self
+                    .send_retry_status(format!("Retry attempt: {body}"))
+                    .await;
                 progress.turn_error = None;
                 return PhaseResult::Retry;
             }
@@ -304,7 +303,8 @@ impl Engine {
                             .reasoning_only_reprompt_message
                             .clone()
                             .unwrap_or_else(|| {
-                                crate::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE.to_string()
+                                codewhale_runtime::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE
+                                    .to_string()
                             });
                         if !text.trim().is_empty() {
                             progress.reasoning_only_nudge = Some(text);
@@ -312,7 +312,7 @@ impl Engine {
                         "re-requesting the answer with a nudge"
                     }
                 };
-                crate::logging::warn(format!(
+                codewhale_runtime::logging::warn(format!(
                     "Model returned terminal stop reason `{reason}` with no answer or tool call (attempt {attempt}/{EMPTY_STOP_MAX_RETRIES}); {how}"
                 ));
                 let _ = self.send_retry_status(format!(
@@ -366,7 +366,7 @@ impl Engine {
                 } else {
                     "Model stream ended with no answer or tool call.".to_string()
                 };
-                crate::logging::warn(&message);
+                codewhale_runtime::logging::warn(&message);
                 progress.turn_error = Some(message.clone());
                 let _ = self
                     .send_event(Event::error(ErrorEnvelope::classify(message, true)))

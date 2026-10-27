@@ -79,7 +79,7 @@ pub struct UserCommandMetadata {
     pub pausable: bool,
     pub aliases: Vec<String>,
     pub hidden: bool,
-    pub plugin_authority: Option<crate::plugins::types::PluginAuthority>,
+    pub plugin_authority: Option<codewhale_config::PluginAuthority>,
     /// Set for a command contributed by an extension-host plugin: it runs in
     /// the host (`command/run`) instead of expanding `body`.
     pub extension: Option<crate::extension_host::command::ExtensionCommandRef>,
@@ -532,7 +532,7 @@ struct CommandSourceEntry {
     name: String,
     content: String,
     path: PathBuf,
-    plugin_authority: Option<crate::plugins::types::PluginAuthority>,
+    plugin_authority: Option<codewhale_config::PluginAuthority>,
     /// Came from a workspace (repository) directory rather than the user's
     /// own global store or a reviewed plugin.
     workspace_sourced: bool,
@@ -1191,7 +1191,7 @@ mod tests {
     /// Workspace commands load only in a trusted workspace; the dispatch
     /// tests below exercise that trusted path.
     fn write_workspace_command(workspace: &Path, name: &str, content: &str) {
-        crate::config::save_workspace_trust(workspace).expect("trust test workspace");
+        codewhale_runtime::config::save_workspace_trust(workspace).expect("trust test workspace");
         write_untrusted_workspace_command(workspace, name, content);
     }
 
@@ -1205,7 +1205,7 @@ mod tests {
         let options = crate::tui::app::TuiOptions {
             ..crate::tui::test_support::test_tui_options(workspace)
         };
-        App::new(options, &crate::config::Config::default())
+        App::new(options, &codewhale_runtime::config::Config::default())
     }
 
     fn sent_message(result: CommandResult) -> String {
@@ -1361,7 +1361,7 @@ mod tests {
         let mut app = test_app(tmp.path().to_path_buf());
         assert!(try_dispatch(&mut app, "/deploy-now").is_none());
 
-        crate::config::save_workspace_trust(tmp.path()).expect("trust workspace");
+        codewhale_runtime::config::save_workspace_trust(tmp.path()).expect("trust workspace");
         let registry = registry_for_workspace(Some(tmp.path()));
         assert!(registry.get("deploy-now").is_some(), "trust reloads them");
         assert!(registry.get("ship").is_some());

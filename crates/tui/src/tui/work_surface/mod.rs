@@ -85,10 +85,8 @@ mod tests {
     };
     use ratatui::{Terminal, backend::TestBackend};
 
-    use crate::config::{Config, ProviderKind};
     use crate::tools::subagent::{
-        AgentWorkerStatus, FleetRole, MailboxMessage, SubAgentAssignment, SubAgentResult,
-        SubAgentStatus,
+        AgentWorkerStatus, MailboxMessage, SubAgentAssignment, SubAgentResult, SubAgentStatus,
     };
     use crate::tools::todo::TodoStatus;
     use crate::tui::app::{
@@ -104,6 +102,9 @@ mod tests {
         OperationBinding, OperationOwnerSnapshot, OwnerState, Provenance, WorkEdge, WorkEdgeId,
         WorkGraph, WorkGraphChange, WorkNode, WorkNodeId,
     };
+    use codewhale_agent_contract::role::FleetRole;
+    use codewhale_config::ProviderKind;
+    use codewhale_runtime::config::Config;
 
     const SESSION: &str = "work-surface-test";
 
@@ -985,9 +986,9 @@ mod tests {
             .find(|row| row.id.0 == "activity:aggregate")
             .expect("aggregated activity row");
         assert!(
-            activity.label.contains("Read 1 files")
-                && activity.label.contains("Searched 1 patterns")
-                && activity.label.contains("Wrote 1 files"),
+            activity.label.contains("Read 1 file ·")
+                && activity.label.contains("Searched 1 pattern ·")
+                && activity.label.ends_with("Wrote 1 file"),
             "aggregated label: {}",
             activity.label
         );

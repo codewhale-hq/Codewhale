@@ -6,11 +6,11 @@
   "models": [],
   "provider_defaults": {},
   "release": {
-    "latest": "0.10.1",
+    "latest": "0.10.2",
     "yanked": [],
     "min_supported": null,
     "notice": null,
-    "release_url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.1"
+    "release_url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.2"
   },
   "announcements": [],
   "_meta": {

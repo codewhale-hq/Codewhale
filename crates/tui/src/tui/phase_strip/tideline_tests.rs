@@ -467,7 +467,7 @@ fn completed_subagent(id: &str) -> crate::tools::subagent::SubAgentResult {
         fork_context: false,
         workspace: None,
         git_branch: None,
-        agent_type: crate::tools::subagent::FleetRole::Worker,
+        agent_type: codewhale_agent_contract::role::FleetRole::Worker,
         assignment: crate::tools::subagent::SubAgentAssignment {
             native_preset: None,
             objective: format!("objective-{id}"),

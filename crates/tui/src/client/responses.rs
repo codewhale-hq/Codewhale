@@ -10,23 +10,24 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use crate::config::ProviderKind;
 use crate::llm_client::StreamEventBox;
-use crate::logging;
-use crate::tools::schema_sanitize;
+use codewhale_config::ProviderKind;
+use codewhale_models::schema_sanitize;
 use codewhale_models::{
     ContentBlock, ContentBlockStart, Delta, MessageDelta, MessageRequest, MessageResponse,
     OpaqueReasoningState, StreamEvent, Tool, Usage,
 };
+use codewhale_runtime::logging;
 
+use super::CodewhaleClient;
 use super::chat::REASONING_REPLAY_PLACEHOLDER;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
-use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
-use super::{
-    CodewhaleClient, ERROR_BODY_MAX_BYTES, bounded_error_text, from_api_tool_name,
-    system_to_instructions, to_api_tool_name,
+use super::wire::{
+    ERROR_BODY_MAX_BYTES, bounded_error_text, from_api_tool_name, system_to_instructions,
+    to_api_tool_name,
 };
+use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
 
 const CHATGPT_TOOL_NAMESPACE: &str = "codewhale";
@@ -189,38 +190,24 @@ impl CodewhaleClient {
         // header on both HTTP clients, so it must not be duplicated here.
         // The public API does not use Codex backend identity or beta headers.
         //
-        // The open itself goes through the shared stream-entry transport
-        // policy: bounded header wait, policy-selected client, and at most
-        // one HTTP/1.1 fallback retry on a classified H2 header stall. The
-        // pre-existing provider retry loop (rate limit / transient upstream)
-        // stays inside each open attempt, before any stream body exists.
+        // Provider backoff stays outside each response-header wait. The
+        // returned SSE body carries no reqwest total timeout.
         let request_body =
             serde_json::to_vec(&body).context("Failed to serialize Responses API request body")?;
-        let open_req = self.stream_open_request();
-        let response = super::stream_entry::open_sse_response(&open_req, |policy| {
-            let url = url.clone();
-            let request_body = request_body.clone();
-            async move {
-                let client = super::stream_entry::client_for_policy(
+        let response = self
+            .send_stream_open_with_retry(|policy| {
+                super::stream_entry::client_for_policy(
                     &self.http_client,
                     self.http1_fallback_client(),
                     policy,
-                );
-                // Stream open: the same retry and rate-limit handling with no
-                // total deadline — a per-request total would ride on the
-                // returned SSE body and hard-cut the live stream.
-                self.send_stream_open_with_retry(|| {
-                    client
-                        .post(&url)
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "text/event-stream")
-                        .body(request_body.clone())
-                })
-                .await
-                .context("Responses API request failed")
-            }
-        })
-        .await?;
+                )
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .body(request_body.clone())
+            })
+            .await
+            .context("Responses API request failed")?;
 
         let status = response.status();
         crate::client::record_provider_response(self.api_provider, status.as_u16());
@@ -804,7 +791,7 @@ impl CodewhaleClient {
 
 pub(super) fn responses_tool_output(content: &str, content_blocks: Option<&[Value]>) -> Value {
     let (image, omitted) = crate::image_attach::provider_tool_result_image_refs(content_blocks);
-    let content = crate::image_attach::tool_result_text_with_omission(content, omitted);
+    let content = codewhale_models::image_window::tool_result_text_with_omission(content, omitted);
     let Some((mime_type, data)) = image else {
         return json!(content);
     };

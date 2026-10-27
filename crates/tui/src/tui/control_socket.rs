@@ -404,7 +404,7 @@ impl SessionControl {
     pub(crate) async fn drain(
         &mut self,
         app: &mut App,
-        config: &crate::config::Config,
+        config: &codewhale_runtime::config::Config,
         engine_handle: &crate::core::engine::EngineHandle,
         current_streaming_text: &mut String,
         stream_display_clock: &mut StreamDisplayClock,
@@ -473,7 +473,7 @@ fn snapshot_from_app(app: &App) -> StatusSnapshot {
 /// Execute one verb on the UI thread and return its response line.
 async fn execute_command(
     app: &mut App,
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     engine_handle: &crate::core::engine::EngineHandle,
     current_streaming_text: &mut String,
     stream_display_clock: &mut StreamDisplayClock,

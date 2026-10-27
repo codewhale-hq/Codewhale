@@ -136,8 +136,7 @@ fn open_preview(app: &mut App) {
 
 fn open_repo_law(app: &mut App) {
     let locale = app.ui_locale;
-    let context = crate::project_context::load_project_context_with_parents(&app.workspace);
-    let text = match context.constitution_block {
+    let text = match crate::project_context::load_repo_constitution_block(&app.workspace).0 {
         Some(block) => block,
         None => no_repo_law_text(locale).to_string(),
     };
@@ -413,7 +412,25 @@ fn open_pager(app: &mut App, title: &str, text: &str) {
 fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> String {
     let state = load_setup_state();
     let load = load_user_constitution();
-    let context = crate::project_context::load_project_context_with_parents(&app.workspace);
+    let (constitution_source_path, source_path, has_instructions, warnings) =
+        match app.instruction_assembly.as_deref() {
+            Some(assembly) => (
+                assembly.constitution_source_path.clone(),
+                assembly.source_path.clone(),
+                assembly.global_tokens + assembly.project_tokens > 0,
+                assembly.warnings.clone(),
+            ),
+            None => {
+                let context =
+                    crate::project_context::load_project_context_with_parents(&app.workspace);
+                (
+                    context.constitution_source_path,
+                    context.source_path,
+                    context.instructions.is_some(),
+                    context.warnings,
+                )
+            }
+        };
     let mut out = String::new();
 
     let copy = ConstitutionManagerCopy::for_locale(locale);
@@ -443,7 +460,7 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
         copy.user_global_label,
         user_constitution_stack_status(state.as_ref(), &load, locale, matches!(account, Ok(true)))
     );
-    if let Some(path) = context.constitution_source_path.as_ref() {
+    if let Some(path) = constitution_source_path.as_ref() {
         let _ = writeln!(
             out,
             "- {}: {} ({})",
@@ -454,7 +471,7 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
     } else {
         let _ = writeln!(out, "- {}: {}", copy.repo_local_label, copy.not_present);
     }
-    if let Some(path) = context.source_path.as_ref() {
+    if let Some(path) = source_path.as_ref() {
         let _ = writeln!(
             out,
             "- {}: {} ({})",
@@ -462,12 +479,12 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
             copy.present,
             path.display()
         );
-    } else if context.instructions.is_some() {
+    } else if has_instructions {
         let _ = writeln!(out, "- {}: {}", copy.agents_label, copy.generated_fallback);
     } else {
         let _ = writeln!(out, "- {}: {}", copy.agents_label, copy.not_present);
     }
-    let whale_warnings = ignored_whale_warnings(&context.warnings);
+    let whale_warnings = ignored_whale_warnings(&warnings);
     if whale_warnings.is_empty() {
         let _ = writeln!(out, "- {}: {}", copy.legacy_whale_label, copy.not_present);
     } else {
@@ -1265,10 +1282,10 @@ impl ConstitutionManagerCopy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
     use crate::tui::pager::PagerView;
     use crate::tui::views::ModalKind;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
     use tempfile::tempdir;
 

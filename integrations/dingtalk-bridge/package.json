@@ -1,0 +1,14 @@
+{
+  "name": "@codewhale/dingtalk-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DingTalk Stream transport for the Codewhale Engine HTTP API.",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "check": "node --check src/index.mjs && node --check src/lib.mjs",
+    "validate:config": "node src/index.mjs --validate-config"
+  },
+  "engines": { "node": ">=22" },
+  "dependencies": { "dingtalk-stream": "2.1.7-beta.1" }
+}

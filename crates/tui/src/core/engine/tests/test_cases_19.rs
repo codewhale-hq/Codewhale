@@ -227,7 +227,8 @@ async fn bootstrap_and_retry_mcp_use_the_engine_owned_pool() {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("alpha")),
-        "the named retry error must stay attached to its row"
+        "the named retry error must stay attached to its row: {:?}",
+        retry.servers
     );
     assert_eq!(
         retry

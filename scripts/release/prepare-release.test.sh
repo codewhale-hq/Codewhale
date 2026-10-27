@@ -11,7 +11,7 @@ make_fixture() {
     "${root}/bin" \
     "${root}/crates/example" \
     "${root}/crates/tui" \
-    "${root}/docs" \
+    "${root}/docs/i18n" \
     "${root}/extensions/vscode" \
     "${root}/npm/codewhale" \
     "${root}/npm/runtime-sdk" \
@@ -150,7 +150,7 @@ EOF
 }
 EOF
 
-  for readme in README.md README.zh-CN.md README.ja-JP.md README.vi.md README.ko-KR.md; do
+  for readme in README.md docs/i18n/README.{zh-CN,ja-JP,vi,ko-KR,de}.md; do
     printf 'Install Codewhale from the package manager.\n' >"${root}/${readme}"
   done
 
@@ -227,10 +227,7 @@ grep -Fq 'prints the published version that was installed' \
   "${success_root}/docs/INSTALL.md"
 grep -Fq -- '--tag v0.9.0' "${success_root}/README.md"
 if grep -R -E -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' \
-  "${success_root}/README.zh-CN.md" \
-  "${success_root}/README.ja-JP.md" \
-  "${success_root}/README.vi.md" \
-  "${success_root}/README.ko-KR.md"; then
+  "${success_root}"/docs/i18n/README.*.md; then
   echo "tag-free localized README unexpectedly gained a release tag" >&2
   exit 1
 fi
@@ -329,7 +326,7 @@ stale_markers="${tmp_dir}/stale-markers"
 stale_log="${tmp_dir}/stale.log"
 make_fixture "${stale_root}"
 mkdir -p "${stale_markers}"
-printf 'Stale install example: --tag v0.8.67\n' >"${stale_root}/README.ja-JP.md"
+printf 'Stale install example: --tag v0.8.67\n' >"${stale_root}/docs/i18n/README.de.md"
 
 if PREPARE_RELEASE_TEST_MARKERS="${stale_markers}" \
   PATH="${stale_root}/bin:${PATH}" \
@@ -340,7 +337,7 @@ if PREPARE_RELEASE_TEST_MARKERS="${stale_markers}" \
 fi
 
 grep -Fq \
-  'README.ja-JP.md has release tag version(s) 0.8.67; expected 0.8.68' \
+  'docs/i18n/README.de.md has release tag version(s) 0.8.67; expected 0.8.68' \
   "${stale_log}"
 grep -Fq 'version = "0.8.68"' "${stale_root}/Cargo.toml"
 grep -Fq 'version = "0.8.68"' "${stale_root}/crates/example/Cargo.toml"
@@ -358,6 +355,8 @@ failure_markers="${tmp_dir}/failure-markers"
 failure_log="${tmp_dir}/failure.log"
 make_fixture "${failure_root}"
 mkdir -p "${failure_markers}"
+printf 'Install from a release tag: --tag v0.8.68\ncodewhale --version # 0.8.68\n' \
+  >"${failure_root}/docs/i18n/README.de.md"
 cp -R "${failure_root}" "${failure_snapshot}"
 cat >"${failure_root}/bin/cargo" <<'EOF'
 #!/usr/bin/env bash

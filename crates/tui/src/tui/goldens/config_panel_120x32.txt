@@ -20,7 +20,7 @@
                     │ Inline file changes                Full diff      ‹ ›   │underwater-retro | dark | light |        
                     │ Output pacing                      auto           ‹ ›   │grayscale | catppuccin-mocha |           
                     │ Cost currency                      usd            ‹ ›   │tokyo-night | dracula | gruvbox-dark |   
-                    │ Transcript spacing                 comfortable    ‹ ›   │claude | matrix | solarized-light | uwu  
+                    │ Transcript spacing                 spacious       ‹ ›   │claude | matrix | solarized-light | uwu  
                     │ Tool cards                         compact        ‹ ›   │Enter or click again: Enter opens        
                     │                                                         │choices                                  
                     │                                                         │                                         

@@ -89,7 +89,7 @@ impl FileTreeState {
         let loading_cell = Arc::new(Mutex::new(None));
         let cell = loading_cell.clone();
         let ws = workspace.to_path_buf();
-        crate::utils::spawn_blocking_supervised("file-tree-build", move || {
+        codewhale_util::utils::spawn_blocking_supervised("file-tree-build", move || {
             let entries = build_file_tree_inner(&ws, &HashSet::new(), None);
             if let Ok(mut guard) = cell.lock() {
                 *guard = Some(entries);
@@ -278,7 +278,7 @@ impl FileTreeState {
             },
         );
         if tokio::runtime::Handle::try_current().is_ok() {
-            crate::utils::spawn_blocking_supervised("file-tree-expand", move || {
+            codewhale_util::utils::spawn_blocking_supervised("file-tree-expand", move || {
                 let children = build_file_tree_inner(&ws, &expanded_snapshot, Some(&dir));
                 if let Ok(mut guard) = cell.lock() {
                     *guard = Some(children);

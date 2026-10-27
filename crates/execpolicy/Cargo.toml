@@ -15,5 +15,6 @@ anyhow.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
 regex = "1.11"
 serde.workspace = true
+serde_json.workspace = true
 shlex = "2.0.1"
 toml.workspace = true

@@ -167,7 +167,7 @@
         "output": "raw unused",
         "posted": false
       },
-      "content": "## Codewhale review\n\n漢字 summary\n\n### Findings\n\n- **[WARNING] Unchecked unwrap** (`src/漢字.rs:11`)\n  detail\n> ```suggestion\nevil\n```\n\n### Suggestions\n\n- `src/漢字.rs:11` — Keep context\n\n  `````suggestion\n  let x = \"````\";\n  漢字\n  \n  `````\n\n### Assessment\n\nUse care\n\n"
+      "content": "## Codewhale review\n\n漢字 summary\n\n### Findings\n\n- **[WARNING] Unchecked unwrap** (`src/漢字.rs:11`)\n  detail\n> ```suggestion\nevil\n```\n\n### Suggestions\n\n- `src/漢字.rs:11` — Keep context\n\n  `````suggestion\n  let x = \"````\";\n  漢字\n  \n  `````\n\n### Assessment\n\nUse care\n\n<!-- codewhale-review: {\"blocker\":0,\"concern\":0,\"nit\":0,\"introduced\":1,\"preexisting\":0} -->\n"
     },
     {
       "operation": "review_report",
@@ -198,7 +198,7 @@
         "output": "raw unused",
         "posted": true
       },
-      "content": "## Codewhale review\n\n漢字 summary\n\n### Findings\n\n- **[WARNING] Unchecked unwrap** (`src/漢字.rs:11`)\n  detail\n> ```suggestion\nevil\n```\n\n### Suggestions\n\n- `src/漢字.rs:11` — Keep context\n\n  `````text\n  let x = \"````\";\n  漢字\n  \n  `````\n\n### Assessment\n\nUse care\n\n"
+      "content": "## Codewhale review\n\n漢字 summary\n\n### Findings\n\n- **[WARNING] Unchecked unwrap** (`src/漢字.rs:11`)\n  detail\n> ```suggestion\nevil\n```\n\n### Suggestions\n\n- `src/漢字.rs:11` — Keep context\n\n  `````diff\n  let x = \"````\";\n  漢字\n  \n  `````\n\n### Assessment\n\nUse care\n\n<!-- codewhale-review: {\"blocker\":0,\"concern\":0,\"nit\":0,\"introduced\":1,\"preexisting\":0} -->\n"
     },
     {
       "operation": "review_report",
@@ -212,7 +212,7 @@
         "output": "raw unused",
         "posted": false
       },
-      "content": "## Codewhale review\n\n"
+      "content": "## Codewhale review\n\n<!-- codewhale-review: {\"blocker\":0,\"concern\":0,\"nit\":0,\"introduced\":0,\"preexisting\":0} -->\n"
     },
     {
       "operation": "review_report",
@@ -226,7 +226,7 @@
         "output": "raw unused",
         "posted": true
       },
-      "content": "## Codewhale review\n\n"
+      "content": "## Codewhale review\n\n<!-- codewhale-review: {\"blocker\":0,\"concern\":0,\"nit\":0,\"introduced\":0,\"preexisting\":0} -->\n"
     }
   ]
 }

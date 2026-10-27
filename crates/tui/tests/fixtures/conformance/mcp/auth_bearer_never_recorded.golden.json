@@ -1,21 +1,4 @@
 {
-  "requests_summary": {
-    "authorization_shapes": [
-      "<bearer>"
-    ],
-    "rpcs": [
-      "initialize",
-      "notifications/initialized",
-      "tools/call",
-      "tools/list"
-    ],
-    "statuses": [
-      200,
-      202,
-      401,
-      500
-    ]
-  },
   "server_received": [
     {
       "arguments": {},

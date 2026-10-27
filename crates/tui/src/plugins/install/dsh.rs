@@ -375,7 +375,7 @@ impl Package {
             }
             if let Ok(metadata) = fs::symlink_metadata(&current) {
                 require(
-                    !crate::plugins::metadata_is_link_or_reparse(&metadata),
+                    !codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata),
                     "Source paths must not contain links or reparse points.",
                 )?;
             }
@@ -394,7 +394,8 @@ fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
         anyhow::Error::msg("File operation failed; source files must be accessible regular paths.")
     })?;
     require(
-        metadata.is_file() && !crate::plugins::metadata_is_link_or_reparse(&metadata),
+        metadata.is_file()
+            && !codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata),
         "Only regular, non-linked source files are supported.",
     )?;
     #[cfg(unix)]
@@ -444,7 +445,7 @@ fn utf8(content: Vec<u8>) -> Result<String> {
         .map_err(|_| anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8."))
 }
 
-use crate::skills::install::sha256_hex;
+use codewhale_skill_install::install::sha256_hex;
 
 /// Relative path spellings a package may use for its own files.
 fn plain_relative(text: &str) -> bool {
@@ -547,7 +548,7 @@ fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         .is_some_and(|client| !matches!(client, Value::Null))
     {
         notes.push(
-            "package declares `dsh.client`; the client UI half has no Codewhale equivalent and was not converted"
+            "package declares `dsh.client`; its UI half was not converted and stays off until Codewhale has a renderer that can keep plugin UI off the network (WebKit restrictions do not stop WebRTC)"
                 .to_string(),
         );
     }
@@ -1470,7 +1471,7 @@ fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> 
             let path = child.path();
             let metadata = fs::symlink_metadata(&path)?;
             require(
-                !crate::plugins::metadata_is_link_or_reparse(&metadata),
+                !codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata),
                 "Source paths must not contain links or reparse points.",
             )?;
             visit(&path, metadata.is_dir())?;
@@ -1635,14 +1636,7 @@ fn stdio_files(root: &Path, name: &str, output: &mut OutputFiles) -> Result<()> 
 /// A native plugin name from the package name: its last path segment,
 /// lowercased, with other characters replaced by single hyphens.
 fn host_hook_bridge(name: &str) -> bool {
-    matches!(
-        name,
-        "@deepseek-ai/dsh-hooks-claude-code"
-            | "@deepseek-ai/dsh-hooks-codex"
-            | "@deepseek-ai/dsh-persona"
-            | DSH_MCP_CLIENT
-            | DSH_SKILL_FILESYSTEM
-    )
+    crate::plugins::activation::dsh_row_bridge(name)
 }
 
 /// Closed relative modules and exact contained ESM package exports. Missing

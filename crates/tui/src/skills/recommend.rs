@@ -5,7 +5,7 @@
 //! then this matcher ranks its metadata. A suggestion is never an install,
 //! trust decision, or activation.
 
-use crate::skills::install::{RegistryDocument, RegistryEntry};
+use codewhale_skill_install::install::{RegistryDocument, RegistryEntry};
 
 const MIN_QUERY_CHARS: usize = 3;
 const MAX_EXPLANATIONS: usize = 3;

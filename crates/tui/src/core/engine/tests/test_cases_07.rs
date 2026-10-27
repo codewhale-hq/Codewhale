@@ -19,19 +19,26 @@ async fn repl_fence_obeys_auto_review_block_under_full_access() {
     let client: crate::core::model_client::SharedModelClient = mock.clone();
     let mut config = deterministic_engine_config(workspace.path());
     // Built through the config entry point, as production does.
-    config.auto_review_policy = Config {
-        auto_review: Some(crate::config::AutoReviewConfig {
-            block: vec![crate::config::AutoReviewRuleConfig {
-                id: Some("no-code".to_string()),
-                tool: Some(CODE_EXECUTION_TOOL_NAME.to_string()),
-                reason: Some("code is blocked here".to_string()),
+    config.auto_review_policy =
+        crate::core::authority::auto_review::AutoReviewPolicy::from_config(&{
+            let __cw_config_init_0_0 = Some(codewhale_runtime::config::AutoReviewConfig {
+                block: vec![{
+                    let __cw_config_init_1_0 = Some("no-code".to_string());
+                    let __cw_config_init_1_1 = Some(CODE_EXECUTION_TOOL_NAME.to_string());
+                    let __cw_config_init_1_2 = Some("code is blocked here".to_string());
+                    let mut __cw_config_init_1_value: codewhale_runtime::config::AutoReviewRuleConfig =
+                        Default::default();
+                    __cw_config_init_1_value.id = __cw_config_init_1_0;
+                    __cw_config_init_1_value.tool = __cw_config_init_1_1;
+                    __cw_config_init_1_value.reason = __cw_config_init_1_2;
+                    __cw_config_init_1_value
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        ..Config::default()
-    }
-    .auto_review_policy();
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.auto_review = __cw_config_init_0_0;
+            __cw_config_init_0_value
+        });
     let (mut engine, handle) = Engine::new_with_model_client(config, &Config::default(), client);
     engine.session.auto_approve = true;
     engine.session.add_message(Message {
@@ -528,7 +535,7 @@ async fn empty_clean_stop_is_retried_once_and_the_turn_completes() {
     for (index, receipt) in retry_receipts.iter().enumerate() {
         assert!(receipt.starts_with(&format!("Retry attempt: empty-stop {}/2;", index + 1)));
     }
-    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry recovery: empty-stop used 1/2 retries; turn completed")).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry recovery: per-kind counter empty-stop used 1/2 retries; turn completed")).count(), 1);
 }
 
 /// #6310: the second retry carries the request-scoped nudge, which never
@@ -548,7 +555,7 @@ async fn empty_clean_stop_second_retry_is_nudged_and_never_persisted() {
     assert_eq!(mock.call_count(), 3);
     assert_eq!(turn.stop_diagnostics.empty_stop_retries, 2);
     let requests = mock.captured_requests();
-    let nudge = crate::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE;
+    let nudge = codewhale_runtime::config::DEFAULT_REASONING_ONLY_REPROMPT_MESSAGE;
     let carries_nudge = |request: &codewhale_models::MessageRequest| {
         serde_json::to_string(&request.messages)
             .unwrap()
@@ -577,7 +584,7 @@ async fn empty_clean_stop_second_retry_is_nudged_and_never_persisted() {
     for (index, receipt) in retry_receipts.iter().enumerate() {
         assert!(receipt.starts_with(&format!("Retry attempt: empty-stop {}/2;", index + 1)));
     }
-    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry recovery: empty-stop used 2/2 retries; turn completed")).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry recovery: per-kind counter empty-stop used 2/2 retries; turn completed")).count(), 1);
 }
 
 /// #6310: an empty response on every attempt fails visibly once the budget
@@ -620,7 +627,7 @@ async fn empty_clean_stop_every_time_fails_after_the_retry_budget() {
     for (index, receipt) in retry_receipts.iter().enumerate() {
         assert!(receipt.starts_with(&format!("Retry attempt: empty-stop {}/2;", index + 1)));
     }
-    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry stopped: empty-stop used 2/2 retries; turn failed")).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::Status { message } if message == "Retry stopped: per-kind counter empty-stop used 2/2 retries; turn failed")).count(), 1);
 }
 
 #[tokio::test]
@@ -1067,9 +1074,11 @@ async fn isolated_runtime_chat_provider_request_contains_no_host_context_or_tool
     let attachment = root.path().join("private-attachment.png");
     fs::write(&attachment, ATTACHMENT_CANARY).expect("write attachment canary");
 
-    let api_config = Config {
-        runtime_chat_isolated: true,
-        ..Config::default()
+    let api_config = {
+        let __cw_config_init_2_0 = true;
+        let mut __cw_config_init_2_value: Config = Config::default();
+        __cw_config_init_2_value.runtime_chat_isolated = __cw_config_init_2_0;
+        __cw_config_init_2_value
     };
     let mut engine_config = deterministic_engine_config(&workspace);
     engine_config.instructions = vec![instructions.into()];
@@ -1267,9 +1276,11 @@ async fn injected_model_sandbox_escalation_applies_only_after_exact_call_approva
             canned::simple_text_turn("Escalated command complete."),
         ]));
         let client: crate::core::model_client::SharedModelClient = mock.clone();
-        let config = Config {
-            sandbox_mode: Some("read-only".to_string()),
-            ..Config::default()
+        let config = {
+            let __cw_config_init_3_0 = Some("read-only".to_string());
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.sandbox_mode = __cw_config_init_3_0;
+            __cw_config_init_3_value
         };
         let mut engine_config = deterministic_engine_config(workspace.path());
         engine_config.exec_policy_engine = ask_rule_engine(COMMAND);
@@ -1397,9 +1408,11 @@ async fn sandbox_escalation_fails_closed_when_the_posture_cannot_prompt() {
                 ));
             }
             let client: crate::core::model_client::SharedModelClient = mock.clone();
-            let config = Config {
-                sandbox_mode: Some("read-only".to_string()),
-                ..Config::default()
+            let config = {
+                let __cw_config_init_4_0 = Some("read-only".to_string());
+                let mut __cw_config_init_4_value: Config = Config::default();
+                __cw_config_init_4_value.sandbox_mode = __cw_config_init_4_0;
+                __cw_config_init_4_value
             };
             let (engine, handle) = Engine::new_with_model_client(
                 deterministic_engine_config(workspace.path()),

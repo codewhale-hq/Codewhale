@@ -17,16 +17,15 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::repl::PythonRuntime;
 use crate::rlm::RlmBridge;
-use crate::rlm::session::{
-    ContextMeta, OutputFeedback, RlmSession, derive_session_name, write_context_file,
-};
+use crate::rlm::bridge::wait_for_deadline;
+use crate::rlm::session::{ContextMeta, OutputFeedback, RlmSession, derive_session_name};
 use crate::tools::fetch_url::FetchUrlTool;
 use crate::tools::handle::VarHandle;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codewhale_repl::PythonRuntime;
 
 /// Registered name of the persistent RLM session tool.
 pub(crate) const RLM_TOOL_NAME: &str = "rlm";
@@ -253,10 +252,6 @@ impl ToolSpec for RlmTool {
                     "enum": ["full", "metadata"],
                     "description": "(action=configure)"
                 },
-                "sub_query_timeout_secs": {
-                    "type": "integer",
-                    "description": "(action=configure)"
-                },
                 "sub_rlm_max_depth": {
                     "type": "integer",
                     "minimum": 0,
@@ -364,10 +359,8 @@ impl RlmTool {
         input: &Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let deadline = context.turn_deadline.unwrap_or_else(|| {
-            tokio::time::Instant::now() + crate::tools::subagent::DEFAULT_CHILD_WALL_TIME
-        });
-        if tokio::time::Instant::now() >= deadline {
+        let deadline = context.turn_deadline;
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
             return Err(ToolError::execution_failed(
                 "RLM parent turn deadline exhausted before opening context",
             ));
@@ -425,7 +418,7 @@ impl RlmTool {
                 }
             }
 
-            let context_path = write_context_file(&body).map_err(|e| {
+            let context_path = codewhale_repl::write_context_file(&body).map_err(|e| {
                 ToolError::execution_failed(format!("rlm_open: failed to stage context: {e}"))
             })?;
             let context_path = tempfile::TempPath::try_from_path(context_path).map_err(|e| {
@@ -464,9 +457,8 @@ impl RlmTool {
                     std::future::pending::<()>().await;
                 }
             } => Err(ToolError::cancelled("RLM originating turn cancelled while opening context")),
-            result = tokio::time::timeout_at(deadline, open) => result.map_err(|_| {
-                ToolError::execution_failed("RLM parent turn deadline exhausted opening context")
-            })?,
+            () = wait_for_deadline(deadline) => Err(ToolError::execution_failed("RLM parent turn deadline exhausted opening context")),
+            result = open => result,
         }
     }
 
@@ -475,7 +467,7 @@ impl RlmTool {
         input: &Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        crate::core::engine::tool_catalog::enforce_tool_denial(context, "rlm_eval", input)?;
+        crate::tools::execution_envelope::enforce_tool_denial(context, "rlm_eval", input)?;
         let name = required_non_empty_str(input, "name")?;
         let code = required_non_empty_str(input, "code").map_err(|_| {
             ToolError::invalid_input(
@@ -483,10 +475,8 @@ impl RlmTool {
                  Example: {\"name\": \"<ctx>\", \"code\": \"print(len(content))\"}; call FINAL(value) to return a result handle.",
             )
         })?;
-        let deadline = context.turn_deadline.unwrap_or_else(|| {
-            tokio::time::Instant::now() + crate::tools::subagent::DEFAULT_CHILD_WALL_TIME
-        });
-        if tokio::time::Instant::now() >= deadline {
+        let deadline = context.turn_deadline;
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
             return Err(ToolError::execution_failed(
                 "RLM parent turn deadline exhausted before execution",
             ));
@@ -502,12 +492,11 @@ impl RlmTool {
         let mut session = tokio::select! {
             biased;
             () = wait_for_cancel() => return Err(ToolError::cancelled("RLM originating turn cancelled while waiting for context")),
-            result = tokio::time::timeout_at(deadline, async {
+            () = wait_for_deadline(deadline) => return Err(ToolError::execution_failed("RLM parent turn deadline exhausted waiting for context")),
+            result = async {
                 let session = get_session(context, name).await?;
                 Ok::<_, ToolError>(session.lock_owned().await)
-            }) => result.map_err(|_| {
-                ToolError::execution_failed("RLM parent turn deadline exhausted waiting for context")
-            })??,
+            } => result?,
         };
         let config = session.config.clone();
 
@@ -527,19 +516,15 @@ impl RlmTool {
         let (round, child_usage_batch, nested_events) = if let Some(caller) =
             context.rlm_caller.as_deref()
         {
-            let bridge = RlmBridge::new(
-                caller,
-                config.sub_rlm_max_depth.min(HARD_SUB_RLM_DEPTH_CAP),
-                Duration::from_secs(config.sub_query_timeout_secs),
-            )
-            .with_deadline(Some(deadline))
-            .with_gate(context.execution.nested_call_gate.clone());
+            let bridge =
+                RlmBridge::new(caller, config.sub_rlm_max_depth.min(HARD_SUB_RLM_DEPTH_CAP))
+                    .with_deadline(deadline)
+                    .with_gate(context.execution.nested_call_gate.clone());
             let round_result = tokio::select! {
                 biased;
                 () = wait_for_cancel() => Err("RLM evaluation cancelled by its originating turn".into()),
-                result = tokio::time::timeout_at(bridge.deadline(), kernel.run(code, Some(&bridge))) => {
-                    result.unwrap_or_else(|_| Err("RLM evaluation reached the parent turn deadline".into()))
-                },
+                () = wait_for_deadline(bridge.deadline()) => Err("RLM evaluation reached the parent turn deadline".into()),
+                result = kernel.run(code, Some(&bridge)) => result,
             };
             let usage = bridge.usage_snapshot().await;
             let round = match round_result {
@@ -581,12 +566,8 @@ impl RlmTool {
             let round = tokio::select! {
                 biased;
                 () = wait_for_cancel() => return Err(ToolError::cancelled("RLM evaluation cancelled by its originating turn")),
-                result = tokio::time::timeout_at(deadline, kernel.run(code, None::<&RlmBridge<'_>>)) => {
-                    match result {
-                        Ok(result) => result.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?,
-                        Err(_) => return Err(ToolError::execution_failed("RLM evaluation reached the parent turn deadline")),
-                    }
-                },
+                () = wait_for_deadline(deadline) => return Err(ToolError::execution_failed("RLM evaluation reached the parent turn deadline")),
+                result = kernel.run(code, None::<&RlmBridge<'_>>) => result.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?,
             };
             (
                 round,
@@ -734,9 +715,6 @@ impl RlmTool {
                 }
             };
         }
-        if let Some(timeout) = input.get("sub_query_timeout_secs").and_then(Value::as_u64) {
-            session.config.sub_query_timeout_secs = timeout.clamp(1, 600);
-        }
         if let Some(depth) = input.get("sub_rlm_max_depth").and_then(Value::as_u64) {
             session.config.sub_rlm_max_depth = (depth as u32).min(HARD_SUB_RLM_DEPTH_CAP);
         }
@@ -744,11 +722,17 @@ impl RlmTool {
             session.config.share_session = false;
         }
 
-        ToolResult::json(&json!({
+        let mut result = json!({
             "name": session.name,
             "current_config": session.config,
-        }))
-        .map_err(|e| ToolError::execution_failed(e.to_string()))
+        });
+        if input.get("sub_query_timeout_secs").is_some() {
+            result["ignored_limit_fields"] = json!(["sub_query_timeout_secs"]);
+            result["limits_note"] = json!(
+                "Recursive work inherits the owner's deadline; model-selected subquery time limits are retired."
+            );
+        }
+        ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
     async fn execute_close(
@@ -835,7 +819,6 @@ fn legacy_action_schema(action: &str) -> Value {
             "properties": {
                 "name": { "type": "string" },
                 "output_feedback": { "type": "string", "enum": ["full", "metadata"] },
-                "sub_query_timeout_secs": { "type": "integer" },
                 "sub_rlm_max_depth": { "type": "integer", "minimum": 0, "maximum": 3 },
                 "share_session": { "type": "boolean" }
             }
@@ -890,7 +873,7 @@ async fn load_source(
     let url = rlm_open_source_field(input, "url")
         .map(str::trim)
         .ok_or_else(|| ToolError::invalid_input("rlm_open: missing source"))?;
-    crate::core::engine::tool_catalog::enforce_tool_denial(context, "fetch_url", input)?;
+    crate::tools::execution_envelope::enforce_tool_denial(context, "fetch_url", input)?;
     let result = FetchUrlTool
         .execute(json!({"url": url, "format": "raw"}), context)
         .await?;
@@ -989,7 +972,7 @@ mod tests {
             .lines()
             .find(|line| line.contains("chars truncated"))
             .expect("truncation footer");
-        crate::tools::canonical_action::tests::assert_text_names_only_callable_tools(
+        crate::tools::canonical_action_tests::assert_text_names_only_callable_tools(
             "rlm preview footer",
             preview_footer,
         );
@@ -1075,11 +1058,11 @@ mod tests {
     fn kernel_failure_result_retains_child_usage_receipt() {
         let route = crate::cost_status::EffectiveRouteEnvelope::capture(
             None,
-            crate::config::ProviderKind::Deepseek,
-            crate::config::ProviderKind::Deepseek.as_str(),
+            codewhale_config::ProviderKind::Deepseek,
+            codewhale_config::ProviderKind::Deepseek.as_str(),
             "deepseek-v4-flash",
             Some(
-                crate::config::ProviderKind::Deepseek
+                codewhale_config::ProviderKind::Deepseek
                     .provider()
                     .default_base_url(),
             ),
@@ -1501,14 +1484,8 @@ mod tests {
             let mut context = ToolContext::new(temp.path());
             let cancel = tokio_util::sync::CancellationToken::new();
             context.cancel_token = Some(cancel.clone());
-            context.turn_deadline = Some(
-                tokio::time::Instant::now()
-                    + if cancelled {
-                        Duration::from_secs(30)
-                    } else {
-                        Duration::from_millis(40)
-                    },
-            );
+            context.turn_deadline =
+                (!cancelled).then(|| tokio::time::Instant::now() + Duration::from_millis(40));
             let sessions = context.runtime.rlm_sessions.lock().await;
             let input = json!({"action": "open", "name": "never-installed", "content": "fixture"});
             let mut open = tool.execute(input, &context);

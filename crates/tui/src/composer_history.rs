@@ -47,7 +47,13 @@ fn default_history_path() -> Option<PathBuf> {
     if let Some(home) = crate::test_support::unsealed_state_dir(".") {
         return history_path_with_home(Some(home));
     }
-    history_path_with_home(crate::config::effective_home_dir())
+    if codewhale_paths::codewhale_home_is_explicit() {
+        return codewhale_paths::codewhale_home()
+            .ok()
+            .flatten()
+            .map(|home| home.join(HISTORY_FILE_NAME));
+    }
+    history_path_with_home(codewhale_paths::user_home())
 }
 
 /// Resolve the composer-history file under `home`, preferring the CodeWhale
@@ -83,6 +89,16 @@ pub fn load_history() -> Vec<String> {
 }
 
 fn load_history_from(path: &Path) -> Vec<String> {
+    read_history_from(path).unwrap_or_else(|err| {
+        tracing::warn!(
+            "Failed to read composer history at {}: {err}",
+            path.display()
+        );
+        Vec::new()
+    })
+}
+
+fn read_history_from(path: &Path) -> std::io::Result<Vec<String>> {
     // A separate filename is the format discriminator: arbitrary legacy
     // prompts can themselves be valid JSON strings (including escapes).
     let (source, encoded) = if path.exists() {
@@ -90,23 +106,26 @@ fn load_history_from(path: &Path) -> Vec<String> {
     } else {
         (path.with_file_name(LEGACY_HISTORY_FILE_NAME), false)
     };
-    let Ok(file) = fs::File::open(source) else {
-        return Vec::new();
+    let file = match fs::File::open(source) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            if encoded {
-                // Keep a malformed record as text rather than losing it on
-                // the next append/rewrite.
-                serde_json::from_str::<String>(&line).unwrap_or(line)
-            } else {
-                line
-            }
-        })
-        .collect()
+    let mut entries = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        entries.push(if encoded {
+            // Keep a malformed record as text rather than losing it on
+            // the next append/rewrite.
+            serde_json::from_str::<String>(&line).unwrap_or(line)
+        } else {
+            line
+        });
+    }
+    Ok(entries)
 }
 
 /// Append an entry to the persisted history, pruning old entries to
@@ -252,7 +271,16 @@ fn append_history_entries_to<'a>(
 
     // Read existing entries, append the new ones, prune from the front
     // until under the cap, then atomically rewrite.
-    let mut entries = load_history_from(path);
+    let mut entries = match read_history_from(path) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(
+                "Not rewriting composer history at {}: reading it failed: {err}",
+                path.display()
+            );
+            return;
+        }
+    };
     let mut changed = false;
     for entry in entries_to_append {
         changed |= push_history_entry(&mut entries, entry.trim());
@@ -298,7 +326,7 @@ fn write_history_atomic(path: &Path, payload: &[u8]) -> std::io::Result<()> {
         .chain(std::iter::once(None))
         .enumerate()
     {
-        match crate::utils::write_atomic(path, payload) {
+        match codewhale_util::utils::write_atomic(path, payload) {
             Ok(()) => return Ok(()),
             Err(err) if delay.is_some() => {
                 tracing::debug!(
@@ -333,7 +361,7 @@ mod tests {
 
     /// Tests use the path-injecting `*_from` / `*_to` helpers so they
     /// don't have to mutate `HOME` (which is not honored by
-    /// `crate::config::effective_home_dir()` on Windows — it reads `USERPROFILE` /
+    /// `codewhale_paths::user_home()` on Windows — it reads `USERPROFILE` /
     /// `SHGetKnownFolderPath` instead). This makes the suite portable
     /// across all three CI runners without per-platform env juggling.
     fn temp_history_path() -> (tempfile::TempDir, PathBuf) {

@@ -1,5 +1,5 @@
-use super::{Hook, HookCondition, HookEvent, HooksConfig};
 use chrono::{DateTime, Utc};
+use codewhale_config::hooks::{Hook, HookCondition, HookEvent, HooksConfig};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fmt;
@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
-use crate::process_tree::ProcessTree;
+use codewhale_runtime::process_tree::ProcessTree;
 
 /// Core-only caller receipt. Not exported as an environment value or accepted from JS.
 #[derive(Debug, Clone)]
@@ -1104,7 +1104,7 @@ pub struct TurnEndPayloadInput<'a> {
     pub queued_message_count: usize,
 }
 
-/// Kill a hook's whole process tree (see [`crate::process_tree`]): hooks run
+/// Kill a hook's whole process tree (see [`codewhale_runtime::process_tree`]): hooks run
 /// through a shell, so killing only the immediate `sh`/`cmd.exe` child can
 /// leave the actual hook runtime alive. Falls back to `taskkill /T` on Windows
 /// and to the immediate child everywhere.
@@ -1124,7 +1124,7 @@ fn terminate_tree(process_tree: &ProcessTree, child: &mut Child) {
 #[cfg(windows)]
 fn kill_windows_process_tree(pid: u32) -> std::io::Result<()> {
     let mut command = Command::new("taskkill");
-    crate::utils::suppress_console_window(&mut command);
+    codewhale_util::utils::suppress_console_window(&mut command);
     let pid = pid.to_string();
     let mut child = command
         .args(["/F", "/T", "/PID", pid.as_str()])
@@ -1172,7 +1172,7 @@ fn kill_and_reap_immediate_child(child: &mut Child, timeout: Duration) -> bool {
 /// user-visible "hook could not answer" receipt, and on Windows a raw spawn
 /// error echoes the whole command line back. The detail is logged instead.
 fn spawn_hook_child(command: &mut Command) -> std::io::Result<(Child, ProcessTree)> {
-    crate::process_tree::spawn_contained_std(command).map_err(|error| {
+    codewhale_runtime::process_tree::spawn_contained_std(command).map_err(|error| {
         tracing::warn!(target: "hooks", %error, "failed to start contained hook process");
         std::io::Error::new(error.kind(), "failed to contain hook process tree")
     })
@@ -1428,8 +1428,8 @@ struct BackgroundHookJob {
     stdin_bytes: Option<Vec<u8>>,
     label: String,
     timeout: Duration,
-    plugin_authority: Option<crate::plugins::types::PluginAuthority>,
-    project_authority: Option<super::authority::ProjectHookAuthority>,
+    plugin_authority: Option<codewhale_config::PluginAuthority>,
+    project_authority: Option<codewhale_config::ProjectHookAuthority>,
 }
 
 impl BackgroundHookJob {
@@ -2047,7 +2047,7 @@ impl HookExecutor {
                 continue;
             }
             // Audit-log the *keys* — never the values.
-            crate::audit::log_sensitive_event(
+            codewhale_runtime::audit::log_sensitive_event(
                 "shell_env_hook",
                 serde_json::json!({
                     // Bounded and de-fanged like every other rendering of a
@@ -2503,9 +2503,9 @@ impl HookExecutor {
             .stdin(Stdio::piped());
 
         if self.native_policy {
-            crate::child_env::apply_to_command(
+            codewhale_runtime::child_env::apply_to_command(
                 &mut command,
-                crate::child_env::string_map_env(env_vars),
+                codewhale_runtime::child_env::string_map_env(env_vars),
             );
             if hook
                 .native_shell
@@ -3481,7 +3481,7 @@ mod tests {
 
     fn trust_workspace_for_project_hooks(workspace: &Path, config_path: &Path) -> EnvVarGuard {
         let guard = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", config_path);
-        crate::config::save_workspace_trust(workspace).expect("save workspace trust");
+        codewhale_runtime::config::save_workspace_trust(workspace).expect("save workspace trust");
         guard
     }
 
@@ -3571,17 +3571,17 @@ mod tests {
 
     #[test]
     fn config_types_are_available_from_config_module() {
-        let hook = crate::hooks::config::Hook::new(
-            crate::hooks::config::HookEvent::SessionStart,
+        let hook = codewhale_config::hooks::Hook::new(
+            codewhale_config::hooks::HookEvent::SessionStart,
             "echo ready",
         );
-        let config = crate::hooks::config::HooksConfig {
+        let config = codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: vec![hook],
             ..Default::default()
         };
 
-        let hooks = config.hooks_for_event(crate::hooks::config::HookEvent::SessionStart);
+        let hooks = config.hooks_for_event(codewhale_config::hooks::HookEvent::SessionStart);
 
         assert_eq!(hooks.len(), 1);
     }
@@ -3591,7 +3591,7 @@ mod tests {
     fn plugin_hook_runs_after_restart_and_process_spawn_rechecks_revocation() {
         let _lock = lock_test_env();
         let fixture = crate::plugins::test_fixture::DeclarativePluginFixture::new();
-        let config = HooksConfig::load_with_project_and_plugins(
+        let config = crate::hooks::config::load_with_project_and_plugins(
             HooksConfig {
                 enabled: true,
                 ..HooksConfig::default()
@@ -3631,7 +3631,7 @@ mod tests {
             "revoked hook must be denied before process spawn"
         );
 
-        let reloaded = HooksConfig::load_with_project_and_plugins(
+        let reloaded = crate::hooks::config::load_with_project_and_plugins(
             HooksConfig {
                 enabled: true,
                 ..HooksConfig::default()
@@ -3652,7 +3652,7 @@ mod tests {
         let fixture = crate::plugins::test_fixture::DeclarativePluginFixture::new();
         let blocker_one = Hook::new(HookEvent::SessionStart, "sleep 1").background();
         let blocker_two = Hook::new(HookEvent::SessionStart, "sleep 1").background();
-        let mut config = HooksConfig::load_with_project_and_plugins(
+        let mut config = crate::hooks::config::load_with_project_and_plugins(
             HooksConfig {
                 enabled: true,
                 hooks: vec![blocker_one, blocker_two],
@@ -4960,7 +4960,7 @@ exit 7
             ..HooksConfig::default()
         };
 
-        let merged = HooksConfig::load_with_project(global.clone(), dir.path());
+        let merged = crate::hooks::config::load_with_project(global.clone(), dir.path());
         assert_eq!(merged.hooks.len(), 1);
         assert_eq!(merged.hooks[0].command, "echo global");
     }
@@ -4992,7 +4992,7 @@ command = "echo project"
 
         let (authority, _) = super::super::authority::review_project_hooks(dir.path()).unwrap();
         super::super::authority::approve_project_hooks(dir.path(), &authority.digest).unwrap();
-        let merged = HooksConfig::load_with_project(global, dir.path());
+        let merged = crate::hooks::config::load_with_project(global, dir.path());
         assert_eq!(merged.hooks.len(), 2);
         assert_eq!(
             merged.hooks[0].command, "echo global",
@@ -5028,7 +5028,7 @@ command = "echo project"
             ..HooksConfig::default()
         };
 
-        let merged = HooksConfig::load_with_project(global, dir.path());
+        let merged = crate::hooks::config::load_with_project(global, dir.path());
         assert_eq!(merged.hooks.len(), 1);
         assert_eq!(merged.hooks[0].command, "echo global");
     }
@@ -5060,7 +5060,7 @@ command = "echo project"
             ..HooksConfig::default()
         };
 
-        let merged = HooksConfig::load_with_project(global, dir.path());
+        let merged = crate::hooks::config::load_with_project(global, dir.path());
         assert_eq!(merged.hooks.len(), 1);
         assert_eq!(merged.hooks[0].command, "echo global");
     }
@@ -5083,7 +5083,7 @@ command = "echo project"
             ..HooksConfig::default()
         };
 
-        let merged = HooksConfig::load_with_project(global, dir.path());
+        let merged = crate::hooks::config::load_with_project(global, dir.path());
         assert_eq!(merged.hooks.len(), 1, "malformed project file is ignored");
         assert_eq!(merged.hooks[0].command, "echo global");
     }
@@ -5100,7 +5100,7 @@ command = "echo project"
         let contents = "[[hooks]]\nevent = \"session_start\"\ncommand = \"touch hook-ran\"\n";
         std::fs::write(&hook_path, contents).unwrap();
         let load = || {
-            HooksConfig::load_with_project(
+            crate::hooks::config::load_with_project(
                 HooksConfig {
                     enabled: true,
                     ..Default::default()
@@ -5143,7 +5143,7 @@ command = "echo project"
             "queued work must revalidate"
         );
         std::fs::write(&hook_path, contents).unwrap();
-        crate::config::save_workspace_hook_receipt(dir.path(), "").unwrap();
+        codewhale_runtime::config::save_workspace_hook_receipt(dir.path(), "").unwrap();
         assert!(!executor.execute_sync(&hook, &HashMap::new()).success);
         assert!(!dir.path().join("hook-ran").exists());
     }
@@ -5174,7 +5174,7 @@ command = "echo project"
         )
         .unwrap();
         assert!(
-            HooksConfig::load_with_project(HooksConfig::default(), dir.path())
+            crate::hooks::config::load_with_project(HooksConfig::default(), dir.path())
                 .hooks
                 .is_empty()
         );
@@ -5404,7 +5404,7 @@ command = "echo project"
             "unexpected session id shape: {session_id}"
         );
 
-        for event in crate::hooks::ALL_HOOK_EVENTS {
+        for event in codewhale_config::hooks::ALL_HOOK_EVENTS {
             let context = HookContext::new()
                 .with_session_id(executor.session_id())
                 .with_tool_name(event.as_str());
@@ -6284,7 +6284,9 @@ command = "echo project"
                     dir.path().to_owned(),
                 );
                 let mut tool_context = crate::tools::spec::ToolContext::new(dir.path())
-                    .with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::DangerFullAccess);
+                    .with_elevated_sandbox_policy(
+                        codewhale_sandbox::SandboxPolicy::DangerFullAccess,
+                    );
                 tool_context.auto_approve = true;
                 tool_context.runtime.hook_executor = Some(Arc::new(hooks.clone()));
                 let result = crate::tools::shell::BashTool::new("Bash")
@@ -6644,7 +6646,7 @@ command = "echo project"
     #[cfg(unix)]
     #[test]
     fn matched_strict_gate_labels_names_only_gates_that_would_run() {
-        use crate::hooks::{Hook, HookCondition, HookEvent, HooksConfig};
+        use codewhale_config::hooks::{Hook, HookCondition, HookEvent, HooksConfig};
 
         let strict_shell = {
             let mut hook = Hook::new(HookEvent::ToolCallBefore, "true")
@@ -6716,7 +6718,7 @@ command = "echo project"
     #[cfg(unix)]
     #[test]
     fn timed_out_hook_is_killed_and_reaped_within_the_bound() {
-        use crate::hooks::{Hook, HookEvent, HooksConfig};
+        use codewhale_config::hooks::{Hook, HookEvent, HooksConfig};
 
         let hook = Hook::new(HookEvent::SessionStart, "sleep 30")
             .with_name("slow")

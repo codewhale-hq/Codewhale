@@ -25,7 +25,7 @@ CONFIG_RS = ROOT / "crates" / "config" / "src" / "lib.rs"
 # ProviderKind's enum + identity impl were split out of lib.rs into this module.
 PROVIDER_KIND_RS = ROOT / "crates" / "config" / "src" / "provider_kind.rs"
 PROVIDER_RS = ROOT / "crates" / "config" / "src" / "provider.rs"
-TUI_CONFIG_RS = ROOT / "crates" / "tui" / "src" / "config.rs"
+TUI_CONFIG_RS = ROOT / "crates" / "runtime" / "src" / "config.rs"
 # Default provider model/base-URL constants were split out of config.rs into
 # this leaf module (#3311); read them from there for the default-string check.
 PROVIDER_DATA = ROOT / "crates" / "config" / "assets" / "provider_descriptors.json"
@@ -212,7 +212,7 @@ def report_tui_catalog_contract(tui_config_rs: str) -> list[str]:
         errors.append("TUI must not define a duplicate provider enum or ordinal bridge")
     # The exact private historical enum in config/tests.rs is the serde
     # counterpart, not a production owner. Check every other Rust consumer.
-    counterpart = ROOT / "crates/tui/src/config/tests.rs"
+    counterpart = ROOT / "crates/tui/src/config_stay_tests/config.rs"
     for path in (ROOT / "crates").rglob("*.rs"):
         source = read(path)
         if path != counterpart and re.search(r"\bApiProvider\b", source):
@@ -262,7 +262,7 @@ def report_tombstone_runtime_contract(
         )
 
     if "for provider in doctor_api_key_providers()" not in tui_lib_rs or (
-        "*provider != crate::config::ProviderKind::Antigravity" not in tui_lib_rs
+        "*provider != codewhale_config::ProviderKind::Antigravity" not in tui_lib_rs
     ):
         errors.append(
             "`codewhale doctor` API Keys rows must iterate doctor_api_key_providers() "
@@ -486,7 +486,7 @@ def report_huggingface_coverage(
         config_rs, "ProviderKind", "Huggingface", "crates/config/src/lib.rs"
     )
     tui_aliases = parse_aliases_for_variant(
-        tui_config_rs, "ProviderIdentity", "Huggingface", "crates/tui/src/config.rs"
+        tui_config_rs, "ProviderIdentity", "Huggingface", "crates/runtime/src/config.rs"
     )
     errors += report_set(
         "ProviderKind Hugging Face aliases",
@@ -523,7 +523,7 @@ def report_huggingface_coverage(
                 label, config_rs, env_order, "crates/config/src/lib.rs"
             )
         errors += report_env_lookup_order(
-            label, tui_config_rs, env_order, "crates/tui/src/config.rs"
+            label, tui_config_rs, env_order, "crates/runtime/src/config.rs"
         )
         errors += report_string_order(label, providers_md, env_order, "docs/PROVIDERS.md")
 

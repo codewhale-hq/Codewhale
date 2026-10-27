@@ -89,6 +89,9 @@ pub struct KeybindingEntry {
     pub section: KeybindingSection,
 }
 
+pub const PROVIDER_OFFER_CHORD: &str = "F7";
+pub const EXTERNAL_EDITOR_CHORD: &str = "Ctrl+Shift+O / F4";
+
 /// Canonical list of keybindings shown in the help overlay.
 ///
 /// Strings are written in the same notation the existing help screen uses so
@@ -247,6 +250,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
+        chord: PROVIDER_OFFER_CHORD,
+        description_id: codewhale_localization::MessageId::OrcaRouterOfferAction,
+        section: KeybindingSection::Submission,
+    },
+    KeybindingEntry {
         chord: "Ctrl+X (Activity workbar)",
         description_id: codewhale_localization::MessageId::KbCancelBackgroundShellJobs,
         section: KeybindingSection::Submission,
@@ -292,7 +300,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "Ctrl+Shift+O / F4",
+        chord: EXTERNAL_EDITOR_CHORD,
         description_id: codewhale_localization::MessageId::KbExternalEditor,
         section: KeybindingSection::Editing,
     },

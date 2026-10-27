@@ -120,24 +120,19 @@ A worker runs at `spawn_depth = 0` and may spawn children while
 delegation levels. Sub-agents and fleet-selected Runtime workers share **one**
 axis, sourced from `codewhale_config`:
 
-- `DEFAULT_SPAWN_DEPTH = 3` — the default budget for both standalone sub-agents
-  and fleet-selected Runtime workers (so they cannot drift into "two moving
-  targets");
-- `MAX_SPAWN_DEPTH_CEILING = 8` — the opt-in cap that every configured Runtime
-  value, including fleet execution `max_spawn_depth`, clamps to.
+Runtime delegation has no default product depth cap. Explicit owner depth
+settings still apply to descendants and cannot be widened by a child. Zero
+blocks child delegation while leaving the root worker available. The internal
+`u32` representation rejects overflow; it is not a suggested work budget.
 
-The model-facing `agent` schema intentionally omits `max_depth`. The parser
-still accepts `max_depth`, `maxDepth`, and `max_spawn_depth` for saved
-transcripts, ACP/MCP clients, and internal compatibility callers, and rejects
-values above 8. Current model-authored calls inherit the Runtime configuration
-instead of negotiating recursion depth in the tool schema.
+The model-facing `agent` schema omits depth controls. Legacy `max_depth`,
+`maxDepth` and `max_spawn_depth` inputs are parsed for compatibility but ignored
+when a model requests a child; receipts identify that choice. Exact Fleet and
+saved-runtime authority remains enforced.
 
-Workflow IR has a separate default structural validation limit of five nested nodes.
-That limit constrains the orchestration document's shape; it does not grant or
-consume Runtime child-delegation depth.
-
-The root worker always runs even at budget 0; the budget gates *child*
-delegation. The default affords at least three nested levels.
+Workflow IR structure is independent of child delegation. Its `max_depth`
+default is zero (uncapped); positive operator values are honored. Parser and
+VM stack/memory boundaries still validate documents before execution.
 
 ## Event vocabulary
 

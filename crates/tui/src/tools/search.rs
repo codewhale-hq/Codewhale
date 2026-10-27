@@ -3,14 +3,13 @@
 //! These tools provide powerful code search capabilities within the workspace,
 //! similar to ripgrep/grep functionality.
 
-use super::file::{
-    PATH_ALIASES, SEARCH_CONTENT_ALIASES, SEARCH_CONTENT_PARAMS, apply_param_aliases,
-};
+use super::file::{SEARCH_CONTENT_ALIASES, SEARCH_CONTENT_PARAMS};
 use super::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
     optional_u64, required_str,
 };
 use async_trait::async_trait;
+use codewhale_tools::param_alias::{PATH_ALIASES, apply_param_aliases};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -185,7 +184,7 @@ impl ToolSpec for GrepFilesTool {
 
         // Model-supplied: compile through the bounded cache (length cap,
         // program/DFA size limits, invalid patterns remembered).
-        let regex = crate::regex_cache::compile_user_regex(&regex_pattern)
+        let regex = codewhale_runtime::regex_cache::compile_user_regex(&regex_pattern)
             .map_err(|e| ToolError::invalid_input(format!("Invalid regex pattern: {e}")))?;
 
         // Resolve search path
@@ -689,7 +688,7 @@ fn visit_files_recursive(
             // make `search` useless. The skip is logged; a directed
             // `read_file`/`read`/`read_media` on the same path still returns an
             // explicit refusal rather than an empty result.
-            if let Err(denial) = crate::sandbox::read_guard::active().check(&path) {
+            if let Err(denial) = codewhale_sandbox::read_guard::active().check(&path) {
                 tracing::debug!(
                     target: "codewhale::sandbox::read_guard",
                     requested = %denial.requested.display(),

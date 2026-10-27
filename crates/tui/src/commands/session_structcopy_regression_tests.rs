@@ -2,7 +2,6 @@
 use super::contract::structcopy_host::observe_path_roots;
 use super::groups::session::structcopy::{self, *};
 use crate::commands::CommandResult;
-use crate::config::Config;
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use crate::tui::app::App;
 use crate::tui::app::TuiOptions;
@@ -11,6 +10,7 @@ use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message};
 use codewhale_models::{ImageUrlContent, ToolCaller};
+use codewhale_runtime::config::Config;
 use serde_json::{Value, json};
 use std::path::Path;
 use tempfile::TempDir;

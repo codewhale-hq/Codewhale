@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use super::budget::{InstructionNotice, InstructionSegment};
+
 // === Errors ===
 
 #[derive(Debug, Error)]
@@ -30,11 +32,50 @@ pub(crate) enum ProjectContextError {
     Empty { path: PathBuf },
 }
 
+impl ProjectContextError {
+    /// Machine-readable reason, so a skip can name the limit that produced it.
+    pub(crate) fn kind(&self) -> super::budget::InstructionLimit {
+        match self {
+            Self::TooLarge { .. } => super::budget::InstructionLimit::FileCeiling,
+            Self::Empty { .. } => super::budget::InstructionLimit::EmptyFile,
+            Self::Metadata { .. } | Self::Read { .. } => super::budget::InstructionLimit::None,
+        }
+    }
+
+    pub(crate) fn detail(&self) -> Option<super::budget::InstructionDetail> {
+        match self {
+            Self::TooLarge { max, .. } => Some(super::budget::InstructionDetail::OverFileCeiling {
+                max_bytes: *max as u64,
+            }),
+            Self::Empty { .. } => None,
+            Self::Metadata { source, .. } | Self::Read { source, .. } => {
+                Some(super::budget::InstructionDetail::unreadable(source))
+            }
+        }
+    }
+}
+
 /// Result of loading project context
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
-    /// The loaded instructions content
+    /// The loaded instructions content.
+    ///
+    /// This is the rendered join of [`Self::instruction_segments`] — global
+    /// scope first, then the project chain — and is rebuilt after every
+    /// budget trim, so a consumer that only reads the joined string always
+    /// sees post-budget content.
     pub instructions: Option<String>,
+    /// Raw instruction content kept per source, untrimmed.
+    ///
+    /// Segment-level trimming needs to know where one file ends and the next
+    /// begins; a flattened string cannot answer that. The cached project
+    /// context is therefore stored raw and trimmed per request, so a context
+    /// window change never invalidates the file-keyed cache and a content
+    /// change never reuses trimmed text.
+    pub instruction_segments: Vec<InstructionSegment>,
+    /// Every instruction source that was trimmed, skipped, or refused while
+    /// loading or budgeting, for the startup notice and `/context report`.
+    pub notices: Vec<InstructionNotice>,
     /// Auto-discovered rules from `.codewhale/rules/` / `.claude/rules/`.
     /// Kept separate from `instructions` so rules alone don't block
     /// parent-directory AGENTS.md discovery via `has_instructions()`.
@@ -61,6 +102,8 @@ impl ProjectContext {
     pub fn empty(project_root: PathBuf) -> Self {
         Self {
             instructions: None,
+            instruction_segments: Vec::new(),
+            notices: Vec::new(),
             rules_block: None,
             source_path: None,
             warnings: Vec::new(),
@@ -74,6 +117,15 @@ impl ProjectContext {
     /// Check if any instructions were loaded
     pub fn has_instructions(&self) -> bool {
         self.instructions.is_some()
+    }
+
+    /// Rebuild [`Self::instructions`] from the current segments.
+    ///
+    /// Called after assembly and after every trim. Global scope renders
+    /// first so the workspace keeps the last word, exactly as the single
+    /// merged block did before segments existed.
+    pub(crate) fn rebuild_joined_instructions(&mut self) {
+        self.instructions = super::render_joined_instructions(&self.instruction_segments);
     }
 
     /// Get the instructions as a formatted block for system prompt.

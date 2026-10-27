@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::apply_patch::ApplyPatchTool;
-use super::canonical_action::required_action;
 use super::file::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 use super::file_search::FileSearchTool;
 use super::search::GrepFilesTool;
@@ -16,6 +15,7 @@ use super::spec::{
     ApprovalRequirement, RichToolResult, ToolCapability, ToolContext, ToolError, ToolResult,
     ToolSpec,
 };
+use codewhale_tools::required_action;
 
 /// Lift a parameter description out of the tool that implements the action.
 ///

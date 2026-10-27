@@ -13,12 +13,12 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
-use crate::resource_telemetry::estimate_output_tokens_from_text;
 use anyhow::{Context, Result};
 use codewhale_config::AppMode;
 use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
+use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -46,7 +46,6 @@ use tracing;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
-use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
 use crate::client::{
     CACHE_WARMUP_MAX_TOKENS, CacheWarmupKey, CodewhaleClient, PromptInspection,
@@ -55,16 +54,10 @@ use crate::client::{
 use crate::commands;
 use crate::compaction::CompactionConfig;
 use crate::compaction::{estimate_input_tokens_conservative, estimate_tokens};
-#[cfg(test)]
-use crate::config::ProviderConfig;
-use crate::config::{
-    Config, ProviderIdentity, ProviderKind, ProvidersConfig, StatusItem, UpdateConfig,
-    persist_external_credential_consent_for_at, revoke_external_credential_consent_for_at,
-};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
-use crate::hooks::{HookEvent, HookExecutor, TurnEndPayloadInput, TurnEndTotals};
+use crate::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
 use crate::llm_client::LlmClient;
 use crate::prompts;
 #[cfg(test)]
@@ -75,7 +68,6 @@ use crate::session_manager::create_saved_session_with_id_and_mode;
 use crate::session_manager::{
     OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
 };
-use crate::settings::Settings;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
 };
@@ -107,9 +99,19 @@ use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::scrolling::TranscriptScroll;
 use crate::turn_route_plan::{PlannedTurnRoute, TurnRoutePlanRequest, plan_turn_route};
 use crate::work_graph::task_owner_snapshot;
+use codewhale_config::ProviderKind;
+use codewhale_config::hooks::HookEvent;
 use codewhale_localization::{MessageId, tr};
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use codewhale_palette as palette;
+use codewhale_runtime::audit::log_sensitive_event;
+#[cfg(test)]
+use codewhale_runtime::config::ProviderConfig;
+use codewhale_runtime::config::{
+    Config, ProviderIdentity, ProvidersConfig, StatusItem, UpdateConfig,
+    persist_external_credential_consent_for_at, revoke_external_credential_consent_for_at,
+};
+use codewhale_runtime::settings::Settings;
 // SelectionAutoscroll unused
 use crate::tui::motion::{FrameRequester, MotionMode};
 use crate::tui::session_picker::SessionPickerView;
@@ -462,7 +464,7 @@ fn should_intercept_memory_quick_add(config: &Config, input: &str) -> bool {
 #[cfg(test)]
 mod memory_quick_add_tests {
     use super::should_intercept_memory_quick_add;
-    use crate::config::Config;
+    use codewhale_runtime::config::Config;
 
     #[test]
     fn memory_quick_add_interception_requires_memory_opt_in() {
@@ -631,7 +633,7 @@ const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
 /// Shared `reqwest::Client` for balance fetches so connection pools are
 /// reused across successive background polls.
 static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
-    crate::tls::reqwest_client_builder()
+    codewhale_release::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default()
@@ -867,7 +869,7 @@ fn open_fleet_setup_target(app: &mut App, config: &Config, member_id: Option<&st
                 );
                 return;
             };
-            let fleet_name = crate::safe_label::SafeLabel::phrase(&name);
+            let fleet_name = codewhale_runtime::safe_label::SafeLabel::phrase(&name);
             let picker = if member_id.is_some() {
                 let (editor_id, target) = view.direct_assignment();
                 let (role, scope) = view.assignment_context();
@@ -1053,7 +1055,8 @@ async fn execute_command_input(
         // prevents surprising side-effects when the user has multiple providers
         // configured.
         clear_active_provider_api_key_from_memory(app, config).map_err(anyhow::Error::msg)?;
-        app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
+        app.api_key_env_only =
+            codewhale_runtime::config::active_provider_uses_env_only_api_key(config);
     }
     apply_command_result(terminal, app, engine_handle, task_manager, config, result).await
 }
@@ -1148,7 +1151,7 @@ fn mark_active_turn_cancelled_locally(app: &mut App) {
     app.runtime_turn_id = None;
     app.runtime_turn_status = None;
     app.suppress_stream_events_until_turn_complete = true;
-    crate::retry_status::clear();
+    codewhale_runtime::retry_status::clear();
     crate::tui::notifications::clear_taskbar_progress();
     crate::tui::notifications::stop_title_animation_quietly();
 }
@@ -1349,7 +1352,7 @@ pub(crate) fn flush_background_finished(app: &mut App, config: &Config, parent_i
         return;
     }
     let batch = std::mem::take(&mut app.background_finished);
-    if mode == crate::config::SubagentCompletionNotification::Off {
+    if mode == codewhale_config::notifications::SubagentCompletionNotification::Off {
         return;
     }
     let Some((method, threshold, include_summary)) = notifications::settings(config) else {
@@ -1357,7 +1360,7 @@ pub(crate) fn flush_background_finished(app: &mut App, config: &Config, parent_i
     };
     let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
     let notices: Vec<&[crate::tui::background_finished::FinishedWork]> =
-        if mode == crate::config::SubagentCompletionNotification::Always {
+        if mode == codewhale_config::notifications::SubagentCompletionNotification::Always {
             batch.chunks(1).collect()
         } else {
             vec![batch.as_slice()]
@@ -1529,8 +1532,8 @@ mod provider_key_validation_tests {
         } else {
             PathBuf::from("/tmp/grok-auth.json")
         };
-        let mut config = Config {
-            providers: Some(ProvidersConfig {
+        let mut config = {
+            let __cw_config_init_0_0 = Some(ProvidersConfig {
                 xai: ProviderConfig {
                     auth_mode: Some("oauth".to_string()),
                     external_credentials: Some(
@@ -1543,8 +1546,10 @@ mod provider_key_validation_tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_0_value: Config = Default::default();
+            __cw_config_init_0_value.providers = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
 
         {
@@ -1609,22 +1614,24 @@ mod provider_key_validation_tests {
     }
 
     fn openrouter_config(base_url: &str) -> Config {
-        Config {
-            providers: Some(ProvidersConfig {
+        {
+            let __cw_config_init_1_0 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     base_url: Some(base_url.to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.providers = __cw_config_init_1_0;
+            __cw_config_init_1_value
         }
     }
 
     fn two_named_custom_routes() -> Config {
-        Config {
-            provider: Some("custom-a".to_string()),
-            providers: Some(ProvidersConfig {
+        {
+            let __cw_config_init_2_0 = Some("custom-a".to_string());
+            let __cw_config_init_2_1 = Some(ProvidersConfig {
                 custom: std::collections::HashMap::from([
                     (
                         "custom-a".to_string(),
@@ -1647,8 +1654,11 @@ mod provider_key_validation_tests {
                     ),
                 ]),
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
         }
     }
 
@@ -1830,7 +1840,7 @@ mod provider_key_validation_tests {
         let verified_route = crate::provider_readiness::route_identity_for_model(
             &probed_config,
             &probed_identity,
-            crate::config::DEFAULT_OPENROUTER_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
             crate::provider_readiness::resolve_with_identity(
@@ -1907,7 +1917,7 @@ mod provider_key_validation_tests {
         let verified_route = crate::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
-            crate::config::DEFAULT_OPENROUTER_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
             crate::provider_readiness::resolve_with_identity(
@@ -1962,7 +1972,7 @@ mod provider_key_validation_tests {
         let verified_route = crate::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
-            crate::config::DEFAULT_OPENROUTER_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
             crate::provider_readiness::resolve_with_identity(
@@ -2023,7 +2033,7 @@ mod provider_key_validation_tests {
         let verified_route = crate::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
-            crate::config::DEFAULT_OPENROUTER_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert!(matches!(
             crate::provider_readiness::resolve_with_identity(
@@ -2055,7 +2065,9 @@ mod provider_key_validation_tests {
             &mut config,
             identity,
             "step-plan-key".to_string(),
-            Some(crate::config::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string()),
+            Some(
+                codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string(),
+            ),
             &verifier,
         )
         .await;
@@ -2065,7 +2077,7 @@ mod provider_key_validation_tests {
             vec![(
                 ProviderKind::Stepfun,
                 "step-plan-key".to_string(),
-                crate::config::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string()
+                codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string()
             )],
             "the chosen Step Plan endpoint must be the one live-validated"
         );
@@ -2102,9 +2114,11 @@ mod provider_key_validation_tests {
             &mut config,
             identity,
             "step-plan-key".to_string(),
-            crate::config::DEFAULT_STEPFUN_MODEL.to_string(),
+            codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_MODEL.to_string(),
             None,
-            Some(crate::config::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string()),
+            Some(
+                codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_PLAN_BASE_URL.to_string(),
+            ),
         )
         .await;
 
@@ -2119,7 +2133,7 @@ mod provider_key_validation_tests {
                 .get("stepfun")
                 .and_then(|entry| entry.get("base_url"))
                 .and_then(toml::Value::as_str),
-            Some(crate::config::DEFAULT_STEPFUN_PLAN_BASE_URL)
+            Some(codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_PLAN_BASE_URL)
         );
         assert_eq!(
             providers.keys().collect::<Vec<_>>(),
@@ -2135,7 +2149,7 @@ mod provider_key_validation_tests {
                 .providers
                 .as_ref()
                 .and_then(|providers| providers.stepfun.base_url.as_deref()),
-            Some(crate::config::DEFAULT_STEPFUN_PLAN_BASE_URL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_STEPFUN_PLAN_BASE_URL),
             "the live config mirrors the persisted endpoint"
         );
     }
@@ -2153,15 +2167,17 @@ auth_mode = "kimi_oauth"
         .expect("seed legacy Kimi import config");
         let mut app = create_test_app();
         let mut engine = mock_engine_handle();
-        let mut config = Config {
-            providers: Some(ProvidersConfig {
+        let mut config = {
+            let __cw_config_init_3_0 = Some(ProvidersConfig {
                 moonshot: ProviderConfig {
                     auth_mode: Some("kimi_oauth".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()
-            }),
-            ..Config::default()
+            });
+            let mut __cw_config_init_3_value: Config = Config::default();
+            __cw_config_init_3_value.providers = __cw_config_init_3_0;
+            __cw_config_init_3_value
         };
         let identity = picker_provider_identity(&config, ProviderKind::Moonshot, None)
             .expect("Moonshot identity");
@@ -2183,7 +2199,7 @@ auth_mode = "kimi_oauth"
             vec![(
                 ProviderKind::Moonshot,
                 "sk-kimi-supported".to_string(),
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL.to_string(),
+                codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL.to_string(),
             )],
             "replacement keys must be verified against Kimi Code, not the ordinary Moonshot API"
         );
@@ -2194,7 +2210,7 @@ auth_mode = "kimi_oauth"
             &mut config,
             identity,
             "sk-kimi-supported".to_string(),
-            crate::config::DEFAULT_KIMI_CODE_MODEL.to_string(),
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_MODEL.to_string(),
             None,
             None,
         )
@@ -2208,7 +2224,7 @@ auth_mode = "kimi_oauth"
         assert_eq!(moonshot.auth_mode.as_deref(), Some("api_key"));
         assert_eq!(
             moonshot.base_url.as_deref(),
-            Some(crate::config::DEFAULT_KIMI_CODE_BASE_URL)
+            Some(codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL)
         );
         assert_eq!(moonshot.api_key.as_deref(), Some("sk-kimi-supported"));
 
@@ -2217,7 +2233,7 @@ auth_mode = "kimi_oauth"
         assert!(saved.contains("auth_mode = \"api_key\""));
         assert!(saved.contains(&format!(
             "base_url = \"{}\"",
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL
+            codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL
         )));
     }
 
@@ -2454,20 +2470,31 @@ default_text_model = "legacy-model"
 "#,
         )
         .expect("seed legacy root route");
-        let config = Config {
-            provider: Some("custom".to_string()),
-            default_text_model: Some("legacy-model".to_string()),
-            ..Default::default()
+        let config = {
+            let __cw_config_init_4_0 = Some("custom".to_string());
+            let __cw_config_init_4_1 = Some("legacy-model".to_string());
+            let mut __cw_config_init_4_value: Config = Default::default();
+            __cw_config_init_4_value.provider = __cw_config_init_4_0;
+            __cw_config_init_4_value.default_text_model = __cw_config_init_4_1;
+            __cw_config_init_4_value
         }
         .with_legacy_root(None, Some("http://127.0.0.1:18180/v1".to_string()));
         let identity = config
             .resolve_provider_identity("custom")
             .expect("legacy identity");
 
-        crate::config::save_api_key_for_identity(&identity, &config, "legacy-saved-key")
-            .expect("save legacy key");
-        crate::config::save_provider_model_for_identity(&identity, &config, "legacy-model-updated")
-            .expect("save legacy model");
+        codewhale_runtime::config::save_api_key_for_identity(
+            &identity,
+            &config,
+            "legacy-saved-key",
+        )
+        .expect("save legacy key");
+        codewhale_runtime::config::save_provider_model_for_identity(
+            &identity,
+            &config,
+            "legacy-model-updated",
+        )
+        .expect("save legacy model");
 
         // The literal custom route's top-level fields now live in
         // `[providers.custom]` (#6394); the saves write there and the write
@@ -2487,7 +2514,8 @@ default_text_model = "legacy-model"
             custom["base_url"].as_str(),
             Some("http://127.0.0.1:18180/v1")
         );
-        let reloaded = Config::load(Some(config_env.config_path()), None).expect("reload legacy");
+        let reloaded = crate::plugins::providers::load_config(Some(config_env.config_path()), None)
+            .expect("reload legacy");
         assert!(reloaded.selects_literal_custom_provider());
         assert_eq!(
             reloaded
@@ -2523,16 +2551,21 @@ model = "model-b"
 "#,
         )
         .expect("seed coexistence config");
-        let config = Config::load(Some(config_env.config_path()), None).expect("load config");
+        let config = crate::plugins::providers::load_config(Some(config_env.config_path()), None)
+            .expect("load config");
         assert!(config.selects_literal_custom_provider());
         let identity = config
             .resolve_provider_identity("custom-b")
             .expect("named custom identity");
 
-        crate::config::save_api_key_for_identity(&identity, &config, "saved-b-key")
+        codewhale_runtime::config::save_api_key_for_identity(&identity, &config, "saved-b-key")
             .expect("save named custom key");
-        crate::config::save_provider_model_for_identity(&identity, &config, "model-b-updated")
-            .expect("save named custom model");
+        codewhale_runtime::config::save_provider_model_for_identity(
+            &identity,
+            &config,
+            "model-b-updated",
+        )
+        .expect("save named custom model");
 
         let saved = std::fs::read_to_string(config_env.config_path()).expect("saved config");
         let table: toml::Table = toml::from_str(&saved).expect("saved config parses");

@@ -11,14 +11,14 @@ use std::time::SystemTime;
 
 use serde::Deserialize;
 
-use super::install::{INSTALLED_FROM_MARKER, TRUSTED_MARKER};
-use super::package_digest::{self, PackageDigestError};
 use super::roots::{
     SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId, SkillRootKind,
     safe_display_path,
 };
 use super::system::is_exact_bundled_skill;
 use super::{SkillRegistry, normalize_skill_name_for_lookup};
+use codewhale_skill_install::install::{INSTALLED_FROM_MARKER, TRUSTED_MARKER};
+use codewhale_skill_install::package_digest::{self, PackageDigestError};
 
 /// Max bytes of `SKILL.md` the auditor will read into memory.
 pub const AUDIT_MAX_SKILL_MD_BYTES: u64 = 512 * 1024;
@@ -560,6 +560,14 @@ fn parse_skill_md_bounded(
     if meta.file_type().is_symlink() {
         return (
             ParserState::Broken("SKILL.md is a symlink".into()),
+            None,
+            None,
+            None,
+        );
+    }
+    if !meta.is_file() {
+        return (
+            ParserState::Broken("SKILL.md is not a regular file".into()),
             None,
             None,
             None,

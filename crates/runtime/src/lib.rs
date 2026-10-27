@@ -1,9 +1,8 @@
 //! Codewhale runtime: the headless half of the runtime/TUI split.
 //!
-//! Modules move here from `crates/tui/src` with `git mv`, in the order
-//! `docs/design/TUI_DECONSTRUCTION.md` records. The TUI reaches them through
-//! one path-alias block in its `lib.rs`, so moved code keeps its
-//! `crate::<module>` paths on both sides until the split deletes the alias.
+//! Modules move here from `crates/tui/src` by explicit path, in the order
+//! `docs/design/TUI_DECONSTRUCTION.md` records. The TUI calls them by their
+//! `codewhale_runtime::<module>` paths; there is no alias block.
 //!
 //! This crate never depends on the terminal UI: no `codewhale-tui`, ratatui
 //! or crossterm (`scripts/check-command-crate-boundaries.py`).
@@ -13,8 +12,14 @@
 
 pub use codewhale_command_contract::elapsed;
 
+pub mod audit;
+pub mod browser;
+pub mod child_env;
 pub mod context_budget;
 pub mod continual_harness;
+pub mod credentials;
+pub mod dsh_credentials;
+pub mod external_credentials;
 pub mod fast_hash;
 pub mod features;
 pub mod goal_loop;
@@ -26,6 +31,8 @@ pub mod logging;
 pub mod media_originals;
 pub mod model_context;
 pub mod native_memory;
+pub mod private_log;
+pub mod process_tree;
 pub mod prompt_zones;
 pub mod regex_cache;
 pub mod resource_telemetry;
@@ -35,10 +42,26 @@ pub mod safe_label;
 pub mod session_tree;
 pub mod skill_state;
 pub mod sleep_guard;
+pub mod stall_report;
 pub mod startup_trace;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool_history_repair;
+pub mod turn_budget;
 pub mod workspace_discovery;
 
 pub const CODEWHALE_MAIN_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+pub mod catalog_cache;
+
+pub mod codex_model_roster;
+
+pub mod config;
+
+pub mod config_keys;
+
+pub mod config_persistence;
+
+pub mod oauth;
+
+pub mod settings;

@@ -90,9 +90,13 @@ export function parseChangelog(markdown, options = {}) {
       release.sections.push(section);
       continue;
     }
+    const bullet = line.match(/^- (.*)$/);
+    if (bullet && !section) {
+      section = { heading: "Changes", raw: [] };
+      release.sections.push(section);
+    }
     if (!section) continue;
 
-    const bullet = line.match(/^- (.*)$/);
     if (bullet) {
       flushItem();
       item = bullet[1];

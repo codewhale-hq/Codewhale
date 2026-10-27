@@ -20,8 +20,8 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::dependencies::{ExternalTool, Git};
-use crate::snapshot::repo::run_bounded_git_with_timeout;
+use codewhale_dependencies::run_bounded_git_with_timeout;
+use codewhale_dependencies::{ExternalTool, Git};
 
 const GIT_MENTION_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_COMMAND_FAILED: &str = "git command failed";

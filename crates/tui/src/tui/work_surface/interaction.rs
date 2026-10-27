@@ -119,8 +119,8 @@ pub(crate) fn agent_details_closed(app: &mut App, agent_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn app() -> App {

@@ -269,12 +269,12 @@ fn sidebar_agent_status_is_terminal(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::sidebar_agent_rows;
-    use crate::config::Config;
     use crate::tui::app::{
         AgentCurrentActivity, AgentCurrentActivityStatus, AgentProgressMeta, App,
         SidebarHoverSection, SidebarHoverState, TuiOptions,
     };
     use codewhale_localization::Locale;
+    use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
     fn create_test_app() -> App {
@@ -389,7 +389,7 @@ mod tests {
 
         let mut typed = cached_agent("agent_typed", None);
         typed.assignment.role = None;
-        typed.agent_type = crate::tools::subagent::FleetRole::Builder;
+        typed.agent_type = codewhale_agent_contract::role::FleetRole::Builder;
         app.subagent_cache.push(typed);
 
         // The dispatch name leads, annotated with the role when the role is
@@ -420,12 +420,12 @@ mod tests {
 
         let mut first = cached_agent("agent_builder_a", None);
         first.assignment.role = None;
-        first.agent_type = crate::tools::subagent::FleetRole::Builder;
+        first.agent_type = codewhale_agent_contract::role::FleetRole::Builder;
         app.subagent_cache.push(first);
 
         let mut second = cached_agent("agent_builder_b", None);
         second.assignment.role = None;
-        second.agent_type = crate::tools::subagent::FleetRole::Builder;
+        second.agent_type = codewhale_agent_contract::role::FleetRole::Builder;
         app.subagent_cache.push(second);
 
         assert_eq!(app.ensure_agent_label("agent_builder_a"), "implement");
@@ -483,7 +483,7 @@ mod tests {
             fork_context: false,
             workspace: None,
             git_branch: None,
-            agent_type: crate::tools::subagent::FleetRole::Worker,
+            agent_type: codewhale_agent_contract::role::FleetRole::Worker,
             assignment: crate::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "task".to_string(),

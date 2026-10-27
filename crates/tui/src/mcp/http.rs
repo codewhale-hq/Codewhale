@@ -122,7 +122,7 @@ impl HttpTransport {
             .and_then(|v| v.to_str().ok())
             && transport.session_id.as_deref() != Some(sid)
         {
-            let session_ref = crate::utils::redacted_identifier_for_log(sid);
+            let session_ref = codewhale_util::utils::redacted_identifier_for_log(sid);
             tracing::debug!(target: "mcp", session = %session_ref, "captured MCP session ID via GET preflight");
             transport.session_id = Some(sid.to_string());
         }

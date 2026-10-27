@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use crate::artifacts::open_session_relative;
 use crate::artifacts::write_session_relative_immutable;
-use crate::fleet::files::{WorkspaceFile, same_file};
+use codewhale_util::files::{WorkspaceFile, same_file};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
@@ -26,8 +26,8 @@ pub struct Store {
 impl Store {
     /// Shared presentation-owner state. Legacy session habitats stay in place.
     pub fn at(root: &Path) -> io::Result<Self> {
-        let data = WorkspaceFile::open(root, Path::new("habitat.json"), true)?;
-        let lock = WorkspaceFile::open(root, Path::new("habitat.lock"), true)?;
+        let data = WorkspaceFile::open_resolved_root(root, Path::new("habitat.json"), true)?;
+        let lock = WorkspaceFile::open_resolved_root(root, Path::new("habitat.lock"), true)?;
         let original_lock = lock.open_update(true, false)?;
         Ok(Self {
             data,

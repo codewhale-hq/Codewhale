@@ -2,9 +2,9 @@
 use super::*;
 use crate::extension_host::TestManagerGuard;
 use crate::extension_host::composition_scope::NativePresetRef;
-use crate::extension_host::protocol::EntryRef;
 use crate::extension_host::tests::{FixturePlugins, node_for_tests};
 use crate::plugins::activation::{PluginActivationCapability, TestPolicyGuard};
+use codewhale_config::EntryRef;
 
 #[cfg(test)]
 fn preset(fixture: &FixturePlugins, tag: &str) -> NativePresetRef {
@@ -23,7 +23,7 @@ fn preset(fixture: &FixturePlugins, tag: &str) -> NativePresetRef {
         content_hash: source.authority.content_hash,
         entry: EntryRef {
             path: source.path.to_string_lossy().into(),
-            sha256: crate::hashing::sha256_hex(std::fs::read(source.path).unwrap()),
+            sha256: codewhale_runtime::hashing::sha256_hex(std::fs::read(source.path).unwrap()),
         },
     }
 }
@@ -65,7 +65,7 @@ replacements = ["BackupRoute/fixture-backup-model"]
 "#,
     )
     .await;
-    let mut config = crate::config::Config::load(Some(config_path), None).unwrap();
+    let mut config = crate::plugins::providers::load_config(Some(config_path), None).unwrap();
     config.set_feature("extension_host", true).unwrap();
     let mut runtime = stub_runtime().with_api_config(config.clone());
     runtime.client = CodewhaleClient::new(&config).unwrap();

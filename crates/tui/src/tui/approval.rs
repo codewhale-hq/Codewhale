@@ -27,22 +27,22 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
-#[cfg(test)]
-use crate::config::ApprovalDefaultSelection;
 use crate::tools::approval_summary::{
     delegated_authority_fields, param_preview, truncate_string_value,
 };
-use crate::tools::canonical_action::canonical_action_alias;
 use codewhale_config::ToolAskRule;
+use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_localization::{Locale, MessageId, tr};
+#[cfg(test)]
+use codewhale_runtime::config::ApprovalDefaultSelection;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(test)]
-use crate::sandbox::SandboxPolicy;
-#[cfg(test)]
 use crate::tui::views::{ModalView, ViewAction, ViewEvent};
+#[cfg(test)]
+use codewhale_sandbox::SandboxPolicy;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 
@@ -337,7 +337,8 @@ impl ApprovalRequest {
             .into_iter()
             .map(|mut detail| {
                 if matches!(detail.label.as_str(), "File" | "Path" | "Dir") {
-                    detail.value = crate::utils::workspace_relative(&detail.value, &self.workspace);
+                    detail.value =
+                        codewhale_util::utils::workspace_relative(&detail.value, &self.workspace);
                 }
                 detail.label = localize_detail_label(&detail.label, locale).to_string();
                 if detail.is_preview

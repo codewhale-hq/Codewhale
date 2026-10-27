@@ -191,7 +191,7 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
             workspace: fixture.workspace().to_path_buf(),
             ..crate::tui::test_support::test_tui_options(fixture.workspace())
         },
-        &crate::config::Config::default(),
+        &codewhale_runtime::config::Config::default(),
     );
     let help = crate::commands::execute("/help ext-echo", &mut app);
     assert!(
@@ -343,7 +343,7 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
         registration: crate::extension_host::registry::CommandRegistration {
             scope: None,
             handle: 1,
-            owner: crate::extension_host::protocol::OwnerRef {
+            owner: codewhale_config::OwnerRef {
                 plugin_id: "p".into(),
                 generation: 1,
                 owner_token: "t".into(),

@@ -1,0 +1,32 @@
+[package]
+name = "codewhale-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale outbound network policy, guarded destinations and proxy resolution"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-tools = { path = "../tools", version = "0.10.2" }
+http = "1"
+hyper-util = { version = "=0.1.21", features = ["client-proxy"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

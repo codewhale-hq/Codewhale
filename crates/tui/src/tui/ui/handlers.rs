@@ -87,7 +87,7 @@ pub(super) fn toggle_model_picker_pin(
 ) {
     let locale = app.ui_locale;
     let route = format!("{provider_key}/{model}");
-    let (receipt, level) = match crate::settings::Settings::transact(|settings| {
+    let (receipt, level) = match codewhale_runtime::settings::Settings::transact(|settings| {
         Ok(settings.toggle_pinned_model(provider_key, model))
     }) {
         Ok(true) => (
@@ -103,7 +103,7 @@ pub(super) fn toggle_model_picker_pin(
             StatusToastLevel::Error,
         ),
     };
-    if let Ok(settings) = crate::settings::Settings::load_persisted() {
+    if let Ok(settings) = codewhale_runtime::settings::Settings::load_persisted() {
         app.pinned_models = settings.pinned_models;
     }
     app.status_message = Some(receipt.clone());
@@ -190,11 +190,15 @@ pub(crate) fn flush_stale_fleet_roster(
 pub(crate) fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
     let path = config.memory_path();
     let note = input.trim_start_matches('#').trim();
-    let result = crate::native_memory::NativeMemoryStore::from_global_path(&path)
+    let result = codewhale_runtime::native_memory::NativeMemoryStore::from_global_path(&path)
         .ok_or_else(|| format!("{} is not a native memory path", path.display()))
         .and_then(|store| {
             store
-                .remember(crate::native_memory::MemoryScope::Global, None, note)
+                .remember(
+                    codewhale_runtime::native_memory::MemoryScope::Global,
+                    None,
+                    note,
+                )
                 .map(|hit| hit.source)
                 .map_err(|err| err.to_string())
         });
@@ -547,7 +551,9 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
     let workspace = app.workspace.clone();
     let plugin_registry = Arc::clone(&app.plugin_registry);
     let network_policy = config.network.clone().map(|network| {
-        crate::network_policy::NetworkPolicyDecider::with_default_audit(network.into_runtime())
+        codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
+            codewhale_net::network_policy::NetworkPolicy::from(network),
+        )
     });
     let callback_port = config.mcp_oauth_callback_port;
     let callback_url = config.mcp_oauth_callback_url.clone();
@@ -1144,7 +1150,7 @@ pub(crate) async fn handle_mcp_ui_action(
                 Some(snapshot) => {
                     app.mcp_configured_count = snapshot.servers.len();
                     app.mcp_snapshot = Some(snapshot);
-                    app.mcp_initializing = false;
+                    app.set_mcp_boot_initializing(false);
                     app.mcp_connecting.clear();
                     app.hotbar_actions
                         .replace_mcp_tools(app.mcp_snapshot.as_ref());
@@ -1193,7 +1199,7 @@ pub(crate) async fn handle_mcp_ui_action(
                 // the reload-started line.
                 app.mcp_reload_required = false;
                 app.mcp_reload_in_flight = true;
-                app.mcp_initializing = true;
+                app.set_mcp_boot_initializing(true);
                 if is_reload {
                     add_mcp_message(
                         app,
@@ -1218,7 +1224,9 @@ pub(crate) async fn handle_mcp_ui_action(
         }
     } else if discover {
         let network_policy = config.network.clone().map(|toml_cfg| {
-            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+            codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
+                codewhale_net::network_policy::NetworkPolicy::from(toml_cfg),
+            )
         });
         mcp::discover_manager_snapshot_with_workspace_and_plugins(
             &path,
@@ -1226,7 +1234,7 @@ pub(crate) async fn handle_mcp_ui_action(
             network_policy,
             app.mcp_reload_required,
             std::sync::Arc::clone(&app.plugin_registry),
-            mcp::McpBackend::from_config(config),
+            config.mcp_backend(),
         )
         .await
         .map(|snapshot| (snapshot, None))
@@ -1257,7 +1265,7 @@ pub(crate) async fn handle_mcp_ui_action(
                 app.mcp_snapshot_generation_invalidated = true;
             }
             app.mcp_snapshot = Some(snapshot.clone());
-            app.mcp_initializing = false;
+            app.set_mcp_boot_initializing(false);
             app.mcp_connecting.clear();
             // #2068: keep the hotbar's MCP-tool actions in sync with the tools
             // that are actually loaded; the hotbar never connects on its own.
@@ -1358,8 +1366,8 @@ pub(crate) async fn handle_skill_mutation_requested(
     app: &mut App,
     request: crate::skills::mutation::SkillMutationRequest,
 ) {
-    use crate::skills::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
     use crate::skills::mutation::{MutationContext, SkillMutationOutcome, SkillMutationRequest};
+    use codewhale_skill_install::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
 
     let focus = match &request {
         SkillMutationRequest::ImportExternal { source_id, .. } => Some(source_id.clone()),
@@ -1373,12 +1381,12 @@ pub(crate) async fn handle_skill_mutation_requested(
     };
 
     let workspace = app.workspace.clone();
-    let home = crate::config::effective_home_dir();
-    let cfg = crate::config::Config::load(None, None).unwrap_or_default();
+    let home = codewhale_paths::user_home();
+    let cfg = crate::plugins::providers::load_config(None, None).unwrap_or_default();
     let network = cfg
         .network
         .clone()
-        .map(|policy| policy.into_runtime())
+        .map(codewhale_net::network_policy::NetworkPolicy::from)
         .unwrap_or_default();
     let skills_cfg = cfg.skills.as_ref();
     let max_size = skills_cfg
@@ -1548,13 +1556,49 @@ pub(crate) fn is_plan_handoff_request(app: &App, tool_id: &str) -> bool {
 
 fn plan_handoff_seed_title(plan: &crate::tui::plan_handoff::PendingPlanHandoff) -> String {
     // Match the graph's trimmed title without changing the approved message.
-    plan.text
-        .trim()
+    let collapse = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut in_fence = false;
+    let title = plan
+        .text
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            if line.starts_with("```") || line.starts_with("~~~") {
+                in_fence = !in_fence;
+                return false;
+            }
+            !in_fence && !line.starts_with('#')
+        })
+        .map(|line| {
+            collapse(
+                &line
+                    .trim_start_matches(['-', '*', '+', '>'])
+                    .replace(['*', '`'], ""),
+            )
+        })
+        .find(|line| !line.is_empty())
+        .unwrap_or_else(|| collapse(&plan.text));
+    title
         .chars()
         .take(1024)
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+fn plan_handoff_proceed_message(
+    app: &App,
+    plan: &crate::tui::plan_handoff::PendingPlanHandoff,
+) -> String {
+    let message = format!("{}\n\n{}", app.tr(MessageId::PlanHandoffProceed), plan.text);
+    if plan.seeded_todo_id.is_none() {
+        return message;
+    }
+    format!(
+        "{message}\n\n{}",
+        app.tr(MessageId::PlanHandoffTodoNote)
+            .replace("{title}", &plan_handoff_seed_title(plan))
+    )
 }
 
 /// Stage one graph-owned item for a prose plan without replacing existing work.
@@ -1644,6 +1688,7 @@ fn reopen_plan_handoff(
     app.view_stack.push(UserInputView::new(
         plan.request_id.clone(),
         crate::tui::plan_handoff::request(app.ui_locale),
+        app.ui_locale,
     ));
     let notice = app
         .tr(MessageId::SessionSaveFailed)
@@ -1724,10 +1769,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
                 reopen_plan_handoff(app, &plan, &reason);
                 return Ok(());
             }
-            QueuedMessage::new(
-                format!("{}\n\n{}", app.tr(MessageId::PlanHandoffProceed), plan.text),
-                None,
-            )
+            QueuedMessage::new(plan_handoff_proceed_message(app, &plan), None)
         }
     };
     // Consume before ordinary composer admission. Its existing recovery owns
@@ -2196,7 +2238,7 @@ pub(crate) async fn handle_view_events(
                 app.status_items = items.clone();
                 app.needs_redraw = true;
                 if final_save {
-                    match crate::config_persistence::persist_status_items(&items) {
+                    match codewhale_runtime::config_persistence::persist_status_items(&items) {
                         Ok(path) => {
                             app.status_message =
                                 Some(format!("Status line saved to {}", path.display()));
@@ -2664,7 +2706,7 @@ pub(crate) async fn handle_view_events(
                             .resolve_provider_pin_identity(provider_id)
                             .and_then(|identity| {
                                 let active = app.admitted_provider_identity()?;
-                                if crate::config::provider_is_configured_for_active(
+                                if crate::provider_readiness::provider_is_configured_for_active(
                                     config, &identity, active,
                                 ) {
                                     Ok(())
@@ -2932,7 +2974,7 @@ pub(crate) async fn handle_view_events(
                 delta,
             } => {
                 let provider_key = provider_id.unwrap_or_else(|| provider.as_str().to_string());
-                let reordered = crate::settings::Settings::transact_opt(|settings| {
+                let reordered = codewhale_runtime::settings::Settings::transact_opt(|settings| {
                     if !settings.move_pinned_model(&provider_key, &model, delta) {
                         return Ok(None);
                     }

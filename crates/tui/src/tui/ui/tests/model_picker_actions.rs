@@ -1,4 +1,4 @@
-//! #6500: the model picker's ⇧P / ⇧F / ⇧D after a search, driven through the
+//! #6500: the model picker's Ctrl+P / Ctrl+F / ⇧D after a search, driven through the
 //! open view stack, the event handler, disk, and the rendered picker.
 
 use super::*;
@@ -42,6 +42,10 @@ fn shifted(ch: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::SHIFT)
 }
 
+fn ctrl(ch: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+}
+
 fn render_picker(app: &mut App) -> String {
     assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ModelPicker));
     let view = app.view_stack.pop().unwrap();
@@ -71,7 +75,7 @@ fn row_line<'a>(screen: &'a str, model: &str) -> &'a str {
 }
 
 #[test]
-fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
+fn ctrl_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
     let _lock = crate::test_support::lock_test_env();
     let root = tempfile::tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
@@ -79,7 +83,7 @@ fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
     let model = app.model.clone();
     type_query(&mut app, &model);
 
-    let events = app.view_stack.handle_key(shifted('P'));
+    let events = app.view_stack.handle_key(ctrl('p'));
     let [
         ViewEvent::ModelPickerTogglePin {
             provider,
@@ -88,7 +92,7 @@ fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
         },
     ] = events.as_slice()
     else {
-        panic!("⇧P while searching must pin the highlighted row, got {events:?}");
+        panic!("Ctrl+P while searching must pin the highlighted row, got {events:?}");
     };
     assert_eq!(picked, &model);
     let provider_key = provider_id
@@ -96,7 +100,7 @@ fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
         .unwrap_or_else(|| provider.as_str().to_string());
     toggle_model_picker_pin(&mut app, &config, &provider_key, picked);
 
-    let saved = crate::settings::Settings::load_persisted().unwrap();
+    let saved = codewhale_runtime::settings::Settings::load_persisted().unwrap();
     assert!(
         saved
             .pinned_models
@@ -116,17 +120,17 @@ fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
     );
     assert!(
         screen.contains(&format!("Model: {model}")) && !screen.contains(&format!("{model}P")),
-        "⇧P must not become query text:\n{screen}"
+        "Ctrl+P must not become query text:\n{screen}"
     );
 
     // The same chord on the same row unpins it, on disk and on screen.
-    let events = app.view_stack.handle_key(shifted('P'));
+    let events = app.view_stack.handle_key(ctrl('p'));
     assert!(matches!(
         events.as_slice(),
         [ViewEvent::ModelPickerTogglePin { model: again, .. }] if again == &model
     ));
     toggle_model_picker_pin(&mut app, &config, &provider_key, &model);
-    let saved = crate::settings::Settings::load_persisted().unwrap();
+    let saved = codewhale_runtime::settings::Settings::load_persisted().unwrap();
     assert!(saved.pinned_models.is_empty(), "{:?}", saved.pinned_models);
     let screen = render_picker(&mut app);
     assert!(
@@ -137,7 +141,7 @@ fn shift_p_after_a_search_pins_the_highlighted_row_and_says_so_in_the_picker() {
 }
 
 #[test]
-fn shift_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_picker() {
+fn ctrl_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_picker() {
     let _lock = crate::test_support::lock_test_env();
     let root = tempfile::tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
@@ -145,7 +149,7 @@ fn shift_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_p
     let model = app.model.clone();
     type_query(&mut app, &model);
 
-    let events = app.view_stack.handle_key(shifted('F'));
+    let events = app.view_stack.handle_key(ctrl('f'));
     let [
         ViewEvent::ModelPickerToggleFleet {
             provider,
@@ -154,7 +158,7 @@ fn shift_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_p
         },
     ] = events.as_slice()
     else {
-        panic!("⇧F while searching must toggle Fleet for the highlighted row, got {events:?}");
+        panic!("Ctrl+F while searching must toggle Fleet for the highlighted row, got {events:?}");
     };
     assert_eq!(picked, &model);
     let provider_key = provider_id
@@ -181,7 +185,7 @@ fn shift_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_p
     );
 
     // Toggling again removes the shortlist row it added.
-    let events = app.view_stack.handle_key(shifted('F'));
+    let events = app.view_stack.handle_key(ctrl('f'));
     assert!(matches!(
         events.as_slice(),
         [ViewEvent::ModelPickerToggleFleet { model: again, .. }] if again == &model
@@ -272,8 +276,9 @@ fn picker_receipt_renders_its_semantic_level_through_the_palette() {
     assert_eq!(receipt_fg(&mut app, success), theme.status_working);
 }
 
-/// #6523 review: while a custom model id is typed there is no highlighted
-/// catalog route, ⇧P / ⇧F are query text, so the footer must not offer them.
+/// #6523 review: while searching, ⇧P / ⇧F are query text and Ctrl+P / Ctrl+F
+/// are offered for a highlighted catalog route; with no highlighted route
+/// (a custom model id) neither is offered.
 #[test]
 fn pin_and_fleet_hints_hide_when_no_catalog_route_is_highlighted() {
     let _lock = crate::test_support::lock_test_env();
@@ -284,8 +289,12 @@ fn pin_and_fleet_hints_hide_when_no_catalog_route_is_highlighted() {
     type_query(&mut app, &model);
     let screen = render_picker(&mut app);
     assert!(
-        screen.contains("⇧P") && screen.contains("⇧F"),
+        screen.contains("Ctrl+P") && screen.contains("Ctrl+F"),
         "a highlighted route offers its verbs:\n{screen}"
+    );
+    assert!(
+        !screen.contains("⇧P") && !screen.contains("⇧F"),
+        "shifted letters are query text while searching:\n{screen}"
     );
 
     let mut app_custom = {
@@ -295,9 +304,9 @@ fn pin_and_fleet_hints_hide_when_no_catalog_route_is_highlighted() {
     type_query(&mut app_custom, "zz-no-such-model-xyz");
     let screen = render_picker(&mut app_custom);
     assert!(
-        !screen.contains("⇧P") && !screen.contains("⇧F"),
+        !screen.contains("Ctrl+P") && !screen.contains("Ctrl+F"),
         "no highlighted route, no Pin/Fleet hints:\n{screen}"
     );
-    let events = app_custom.view_stack.handle_key(shifted('P'));
+    let events = app_custom.view_stack.handle_key(ctrl('p'));
     assert!(events.is_empty(), "{events:?}");
 }

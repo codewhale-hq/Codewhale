@@ -800,7 +800,7 @@ fn reopen_windows_file_for_owner_security(file: &File, path: &Path) -> Result<Fi
 }
 
 #[cfg(windows)]
-fn mark_windows_file_handle_for_deletion(file: &File) -> Result<()> {
+pub fn mark_windows_file_handle_for_deletion(file: &File) -> Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Foundation::{
         ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,

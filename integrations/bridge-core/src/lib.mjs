@@ -66,7 +66,7 @@ export async function writeFileDurable(filePath, contents, { mode = 0o600 } = {}
 
 export class ThreadStore {
   static async open(filePath, options = {}) {
-    const store = new ThreadStore(filePath, options);
+    const store = new this(filePath, options);
     await store.load();
     return store;
   }
@@ -146,12 +146,17 @@ export class ThreadStore {
     await this.save();
   }
 
-  async recordMessage(messageKey) {
-    if (!messageKey || this.options.messageLimit <= 0) return false;
+  async recordMessage(messageKey, chatId = null, patch = null) {
+    if (patch && !chatId) throw new Error("Durable admission requires a chat binding");
+    if (!messageKey || this.options.messageLimit <= 0) {
+      if (patch) throw new Error("Durable admission requires message retention");
+      return false;
+    }
     this.ensureShape();
     if (this.data.messages.includes(messageKey)) return true;
     this.data.messages.push(messageKey);
     this.data.messages = this.data.messages.slice(-this.options.messageLimit);
+    if (chatId && patch) this.data.chats[chatId] = { ...this.data.chats[chatId], ...patch };
     await this.save();
     return false;
   }
@@ -636,7 +641,7 @@ export async function* readSse(response) {
   }
 }
 
-export function createRuntimeClient({ runtimeUrl, runtimeToken }) {
+export function createRuntimeClient({ runtimeUrl, runtimeToken, runtimeRequestTimeoutMs }) {
   function authHeaders() {
     return { authorization: `Bearer ${runtimeToken}` };
   }
@@ -648,11 +653,14 @@ export function createRuntimeClient({ runtimeUrl, runtimeToken }) {
         ...(options.auth === false ? {} : authHeaders()),
         ...(options.body ? { "content-type": "application/json" } : {})
       },
-      body: options.body ? JSON.stringify(options.body) : undefined
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: options.signal || (runtimeRequestTimeoutMs ? AbortSignal.timeout(runtimeRequestTimeoutMs) : undefined)
     });
     const body = await readJsonSafe(response);
     if (!response.ok) {
-      throw new Error(compactRuntimeError(response.status, body));
+      const error = new Error(compactRuntimeError(response.status, body));
+      error.status = response.status;
+      throw error;
     }
     return body;
   }
@@ -666,6 +674,93 @@ export function compactRuntimeError(status, body) {
     body?.message ||
     (typeof body === "string" ? body : JSON.stringify(body));
   return `Runtime API request failed (${status}): ${message}`;
+}
+
+export function questionText(request) {
+  const questions = Array.isArray(request?.questions) ? request.questions : [];
+  const lines = ["需要你回答 / Codewhale is asking"];
+  for (const [index, question] of questions.entries()) {
+    const prefix = questions.length > 1 ? `${index + 1}. ` : "";
+    lines.push(`${prefix}${question.header ? `${question.header}: ` : ""}${question.question || ""}`);
+    for (const [optionIndex, option] of (question.options || []).entries()) {
+      const description = String(option.description || "").trim();
+      lines.push(`  ${optionIndex + 1}) ${option.label}${option.description ? ` - ${description.length > 120 ? `${description.slice(0, 119)}…` : description}` : ""}`);
+    }
+  }
+  lines.push(questions.length > 1
+    ? "每行回答一个问题，可回复选项编号或文字。/ Answer one question per line, by option number or in words."
+    : "回复选项编号或文字。/ Reply with an option number or in words.");
+  return lines.join("\n");
+}
+
+export function parseQuestionAnswers(request, text) {
+  const questions = Array.isArray(request?.questions) ? request.questions : [];
+  if (!questions.length) return null;
+  const replies = questions.length > 1
+    ? String(text || "").split(/\n+/).map((line) => line.trim()).filter(Boolean)
+    : [String(text || "").trim()];
+  if (replies.length !== questions.length || replies.some((reply) => !reply)) return null;
+  const answers = [];
+  for (const [index, question] of questions.entries()) {
+    const reply = replies[index];
+    const options = question.options || [];
+    const picks = question.multi_select ? reply.split(/[\s,，、]+/u).filter(Boolean) : [reply];
+    const chosen = picks.every((pick) => /^\d+$/.test(pick) && Number(pick) >= 1 && Number(pick) <= options.length)
+      ? picks.map((pick) => options[Number(pick) - 1])
+      : options.filter((option) => option.label.toLowerCase() === reply.toLowerCase());
+    if (chosen.length) {
+      for (const option of chosen) answers.push({ id: question.id, label: option.label, value: option.label });
+    } else if (question.allow_free_text || !options.length) {
+      answers.push({ id: question.id, label: "Other", value: reply });
+    } else {
+      return null;
+    }
+  }
+  return answers;
+}
+
+export async function admitTurn({ runtimeJson, pending, capabilities, persistPending, ensureThread }) {
+  if (!pending?.request || (pending.operationKey && pending.request.operation_key !== pending.operationKey)) {
+    throw new Error("Invalid retained turn admission");
+  }
+  if (pending.operationKey && (capabilities?.turn_operation_idempotency !== true || capabilities?.turn_operation_lookup !== true)) {
+    return { pending, turn: null, uncertain: true };
+  }
+  if (!pending.threadId) {
+    const threadId = await ensureThread(pending.threadRequest);
+    if (!threadId) throw new Error("Turn admission requires a durable thread binding");
+    pending = { ...pending, threadId };
+    await persistPending(pending);
+  }
+  if (pending.sinceSeq === null) {
+    const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(pending.threadId)}`);
+    if (latestRunningTurn(detail)) return { pending, turn: null, blocked: true };
+    pending = { ...pending, sinceSeq: Number(detail.latest_seq || 0) };
+    await persistPending(pending);
+  }
+  let turn;
+  if (pending.submitted) {
+    if (!pending.operationKey || capabilities?.turn_operation_idempotency !== true || capabilities?.turn_operation_lookup !== true) {
+      return { pending, turn: null, uncertain: true };
+    }
+    try {
+      turn = await runtimeJson(`/v1/threads/${encodeURIComponent(pending.threadId)}/turn-operations/${encodeURIComponent(pending.operationKey)}`);
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(pending.threadId)}`);
+      if (latestRunningTurn(detail)) return { pending, turn: null, blocked: true };
+    }
+  }
+  if (!turn) {
+    pending = { ...pending, submitted: true };
+    await persistPending(pending);
+    const result = await runtimeJson(`/v1/threads/${encodeURIComponent(pending.threadId)}/turns`, {
+      method: "POST", body: pending.request
+    });
+    turn = result?.turn;
+  }
+  if (!turn?.id || turn.thread_id !== pending.threadId) throw new Error("Invalid Engine admission receipt");
+  return { pending, turn };
 }
 
 export function latestRunningTurn(detail) {

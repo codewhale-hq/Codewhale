@@ -14,7 +14,10 @@
 //! block. The loaded content is injected into the system prompt to give the
 //! agent context about the project's conventions, structure, and requirements.
 
+mod budget;
 mod constitution;
+#[cfg(test)]
+mod instruction_budget_tests;
 mod pack;
 mod types;
 
@@ -22,14 +25,23 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+pub use self::budget::InstructionAssembly;
+pub(crate) use self::budget::{
+    InstructionAction, InstructionBudgetConfig, InstructionBudgetPolicy, InstructionBudgets,
+    InstructionDetail, InstructionLimit, InstructionNotice, InstructionOrigin, InstructionRefusal,
+    InstructionScope, InstructionSegment, apply_instruction_budgets, estimate_instruction_tokens,
+    render_notice_body,
+};
+pub(crate) use self::constitution::load_repo_constitution_block;
+use self::constitution::repo_constitution_candidate_paths;
 pub(crate) use self::constitution::{RepoLawAction, RepoLawRule, load_repo_law_rules};
-use self::constitution::{load_repo_constitution_block, repo_constitution_candidate_paths};
 use self::pack::generate_bounded_project_overview;
 pub use self::pack::generate_project_context_pack;
 pub use self::types::ProjectContext;
 use self::types::ProjectContextError;
 pub(crate) use self::types::project_instructions_source_label;
 use self::types::repo_relative_source_label;
+use codewhale_config::instruction_budget::DEFAULT_FILE_MAX_BYTES;
 
 /// Names of project context files to look for, in priority order.
 ///
@@ -188,16 +200,6 @@ impl ForeignInstructionImports {
     }
 }
 
-/// Foreign fragment candidates enabled by the active opt-in set.
-///
-/// `.agents/AGENTS.md` is always included: it is the cross-agent `AGENTS.md`
-/// standard Codewhale already follows, not another vendor's format.
-#[must_use]
-pub(crate) fn active_fragment_candidates() -> Vec<&'static str> {
-    let imports = foreign_instruction_imports();
-    fragment_candidates_for(&imports)
-}
-
 #[must_use]
 pub(crate) fn fragment_candidates_for(imports: &ForeignInstructionImports) -> Vec<&'static str> {
     let mut candidates: Vec<&'static str> = vec![".agents/AGENTS.md"];
@@ -209,33 +211,51 @@ pub(crate) fn fragment_candidates_for(imports: &ForeignInstructionImports) -> Ve
     candidates
 }
 
-static FOREIGN_IMPORTS: std::sync::RwLock<Option<ForeignInstructionImports>> =
-    std::sync::RwLock::new(None);
-
-/// Install the resolved opt-in set. Called once while config is applied.
-pub fn set_foreign_instruction_imports(imports: ForeignInstructionImports) {
-    if let Ok(mut guard) = FOREIGN_IMPORTS.write() {
-        *guard = Some(imports);
-    }
-    crate::project_context_cache::clear();
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstructionSettings {
+    pub(crate) budget: InstructionBudgetConfig,
+    pub(crate) imports: ForeignInstructionImports,
+    pub(crate) home: Option<PathBuf>,
 }
 
-/// The active opt-in set. Defaults to "import nothing".
-#[must_use]
-pub(crate) fn foreign_instruction_imports() -> ForeignInstructionImports {
-    FOREIGN_IMPORTS
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .unwrap_or_default()
+impl Default for InstructionSettings {
+    fn default() -> Self {
+        Self {
+            budget: InstructionBudgetConfig::default(),
+            imports: ForeignInstructionImports::default(),
+            home: codewhale_paths::user_home(),
+        }
+    }
+}
+
+impl InstructionSettings {
+    pub(crate) fn from_config(config: &codewhale_runtime::config::Config) -> Self {
+        Self {
+            budget: config.instruction_budget.clone().unwrap_or_default(),
+            imports: ForeignInstructionImports::from_config(&config.project_instruction_imports).0,
+            home: codewhale_paths::user_home(),
+        }
+    }
+
+    fn file_max_bytes(&self) -> u64 {
+        self.budget
+            .file_max_bytes
+            .unwrap_or(DEFAULT_FILE_MAX_BYTES)
+            .min(DEFAULT_FILE_MAX_BYTES)
+    }
+    fn claude_fallback(&self) -> bool {
+        self.budget.claude_fallback.unwrap_or(false)
+    }
 }
 
 /// Instruction file candidates in priority order for the active opt-in set.
 fn context_files_for(imports: &ForeignInstructionImports) -> Vec<&'static str> {
-    // Order is priority: `load_dir_instructions` takes the first match in a
-    // directory. AGENTS.md leads, then Codewhale's own files, and only then
-    // anything imported from another tool — an imported CLAUDE.md must never
-    // outrank .codewhale/instructions.md the way the old flat list let it.
+    // Order is priority: `load_dir_instructions` takes the first usable match
+    // in a directory. AGENTS.md leads, then Codewhale's own files, and only
+    // then anything imported from another tool — an imported CLAUDE.md must
+    // never outrank .codewhale/instructions.md the way the old flat list let
+    // it. Only an enabled import adds a foreign candidate here; the source
+    // listing adds the opt-in `claude_fallback` candidates itself.
     let mut files: Vec<&'static str> = vec![
         "AGENTS.md",
         ".codewhale/instructions.md",
@@ -304,9 +324,10 @@ fn unimported_foreign_warnings(
             .iter()
             .any(|relative| rules_dir_has_loadable_content(workspace, relative));
         let fragment_present =
-            codewhale_core::fragments::load_selected_project_instruction_fragment(
+            codewhale_core::fragments::load_selected_project_instruction_fragment_with_reader(
                 workspace,
                 format.fragment_candidates(),
+                |path| codewhale_util::fs_confined::open_read(workspace, path),
             )
             .is_some();
         // Keep discovery aligned with the loaders. A path can exist without
@@ -364,225 +385,714 @@ const GLOBAL_INSTRUCTIONS_RELATIVE_PATH: &[&str] = &[".codewhale", "instructions
 const GLOBAL_INSTRUCTIONS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "instructions.md"];
 const GLOBAL_INSTRUCTIONS_LEGACY_PATH: &[&str] = &[".deepseek", "instructions.md"];
 
-/// Maximum size for project context files (to prevent loading huge files)
-const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
-
-/// One aggregate budget for everything that reaches the model as project
-/// instruction authority: the repository-root → workspace instruction chain,
-/// the global fallback layer merged into it, the assembled rules block, and
-/// any opted-in foreign-agent rule files.
-///
-/// Previously each of those had its own cap — 200 KiB for the chain, 500 KiB
-/// for the rules block, 40 KiB for the imported-fragment path — so a workspace
-/// could put roughly three quarters of a megabyte of standing instructions in
-/// front of the model before skills, memory, history, or tool schemas were
-/// counted, and no single number described the ceiling. One budget, checked
-/// once, is the number that can actually be reasoned about.
-///
-/// Authority decides what survives: `instructions` claims the budget first and
-/// is trimmed from the *front* (the broadest scope) so the nearest-scope file
-/// is the last thing dropped; the rules block takes what is left. Both trims
-/// leave an explicit marker in the text.
-pub(crate) const MAX_PROJECT_INSTRUCTION_BYTES: usize = 48 * 1024; // 48 KiB
-
 /// Maximum number of rule files loaded per rules directory.
-/// Prevents a project from silently injecting hundreds of rule files.
+///
+/// A safety cap, not a budget: the files it drops are reported as
+/// `skipped (rules_cap)` instead of disappearing into a log line.
 const MAX_RULES_FILES: usize = 50;
 
-const CHAIN_TRUNCATION_MARKER: &str =
-    "[…broader-scope project instructions dropped at the aggregate budget…]\n\n";
-const RULES_TRUNCATION_MARKER: &str = "\n\n[…rules block truncated at the aggregate budget…]";
+/// Claude-format instruction files, most authoritative first. `CLAUDE.md` is
+/// read as a same-directory alternative to `.claude/CLAUDE.md`; `CLAUDE.local.md`
+/// is Claude-specific and is deliberately not imported.
+const CLAUDE_CONTEXT_FILES: &[&str] = &["CLAUDE.md", ".claude/CLAUDE.md"];
 
-/// Trim `text` to at most `max` bytes, keeping the tail and marking the cut.
-fn keep_tail_within(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
+/// Render the raw segments into the single instruction string the prompt
+/// carries: global scope first (so the workspace keeps the last word), then
+/// the repository-root → workspace chain.
+///
+/// Labels use repository-relative project paths, home-relative global paths,
+/// and configured file names so host roots stay outside the pinned prefix.
+#[must_use]
+pub(crate) fn render_joined_instructions(segments: &[InstructionSegment]) -> Option<String> {
+    let global = render_instruction_scope(segments, InstructionScope::Global);
+    let project = render_instruction_scope(segments, InstructionScope::Project);
+    match (global, project) {
+        (Some(global_text), Some(project_text)) => {
+            let global_label = segments
+                .iter()
+                .find(|segment| segment.scope == InstructionScope::Global)
+                .and_then(|segment| segment.label.as_deref())
+                .map(|label| format!("<!-- global: {label} -->"))
+                .unwrap_or_else(|| "<!-- global -->".to_string());
+            Some(format!(
+                "{global_label}\n{}\n\n<!-- project (overrides global where they conflict) -->\n{}",
+                global_text.trim_end(),
+                project_text.trim_start(),
+            ))
+        }
+        (Some(text), None) | (None, Some(text)) => Some(text),
+        (None, None) => None,
     }
-    let keep = max.saturating_sub(CHAIN_TRUNCATION_MARKER.len());
-    if keep == 0 {
-        return CHAIN_TRUNCATION_MARKER.to_string();
-    }
-    let mut start = text.len() - keep;
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-    format!("{CHAIN_TRUNCATION_MARKER}{}", &text[start..])
 }
 
-/// Trim `text` to at most `max` bytes, keeping the head and marking the cut.
-fn keep_head_within(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
+fn render_instruction_scope(
+    segments: &[InstructionSegment],
+    scope: InstructionScope,
+) -> Option<String> {
+    let mut out = String::new();
+    for segment in segments.iter().filter(|segment| segment.scope == scope) {
+        let label = segment
+            .label
+            .clone()
+            .or_else(|| segment.path.as_ref().map(|path| path.display().to_string()))
+            .unwrap_or_else(|| scope.as_str().to_string());
+        match segment.origin {
+            InstructionOrigin::Configured => {
+                if !out.is_empty() {
+                    out.push_str("\n\n");
+                }
+                out.push_str(&format!(
+                    "<instructions source=\"{label}\">\n{}\n</instructions>",
+                    segment.text.trim()
+                ));
+            }
+            _ if scope == InstructionScope::Global => {
+                if !out.is_empty() {
+                    out.push_str(&format!("\n\n<!-- global instructions: {label} -->\n"));
+                }
+                out.push_str(&segment.text);
+            }
+            _ => {
+                if !out.is_empty() {
+                    out.push_str(&format!(
+                        "\n\n<!-- scoped instructions: {label} (overrides wider scopes where they conflict) -->\n"
+                    ));
+                }
+                out.push_str(&segment.text);
+            }
+        }
     }
-    let keep = max.saturating_sub(RULES_TRUNCATION_MARKER.len());
-    if keep == 0 {
-        return String::new();
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Assemble both scopes for one request: read the configured `instructions`
+/// entries fresh, apply per-scope budgets, and re-render the instruction
+/// string.
+///
+/// This is the only place configured entries are read and charged. They are
+/// user-level authority, so they belong to the global scope, and reading them
+/// after the cache lookup means editing one takes effect without invalidating
+/// the file-keyed context cache.
+pub(crate) fn assemble_instruction_block(
+    ctx: &mut ProjectContext,
+    configured: &[crate::prompts::InstructionSource],
+    budgets: &InstructionBudgets,
+) -> InstructionAssembly {
+    append_configured_instructions(ctx, configured, budgets.file_max_bytes);
+    let mut budget_notices =
+        apply_instruction_budgets(&mut ctx.instruction_segments, &mut ctx.rules_block, budgets);
+    budget_notices.retain(|notice| {
+        notice.is_loss()
+            || !ctx
+                .notices
+                .iter()
+                .any(|loss| loss.is_loss() && loss.path.is_some() && loss.path == notice.path)
+    });
+    ctx.notices.append(&mut budget_notices);
+    ctx.rebuild_joined_instructions();
+
+    let global_tokens =
+        render_instruction_scope(&ctx.instruction_segments, InstructionScope::Global)
+            .as_deref()
+            .map_or(0, estimate_instruction_tokens);
+    let mut project_tokens =
+        render_instruction_scope(&ctx.instruction_segments, InstructionScope::Project)
+            .as_deref()
+            .map_or(0, estimate_instruction_tokens);
+    if let Some(rules) = ctx.rules_block.as_deref() {
+        project_tokens = project_tokens.saturating_add(estimate_instruction_tokens(rules));
     }
-    let mut end = keep;
-    while end > 0 && !text.is_char_boundary(end) {
+
+    InstructionAssembly {
+        block: ctx.as_system_block(),
+        source_path: ctx.source_path.clone(),
+        constitution_source_path: ctx.constitution_source_path.clone(),
+        constitution_tokens: ctx
+            .constitution_block
+            .as_deref()
+            .map_or(0, estimate_instruction_tokens),
+        warnings: ctx.warnings.clone(),
+        prompt_range: None,
+        notices: ctx.notices.clone(),
+        global_tokens,
+        project_tokens,
+        budgets: *budgets,
+    }
+}
+
+pub(crate) fn append_configured_instructions(
+    ctx: &mut ProjectContext,
+    configured: &[crate::prompts::InstructionSource],
+    file_max_bytes: u64,
+) {
+    let (configured_segments, mut fresh_notices) =
+        configured_instruction_segments(configured, file_max_bytes);
+    let mut loaded: Vec<PathBuf> = ctx
+        .instruction_segments
+        .iter()
+        .filter_map(|segment| segment.canonical_path.clone())
+        .collect();
+    for segment in configured_segments {
+        if let Some(canonical) = segment.canonical_path.clone() {
+            if loaded.contains(&canonical) {
+                fresh_notices.push(InstructionNotice {
+                    path: segment.path.clone(),
+                    scope: segment.scope,
+                    origin: segment.origin,
+                    action: InstructionAction::Skipped,
+                    bytes_kept: 0,
+                    bytes_dropped: segment.text.len() as u64,
+                    tokens_kept: 0,
+                    tokens_dropped: estimate_instruction_tokens(&segment.text),
+                    limit: InstructionLimit::DuplicatePath,
+                    fallback_selected: None,
+                    detail: Some(InstructionDetail::AlreadyLoaded),
+                });
+                continue;
+            }
+            loaded.push(canonical);
+        }
+        ctx.instruction_segments.push(segment);
+    }
+
+    ctx.notices.append(&mut fresh_notices);
+    ctx.rebuild_joined_instructions();
+}
+
+pub(crate) fn capture_instruction_context(
+    workspace: &Path,
+    configured: &[crate::prompts::InstructionSource],
+    settings: &InstructionSettings,
+) -> ProjectContext {
+    let mut ctx = load_project_context_with_settings(workspace, settings);
+    append_configured_instructions(&mut ctx, configured, settings.file_max_bytes());
+    ctx
+}
+
+/// The instruction notice a session must show before its first turn, or an
+/// error when `policy = "refuse"` and a budget loss would have occurred.
+///
+/// Deterministic from the current files and config, so the interactive start,
+/// the headless stderr line, and a resumed session all state the same losses.
+#[cfg(test)]
+pub fn startup_instruction_notice(
+    workspace: &Path,
+    configured: &[crate::prompts::InstructionSource],
+    window_tokens: Option<usize>,
+    output_tokens: Option<usize>,
+    settings: &InstructionSettings,
+) -> Result<Option<String>, String> {
+    let budgets =
+        InstructionBudgets::resolve(Some(&settings.budget), window_tokens, output_tokens)?;
+    let mut ctx = load_project_context_with_settings(workspace, settings);
+    let assembly = assemble_instruction_block(&mut ctx, configured, &budgets);
+    if budgets.policy == InstructionBudgetPolicy::Refuse
+        && let Some(loss) = assembly.notices.iter().find(|notice| {
+            notice.is_loss()
+                && matches!(
+                    notice.limit,
+                    InstructionLimit::ScopeBudget
+                        | InstructionLimit::StaticGuard
+                        | InstructionLimit::RulesBudget
+                )
+        })
+    {
+        let mut refused = loss.clone();
+        refused.action = InstructionAction::Refused;
+        return Err(format!(
+            "instruction budget refused this session (policy = \"refuse\"): {refused}"
+        ));
+    }
+    Ok(render_notice_body(&assembly.notices, "en"))
+}
+
+/// Read a configured instruction file without trusting its metadata length.
+///
+/// Returns the text and whether the file exceeded `cap`. An over-cap file
+/// returns no text at all: the caller reports a skip, and nothing past the
+/// ceiling is read into memory.
+fn read_instruction_file_bounded(path: &Path, cap: u64) -> std::io::Result<(String, bool)> {
+    use std::io::Read as _;
+
+    let file = codewhale_util::fs_confined::open_user_read(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Ok((String::new(), true));
+    }
+    String::from_utf8(bytes)
+        .map(|text| (text, false))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Read the configured `instructions = [...]` entries as global-scope
+/// segments. Missing, empty, and over-ceiling files are reported and skipped;
+/// they never fail the launch, and `policy = refuse` does not turn a skip into
+/// a refusal — one bad include must not make the project unopenable.
+fn configured_instruction_segments(
+    configured: &[crate::prompts::InstructionSource],
+    file_max_bytes: u64,
+) -> (Vec<InstructionSegment>, Vec<InstructionNotice>) {
+    use crate::prompts::InstructionSource;
+
+    let mut segments = Vec::new();
+    let mut notices = Vec::new();
+    for source in configured {
+        if matches!(source, InstructionSource::Inline { name, .. } if name.starts_with("runtime:"))
+        {
+            continue;
+        }
+        let (path, name, content, read_error) = match source {
+            InstructionSource::File(path) => {
+                // Bound the read on the open handle instead of trusting the
+                // metadata length: a zero-length device such as `/dev/zero`, or
+                // a file that grows after the check, must not become an
+                // unbounded read.
+                match read_instruction_file_bounded(path, file_max_bytes) {
+                    Ok((_, true)) => {
+                        notices.push(InstructionNotice {
+                            path: Some(path.clone()),
+                            scope: InstructionScope::Global,
+                            origin: InstructionOrigin::Configured,
+                            action: InstructionAction::Skipped,
+                            bytes_kept: 0,
+                            bytes_dropped: 0,
+                            tokens_kept: 0,
+                            tokens_dropped: 0,
+                            limit: InstructionLimit::FileCeiling,
+                            fallback_selected: None,
+                            detail: Some(InstructionDetail::OverFileCeiling {
+                                max_bytes: file_max_bytes,
+                            }),
+                        });
+                        continue;
+                    }
+                    Ok((text, false)) => (Some(path.clone()), None, text, None),
+                    Err(error) => (Some(path.clone()), None, String::new(), Some(error)),
+                }
+            }
+            InstructionSource::Inline { name, content } => {
+                (None, Some(name.clone()), content.clone(), None)
+            }
+        };
+        if let Some(error) = read_error {
+            notices.push(InstructionNotice {
+                path,
+                scope: InstructionScope::Global,
+                origin: InstructionOrigin::Configured,
+                action: InstructionAction::Skipped,
+                bytes_kept: 0,
+                bytes_dropped: 0,
+                tokens_kept: 0,
+                tokens_dropped: 0,
+                limit: InstructionLimit::None,
+                fallback_selected: None,
+                detail: Some(InstructionDetail::unreadable(&error)),
+            });
+            continue;
+        }
+        if content.trim().is_empty() {
+            notices.push(InstructionNotice::loss(
+                InstructionScope::Global,
+                InstructionOrigin::Configured,
+                path,
+                InstructionLimit::EmptyFile,
+                InstructionAction::Skipped,
+            ));
+            continue;
+        }
+        let content = if path.is_some() {
+            retain_file_content(
+                content,
+                InstructionScope::Global,
+                InstructionOrigin::Configured,
+                path.as_deref(),
+                &mut notices,
+            )
+        } else {
+            content
+        };
+        let label = name.or_else(|| {
+            path.as_ref().map(|path| {
+                if path.is_absolute() {
+                    file_label(path)
+                } else {
+                    path.to_string_lossy().replace('\\', "/")
+                }
+            })
+        });
+        let mut segment = InstructionSegment::new(
+            InstructionScope::Global,
+            InstructionOrigin::Configured,
+            path,
+            content.trim().to_string(),
+        );
+        segment.canonical_path = segment
+            .path
+            .as_deref()
+            .and_then(|path| fs::canonicalize(path).ok());
+        segment.label = label;
+        segments.push(segment);
+    }
+    (segments, notices)
+}
+
+fn retain_file_content(
+    content: String,
+    scope: InstructionScope,
+    origin: InstructionOrigin,
+    path: Option<&Path>,
+    notices: &mut Vec<InstructionNotice>,
+) -> String {
+    const CONTENT_BYTES: usize = 100 * 1024;
+    if content.len() <= CONTENT_BYTES {
+        return content;
+    }
+    let mut end = CONTENT_BYTES;
+    while !content.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}{RULES_TRUNCATION_MARKER}", &text[..end])
+    let head = &content[..end];
+    let dropped = content.len() - end;
+    notices.push(InstructionNotice {
+        path: path.map(Path::to_path_buf),
+        scope,
+        origin,
+        action: InstructionAction::Trimmed,
+        bytes_kept: end as u64,
+        bytes_dropped: dropped as u64,
+        tokens_kept: estimate_instruction_tokens(head),
+        tokens_dropped: estimate_instruction_tokens(&content[end..]),
+        limit: InstructionLimit::FileContent,
+        fallback_selected: None,
+        detail: None,
+    });
+    format!("{head}\n\n[…instruction file truncated: {end} bytes kept, {dropped} bytes dropped…]")
 }
 
-/// Apply the single aggregate project-instruction budget.
-///
-/// Called once, after every source has been assembled, so the ceiling holds
-/// across the chain, the global layer, and the rules block together rather
-/// than per-loader. Nothing here re-reads the filesystem.
-pub(crate) fn enforce_project_instruction_budget(ctx: &mut ProjectContext) {
-    let instructions_len = ctx.instructions.as_ref().map_or(0, String::len);
-    let rules_len = ctx.rules_block.as_ref().map_or(0, String::len);
-    if instructions_len + rules_len <= MAX_PROJECT_INSTRUCTION_BYTES {
-        return;
-    }
-
-    // Instructions are the higher authority and claim the budget first.
-    if instructions_len > MAX_PROJECT_INSTRUCTION_BYTES
-        && let Some(text) = ctx.instructions.as_ref()
-    {
-        let trimmed = keep_tail_within(text, MAX_PROJECT_INSTRUCTION_BYTES);
-        tracing::warn!(
-            target: "project_context",
-            was = instructions_len,
-            now = trimmed.len(),
-            cap = MAX_PROJECT_INSTRUCTION_BYTES,
-            "Dropping broadest-scope project instructions at the aggregate budget"
-        );
-        ctx.instructions = Some(trimmed);
-    }
-
-    let used = ctx.instructions.as_ref().map_or(0, String::len);
-    let remaining = MAX_PROJECT_INSTRUCTION_BYTES.saturating_sub(used);
-    if rules_len > remaining
-        && let Some(text) = ctx.rules_block.as_ref()
-    {
-        let trimmed = keep_head_within(text, remaining);
-        tracing::warn!(
-            target: "project_context",
-            was = rules_len,
-            now = trimmed.len(),
-            remaining,
-            "Truncating rules block to the aggregate project-instruction budget"
-        );
-        ctx.rules_block = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        };
-    }
+/// One directory's resolved instruction segments plus the skips that produced
+/// them.
+#[derive(Debug, Default)]
+struct DirInstructions {
+    segments: Vec<InstructionSegment>,
+    notices: Vec<InstructionNotice>,
+    /// Human-readable reason a candidate was refused. The notice carries the
+    /// structured form; this is the text `/context report` and the Runtime API
+    /// listing have always shown.
+    warnings: Vec<String>,
 }
 /// Load project context from the workspace directory.
 ///
 /// This searches for known project context files and loads the first one found.
-/// Convenience wrapper that reads the process-wide opt-in set.
+/// Convenience wrapper that imports no foreign format.
 ///
 /// Production goes through [`load_project_context_with_imports`] so the import
 /// set is explicit at the call site; this exists for tests that only care about
 /// default behaviour.
 #[cfg(test)]
 pub fn load_project_context(workspace: &Path) -> ProjectContext {
-    load_project_context_with_imports(workspace, &foreign_instruction_imports())
+    load_project_context_with_imports(workspace, &ForeignInstructionImports::default())
 }
 
 /// Load workspace project context under an explicit foreign-import set.
 ///
 /// The set is a parameter rather than a global read so a caller — and every
 /// test — states which foreign formats are in play instead of depending on
-/// process-wide state that parallel tests would race on.
+/// process-wide state that parallel tests would race on. Production loads the
+/// repository chain through `load_project_context_with_settings`, which shares
+/// every helper here.
+#[cfg(test)]
 pub(crate) fn load_project_context_with_imports(
     workspace: &Path,
     imports: &ForeignInstructionImports,
 ) -> ProjectContext {
     let mut ctx = ProjectContext::empty(workspace.to_path_buf());
-
-    // Search for active project context files.
-    let (instructions, source_path, warnings) = load_dir_instructions(workspace, imports);
-    ctx.instructions = instructions;
-    ctx.source_path = source_path;
-    ctx.warnings.extend(warnings);
+    let label_root = find_git_root(workspace);
+    let mut loaded: Vec<PathBuf> = Vec::new();
+    let dir = {
+        let mut scope = DirLoadContext {
+            imports,
+            file_max_bytes: DEFAULT_FILE_MAX_BYTES,
+            claude_fallback: false,
+            label_root: label_root.as_deref(),
+            loaded: &mut loaded,
+        };
+        load_dir_instructions(workspace, &mut scope)
+    };
+    if let Some(last) = dir.segments.last() {
+        ctx.source_path = last.path.clone();
+    }
+    ctx.notices.extend(dir.notices);
+    ctx.warnings.extend(dir.warnings);
+    ctx.instruction_segments.extend(dir.segments);
 
     ctx.warnings
         .extend(ignored_project_whale_warnings(workspace));
     ctx.warnings
         .extend(unimported_foreign_warnings(workspace, imports));
 
-    // Load rules from auto-discovered directories (.codewhale/rules/, .claude/rules/)
-    // Each rule file is wrapped in a <project_rule> block and appended after
-    // the main instructions content. Security model: same as AGENTS.md —
-    // workspace-contained content only, no absolute-path escape.
-    //
-    // The source label sits inside the pinned system prompt, so it is
-    // rendered repo-relative (forward slashes) and a checkout move or
-    // recase leaves the block byte-identical. `load_rules_from_dir`
-    // only returns paths under `workspace`, so workspace-relative is a
-    // safe fallback spelling when no git root exists; the absolute
-    // spelling remains only for a path outside the root, which is not
-    // reachable by construction. The label root does not depend on the
-    // loop below, so it is computed once up front:
-    // `repo_relative_source_label` must never render a rule before its
-    // root exists, and a `None` sentinel would silently degrade the
-    // label to the absolute spelling.
-    let rules_label_root = find_git_root(workspace).unwrap_or_else(|| workspace.to_path_buf());
-    let mut rules_content = String::new();
-    for rules_dir in rules_dirs_for(imports) {
-        let rules = load_rules_from_dir(workspace, rules_dir);
-        for (path, content) in rules {
-            if !rules_content.is_empty() {
-                rules_content.push('\n');
-            }
-            rules_content.push_str(&format!(
-                "<project_rule source=\"{}\">\n{}\n</project_rule>",
-                repo_relative_source_label(&path, Some(rules_label_root.as_path())),
-                content.trim()
-            ));
-        }
-    }
-
-    if !rules_content.is_empty() {
-        // No private cap here: `enforce_project_instruction_budget` applies the
-        // one aggregate ceiling across instructions and rules together, after
-        // every source has been assembled.
-        ctx.rules_block = Some(rules_content);
-    }
+    // Rules are workspace-scope authority. Labels are repo-relative because
+    // the block sits inside the pinned system prompt; the project scope
+    // budget charges it after the instruction chain.
+    let rules = load_rules_block(
+        workspace,
+        imports,
+        label_root.as_deref().unwrap_or(workspace),
+        DEFAULT_FILE_MAX_BYTES,
+    );
+    ctx.notices.extend(rules.notices);
+    ctx.rules_block = rules.block;
 
     // Check for trust file
     ctx.is_trusted = check_trust_status(workspace);
 
-    enforce_project_instruction_budget(&mut ctx);
-
+    ctx.rebuild_joined_instructions();
     ctx
 }
 
-/// Load the highest-priority instruction file from one directory.
+/// Everything one scope directory's loader needs, so the selection rules are
+/// stated once and shared by the workspace loader and the ancestor chain.
+struct DirLoadContext<'a> {
+    imports: &'a ForeignInstructionImports,
+    file_max_bytes: u64,
+    /// Read `CLAUDE.md` when no `AGENTS.md`/codewhale file is usable.
+    claude_fallback: bool,
+    /// Repository root for repo-relative segment labels.
+    label_root: Option<&'a Path>,
+    /// Canonical paths already loaded by wider scopes; one physical file loads
+    /// once no matter how many scopes link to it.
+    loaded: &'a mut Vec<PathBuf>,
+}
+
+/// Resolve one directory's instruction files.
 ///
-/// Returns the content, its path, and any warnings from failed candidates.
-/// A directory with no candidate file yields `(None, None, warnings)`.
-fn load_dir_instructions(
-    dir: &Path,
-    imports: &ForeignInstructionImports,
-) -> (Option<String>, Option<PathBuf>, Vec<String>) {
-    let mut warnings = Vec::new();
+/// Selection follows OpenCode's model with codewhale's own sources preserved:
+/// `AGENTS.md` wins; codewhale's `.codewhale/instructions.md` (and the legacy
+/// `.deepseek/` spelling) sit next; `CLAUDE.md` is co-read when the `claude`
+/// import is enabled and is read as a fallback only when `claude_fallback` is
+/// opted in. A candidate that
+/// exists but cannot be used counts as **absent**, so the next candidate is
+/// tried — including `CLAUDE.md`. A duplicate of an already-loaded file is
+/// *not* absent: the content is already in the prompt from a wider scope, so
+/// no fallback runs and the notice says `duplicate`.
+fn load_dir_instructions(dir: &Path, scope: &mut DirLoadContext<'_>) -> DirInstructions {
+    let mut out = DirInstructions::default();
+    let mut chain: Vec<(&'static str, InstructionOrigin)> = vec![
+        ("AGENTS.md", InstructionOrigin::Agents),
+        (
+            ".codewhale/instructions.md",
+            InstructionOrigin::Instructions,
+        ),
+        (".deepseek/instructions.md", InstructionOrigin::Instructions),
+    ];
+    if scope.imports.is_enabled(ForeignInstructionFormat::Claude) {
+        chain.push((".claude/instructions.md", InstructionOrigin::Claude));
+    }
 
-    for filename in context_files_for(imports) {
-        let file_path = dir.join(filename);
-
-        if context_candidate_exists(&file_path) {
-            match load_context_file(dir, &file_path) {
-                Ok(content) => {
-                    tracing::info!(
-                        "Loaded project context from {} ({} bytes)",
-                        file_path.display(),
-                        content.len()
-                    );
-                    return (Some(content), Some(file_path), warnings);
+    let mut primary_resolved = false;
+    let mut preferred_skipped: Option<PathBuf> = None;
+    for (filename, origin) in chain {
+        let path = dir.join(filename);
+        if !context_candidate_exists(&path) {
+            continue;
+        }
+        if is_duplicate(&path, scope.loaded) {
+            out.notices.push(duplicate_notice(origin, &path));
+            // A duplicate is not "absent": the content is already in the
+            // prompt from a wider scope, so no fallback runs for this
+            // directory.
+            primary_resolved = true;
+            break;
+        }
+        match load_context_file_limited(dir, &path, scope.file_max_bytes) {
+            Ok(content) => {
+                let pushed = push_loaded_segment(&mut out, scope, origin, &path, content);
+                if pushed
+                    && let Some(preferred) = preferred_skipped.as_ref()
+                    && let Some(skipped) = out
+                        .notices
+                        .iter_mut()
+                        .find(|notice| notice.path.as_ref() == Some(preferred))
+                {
+                    skipped.fallback_selected = Some(relative_label(dir, &path));
                 }
-                Err(error) => warnings.push(error.to_string()),
+                primary_resolved = true;
+                break;
+            }
+            Err(error) => {
+                if preferred_skipped.is_none() {
+                    preferred_skipped = Some(path.clone());
+                }
+                out.warnings.push(error.to_string());
+                out.notices.push(skip_notice(origin, &path, &error));
             }
         }
     }
 
-    (None, None, warnings)
+    let claude_imported = scope.imports.is_enabled(ForeignInstructionFormat::Claude);
+    let claude_paths: Vec<PathBuf> = CLAUDE_CONTEXT_FILES
+        .iter()
+        .map(|filename| dir.join(filename))
+        .filter(|path| context_candidate_exists(path))
+        .collect();
+    // An explicit import co-reads `CLAUDE.md` next to `AGENTS.md`; the default
+    // fallback runs only when nothing else in this directory loaded, and
+    // `claude_fallback = false` is an explicit opt-out.
+    let read_claude = claude_imported || (scope.claude_fallback && !primary_resolved);
+    if read_claude {
+        // Candidates are tried in order and a skipped one falls through to the
+        // next, exactly like the `AGENTS.md` chain.
+        for path in claude_paths {
+            if is_duplicate(&path, scope.loaded) {
+                out.notices
+                    .push(duplicate_notice(InstructionOrigin::Claude, &path));
+                return out;
+            }
+            match load_context_file_limited(dir, &path, scope.file_max_bytes) {
+                Ok(content) => {
+                    let pushed = push_loaded_segment(
+                        &mut out,
+                        scope,
+                        InstructionOrigin::Claude,
+                        &path,
+                        content,
+                    );
+                    if pushed
+                        && !primary_resolved
+                        && let Some(preferred) = preferred_skipped.as_ref()
+                        && let Some(skipped) = out
+                            .notices
+                            .iter_mut()
+                            .find(|notice| notice.path.as_ref() == Some(preferred))
+                    {
+                        skipped.fallback_selected = Some(relative_label(dir, &path));
+                    }
+                    break;
+                }
+                Err(error) => {
+                    out.warnings.push(error.to_string());
+                    out.notices
+                        .push(skip_notice(InstructionOrigin::Claude, &path, &error))
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Push one loaded file as a project-scope segment, reporting a duplicate
+/// instead of loading the same physical file twice.
+fn push_loaded_segment(
+    out: &mut DirInstructions,
+    scope: &mut DirLoadContext<'_>,
+    origin: InstructionOrigin,
+    path: &Path,
+    content: String,
+) -> bool {
+    let canonical = fs::canonicalize(path).ok();
+    if let Some(canonical) = canonical.as_ref() {
+        if scope.loaded.contains(canonical) {
+            out.notices.push(InstructionNotice {
+                path: Some(path.to_path_buf()),
+                scope: InstructionScope::Project,
+                origin,
+                action: InstructionAction::Skipped,
+                bytes_kept: 0,
+                bytes_dropped: content.len() as u64,
+                tokens_kept: 0,
+                tokens_dropped: estimate_instruction_tokens(&content),
+                limit: InstructionLimit::DuplicatePath,
+                fallback_selected: None,
+                detail: Some(InstructionDetail::AlreadyLoaded),
+            });
+            return false;
+        }
+        scope.loaded.push(canonical.clone());
+    }
+    tracing::info!(
+        "Loaded project context from {} ({} bytes)",
+        path.display(),
+        content.len()
+    );
+    let content = retain_file_content(
+        content,
+        InstructionScope::Project,
+        origin,
+        Some(path),
+        &mut out.notices,
+    );
+    let mut segment = InstructionSegment::new(
+        InstructionScope::Project,
+        origin,
+        Some(path.to_path_buf()),
+        content,
+    );
+    segment.canonical_path = canonical;
+    segment.label = Some(repo_relative_source_label(path, scope.label_root));
+    out.segments.push(segment);
+    true
+}
+
+/// Whether `path` names a physical file already loaded by a wider scope.
+fn is_duplicate(path: &Path, loaded: &[PathBuf]) -> bool {
+    fs::canonicalize(path).is_ok_and(|canonical| loaded.contains(&canonical))
+}
+
+fn relative_label(dir: &Path, path: &Path) -> String {
+    path.strip_prefix(dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn duplicate_notice(origin: InstructionOrigin, path: &Path) -> InstructionNotice {
+    InstructionNotice {
+        path: Some(path.to_path_buf()),
+        scope: InstructionScope::Project,
+        origin,
+        action: InstructionAction::Skipped,
+        bytes_kept: 0,
+        bytes_dropped: 0,
+        tokens_kept: 0,
+        tokens_dropped: 0,
+        limit: InstructionLimit::DuplicatePath,
+        fallback_selected: None,
+        detail: Some(InstructionDetail::AlreadyLoaded),
+    }
+}
+
+fn skip_notice(
+    origin: InstructionOrigin,
+    path: &Path,
+    error: &ProjectContextError,
+) -> InstructionNotice {
+    InstructionNotice {
+        path: Some(path.to_path_buf()),
+        scope: InstructionScope::Project,
+        origin,
+        action: InstructionAction::Skipped,
+        bytes_kept: 0,
+        bytes_dropped: 0,
+        tokens_kept: 0,
+        tokens_dropped: 0,
+        limit: error.kind(),
+        fallback_selected: None,
+        detail: error.detail(),
+    }
 }
 
 /// Load project context from the containing repository as well.
@@ -596,129 +1106,138 @@ fn load_dir_instructions(
 /// repository boundary. Outside any repository only the workspace itself is
 /// searched.
 pub fn load_project_context_with_parents(workspace: &Path) -> ProjectContext {
-    load_project_context_with_parents_cached_and_home(
-        workspace,
-        crate::config::effective_home_dir().as_deref(),
-    )
+    load_project_context_with_settings(workspace, &InstructionSettings::default())
 }
 
+pub(crate) fn load_project_context_with_settings(
+    workspace: &Path,
+    settings: &InstructionSettings,
+) -> ProjectContext {
+    let workspace = canonicalize_workspace_or_keep(workspace);
+    let pre = crate::project_context_cache::compute_cache_key_with_settings(&workspace, settings);
+    if let Some(ctx) = crate::project_context_cache::lookup(&pre) {
+        return ctx;
+    }
+    let ctx = load_project_context_with_settings_uncached(&workspace, settings);
+    let post = crate::project_context_cache::compute_cache_key_with_settings(&workspace, settings);
+    if pre == post {
+        crate::project_context_cache::store(pre, ctx.clone());
+    }
+    ctx
+}
+
+#[cfg(test)]
 fn load_project_context_with_parents_cached_and_home(
     workspace: &Path,
     home_dir: Option<&Path>,
 ) -> ProjectContext {
-    let workspace = canonicalize_workspace_or_keep(workspace);
-    let pre_load_key = crate::project_context_cache::compute_cache_key(&workspace, home_dir);
-    if let Some(ctx) = crate::project_context_cache::lookup(&pre_load_key) {
-        return ctx;
-    }
-
-    let ctx = load_project_context_with_parents_and_home(&workspace, home_dir);
-    let post_load_key = crate::project_context_cache::compute_cache_key(&workspace, home_dir);
-    crate::project_context_cache::store(post_load_key, ctx.clone());
-    ctx
+    load_project_context_with_settings(
+        workspace,
+        &InstructionSettings {
+            home: home_dir.map(Path::to_path_buf),
+            ..Default::default()
+        },
+    )
 }
 
+#[cfg(test)]
 fn load_project_context_with_parents_and_home(
     workspace: &Path,
     home_dir: Option<&Path>,
 ) -> ProjectContext {
-    let imports = &foreign_instruction_imports();
-    load_project_context_with_parents_and_home_imports(workspace, home_dir, imports)
+    load_project_context_with_parents_cached_and_home(workspace, home_dir)
 }
 
-fn load_project_context_with_parents_and_home_imports(
+fn load_project_context_with_settings_uncached(
     workspace: &Path,
-    home_dir: Option<&Path>,
-    imports: &ForeignInstructionImports,
+    settings: &InstructionSettings,
 ) -> ProjectContext {
+    let home_dir = settings.home.as_deref();
+    let imports = &settings.imports;
     let workspace_canonical = canonicalize_workspace_or_keep(workspace);
     // Chain-segment labels sit inside the pinned system prompt, so they are
     // rendered repo-relative: a checkout move or recase leaves the labels —
     // and therefore the whole prompt prefix — byte-identical. The chain
     // never leaves the checkout (`context_chain_dirs`), so every labeled
-    // path strips cleanly; without a git root the chain is a single
-    // workspace segment that never emits a label at all.
+    // path strips cleanly.
     let git_root = find_git_root(&workspace_canonical);
-    let mut ctx = load_project_context_with_imports(&workspace_canonical, imports);
+    let claude_fallback = settings.claude_fallback();
+    let mut ctx = ProjectContext::empty(workspace_canonical.clone());
+
+    // The global layer loads first: it is the widest scope, so a project file
+    // symlinked to it is recognised as a duplicate instead of being charged
+    // twice.
+    let mut loaded: Vec<PathBuf> = Vec::new();
+    let global = load_global_agents_context(
+        &workspace_canonical,
+        home_dir,
+        claude_fallback || imports.is_enabled(ForeignInstructionFormat::Claude),
+        settings.file_max_bytes(),
+        &mut loaded,
+    );
+    if let Some(global) = &global {
+        ctx.warnings.extend(global.warnings.iter().cloned());
+        ctx.notices.extend(global.notices.iter().cloned());
+    }
 
     // Assemble the repository-root → workspace instruction chain. The chain
     // directories come from Git traversal of the containing checkout, so a
     // linked worktree contributes its own root and files above the root —
-    // other checkouts, unrelated parents — stay out of scope.
+    // other checkouts, unrelated parents — stay out of scope. Segments are
+    // appended root first, so the nearest scope has the last word and is the
+    // last thing a budget trim drops.
     let chain_dirs = context_chain_dirs(&workspace_canonical, git_root.as_deref(), home_dir);
-    // `chain_dirs` is ordered root → workspace; the workspace itself is the
-    // last entry and was already loaded above.
-    let ancestor_dirs = &chain_dirs[..chain_dirs.len().saturating_sub(1)];
-
-    let mut ancestor_docs: Vec<(PathBuf, String)> = Vec::new();
-    for dir in ancestor_dirs {
-        ctx.warnings.extend(ignored_project_whale_warnings(dir));
-        let (content, path, warnings) = load_dir_instructions(dir, imports);
-        ctx.warnings.extend(warnings);
-        if let (Some(content), Some(path)) = (content, path) {
-            ancestor_docs.push((path, content));
+    let mut project_segments: Vec<InstructionSegment> = Vec::new();
+    {
+        let mut scope = DirLoadContext {
+            imports,
+            file_max_bytes: settings.file_max_bytes(),
+            claude_fallback,
+            label_root: git_root.as_deref(),
+            loaded: &mut loaded,
+        };
+        for dir in &chain_dirs {
+            ctx.warnings.extend(ignored_project_whale_warnings(dir));
+            let dir_instructions = load_dir_instructions(dir, &mut scope);
+            ctx.notices.extend(dir_instructions.notices);
+            ctx.warnings.extend(dir_instructions.warnings);
+            project_segments.extend(dir_instructions.segments);
         }
     }
 
-    if !ancestor_docs.is_empty() {
-        // Assemble root → workspace so the nearest scope has the last word.
-        // The byte ceiling is applied once at the end of this function by
-        // `enforce_project_instruction_budget`, which trims from the front —
-        // i.e. drops the broadest scope first and never strands the workspace's
-        // own file behind an exhausted budget the way per-segment accounting
-        // did.
-        let mut assembled = String::new();
+    // Unimported foreign formats stay discoverable rather than silently
+    // ignored: the warning names the opt-in key that would read them.
+    ctx.warnings
+        .extend(unimported_foreign_warnings(&workspace_canonical, imports));
 
-        for (path, content) in &ancestor_docs {
-            append_chain_segment(&mut assembled, path, content, git_root.as_deref());
-        }
+    // Rules are workspace-scope authority: the chain loader never reads
+    // ancestor rules.
+    let rules = load_rules_block(
+        &workspace_canonical,
+        imports,
+        git_root.as_deref().unwrap_or(workspace_canonical.as_path()),
+        settings.file_max_bytes(),
+    );
+    ctx.notices.extend(rules.notices);
+    ctx.rules_block = rules.block;
 
-        // The workspace's own file is the most specific link: it reads last,
-        // and `source_path` keeps pointing at it so the user knows where the
-        // workspace-level override lives.
-        if let Some(content) = ctx.instructions.take() {
-            let path = ctx
-                .source_path
-                .clone()
-                .unwrap_or_else(|| workspace_canonical.clone());
-            append_chain_segment(&mut assembled, &path, &content, git_root.as_deref());
-        } else if let Some((path, _)) = ancestor_docs.last() {
-            // No workspace-level file: the nearest ancestor is the most
-            // specific source.
-            ctx.source_path = Some(path.clone());
-        }
-
-        ctx.instructions = Some(assembled);
+    // `source_path` names the most specific source — the workspace file when
+    // there is one, otherwise the nearest ancestor that contributed.
+    if let Some(last) = project_segments.last() {
+        ctx.source_path = last.path.clone();
     }
+    ctx.instruction_segments = project_segments;
 
-    // Always check global instruction files so user-wide preferences
-    // travel into every session (#1157). When both global and project
-    // instructions exist, the global block prepends the project's so
-    // workspace overrides win the last word; when only global exists,
-    // it continues to serve as the fallback. `source_path` keeps
-    // pointing at the more-specific source (project > global) for
-    // display purposes.
-    if let Some(global_ctx) = load_global_agents_context(workspace, home_dir) {
-        ctx.warnings.extend(global_ctx.warnings.iter().cloned());
-        if let Some(global_text) = global_ctx.instructions {
-            match ctx.instructions.take() {
-                Some(project_text) => {
-                    ctx.instructions = Some(merge_global_and_project_instructions(
-                        &global_text,
-                        global_ctx.source_path.as_deref(),
-                        &project_text,
-                    ));
-                    // Leave `ctx.source_path` pointing at the project /
-                    // parent file — that's the location the user might
-                    // want to edit when something looks wrong.
-                }
-                None => {
-                    ctx.instructions = Some(global_text);
-                    ctx.source_path = global_ctx.source_path;
-                }
-            }
+    if let Some(global) = global {
+        let mut segments = global.instruction_segments;
+        segments.append(&mut ctx.instruction_segments);
+        ctx.instruction_segments = segments;
+        if ctx.source_path.is_none() {
+            ctx.source_path = global.source_path;
         }
     }
+    ctx.is_trusted = check_trust_status(&workspace_canonical);
+    ctx.rebuild_joined_instructions();
 
     // Generate a bounded in-memory fallback when no context file exists
     // anywhere. This keeps prompt shape stable without creating project-local
@@ -726,8 +1245,14 @@ fn load_project_context_with_parents_and_home_imports(
     if !ctx.has_instructions()
         && let Some(generated) = generate_ephemeral_context(workspace)
     {
-        ctx.instructions = Some(generated);
+        ctx.instruction_segments.push(InstructionSegment::new(
+            InstructionScope::Project,
+            InstructionOrigin::Instructions,
+            None,
+            generated,
+        ));
         ctx.source_path = None;
+        ctx.rebuild_joined_instructions();
     }
 
     // Load the Codewhale-specific repo authority policy
@@ -735,56 +1260,120 @@ fn load_project_context_with_parents_and_home_imports(
     // it is a distinct, higher-authority artifact and may exist with or without
     // an AGENTS.md. Legacy WHALE.md files are ignored and reported as
     // migration-only diagnostics.
-    // Loaded last so the auto-generate fallback above (which rebuilds `ctx`)
-    // cannot clobber it.
     let (constitution_block, constitution_source_path, constitution_warnings) =
         load_repo_constitution_block(workspace);
     ctx.warnings.extend(constitution_warnings);
     ctx.constitution_block = constitution_block;
     ctx.constitution_source_path = constitution_source_path;
 
-    // The chain and the global layer were both rebuilt above, so re-apply the
-    // one ceiling here. Without this the merged global block was entirely
-    // unbudgeted: the old per-chain accounting closed before the merge.
-    enforce_project_instruction_budget(&mut ctx);
-
     ctx
+}
+
+/// Assemble the workspace rules block. Labels are repo-relative because the
+/// block sits inside the pinned system prompt.
+fn load_rules_block(
+    workspace: &Path,
+    imports: &ForeignInstructionImports,
+    label_root: &Path,
+    file_max_bytes: u64,
+) -> RulesLoad {
+    let mut block = String::new();
+    let mut notices = Vec::new();
+    for rules_dir in rules_dirs_for(imports) {
+        let rules = load_rules_from_dir(workspace, rules_dir, file_max_bytes);
+        notices.extend(rules.notices);
+        for (path, content) in rules.entries {
+            if !block.is_empty() {
+                block.push('\n');
+            }
+            block.push_str(&format!(
+                "<project_rule source=\"{}\">\n{}\n</project_rule>",
+                repo_relative_source_label(&path, Some(label_root)),
+                content.trim()
+            ));
+        }
+    }
+    RulesLoad {
+        block: if block.is_empty() { None } else { Some(block) },
+        notices,
+    }
+}
+
+/// One rules directory pass: the loaded files and the skips that produced
+/// them. A rules overflow or an unreadable file is a reported skip, never a
+/// silent drop.
+struct RulesDirLoad {
+    entries: Vec<(PathBuf, String)>,
+    notices: Vec<InstructionNotice>,
+}
+
+/// The assembled rules block plus the skips from every rules directory.
+struct RulesLoad {
+    block: Option<String>,
+    notices: Vec<InstructionNotice>,
 }
 
 pub(crate) fn project_context_cache_candidate_paths(
     workspace: &Path,
     home_dir: Option<&Path>,
-) -> Vec<PathBuf> {
+) -> Vec<(PathBuf, Option<PathBuf>)> {
     let workspace = canonicalize_workspace_or_keep(workspace);
     let mut paths = Vec::new();
 
     // Enumerate the superset of instruction candidates, not just the ones the
     // active opt-in set loads: a `CLAUDE.md` that is *not* imported still
     // decides whether the "not loaded" warning fires, so its content has to
-    // invalidate the cache too. Changing the opt-in set clears the cache
-    // outright (`set_foreign_instruction_imports`), so over-enumerating here
+    // invalidate the cache too. The cache key carries the loading settings, so
+    // a changed opt-in set never reuses an entry and over-enumerating here
     // only ever costs an extra reload.
     let repo_root = find_git_root(&workspace);
     for dir in context_chain_dirs(&workspace, repo_root.as_deref(), home_dir) {
         for filename in PROJECT_CONTEXT_FILES {
-            paths.push(dir.join(filename));
+            paths.push((dir.join(filename), Some(dir.clone())));
         }
-        paths.push(dir.join(DEPRECATED_WHALE_FILENAME));
+        // `CLAUDE.md` / `.claude/CLAUDE.md` decide the selection even when the
+        // `claude` import is off (`claude_fallback`), so their content must
+        // invalidate the cache too. `PROJECT_CONTEXT_FILES` already carries
+        // `CLAUDE.md`; the hidden spelling is added here.
+        paths.push((dir.join(".claude/CLAUDE.md"), Some(dir.clone())));
+        paths.push((dir.join(DEPRECATED_WHALE_FILENAME), Some(dir.clone())));
     }
 
     if let Some(home) = home_dir {
         for candidate in global_context_relative_paths() {
-            paths.push(join_relative_components(home, candidate));
+            paths.push((join_relative_components(home, candidate), None));
         }
+        // Last-resort global `~/.claude/CLAUDE.md` (#6526).
+        paths.push((
+            join_relative_components(home, &[".claude", "CLAUDE.md"]),
+            None,
+        ));
         for candidate in legacy_global_whale_relative_paths() {
-            paths.push(join_relative_components(home, candidate));
+            paths.push((join_relative_components(home, candidate), None));
         }
     }
 
-    paths.extend(repo_constitution_candidate_paths(&workspace));
-    paths.push(workspace.join(".deepseek").join("trusted"));
-    paths.push(workspace.join(".deepseek").join("trust.json"));
-    paths.extend(crate::config::workspace_trust_config_candidate_paths());
+    paths.extend(
+        repo_constitution_candidate_paths(&workspace)
+            .into_iter()
+            .map(|path| {
+                let root = path.parent().and_then(Path::parent).map(Path::to_path_buf);
+                (path, root)
+            }),
+    );
+    paths.push((
+        workspace.join(".deepseek").join("trusted"),
+        Some(workspace.clone()),
+    ));
+    paths.push((
+        workspace.join(".deepseek").join("trust.json"),
+        Some(workspace.clone()),
+    ));
+    paths.extend(
+        codewhale_runtime::config::workspace_trust_config_candidate_paths()
+            .into_iter()
+            .map(|path| (path, None)),
+    );
 
     // Include auto-discovered rules directory files so cache invalidates
     // when rules change (not just when AGENTS.md changes).
@@ -801,7 +1390,7 @@ pub(crate) fn project_context_cache_candidate_paths(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|ext| ext == "md") {
-                    paths.push(path);
+                    paths.push((path, Some(workspace.clone())));
                 }
             }
         }
@@ -818,7 +1407,9 @@ pub(crate) fn project_context_cache_candidate_paths(
             codewhale_core::fragments::selected_project_instruction_candidate_files(
                 &workspace,
                 format.fragment_candidates(),
-            ),
+            )
+            .into_iter()
+            .map(|path| (path, Some(workspace.clone()))),
         );
     }
 
@@ -953,51 +1544,13 @@ fn context_chain_dirs(
     dirs
 }
 
-/// Append one chain segment to the assembled instruction text.
-///
-/// The first segment is the file's raw content (a single-file chain stays
-/// byte-identical to a plain load); every later segment is prefixed with a
-/// provenance label so the model can tell the scopes apart, wider scopes
-/// first and the workspace last. The label is repo-relative (forward
-/// slashes) so the pinned system prompt stays stable across checkout moves
-/// and recasings; filenames alone would collide, since chain segments
-/// legitimately share the `AGENTS.md` basename.
-fn append_chain_segment(
-    assembled: &mut String,
-    path: &Path,
-    content: &str,
-    repo_root: Option<&Path>,
-) {
-    if !assembled.is_empty() {
-        assembled.push_str(&format!(
-            "\n\n<!-- scoped instructions: {} (overrides wider scopes where they conflict) -->\n",
-            repo_relative_source_label(path, repo_root)
-        ));
-    }
-    assembled.push_str(content);
-}
-
-/// Combine global user-wide preferences with a project-local
-/// AGENTS.md/CLAUDE.md/instructions.md. Global comes first so
-/// workspace-specific rules can override it — the model reads in declared
-/// order. Each block is wrapped in a labelled fence so the model can tell
-/// which level any rule comes from when the two sets disagree (#1157).
-fn merge_global_and_project_instructions(
-    global: &str,
-    global_source: Option<&Path>,
-    project: &str,
-) -> String {
-    let global_label = global_source
-        .map(|p| format!("<!-- global: {} -->", p.display()))
-        .unwrap_or_else(|| "<!-- global -->".to_string());
-    format!(
-        "{global_label}\n{}\n\n<!-- project (overrides global where they conflict) -->\n{}",
-        global.trim_end(),
-        project.trim_start(),
-    )
-}
-
-fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Option<ProjectContext> {
+fn load_global_agents_context(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+    claude_fallback: bool,
+    file_max_bytes: u64,
+    loaded: &mut Vec<PathBuf>,
+) -> Option<ProjectContext> {
     let home = home_dir?;
 
     // Priority order (AGENTS.md preferred; instructions.md next, #3012):
@@ -1007,34 +1560,123 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
     // 4. ~/.codewhale/instructions.md (canonical)
     // 5. ~/.agents/instructions.md    (vendor-neutral fallback)
     // 6. ~/.deepseek/instructions.md  (legacy fallback)
-    // Global WHALE.md files are ignored and reported as migration-only
-    // diagnostics, never loaded as fallback law.
+    // 7. ~/.claude/CLAUDE.md          (last resort, `claude_fallback` only)
+    //
+    // A candidate that exists but cannot be used counts as absent and the
+    // next one is tried. Global WHALE.md files are ignored and reported as
+    // migration-only diagnostics, never loaded as fallback law.
     let mut warnings = ignored_global_whale_warnings(home);
+    let mut notices: Vec<InstructionNotice> = Vec::new();
+    let mut global_preferred_skipped: Option<PathBuf> = None;
+    let mut chosen: Option<(PathBuf, String, InstructionOrigin)> = None;
 
-    for candidate in global_context_relative_paths() {
+    for (index, candidate) in global_context_relative_paths().iter().enumerate() {
+        let origin = if index < 3 {
+            InstructionOrigin::Agents
+        } else {
+            InstructionOrigin::Instructions
+        };
         let path = join_relative_components(home, candidate);
-
-        if context_candidate_exists(&path) {
-            match load_global_context_file(&path) {
-                Ok(content) => {
-                    let mut ctx = ProjectContext::empty(workspace.to_path_buf());
-                    ctx.instructions = Some(content);
-                    ctx.source_path = Some(path);
-                    ctx.warnings = warnings;
-                    return Some(ctx);
+        if !context_candidate_exists(&path) {
+            continue;
+        }
+        match load_global_context_file_limited(&path, file_max_bytes) {
+            Ok(content) => {
+                chosen = Some((path, content, origin));
+                break;
+            }
+            Err(error) => {
+                warnings.push(error.to_string());
+                if global_preferred_skipped.is_none() {
+                    global_preferred_skipped = Some(path.clone());
                 }
-                Err(error) => warnings.push(error.to_string()),
+                notices.push(InstructionNotice {
+                    path: Some(path.clone()),
+                    scope: InstructionScope::Global,
+                    origin,
+                    action: InstructionAction::Skipped,
+                    bytes_kept: 0,
+                    bytes_dropped: 0,
+                    tokens_kept: 0,
+                    tokens_dropped: 0,
+                    limit: error.kind(),
+                    fallback_selected: None,
+                    detail: error.detail(),
+                });
             }
         }
     }
 
-    if !warnings.is_empty() {
-        let mut ctx = ProjectContext::empty(workspace.to_path_buf());
-        ctx.warnings = warnings;
-        return Some(ctx);
+    // `~/.claude/CLAUDE.md` is the last resort: foreign files never outrank
+    // codewhale's own, so it is read only when none of the six candidates
+    // loaded.
+    if chosen.is_none() && claude_fallback {
+        let path = join_relative_components(home, &[".claude", "CLAUDE.md"]);
+        if context_candidate_exists(&path) {
+            match load_global_context_file_limited(&path, file_max_bytes) {
+                Ok(content) => {
+                    chosen = Some((path, content, InstructionOrigin::Claude));
+                }
+                Err(error) => {
+                    warnings.push(error.to_string());
+                    notices.push(InstructionNotice {
+                        path: Some(path.clone()),
+                        scope: InstructionScope::Global,
+                        origin: InstructionOrigin::Claude,
+                        action: InstructionAction::Skipped,
+                        bytes_kept: 0,
+                        bytes_dropped: 0,
+                        tokens_kept: 0,
+                        tokens_dropped: 0,
+                        limit: error.kind(),
+                        fallback_selected: None,
+                        detail: error.detail(),
+                    });
+                }
+            }
+        }
     }
 
-    None
+    let mut ctx = ProjectContext::empty(workspace.to_path_buf());
+    ctx.warnings = warnings;
+    ctx.notices = notices;
+    if let Some((path, content, origin)) = chosen {
+        if let Some(preferred) = global_preferred_skipped.as_ref()
+            && let Some(skipped) = ctx
+                .notices
+                .iter_mut()
+                .find(|notice| notice.path.as_ref() == Some(preferred))
+        {
+            skipped.fallback_selected = Some(relative_label(home, &path));
+        }
+        let content = retain_file_content(
+            content,
+            InstructionScope::Global,
+            origin,
+            Some(&path),
+            &mut ctx.notices,
+        );
+        let canonical = fs::canonicalize(&path).ok();
+        if let Some(canonical) = canonical.as_ref() {
+            loaded.push(canonical.clone());
+        }
+        let mut segment = InstructionSegment::new(
+            InstructionScope::Global,
+            origin,
+            Some(path.clone()),
+            content,
+        );
+        segment.canonical_path = canonical;
+        segment.label = Some(relative_label(home, &path));
+        ctx.instruction_segments = vec![segment];
+        ctx.source_path = Some(path);
+        ctx.rebuild_joined_instructions();
+    }
+
+    if ctx.instruction_segments.is_empty() && ctx.warnings.is_empty() && ctx.notices.is_empty() {
+        return None;
+    }
+    Some(ctx)
 }
 
 /// Generate ephemeral context from the project tree. Returns the generated
@@ -1052,35 +1694,56 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
 
 /// Load a context file with size checking and no links below its scope root.
 fn load_context_file(root: &Path, path: &Path) -> Result<String, ProjectContextError> {
-    let file =
-        crate::fs_confined::open_read(root, path).map_err(|source| ProjectContextError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    read_context_file(file, path)
+    load_context_file_limited(root, path, DEFAULT_FILE_MAX_BYTES)
 }
 
-fn read_context_file(mut file: fs::File, path: &Path) -> Result<String, ProjectContextError> {
+fn load_context_file_limited(
+    root: &Path,
+    path: &Path,
+    cap: u64,
+) -> Result<String, ProjectContextError> {
+    let file = codewhale_util::fs_confined::open_read(root, path).map_err(|source| {
+        ProjectContextError::Read {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    read_context_file(file, path, cap)
+}
+
+fn read_context_file(file: fs::File, path: &Path, cap: u64) -> Result<String, ProjectContextError> {
     let metadata = file
         .metadata()
         .map_err(|source| ProjectContextError::Metadata {
             path: path.to_path_buf(),
             source,
         })?;
-    if metadata.len() > MAX_CONTEXT_SIZE as u64 {
+    if metadata.len() > cap {
         return Err(ProjectContextError::TooLarge {
             path: path.to_path_buf(),
             size: metadata.len(),
-            max: MAX_CONTEXT_SIZE,
+            max: usize::try_from(cap).unwrap_or(usize::MAX),
         });
     }
 
-    let mut content = String::new();
-    file.read_to_string(&mut content)
+    let mut bytes = Vec::new();
+    file.take(cap.min(DEFAULT_FILE_MAX_BYTES).saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|source| ProjectContextError::Read {
             path: path.to_path_buf(),
             source,
         })?;
+    if bytes.len() as u64 > cap {
+        return Err(ProjectContextError::TooLarge {
+            path: path.to_path_buf(),
+            size: bytes.len() as u64,
+            max: cap as usize,
+        });
+    }
+    let content = String::from_utf8(bytes).map_err(|error| ProjectContextError::Read {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
 
     // Basic validation
     if content.trim().is_empty() {
@@ -1100,11 +1763,22 @@ fn context_candidate_exists(path: &Path) -> bool {
 }
 
 /// Scan a rules directory for `.md` files and load them in filename order.
-/// Missing or unreadable directories return an empty vec (no error).
+/// Missing or unreadable directories return nothing (no error).
 /// Each file is verified through `load_context_file` (size check, symlink safety).
-fn load_rules_from_dir(workspace: &Path, rules_dir_name: &str) -> Vec<(PathBuf, String)> {
+///
+/// A directory beyond [`MAX_RULES_FILES`] used to be truncated with a
+/// `tracing::warn!` only, which made an over-cap workspace look like it had
+/// fewer rules than it does. The overflow is now a reported skip.
+fn load_rules_from_dir(
+    workspace: &Path,
+    rules_dir_name: &str,
+    file_max_bytes: u64,
+) -> RulesDirLoad {
     let rules_dir = workspace.join(rules_dir_name);
-    let mut entries: Vec<(PathBuf, String)> = Vec::new();
+    let mut out = RulesDirLoad {
+        entries: Vec::new(),
+        notices: Vec::new(),
+    };
 
     // Refuse a symlinked rules directory: the real .md files behind it
     // would pass per-file is_symlink checks and be read from outside the
@@ -1118,12 +1792,25 @@ fn load_rules_from_dir(workspace: &Path, rules_dir_name: &str) -> Vec<(PathBuf, 
             dir = %rules_dir.display(),
             "Refusing symlinked rules directory"
         );
-        return entries;
+        out.notices.push(InstructionNotice {
+            path: Some(rules_dir),
+            scope: InstructionScope::Project,
+            origin: InstructionOrigin::Rules,
+            action: InstructionAction::Skipped,
+            bytes_kept: 0,
+            bytes_dropped: 0,
+            tokens_kept: 0,
+            tokens_dropped: 0,
+            limit: InstructionLimit::None,
+            fallback_selected: None,
+            detail: Some(InstructionDetail::SymlinkedRulesDir),
+        });
+        return out;
     }
 
     let dir_iter = match fs::read_dir(&rules_dir) {
         Ok(iter) => iter,
-        Err(_) => return entries,
+        Err(_) => return out,
     };
 
     let mut file_paths: Vec<PathBuf> = Vec::new();
@@ -1141,28 +1828,51 @@ fn load_rules_from_dir(workspace: &Path, rules_dir_name: &str) -> Vec<(PathBuf, 
             .cmp(b.file_name().unwrap_or_default())
     });
 
-    // Enforce per-directory cap
-    let total = file_paths.len();
-    if total > MAX_RULES_FILES {
+    // Enforce per-directory cap, reporting the files it drops.
+    if file_paths.len() > MAX_RULES_FILES {
         tracing::warn!(
             target: "project_context",
             dir = %rules_dir.display(),
-            total,
+            total = file_paths.len(),
             cap = MAX_RULES_FILES,
             "Truncating rules directory to cap"
         );
+        for path in file_paths.iter().skip(MAX_RULES_FILES) {
+            out.notices.push(InstructionNotice {
+                path: Some(path.clone()),
+                scope: InstructionScope::Project,
+                origin: InstructionOrigin::Rules,
+                action: InstructionAction::Skipped,
+                bytes_kept: 0,
+                bytes_dropped: file_len(path).unwrap_or(0),
+                tokens_kept: 0,
+                tokens_dropped: 0,
+                limit: InstructionLimit::RulesCap,
+                fallback_selected: None,
+                detail: Some(InstructionDetail::RulesCap {
+                    max_files: MAX_RULES_FILES,
+                }),
+            });
+        }
         file_paths.truncate(MAX_RULES_FILES);
     }
 
     for path in file_paths {
-        match load_context_file(workspace, &path) {
+        match load_context_file_limited(workspace, &path, file_max_bytes) {
             Ok(content) => {
                 tracing::info!(
                     "Loaded project rule from {} ({} bytes)",
                     path.display(),
                     content.len()
                 );
-                entries.push((path, content));
+                let content = retain_file_content(
+                    content,
+                    InstructionScope::Project,
+                    InstructionOrigin::Rules,
+                    Some(&path),
+                    &mut out.notices,
+                );
+                out.entries.push((path, content));
             }
             Err(error) => {
                 tracing::warn!(
@@ -1171,26 +1881,45 @@ fn load_rules_from_dir(workspace: &Path, rules_dir_name: &str) -> Vec<(PathBuf, 
                     ?path,
                     "Skipping unreadable rules file"
                 );
+                out.notices.push(InstructionNotice {
+                    path: Some(path.clone()),
+                    scope: InstructionScope::Project,
+                    origin: InstructionOrigin::Rules,
+                    action: InstructionAction::Skipped,
+                    bytes_kept: 0,
+                    bytes_dropped: file_len(&path).unwrap_or(0),
+                    tokens_kept: 0,
+                    tokens_dropped: 0,
+                    limit: error.kind(),
+                    fallback_selected: None,
+                    detail: error.detail(),
+                });
             }
         }
     }
 
-    entries
+    out
 }
 
 /// User-owned global instructions may intentionally resolve through links.
+#[cfg(test)]
 fn load_global_context_file(path: &Path) -> Result<String, ProjectContextError> {
-    let file =
-        crate::fs_confined::open_user_read(path).map_err(|source| ProjectContextError::Read {
+    load_global_context_file_limited(path, DEFAULT_FILE_MAX_BYTES)
+}
+
+fn load_global_context_file_limited(path: &Path, cap: u64) -> Result<String, ProjectContextError> {
+    let file = codewhale_util::fs_confined::open_user_read(path).map_err(|source| {
+        ProjectContextError::Read {
             path: path.to_path_buf(),
             source,
-        })?;
-    read_context_file(file, path)
+        }
+    })?;
+    read_context_file(file, path, cap)
 }
 
 /// Check if this project is marked as trusted
 fn check_trust_status(workspace: &Path) -> bool {
-    if crate::config::is_workspace_trusted(workspace) {
+    if codewhale_runtime::config::is_workspace_trusted(workspace) {
         return true;
     }
 
@@ -1338,6 +2067,7 @@ fn push_candidate_entry(
     scope_dir: &Path,
     path: PathBuf,
     scope_loaded: &mut bool,
+    loaded: Option<&mut Vec<PathBuf>>,
     load: impl FnOnce(&Path) -> Result<String, ProjectContextError>,
 ) {
     let exists = context_candidate_exists(&path);
@@ -1345,10 +2075,24 @@ fn push_candidate_entry(
         (InstructionSourceStatus::Missing, None)
     } else if *scope_loaded {
         (InstructionSourceStatus::Shadowed, None)
+    } else if loaded
+        .as_deref()
+        .is_some_and(|loaded| is_duplicate(&path, loaded))
+    {
+        *scope_loaded = true;
+        (
+            InstructionSourceStatus::Skipped,
+            Some("already loaded by a wider scope".to_string()),
+        )
     } else {
         match load(&path) {
             Ok(_) => {
                 *scope_loaded = true;
+                if let Some(loaded) = loaded
+                    && let Ok(canonical) = fs::canonicalize(&path)
+                {
+                    loaded.push(canonical);
+                }
                 (InstructionSourceStatus::Loaded, None)
             }
             Err(error) => (InstructionSourceStatus::Skipped, Some(error.to_string())),
@@ -1375,18 +2119,44 @@ fn push_candidate_entry(
 /// `home_dir` gates the global layer exactly as
 /// `load_project_context_with_parents_and_home` does.
 ///
-/// Known limit: statuses describe file selection, not the aggregate byte
-/// budget — `enforce_project_instruction_budget` can still trim loaded
-/// content at render time without changing a source's `Loaded` status.
+/// Known limit: statuses describe file selection, not the per-scope token
+/// budget — `assemble_instruction_block` can still trim or drop a loaded
+/// source at render time without changing its `Loaded` status here. The
+/// trim/skip notices on `ProjectContext` are the budget-side truth.
 #[must_use]
+#[cfg(test)]
 pub fn project_instruction_sources(
     workspace: &Path,
     home_dir: Option<&Path>,
     configured: &[PathBuf],
 ) -> Vec<InstructionSourceInfo> {
-    let imports = &foreign_instruction_imports();
+    project_instruction_sources_with_settings(
+        workspace,
+        &InstructionSettings {
+            home: home_dir.map(Path::to_path_buf),
+            ..Default::default()
+        },
+        configured,
+    )
+}
+
+pub(crate) fn project_instruction_sources_with_settings(
+    workspace: &Path,
+    settings: &InstructionSettings,
+    configured: &[PathBuf],
+) -> Vec<InstructionSourceInfo> {
+    let home_dir = settings.home.as_deref();
+    let imports = &settings.imports;
     let workspace = canonicalize_workspace_or_keep(workspace);
     let mut sources = Vec::new();
+    let mut loaded = Vec::new();
+    let _ = load_global_agents_context(
+        &workspace,
+        home_dir,
+        settings.claude_fallback() || imports.is_enabled(ForeignInstructionFormat::Claude),
+        settings.file_max_bytes(),
+        &mut loaded,
+    );
 
     // Repository-root → workspace instruction chain. Same dir order the
     // loader assembles, so wider scopes list first.
@@ -1404,16 +2174,35 @@ pub fn project_instruction_sources(
                 warning: Some(WHALE_IGNORED_WARNING.to_string()),
             });
         }
+        let claude_imported = imports.is_enabled(ForeignInstructionFormat::Claude);
         let mut scope_loaded = false;
-        for filename in context_files_for(imports) {
+        for filename in context_files_for(imports)
+            .into_iter()
+            .filter(|filename| !CLAUDE_CONTEXT_FILES.contains(filename))
+        {
             push_candidate_entry(
                 &mut sources,
                 InstructionSourceKind::Project,
                 &dir,
                 dir.join(filename),
                 &mut scope_loaded,
-                |path| load_context_file(&dir, path),
+                Some(&mut loaded),
+                |path| load_context_file_limited(&dir, path, settings.file_max_bytes()),
             );
+        }
+        let mut claude_loaded = !claude_imported && scope_loaded;
+        if claude_imported || settings.claude_fallback() {
+            for filename in CLAUDE_CONTEXT_FILES {
+                push_candidate_entry(
+                    &mut sources,
+                    InstructionSourceKind::Project,
+                    &dir,
+                    dir.join(filename),
+                    &mut claude_loaded,
+                    Some(&mut loaded),
+                    |path| load_context_file_limited(&dir, path, settings.file_max_bytes()),
+                );
+            }
         }
     }
 
@@ -1462,7 +2251,7 @@ pub fn project_instruction_sources(
                     )),
                 )
             } else {
-                match load_context_file(&workspace, &path) {
+                match load_context_file_limited(&workspace, &path, settings.file_max_bytes()) {
                     Ok(_) => (InstructionSourceStatus::Loaded, None),
                     Err(error) => (InstructionSourceStatus::Skipped, Some(error.to_string())),
                 }
@@ -1503,7 +2292,19 @@ pub fn project_instruction_sources(
                 home,
                 join_relative_components(home, relative),
                 &mut scope_loaded,
-                load_global_context_file,
+                None,
+                |path| load_global_context_file_limited(path, settings.file_max_bytes()),
+            );
+        }
+        if settings.claude_fallback() || imports.is_enabled(ForeignInstructionFormat::Claude) {
+            push_candidate_entry(
+                &mut sources,
+                InstructionSourceKind::Global,
+                home,
+                home.join(".claude/CLAUDE.md"),
+                &mut scope_loaded,
+                None,
+                |path| load_global_context_file_limited(path, settings.file_max_bytes()),
             );
         }
     }
@@ -1511,6 +2312,12 @@ pub fn project_instruction_sources(
     // Opted-in foreign fragments — enumerate the declared candidates, then
     // mark the files the bounded loader's own selection walk picks.
     let fragment_candidates = fragment_candidates_for(imports);
+    let fragment_loaded = |path: &Path| {
+        codewhale_util::fs_confined::open_read(&workspace, path)
+            .ok()
+            .and_then(codewhale_core::fragments::read_project_instruction_file)
+            .is_some()
+    };
     let selected: std::collections::BTreeSet<PathBuf> =
         codewhale_core::fragments::selected_project_instruction_candidate_files(
             &workspace,
@@ -1556,9 +2363,7 @@ pub fn project_instruction_sources(
             }
             for file in members {
                 emitted.insert(file.clone());
-                let loaded = fs::read_to_string(&file)
-                    .map(|content| !content.trim().is_empty())
-                    .unwrap_or(false);
+                let loaded = fragment_loaded(&file);
                 sources.push(InstructionSourceInfo {
                     kind: InstructionSourceKind::Fragment,
                     scope_dir: workspace.clone(),
@@ -1576,10 +2381,7 @@ pub fn project_instruction_sources(
         } else {
             emitted.insert(path.clone());
             let selected_file = selected.contains(&path);
-            let loaded = selected_file
-                && fs::read_to_string(&path)
-                    .map(|content| !content.trim().is_empty())
-                    .unwrap_or(false);
+            let loaded = selected_file && fragment_loaded(&path);
             sources.push(InstructionSourceInfo {
                 kind: InstructionSourceKind::Fragment,
                 scope_dir: workspace.clone(),
@@ -1605,9 +2407,7 @@ pub fn project_instruction_sources(
     // Selected files not attributed to a listed candidate (nested rules dir
     // members) still get reported.
     for file in selected.iter().filter(|file| !emitted.contains(*file)) {
-        let loaded = fs::read_to_string(file)
-            .map(|content| !content.trim().is_empty())
-            .unwrap_or(false);
+        let loaded = fragment_loaded(file);
         sources.push(InstructionSourceInfo {
             kind: InstructionSourceKind::Fragment,
             scope_dir: workspace.clone(),
@@ -1627,16 +2427,28 @@ pub fn project_instruction_sources(
     // declared order. The renderer skips missing/empty files with a warning.
     for path in configured {
         let exists = context_candidate_exists(path);
-        let (status, warning) = match fs::read_to_string(path) {
-            Ok(content) if !content.trim().is_empty() => (InstructionSourceStatus::Loaded, None),
-            Ok(_) => (
+        let (status, warning) = if is_duplicate(path, &loaded) {
+            (
                 InstructionSourceStatus::Skipped,
-                Some("empty instructions file".to_string()),
-            ),
-            Err(error) => (
-                InstructionSourceStatus::Skipped,
-                Some(format!("unreadable instructions file: {error}")),
-            ),
+                Some("already loaded by another instruction source".to_string()),
+            )
+        } else {
+            match load_global_context_file_limited(path, settings.file_max_bytes()) {
+                Ok(content) if !content.trim().is_empty() => {
+                    if let Ok(canonical) = fs::canonicalize(path) {
+                        loaded.push(canonical);
+                    }
+                    (InstructionSourceStatus::Loaded, None)
+                }
+                Ok(_) => (
+                    InstructionSourceStatus::Skipped,
+                    Some("empty instructions file".to_string()),
+                ),
+                Err(error) => (
+                    InstructionSourceStatus::Skipped,
+                    Some(format!("unreadable instructions file: {error}")),
+                ),
+            }
         };
         sources.push(InstructionSourceInfo {
             kind: InstructionSourceKind::Configured,
@@ -2145,7 +2957,7 @@ mod tests {
         assert!(
             !project_context_cache_candidate_paths(&workspace, Some(home.path()))
                 .iter()
-                .any(|candidate| candidate == &tmp.path().join("AGENTS.md")),
+                .any(|(candidate, _)| candidate == &tmp.path().join("AGENTS.md")),
             "cache candidates must respect the repository boundary too"
         );
     }
@@ -2209,12 +3021,6 @@ mod tests {
             ctx.source_path.as_deref(),
             Some(expected_source.as_path()),
             "source_path points at the most specific (current-directory) file"
-        );
-        assert!(
-            instructions.len() <= MAX_PROJECT_INSTRUCTION_BYTES,
-            "assembled chain must stay within the aggregate budget ({} > {})",
-            instructions.len(),
-            MAX_PROJECT_INSTRUCTION_BYTES
         );
     }
 
@@ -2513,7 +3319,7 @@ mod tests {
         assert!(
             project_context_cache_candidate_paths(&workspace, Some(home.path()))
                 .iter()
-                .all(|candidate| candidate != &home.path().join("AGENTS.md")),
+                .all(|(candidate, _)| candidate != &home.path().join("AGENTS.md")),
             "cache candidates must use the same explicit parent-search boundary"
         );
     }
@@ -3406,99 +4212,6 @@ mod tests {
         assert!(
             pos_cw < pos_claude,
             ".codewhale/rules/ should precede .claude/rules/"
-        );
-    }
-
-    #[test]
-    fn rules_block_truncated_at_the_aggregate_budget() {
-        let tmp = tempdir().expect("tempdir");
-        let rules_dir = tmp.path().join(".codewhale/rules");
-        fs::create_dir_all(&rules_dir).expect("mkdir rules");
-
-        let per_file = "X".repeat(20 * 1024); // 20 KB each
-        for i in 0..30 {
-            fs::write(rules_dir.join(format!("rule_{i:04}.md")), &per_file).expect("write");
-        }
-
-        let ctx = load_project_context(tmp.path());
-        let rules = ctx.rules_block.as_ref().unwrap();
-
-        assert!(
-            rules.len() <= MAX_PROJECT_INSTRUCTION_BYTES,
-            "rules block should be truncated to the aggregate budget: {} > {}",
-            rules.len(),
-            MAX_PROJECT_INSTRUCTION_BYTES
-        );
-        assert!(
-            rules.contains("truncated at the aggregate budget"),
-            "truncation marker missing:\n{}",
-            &rules[rules.len().saturating_sub(200)..]
-        );
-    }
-
-    #[test]
-    fn instructions_and_rules_share_one_aggregate_budget() {
-        // The point of the change: three separate caps (200 KiB chain,
-        // 500 KiB rules, 40 KiB fragments) meant no single number described
-        // how much standing instruction text could precede the conversation.
-        let tmp = tempdir().expect("tempdir");
-        fs::write(tmp.path().join("AGENTS.md"), "A".repeat(40 * 1024)).expect("write agents");
-        let rules_dir = tmp.path().join(".codewhale/rules");
-        fs::create_dir_all(&rules_dir).expect("mkdir rules");
-        for i in 0..10 {
-            fs::write(rules_dir.join(format!("r{i}.md")), "B".repeat(20 * 1024)).expect("write");
-        }
-
-        let ctx = load_project_context(tmp.path());
-        let total = ctx.instructions.as_ref().map_or(0, String::len)
-            + ctx.rules_block.as_ref().map_or(0, String::len);
-        assert!(
-            total <= MAX_PROJECT_INSTRUCTION_BYTES,
-            "instructions + rules must share one ceiling: {total} > {MAX_PROJECT_INSTRUCTION_BYTES}"
-        );
-        // Instructions are the higher authority and are not starved by rules.
-        assert!(
-            ctx.instructions
-                .as_ref()
-                .is_some_and(|i| i.len() > 8 * 1024),
-            "the instruction file must keep its claim on the budget"
-        );
-    }
-
-    #[test]
-    fn nearest_scope_survives_when_the_budget_forces_a_cut() {
-        // Trimming from the front means the broadest scope is dropped first,
-        // so the workspace's own file is the last thing to go. The previous
-        // per-segment accounting spent the budget root-first and could strand
-        // the most specific file entirely.
-        let tmp = tempdir().expect("tempdir");
-        let root = tmp.path();
-        fs::create_dir_all(root.join(".git")).expect("mkdir git");
-        fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
-        fs::write(
-            root.join("AGENTS.md"),
-            format!("ROOT-MARKER {}", "R".repeat(60 * 1024)),
-        )
-        .expect("root agents");
-        let nested = root.join("crates").join("tui");
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::write(nested.join("AGENTS.md"), "NEAREST-MARKER stays").expect("nested agents");
-
-        let ctx = load_project_context_with_parents_and_home(&nested, None);
-        let instructions = ctx.instructions.as_deref().unwrap_or("");
-
-        assert!(
-            instructions.contains("NEAREST-MARKER stays"),
-            "the nearest-scope file must survive the cut"
-        );
-        assert!(
-            instructions.contains(CHAIN_TRUNCATION_MARKER.trim()),
-            "an explicit marker must record that broader scopes were dropped"
-        );
-        assert!(
-            instructions.len() <= MAX_PROJECT_INSTRUCTION_BYTES,
-            "budget not enforced: {}",
-            instructions.len()
         );
     }
 

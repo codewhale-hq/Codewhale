@@ -113,7 +113,7 @@ async fn grep_refuses_a_pattern_past_the_user_regex_length_cap() {
     let tmp = tempdir().expect("tempdir");
     fs::write(tmp.path().join("a.txt"), "needle\n").expect("write");
     let ctx = ToolContext::new(tmp.path());
-    let long = "a".repeat(crate::regex_cache::MAX_USER_REGEX_PATTERN_BYTES + 1);
+    let long = "a".repeat(codewhale_runtime::regex_cache::MAX_USER_REGEX_PATTERN_BYTES + 1);
     let err = GrepFilesTool
         .execute(json!({ "pattern": long }), &ctx)
         .await

@@ -1,13 +1,14 @@
 //! Typed model and resolved-route capability descriptors (#3365).
 //!
 //! This module bridges the additive config catalog intrinsic facts and the
-//! provider+model capability matrix in [`crate::config::provider_capability`].
+//! provider+model capability matrix in [`crate::provider_lake::provider_capability`].
 //! It intentionally keeps intrinsic model facts separate from resolved route
 //! facts so future route resolution can combine catalog offerings, user
 //! overrides, live hints, and auth readiness without scattering provider/model
 //! string checks through prompt, tool, and Fleet code.
 
-use crate::config::{ProviderKind, RequestPayloadMode, provider_capability};
+use crate::provider_lake::{RequestPayloadMode, provider_capability};
+use codewhale_config::ProviderKind;
 pub use codewhale_config::catalog::reviewed::ModelFamily as ModelProvider;
 use codewhale_config::route::{RouteCapabilities, RouteLimits};
 

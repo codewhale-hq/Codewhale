@@ -6,7 +6,7 @@
 凡 Codewhale 已发布、正在构建、已排期或明确搁置的区域设置（locale），都以本文档为准。
 
 > **范围说明（2026-07-12）：** 本矩阵覆盖三个层面——TUI 语言包
-> （`crates/localization/locales/`）、已翻译的 README（仓库根目录），以及网站（`web/`）。
+> （`crates/localization/locales/`）、已翻译的 README（`docs/i18n/`），以及网站（`web/`）。
 > 三者发布节奏不同，所以同一个区域设置可能在某个层面已**发布**、在另一个层面还是
 > **已排期**；下面每个层面各有一张表，每张表只讲自己层面的事实。网站注册表是
 > `web/lib/i18n/config.ts`（`ALL_LOCALES`）：区域设置切换器和路由生成都从它派生。
@@ -122,24 +122,24 @@ partial 区域设置在网站上还差的范围（下一波）：首页之外的
 | 区域设置 | 文件 | 状态 | 对等检查 |
 |--------|------|--------|-------------|
 | 英语 | `README.md` | **shipped** | 权威源文件 |
-| 简体中文 | `README.zh-CN.md` | **shipped** | `scripts/check-readme-translations.py`（同步戳 + 代码围栏 + URL + 章节） |
-| 日语 | `README.ja-JP.md` | **shipped** | 同上 |
-| 越南语 | `README.vi.md` | **shipped** | 同上 |
-| 韩语 | `README.ko-KR.md` | **shipped** | 同上 |
-| 拉美西班牙语 | `README.es-419.md` | **shipped** | 同上 |
-| 巴西葡萄牙语 | `README.pt-BR.md` | **shipped** | 同上 |
-| 俄语 | `README.ru.md` | **shipped** | 同上（#3092）。等待母语者审核。 |
-| 乌克兰语 | `README.uk.md` | **shipped** | 同上（#4791）。等待母语者审核。 |
-| 印尼语 | `README.id.md` | **shipped** | 同上（#4789）。等待母语者审核。 |
-| 法语 | `README.fr.md` | **shipped** | 同上。等待母语者审核。 |
-| 德语 | `README.de.md` | **shipped** | 同上。等待母语者审核。 |
-| 繁体中文 | `README.zh-TW.md` | **shipped** | 同上。等待母语者审核。 |
-| 印地语 | `README.hi.md` | **shipped** | 同上。等待母语者审核。 |
-| 土耳其语 | `README.tr.md` | **shipped** | 同上。等待母语者审核。 |
-| 意大利语 | `README.it.md` | **shipped** | 同上。等待母语者审核。 |
-| 波兰语 | `README.pl.md` | **shipped** | 同上。等待母语者审核。 |
-| 阿拉伯语 | `README.ar.md` | **shipped** | 同上。等待母语者审核。只用 Markdown；不加 HTML `dir` 属性。 |
-| 加泰罗尼亚语 | `README.ca.md` | **shipped** | 同上。等待母语者审核。 |
+| 简体中文 | `docs/i18n/README.zh-CN.md` | **shipped** | `scripts/check-readme-translations.py`（同步戳 + 代码围栏 + URL + 章节） |
+| 日语 | `docs/i18n/README.ja-JP.md` | **shipped** | 同上 |
+| 越南语 | `docs/i18n/README.vi.md` | **shipped** | 同上 |
+| 韩语 | `docs/i18n/README.ko-KR.md` | **shipped** | 同上 |
+| 拉美西班牙语 | `docs/i18n/README.es-419.md` | **shipped** | 同上 |
+| 巴西葡萄牙语 | `docs/i18n/README.pt-BR.md` | **shipped** | 同上 |
+| 俄语 | `docs/i18n/README.ru.md` | **shipped** | 同上（#3092）。等待母语者审核。 |
+| 乌克兰语 | `docs/i18n/README.uk.md` | **shipped** | 同上（#4791）。等待母语者审核。 |
+| 印尼语 | `docs/i18n/README.id.md` | **shipped** | 同上（#4789）。等待母语者审核。 |
+| 法语 | `docs/i18n/README.fr.md` | **shipped** | 同上。等待母语者审核。 |
+| 德语 | `docs/i18n/README.de.md` | **shipped** | 同上。等待母语者审核。 |
+| 繁体中文 | `docs/i18n/README.zh-TW.md` | **shipped** | 同上。等待母语者审核。 |
+| 印地语 | `docs/i18n/README.hi.md` | **shipped** | 同上。等待母语者审核。 |
+| 土耳其语 | `docs/i18n/README.tr.md` | **shipped** | 同上。等待母语者审核。 |
+| 意大利语 | `docs/i18n/README.it.md` | **shipped** | 同上。等待母语者审核。 |
+| 波兰语 | `docs/i18n/README.pl.md` | **shipped** | 同上。等待母语者审核。 |
+| 阿拉伯语 | `docs/i18n/README.ar.md` | **shipped** | 同上。等待母语者审核。只用 Markdown；不加 HTML `dir` 属性。 |
+| 加泰罗尼亚语 | `docs/i18n/README.ca.md` | **shipped** | 同上。等待母语者审核。 |
 
 ## 漂移检查
 
@@ -177,11 +177,14 @@ partial 区域设置在网站上还差的范围（下一波）：首页之外的
    `normalize_configured_locale` 校验（它复用第 2 步的 `parse_locale`）；`/config`
    的取值列表（`crates/tui/src/tui/views/mod.rs` 里的 `config_choice_values`）和提示文字
    （`configured_locale_values`）都从 `Locale::shipped()` 派生，所以这两处不用改。
-   编译器会指出来的穷尽 `match` 分支有三处：设置向导
-   （`crates/tui/src/tui/setup/mod.rs`）、
-   `crates/tui/src/commands/groups/config/config.rs` 里的 `locale_display`，
-   以及 `crates/tui/src/commands/groups/core/core.rs` 里的 `public_site_locale_segment`
-   （`/links` 的站点路径）。还要给引导流程的语言选择器
+   检查设置向导（`crates/tui/src/tui/setup/mod.rs`）以及
+   `crates/tui/src/commands/groups/config/config.rs` 里的 `locale_display`
+   是否需要更新显式区域设置映射。还要检查
+   `crates/tui/src/commands/groups/core/links.rs` 里的 `public_site_locale_segment`：
+   可移植的 `/links` 命令匹配的是区域设置 tag，而不是宿主的 `Locale` 枚举。
+   未列出的 tag 会回退到英文网站页面，因此编译器不会在这里提醒新增的区域设置。
+   当网站提供该语言版本时，添加显式 tag 映射，并验证 `/links` 选择了正确的文档和社区 URL。
+   还要给引导流程的语言选择器
    （`crates/tui/src/tui/onboarding/language.rs`）加一条 `LANGUAGE_OPTIONS` 条目；
    不加的话，它的 `picker_offers_every_shipped_locale` 测试会失败。有几个
    “不泄漏英文”的测试（例如 `status_picker.rs` 和 `tool_card.rs` 里的）显式列出了
@@ -196,7 +199,7 @@ partial 区域设置在网站上还差的范围（下一波）：首页之外的
 
 ### 2. README
 
-1. 把 `README.md` 翻成 `README.<tag>.md`，保留结构、命令，以及 #3087 确立的史实。
+1. 把 `README.md` 翻成 `docs/i18n/README.<tag>.md`，保留结构、命令，以及 #3087 确立的史实。
 2. 在 `README.md` 的语言行和其他已翻译的 README 里与它互链。
 3. 按 `scripts/check-readme-translations.py` 的规定重新盖同步戳，然后运行
    `python3 scripts/check-readme-translations.py` 和

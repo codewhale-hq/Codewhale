@@ -13,6 +13,9 @@ mod config_main_import_host;
 #[cfg(test)]
 mod config_policy_host;
 mod contract;
+mod core_navigation_host;
+#[cfg(test)]
+mod core_navigation_host_tests;
 pub mod discovery;
 pub(crate) mod groups;
 
@@ -85,7 +88,8 @@ pub(crate) use groups::memory::{notes_path, read_notes};
 pub use groups::project::share;
 
 // Voice capture plumbing shared with the hotbar and the UI event loop.
-pub use groups::core::voice;
+#[path = "core_navigation_voice_host.rs"]
+pub mod voice;
 
 #[cfg(test)]
 mod debug_diagnostics_baseline_tests;
@@ -291,7 +295,7 @@ pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
 pub fn execute_with_config(
     cmd: &str,
     app: &mut App,
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
 ) -> CommandResult {
     execute_in_context(cmd, app, Some(config))
 }
@@ -305,7 +309,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 fn execute_in_context(
     cmd: &str,
     app: &mut App,
-    config: Option<&crate::config::Config>,
+    config: Option<&codewhale_runtime::config::Config>,
 ) -> CommandResult {
     // Keep the command's raw remainder available for commands whose payload is
     // byte-sensitive. Most slash commands intentionally receive a normalized
@@ -459,67 +463,6 @@ pub fn switch_mode(app: &mut App, mode: AppMode) -> String {
     config_main_host::switch_mode(app, mode)
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
-    if a == b {
-        return 0;
-    }
-    if a.is_empty() {
-        return b.chars().count();
-    }
-    if b.is_empty() {
-        return a.chars().count();
-    }
-
-    let b_chars: Vec<char> = b.chars().collect();
-    let mut previous: Vec<usize> = (0..=b_chars.len()).collect();
-    let mut current = vec![0usize; b_chars.len() + 1];
-
-    for (i, a_ch) in a.chars().enumerate() {
-        current[0] = i + 1;
-        for (j, b_ch) in b_chars.iter().enumerate() {
-            let cost = if a_ch == *b_ch { 0 } else { 1 };
-            let delete = previous[j + 1] + 1;
-            let insert = current[j] + 1;
-            let substitute = previous[j] + cost;
-            current[j + 1] = delete.min(insert).min(substitute);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[b_chars.len()]
-}
-
-pub(crate) fn best_suggestion_score<'a>(
-    query: &str,
-    candidates: impl IntoIterator<Item = &'a str>,
-) -> Option<(u8, usize)> {
-    let mut best: Option<(u8, usize)> = None;
-    for candidate in candidates {
-        let prefix_match = candidate.starts_with(query) || query.starts_with(candidate);
-        let contains_match = candidate.contains(query) || query.contains(candidate);
-        let distance = edit_distance(candidate, query);
-        let close_typo = distance <= 2;
-        if !(prefix_match || contains_match || close_typo) {
-            continue;
-        }
-
-        let rank = if prefix_match {
-            0
-        } else if contains_match {
-            1
-        } else {
-            2
-        };
-
-        match best {
-            Some((best_rank, best_distance))
-                if rank > best_rank || (rank == best_rank && distance >= best_distance) => {}
-            _ => best = Some((rank, distance)),
-        }
-    }
-    best
-}
-
 fn suggest_command_names(
     input: &str,
     limit: usize,
@@ -545,7 +488,9 @@ fn suggest_command_names(
                 .copied()
                 .filter(|alias| user_commands.get(alias).is_none()),
         );
-        if let Some((rank, distance)) = best_suggestion_score(&query, candidates) {
+        if let Some((rank, distance)) =
+            codewhale_config::suggest::best_suggestion_score(&query, candidates)
+        {
             scored.push((rank, distance, command.name.to_string()));
         }
     }
@@ -558,7 +503,9 @@ fn suggest_command_names(
                     .is_some_and(|resolved| resolved.name == command.name)
             }),
         );
-        if let Some((rank, distance)) = best_suggestion_score(&query, candidates) {
+        if let Some((rank, distance)) =
+            codewhale_config::suggest::best_suggestion_score(&query, candidates)
+        {
             scored.push((rank, distance, command.name.clone()));
         }
     }
@@ -578,12 +525,13 @@ fn suggest_command_names(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ProviderKind};
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
     use crate::tools::todo::TodoStatus;
     use crate::tui::app::{App, AppAction, TuiOptions};
     use crate::tui::work_surface::{RailPanel, WorkSurfacePlacement};
+    use codewhale_config::ProviderKind;
     use codewhale_localization::{Locale, MessageId};
+    use codewhale_runtime::config::Config;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
@@ -651,6 +599,22 @@ mod tests {
             Some(AppAction::SendMessage(message)) => assert_eq!(message, "user help now"),
             other => panic!("expected user command SendMessage action, got {other:?}"),
         }
+        std::fs::write(commands_dir.join("voice.md"), "user voice").unwrap();
+        super::user_registry::reload(Some(temp.path()));
+        assert!(
+            matches!(execute("/voice", &mut app).action, Some(AppAction::SendMessage(message)) if message == "user voice")
+        );
+        app.voice_enabled = true;
+        let shortcut = crate::commands::voice::voice(&mut app);
+        assert!(!shortcut.is_error && shortcut.action.is_none());
+        assert!(
+            !app.voice_enabled,
+            "builtin voice shortcut must not dispatch a shadowing user command"
+        );
+        let missing =
+            super::core_navigation_host::dispatch(&mut app, "__missing_navigation_builtin__", None);
+        assert!(missing.is_error && missing.action.is_none());
+        assert!(!app.voice_enabled);
     }
 
     #[test]
@@ -1348,6 +1312,182 @@ mod tests {
 
     #[test]
     fn command_info_resolves_canonical_names_and_aliases() {
+        use codewhale_command_contract::handler::{
+            CommandCapabilities as Caps, CommandContexts, CommandHandler, ContextParts,
+        };
+        struct MissingTemplate;
+        impl codewhale_command_contract::facets::CommandPresentationContext for MissingTemplate {
+            fn translate(&self, _: &str, _: &[(&str, &str)]) -> Result<String, String> {
+                Err("template unavailable".into())
+            }
+        }
+        for (name, service, needs_presentation) in [
+            ("help", Caps::NAVIGATION, true),
+            ("home", Caps::NAVIGATION, true),
+            ("overview", Caps::NAVIGATION, true),
+            ("links", Caps::NAVIGATION, true),
+            ("anchor", Caps::WORKSPACE, false),
+            ("workspace", Caps::WORKSPACE, true),
+            ("translate", Caps::CONFIG, true),
+            ("voice", Caps::VOICE_INPUT, true),
+            ("voicesend", Caps::VOICE_INPUT, true),
+            ("voicecontrol", Caps::VOICE_INPUT, true),
+        ] {
+            let expected = if needs_presentation {
+                service | Caps::PRESENTATION
+            } else {
+                service
+            };
+            let CommandHandler::Contextual {
+                capabilities,
+                handler,
+            } = registry().get(name).unwrap().contextual_handler().unwrap()
+            else {
+                panic!("/{name} must declare scoped authority");
+            };
+            assert_eq!(capabilities, expected);
+            let missing = handler(CommandContexts::empty(), Some("missing-facet-input"));
+            assert!(missing.is_error && missing.action.is_none());
+            let mut app = create_test_app();
+            app.launch.dismiss();
+            let before_view = format!("{:?}", app.view_stack.top_kind());
+            let before_translation = app.translation_enabled;
+            app.voice_enabled = name == "voice";
+            let before_voice = (
+                app.voice_enabled,
+                app.voice_send_enabled,
+                app.voice_control_enabled,
+            );
+            if needs_presentation {
+                let missing_presentation = {
+                    let mut bundle = app.command_contexts();
+                    handler(bundle.contexts(service), None)
+                };
+                assert!(missing_presentation.is_error && missing_presentation.action.is_none());
+                assert!(
+                    missing_presentation
+                        .message
+                        .as_deref()
+                        .is_some_and(|text| text.contains("presentation"))
+                );
+            }
+            if name == "translate" || service == Caps::VOICE_INPUT {
+                let mut failing = MissingTemplate;
+                let failure = {
+                    let mut bundle = app.command_contexts();
+                    handler(
+                        bundle.contexts(service).with_presentation(&mut failing),
+                        None,
+                    )
+                };
+                assert!(failure.is_error && failure.action.is_none());
+            }
+            assert!(!app.launch.visible);
+            assert_eq!(format!("{:?}", app.view_stack.top_kind()), before_view);
+            assert_eq!(app.translation_enabled, before_translation);
+            assert_eq!(
+                (
+                    app.voice_enabled,
+                    app.voice_send_enabled,
+                    app.voice_control_enabled
+                ),
+                before_voice
+            );
+            let mut bundle = app.command_contexts();
+            let ContextParts {
+                session,
+                model,
+                cost,
+                mode_policy,
+                system_prompt,
+                skills,
+                workspace,
+                presentation,
+                media,
+                memory,
+                project,
+                skill_group,
+                plugin,
+                lifecycle,
+                control,
+                export,
+                structcopy,
+                debug_receipts,
+                debug_change,
+                debug_history,
+                debug_diff,
+                debug_undo,
+                debug_diagnostics,
+                permissions,
+                config_status,
+                config,
+                pet,
+                trust,
+                login,
+                work_surface,
+                navigation,
+                voice_input,
+            } = bundle.contexts(capabilities).into_parts();
+            for (capability, exposed) in [
+                (Caps::SESSION, session.is_some()),
+                (Caps::MODEL, model.is_some()),
+                (Caps::COST, cost.is_some()),
+                (Caps::MODE_POLICY, mode_policy.is_some()),
+                (Caps::SYSTEM_PROMPT, system_prompt.is_some()),
+                (Caps::SKILLS, skills.is_some()),
+                (Caps::WORKSPACE, workspace.is_some()),
+                (Caps::PRESENTATION, presentation.is_some()),
+                (Caps::MEDIA, media.is_some()),
+                (Caps::MEMORY, memory.is_some()),
+                (Caps::PROJECT, project.is_some()),
+                (Caps::SKILL_GROUP, skill_group.is_some()),
+                (Caps::PLUGIN, plugin.is_some()),
+                (Caps::SESSION_LIFECYCLE, lifecycle.is_some()),
+                (Caps::SESSION_CONTROL, control.is_some()),
+                (Caps::SESSION_EXPORT, export.is_some()),
+                (Caps::SESSION_STRUCTCOPY, structcopy.is_some()),
+                (Caps::DEBUG_RECEIPTS, debug_receipts.is_some()),
+                (Caps::DEBUG_CHANGE, debug_change.is_some()),
+                (Caps::DEBUG_HISTORY, debug_history.is_some()),
+                (Caps::DEBUG_DIFF, debug_diff.is_some()),
+                (Caps::DEBUG_UNDO, debug_undo.is_some()),
+                (Caps::DEBUG_DIAGNOSTICS, debug_diagnostics.is_some()),
+                (Caps::PERMISSIONS, permissions.is_some()),
+                (Caps::CONFIG_STATUS, config_status.is_some()),
+                (Caps::CONFIG, config.is_some()),
+                (Caps::PET, pet.is_some()),
+                (Caps::TRUST, trust.is_some()),
+                (Caps::LOGIN, login.is_some()),
+                (Caps::WORK_SURFACE, work_surface.is_some()),
+                (Caps::NAVIGATION, navigation.is_some()),
+                (Caps::VOICE_INPUT, voice_input.is_some()),
+            ] {
+                assert_eq!(
+                    exposed,
+                    expected.contains(capability),
+                    "/{name} facet {capability:?}"
+                );
+            }
+        }
+        for (name, expected) in [
+            ("hotbar", AppAction::OpenHotbarSetup),
+            ("transcript", AppAction::OpenLiveTranscript),
+            ("turn", AppAction::OpenTurnInspector),
+        ] {
+            let handler = registry().get(name).unwrap().contextual_handler().unwrap();
+            let codewhale_command_contract::handler::CommandHandler::Pure(run) = handler else {
+                panic!("/{name} must be pure and require no host envelope");
+            };
+            let result = run(None);
+            assert_eq!(result.action, Some(expected.clone()));
+            assert!(result.message.is_none());
+            assert!(!result.is_error);
+            let mut app = create_test_app();
+            let shortcut = super::core_navigation_host::dispatch(&mut app, name, None);
+            assert_eq!(shortcut.action, Some(expected));
+            assert!(shortcut.message.is_none());
+            assert!(!shortcut.is_error);
+        }
         for command in command_infos() {
             for lookup in [command.name.to_string(), format!("/{}", command.name)] {
                 let resolved = get_command_info(&lookup)
@@ -1485,6 +1625,101 @@ mod tests {
     /// On hosts without a recorder it must fail gracefully instead.
     #[test]
     fn voice_command_toggles_on_and_off_or_fails_gracefully() {
+        use codewhale_command_contract::handler::{CommandContexts, CommandHandler};
+        struct VoiceState {
+            enabled: bool,
+            available: bool,
+            probes: std::cell::Cell<usize>,
+        }
+        impl codewhale_command_contract::navigation::CommandVoiceInputContext for VoiceState {
+            fn recorder_available(&self) -> bool {
+                self.probes.set(self.probes.get() + 1);
+                self.available
+            }
+            fn voice_enabled(&self) -> bool {
+                self.enabled
+            }
+            fn set_voice_enabled(&mut self, enabled: bool) {
+                self.enabled = enabled;
+            }
+            fn send_enabled(&self) -> bool {
+                unreachable!("voice must not read send state")
+            }
+            fn set_send_enabled(&mut self, _: bool) {
+                unreachable!("voice must not set send state")
+            }
+            fn control_enabled(&self) -> bool {
+                unreachable!("voice must not read control state")
+            }
+            fn set_control_enabled(&mut self, _: bool) {
+                unreachable!("voice must not set control state")
+            }
+        }
+        struct Labels {
+            fail: bool,
+        }
+        impl codewhale_command_contract::facets::CommandPresentationContext for Labels {
+            fn translate(&self, key: &str, _: &[(&str, &str)]) -> Result<String, String> {
+                if self.fail {
+                    return Err("missing fixture template".into());
+                }
+                match key {
+                    "voice_enabled" => Ok("Voice enabled".into()),
+                    "voice_disabled" => Ok("Voice disabled".into()),
+                    "voice_err_no_recorder" => Ok("Recorder unavailable".into()),
+                    _ => Err("unexpected voice label".into()),
+                }
+            }
+        }
+        let CommandHandler::Contextual { handler, .. } = registry()
+            .get("voice")
+            .unwrap()
+            .contextual_handler()
+            .unwrap()
+        else {
+            panic!("voice must be contextual");
+        };
+        for available in [false, true] {
+            let mut voice = VoiceState {
+                enabled: false,
+                available,
+                probes: std::cell::Cell::new(0),
+            };
+            let mut labels = Labels { fail: false };
+            let on = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert_eq!(on.is_error, !available);
+            assert_eq!(voice.enabled, available);
+            assert_eq!(on.action, available.then_some(AppAction::VoiceCapture));
+            assert_eq!(voice.probes.get(), 1);
+            voice.enabled = true;
+            voice.available = false;
+            let off = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert!(!off.is_error && off.action.is_none() && !voice.enabled);
+            assert_eq!(
+                voice.probes.get(),
+                1,
+                "voice-off must not probe recorder availability"
+            );
+            voice.available = true;
+            labels.fail = true;
+            let failed = handler(
+                CommandContexts::empty()
+                    .with_voice_input(&mut voice)
+                    .with_presentation(&mut labels),
+                None,
+            );
+            assert!(failed.is_error && failed.action.is_none() && !voice.enabled);
+        }
         let mut app = create_test_app();
         let result = execute("/voice", &mut app);
         if app.voice_enabled {
@@ -2171,6 +2406,19 @@ mod tests {
         // register bounded portable groups/slices; every entry outside the
         // explicit list must still use the original legacy dispatcher.
         const MIGRATED_GROUPS: &[&str] = &[
+            "voice",
+            "voicesend",
+            "voicecontrol",
+            "translate",
+            "anchor",
+            "workspace",
+            "help",
+            "home",
+            "overview",
+            "links",
+            "hotbar",
+            "transcript",
+            "turn",
             // FEAT-018 utility group.
             "attach",
             "automation",
@@ -2943,15 +3191,16 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // FEAT-024: session control entries register through the portable bridge
-    // (D3/D6) — six declare SESSION_CONTROL only; `/remote-env` declares
-    // control plus presentation; export/structcopy have independent authority.
+    // (D3/D6) — five declare SESSION_CONTROL only; `/remote-env` and `/color`
+    // declare control plus presentation; export/structcopy have independent
+    // authority.
     // ---------------------------------------------------------------------
 
     #[test]
     fn feat024_control_entries_register_through_portable_bridge() {
         use codewhale_command_contract::handler::{CommandCapabilities, CommandHandler};
 
-        for name in ["relay", "rename", "resume", "rc", "title", "color"] {
+        for name in ["relay", "rename", "resume", "rc", "title"] {
             assert!(
                 registry().has_contextual_handler(name),
                 "/{name} must register through the portable bridge"
@@ -2970,19 +3219,25 @@ mod tests {
                 "/{name} declares control authority only"
             );
         }
-        let handler = registry()
-            .get("remote-env")
-            .expect("entry")
-            .contextual_handler()
-            .expect("remote-env handler");
-        let CommandHandler::Contextual { capabilities, .. } = handler else {
-            panic!("/remote-env must be contextual");
-        };
-        assert_eq!(
-            capabilities,
-            CommandCapabilities::SESSION_CONTROL.union(CommandCapabilities::PRESENTATION),
-            "/remote-env declares control plus presentation only"
-        );
+        for name in ["remote-env", "color"] {
+            assert!(
+                registry().has_contextual_handler(name),
+                "/{name} must register through the portable bridge"
+            );
+            let handler = registry()
+                .get(name)
+                .expect("entry")
+                .contextual_handler()
+                .expect("contextual handler");
+            let CommandHandler::Contextual { capabilities, .. } = handler else {
+                panic!("/{name} must be contextual");
+            };
+            assert_eq!(
+                capabilities,
+                CommandCapabilities::SESSION_CONTROL.union(CommandCapabilities::PRESENTATION),
+                "/{name} declares control plus presentation only"
+            );
+        }
         // FEAT-026 also registers structcopy through its own narrow boundary.
         assert!(
             registry().has_contextual_handler("structcopy"),

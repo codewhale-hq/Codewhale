@@ -192,7 +192,7 @@ impl SessionPickerView {
         }
         let cell = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&cell);
-        crate::utils::spawn_blocking_supervised("session-picker-list", move || {
+        codewhale_util::utils::spawn_blocking_supervised("session-picker-list", move || {
             let listed = list_session_store();
             if let Ok(mut guard) = slot.lock() {
                 *guard = Some(listed);
@@ -794,7 +794,7 @@ impl SessionPickerView {
         let slot = Arc::clone(&cell);
         let locale = self.locale;
         let id = session_id.clone();
-        crate::utils::spawn_blocking_supervised("session-picker-preview", move || {
+        codewhale_util::utils::spawn_blocking_supervised("session-picker-preview", move || {
             let load = load_preview(&id, locale);
             if let Ok(mut guard) = slot.lock() {
                 *guard = Some(load);
@@ -1069,7 +1069,7 @@ impl ModalView for SessionPickerView {
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.rename_mode = true;
                 self.rename_input.clear();
-                self.status = Some(tr(self.locale, MessageId::SessionsNewTitlePrompt).into_owned());
+                self.status = None;
                 ViewAction::None
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {

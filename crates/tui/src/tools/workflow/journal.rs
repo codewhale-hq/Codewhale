@@ -27,8 +27,8 @@ impl WorkflowWorkspaceState {
     }
 
     /// Hydrate the journal without rewriting leftover `running` rows to
-    /// `failed`. Host cancel uses this after a restart so a controller-less
-    /// run can still be marked cancelled instead of looking like a crash.
+    /// `failed`. Host reads do not claim runtime ownership; host cancel can
+    /// still mark a controller-less run cancelled instead of assuming a crash.
     pub fn open_preserving_running(workspace: &Path) -> Arc<Self> {
         Self::open_inner(workspace, false)
     }
@@ -194,7 +194,7 @@ impl WorkflowRunJournal {
     }
 
     fn hydrate_runs(&self, recover_orphans: bool) -> HashMap<String, WorkflowRunRecord> {
-        let file = match crate::fs_confined::open_read(&self.root, &self.ledger_path) {
+        let file = match codewhale_util::fs_confined::open_read(&self.root, &self.ledger_path) {
             Ok(file) => file,
             Err(err) => {
                 if err.kind() != std::io::ErrorKind::NotFound {
@@ -261,8 +261,7 @@ impl WorkflowRunJournal {
         }
         // A run journaled as Running belongs to a process that is gone;
         // without this it would show as live forever after a restart.
-        // Host cancel skips this rewrite so it can still mark the line
-        // cancelled with an honest "nothing live to stop" receipt.
+        // Host reads and cancellation skip this owner-only rewrite.
         if recover_orphans {
             let mut recovered = Vec::new();
             for run in runs.values_mut() {
@@ -296,7 +295,7 @@ impl WorkflowRunJournal {
         let mut line =
             serde_json::to_string(record).map_err(|err| std::io::Error::other(err.to_string()))?;
         line.push('\n');
-        let mut file = crate::fs_confined::open_append(&self.root, &self.ledger_path)?;
+        let mut file = codewhale_util::fs_confined::open_append(&self.root, &self.ledger_path)?;
         file.write_all(line.as_bytes())?;
         file.flush()?;
         Ok(())
@@ -826,7 +825,7 @@ mod tests {
             "status": "failed"
         }))
         .expect("task_completed event");
-        let replay = WorkflowWorkspaceState::open(tmp.path());
+        let replay = WorkflowWorkspaceState::open_preserving_running(tmp.path());
         replay.record_event("workflow_detail", &phase);
         replay.record_event("workflow_detail", &started);
         replay.record_event("workflow_detail", &completed);
@@ -836,11 +835,8 @@ mod tests {
         assert_eq!(details.len(), 1, "one journaled run");
         let detail = &details[0];
         assert_eq!(detail.line.run_id, "workflow_detail");
-        // Journal-only `running` rows hydrate through restart-orphan
-        // recovery (the same rewrite `WorkflowWorkspaceState::open`
-        // applies), so the host projection reports the run as failed —
-        // live in-process runs keep `running` via the shared state.
-        assert_eq!(detail.line.status, "failed");
+        assert_eq!(detail.line.status, "running");
+        assert!(peek_shared_workflow_state(tmp.path()).is_none());
         assert_eq!(detail.line.label, "audit provider errors");
         assert_eq!(detail.phases, vec!["scan".to_string()]);
         assert_eq!(detail.children.len(), 1);

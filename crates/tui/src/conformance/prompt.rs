@@ -141,14 +141,14 @@ fn summary(prefix: &Prefix) -> Value {
     let tools_json = serde_json::to_string(&prefix.tools).expect("tools json");
     let combined = format!("{}\n{}", prefix.system_json, tools_json);
     json!({
-        "system_sha256": crate::hashing::sha256_hex(prefix.system_json.as_bytes()),
+        "system_sha256": codewhale_runtime::hashing::sha256_hex(prefix.system_json.as_bytes()),
         "system_bytes": prefix.system_json.len(),
         "system_blocks": prefix.system_blocks,
-        "tools_sha256": crate::hashing::sha256_hex(tools_json.as_bytes()),
+        "tools_sha256": codewhale_runtime::hashing::sha256_hex(tools_json.as_bytes()),
         "tools_bytes": tools_json.len(),
         "tool_count": prefix.tools.len(),
         "tool_names": prefix.tools.iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>(),
-        "prefix_sha256": crate::hashing::sha256_hex(combined.as_bytes()),
+        "prefix_sha256": codewhale_runtime::hashing::sha256_hex(combined.as_bytes()),
         "masks": ["<WORKSPACE>", "<HOME>", "<TMP>", "- platform: <PLATFORM>", "- shell: <SHELL>"],
         "host_probed_tools_excluded": HOST_PROBED_TOOLS,
     })

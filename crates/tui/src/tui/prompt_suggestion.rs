@@ -11,9 +11,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tracing::debug;
 
-use crate::config::{Config, ProviderKind};
 use crate::core::events::TurnRoute;
 use crate::route_receipt::{TurnRouteReceipt, endpoint_identity};
+use codewhale_config::ProviderKind;
+use codewhale_runtime::config::Config;
 
 /// The exact route authority a turn was launched against.
 ///
@@ -179,7 +180,7 @@ pub fn route_is_supported_suggestion_provider(provider: ProviderKind) -> bool {
 /// and fail closed on routes that never changed.
 fn resolve_credentials_for_identity(
     config: &Config,
-    identity: &crate::config::ProviderIdentity,
+    identity: &codewhale_runtime::config::ProviderIdentity,
     model: &str,
 ) -> Option<SuggestionRouteCredentials> {
     // Belt and braces: callers already gated, but this function must never
@@ -378,7 +379,7 @@ pub fn plan_suggestion_launch_with_config(
 /// Reusable static client — avoids creating a new connection pool per request.
 fn suggestion_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(crate::tls::reqwest_client)
+    CLIENT.get_or_init(codewhale_release::tls::reqwest_client)
 }
 
 /// Generate a follow-up prompt suggestion based on recent messages.
@@ -525,8 +526,8 @@ mod tests {
         endpoint_identity, generate_suggestion, plan_suggestion_launch,
         plan_suggestion_launch_with_config, resolve_credentials_for_identity,
     };
-    use crate::config::ProvidersConfig;
     use crate::test_support::{EnvVarGuard, TestEnvLock, lock_test_env};
+    use codewhale_runtime::config::ProvidersConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1300,9 +1301,11 @@ mod tests {
     }
 
     fn deepseek_config(api_key: &str, base_url: &str) -> Config {
-        let mut config = Config {
-            provider: Some("deepseek".to_string()),
-            ..Config::default()
+        let mut config = {
+            let __cw_config_init_0_0 = Some("deepseek".to_string());
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.provider = __cw_config_init_0_0;
+            __cw_config_init_0_value
         };
         let providers = config
             .providers
@@ -1315,10 +1318,10 @@ mod tests {
     #[test]
     fn suggestion_vendor_pin_rotation_or_invalid_config_fails_closed() {
         let _env = seal_deepseek_env();
-        let mut config = Config {
-            provider: Some("openrouter".to_string()),
-            providers: Some(ProvidersConfig {
-                openrouter: crate::config::ProviderConfig {
+        let mut config = {
+            let __cw_config_init_1_0 = Some("openrouter".to_string());
+            let __cw_config_init_1_1 = Some(ProvidersConfig {
+                openrouter: codewhale_runtime::config::ProviderConfig {
                     api_key: Some("fixture-openrouter-key".to_string()),
                     base_url: Some("http://127.0.0.1:18080/v1".to_string()),
                     model: Some("fixture/model".to_string()),
@@ -1326,8 +1329,11 @@ mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            let mut __cw_config_init_1_value: Config = Default::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value.providers = __cw_config_init_1_1;
+            __cw_config_init_1_value
         };
         let client = crate::client::CodewhaleClient::new(&config).unwrap();
         let authority =
@@ -1370,7 +1376,7 @@ mod tests {
         let resolved = crate::route_runtime::resolve_runtime_route_for_identity(
             config,
             &identity,
-            Some(crate::config::DEFAULT_TEXT_MODEL),
+            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
         )
         .expect("test config must resolve the deepseek route");
         let model = resolved.model.clone();
@@ -1391,7 +1397,8 @@ mod tests {
                 billing_mode: crate::cost_status::RouteBillingMode::Unknown,
                 dispatched_at: chrono::Utc::now(),
             }),
-            base_url: crate::config::DEFAULT_DEEPSEEK_BASE_URL.to_string(),
+            base_url: codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL
+                .to_string(),
             billing_product: crate::route_billing::RouteProduct::Unproven,
         }
     }

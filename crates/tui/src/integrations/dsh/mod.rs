@@ -523,7 +523,7 @@ pub(crate) fn apply_plan(
     });
     doc.current = Some(record.clone());
     doc.save(&paths.receipt)?;
-    crate::audit::log_sensitive_event_in(
+    codewhale_runtime::audit::log_sensitive_event_in(
         &paths.codewhale_home,
         &format!("integration.dsh.{}", event.as_str()),
         serde_json::json!({
@@ -567,7 +567,7 @@ pub(crate) fn set_disabled(paths: &DshPaths, disabled: bool) -> Result<DshConnec
     });
     doc.current = Some(record.clone());
     doc.save(&paths.receipt)?;
-    crate::audit::log_sensitive_event_in(
+    codewhale_runtime::audit::log_sensitive_event_in(
         &paths.codewhale_home,
         &format!("integration.dsh.{}", event.as_str()),
         serde_json::json!({ "overlay_path": paths.overlay.display().to_string() }),
@@ -616,7 +616,7 @@ pub(crate) fn remove(paths: &DshPaths) -> Result<Vec<PathBuf>> {
         )),
     });
     doc.save(&paths.receipt)?;
-    crate::audit::log_sensitive_event_in(
+    codewhale_runtime::audit::log_sensitive_event_in(
         &paths.codewhale_home,
         "integration.dsh.remove",
         serde_json::json!({ "removed": removed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>() }),
@@ -741,7 +741,7 @@ pub(crate) fn launch_spec(
     let provider_env_vars: Vec<String> =
         record.identity.source.api_key_env.iter().cloned().collect();
     let strip_env = launch_env_strip_list(
-        crate::config::cli_api_key_source().as_deref(),
+        codewhale_runtime::config::cli_api_key_source().as_deref(),
         &provider_env_vars,
     );
     Ok(LaunchSpec {
@@ -869,7 +869,7 @@ pub(crate) fn install_bundle(
     });
     doc.current = Some(record);
     doc.save(&paths.receipt)?;
-    crate::audit::log_sensitive_event_in(
+    codewhale_runtime::audit::log_sensitive_event_in(
         &paths.codewhale_home,
         "integration.dsh.install_bundle",
         serde_json::json!({
@@ -922,7 +922,7 @@ pub(crate) fn remove_bundle(
     });
     doc.current = Some(record);
     doc.save(&paths.receipt)?;
-    crate::audit::log_sensitive_event_in(
+    codewhale_runtime::audit::log_sensitive_event_in(
         &paths.codewhale_home,
         "integration.dsh.remove_bundle",
         serde_json::json!({ "removed": removed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>() }),
@@ -936,7 +936,7 @@ pub(crate) fn bundle_availability_now() -> BundleAvailability {
 
 /// Derive the non-secret route identity from a loaded Codewhale config.
 pub(crate) fn codewhale_route_identity(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     workspace: &Path,
 ) -> Result<CodewhaleRouteIdentity, String> {
     let identity = config.active_provider_identity()?;
@@ -956,7 +956,8 @@ pub(crate) fn codewhale_route_identity(
             WireProtocol::AnthropicMessages
         }
     };
-    let keyless_local = crate::config::provider_route_is_keyless_self_hosted(provider, &base_url);
+    let keyless_local =
+        codewhale_runtime::config::provider_route_is_keyless_self_hosted(provider, &base_url);
     let api_key_env = provider
         .provider()
         .env_vars()

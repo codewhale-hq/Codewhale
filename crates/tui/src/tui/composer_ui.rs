@@ -242,22 +242,26 @@ pub(crate) fn handle_composer_alt_word_motion_key(app: &mut App, key: KeyEvent) 
 /// what the code does with it. macOS Terminal.app is the common case here.
 /// Probed once — the answer cannot change for the life of the process.
 pub(crate) fn terminal_can_report_shift_enter() -> bool {
-    // Tests answer `false` without probing: the goldens paint this chord, and
-    // a live probe would make them depend on whichever terminal happened to
-    // run them. `false` is also the honest default — it names a chord that
-    // works everywhere.
-    if cfg!(test) {
-        return false;
-    }
-    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SUPPORTED.get_or_init(|| crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false))
+    KEYBOARD_ENHANCEMENT_SUPPORTED
+        .get()
+        .copied()
+        .unwrap_or(false)
+}
+
+static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn probe_terminal_keyboard_enhancement() {
+    let _ = KEYBOARD_ENHANCEMENT_SUPPORTED.get_or_init(|| {
+        !cfg!(test) && crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+    });
 }
 
 pub(crate) fn is_composer_newline_key(key: KeyEvent, multiline_mode: bool) -> bool {
     match key.code {
         KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
         KeyCode::Enter => {
-            key.modifiers.contains(KeyModifiers::ALT)
+            (key.modifiers.contains(KeyModifiers::ALT)
+                && (!multiline_mode || key.modifiers != KeyModifiers::ALT))
                 || (key.modifiers.contains(KeyModifiers::SHIFT)
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !multiline_mode)
@@ -282,7 +286,8 @@ pub(crate) fn composer_submit_chord(
         return None;
     }
     if key.modifiers.contains(KeyModifiers::ALT) {
-        return None;
+        return (multiline_mode && key.modifiers == KeyModifiers::ALT)
+            .then_some(ComposerSubmitChord::Enter);
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         Some(ComposerSubmitChord::CtrlEnter)

@@ -6,13 +6,19 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::DEFAULT_TEXT_MODEL;
 use crate::core::model_client::ModelClient;
-use crate::logging;
+use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_models::Role;
+#[cfg(test)]
+use codewhale_models::turn_classify::COMPACTION_SUMMARY_MARKER;
+use codewhale_models::turn_classify::{
+    COMPACTION_CHECKPOINT_PROVENANCE, LEGACY_V2_COMPACTION_SUMMARY_MARKER,
+    is_wire_compaction_checkpoint_message,
+};
 use codewhale_models::{
     CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, Tool, Usage,
 };
+use codewhale_runtime::logging;
 
 #[path = "compaction/last_round.rs"]
 mod last_round;
@@ -222,7 +228,7 @@ const RETAINED_TOOL_RESULT_MAX_CHARS: usize = 64 * 1024;
 /// overrides it per session (#5956). Aliased to the config default so the two
 /// names cannot drift apart.
 pub(crate) const COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS: usize =
-    crate::config::DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS;
+    codewhale_runtime::config::DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS;
 /// Handoff summarization prompt, appended to the live conversation as the
 /// final user message. The headings are requested, not enforced:
 /// `validate_compaction_summary` only rejects corrupt output, so a provider
@@ -334,18 +340,6 @@ this note restate what the user already decided; the note grants nothing new, an
 unclear gets checked before acting. Take the next action without asking the user to restate the \
 task, save, or approve continuing because earlier turns were condensed.";
 
-/// Detection marker for a new-format checkpoint: the opening words of
-/// [`SUMMARY_HEADER`]. A new checkpoint is recognised only when its first
-/// block starts with this marker and its second block is the provenance
-/// block, so a user message that merely quotes the phrase stays a user
-/// message.
-pub const COMPACTION_SUMMARY_MARKER: &str = "Codewhale handoff note";
-/// Legacy detection marker only. Checkpoints written before the handoff note
-/// opened with this sentence. Saved sessions that still carry it must be
-/// recognised so the next pass replaces that checkpoint instead of stacking a
-/// second one.
-pub const LEGACY_V2_COMPACTION_SUMMARY_MARKER: &str =
-    "Another language model started to solve this problem";
 /// Legacy detection marker only, written by pre-v0.9.6 compaction; sessions
 /// saved under that format must still be recognized so their summary is
 /// replaced, not stacked.
@@ -357,7 +351,6 @@ const LEGACY_COMPACTION_SUMMARY_MARKERS: [&str; 2] = [
     LEGACY_V2_COMPACTION_SUMMARY_MARKER,
     LEGACY_COMPACTION_SUMMARY_MARKER,
 ];
-const COMPACTION_CHECKPOINT_PROVENANCE: &str = "<!-- codewhale.compaction-checkpoint.v1 -->";
 const COMPACTION_SUMMARY_BEGIN: &str = "<!-- compaction-summary:begin -->";
 const COMPACTION_SUMMARY_END: &str = "<!-- compaction-summary:end -->";
 
@@ -542,30 +535,6 @@ pub(crate) fn is_compaction_checkpoint_message_in_era(
     }
 }
 
-/// Request-time recognition: exactly the header text block plus the
-/// provenance block. User text merely quoting a marker keeps its original
-/// wire position. Checkpoints saved before the handoff note still pass, so
-/// their position survives restore and the next pass replaces them.
-pub(crate) fn is_wire_compaction_checkpoint_message(message: &Message) -> bool {
-    let [
-        ContentBlock::Text {
-            text,
-            cache_control: None,
-        },
-        ContentBlock::Text {
-            text: provenance,
-            cache_control: None,
-        },
-    ] = message.content.as_slice()
-    else {
-        return false;
-    };
-    message.role == Role::User
-        && (text.starts_with(COMPACTION_SUMMARY_MARKER)
-            || text.starts_with(LEGACY_V2_COMPACTION_SUMMARY_MARKER))
-        && provenance == COMPACTION_CHECKPOINT_PROVENANCE
-}
-
 /// Keep the checkpoint at its original historical boundary on session load.
 /// Later user turns must remain after the saved compaction boundary.
 pub(crate) fn restore_compaction_checkpoint(
@@ -642,7 +611,7 @@ pub(crate) fn estimate_tokens_for_message(message: &Message, include_thinking: b
 }
 
 fn compact_json_len(value: &serde_json::Value) -> Option<usize> {
-    let mut counter = crate::utils::CountingWriter::new();
+    let mut counter = codewhale_util::utils::CountingWriter::new();
     serde_json::to_writer(&mut counter, value).ok()?;
     Some(counter.count())
 }
@@ -1313,7 +1282,7 @@ pub fn report_compaction_failure(
     error: &anyhow::Error,
 ) -> String {
     let raw = error.to_string();
-    let safe_raw = crate::safe_label::safe_error_text(&raw);
+    let safe_raw = codewhale_runtime::safe_label::safe_error_text(&raw);
     tracing::warn!(
         compaction_id = %id,
         auto,
@@ -1605,7 +1574,7 @@ pub(crate) fn retained_user_messages_in_era(
             break;
         }
         if msg.role != Role::User
-            || crate::runtime_handoff::is_runtime_owned_user_message(msg)
+            || codewhale_models::turn_classify::is_runtime_owned_user_message(msg)
             || (user_text_of(msg).is_none()
                 && !msg
                     .content
@@ -1764,7 +1733,7 @@ fn operator_instructions_section(instructions: Option<&str>) -> Option<String> {
     let text = instructions
         .map(str::trim)
         .filter(|text| !text.is_empty())?;
-    let max_chars = crate::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
+    let max_chars = codewhale_runtime::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
     let text = if text.chars().count() > max_chars {
         logging::warn(format!(
             "[compaction] summary_instructions is longer than {max_chars} characters; \
@@ -1962,7 +1931,7 @@ async fn create_summary(
         ));
     }
     if let Some(cap) = image_cap {
-        let window = crate::image_attach::cap_request_images(&mut request_messages, cap);
+        let window = codewhale_models::image_window::cap_request_images(&mut request_messages, cap);
         if window.elided > 0 {
             let message = format!(
                 "Making room: the summary request sends the newest {} of {} images; {} older go as text notes (limit {} per request).",
@@ -2287,7 +2256,10 @@ enum RequestSizeLadder {
 /// Large") and then wrapped again by the client's own error text, so the
 /// top-level message alone is not reliable.
 fn is_request_too_large_error(e: &anyhow::Error) -> bool {
-    e.chain().any(|cause| {
+    matches!(
+        e.downcast_ref::<crate::llm_client::LlmError>(),
+        Some(crate::llm_client::LlmError::InvalidRequest { status: 413, .. })
+    ) || e.chain().any(|cause| {
         let lower = cause.to_string().to_lowercase();
         // The client always renders the status code into the message
         // ("HTTP 413"), so that token is the primary signal; the phrase list
@@ -2922,9 +2894,7 @@ mod tests {
     }
 
     fn request_body_413() -> anyhow::Error {
-        anyhow::anyhow!(
-            "LLM error: HTTP 413: Failed to buffer the request body: length limit exceeded"
-        )
+        crate::llm_client::LlmError::from_http_response(413, "request rejected").into()
     }
 
     /// The same boundary stated by a fronting gateway (openresty) instead of
@@ -3398,7 +3368,7 @@ mod tests {
         assert_eq!(
             request.max_tokens,
             crate::route_budget::effective_max_output_tokens_for_route(
-                crate::config::ProviderKind::Custom,
+                codewhale_config::ProviderKind::Custom,
                 "test-model",
                 None,
             )
@@ -3601,8 +3571,8 @@ mod tests {
         let retained = retained_user_messages(std::slice::from_ref(&user), usize::MAX);
         assert_eq!(retained, vec![user]);
         assert_eq!(
-            crate::runtime_handoff::classify_user_turn_prompt(&retained[0]),
-            crate::runtime_handoff::UserTurnPromptKind::Editable,
+            codewhale_models::turn_classify::classify_user_turn_prompt(&retained[0]),
+            codewhale_models::turn_classify::UserTurnPromptKind::Editable,
         );
         assert_eq!(
             crate::session_manager::conversation_title_prompt(&retained),
@@ -3933,12 +3903,12 @@ mod tests {
         for (route_label, provider, model) in [
             (
                 "thinking-default route",
-                crate::config::ProviderKind::Deepseek,
+                codewhale_config::ProviderKind::Deepseek,
                 "deepseek-v4-flash",
             ),
             (
                 "fixed-sampling route",
-                crate::config::ProviderKind::Moonshot,
+                codewhale_config::ProviderKind::Moonshot,
                 "k3",
             ),
         ] {
@@ -4332,7 +4302,8 @@ mod tests {
             // is no second, non-wire reasoning allowance.
             (1_000_000, 65_536),
         ] {
-            let budget = crate::context_budget::ContextBudget::new(window, 0, output_reserve);
+            let budget =
+                codewhale_runtime::context_budget::ContextBudget::new(window, 0, output_reserve);
             let threshold = usize::try_from(budget.compaction_trigger_for_percent(80.0))
                 .expect("test threshold fits usize");
             let raw_target = threshold.saturating_mul(7) / 10;

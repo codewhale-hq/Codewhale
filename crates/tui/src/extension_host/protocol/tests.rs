@@ -49,6 +49,7 @@ fn params_schema(method: &str, generator: &mut SchemaGenerator) -> Schema {
         "registry/register" => generator.subschema_for::<RegisterParams>(),
         "registry/unregister" => generator.subschema_for::<UnregisterParams>(),
         "core/call" => generator.subschema_for::<CoreCallParams>(),
+        "session/checkpoint" => generator.subschema_for::<SessionCheckpointParams>(),
         "ext/faulted" => generator.subschema_for::<FaultedParams>(),
         "log" => generator.subschema_for::<LogParams>(),
         other => panic!("method `{other}` has no params type in the TypeScript generator"),
@@ -477,8 +478,8 @@ fn typescript_protocol_is_generated_from_the_rust_types() {
 
 /// Authority only the core may hold (CURRENT_DECISIONS §26): the event
 /// authority, the store, approval, secrets and credentials, the turn loop,
-/// sessions and the prompt. A method whose name mentions any of these is
-/// refused outright, whatever its reviewed reason.
+/// sessions and the prompt. Names remain refused except the exact reviewed
+/// invocation-bound checkpoint request, whose state and writer stay in Core.
 const CORE_ONLY: &[&str] = &[
     "event",
     "store",
@@ -496,6 +497,11 @@ const CORE_ONLY: &[&str] = &[
 /// Every method, with why it gives the host no core authority. Adding a
 /// method means adding its row here, in review, with that reason.
 const REVIEWED: &[(&str, &str, &str)] = &[
+    (
+        "host_to_core",
+        "session/checkpoint",
+        "opaque live root-invocation ticket only; Core captures its own prefix and the existing host persistence owner acknowledges the exact request; no host-supplied session selector, state, writer, restore or turn authority",
+    ),
     (
         "core_to_host",
         "harness/run",
@@ -663,7 +669,11 @@ fn host_protocol_never_gains_core_authority() {
         let name = spec.name.to_ascii_lowercase();
         for word in CORE_ONLY {
             assert!(
-                !name.contains(word),
+                !name.contains(word)
+                    || (*word == "session"
+                        && name == "session/checkpoint"
+                        && spec.direction == Direction::HostToCore
+                        && spec.request),
                 "{} method `{}` reaches for core-only authority (`{word}`); \
                  the extension host must never hold it (CURRENT_DECISIONS §26)",
                 spec.direction.as_str(),

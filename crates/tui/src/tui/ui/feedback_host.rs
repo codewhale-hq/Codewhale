@@ -18,7 +18,7 @@ impl Scope {
                 .context("Feedback caller is unavailable")?,
             host: config
                 .features()
-                .enabled(crate::features::Feature::GithubHost),
+                .enabled(codewhale_runtime::features::Feature::GithubHost),
         })
     }
     fn current(&self, app: &App, config: &Config) -> bool {
@@ -29,7 +29,7 @@ impl Scope {
             && self.host
                 == config
                     .features()
-                    .enabled(crate::features::Feature::GithubHost)
+                    .enabled(codewhale_runtime::features::Feature::GithubHost)
             && self
                 .caller
                 .plugins

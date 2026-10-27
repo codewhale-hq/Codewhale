@@ -10,6 +10,11 @@ Current boundary note (read the workspace version from `Cargo.toml`; this
 boundary has held since v0.9.1):
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool execution loop.
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
+- `crates/net` owns network policy/auditing, destination and DNS guards, proxy resolution, and Claude import planning. Host tool context, transport grants, redirects and response limits stay with their callers. Pure extension-host settings belong to `crates/config`.
+- `crates/notify` owns shared notification payload redaction, attention/category gates, sound policy, and local audio dispatch. TUI retains terminal sinks and native hosts retain banner submission.
+- `crates/util` owns shared string/path/atomic-write helpers, confined workspace file access, link and file-identity checks, bundle file readers, the `.git` name rule and the exclusive file lock.
+- `crates/dependencies` owns external-tool resolution and bounded subprocess probes (git, python, node, bun); `crates/snapshot` the pre/post-turn side-repo snapshots; `crates/lsp` the language-server client; `crates/repl` the Python REPL runtime and RLM context files.
+- `crates/skill-install` owns the community-skill installer (GitHub and tarball sources, the curated registry, bounded extraction, install and trust markers), the package content digest and the shared `SKILL.md` frontmatter reader. Its SSRF DNS pin and shortened timeouts are relaxed only under its dev-dependency-only `test-support` feature.
 
 <img src="assets/architecture.webp" alt="Codewhale architecture: clients reach the one turn loop, Engine::run_turn, through the CLI or the Runtime API; the engine uses crates/core to build requests, runs tools under approval and sandbox policy, routes to any provider through crates/config, and logs everything model-visible to the session store." width="1000">
 
@@ -23,7 +28,7 @@ rather than a traced write path.
   TUI views and hosts, in the order `docs/design/TUI_DECONSTRUCTION.md`
   records. The TUI stays the only crate that writes to the terminal. Until a
   module has moved, its path under `crates/tui/src` is still where it lives.
-- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's
+- The LSP subsystem (`crates/lsp/src/`) is fully wired into the engine's
   post-tool-execution path (`core/engine/lsp_hooks.rs`), providing inline
   diagnostics after `File` write, edit, and patch actions.
 - The swarm agent system was removed in v0.8.5. The active sub-agent surface is
@@ -122,6 +127,7 @@ rather than a traced write path.
   `codew` and legacy release filename aliases contain the same executable.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
 - **`crates/agent`** - Model/provider registry (ModelRegistry) for resolving model IDs to provider endpoints.
+- **`crates/agent-contract`** - Fleet role, child authority (`ChildAuthority`, `ChildGrant`) and worker runtime profile types the agent tool resolves before it spawns a child.
 - **`crates/app-server`** - HTTP/SSE + JSON-RPC app server transport for
   headless agent workflows. The canonical executable dispatches
   `app-server --http`/`--mobile` in process to the runtime API hosted by the
@@ -179,6 +185,10 @@ rather than a traced write path.
   runtime code asks the terminal UI for a terminal effect. It never depends on
   the TUI, `ratatui` or `crossterm`; `scripts/check-command-crate-boundaries.py`
   enforces that and ratchets the runtime -> UI references still in `crates/tui`.
+- **`crates/sandbox`** - Command sandbox policy, platform wrapper preparation,
+  read denial, process hardening and the shared shell dispatcher. Runtime
+  config and terminal ports remain dependencies; this crate never owns a
+  turn loop or depends on the TUI.
 - **`crates/secrets`** - Secret storage. API keys and MCP OAuth tokens live in
   a private file store (`~/.codewhale/secrets/secrets.json`, mode `0600` on
   Unix) by default; the OS keyring is used only when
@@ -274,7 +284,7 @@ drives turns through Chat Completions.
 ### Extension Systems
 
 - **`mcp.rs`** - Model Context Protocol client for external tool servers
-- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus install and audit
+- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus audit and mutation (the installer lives in `crates/skill-install`)
 - **`hooks.rs`** - Pre/post execution hooks with conditions
 
 ### User Interface
@@ -300,15 +310,17 @@ drives turns through Chat Completions.
 
 ### Security
 
-- **`sandbox/`** - platform sandbox policy preparation and denial reporting
-  - `mod.rs` - Sandbox type definitions
+- **`crates/sandbox/src/`** - platform sandbox policy preparation and denial reporting
+  - `lib.rs` - Sandbox type definitions and manager
   - `backend.rs` - Pluggable sandbox backend abstraction (routes shell
     execution to a remote service, e.g. Alibaba OpenSandbox)
   - `policy.rs` - Sandbox policy configuration
   - `opensandbox.rs` - Alibaba OpenSandbox HTTP backend adapter
   - `seatbelt.rs` - macOS Seatbelt profile generation
   - `bwrap.rs` - Linux bubblewrap command wrapper
-  - `seccomp.rs` - dormant Linux seccomp implementation; not wired into commands
+  - `process_hardening.rs` - Startup Linux process hardening
+  - `read_guard.rs` - Shared protected-path read admission
+  - `shell_dispatcher.rs` - Shared shell detection and command construction
   - `process_hardening.rs` - Linux kernel-level hardening for the TUI process
     itself (defense-in-depth; not a child-command sandbox)
   - `windows.rs` - Windows helper contract; not advertised until a Job
@@ -439,8 +451,8 @@ command = "echo 'Running tool: $TOOL_NAME'"
 4. **Cross-platform**: Core works on Linux/macOS/Windows. Sandbox guarantees
    are platform-specific: macOS uses Seatbelt when available; Linux uses an
    installed bubblewrap executable by default when a probe shows it works; Windows has
-   no advertised OS command sandbox. Seccomp and the Windows helper contract
-   are not wired into command execution.
+   no advertised OS command sandbox. The Windows helper contract is not
+   wired into command execution.
 5. **Minimal dependencies**: Careful dependency selection for build speed
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
 7. **Lock poison**: fail-stop by default. A poisoned lock means a holder

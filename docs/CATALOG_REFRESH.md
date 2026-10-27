@@ -16,7 +16,7 @@ Related docs: [`PROVIDERS.md`](./PROVIDERS.md), RFC
 |---|---|
 | Do users need a special model just to refresh models? | **No.** |
 | Does Codewhale auto-update the public model catalog? | **Yes, at runtime**, from [Models.dev](https://models.dev/catalog.json), ~24 h TTL. |
-| Is the offline bundled seed auto-committed in CI? | **No, but it is generated.** A maintainer runs `seed lock` and `seed render` and lands the verified generated slice on main; CI fails a hand edit (`seed render --check`). |
+| Is the offline bundled seed auto-committed in CI? | **No, but it is generated.** A maintainer runs `seed lock` and `seed render` and lands the verified generated slice on main; CI fails a hand edit (`seed render --check`) and a pin nobody re-locked (`seed age --max-days 30`). |
 | Should an LLM rewrite catalog JSON? | **No.** Ingest is deterministic public JSON. An LLM can *review* a PR, not own the source of truth. |
 
 ---
@@ -151,6 +151,41 @@ Runtime live refresh **does not** rewrite those files. Users on a recent
 install with network still see new Models.dev rows; fresh clones offline, CI
 hermetic runs, and first-boot without cache still depend on the seed.
 
+### The failure this guards: a default that silently stops existing
+
+An account roster can rotate out from under a hand-written default. Observed
+2026-10-23: the ChatGPT plan roster served exactly seven ids
+(`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`) and no bare `gpt-5.6`, which is what the
+`openai-codex` descriptor defaulted to. A fresh roster redirects the default
+(`CodexModelRoster::preferred_model_id`), so a live account avoided it; a stale,
+expired or missing roster fell through to `gpt-5.6` and the request failed.
+
+Defaults are the dangerous half of staleness because a stale *price* misreports
+and a stale *default* breaks the request. Two mechanisms now carry the duty:
+
+- **Hermetic drift guard.** `seed lock` and `seed render` compare every
+  descriptor `default_model` against the seed default and refuse to write when
+  they disagree (`--descriptors` to point at another asset). A deliberate,
+  explained disagreement goes in `SEED_DEFAULT_EXCEPTIONS` in
+  `scripts/catalog_models_dev.py`; an unexplained one fails the run.
+- **Review-time freshness report.** `seed lock --dry-run` prints which
+  providers have newer upstream ids than the seed default, plus rows in the
+  lock the spec no longer references. Nothing offline can know a model
+  shipped, so this report is the review step, not a gate.
+
+- **Release-time default audit.** `defaults audit` re-reads a models.dev
+  payload (the fetched snapshot, or `--snapshot PATH`) and lists each provider
+  whose default a newer stable row of its own namespace has overtaken. An
+  unrecorded one fails the run; a deliberate hold is recorded with its reason
+  in `DEFAULT_AUDIT_REASONS`, and a curated or marketplace route is advisory.
+
+Honest limit: the hermetic guard catches descriptor↔seed disagreement, and
+`seed age` catches a pin nobody re-locked: it fails once `source.fetched_at`
+is older than the limit CI enforces (30 days). Neither can tell that a vendor
+shipped a model on the day it happened, so the report above is still the step
+that catches a brand-new release.
+
 ---
 
 The current quote is frozen at dispatch with its exact provider identity, wire
@@ -186,6 +221,10 @@ python3 scripts/catalog_models_dev.py snapshot --check \
 # OpenRouter public /models listing (no API key), dry-run only
 python3 scripts/catalog_models_dev.py refresh --provider openrouter \
   --sort newest --limit 100
+
+# Drift report against the committed seed: field changes, defaults that a
+# newer upstream id has overtaken, and lock rows no longer referenced
+python3 scripts/catalog_models_dev.py seed lock --dry-run
 ```
 
 Design constraints of the script (intentional):
@@ -217,14 +256,22 @@ first live refresh.
 
 1. `python3 scripts/catalog_models_dev.py seed lock --dry-run` prints the
    review report: field changes per row, corrections that upstream now
-   agrees with (delete them), and upstream models not carried. It fails when
-   a referenced row disappeared upstream, or a curated row now exists
-   upstream (switch it to a derived row).
+   agrees with (delete them), upstream models not carried, a
+   **default freshness** block (providers whose default is older than a
+   newer upstream id) and a **lock rot** block (pinned rows the spec no
+   longer references). It fails when a referenced row disappeared upstream,
+   when a curated row now exists upstream (switch it to a derived row), or
+   when a descriptor default disagrees with the seed default.
 2. Edit the spec or the corrections as the report requires.
 3. `python3 scripts/catalog_models_dev.py seed lock` writes the lock.
 4. `python3 scripts/catalog_models_dev.py seed render` writes the seed.
 5. Check that default wire IDs still match `DEFAULT_*_MODEL`, run the
    catalog checks, and land the verified slice on main with its report in the commit.
+6. `python3 scripts/catalog_models_dev.py seed age --max-days 30` is what turns
+   the above from a habit into a cadence: it fails, locally and in CI, when
+   `source.fetched_at` in the lock is older than the limit. It is offline and
+   reads only the lock, so it cannot excuse a stale pin either way — the fix is
+   always another re-lock.
 
 Optional: use a cheap model to summarize “new / removed / default-risk” in
 the PR body — never as the author of the JSON.
@@ -310,8 +357,9 @@ subscription OAuth or Claude Code identity headers.
 - [ ] Offline / CI hermetic: set `CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` or
       point `CODEWHALE_MODELS_DEV_PATH` at a fixture.
 - [ ] Before release: `seed lock --dry-run` to see how far the offline seed
-      has drifted from Models.dev; re-lock by PR if it matters. Skim
-      `PROVIDERS.md` for known drift.
+      has drifted from Models.dev, including the default-freshness block —
+      a stale default is a broken request, not just a stale price. Re-lock
+      by PR if it matters. Skim `PROVIDERS.md` for known drift.
 - [ ] After Models.dev adds a major family you ship by default: consider
       seed PR + default-model decision separately.
 - [ ] Never paste API keys into catalog assets or the automation script env

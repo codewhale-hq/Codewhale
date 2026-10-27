@@ -8,12 +8,12 @@ use super::turn_loop::{
     registered_tool_forces_prompt, replace_runtime_mcp_tools, repo_law_must_block_without_prompt,
     requested_sandbox_escalation, sandbox_escalation_denial, workspace_write_carve_out_applies,
 };
-use crate::config::ProviderKind;
 use crate::prompts::{
     InstructionSource, PromptSessionContext, system_prompt_flat_text,
     system_prompt_for_mode_with_context_skills_and_session,
 };
 use crate::test_support::{EnvVarGuard, lock_test_env};
+use codewhale_config::ProviderKind;
 use codewhale_models::{SystemBlock, Usage};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};

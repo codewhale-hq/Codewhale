@@ -96,6 +96,19 @@ impl ToolActionKind {
         }
     }
 
+    fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Read,
+            Self::Write,
+            Self::Shell,
+            Self::External,
+            Self::Publish,
+            Self::Destructive,
+        ]
+        .into_iter()
+        .find(|kind| kind.as_str() == name)
+    }
+
     #[must_use]
     pub fn from_tool_name(tool_name: &str, category: ToolCategory) -> Self {
         Self::from_tool_call(tool_name, &Value::Null, category, None)
@@ -183,7 +196,7 @@ impl ToolActionKind {
 /// action=delete classifies like the old `automation_delete`).
 fn action_qualified_tool_name(tool_name: &str, params: &Value) -> String {
     let semantic_tool_name =
-        crate::tools::canonical_action::canonical_action_alias(tool_name, params);
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, params);
     match semantic_tool_name.to_ascii_lowercase().as_str() {
         "automation" | "tasks" | "github" | "rlm" => {
             match params.get("action").and_then(Value::as_str) {
@@ -457,7 +470,7 @@ impl<'a> AutoReviewContext<'a> {
             let _membership = crate::test_support::join_env_scope(env_ticket);
             let trusted = workspace
                 .as_deref()
-                .is_some_and(crate::config::is_workspace_trusted);
+                .is_some_and(codewhale_runtime::config::is_workspace_trusted);
             AutoReviewContext::<'static>::from_tool_call_inner(
                 Cow::Owned(tool_name),
                 &params,
@@ -532,7 +545,7 @@ impl<'a> AutoReviewContext<'a> {
             approval_mode,
             workspace_trusted,
             outbound_web_request: matches!(
-                crate::tools::canonical_action::canonical_action_alias(name, params),
+                codewhale_execpolicy::canonical_action::canonical_action_alias(name, params),
                 "web_search" | "fetch_url" | "web_run" | "web.run"
             ),
             write_targets_bounded: workspace
@@ -630,6 +643,53 @@ impl AutoReviewRule {
     }
 }
 
+fn rule_from_config(
+    config: &codewhale_runtime::config::AutoReviewRuleConfig,
+    index: usize,
+    action: AutoReviewAction,
+) -> AutoReviewRule {
+    let id_prefix = match action {
+        AutoReviewAction::Allow => "allow",
+        AutoReviewAction::Block => "block",
+        AutoReviewAction::AskUser => "ask",
+    };
+    let id = config
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("config-{id_prefix}-{index}"));
+    let reason = config
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("configured auto-review {id_prefix} rule"));
+    let mut rule = match action {
+        AutoReviewAction::Allow => AutoReviewRule::allow(id, reason),
+        AutoReviewAction::Block | AutoReviewAction::AskUser => AutoReviewRule::block(id, reason),
+    };
+    if let Some(tool) = config
+        .tool
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        rule = rule.tool_name(tool.to_string());
+    }
+    if let Some(action_kind) = config
+        .action_kind
+        .as_deref()
+        .and_then(codewhale_runtime::config::auto_review_action_kind_name)
+        .and_then(ToolActionKind::from_name)
+    {
+        rule = rule.action_kind(action_kind);
+    }
+    rule
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutoReviewPolicy {
     pub allow_rules: Vec<AutoReviewRule>,
@@ -637,6 +697,27 @@ pub struct AutoReviewPolicy {
 }
 
 impl AutoReviewPolicy {
+    #[must_use]
+    pub fn from_config(config: &codewhale_runtime::config::Config) -> Self {
+        let Some(rules) = config.auto_review.as_ref() else {
+            return Self::default();
+        };
+        Self {
+            allow_rules: rules
+                .allow
+                .iter()
+                .enumerate()
+                .map(|(index, rule)| rule_from_config(rule, index, AutoReviewAction::Allow))
+                .collect(),
+            block_rules: rules
+                .block
+                .iter()
+                .enumerate()
+                .map(|(index, rule)| rule_from_config(rule, index, AutoReviewAction::Block))
+                .collect(),
+        }
+    }
+
     #[must_use]
     pub fn evaluate(&self, ctx: &AutoReviewContext<'_>) -> AutoReviewDecision {
         if let Some(rule) = self.block_rules.iter().find(|rule| rule.matches(ctx)) {
@@ -822,8 +903,9 @@ fn deterministic_fallback(
 fn file_write_target_paths(tool_name: &str, input: &Value) -> Option<Vec<String>> {
     // Judge the path the tool will write: it folds `file_path`/`filePath`
     // onto `path` before executing.
-    let input = &*crate::tools::file::with_canonical_path_argument(input);
-    let canonical = crate::tools::canonical_action::canonical_action_alias(tool_name, input);
+    let input = &*codewhale_tools::param_alias::with_canonical_path_argument(input);
+    let canonical =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input);
     Some(match canonical {
         "write_file" | "edit_file" => vec![
             input
@@ -834,7 +916,7 @@ fn file_write_target_paths(tool_name: &str, input: &Value) -> Option<Vec<String>
                 .map(str::to_string)?,
         ],
         "apply_patch" => {
-            crate::tools::apply_patch::preflight_apply_patch(input)
+            codewhale_tools::patch_preflight::preflight_apply_patch(input)
                 .ok()?
                 .touched_files
         }
@@ -858,7 +940,7 @@ fn file_write_delete_paths(
     input: &Value,
     workspace: Option<&std::path::Path>,
 ) -> Vec<String> {
-    let input = &*crate::tools::file::with_canonical_path_argument(input);
+    let input = &*codewhale_tools::param_alias::with_canonical_path_argument(input);
     let empties_existing = |entry: &Value| -> Option<String> {
         let path = entry
             .get("path")
@@ -874,9 +956,9 @@ fn file_write_delete_paths(
             workspace.is_some_and(|workspace| workspace.join(path).symlink_metadata().is_ok());
         (empty && exists).then(|| path.to_string())
     };
-    match crate::tools::canonical_action::canonical_action_alias(tool_name, input) {
+    match codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, input) {
         "apply_patch" => {
-            let mut paths = crate::tools::apply_patch::preflight_apply_patch(input)
+            let mut paths = codewhale_tools::patch_preflight::preflight_apply_patch(input)
                 .map(|preflight| preflight.deletes)
                 .unwrap_or_default();
             let entries = ["replace", "changes"]
@@ -906,7 +988,7 @@ fn file_write_delete_paths(
 /// silently allowed.
 fn paths_git_cannot_restore(workspace: &std::path::Path, paths: &[String]) -> Vec<String> {
     let run = |args: &[&str]| -> Option<bool> {
-        let mut command = crate::dependencies::Git::review_command(workspace).ok()?;
+        let mut command = codewhale_dependencies::Git::review_command(workspace).ok()?;
         // Paths are file names, never patterns: `notes[1].txt` must not match
         // a tracked `notes1.txt`, nor `:(glob)*` every tracked file.
         command
@@ -1056,8 +1138,10 @@ pub(crate) fn build_reviewer_context(
     let tool = redact_model_bound_secrets(ctx.tool_name.as_ref());
     let hold_reason = redact_model_bound_secrets(held_reason);
     let credentials_masked = input != *tool_input || tool != ctx.tool_name.as_ref();
-    if crate::tools::canonical_action::canonical_action_alias(ctx.tool_name.as_ref(), tool_input)
-        == "exec_shell"
+    if codewhale_execpolicy::canonical_action::canonical_action_alias(
+        ctx.tool_name.as_ref(),
+        tool_input,
+    ) == "exec_shell"
         && let Some(fields) = input.as_object_mut()
     {
         fields.remove("description");
@@ -1180,7 +1264,7 @@ fn execution_texts<'a>(tool_name: &str, params: &'a Value) -> Vec<(ExecutionInpu
             .and_then(Value::as_str)
             .map(|stdin| (ExecutionInput::Stdin, Cow::Borrowed(stdin)))
     };
-    match crate::tools::canonical_action::canonical_action_alias(tool_name, params) {
+    match codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, params) {
         "exec_shell" | "task_shell_start" => command().into_iter().chain(stdin()).collect(),
         "task_gate_run" => command().into_iter().collect(),
         "exec_shell_interact" | "exec_interact" => stdin().into_iter().collect(),
@@ -1938,11 +2022,11 @@ fn strictly_inside(workspace: Option<&std::path::Path>, target: &str) -> bool {
         return false;
     };
     if target.contains(['*', '?', '[', ']', '{', '}', '~', '$'])
-        || crate::snapshot::repo::unsafe_workspace_snapshot_reason(
+        || codewhale_snapshot::repo::unsafe_workspace_snapshot_reason(
             &workspace
                 .canonicalize()
                 .unwrap_or_else(|_| workspace.to_path_buf()),
-            crate::config::effective_home_dir().as_deref(),
+            codewhale_paths::user_home().as_deref(),
         )
         .is_some()
     {
@@ -3012,7 +3096,7 @@ mod tests {
         }
         // Unsafe workspaces clear nothing by being "inside" them.
         assert!(destroyer_held(std::path::Path::new("/"), "rm -rf /usr"));
-        if let Some(home) = crate::config::effective_home_dir()
+        if let Some(home) = codewhale_paths::user_home()
             && let Some(existing) = std::fs::read_dir(&home).ok().and_then(|entries| {
                 entries
                     .flatten()
@@ -3801,7 +3885,7 @@ mod tests {
         let home = tempfile::tempdir().expect("test home");
         let workspace = tempfile::tempdir().expect("workspace");
         let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::config::save_workspace_trust(workspace.path()).expect("save trust");
+        codewhale_runtime::config::save_workspace_trust(workspace.path()).expect("save trust");
 
         let context = tokio::time::timeout(
             Duration::from_secs(2),

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
-  "revision": "2e3a6fba453c9b34d5b1444ab5bd6edc7b119189",
+  "revision": "a5f1d210372ff48c9a278a0a39737956ac0f2d93",
   "catalog": {
     "name": "codewhale",
     "description": "First-party Codewhale extensions: the plugins and skills Codewhale ships, maintained in the open so anyone can propose a change.",
@@ -8,7 +8,7 @@
     "plugins": [
       {
         "name": "chromewhale",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/chromewhale",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/chromewhale",
         "version": "0.4.0",
         "description": "Let Codewhale read and act on selected Chrome tabs and frames, one granted site at a time. Needs the bundled Chrome extension loaded.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace/tree/main/plugins/chromewhale",
@@ -17,7 +17,7 @@
       },
       {
         "name": "cloudflare",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/cloudflare",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/cloudflare",
         "version": "0.1.0",
         "description": "Cloudflare Workers workflows for Codewhale: build and test Workers, deploy with cf only after you approve, use KV, R2, D1 and Durable Objects, and move Pages projects to Workers.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -26,7 +26,7 @@
       },
       {
         "name": "cloudflare-docs",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/cloudflare-docs",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/cloudflare-docs",
         "version": "0.1.0",
         "description": "Search current Cloudflare documentation through its official remote MCP. No account or credential required.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -35,7 +35,7 @@
       },
       {
         "name": "codewhale-skills",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=skills",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=skills",
         "version": "1.1.0",
         "description": "47 workflows for coding, research, documents, email, calendar, travel, shopping and local audio. Account and tool setup is separate; see the skill directory.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -44,8 +44,8 @@
       },
       {
         "name": "computer-use",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/computer-use",
-        "version": "0.12.1",
+        "source": "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/latest/download/computer-use.tar.gz",
+        "version": "0.13.0",
         "description": "Control apps with Codewhale. macOS beta; unsigned Windows preview and experimental Linux/Docker support.",
         "homepage": "https://codewhale.net/computer-use",
         "display_name": "Computer Use",
@@ -57,7 +57,7 @@
       },
       {
         "name": "design-review",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/design-review",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/design-review",
         "version": "0.1.0",
         "description": "Review a user interface three ways: a severity-ranked design critique, a WCAG-based accessibility audit with a static scanner and contrast calculator, and a UX copy review.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -66,7 +66,7 @@
       },
       {
         "name": "github-workflow",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/github-workflow",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/github-workflow",
         "version": "0.1.0",
         "description": "Review pull requests, triage issues and file well-formed issues through GitHub's official remote MCP server. Needs your own GitHub token; never posts without your approval.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -75,7 +75,7 @@
       },
       {
         "name": "hello-extension",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/samples/hello-extension",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/samples/hello-extension",
         "version": "0.1.0",
         "description": "A runnable sample of a native TypeScript extension: one greeting tool and /hello-greet. Install it to see the review flow; it only runs with the experimental extension host turned on.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace/tree/main/plugins/samples/hello-extension",
@@ -88,7 +88,7 @@
       },
       {
         "name": "linear-workflow",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/linear-workflow",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/linear-workflow",
         "version": "0.1.0",
         "description": "Triage Linear issues, claim work with evidence and post status updates through Linear's official remote MCP server. Needs your own Linear API key.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -97,7 +97,7 @@
       },
       {
         "name": "loop",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/loop",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/loop",
         "version": "0.1.0",
         "description": "Run a task again and again until it is done: /loop <prompt> [--max N] [--until <phrase>] re-prompts the session after every reply, with a hard iteration cap, a completion phrase and /cancel-loop.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -110,7 +110,7 @@
       },
       {
         "name": "review-toolkit",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/review-toolkit",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/review-toolkit",
         "version": "0.1.0",
         "description": "Six read-only specialist reviewers (silent failures, type design, test gaps, comment accuracy, simplification, general correctness) and a /review-pr command that fans them out over your diff and merges one ranked report.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -119,7 +119,7 @@
       },
       {
         "name": "skills-dev-process",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/skills-dev-process",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/skills-dev-process",
         "version": "0.1.0",
         "description": "Software process workflows: plan, implement, debug, test, review, security-review, simplify, verify, hand off, and interview for missing requirements.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -128,7 +128,7 @@
       },
       {
         "name": "skills-docs",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/skills-docs",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/skills-docs",
         "version": "0.1.0",
         "description": "Workflows for Word, PDF, PowerPoint and Excel files, plus writing repository documentation. No account or connection needed.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -137,7 +137,7 @@
       },
       {
         "name": "skills-google",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/skills-google",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/skills-google",
         "version": "0.1.0",
         "description": "Workflows for Gmail and Google Calendar through a connected tool or your own OAuth client. Does not connect an account by itself.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -146,7 +146,7 @@
       },
       {
         "name": "skills-personal",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/skills-personal",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/skills-personal",
         "version": "0.1.0",
         "description": "Everyday workflows for bank balances, shopping, flights, local Photos, Spotify, speech, podcasts and image search. Each skill states its own setup.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -155,7 +155,7 @@
       },
       {
         "name": "vercel-workflow",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/vercel-workflow",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/vercel-workflow",
         "version": "0.1.0",
         "description": "Vercel workflows for Codewhale: preview and production deploys only after you approve, environment variables, runtime and build logs, and Next.js configuration.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -164,7 +164,7 @@
       },
       {
         "name": "web-artifacts-builder",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/web-artifacts-builder",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/web-artifacts-builder",
         "version": "0.1.0",
         "description": "Build a self-contained single-file or small React and Tailwind page locally, check that it is really self-contained, and preview it on loopback.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -173,7 +173,7 @@
       },
       {
         "name": "whalesong",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/whalesong",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/whalesong",
         "version": "0.2.0",
         "description": "Review agent traces and failures, compare runs, and turn session timing into audio. Requires the local Whalesong platform.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",
@@ -182,7 +182,7 @@
       },
       {
         "name": "whalewiki",
-        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/2e3a6fba453c9b34d5b1444ab5bd6edc7b119189#path=plugins/whalewiki",
+        "source": "https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/a5f1d210372ff48c9a278a0a39737956ac0f2d93#path=plugins/whalewiki",
         "version": "0.2.0",
         "description": "Understand a repo, find where to change it, and see which docs depend on a file. Source citations, freshness checks and a searchable offline reader.",
         "homepage": "https://github.com/codewhale-hq/codewhale-plugin-marketplace",

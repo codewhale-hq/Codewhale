@@ -233,7 +233,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             let laid_out = layout_agent_row(
                 usize::from(content_area.width).saturating_sub(queued_width),
                 UnicodeWidthStr::width(prefix.as_str()),
-                agent_identity(row, identity_cap),
+                &agent_identity(row, identity_cap),
                 identity_column,
                 status_column,
                 facts,

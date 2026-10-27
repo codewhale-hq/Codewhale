@@ -14,13 +14,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
-use crate::config::DEEPSEEK_ALIAS_RETIREMENT_UTC;
-use crate::config::ProviderKind;
 use crate::pricing::{
     CostEstimate, TurnCostAudit, audit_turn_cost_for_route_at, token_usage_for_pricing,
 };
+use codewhale_config::ProviderKind;
 use codewhale_models::Usage;
+#[cfg(test)]
+use codewhale_runtime::config::DEEPSEEK_ALIAS_RETIREMENT_UTC;
 
 /// One turn's normalized token economics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -887,7 +887,7 @@ mod tests {
 
         let cloud = provider_scoped_cost(
             ProviderKind::OllamaCloud,
-            crate::config::DEFAULT_OLLAMA_CLOUD_MODEL,
+            codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_CLOUD_MODEL,
             &usage,
             None,
             Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE),

@@ -180,7 +180,7 @@ impl CapturedPdf {
             bytes.extend_from_slice(&start.to_le_bytes());
             bytes.extend_from_slice(&end.to_le_bytes());
         }
-        crate::hashing::sha256_hex(&bytes)
+        codewhale_runtime::hashing::sha256_hex(&bytes)
     }
 }
 
@@ -280,10 +280,11 @@ async fn extract_captured(
     if request.cancel.is_some_and(CancellationToken::is_cancelled) {
         return Err(PdfTextError::Cancelled);
     }
-    if let Some(context) = request
-        .context
-        .filter(|context| context.features.enabled(crate::features::Feature::PdfHost))
-    {
+    if let Some(context) = request.context.filter(|context| {
+        context
+            .features
+            .enabled(codewhale_runtime::features::Feature::PdfHost)
+    }) {
         // Capture the existing Core deadline before entering the broker. An
         // expired job's final receipt check can beat its timeout response; the
         // generic RPC error must not erase the real Core terminal outcome.
@@ -330,14 +331,14 @@ pub(crate) async fn run_pdf_driver(
     let output = async {
         if cancel.is_some_and(CancellationToken::is_cancelled) { return Err(PdfTextError::Cancelled); }
         let mut command = tokio::process::Command::new(&input.binary);
-        crate::utils::suppress_tokio_console_window(&mut command);
+        codewhale_util::utils::suppress_tokio_console_window(&mut command);
         command.arg("-layout");
         if let Some((start,end))=input.page_range { command.arg("-f").arg(start.to_string()).arg("-l").arg(end.to_string()); }
         command.arg(&input.path).arg("-").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        crate::child_env::apply_to_tokio_command(&mut command,std::iter::empty::<(&str,&str)>());
+        codewhale_runtime::child_env::apply_to_tokio_command(&mut command,std::iter::empty::<(&str,&str)>());
         #[cfg(unix)] command.process_group(0);
         let mut child = command.spawn().map_err(|error| if error.kind()==std::io::ErrorKind::NotFound { PdfTextError::BinaryUnavailable } else { PdfTextError::Execution(format!("failed to launch pdftotext: {error}")) })?;
-        let tree = crate::process_tree::ProcessTree::attach_tokio(&child).map_err(|error| PdfTextError::Execution(format!("failed to contain pdftotext: {error}")))?;
+        let tree = codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child).map_err(|error| PdfTextError::Execution(format!("failed to contain pdftotext: {error}")))?;
         let stdout=child.stdout.take().ok_or_else(||PdfTextError::Execution("failed to capture pdftotext stdout".into()))?;
         let stderr=child.stderr.take().ok_or_else(||PdfTextError::Execution("failed to capture pdftotext stderr".into()))?;
         let stdout_task=tokio::spawn(read_bounded(stdout,MAX_PDF_STDOUT_BYTES));

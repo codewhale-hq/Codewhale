@@ -1,5 +1,3 @@
-
-
 #[tokio::test]
 async fn queued_goal_clear_refreshes_prompt_and_cancels_stale_continuation() {
     let config = Config::default();
@@ -105,21 +103,24 @@ fn goal_custom_route_config() -> Config {
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    {
+        let __cw_config_init_0_0 = Some("custom-a".to_string());
+        let __cw_config_init_0_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_0_value: Config = Config::default();
+        __cw_config_init_0_value.provider = __cw_config_init_0_0;
+        __cw_config_init_0_value.providers = __cw_config_init_0_1;
+        __cw_config_init_0_value
     }
 }
 
@@ -561,7 +562,10 @@ async fn exhausted_goal_reaches_route_failure_without_budget_pause() {
     };
     let (mut engine, handle) = Engine::new(engine_config, &config);
     let goal_state = engine.config.goal_state.clone();
-    goal_state.lock().expect("goal lock").record_usage(11, 0, std::time::Instant::now());
+    goal_state
+        .lock()
+        .expect("goal lock")
+        .record_usage(11, 0, std::time::Instant::now());
 
     let invalid_route_config = without_named_custom_route(config);
     engine.authoritative_route_config =
@@ -1236,21 +1240,24 @@ async fn host_managed_engine_does_not_self_dispatch_goal_continuation() {
     let mut custom = HashMap::new();
     custom.insert(
         "custom-a".to_string(),
-        crate::config::ProviderConfig {
+        codewhale_runtime::config::ProviderConfig {
             kind: Some("openai-compatible".to_string()),
             base_url: Some("http://127.0.0.1:18181/v1".to_string()),
             model: Some("local-model".to_string()),
             api_key: Some("local-test-key".to_string()),
-            ..crate::config::ProviderConfig::default()
+            ..codewhale_runtime::config::ProviderConfig::default()
         },
     );
-    let config = Config {
-        provider: Some("custom-a".to_string()),
-        providers: Some(crate::config::ProvidersConfig {
+    let config = {
+        let __cw_config_init_1_0 = Some("custom-a".to_string());
+        let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
             custom,
-            ..crate::config::ProvidersConfig::default()
-        }),
-        ..Config::default()
+            ..codewhale_runtime::config::ProvidersConfig::default()
+        });
+        let mut __cw_config_init_1_value: Config = Config::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
     };
     let runtime_services = crate::tools::spec::RuntimeToolServices {
         active_thread_id: Some("thr_host_managed".to_string()),

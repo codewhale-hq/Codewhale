@@ -156,7 +156,7 @@ impl SkillsManagerView {
             ManagerMode::Compatible => ManagerMode::OwnedOnly,
         };
         let focus = self.selected_skill().map(|s| s.id.clone());
-        let home = crate::config::effective_home_dir();
+        let home = codewhale_paths::user_home();
         let snap = if self.mode == ManagerMode::OwnedOnly {
             expand_owned_scan_to_compatible(
                 &app.workspace,
@@ -518,7 +518,7 @@ impl SkillsManagerView {
 fn scan_snapshot(app: &App, mode: ManagerMode) -> SkillAuditSnapshot {
     scan_with_configured(
         &app.workspace,
-        crate::config::effective_home_dir().as_deref(),
+        codewhale_paths::user_home().as_deref(),
         Some(&app.skills_dir),
         mode.audit_mode(),
         None,
@@ -760,8 +760,8 @@ pub fn apply_toggle_compatible(view: &mut SkillsManagerView, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_runtime::config::Config;
     use crossterm::event::{KeyEventKind, KeyModifiers};
     use std::ffi::OsString;
     use std::fs;
@@ -857,7 +857,7 @@ mod tests {
         )
         .unwrap();
         let digest = crate::skills::audit::compute_package_digest(&skill_dir).unwrap();
-        crate::skills::install::write_installed_from_v2(
+        codewhale_skill_install::install::write_installed_from_v2(
             &skill_dir,
             "github:o/r",
             None,

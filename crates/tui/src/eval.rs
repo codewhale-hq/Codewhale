@@ -753,7 +753,7 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
 }
 
 fn run_bash(root: &Path, command: &str) -> Result<String> {
-    crate::shell_dispatcher::global_dispatcher().run_foreground(command, root)
+    codewhale_sandbox::shell_dispatcher::global_dispatcher().run_foreground(command, root)
 }
 
 fn truncate_output(value: &str, max_chars: usize) -> String {

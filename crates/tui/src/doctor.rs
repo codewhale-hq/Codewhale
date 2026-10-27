@@ -39,7 +39,7 @@ impl DoctorPathReport {
             None => codewhale_config::resolve_config_path(None)
                 .unwrap_or_else(|_| home.join(codewhale_config::CONFIG_FILE_NAME)),
         };
-        let settings = crate::settings::Settings::path()
+        let settings = codewhale_runtime::settings::Settings::path()
             .context("could not resolve the canonical settings path")?;
         let sessions = codewhale_config::resolve_state_dir("sessions")
             .context("could not resolve the sessions path")?;
@@ -227,27 +227,6 @@ pub(crate) fn config_credential_shaped_keys(raw: &str) -> Vec<String> {
     flagged
 }
 
-/// Return only the non-secret network authority of a configured URL.
-///
-/// Userinfo, path, query keys and values, and fragments are all omitted because
-/// every one of those components can carry credentials. Parse failures also
-/// omit the original input rather than echoing an attacker-controlled value.
-pub(crate) fn structural_url_authority(url: &str) -> String {
-    let Some(parsed) = reqwest::Url::parse(url).ok() else {
-        return "unparseable (configured value omitted)".to_string();
-    };
-    let Some(host) = parsed.host_str() else {
-        return "unparseable (configured value omitted)".to_string();
-    };
-    // Url::host_str already includes the brackets around an IPv6 address.
-    let mut authority = format!("{}://{host}", parsed.scheme());
-    if let Some(port) = parsed.port() {
-        authority.push(':');
-        authority.push_str(&port.to_string());
-    }
-    authority
-}
-
 /// Explicit live operations requested for one doctor invocation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DoctorProbeRequest {
@@ -323,17 +302,17 @@ pub(crate) enum DoctorSearchProbeFailure {
 /// Probe the selected search provider without reading credentials, issuing a
 /// query, following redirects, or writing a network-policy audit receipt.
 pub(crate) async fn doctor_search_probe(
-    config: &crate::config::Config,
+    config: &codewhale_runtime::config::Config,
     probes: DoctorProbeRequest,
 ) -> DoctorSearchProbeReport {
-    use crate::network_policy::{Decision, NetworkPolicyDecider};
+    use codewhale_net::network_policy::{Decision, NetworkPolicyDecider};
 
     if !probes.should_probe_search() {
         return DoctorSearchProbeReport::NotChecked;
     }
     if !config
         .features()
-        .enabled(crate::features::Feature::WebSearch)
+        .enabled(codewhale_runtime::features::Feature::WebSearch)
     {
         return DoctorSearchProbeReport::FeatureDisabled;
     }
@@ -347,12 +326,15 @@ pub(crate) async fn doctor_search_probe(
         Ok(target) => target,
         Err(error) => return DoctorSearchProbeReport::ConfigurationError(error),
     };
-    let authority = structural_url_authority(target.url.as_str());
+    let authority = codewhale_config::structural_url_authority(target.url.as_str());
 
     if let Some(policy) = config.network.clone().map(|network| {
         // Doctor is a read-only diagnostic. Evaluate the same typed policy as
         // web_search, but do not attach the runtime audit writer.
-        NetworkPolicyDecider::new(network.into_runtime(), None)
+        NetworkPolicyDecider::new(
+            codewhale_net::network_policy::NetworkPolicy::from(network),
+            None,
+        )
     }) {
         match policy.evaluate(&target.host, "web_search") {
             Decision::Allow => {}
@@ -363,7 +345,7 @@ pub(crate) async fn doctor_search_probe(
         }
     }
 
-    let client = match crate::tls::reqwest_client_builder()
+    let client = match codewhale_release::tls::reqwest_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(SEARCH_PROBE_TIMEOUT)
         .timeout(SEARCH_PROBE_TIMEOUT)
@@ -555,13 +537,13 @@ pub(crate) async fn print_update_report(probes: DoctorProbeRequest) {
     }
 }
 
-pub(crate) fn is_keyless_ds4_route(config: &crate::config::Config) -> bool {
+pub(crate) fn is_keyless_ds4_route(config: &codewhale_runtime::config::Config) -> bool {
     config
         .provider
         .as_deref()
         .is_some_and(|provider| provider.eq_ignore_ascii_case("ds4"))
-        && crate::config::base_url_uses_local_host(&config.active_route_base_url())
-        && crate::config::auth_mode_disables_api_key(
+        && codewhale_runtime::config::base_url_uses_local_host(&config.active_route_base_url())
+        && codewhale_config::auth_mode_disables_api_key(
             config
                 .active_provider_identity()
                 .ok()
@@ -572,11 +554,14 @@ pub(crate) fn is_keyless_ds4_route(config: &crate::config::Config) -> bool {
 
 /// Probe DS4 through its cheap `/v1/models` contract instead of waking the
 /// model for a completion. The selected model must be advertised.
-pub(crate) async fn probe_ds4_models(config: &crate::config::Config) -> anyhow::Result<()> {
+pub(crate) async fn probe_ds4_models(
+    config: &codewhale_runtime::config::Config,
+) -> anyhow::Result<()> {
     use crate::client::CodewhaleClient;
     use crate::core::model_client::ModelClient;
 
-    let endpoint = crate::client::redact_url_for_display(&config.active_route_base_url());
+    let endpoint =
+        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
     let client = CodewhaleClient::new(config)?;
     let configured_alias = client.model().to_string();
     let models = match tokio::time::timeout(
@@ -612,8 +597,9 @@ pub(crate) async fn probe_ds4_models(config: &crate::config::Config) -> anyhow::
     Ok(())
 }
 
-fn ds4_probe_error(config: &crate::config::Config, error: &str) -> String {
-    let endpoint = crate::client::redact_url_for_display(&config.active_route_base_url());
+fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> String {
+    let endpoint =
+        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
     let status = error
         .split_whitespace()
         .collect::<Vec<_>>()

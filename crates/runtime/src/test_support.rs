@@ -550,3 +550,12 @@ mod tests {
         );
     }
 }
+
+/// Build a syntactically valid, non-secret JWT fixture without embedding a
+/// high-entropy token-shaped literal in Git history.
+pub fn future_test_jwt(label: &str) -> String {
+    use base64::Engine as _;
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":9999999999}"#);
+    format!("test.{payload}.{label}")
+}

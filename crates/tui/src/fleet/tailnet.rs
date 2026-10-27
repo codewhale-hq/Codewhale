@@ -66,9 +66,12 @@ pub fn parse_inventory(bytes: &[u8]) -> Result<Vec<TailnetNode>> {
 pub fn inventory() -> Result<Vec<TailnetNode>> {
     let mut command = Command::new("tailscale");
     command.args(["status", "--json"]);
-    crate::utils::suppress_console_window(&mut command);
-    crate::child_env::apply_to_command(&mut command, std::iter::empty::<(&str, &str)>());
-    let output = crate::dependencies::probe_output_bounded(
+    codewhale_util::utils::suppress_console_window(&mut command);
+    codewhale_runtime::child_env::apply_to_command(
+        &mut command,
+        std::iter::empty::<(&str, &str)>(),
+    );
+    let output = codewhale_dependencies::probe_output_bounded(
         &mut command,
         true,
         Duration::from_secs(5),

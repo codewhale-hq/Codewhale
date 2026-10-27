@@ -285,7 +285,7 @@ mod adapter_agreement_tests {
     use serde_json::{Value, json};
 
     use super::super::{anthropic, chat, responses};
-    use crate::config::ProviderKind;
+    use codewhale_config::ProviderKind;
     use codewhale_models::{
         ContentBlock, INTERRUPTED_ASSISTANT_CONTEXT_PREFIX, Message, MessageRequest, Role,
     };

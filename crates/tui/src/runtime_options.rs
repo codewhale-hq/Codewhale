@@ -45,8 +45,9 @@ pub struct RuntimeOptions {
     /// Disable a feature for this run (repeatable).
     #[arg(long = "disable", value_name = "FEATURE", action = clap::ArgAction::Append, global = true)]
     pub disable: Vec<String>,
-    /// Legacy compatibility alias for Act + Full Access.
-    #[arg(long, hide = true)]
+    /// Run with Full Access: no approval prompts and no Codewhale sandbox
+    /// (the same as `yolo = true`; `--yolo` is an alias).
+    #[arg(long = "full-access", alias = "yolo")]
     pub yolo: bool,
     /// Maximum number of concurrent sub-agents (1-128; default 64).
     #[arg(long)]
@@ -97,7 +98,7 @@ impl RuntimeOptions {
         flag!(skip_onboarding, "--skip-onboarding");
         flag!(fresh, "--fresh");
         flag!(no_project_config, "--no-project-config");
-        flag!(yolo, "--yolo");
+        flag!(yolo, "--full-access");
         flag!(verbose, "--verbose");
         flag!(remote_control, "--remote-control");
         if self.mouse_capture && self.no_mouse_capture {
@@ -108,7 +109,10 @@ impl RuntimeOptions {
         Ok(self)
     }
 
-    pub(crate) fn apply_features(&self, config: &mut crate::config::Config) -> Result<()> {
+    pub(crate) fn apply_features(
+        &self,
+        config: &mut codewhale_runtime::config::Config,
+    ) -> Result<()> {
         for feature in &self.enable {
             config.set_feature(feature, true)?;
         }
@@ -170,12 +174,12 @@ mod tests {
         let merged = root.merge(command).unwrap();
         assert_eq!(merged.workspace, Some(PathBuf::from("command workspace")));
         assert!(merged.no_project_config);
-        let mut config = crate::config::Config::default();
+        let mut config = codewhale_runtime::config::Config::default();
         merged.apply_features(&mut config).unwrap();
         assert!(
             !config
                 .features()
-                .enabled(crate::features::Feature::WebSearch)
+                .enabled(codewhale_runtime::features::Feature::WebSearch)
         );
     }
 }

@@ -37,6 +37,26 @@
 # --- Flag-backed tools (crates/runtime/src/features.rs) ---
 
 [[feature]]
+id = "unix-uninstall"
+name = "Receipt-owned uninstall"
+summary = "Remove a receipt-owned release install or print its package manager's command; data kept unless --purge-data."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/INSTALL.md"
+owner = "crates/cli/src/update/uninstall.rs"
+
+[[feature]]
+id = "cloud-computer-dispatch"
+name = "Cloud computer conversations"
+summary = "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/CLOUD_DISPATCH.md"
+owner = "crates/cli/src/cloud/computer.rs"
+
+[[feature]]
 id = "shell-tool"
 name = "Shell tool"
 summary = "Runs shell commands for the agent through the approval gate and sandbox."
@@ -149,7 +169,7 @@ id = "extension-host"
 name = "Extension host"
 summary = "Runs reviewed plugins' native TypeScript/JavaScript tool and slash-command code in a Bun or Node sidecar."
 status = "flagged"
-surfaces = { tui = "preview", web = "none", api = "none" }
+surfaces = { tui = "preview", web = "none", api = "preview" }
 since = "0.10.1"
 flag = "extension_host"
 docs = "docs/EXTENSIONS.md"
@@ -277,16 +297,16 @@ owner = "crates/execpolicy/src/approval_mode.rs"
 [[feature]]
 id = "sandbox"
 name = "Command sandbox"
-summary = "Wraps commands in Seatbelt on macOS; bubblewrap on Linux is on by default once installed and verified."
+summary = "Seatbelt on macOS; verified bubblewrap on Linux by default. Sandboxed PTYs require util-linux setsid."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/SANDBOX.md"
-owner = "crates/tui/src/sandbox"
+owner = "crates/sandbox/src"
 
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes with endpoint-scoped model facts, explicit limits and sourced price estimates."
+summary = "Provider routes with scoped facts, limits, price estimates and a disclosed OrcaRouter offer in the pickers."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -300,6 +320,16 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
 owner = "crates/tui/src/model_routing.rs"
+
+[[feature]]
+id = "output-limit-answer-recovery"
+name = "Answerless output-limit recovery"
+summary = "Opt-in bounded answer retries after an output-limit stop, including Fleet, with request-scoped nudge receipts."
+status = "flagged"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only"
+owner = "crates/tui/src/core/engine/turn_loop/continuation.rs"
 
 [[feature]]
 id = "fleet"
@@ -345,6 +375,16 @@ status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/CONFIGURATION.md#goal-loop-goal"
 owner = "crates/tui/src/tools/goal.rs"
+
+[[feature]]
+id = "thread-scheduled-turns"
+name = "Reminders into the same thread"
+summary = "send_later, automations and /v1/triggers can deliver a scheduled message as a new turn in an existing thread."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md"
+owner = "crates/tui/src/automation_manager.rs"
 
 [[feature]]
 id = "todos"
@@ -424,11 +464,11 @@ owner = "crates/tui/src/plugins"
 [[feature]]
 id = "computer-use"
 name = "Computer Use"
-summary = "Reviewed app control with consent, fresh element targets, observation diffs and bounded named action batches."
+summary = "Reviewed app control: one approval covers background and foreground use, fresh targets, bounded batches."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 docs = "docs/PLUGIN_BUNDLES.md"
-owner = "crates/tui/plugins/computer-use"
+owner = "crates/tui/src/plugins/marketplace"
 
 [[feature]]
 id = "script-tools"
@@ -454,7 +494,7 @@ name = "Claude settings import"
 summary = "/import-claude plans a reviewable import of Claude Code settings and servers."
 status = "stable"
 surfaces = { tui = "stable" }
-owner = "crates/tui/src/import_claude.rs"
+owner = "crates/net/src/import_claude.rs"
 
 [[feature]]
 id = "hooks"
@@ -472,16 +512,36 @@ summary = "Feeds language-server diagnostics to the agent; custom servers can be
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/LSP_PHP_CUSTOM.md"
-owner = "crates/tui/src/lsp"
+owner = "crates/lsp/src"
 
 [[feature]]
 id = "runtime-api"
 name = "Runtime API"
-summary = "Local API: threads, events, approvals, project trust, workspace leases, Unix store sockets and scoped device tokens."
+summary = "Local API: replay-safe thread creation, events, approvals, project trust, workspace leases, Unix sockets, device tokens."
 status = "stable"
 surfaces = { api = "stable" }
 docs = "docs/RUNTIME_API.md"
 owner = "crates/tui/src/runtime_api.rs"
+
+[[feature]]
+id = "compatibility-tool-free-turns"
+name = "Compatibility turn admission"
+summary = "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API."
+status = "stable"
+surfaces = { api = "stable" }
+since = "0.10.2"
+docs = "docs/RUNTIME_API.md#compatibility-execution-limits"
+owner = "crates/app-server/src/lib.rs"
+
+[[feature]]
+id = "runtime-provider-keys"
+name = "Runtime provider keys"
+summary = "Runtime API provider keys: durable or process-only memory, with a session-only policy that disables stored fallback."
+status = "stable"
+surfaces = { api = "stable" }
+since = "0.10.2"
+docs = "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential"
+owner = "crates/tui/src/runtime_api/secrets.rs"
 
 [[feature]]
 id = "headless-exec"
@@ -697,7 +757,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "0.10.1"
 docs = "docs/PROVIDERS.md#sign-in-with-chatgpt"
-owner = "crates/tui/src/oauth.rs"
+owner = "crates/runtime/src/oauth.rs"
 
 [[feature]]
 id = "claude-plan-sign-in"
@@ -707,7 +767,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "0.10.2"
 docs = "docs/PROVIDERS.md#sign-in-with-claude"
-owner = "crates/tui/src/oauth.rs"
+owner = "crates/runtime/src/oauth.rs"
 
 [[feature]]
 id = "plugin-oauth-providers"
@@ -727,7 +787,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "preview", web = "none" }
 since = "0.10.1"
 docs = "docs/PROVIDERS.md"
-owner = "crates/tui/src/oauth.rs"
+owner = "crates/runtime/src/oauth.rs"
 
 # Community marketing website, separate from the Runtime's local web client.
 [[feature]]
@@ -789,3 +849,52 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.2"
 docs = "docs/ECHOLOCATION.md"
 owner = "crates/tui/src/tools/echolocation.rs"
+
+[[feature]]
+id = "herdr-agent-state"
+name = "Herdr agent state"
+summary = "Reports idle, working or blocked to the Herdr multiplexer and reopens the session after a restart."
+status = "stable"
+since = "0.10.2"
+surfaces = { tui = "stable" }
+owner = "crates/tui/src/tui/herdr.rs"
+
+[[feature]]
+id = "instruction-budgets"
+name = "Instruction budgets"
+summary = "Global and project standing instructions get separate token budgets, with every trim or skip reported."
+status = "stable"
+since = "unreleased"
+surfaces = { tui = "stable" }
+docs = "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526"
+owner = "crates/tui/src/project_context/budget.rs"
+
+[[feature]]
+id = "github-action-review"
+name = "GitHub Action review"
+summary = "Review pull requests with the Engine and publish validated findings from a separate trusted job."
+status = "experimental"
+since = "unreleased"
+surfaces = { tui = "preview" }
+docs = "docs/GITHUB_ACTION.md"
+owner = "scripts/github-action/review.mjs"
+
+[[feature]]
+id = "telegram-agent"
+name = "Telegram agent bridge"
+summary = "Use an Engine from Telegram with durable prompt recovery, human-owned approvals and retained replies."
+status = "experimental"
+since = "unreleased"
+surfaces = { api = "preview" }
+docs = "integrations/telegram-bridge/README.md"
+owner = "integrations/telegram-bridge/src/index.mjs"
+
+[[feature]]
+id = "dingtalk-agent"
+name = "DingTalk agent bridge"
+summary = "Connect an internal DingTalk app to the same Engine with scoped identity and durable message recovery."
+status = "experimental"
+since = "unreleased"
+surfaces = { api = "preview" }
+docs = "integrations/dingtalk-bridge/README.md"
+owner = "integrations/dingtalk-bridge/src/index.mjs"

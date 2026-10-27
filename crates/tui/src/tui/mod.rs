@@ -55,6 +55,7 @@ pub mod git_mention;
 pub mod glyphs;
 #[cfg(test)]
 pub(crate) mod golden_harness;
+pub mod herdr;
 pub mod history;
 pub mod hot_tail;
 pub mod hotbar;

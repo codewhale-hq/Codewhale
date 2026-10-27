@@ -507,7 +507,7 @@ pub(crate) fn subagent_role_label(
         .or_else(|| non_empty(agent_type.as_str()))
         .map_or_else(
             || "agent".to_string(),
-            |role| crate::fleet::role::public_role_label(&role),
+            |role| codewhale_agent_contract::role::public_role_label(&role),
         )
 }
 
@@ -554,7 +554,7 @@ pub(crate) fn subagent_result_display_name(result: &super::SubAgentResult) -> St
 #[cfg(test)]
 mod display_name_tests {
     use super::*;
-    use crate::tools::subagent::FleetRole;
+    use codewhale_agent_contract::role::FleetRole;
 
     #[test]
     fn one_name_precedence_never_falls_to_the_agent_id() {

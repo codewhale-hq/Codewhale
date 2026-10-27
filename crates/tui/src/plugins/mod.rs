@@ -13,7 +13,6 @@ pub mod marketplace;
 pub mod matcher;
 pub mod mutation;
 pub(crate) mod native_presets;
-mod path_identity;
 pub mod providers;
 pub mod recommend;
 pub mod registry;
@@ -27,9 +26,6 @@ mod tests;
 
 pub use context::{HostEnvironment, PluginDiscoveryContext};
 pub use discovery::PluginCatalogStamp;
-pub(crate) use path_identity::metadata_is_link_or_reparse;
-#[cfg(windows)]
-pub(crate) use path_identity::windows_file_identity;
 pub use registry::PluginRegistry;
 
 pub const PLUGIN_RELOAD_NUDGE: &str = "Plugins changed on disk. Run /plugin reload to apply.";

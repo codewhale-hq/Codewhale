@@ -5,6 +5,7 @@
 //! roll both stores back if either leg fails.
 
 use anyhow::{Context, Result};
+use sha2::Digest as _;
 
 use crate::provider_kind::ProviderKind;
 use crate::{ConfigStore, Secrets};
@@ -236,6 +237,56 @@ pub fn clear_provider_api_key(
         slot,
         secret_store_error,
     })
+}
+
+/// One-way digest proving a credential (and the endpoint it is bound to) is
+/// still the same one.
+///
+/// SHA-256 over a domain-separated, length-prefixed preimage, truncated to 128
+/// bits. Length prefixing keeps `(base_url, key)` unambiguous, so no pair of
+/// distinct routes can be made to share a generation by moving bytes across the
+/// boundary. The value is never rendered: it is credential-derived, and a
+/// stable public digest of a secret is a secret's shadow.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialGeneration(String);
+
+impl CredentialGeneration {
+    #[must_use]
+    pub fn derive(base_url: &str, credential: &str) -> Self {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"codewhale/turn-route/credential-generation/v1\0");
+        hasher.update(
+            u64::try_from(base_url.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hasher.update(base_url.as_bytes());
+        hasher.update(
+            u64::try_from(credential.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hasher.update(credential.as_bytes());
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(32);
+        for byte in &digest[..16] {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self(hex)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Redacted: see the type docs. There is no accessor for the digest string.
+impl std::fmt::Debug for CredentialGeneration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 #[cfg(test)]

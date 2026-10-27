@@ -18,10 +18,10 @@
 //!    deliberately, and the resolution says so.
 //! 4. **No session route at all:** `Unavailable` with a precise reason.
 
-use crate::config::ProviderKind;
 use crate::fleet::store::FleetMember;
 use crate::model_routing::provider_router_candidates;
 use crate::provider_lake::all_catalog_models_for_provider;
+use codewhale_config::ProviderKind;
 
 /// Where the resolved Scout route came from. Shown before a run, never
 /// guessed.
