@@ -238,15 +238,26 @@ impl SourceNavigation {
     }
 
     /// Whole actionable objects under half the existing footer budget.
-    /// Metadata retains the larger bounded view.
-    fn render_footer(&self) -> String {
+    /// Metadata retains the larger bounded, range-independent view. Only
+    /// displayed source lines promote intersecting functions ahead of file order.
+    /// A non-fitting candidate must not block smaller references later in that order.
+    fn render_footer(&self, first_line: usize, shown_lines: usize) -> String {
         if echo_off("navigation") {
             return String::new();
         }
+        let last_line = first_line.saturating_add(shown_lines.saturating_sub(1));
+        let mut symbols: Vec<_> = self.symbols.iter().collect();
+        symbols.sort_by_key(|symbol| {
+            let end_line = symbol
+                .read
+                .offset
+                .saturating_add(symbol.read.limit.saturating_sub(1));
+            !(shown_lines > 0 && symbol.read.offset <= last_line && end_line >= first_line)
+        });
         let mut shown = self.clone();
         shown.symbols.clear();
         shown.symbols_omitted += self.symbols.len();
-        for symbol in &self.symbols {
+        for symbol in symbols {
             shown.symbols.push(symbol.clone());
             shown.symbols_omitted -= 1;
             if serde_json::to_string(&shown).is_ok_and(|text| {
@@ -254,7 +265,6 @@ impl SourceNavigation {
             }) {
                 shown.symbols.pop();
                 shown.symbols_omitted += 1;
-                break;
             }
         }
         let footer = format!(
@@ -586,11 +596,16 @@ impl EchoChart {
         self.render_footer_with_budget(POD_FOOTER_MAX_BYTES)
     }
 
-    pub(crate) fn render_with_navigation(&self, navigation: Option<&SourceNavigation>) -> String {
+    pub(crate) fn render_with_navigation(
+        &self,
+        navigation: Option<&SourceNavigation>,
+        first_line: usize,
+        shown_lines: usize,
+    ) -> String {
         let Some(navigation) = navigation else {
             return self.render_footer();
         };
-        let footer = navigation.render_footer();
+        let footer = navigation.render_footer(first_line, shown_lines);
         self.render_footer_with_budget(POD_FOOTER_MAX_BYTES - footer.len()) + &footer
     }
 

@@ -783,7 +783,7 @@ owner = "crates/runtime/src/prompt_zones.rs"
 [[feature]]
 id = "source-navigation-echoes"
 name = "Source navigation echoes"
-summary = "File and search results include bounded source symbols, neighboring files and change attribution."
+summary = "Bounded source symbols, neighbors and change attribution, with Rust read references focused on the displayed window."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 since = "0.10.2"

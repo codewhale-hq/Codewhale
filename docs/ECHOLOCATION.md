@@ -154,6 +154,14 @@ leave no room for an inline reference; the bounded metadata remains available to
 `execute_tools`. Existing scanners still serve other languages and other echo
 surfaces. The successful Rust read's symbol sounding consumes these syntax facts.
 
+Inline references prioritize observed functions intersecting the source lines
+actually displayed after range selection and byte truncation. File order is
+preserved within each priority group; gap or empty reads retain file-order
+selection. Candidates that do not fit are counted as omitted without blocking
+later, smaller references. Structured metadata and cached observations remain
+range-independent.
+Selection does not recover functions already omitted by the observation bounds.
+
 ### Shared facts, separate delivery
 
 `RuntimeToolServices` reuses the existing bounded `HandleStore` implementation in
@@ -167,6 +175,12 @@ delivery ledger. Cache eviction simply recomputes the observation on a later rea
 An optional `expected_revision` guard rejects stale source before using old
 offsets, including a same-size external edit. Without it, ordinary reads behave
 normally. A reference is evidence of a range, never authority to access that path.
+
+Guarded paging instructions retain `expected_revision` when continuing from a
+byte- or line-limited read. An oversized selected line offers a guarded native
+retry when it fits the existing maximum output budget. If it cannot fit, the
+reader reports that limit rather than suggesting an unguarded shell byte slice.
+Ordinary unguarded reads keep their existing paging and fallback behavior.
 
 `WorkingSet` retains at most 32 delivered references **only after the final
 projected request is accepted by the model client**. It inspects model-facing

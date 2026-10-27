@@ -1127,10 +1127,27 @@ impl ReadFileTool {
         // before EOF. A whole file that fits is never truncated.
         let truncated = window.truncated || limit.is_some() && start + selected_lines < line_count;
         let first_display = start + 1;
+        let revision_hint = expected_revision
+            .map(|revision| format!(" expected_revision={revision}"))
+            .unwrap_or_default();
         let mut output = if window.first_line_too_large {
             let size = selected_content.split('\n').next().map_or(0, str::len);
+            let hint = if expected_revision.is_some() {
+                if size <= READ_REQUEST_MAX_BYTES && max_bytes < READ_REQUEST_MAX_BYTES {
+                    let limit_hint = limit
+                        .map(|limit| format!(" limit={limit}"))
+                        .unwrap_or_default();
+                    format!(
+                        "Use offset={first_display}{limit_hint}{revision_hint} max_bytes={READ_REQUEST_MAX_BYTES} to retry"
+                    )
+                } else {
+                    "No complete line fits the maximum read budget; a shell byte slice would not preserve the revision guard".to_string()
+                }
+            } else {
+                format!("Use bash: sed -n '{first_display}p' {path_str} | head -c {max_bytes}")
+            };
             format!(
-                "[Line {first_display} is {}, exceeds the {max_bytes}-byte output budget for this call. Use bash: sed -n '{first_display}p' {path_str} | head -c {max_bytes}]",
+                "[Line {first_display} is {}, exceeds the {max_bytes}-byte output budget for this call. {hint}]",
                 contract_format_size(size)
             )
         } else {
@@ -1150,6 +1167,7 @@ impl ReadFileTool {
                     hint.push_str(&format!(" limit={remaining}"));
                 }
             }
+            hint.push_str(&revision_hint);
             let raise = if max_bytes < READ_REQUEST_MAX_BYTES {
                 format!(", or max_bytes up to {READ_REQUEST_MAX_BYTES} to read more per call")
             } else {
@@ -1166,7 +1184,7 @@ impl ReadFileTool {
                 let remaining = line_count - (start + consumed);
                 let next_offset = start + consumed + 1;
                 output.push_str(&format!(
-                    "\n\n[{remaining} more lines in file ({} total). Use offset={next_offset} to continue.]",
+                    "\n\n[{remaining} more lines in file ({} total). Use offset={next_offset}{revision_hint} to continue.]",
                     contract_format_size(size_bytes)
                 ));
             }
@@ -1218,7 +1236,11 @@ impl ReadFileTool {
                 buzz,
                 navigation.as_ref(),
             )
-            .render_with_navigation(navigation.as_ref());
+            .render_with_navigation(
+                navigation.as_ref(),
+                first_display,
+                window.shown_lines,
+            );
             (echo, navigation)
         })
         .await
