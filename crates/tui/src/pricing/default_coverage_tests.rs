@@ -153,7 +153,7 @@ fn shipped_default_routes_have_reviewed_pricing_coverage() {
     assert_eq!(built_in_count, 51, "review changed shipped-default breadth");
     assert_eq!(
         defaults.len() - built_in_count,
-        11,
+        12,
         "review compatible-default breadth"
     );
     let recorded_at = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();

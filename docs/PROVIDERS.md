@@ -59,6 +59,7 @@ against the vendor's own docs before trusting any value here:
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini`, `claude-sonnet-5`, `gemini-3.1-pro` | `CHEAPER_INFERENCE_API_KEY` |
 | Yolo-Auto | `https://yolo-auto.com/v1` | `qwen3.8-flash`; `yolo` / `yolo-small` | `YOLO_AUTO_API_KEY` |
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute` (router); `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
+| Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 
 AICraft's roster spans DeepSeek, Anthropic Claude, Google Gemini, Qwen, GLM,
 MiniMax and Doubao ids on its OpenAI-compatible endpoint. The authority is
@@ -83,6 +84,14 @@ The `standardcompute` model id routes each request across models and providers;
 vendor-prefixed ids such as `deepseek/deepseek-v4-pro` pin one model. The
 authority is `GET https://api.stdcmpt.com/v1/models`.
 Docs: <https://docs.standardcompute.com/quickstart>.
+
+Opper is an EU-hosted, OpenAI-compatible gateway with 700+ models from 50+
+providers behind one key. Bare pool names such as `claude-sonnet-4-6` let Opper
+pick the route per request; a `provider/model` id such as
+`anthropic/claude-sonnet-4-6` pins one route. Token rates are the model
+providers' rates with no markup. The authority is
+`GET https://api.opper.ai/v3/compat/models` with your key.
+Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
 
 OpenCode Zen and OpenCode Go are first-class provider routes, configured like
 any other provider below; they are not part of this table. In `/provider`,
