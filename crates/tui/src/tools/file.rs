@@ -295,8 +295,13 @@ impl ActionParams {
             .filter(|key| !self.allowed.contains(key))
             .collect();
         if !unexpected.is_empty() {
+            let hint = if action == "search_content" && unexpected.contains(&"extensions") {
+                " Use `include` filename globs for content search (`\"include\": [\"*.rs\"]` filters Rust files). `extensions` belongs to `file_search`."
+            } else {
+                ""
+            };
             return Err(ToolError::invalid_input(format!(
-                "unexpected File {action} parameter(s): {}. Allowed parameters are {}. Required: {required}. The {action} was not performed.",
+                "unexpected File {action} parameter(s): {}. Allowed parameters are {}. Required: {required}. The {action} was not performed.{hint}",
                 unexpected.join(", "),
                 quoted_list(self.allowed, "and"),
             )));
@@ -1031,11 +1036,13 @@ impl ReadFileTool {
         let truncated = window.truncated || limit.is_some() && start + selected_lines < line_count;
         let first_display = start + 1;
         let revision_hint = expected_revision
+            .or(source_revision.as_deref())
             .map(|revision| format!(" expected_revision={revision}"))
             .unwrap_or_default();
+        let shown_bytes = window.content.len();
         let mut output = if window.first_line_too_large {
             let size = selected_content.split('\n').next().map_or(0, str::len);
-            let hint = if expected_revision.is_some() {
+            let hint = if source_revision.is_some() {
                 if size <= READ_REQUEST_MAX_BYTES && max_bytes < READ_REQUEST_MAX_BYTES {
                     let limit_hint = limit
                         .map(|limit| format!(" limit={limit}"))
@@ -1081,7 +1088,7 @@ impl ReadFileTool {
                 line_count,
                 contract_format_size(size_bytes)
             ));
-        } else if limit.is_some() {
+        } else if limit.is_some() && selected_lines > 0 && !window.first_line_too_large {
             let consumed = selected_lines;
             if start + consumed < line_count {
                 let remaining = line_count - (start + consumed);
@@ -1141,6 +1148,7 @@ impl ReadFileTool {
             )
             .render_with_navigation(
                 navigation.as_ref(),
+                &text,
                 first_display,
                 window.shown_lines,
             );
@@ -1167,10 +1175,10 @@ impl ReadFileTool {
         context.note_file_read(&file_path);
         let mut metadata = json!({
             "evidence_routing": "inline",
-            // The budget this call actually enforced. The context
+            // The source budget plus bounded presentation bytes. The context
             // compactor honors it so an already-bounded read is never
             // truncated a second time on its way into the conversation.
-            "read_budget_bytes": max_bytes,
+            "read_budget_bytes": max_bytes.saturating_add(output.len().saturating_sub(shown_bytes)),
             // #6283: paging contract. `size` is the whole file in bytes,
             // `line_count` its total lines, `truncated` whether the file
             // holds more than this response shows.

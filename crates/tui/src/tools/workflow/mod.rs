@@ -11367,9 +11367,6 @@ reviewer = "reviewer"
             }
             let tools = leaf_allowed_tools(leaf).expect("lower stopship child tools");
             if index == 0 {
-                // No explicit list: the scout keeps its read-only catalog, and
-                // `scout_surface_keeps_tool_search_grep_files_activation_path`
-                // pins the tool_search -> deferred grep_files route it uses.
                 assert_eq!(tools, None, "the scout keeps its read-only catalog");
             } else {
                 assert_eq!(

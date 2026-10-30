@@ -9315,7 +9315,7 @@ fn tool_result_api_content_is_the_engine_model_view() {
     let within = line.repeat((budget - 1) / line.len());
     let output = crate::tools::spec::ToolResult::success(within.clone());
     let content = tool_result_content_for_api_message(&app, "exec_shell", &output);
-    assert_eq!(content, within.trim());
+    assert_eq!(content, within);
     assert!(!content.contains("[TOOL_OUTPUT_RECEIPT]"));
 
     let over = line.repeat(budget / line.len() + 100);

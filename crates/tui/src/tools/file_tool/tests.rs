@@ -14,7 +14,7 @@ async fn native_navigation_footer_follows_displayed_lines() {
     let context = ToolContext::new(tmp.path());
     std::fs::write(
         tmp.path().join("nav.rs"),
-        "fn early() {\n    let _ = 0;\n}\nfn target() {\n    let _ = \"TARGET_BODY\";\n}\n// gap\nfn later() {\n    let _ = 2;\n}\n",
+        "fn early() {\n    let _ = 0;\n}\nfn target() {\n    let _ = \"TARGET_BODY\";\n}\n\nfn later() {\n    let _ = 2;\n}\n",
     )
     .unwrap();
     let whole = ReadTool
@@ -22,19 +22,19 @@ async fn native_navigation_footer_follows_displayed_lines() {
         .await
         .unwrap();
     let navigation = whole.metadata.as_ref().unwrap()["navigation"].clone();
-    assert_eq!(delivered_navigation_refs(&whole.content)[0].offset, 1);
+    assert!(delivered_navigation_refs(&whole.content).is_empty());
 
     // Body-only reads, both inclusive boundaries, gap/empty reads, and a
     // second focused read all reuse the same range-independent observations.
     for (offset, limit, expected) in [
-        (5, 1, 4),
-        (4, 1, 4),
-        (6, 1, 4),
-        (3, 1, 1),
-        (7, 1, 1),
-        (9, 1, 8),
-        (5, 0, 1),
-        (5, 1, 4),
+        (5, 1, Some(4)),
+        (4, 1, Some(4)),
+        (6, 1, Some(4)),
+        (3, 1, Some(1)),
+        (7, 1, None),
+        (9, 1, Some(8)),
+        (5, 0, None),
+        (5, 1, Some(4)),
     ] {
         let result = ReadTool
             .execute(
@@ -45,11 +45,21 @@ async fn native_navigation_footer_follows_displayed_lines() {
             .unwrap();
         let references = delivered_navigation_refs(&result.content);
         assert_eq!(
-            references[0].offset, expected,
+            references.first().map(|reference| reference.offset),
+            expected,
             "read offset={offset} limit={limit} must prioritize displayed source: {}",
             result.content
         );
         assert_eq!(result.metadata.as_ref().unwrap()["navigation"], navigation);
+        if limit == 0 {
+            assert!(!result.content.contains("Use offset="));
+        }
+        if offset == 7 {
+            assert!(result.content.contains(&format!(
+                "Use offset=8 expected_revision={}",
+                navigation["source_revision"].as_str().unwrap()
+            )));
+        }
         let footer = result.content.rfind("\n\n[Code navigation: ").unwrap();
         assert!(result.content.len() - footer <= 600);
         if offset == 5 && limit == 1 {
@@ -78,7 +88,7 @@ async fn native_navigation_footer_follows_displayed_lines() {
             .await
             .unwrap();
         assert_eq!(result.metadata.as_ref().unwrap()["truncated"], true);
-        assert_eq!(delivered_navigation_refs(&result.content)[0].offset, 1);
+        assert!(delivered_navigation_refs(&result.content).is_empty());
     }
 
     // A long reference must not suppress a later displayed function whose
@@ -86,11 +96,14 @@ async fn native_navigation_footer_follows_displayed_lines() {
     let path = format!("{}.rs", "p".repeat(90));
     std::fs::write(
         tmp.path().join(&path),
-        format!("fn {}() {{}}\nfn fits() {{}}\n", "a".repeat(64)),
+        format!(
+            "fn {}() {{\n    let _ = 0;\n}}\nfn fits() {{\n    let _ = 1;\n}}\n",
+            "a".repeat(64)
+        ),
     )
     .unwrap();
     let result = ReadTool
-        .execute(json!({"path": path}), &context)
+        .execute(json!({"path": path, "offset": 2, "limit": 4}), &context)
         .await
         .unwrap();
     assert_eq!(
@@ -98,7 +111,7 @@ async fn native_navigation_footer_follows_displayed_lines() {
             .iter()
             .map(|reference| reference.offset)
             .collect::<Vec<_>>(),
-        vec![2],
+        vec![4],
         "a non-fitting candidate must not hide a reference that fits: {}",
         result.content
     );
@@ -139,13 +152,22 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
     let reference = &observed.metadata.as_ref().unwrap()["navigation"]["symbols"][0]["read"];
     let mut continuations = Vec::new();
 
-    // Follow the reader's own instructions after byte truncation, a line
-    // limit, and an oversized first line, without supplying a missing guard.
-    for (offset, limit) in [(1, 3), (1, 1), (2, 2)] {
-        let mut request = reference.clone();
-        request["offset"] = json!(offset);
-        request["limit"] = json!(limit);
+    // Follow the reader's own instructions from unguarded or guarded reads
+    // after byte truncation, a line limit, and an oversized first line.
+    for (offset, limit, guarded) in [
+        (1, 3, false),
+        (1, 1, false),
+        (2, 2, false),
+        (1, 3, true),
+        (1, 1, true),
+        (2, 2, true),
+    ] {
+        let mut request = json!({"path": "paged.rs", "offset": offset, "limit": limit});
+        if guarded {
+            request["expected_revision"] = reference["expected_revision"].clone();
+        }
         let page = ReadTool.execute(request, &context).await.unwrap();
+        assert_eq!(page.content.matches("Use offset=").count(), 1);
         let hint = page
             .content
             .split_once("Use ")
@@ -197,15 +219,22 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
 
     // A guard also applies to ordinary non-navigable files; if even the
     // existing maximum cannot fit a line, do not suggest an unguarded shell.
-    std::fs::write(tmp.path().join("wide.rs"), "x".repeat(500_001)).unwrap();
+    std::fs::write(
+        tmp.path().join("wide.rs"),
+        format!("{}\nfn following() {{}}\n", "x".repeat(500_001)),
+    )
+    .unwrap();
     let wide = ReadTool
-        .execute(json!({"path": "wide.rs"}), &context)
+        .execute(json!({"path": "wide.rs", "limit": 1}), &context)
         .await
         .unwrap();
     let revision = &wide.metadata.as_ref().unwrap()["navigation"]["source_revision"];
+    assert!(!wide.content.contains("Use bash:"));
+    assert!(!wide.content.contains("Use offset="));
+    assert!(wide.content.contains("revision guard"));
     let blocked = ReadTool
         .execute(
-            json!({"path": "wide.rs", "expected_revision": revision, "max_bytes": 500_000}),
+            json!({"path": "wide.rs", "limit": 1, "expected_revision": revision, "max_bytes": 500_000}),
             &context,
         )
         .await

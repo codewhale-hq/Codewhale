@@ -154,13 +154,64 @@ leave no room for an inline reference; the bounded metadata remains available to
 `execute_tools`. Existing scanners still serve other languages and other echo
 surfaces. The successful Rust read's symbol sounding consumes these syntax facts.
 
-Inline references prioritize observed functions intersecting the source lines
-actually displayed after range selection and byte truncation. File order is
-preserved within each priority group; gap or empty reads retain file-order
-selection. Candidates that do not fit are counted as omitted without blocking
-later, smaller references. Structured metadata and cached observations remain
-range-independent.
-Selection does not recover functions already omitted by the observation bounds.
+Inline references offer only functions partially displayed after range selection
+and byte truncation: a whole-function read completes missing source, rather than
+repeating a body already shown or suggesting an unrelated early helper. Gap,
+empty, and whole-function reads offer no such continuation. This checks only the
+current response, not bodies delivered in earlier reads.
+
+References continuing beyond the last displayed line take priority over backward-only
+boundary fragments, with file order preserved within each group. The same byte
+budget still applies; a forward reference that does not fit cannot block a fitting
+backward completion. This is geometric continuation, not semantic relevance.
+
+When displayed lines extend beyond an incomplete cached symbol prefix, the
+renderer reparses the same admitted source snapshot on the existing blocking
+worker. It selects partially displayed functions before the 24-symbol cap, so
+late functions can appear without widening the source, cache, metadata, or footer
+budgets. Candidates that do not fit are counted as omitted without blocking later,
+smaller references. Structured metadata and cached observations remain
+range-independent; the per-read selection is never cached. Cache hits outside the
+retained prefix can therefore incur another bounded parse. A fully displayed file
+skips this extra parse: no function can extend outside the displayed window.
+References still name whole functions, including large enclosing functions; no
+semantic next-step or model-performance improvement is claimed. A read footer
+cannot assist discovery before the first source read, and offering a reference
+does not establish that an agent followed it.
+
+### Focused Rust search-to-read
+
+An untruncated `grep_files` result with at most 16 hits can now include
+`navigation` before its ordinary `matches`. The existing syntax producer selects
+only supported functions intersecting the matched lines, before its symbol cap.
+Each symbol names the enclosing scope and supplies the same
+`{path, offset, limit, expected_revision}` object accepted by lowercase `read`.
+This works before the first read, including for definitions beyond the cached
+file-prefix cap. Comment lookalikes do not manufacture declarations.
+Matches on a function's name-token line take precedence over matches in callers,
+both within a file and across the bounded candidate set. This orders only the
+added observations, not the raw grep matches. This is line-level evidence: a call
+and declaration sharing a line can tie; query intent is not resolved.
+
+Small complete function bodies can also appear as `source` beside their reference:
+at most 2048 source bytes per body, only when their JSON fits without removing
+references. Larger functions still offer the guarded read rather than an arbitrary
+context window. Raw matches, context, search coverage, and pod visibility are
+unchanged. Broad or truncated searches keep their ordinary presentation.
+
+Source is retained from the existing streaming search, not reread. At most 16
+matched Rust snapshots, each at most 256 KiB, survive until the walk ends; broad
+results discard them without parsing. Only snapshots scanned through EOF can
+produce a whole-file revision. Syntax observations, bodies and references together
+fit a 4 KiB JSON array; `navigation_files_omitted` reports qualifying matched files
+without an observation. Invalid syntax reports `unavailable`; invalid UTF-8 still
+follows the search's existing file-skip behavior. This does not resolve types,
+macro/cfg expansion, callees or repository-wide definitions, and does not establish
+that a model used the evidence or completed its task faster.
+
+These are ordinary logged tool results, not a new tool, repository index,
+cache entry, planning call, or prefix contributor. Following a reference still
+performs the reader's current access and byte-revision checks.
 
 ### Shared facts, separate delivery
 
@@ -176,11 +227,29 @@ An optional `expected_revision` guard rejects stale source before using old
 offsets, including a same-size external edit. Without it, ordinary reads behave
 normally. A reference is evidence of a range, never authority to access that path.
 
-Guarded paging instructions retain `expected_revision` when continuing from a
-byte- or line-limited read. An oversized selected line offers a guarded native
-retry when it fits the existing maximum output budget. If it cannot fit, the
-reader reports that limit rather than suggesting an unguarded shell byte slice.
-Ordinary unguarded reads keep their existing paging and fallback behavior.
+When a source snapshot revision is available, native paging carries it from the
+first page, even when the initial read omitted `expected_revision`. This applies
+to byte-budget continuations, line-range continuations and oversized-line
+retries, using the revision already computed from the admitted source bytes.
+An oversized line retries with a larger native `max_bytes` only when that can
+succeed within the existing 500,000-byte maximum; otherwise it reports that no
+complete guarded line fits rather than suggesting an unguarded shell slice.
+Continuation offsets advance only after the selected range fits or source lines
+were displayed. A complete blank line still permits advancing; it is not a
+zero-line request. An empty selection or oversized first line does not also
+advertise skipping the unread range; a feasible oversized-line retry stays on
+that line.
+
+The read's model-facing budget includes these bounded presentation bytes in
+addition to the enforced source-byte budget, so paging and navigation footers do
+not cause a second context cut. Whole results preserve source whitespace. The
+source-byte maximum is unchanged; independent artifact spilling and explicit
+child-output caps can still narrow delivery.
+
+Reads without an available snapshot revision retain their existing paging and
+fallback behavior. The guard remains optional on read requests; following a
+paging hint does not grant read authority. These hints are appended tool-result
+history, not additions to the session-pinned prefix.
 
 `WorkingSet` retains at most 32 delivered references **only after the final
 projected request is accepted by the model client**. It inspects model-facing
@@ -205,12 +274,15 @@ with the tool catalog. No new system-prompt text is inserted.
 
 `CODEWHALE_ECHO` gates sections for trials
 (`off:<name>`, comma-separated; names: `mates`, `symbols`, `imports`,
-`links`, `callers`, `pods`, `soundings`, `navigation`). Unset or malformed means
+`links`, `callers`, `pods`, `soundings`, `navigation`, `grep_navigation`). Unset or malformed means
 everything on. The gates are process-pinned and read-only; there is no
 per-session or per-call control, by design. The squeeze follows the
 same gates, so an `off:links` trial measures links alone.
 `off:navigation` suppresses the inline navigation footer only; structured
 metadata remains available to programs and still uses the syntax producer.
+`off:grep_navigation` disables search snapshot retention, syntax analysis, bodies,
+and references together, leaving the ordinary grep result for paired trials.
+
 
 ## Non-goals
 

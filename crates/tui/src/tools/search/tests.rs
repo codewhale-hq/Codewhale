@@ -9,6 +9,112 @@ use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 use super::{GrepFilesTool, matches_glob};
 
 #[tokio::test]
+async fn grep_match_scope_can_be_read_without_guessing_ranges_and_refuses_stale_source() {
+    let tmp = tempdir().expect("tempdir");
+    // A late definition must not be displaced by the cached file-prefix cap;
+    // a matching comment must not manufacture a function.
+    let mut source = String::from("// fn target_symbol() { marker 源 }\r\n");
+    for index in 0..30 {
+        source.push_str(&format!("fn prefix_{index}() {{}}\r\n"));
+    }
+    source.push_str("pub fn target_symbol() -> u32 {\r\n    // marker 源\r\n    7\r\n}\r\n");
+    let path = tmp.path().join("scope.rs");
+    fs::write(&path, &source).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["total_matches"], 3);
+    assert_eq!(
+        payload["matches"][0]["line"],
+        "// fn target_symbol() { marker 源 }"
+    );
+    let navigation = payload["navigation"].as_array().expect("search scopes");
+    assert_eq!(navigation.len(), 1);
+    assert_eq!(navigation[0]["status"], "ready");
+    let symbols = navigation[0]["symbols"]
+        .as_array()
+        .expect("function scopes");
+    assert_eq!(symbols.len(), 1, "no fake or unrelated prefix functions");
+    assert_eq!(symbols[0]["name"], "target_symbol");
+    assert_eq!(
+        symbols[0]["source"],
+        "pub fn target_symbol() -> u32 {\r\n    // marker 源\r\n    7\r\n}\r\n"
+    );
+    let reference = symbols[0]["read"].clone();
+    assert_eq!(reference["path"], "scope.rs");
+    assert_eq!(reference["offset"], 32);
+    assert_eq!(reference["limit"], 4);
+    assert_eq!(
+        reference["expected_revision"],
+        crate::tools::file::content_hash(source.as_bytes())
+    );
+    assert_eq!(
+        crate::tools::echolocation::delivered_navigation_refs(&result.content).len(),
+        1
+    );
+
+    let read = crate::tools::file_tool::ReadTool
+        .execute(reference.clone(), &ctx)
+        .await
+        .expect("follow exact search reference through the real reader");
+    assert!(read.content.contains("pub fn target_symbol() -> u32 {"));
+    assert!(read.content.contains("    7"));
+    // The ordinary symbol footer may name prefix functions; their source
+    // declarations must not leak into the requested four-line window.
+    for index in 0..30 {
+        assert!(!read.content.contains(&format!("fn prefix_{index}() {{}}")));
+    }
+
+    fs::write(&path, source.replace("    7", "    8")).expect("same-size mutation");
+    let error = crate::tools::file_tool::ReadTool
+        .execute(reference, &ctx)
+        .await
+        .expect_err("search references never authorize stale coordinates");
+    assert!(error.to_string().contains("stale"), "{error}");
+
+    // A partial scan cannot mint a whole-file revision, and broad searches
+    // must not turn into a function-body dump.
+    for (body, input) in [
+        (
+            source.clone(),
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs", "max_results": 1}),
+        ),
+        (
+            "fn target_symbol() {}\n".repeat(17),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+        (
+            format!("{}fn target_symbol() {{}}\n", "// padding\n".repeat(30_000)),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+    ] {
+        fs::write(&path, body).expect("boundary fixture");
+        let result = GrepFilesTool.execute(input, &ctx).await.expect("grep");
+        let payload: Value = serde_json::from_str(&result.content).expect("json");
+        assert!(payload.get("navigation").is_none(), "{payload}");
+        assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+    }
+
+    fs::write(&path, "fn target_symbol() {\n").expect("invalid syntax");
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep still works for incomplete Rust");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["navigation"][0]["reason"], "syntax_error");
+    assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+}
+
+#[tokio::test]
 async fn grep_max_results_is_clamped_not_trusted() {
     let tmp = tempdir().expect("tempdir");
     let body = "needle here\n".repeat(1_200);

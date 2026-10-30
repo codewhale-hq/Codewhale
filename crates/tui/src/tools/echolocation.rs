@@ -19,7 +19,7 @@
 //! Tuning: `CODEWHALE_ECHO` gates sections for ablation trials
 //! (comma-separated `off:<name>` entries, e.g. `off:links,off:mates`;
 //! section names: mates, symbols, imports, links, callers, pods,
-//! soundings, navigation). Unset or malformed means everything on.
+//! soundings, navigation, grep_navigation). Unset or malformed means everything on.
 //!
 //! Terminal buzz: the read footer deepens when the model is closing in.
 //! Two distinct files read in a pod (see
@@ -49,7 +49,7 @@ use serde_json::Value;
 
 const NAVIGATION_PRODUCER: &str = "rust_syntax_v1";
 const NAVIGATION_MARKER: &str = "[Code navigation: ";
-const MAX_NAVIGATION_SOURCE_BYTES: usize = 256 * 1024;
+pub(super) const MAX_NAVIGATION_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_NAVIGATION_BYTES: usize = 4 * 1024;
 const MAX_NAVIGATION_PATH_BYTES: usize = 512;
 pub(crate) const MAX_DELIVERED_REFS: usize = 32;
@@ -78,6 +78,13 @@ impl CodeReadReference {
             && self.offset.checked_add(self.limit - 1).is_some()
             && valid_source_revision(&self.expected_revision)
     }
+
+    fn extends_window(&self, first_line: usize, last_line: usize) -> bool {
+        let end_line = self.offset.saturating_add(self.limit.saturating_sub(1));
+        self.offset <= last_line
+            && end_line >= first_line
+            && (self.offset < first_line || end_line > last_line)
+    }
 }
 
 pub(crate) fn valid_source_revision(revision: &str) -> bool {
@@ -93,6 +100,10 @@ pub(crate) fn valid_source_revision(revision: &str) -> bool {
 pub(crate) struct NavigationSymbol {
     name: String,
     read: CodeReadReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip)]
+    definition_match: bool,
 }
 
 /// Syntax only: no macro expansion, cfg evaluation, name/type resolution or
@@ -129,6 +140,10 @@ pub(crate) fn navigation_cache_identity(workspace: &Path, path: &Path) -> Option
 }
 
 impl SourceNavigation {
+    pub(crate) fn definition_match(&self) -> bool {
+        self.symbols.iter().any(|symbol| symbol.definition_match)
+    }
+
     pub(crate) fn matches(&self, path: &str, revision: &str) -> bool {
         self.producer == NAVIGATION_PRODUCER
             && self.path == path
@@ -140,6 +155,51 @@ impl SourceNavigation {
         revision: String,
         source: &str,
         utf8_valid: bool,
+    ) -> Self {
+        Self::from_selected_source(path, revision, source, utf8_valid, None)
+    }
+
+    /// A focused grep already owns this complete byte snapshot. Select matching
+    /// scopes before the prefix cap; include small complete bodies only when
+    /// they fit without displacing references. No cache or delivery is implied.
+    pub(crate) fn from_search_source(
+        path: String,
+        revision: String,
+        source: &str,
+        matched_lines: &[usize],
+        max_bytes: usize,
+    ) -> Self {
+        let mut navigation =
+            Self::from_selected_source(path, revision, source, true, Some(matched_lines));
+        while serde_json::to_vec(&navigation).is_ok_and(|bytes| bytes.len() > max_bytes) {
+            if navigation.symbols.pop().is_none() {
+                break;
+            }
+            navigation.symbols_omitted += 1;
+        }
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        for index in 0..navigation.symbols.len() {
+            let read = &navigation.symbols[index].read;
+            let Some(body) = lines.get(read.offset - 1..read.offset - 1 + read.limit) else {
+                continue;
+            };
+            if body.iter().map(|line| line.len()).sum::<usize>() > 2048 {
+                continue;
+            }
+            navigation.symbols[index].source = Some(body.concat());
+            if serde_json::to_vec(&navigation).is_ok_and(|bytes| bytes.len() > max_bytes) {
+                navigation.symbols[index].source = None;
+            }
+        }
+        navigation
+    }
+
+    fn from_selected_source(
+        path: String,
+        revision: String,
+        source: &str,
+        utf8_valid: bool,
+        matched_lines: Option<&[usize]>,
     ) -> Self {
         let mut result = Self {
             producer: NAVIGATION_PRODUCER.to_string(),
@@ -164,11 +224,16 @@ impl SourceNavigation {
             return result;
         }
         match syn::parse_file(source) {
-            Ok(file) => result.visit_items(&file.items, "", 0),
+            Ok(file) => result.visit_items(&file.items, "", 0, None, matched_lines),
             Err(_) => {
                 result.status = "unavailable".to_string();
                 result.reason = Some("syntax_error".to_string());
             }
+        }
+        if matched_lines.is_some() {
+            result
+                .symbols
+                .sort_by_key(|symbol| !symbol.definition_match);
         }
         while serde_json::to_vec(&result).is_ok_and(|bytes| bytes.len() > MAX_NAVIGATION_BYTES) {
             if result.symbols.pop().is_none() {
@@ -179,11 +244,18 @@ impl SourceNavigation {
         result
     }
 
-    fn visit_items(&mut self, items: &[syn::Item], scope: &str, depth: usize) {
+    fn visit_items(
+        &mut self,
+        items: &[syn::Item],
+        scope: &str,
+        depth: usize,
+        window: Option<(usize, usize)>,
+        matched_lines: Option<&[usize]>,
+    ) {
         for item in items {
             match item {
                 syn::Item::Fn(function) => {
-                    self.note_function(scope, &function.sig, &function.block)
+                    self.note_function(scope, &function.sig, &function.block, window, matched_lines)
                 }
                 syn::Item::Impl(implementation) => {
                     let scope = format!(
@@ -192,7 +264,13 @@ impl SourceNavigation {
                     );
                     for item in &implementation.items {
                         if let syn::ImplItem::Fn(function) = item {
-                            self.note_function(&scope, &function.sig, &function.block);
+                            self.note_function(
+                                &scope,
+                                &function.sig,
+                                &function.block,
+                                window,
+                                matched_lines,
+                            );
                         }
                     }
                 }
@@ -205,6 +283,8 @@ impl SourceNavigation {
                                 items,
                                 &format!("{scope}{}::", module.ident),
                                 depth + 1,
+                                window,
+                                matched_lines,
                             );
                         }
                     }
@@ -214,10 +294,22 @@ impl SourceNavigation {
         }
     }
 
-    fn note_function(&mut self, scope: &str, signature: &syn::Signature, block: &syn::Block) {
+    fn note_function(
+        &mut self,
+        scope: &str,
+        signature: &syn::Signature,
+        block: &syn::Block,
+        window: Option<(usize, usize)>,
+        matched_lines: Option<&[usize]>,
+    ) {
         let name = format!("{scope}{}", signature.ident);
         let start = signature.fn_token.span.start().line;
         let end = block.brace_token.span.close().end().line;
+        if matched_lines
+            .is_some_and(|lines| !lines.iter().any(|line| start <= *line && *line <= end))
+        {
+            return;
+        }
         if self.symbols.len() >= MAX_SYMBOLS
             || name.len() > MAX_NAME_LEN
             || start == 0
@@ -226,33 +318,68 @@ impl SourceNavigation {
             self.symbols_omitted += 1;
             return;
         }
+        let read = CodeReadReference {
+            path: self.path.clone(),
+            offset: start,
+            limit: end - start + 1,
+            expected_revision: self.source_revision.clone(),
+        };
+        if window.is_some_and(|(first, last)| !read.extends_window(first, last)) {
+            self.symbols_omitted += 1;
+            return;
+        }
         self.symbols.push(NavigationSymbol {
             name,
-            read: CodeReadReference {
-                path: self.path.clone(),
-                offset: start,
-                limit: end - start + 1,
-                expected_revision: self.source_revision.clone(),
-            },
+            read,
+            source: None,
+            definition_match: matched_lines
+                .is_some_and(|lines| lines.contains(&signature.ident.span().start().line)),
         });
     }
 
     /// Whole actionable objects under half the existing footer budget.
-    /// Metadata retains the larger bounded, range-independent view. Only
-    /// displayed source lines promote intersecting functions ahead of file order.
+    /// Cached metadata stays range-independent; partially displayed functions
+    /// are selected before observation caps when the cached prefix is incomplete.
     /// A non-fitting candidate must not block smaller references later in that order.
-    fn render_footer(&self, first_line: usize, shown_lines: usize) -> String {
+    fn render_footer(&self, source: &str, first_line: usize, shown_lines: usize) -> String {
         if echo_off("navigation") {
             return String::new();
         }
         let last_line = first_line.saturating_add(shown_lines.saturating_sub(1));
-        let mut symbols: Vec<_> = self.symbols.iter().collect();
+        let focused = if self.status == "ready"
+            && shown_lines > 0
+            && self.symbols_omitted > 0
+            && source.len() <= MAX_NAVIGATION_SOURCE_BYTES
+            && self
+                .symbols
+                .last()
+                .is_none_or(|symbol| symbol.read.offset < last_line)
+            && (first_line > 1 || source.split_terminator('\n').nth(last_line).is_some())
+        {
+            syn::parse_file(source).ok().map(|file| {
+                let mut focused = self.clone();
+                focused.symbols.clear();
+                focused.symbols_omitted = 0;
+                focused.unscanned_modules = 0;
+                focused.visit_items(&file.items, "", 0, Some((first_line, last_line)), None);
+                focused
+            })
+        } else {
+            None
+        };
+        let mut symbols: Vec<_> = focused
+            .as_ref()
+            .unwrap_or(self)
+            .symbols
+            .iter()
+            .filter(|symbol| shown_lines > 0 && symbol.read.extends_window(first_line, last_line))
+            .collect();
         symbols.sort_by_key(|symbol| {
-            let end_line = symbol
+            symbol
                 .read
                 .offset
-                .saturating_add(symbol.read.limit.saturating_sub(1));
-            !(shown_lines > 0 && symbol.read.offset <= last_line && end_line >= first_line)
+                .saturating_add(symbol.read.limit.saturating_sub(1))
+                <= last_line
         });
         let mut shown = self.clone();
         shown.symbols.clear();
@@ -371,7 +498,7 @@ const EDIT_DIFF_TIMEOUT_MS: u64 = 100;
 
 /// Ablation gate: true when `CODEWHALE_ECHO` disables `section`.
 /// Parsed once per process; unset or malformed means everything on.
-fn echo_off(section: &str) -> bool {
+pub(super) fn echo_off(section: &str) -> bool {
     static GATES: OnceLock<BTreeSet<String>> = OnceLock::new();
     GATES
         .get_or_init(|| {
@@ -599,13 +726,14 @@ impl EchoChart {
     pub(crate) fn render_with_navigation(
         &self,
         navigation: Option<&SourceNavigation>,
+        source: &str,
         first_line: usize,
         shown_lines: usize,
     ) -> String {
         let Some(navigation) = navigation else {
             return self.render_footer();
         };
-        let footer = navigation.render_footer(first_line, shown_lines);
+        let footer = navigation.render_footer(source, first_line, shown_lines);
         self.render_footer_with_budget(POD_FOOTER_MAX_BYTES - footer.len()) + &footer
     }
 

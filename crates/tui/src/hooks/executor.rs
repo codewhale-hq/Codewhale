@@ -6799,6 +6799,7 @@ command = "echo project"
             // Searches the workspace without caller-named write targets, so it
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
+            ("grep_files", "other"),
             ("bash", "shell"),
             ("todo_write", "safe"),
             ("create_goal", "other"),

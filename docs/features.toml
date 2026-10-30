@@ -68,6 +68,16 @@ docs = "docs/TOOL_SURFACE.md"
 owner = "crates/tui/src/tools/shell.rs"
 
 [[feature]]
+id = "workspace-search"
+name = "Workspace search"
+summary = "Eager file and content search, with explicit search schemas and unchanged read guards."
+status = "stable"
+surfaces = { tui = "stable", api = "stable" }
+since = "unreleased"
+docs = "docs/TOOL_SURFACE.md#default-active-contract"
+owner = "crates/tui/src/core/engine/tool_catalog.rs"
+
+[[feature]]
 id = "local-code-execution"
 name = "Local code execution"
 summary = "Runs Python and Node with the shared execution policy and explicitly approved per-call elevation."
@@ -843,7 +853,7 @@ owner = "crates/runtime/src/prompt_zones.rs"
 [[feature]]
 id = "source-navigation-echoes"
 name = "Source navigation echoes"
-summary = "Bounded source symbols, neighbors and change attribution, with Rust read references focused on the displayed window."
+summary = "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 since = "0.10.2"

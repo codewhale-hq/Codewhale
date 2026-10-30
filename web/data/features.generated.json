@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "2442177a130dcd24fc905ac7d02f3921032a3aa8e605feea20e344b7d41a6ebd"
+    "sha256": "b19e4547654c035cbca03576682e4a195ec4e6dd18282ae5e43065d47784697e"
   },
   "features": [
     {
@@ -45,6 +45,20 @@
       "registryLine": 60
     },
     {
+      "id": "workspace-search",
+      "name": "Workspace search",
+      "summary": "Eager file and content search, with explicit search schemas and unchanged read guards.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable",
+        "api": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/TOOL_SURFACE.md#default-active-contract",
+      "registryLine": 71
+    },
+    {
       "id": "local-code-execution",
       "name": "Local code execution",
       "summary": "Runs Python and Node with the shared execution policy and explicitly approved per-call elevation.",
@@ -55,7 +69,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md#local-code-execution",
-      "registryLine": 71
+      "registryLine": 81
     },
     {
       "id": "subagents",
@@ -69,7 +83,7 @@
       "since": "0.1.0",
       "flag": "subagents",
       "docs": "docs/SUBAGENTS.md",
-      "registryLine": 80
+      "registryLine": 90
     },
     {
       "id": "web-search",
@@ -82,7 +96,7 @@
       "since": "0.1.0",
       "flag": "web_search",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 91
+      "registryLine": 101
     },
     {
       "id": "apply-patch",
@@ -95,7 +109,7 @@
       "since": "0.1.0",
       "flag": "apply_patch",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 102
+      "registryLine": 112
     },
     {
       "id": "mcp-client",
@@ -109,7 +123,7 @@
       "since": "0.1.0",
       "flag": "mcp",
       "docs": "docs/MCP.md",
-      "registryLine": 113
+      "registryLine": 123
     },
     {
       "id": "exec-policy",
@@ -122,7 +136,7 @@
       "since": "0.1.0",
       "flag": "exec_policy",
       "docs": "docs/AUTHORIZATION_ORDER.md",
-      "registryLine": 124
+      "registryLine": 134
     },
     {
       "id": "vision-model",
@@ -135,7 +149,7 @@
       "since": "0.8.32",
       "flag": "vision_model",
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 135
+      "registryLine": 145
     },
     {
       "id": "verify-tool",
@@ -148,7 +162,7 @@
       "since": "0.9.2",
       "flag": "verify_tool",
       "docs": "docs/CONFIGURATION.md#feature-flags",
-      "registryLine": 146
+      "registryLine": 156
     },
     {
       "id": "code-mode",
@@ -161,7 +175,7 @@
       "since": "0.10.0",
       "flag": "code_mode",
       "docs": "docs/TOOL_SURFACE.md#code-mode-execute_tools",
-      "registryLine": 157
+      "registryLine": 167
     },
     {
       "id": "extension-host",
@@ -176,7 +190,7 @@
       "since": "0.10.1",
       "flag": "extension_host",
       "docs": "docs/EXTENSIONS.md",
-      "registryLine": 168
+      "registryLine": 178
     },
     {
       "id": "finance-host",
@@ -190,7 +204,7 @@
       "since": "0.10.1",
       "flag": "finance_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 179
+      "registryLine": 189
     },
     {
       "id": "data-host",
@@ -204,7 +218,7 @@
       "since": "0.10.1",
       "flag": "data_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 190
+      "registryLine": 200
     },
     {
       "id": "speech-host",
@@ -218,7 +232,7 @@
       "since": "0.10.1",
       "flag": "speech_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 201
+      "registryLine": 211
     },
     {
       "id": "pdf-host",
@@ -232,7 +246,7 @@
       "since": "0.10.1",
       "flag": "pdf_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 212
+      "registryLine": 222
     },
     {
       "id": "ocr-host",
@@ -246,7 +260,7 @@
       "since": "0.10.1",
       "flag": "ocr_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 223
+      "registryLine": 233
     },
     {
       "id": "github-host",
@@ -260,7 +274,7 @@
       "since": "0.10.1",
       "flag": "github_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 234
+      "registryLine": 244
     },
     {
       "id": "web-search-host",
@@ -274,7 +288,7 @@
       "since": "0.10.1",
       "flag": "web_search_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 245
+      "registryLine": 255
     },
     {
       "id": "web-extract-host",
@@ -288,7 +302,7 @@
       "since": "0.10.1",
       "flag": "web_extract_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 256
+      "registryLine": 266
     },
     {
       "id": "review-host",
@@ -302,7 +316,7 @@
       "since": "0.10.1",
       "flag": "review_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 267
+      "registryLine": 277
     },
     {
       "id": "modes",
@@ -316,7 +330,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md",
-      "registryLine": 280
+      "registryLine": 290
     },
     {
       "id": "permission-postures",
@@ -330,7 +344,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md#permission-posture",
-      "registryLine": 289
+      "registryLine": 299
     },
     {
       "id": "sandbox",
@@ -343,7 +357,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/SANDBOX.md",
-      "registryLine": 298
+      "registryLine": 308
     },
     {
       "id": "providers",
@@ -357,7 +371,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 307
+      "registryLine": 317
     },
     {
       "id": "model-routing",
@@ -370,7 +384,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter",
-      "registryLine": 316
+      "registryLine": 326
     },
     {
       "id": "output-limit-answer-recovery",
@@ -384,7 +398,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only",
-      "registryLine": 325
+      "registryLine": 335
     },
     {
       "id": "fleet",
@@ -398,7 +412,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/FLEET.md",
-      "registryLine": 335
+      "registryLine": 345
     },
     {
       "id": "environment-placement",
@@ -412,7 +426,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/ENVIRONMENTS.md#environment-aware-fleet-placement-preview",
-      "registryLine": 344
+      "registryLine": 354
     },
     {
       "id": "workflows",
@@ -425,7 +439,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WORKFLOW_AUTHORING.md",
-      "registryLine": 353
+      "registryLine": 363
     },
     {
       "id": "automatic-workflows",
@@ -438,7 +452,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/AUTOMATIC_WORKFLOWS.md",
-      "registryLine": 362
+      "registryLine": 372
     },
     {
       "id": "goals",
@@ -452,7 +466,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#goal-loop-goal",
-      "registryLine": 371
+      "registryLine": 381
     },
     {
       "id": "thread-scheduled-turns",
@@ -465,7 +479,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 380
+      "registryLine": 390
     },
     {
       "id": "todos",
@@ -479,7 +493,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 390
+      "registryLine": 400
     },
     {
       "id": "composer-queue-steer",
@@ -493,7 +507,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 399
+      "registryLine": 409
     },
     {
       "id": "receipts",
@@ -507,7 +521,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RECEIPTS.md",
-      "registryLine": 408
+      "registryLine": 418
     },
     {
       "id": "preview-request",
@@ -520,7 +534,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PREVIEW_REQUEST.md",
-      "registryLine": 418
+      "registryLine": 428
     },
     {
       "id": "read-media",
@@ -533,7 +547,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/READ_MEDIA.md",
-      "registryLine": 427
+      "registryLine": 437
     },
     {
       "id": "memory",
@@ -547,7 +561,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MEMORY.md",
-      "registryLine": 436
+      "registryLine": 446
     },
     {
       "id": "skills",
@@ -561,7 +575,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/SKILLS.md",
-      "registryLine": 447
+      "registryLine": 457
     },
     {
       "id": "plugins",
@@ -575,7 +589,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 456
+      "registryLine": 466
     },
     {
       "id": "computer-use",
@@ -589,7 +603,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGIN_BUNDLES.md",
-      "registryLine": 465
+      "registryLine": 475
     },
     {
       "id": "script-tools",
@@ -602,7 +616,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#script-tools-and-overrides",
-      "registryLine": 474
+      "registryLine": 484
     },
     {
       "id": "claude-plugin-compat",
@@ -615,7 +629,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CLAUDE_PLUGIN_COMPAT.md",
-      "registryLine": 483
+      "registryLine": 493
     },
     {
       "id": "claude-settings-import",
@@ -628,7 +642,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 492
+      "registryLine": 502
     },
     {
       "id": "hooks",
@@ -642,7 +656,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/HOOKS.md",
-      "registryLine": 500
+      "registryLine": 510
     },
     {
       "id": "lsp",
@@ -656,7 +670,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LSP_PHP_CUSTOM.md",
-      "registryLine": 509
+      "registryLine": 519
     },
     {
       "id": "runtime-api",
@@ -669,7 +683,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 518
+      "registryLine": 528
     },
     {
       "id": "compatibility-tool-free-turns",
@@ -682,7 +696,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#compatibility-execution-limits",
-      "registryLine": 527
+      "registryLine": 537
     },
     {
       "id": "runtime-provider-keys",
@@ -695,7 +709,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential",
-      "registryLine": 537
+      "registryLine": 547
     },
     {
       "id": "headless-exec",
@@ -708,7 +722,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 547
+      "registryLine": 557
     },
     {
       "id": "github-review",
@@ -721,7 +735,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/GITHUB_APP.md",
-      "registryLine": 556
+      "registryLine": 566
     },
     {
       "id": "web-client",
@@ -734,7 +748,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WEB.md",
-      "registryLine": 567
+      "registryLine": 577
     },
     {
       "id": "keybindings",
@@ -747,7 +761,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 576
+      "registryLine": 586
     },
     {
       "id": "settings",
@@ -761,7 +775,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 585
+      "registryLine": 595
     },
     {
       "id": "whats-new-notice",
@@ -774,7 +788,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#whats-new-after-an-update",
-      "registryLine": 594
+      "registryLine": 604
     },
     {
       "id": "themes",
@@ -787,7 +801,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/schemas/user-theme.schema.json",
-      "registryLine": 604
+      "registryLine": 614
     },
     {
       "id": "chat-color",
@@ -800,7 +814,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/GUIDE.md",
-      "registryLine": 613
+      "registryLine": 623
     },
     {
       "id": "localization",
@@ -813,7 +827,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LOCALIZATION.md",
-      "registryLine": 623
+      "registryLine": 633
     },
     {
       "id": "voice",
@@ -827,7 +841,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 632
+      "registryLine": 642
     },
     {
       "id": "pet",
@@ -841,7 +855,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PET_MODE.md",
-      "registryLine": 640
+      "registryLine": 650
     },
     {
       "id": "overview",
@@ -854,7 +868,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 649
+      "registryLine": 659
     },
     {
       "id": "account-login",
@@ -867,7 +881,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 658
+      "registryLine": 668
     },
     {
       "id": "account-computer-files",
@@ -880,7 +894,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 666
+      "registryLine": 676
     },
     {
       "id": "context-anchors",
@@ -893,7 +907,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 675
+      "registryLine": 685
     },
     {
       "id": "window-pin",
@@ -906,7 +920,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 683
+      "registryLine": 693
     },
     {
       "id": "structured-copy",
@@ -919,7 +933,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 691
+      "registryLine": 701
     },
     {
       "id": "live-thinking",
@@ -932,7 +946,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 699
+      "registryLine": 709
     },
     {
       "id": "workbar",
@@ -945,7 +959,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 707
+      "registryLine": 717
     },
     {
       "id": "terminal-dock",
@@ -958,7 +972,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 715
+      "registryLine": 725
     },
     {
       "id": "telemetry",
@@ -971,7 +985,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 726
+      "registryLine": 736
     },
     {
       "id": "docker",
@@ -984,7 +998,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 735
+      "registryLine": 745
     },
     {
       "id": "termux",
@@ -997,7 +1011,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 744
+      "registryLine": 754
     },
     {
       "id": "chatgpt-plan-sign-in",
@@ -1012,7 +1026,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 753
+      "registryLine": 763
     },
     {
       "id": "claude-plan-sign-in",
@@ -1027,7 +1041,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 763
+      "registryLine": 773
     },
     {
       "id": "plugin-oauth-providers",
@@ -1042,7 +1056,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 773
+      "registryLine": 783
     },
     {
       "id": "orcarouter-sign-in",
@@ -1057,7 +1071,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 783
+      "registryLine": 793
     },
     {
       "id": "merch-interest",
@@ -1072,7 +1086,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 794
+      "registryLine": 804
     },
     {
       "id": "profile-constitution",
@@ -1086,7 +1100,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 804
+      "registryLine": 814
     },
     {
       "id": "plugin-shell-install",
@@ -1099,7 +1113,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 814
+      "registryLine": 824
     },
     {
       "id": "fork-prefix-inheritance",
@@ -1113,7 +1127,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CACHE.md#fork-prefix-inheritance",
-      "registryLine": 824
+      "registryLine": 834
     },
     {
       "id": "fork-trial-diagnostics",
@@ -1127,12 +1141,12 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CACHE.md#fork-trial-diagnostics",
-      "registryLine": 834
+      "registryLine": 844
     },
     {
       "id": "source-navigation-echoes",
       "name": "Source navigation echoes",
-      "summary": "Bounded source symbols, neighbors and change attribution, with Rust read references focused on the displayed window.",
+      "summary": "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview",
@@ -1141,7 +1155,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/ECHOLOCATION.md",
-      "registryLine": 844
+      "registryLine": 854
     },
     {
       "id": "herdr-agent-state",
@@ -1154,7 +1168,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 854
+      "registryLine": 864
     },
     {
       "id": "instruction-budgets",
@@ -1167,7 +1181,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 863
+      "registryLine": 873
     },
     {
       "id": "github-action-review",
@@ -1180,7 +1194,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 873
+      "registryLine": 883
     },
     {
       "id": "telegram-agent",
@@ -1193,7 +1207,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 883
+      "registryLine": 893
     },
     {
       "id": "dingtalk-agent",
@@ -1206,7 +1220,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 893
+      "registryLine": 903
     }
   ]
 }

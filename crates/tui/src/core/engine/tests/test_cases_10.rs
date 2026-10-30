@@ -2,11 +2,12 @@
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
     // Token diet: agent+workflow (21KB of schema) and get/update_goal
     // (meaningless without an active goal) stay searchable by default.
-    const EXPECTED_NATIVE: [&str; 9] = [
+    const EXPECTED_NATIVE: [&str; 10] = [
         "read",
         "write",
         "edit",
         "file_search",
+        "grep_files",
         "bash",
         "todo_write",
         "task_shell_wait",

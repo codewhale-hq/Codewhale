@@ -1252,20 +1252,26 @@ fn under_budget_results_pass_through_whole_for_every_tool() {
     // 3% of a 128K window is 15,360 characters (an operator opt-in can only
     // raise it; see route_budget's tests for the exact values).
     assert!(budget_128k() >= 15_360);
-    let content = "w".repeat(14_000);
-    let output = ToolResult::success(content.clone());
-    for tool_name in [
-        "exec_shell",
-        "web_search",
-        "Web",
-        "web.run",
-        "fetch_url",
-        "read_file",
-        "run_tests",
+    for content in [
+        String::new(),
+        "\n \t\n".to_string(),
+        format!("\n\t{} \n", "w".repeat(14_000)),
     ] {
-        let view = view_128k(tool_name, &output);
-        assert_eq!(view.text, content, "{tool_name} was cut under the budget");
-        assert!(!view.needs_full_output_artifact);
+        let output = ToolResult::success(content.clone());
+        for tool_name in [
+            "exec_shell",
+            "web_search",
+            "Web",
+            "web.run",
+            "fetch_url",
+            "read",
+            "read_file",
+            "run_tests",
+        ] {
+            let view = view_128k(tool_name, &output);
+            assert_eq!(view.text, content, "{tool_name} was cut under the budget");
+            assert!(!view.needs_full_output_artifact);
+        }
     }
 }
 
@@ -1427,7 +1433,7 @@ fn spilled_preview_is_refit_not_recut() {
     // second artifact (which could only hold the preview) is written.
     with_artifact_home(|home| {
         let raw = format!(
-            "HEAD START\n{}TAIL END",
+            "\n    HEAD START\n{}TAIL END \n",
             "spilled output line\n".repeat(16_000)
         );
         let mut output = ToolResult::success(raw.clone());
@@ -1445,8 +1451,8 @@ fn spilled_preview_is_refit_not_recut() {
         let view = view_128k("exec_shell", &output);
         assert!(!view.needs_full_output_artifact);
         assert!(view.text.chars().count() <= budget_128k());
-        assert!(view.text.starts_with("HEAD START"));
-        assert!(view.text.ends_with("TAIL END"));
+        assert!(view.text.starts_with("\n    HEAD START"));
+        assert!(view.text.ends_with("TAIL END \n"));
         assert_eq!(
             view.text.matches("omitted range recovery:").count(),
             1,
@@ -1548,7 +1554,7 @@ fn evidence_bounded_preview_is_not_recompacted() {
     // compactor must pass it through untouched, even beyond the 12K hard
     // limit — re-compacting would strip the recovery contract.
     let content = format!(
-        "{}\n\n… 19.0 KiB of output omitted (123 lines) — full output at /tmp/art_call.txt; read it back with the read_file tool or with sed line ranges\n\n…\n{}",
+        "\n\t{}\n\n… 19.0 KiB of output omitted (123 lines) — full output at /tmp/art_call.txt; read it back with the read_file tool or with sed line ranges\n\n…\n{} \n",
         "h".repeat(32 * 1024),
         "t".repeat(8 * 1024)
     );
@@ -1563,8 +1569,10 @@ fn evidence_bounded_preview_is_not_recompacted() {
     assert!(context.contains("full output at /tmp/art_call.txt"));
 }
 
-#[test]
-fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor() {
+#[tokio::test]
+async fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor() {
+    use crate::tools::spec::ToolSpec as _;
+
     // C05: `read` bounds itself to an explicit per-call byte budget. The 12K
     // context hard limit used to re-truncate that bounded result into a 900-
     // char snippet, discarding both the content and the continuation footer.
@@ -1593,6 +1601,37 @@ fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor(
     }));
     let compacted_overrun = compact_tool_result_for_context("deepseek-v3.2-128k", "read", &overrun);
     assert!(compacted_overrun.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT));
+
+    let workspace = tempdir().expect("tempdir");
+    let line = format!("    {}\n", "x".repeat(95));
+    let source = format!("\n\t{}", line.repeat(1_200));
+    tokio::fs::write(workspace.path().join("budget.txt"), &source)
+        .await
+        .unwrap();
+    let context = ToolContext::new(workspace.path());
+    for max_bytes in [1, 90_000, 500_000] {
+        let native = crate::tools::file_tool::ReadTool
+            .execute(
+                json!({"path": "budget.txt", "max_bytes": max_bytes}),
+                &context,
+            )
+            .await
+            .expect("native read");
+        let metadata = native.metadata.as_ref().unwrap();
+        assert!(native.content.len() as u64 <= metadata["read_budget_bytes"].as_u64().unwrap());
+        let view = view_128k("read", &native);
+        assert_eq!(view.text, native.content, "max_bytes={max_bytes}");
+        assert!(!view.needs_full_output_artifact);
+        let body = native.content.split("\n\n[").next().unwrap();
+        assert!(body.len() <= (max_bytes as usize).max(100_000));
+        if max_bytes == 90_000 {
+            let mut source_budget_only = native.clone();
+            source_budget_only.metadata.as_mut().unwrap()["read_budget_bytes"] = json!(max_bytes);
+            let cut = view_128k("read", &source_budget_only);
+            assert_ne!(cut.text, native.content);
+            assert!(cut.needs_full_output_artifact);
+        }
+    }
 }
 
 #[test]
@@ -1623,5 +1662,5 @@ fn codex_tool_retention_uses_oauth_route_window_not_asmall_contract_model_window
         &output,
     );
 
-    assert_eq!(context, content.trim());
+    assert_eq!(context, content);
 }

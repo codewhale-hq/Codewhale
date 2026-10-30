@@ -44,7 +44,7 @@ const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 #[rustfmt::skip]
 pub(crate) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "bash", "todo_write",
+    "read", "write", "edit", "file_search", "grep_files", "bash", "todo_write",
     // Continuation instructions require these controls. Hiding them behind
     // discovery leaves a model unable to stop the work it was asked to run.
     "task_shell_wait",

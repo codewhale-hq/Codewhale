@@ -26526,20 +26526,8 @@ async fn agent_claim_is_withheld_from_a_role_with_no_write_authority() {
     assert!(refusal.contains("no write authority to widen"), "{refusal}");
 }
 
-// Regression (stopship scout repair): the workflow's read-only scout
-// activates `grep_files` with one `tool_search` call before searching. That
-// two-step path only works while the scout surface keeps a first-turn-active
-// `tool_search` and a deferred, searchable `grep_files`; the hidden `File`
-// alias the brief cited before is filtered from every model-visible catalog
-// (`to_api_tools`), which is what silently broke the release-acceptance
-// explore gate. The registry is built with the scope the fixture scout really
-// runs under (`leaf_allowed_tools` lowers a read-only leaf to `["File"]`), so
-// the guard also pins the alias-family intersection that keeps `grep_files`
-// discoverable under that legacy rule. If a surface reshape fails this test,
-// re-work the fixture brief in the same change instead of leaving it
-// instructing calls the child cannot make.
 #[tokio::test]
-async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
+async fn scout_surface_keeps_content_search_eager() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
@@ -26562,7 +26550,7 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     let grep = catalog
         .iter()
         .find(|tool| tool.name == "grep_files")
-        .expect("scout must keep a deferred, searchable grep_files");
+        .expect("scout must keep an active grep_files");
     assert_eq!(
         search.defer_loading,
         Some(false),
@@ -26570,8 +26558,8 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     );
     assert_eq!(
         grep.defer_loading,
-        Some(true),
-        "grep_files must be deferred so the taught tool_search activation is required"
+        Some(false),
+        "grep_files must be first-turn active on the scout"
     );
     assert!(
         !catalog.iter().any(|tool| tool.name == "File"),
@@ -26595,7 +26583,7 @@ fn workflow_briefs_name_catalog_visible_tools() {
         .1;
     assert!(
         body.contains("`tool_search`") && body.contains("`grep_files`"),
-        "the scout brief must teach the two-step activation path:\n{body}"
+        "the scout brief must name content search and its discovery fallback:\n{body}"
     );
     // Every catalog-invisible execution name (hidden replay aliases and the
     // retired `search_content` action) is denied as a whole word, so an
@@ -26621,13 +26609,8 @@ fn workflow_briefs_name_catalog_visible_tools() {
     );
 }
 
-// Behavioral counterpart to the two composition guards above: on the scout's
-// live surface, one `tool_search` call must make the deferred `grep_files`
-// dispatchable through the same gate the child step loop uses. Saved `File`
-// calls retain a hidden compatibility handler for safe reads, but neither
-// model visibility nor that handler grants the scout mutation authority.
 #[tokio::test]
-async fn scout_activation_makes_grep_files_dispatchable() {
+async fn scout_grep_files_dispatches_without_activation() {
     let tmp = tempdir().expect("tempdir");
     let evidence = tmp.path().join("evidence.txt");
     std::fs::write(&evidence, "stopship evidence\n").expect("fixture evidence");
@@ -26644,6 +26627,7 @@ async fn scout_activation_makes_grep_files_dispatchable() {
 
     assert!(!surface.catalog().iter().any(|tool| tool.name == "File"));
     assert!(!model_tool_names(model_request_tools(&mut surface)).contains("File"));
+    assert!(model_tool_names(model_request_tools(&mut surface)).contains("grep_files"));
     let file_read = registry
         .execute_from_surface(
             "agent_unknown",
@@ -26683,22 +26667,12 @@ async fn scout_activation_makes_grep_files_dispatchable() {
     );
     assert!(!surface.active_names().contains("File"));
 
-    registry
-        .execute_from_surface(
-            "agent_unknown",
-            "",
-            &mut surface,
-            "tool_search",
-            serde_json::json!({"query": "grep_files"}),
-        )
-        .await
-        .expect("tool_search activation must succeed on the scout surface");
     assert!(
         surface.active_names().contains("grep_files"),
-        "activation must admit grep_files into the same surface the dispatch gate reads"
+        "grep_files must start active in the same surface the dispatch gate reads"
     );
 
-    registry
+    let searched = registry
         .execute_from_surface(
             "agent_unknown",
             "",
@@ -26712,7 +26686,12 @@ async fn scout_activation_makes_grep_files_dispatchable() {
             }),
         )
         .await
-        .expect("grep_files must dispatch through the real tool after the taught activation");
+        .expect("grep_files must dispatch through the real tool without discovery");
+    assert!(searched.result.success, "{searched:?}");
+    assert!(
+        searched.result.content.contains("stopship evidence"),
+        "{searched:?}"
+    );
 }
 
 #[test]
