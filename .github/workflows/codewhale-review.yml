@@ -54,7 +54,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
-      - uses: codewhale-hq/Codewhale@c2a48723285c48978279f6c10672bbade49cc0cb
+      - uses: codewhale-hq/Codewhale@b92540d882b8e7c66389aa35e5fa0c3c178fe4ce
         id: review
         with:
           version: 'v0.10.2'
