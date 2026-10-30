@@ -511,6 +511,10 @@ mod tests {
         app.approval_mode = ApprovalMode::Bypass;
         app.active_context_window_source =
             crate::route_runtime::ContextWindowSource::ProviderReported;
+        app.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
+            tokens: 262_144,
+            source: crate::route_runtime::ContextWindowSource::ProviderReported,
+        });
 
         let msg = format_status(&mut app);
 

@@ -4915,6 +4915,7 @@ fn test_update_model_compaction_budget() {
     app.auto_model = false;
     app.api_provider = ProviderKind::Deepseek;
     app.active_route_limits = None;
+    app.active_context_window = None;
     app.active_context_window_override = None;
     app.auto_compact_threshold_percent = 80.0;
 
