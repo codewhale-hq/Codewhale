@@ -720,6 +720,7 @@ mod tests {
     /// second driver must never be downgraded to "run anyway", which would let
     /// two engines write one tree. The two predicates are disjoint by
     /// construction; this pins that.
+    #[cfg(unix)]
     #[test]
     fn only_a_held_lock_is_contention_and_only_a_lockless_mount_is_unsupported() {
         use std::io::Error;
