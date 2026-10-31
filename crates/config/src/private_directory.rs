@@ -22,6 +22,9 @@ pub struct PrivateDirectory {
     pub(crate) directory: PathBuf,
     #[cfg(unix)]
     pub(crate) directory_handle: File,
+    /// Whether ownership and mode were actually verifiable on this mount.
+    #[cfg(unix)]
+    pub(crate) guard: PrivateGuard,
     #[cfg(windows)]
     pub(crate) _component_handles: Vec<File>,
 }
@@ -44,16 +47,102 @@ impl std::error::Error for UnlinkedPrivateFile {}
 
 impl PrivateDirectory {
     pub fn open(directory: &Path) -> Result<Self> {
-        open_owned_directory(directory, true, true)
+        open_owned_directory(directory, true, true, PrivateGuard::Required)
     }
     /// Read-only admission of an existing private directory, without repair.
     pub fn inspect(directory: &Path) -> Result<Self> {
-        open_owned_directory(directory, false, false)
+        open_owned_directory(directory, false, false, PrivateGuard::Required)
     }
 
     /// Create missing owned directories; refuse existing non-private permissions.
     pub fn admit(directory: &Path) -> Result<Self> {
-        open_owned_directory(directory, false, true)
+        open_owned_directory(directory, false, true, PrivateGuard::Required)
+    }
+
+    /// Create and admit, accepting a mount that cannot express ownership.
+    ///
+    /// On a filesystem that stores ownership and mode this is exactly
+    /// [`Self::open`]. On one that synthesises them — HarmonyOS hmdfs reports
+    /// the logged-in user's uid and a group-writable mode for every object an
+    /// app creates and reports that user as the owner of every object, so a
+    /// process is never the owner of what it creates and `chmod` answers
+    /// `EPERM` — the strict proof can never hold, so
+    /// refusing here would make the feature unusable on that platform for
+    /// everyone. The object is admitted with [`PrivateGuard::Unverifiable`],
+    /// which relaxes *only* the ownership proof; the no-follow walk, the
+    /// single-link check and atomic publication still apply, and a warning
+    /// names the values the mount reported.
+    ///
+    /// A directory this process may not enter is still an error: the probe must
+    /// be able to create an object of its own before a mount is blamed.
+    #[cfg(unix)]
+    pub fn open_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::with_mount_tolerance(directory, true, true)
+    }
+
+    /// [`Self::admit`], accepting a mount that cannot express ownership.
+    #[cfg(unix)]
+    pub fn admit_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::with_mount_tolerance(directory, false, true)
+    }
+
+    /// [`Self::inspect`], accepting a mount that cannot express ownership.
+    #[cfg(unix)]
+    pub fn inspect_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::with_mount_tolerance(directory, false, false)
+    }
+
+    /// Not applicable outside Unix: the ownership guard is the Windows security
+    /// descriptor, which every local filesystem stores.
+    #[cfg(not(unix))]
+    pub fn open_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::open(directory)
+    }
+
+    #[cfg(not(unix))]
+    pub fn admit_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::admit(directory)
+    }
+
+    #[cfg(not(unix))]
+    pub fn inspect_trusting_mount(directory: &Path) -> Result<Self> {
+        Self::inspect(directory)
+    }
+
+    #[cfg(unix)]
+    fn with_mount_tolerance(directory: &Path, protect: bool, create: bool) -> Result<Self> {
+        match open_owned_directory(directory, protect, create, PrivateGuard::Required) {
+            Ok(private) => Ok(private),
+            Err(strict_error) => {
+                // `mount_footing` answers once per directory and reports the
+                // values it saw; a probe that could not run answers `Native`,
+                // which keeps the strict error below.
+                let PrivateFooting::Synthesised {
+                    observed_uid,
+                    observed_mode,
+                } = mount_footing(directory)
+                else {
+                    return Err(strict_error);
+                };
+                let private = open_owned_directory(
+                    directory,
+                    protect,
+                    create,
+                    PrivateGuard::Unverifiable {
+                        observed_uid,
+                        observed_mode,
+                    },
+                )?;
+                tracing::warn!(
+                    directory = %private.directory.display(),
+                    "{} reports uid {observed_uid} and mode {observed_mode:o} for objects created on \
+                     it, so the ownership guard cannot be verified; relying on the mount's own \
+                     access control for this private directory",
+                    private.directory.display()
+                );
+                Ok(private)
+            }
+        }
     }
 
     /// Check the retained directory against the lexical selection without
@@ -61,10 +150,30 @@ impl PrivateDirectory {
     #[cfg(unix)]
     pub fn is_at_selected_path(&self) -> Result<bool> {
         use std::os::unix::fs::MetadataExt as _;
-        let current = Self::inspect(&self.directory)?;
+        // What this compares is identity — device and inode of the retained
+        // handle against the freshly opened one — so repeating the ownership
+        // proof adds nothing here, and a directory admitted as `Unverifiable`
+        // would fail that proof on exactly the mount that made it necessary.
+        let current = match self.guard {
+            PrivateGuard::Required => Self::inspect(&self.directory)?,
+            PrivateGuard::Unverifiable { .. } => Self::inspect_trusting_mount(&self.directory)?,
+        };
         let held = self.directory_handle.metadata()?;
         let now = current.directory_handle.metadata()?;
         Ok(held.dev() == now.dev() && held.ino() == now.ino())
+    }
+
+    /// The guard this directory was admitted with, for validating files under
+    /// it. A file on a mount that cannot express ownership is exactly as
+    /// unverifiable as its directory.
+    #[cfg(unix)]
+    pub fn guard(&self) -> PrivateGuard {
+        self.guard
+    }
+
+    #[cfg(not(unix))]
+    pub fn guard(&self) -> PrivateGuard {
+        PrivateGuard::Required
     }
 
     #[cfg(unix)]
@@ -72,6 +181,384 @@ impl PrivateDirectory {
         // SAFETY: geteuid has no pointer arguments.
         unsafe { libc::geteuid() }
     }
+}
+
+/// Narrow `path` to `mode`, tolerating a filesystem that cannot store modes.
+///
+/// Every ownership story in this crate ends in a `chmod`: a lock file is
+/// narrowed to `0600`, a session directory to `0700`. On HarmonyOS hmdfs the
+/// call fails with `EPERM` for every object, including objects the caller just
+/// created, because the mount assigns the mode itself. Treating that as fatal
+/// turns an ordinary write into "permission denied" on a platform where the
+/// write itself succeeded — and the mode the caller asked for was never going
+/// to be applied.
+///
+/// This narrows when the mount stores modes and, only where a probe proves the
+/// mount synthesises them, continues. A mount that stores modes keeps the
+/// error, so a real permission problem is still reported; the probe's own
+/// warning names the values the mount reported, once per directory.
+#[cfg(unix)]
+pub fn tighten_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    match fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // A mount that assigns modes itself refuses this for every object
+            // it holds, including one it has just accepted a write to. Only
+            // that mount is excused, and `mount_footing` answers once per
+            // directory, so a write path does not pay for a probe each time.
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+            if parent.is_some_and(|parent| {
+                matches!(mount_footing(parent), PrivateFooting::Synthesised { .. })
+            }) {
+                return Ok(());
+            }
+            Err(error)
+                .with_context(|| format!("narrowing {} to {mode:o}", crate::quote_os_path(path)))
+        }
+    }
+}
+
+/// [`tighten_mode`] for an object this process already holds open.
+///
+/// Preferred wherever a handle exists: the mode is applied to the object the
+/// caller validated, so narrowing cannot be redirected to a substituted path.
+/// Only the *question* about the filesystem is answered by path, and only after
+/// the call has already failed.
+#[cfg(unix)]
+pub fn tighten_mode_of(file: &File, path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let error = match file.set_permissions(fs::Permissions::from_mode(mode)) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if parent
+        .is_some_and(|parent| matches!(mount_footing(parent), PrivateFooting::Synthesised { .. }))
+    {
+        return Ok(());
+    }
+    Err(error).with_context(|| format!("narrowing {} to {mode:o}", crate::quote_os_path(path)))
+}
+
+#[cfg(not(unix))]
+pub fn tighten_mode_of(_file: &File, _path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn tighten_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+/// How much of the private-directory guard this object could establish.
+///
+/// Everything that makes an object unreachable by another local user — the
+/// no-follow component walk, the single-link check, atomic publication, the
+/// retained handle — holds in both cases. Only the proof of *ownership* is what
+/// a mount can fail to express, and that is what [`Self::Unverifiable`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateGuard {
+    /// Ownership and mode prove the directory is current-user-only.
+    Required,
+    /// The mount reports ownership and mode of its own, so they prove nothing.
+    /// The caller asked for this explicitly and has said so to the user; the
+    /// mount's own access control is what governs the object.
+    Unverifiable {
+        observed_uid: u32,
+        observed_mode: u32,
+    },
+}
+
+/// What a filesystem does with the owner and mode of a directory created on it.
+///
+/// A private directory is admitted by proving it is current-user-owned and
+/// inaccessible to group or other. Some mounts synthesise those attributes
+/// instead of storing them, so no object there can ever satisfy that proof —
+/// and refusing the feature outright turns a filesystem limitation into a
+/// failed startup. Callers use this to tell "you are not allowed" (fatal) from
+/// "this mount cannot express the guard" (a capability the caller must
+/// degrade around, loudly).
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateFooting {
+    /// The mount stored the owner and mode the probe directory was created with.
+    Native,
+    /// The mount reported values of its own for the probe directory, with the
+    /// observed values, so a refusal can name what it saw.
+    Synthesised {
+        observed_uid: u32,
+        observed_mode: u32,
+    },
+}
+
+/// Probe the filesystem that would hold `directory`.
+///
+/// Creates one directory at `0o700` under the deepest existing ancestor of
+/// `directory`, reads back what the mount made of it, and removes it. A mount
+/// that keeps the owner and mode it was given answers
+/// [`PrivateFooting::Native`]; a mount that invents them (HarmonyOS hmdfs
+/// reports the logged-in user's uid and a group-writable mode for every object,
+/// and reports another owner, so `chmod` answers `EPERM`) answers
+/// [`PrivateFooting::Synthesised`].
+///
+/// An unexpected mode alone is *not* enough to blame the mount: a default ACL
+/// or a setgid parent can widen a new directory on a filesystem that stores
+/// modes perfectly well. The probe therefore asks the mount to apply `0o700`
+/// and looks again, and only a mount that will not honour that is called
+/// synthesising. Reclassifying a mount that does store modes would relax a real
+/// ownership guard, so the question is asked in the direction that keeps it.
+///
+/// Any failure to run the probe is an error rather than an answer, so a
+/// directory this process cannot write to keeps the strict refusal instead of
+/// being reclassified as a mount limitation.
+#[cfg(unix)]
+pub fn private_footing(directory: &Path) -> Result<PrivateFooting> {
+    anyhow::ensure!(
+        directory.is_absolute(),
+        "private footing probe needs an absolute path"
+    );
+    let Some(parent) = deepest_existing_ancestor(directory) else {
+        // Nothing exists to create in; the real admission reports the cause.
+        return Ok(PrivateFooting::Native);
+    };
+    let handle = File::open(parent).with_context(|| {
+        format!(
+            "opening {} to probe its filesystem",
+            crate::quote_os_path(parent)
+        )
+    })?;
+    probe_footing_in(&handle).with_context(|| {
+        format!(
+            "probing private-directory footing under {}",
+            crate::quote_os_path(parent)
+        )
+    })
+}
+
+/// The footing of the filesystem behind an already-open directory.
+///
+/// The probe runs inside `directory` through its descriptor, so no path is
+/// involved and nothing outside it can be reached. Used both by
+/// [`private_footing`] and by callers that already hold the directory — a
+/// delivery writer, an anchored report directory — and want the answer for the
+/// object they are actually writing into.
+#[cfg(unix)]
+fn probe_footing_in(directory: &File) -> Result<PrivateFooting> {
+    use std::os::fd::AsRawFd as _;
+
+    static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let directory_fd = directory.as_raw_fd();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let mut reserved = None;
+    for _ in 0..8 {
+        let name = CString::new(format!(
+            ".codewhale-owner-probe-{}-{nanos}-{}",
+            std::process::id(),
+            PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))?;
+        // SAFETY: a retained directory descriptor and a single component that
+        // contains no path separator and no interior NUL.
+        if unsafe { libc::mkdirat(directory_fd, name.as_ptr(), 0o700) } == 0 {
+            reserved = Some(name);
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            continue;
+        }
+        return Err(error).context("creating private footing probe");
+    }
+    let name = reserved.context("private footing probe could not reserve a name")?;
+    let observed = (|| {
+        let first = probe_stat(directory_fd, &name)?;
+        if matches!(
+            classify_probe_footing(first.0, first.1, PrivateDirectory::current_user_id()),
+            PrivateFooting::Native
+        ) {
+            return Ok(PrivateFooting::Native);
+        }
+        // Ask the mount for the mode the probe actually wants, and look again.
+        // SAFETY: the same retained descriptor and the same single component.
+        let narrowed = (unsafe { libc::fchmodat(directory_fd, name.as_ptr(), 0o700, 0) } == 0)
+            .then(|| probe_stat(directory_fd, &name))
+            .transpose()?;
+        Ok(footing_from_observations(
+            first,
+            narrowed,
+            PrivateDirectory::current_user_id(),
+        ))
+    })();
+    // Best effort: a probe that cannot be removed must not change the answer.
+    // SAFETY: the same retained descriptor and the same single component.
+    unsafe { libc::unlinkat(directory_fd, name.as_ptr(), libc::AT_REMOVEDIR) };
+    observed
+}
+
+#[cfg(unix)]
+fn probe_stat(directory_fd: libc::c_int, name: &CString) -> Result<(u32, u32)> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: one component below a retained descriptor, no follow, writable
+    // output.
+    if unsafe {
+        libc::fstatat(
+            directory_fd,
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("inspecting private footing probe");
+    }
+    // SAFETY: a successful `fstatat` initialized the whole object.
+    let metadata = unsafe { metadata.assume_init() };
+    // The field types differ per platform (Darwin's `mode_t` is narrower than
+    // Linux's), so both are read through one pair of accessors.
+    let mode = libc_mode(&metadata);
+    Ok((libc_uid(&metadata), mode & 0o777))
+}
+
+/// The rule [`private_footing`] applies, separated so every branch is testable
+/// on a filesystem that only ever produces the native one.
+#[cfg(unix)]
+fn classify_probe_footing(
+    observed_uid: u32,
+    observed_mode: u32,
+    current_uid: u32,
+) -> PrivateFooting {
+    if observed_uid == current_uid && observed_mode & 0o077 == 0 {
+        PrivateFooting::Native
+    } else {
+        PrivateFooting::Synthesised {
+            observed_uid,
+            observed_mode,
+        }
+    }
+}
+
+/// The whole rule: the first observation, and what the mount did when it was
+/// asked to apply `0o700` (`None` when it refused the request).
+///
+/// A second observation that finally shows the private values means the mount
+/// stores modes and simply applied something of its own at creation — a default
+/// ACL, a setgid parent. Such a filesystem can hold the guard (the strict
+/// admission narrows it), so calling it synthesising would relax a real check.
+/// Only a mount that refuses, or that reports values of its own after being
+/// asked, is synthesising.
+#[cfg(unix)]
+fn footing_from_observations(
+    first: (u32, u32),
+    narrowed: Option<(u32, u32)>,
+    current_uid: u32,
+) -> PrivateFooting {
+    match narrowed {
+        Some((uid, mode)) => classify_probe_footing(uid, mode, current_uid),
+        None => classify_probe_footing(first.0, first.1, current_uid),
+    }
+}
+
+#[cfg(unix)]
+fn libc_uid(metadata: &libc::stat) -> u32 {
+    metadata.st_uid
+}
+
+#[cfg(unix)]
+fn libc_mode(metadata: &libc::stat) -> u32 {
+    #[allow(clippy::unnecessary_cast)]
+    // `mode_t` is `u16` on Apple and `u32` on Linux; no single conversion is
+    // lint-clean on both, and this is the widening that keeps the value exact.
+    let mode = metadata.st_mode as u32;
+    mode
+}
+
+/// Answers already obtained from a filesystem, keyed by the identity of the
+/// directory that was probed.
+///
+/// A probe is a create, a stat, a `chmod` and an unlink, and the sites that ask
+/// sit under ordinary file writes. The answer is a property of the mount and
+/// cannot change for one directory, so each directory is asked once per process
+/// and the one warning is emitted with that first answer. A probe that could
+/// not run is not an answer and is never cached.
+#[cfg(unix)]
+fn footing_answers()
+-> &'static std::sync::Mutex<std::collections::HashMap<(u64, u64), PrivateFooting>> {
+    static ANSWERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(u64, u64), PrivateFooting>>,
+    > = std::sync::OnceLock::new();
+    ANSWERS.get_or_init(std::sync::Mutex::default)
+}
+
+/// [`private_footing`] for a directory handle, answered at most once.
+#[cfg(unix)]
+pub fn mount_footing_of(directory: &File) -> PrivateFooting {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let key = directory
+        .metadata()
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    if let Some(key) = key
+        && let Some(answer) = footing_answers()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .copied()
+    {
+        return answer;
+    }
+    let Ok(answer) = probe_footing_in(directory) else {
+        // The probe could not run: that is a problem to report, not a mount
+        // limitation, so the caller keeps its strict check.
+        return PrivateFooting::Native;
+    };
+    if let PrivateFooting::Synthesised {
+        observed_uid,
+        observed_mode,
+    } = answer
+    {
+        tracing::warn!(
+            "a directory on this filesystem was created at 0o700 and reports uid \
+             {observed_uid} and mode {observed_mode:o}, and the mount will not narrow it; \
+             ownership cannot be verified for private files here, so relying on the mount's \
+             own access control"
+        );
+    }
+    if let Some(key) = key {
+        footing_answers()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, answer);
+    }
+    answer
+}
+
+/// [`private_footing`] for a path, answered at most once per directory.
+#[cfg(unix)]
+pub fn mount_footing(directory: &Path) -> PrivateFooting {
+    let Some(existing) = deepest_existing_ancestor(directory) else {
+        return PrivateFooting::Native;
+    };
+    let Ok(handle) = File::open(existing) else {
+        return PrivateFooting::Native;
+    };
+    mount_footing_of(&handle)
+}
+
+#[cfg(unix)]
+fn deepest_existing_ancestor(directory: &Path) -> Option<&Path> {
+    let mut candidate = Some(directory);
+    while let Some(path) = candidate {
+        if fs::symlink_metadata(path).is_ok() {
+            return Some(path);
+        }
+        candidate = path.parent();
+    }
+    None
 }
 
 fn validate_private_basename(name: &str) -> Result<()> {
@@ -102,7 +589,12 @@ fn resolve_ancestors(directory: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
-fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result<PrivateDirectory> {
+fn open_owned_directory(
+    directory: &Path,
+    protect: bool,
+    create: bool,
+    guard: PrivateGuard,
+) -> Result<PrivateDirectory> {
     use std::os::fd::FromRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -215,22 +707,47 @@ fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result
         metadata.is_dir(),
         "Codewhale credentials path must be a directory"
     );
-    // SAFETY: geteuid(2) dereferences no pointers.
-    anyhow::ensure!(
-        metadata.uid() == unsafe { libc::geteuid() },
-        "Codewhale credentials directory must be owned by the current user"
-    );
-    if protect {
-        current.set_permissions(fs::Permissions::from_mode(0o700))?;
-    } else {
-        anyhow::ensure!(
-            metadata.mode() & 0o077 == 0,
-            "private endpoint directory must already be current-user-only"
-        );
+    match guard {
+        PrivateGuard::Required => {
+            // The message names the directory and both uids. It used to say
+            // only "credentials directory must be owned by the current user",
+            // which was wrong twice over: the directory is not necessarily a
+            // credential store (the workspace lease and the control socket use
+            // the same mechanism), and without the values there was no way to
+            // tell a real ownership problem from a mount that reports an owner
+            // of its own.
+            // SAFETY: geteuid(2) dereferences no pointers.
+            let current_uid = unsafe { libc::geteuid() };
+            anyhow::ensure!(
+                metadata.uid() == current_uid,
+                "private directory {} is owned by uid {} but this process runs as uid {}",
+                crate::quote_os_path(directory),
+                metadata.uid(),
+                current_uid
+            );
+            if protect {
+                current.set_permissions(fs::Permissions::from_mode(0o700))?;
+            } else {
+                anyhow::ensure!(
+                    metadata.mode() & 0o077 == 0,
+                    "private endpoint directory must already be current-user-only"
+                );
+            }
+        }
+        PrivateGuard::Unverifiable { .. } => {
+            // The mount owns the attributes, so neither the owner nor the mode
+            // can be made to prove anything. Narrowing is still attempted and
+            // its failure is expected rather than fatal: hmdfs answers EPERM to
+            // `chmod` for every object.
+            if protect {
+                let _ = current.set_permissions(fs::Permissions::from_mode(0o700));
+            }
+        }
     }
     Ok(PrivateDirectory {
         directory: directory.to_path_buf(),
         directory_handle: current,
+        guard,
     })
 }
 
@@ -283,8 +800,19 @@ impl PrivateDirectory {
         let file = self
             .open_at(name, libc::O_RDWR | libc::O_CREAT, 0o600)?
             .context("xAI OAuth lifecycle lock disappeared while opening")?;
-        validate_owned_file_handle(&file, &self.directory.join(name))?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        validate_owned_file_handle(&file, &self.directory.join(name), self.guard)?;
+        // Narrowing is a no-op where the mount stores the mode it was given,
+        // and is expected to fail where the mount invents one (hmdfs answers
+        // EPERM to `chmod` for every object). Refusing there would make the
+        // store unwritable on that platform for a mode it never applied anyway.
+        match self.guard {
+            PrivateGuard::Required => {
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            PrivateGuard::Unverifiable { .. } => {
+                let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+            }
+        }
         Ok(file)
     }
 
@@ -311,7 +839,14 @@ impl PrivateDirectory {
             temp.write_all(bytes)
                 .context("writing xAI OAuth temporary file")?;
             temp.flush().context("flushing xAI OAuth temporary file")?;
-            temp.set_permissions(fs::Permissions::from_mode(0o600))?;
+            match self.guard {
+                PrivateGuard::Required => {
+                    temp.set_permissions(fs::Permissions::from_mode(0o600))?;
+                }
+                PrivateGuard::Unverifiable { .. } => {
+                    let _ = temp.set_permissions(fs::Permissions::from_mode(0o600));
+                }
+            }
             temp.sync_all()
                 .context("syncing xAI OAuth temporary file")?;
 
@@ -321,7 +856,7 @@ impl PrivateDirectory {
                 CString::new(temp_name.as_str()).context("temporary basename contains NUL")?;
             if allow_replace {
                 if let Some(existing) = self.open_owned_file_for_read(name)? {
-                    validate_owned_file_handle(&existing, &self.directory.join(name))?;
+                    validate_owned_file_handle(&existing, &self.directory.join(name), self.guard)?;
                 }
                 // SAFETY: both names are relative to the same stable directory
                 // handle; rename is atomic and cannot escape that directory.
@@ -397,7 +932,7 @@ impl PrivateDirectory {
         let Some(file) = self.open_owned_file_for_read(name)? else {
             return Ok(false);
         };
-        validate_owned_file_handle(&file, &self.directory.join(name))?;
+        validate_owned_file_handle(&file, &self.directory.join(name), self.guard)?;
         drop(file);
         let name = CString::new(name).context("xAI OAuth basename contains an interior NUL")?;
         // SAFETY: the name is one component relative to the stable credentials
@@ -419,7 +954,7 @@ impl PrivateDirectory {
         let source = self
             .open_owned_file_for_read(from)?
             .context("xAI OAuth source disappeared before retirement")?;
-        validate_owned_file_handle(&source, &self.directory.join(from))?;
+        validate_owned_file_handle(&source, &self.directory.join(from), self.guard)?;
         anyhow::ensure!(
             self.open_owned_file_for_read(to)?.is_none(),
             "refusing to replace an existing xAI OAuth retirement path"
@@ -445,7 +980,11 @@ impl PrivateDirectory {
 }
 
 #[cfg(unix)]
-pub(crate) fn validate_owned_file_handle(file: &File, path: &Path) -> Result<fs::Metadata> {
+pub(crate) fn validate_owned_file_handle(
+    file: &File,
+    path: &Path,
+    guard: PrivateGuard,
+) -> Result<fs::Metadata> {
     use std::os::unix::fs::MetadataExt as _;
     let metadata = file.metadata().with_context(|| {
         format!(
@@ -454,11 +993,16 @@ pub(crate) fn validate_owned_file_handle(file: &File, path: &Path) -> Result<fs:
         )
     })?;
     anyhow::ensure!(metadata.is_file(), "xAI OAuth path must be a regular file");
-    // SAFETY: geteuid(2) dereferences no pointers.
-    anyhow::ensure!(
-        metadata.uid() == unsafe { libc::geteuid() },
-        "xAI OAuth file must be owned by the current user"
-    );
+    // A file on a mount that reports ownership of its own carries the same
+    // evidence as its directory: none. The link count still has to be exact,
+    // because that is a real property the mount stores.
+    if matches!(guard, PrivateGuard::Required) {
+        // SAFETY: geteuid(2) dereferences no pointers.
+        anyhow::ensure!(
+            metadata.uid() == unsafe { libc::geteuid() },
+            "xAI OAuth file must be owned by the current user"
+        );
+    }
     anyhow::ensure!(metadata.nlink() != 0, UnlinkedPrivateFile);
     anyhow::ensure!(
         metadata.nlink() == 1,
@@ -468,7 +1012,12 @@ pub(crate) fn validate_owned_file_handle(file: &File, path: &Path) -> Result<fs:
 }
 
 #[cfg(windows)]
-fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result<PrivateDirectory> {
+fn open_owned_directory(
+    directory: &Path,
+    protect: bool,
+    create: bool,
+    _guard: PrivateGuard,
+) -> Result<PrivateDirectory> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
@@ -572,7 +1121,7 @@ impl PrivateDirectory {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         match options.open(&path) {
             Ok(file) => {
-                validate_owned_file_handle(&file, &path)?;
+                validate_windows_owned_file_handle(&file, &path)?;
                 Ok(Some(file))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -631,7 +1180,7 @@ impl PrivateDirectory {
                 validate_windows_file_shape(&file, &path)?;
                 secure_windows_owner_only_handle(&file, false)
                     .context("securing a new xAI OAuth lifecycle lock")?;
-                validate_owned_file_handle(&file, &path)?;
+                validate_windows_owned_file_handle(&file, &path)?;
                 Ok(())
             })();
             if let Err(error) = secured {
@@ -673,7 +1222,7 @@ impl PrivateDirectory {
             reopen_windows_file_for_owner_security(temporary.as_file(), &temporary_path)?;
         secure_windows_owner_only_handle(&security_handle, false)
             .context("securing a new xAI OAuth temporary file before writing credentials")?;
-        validate_owned_file_handle(&security_handle, &temporary_path)
+        validate_windows_owned_file_handle(&security_handle, &temporary_path)
             .context("verifying a new xAI OAuth temporary file before writing credentials")?;
         let write_result = (|| -> Result<()> {
             temporary
@@ -762,7 +1311,7 @@ impl PrivateDirectory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error).context("opening xAI OAuth file for exact deletion"),
         };
-        validate_owned_file_handle(&file, &path)?;
+        validate_windows_owned_file_handle(&file, &path)?;
         mark_windows_file_handle_for_deletion(&file)?;
         drop(file);
         Ok(true)
@@ -880,7 +1429,7 @@ fn validate_persisted_windows_owned_file(file: &File, path: &Path) -> Result<fs:
             bail!("injected post-persistence xAI OAuth validation failure");
         }
     }
-    validate_owned_file_handle(file, path)
+    validate_windows_owned_file_handle(file, path)
 }
 
 #[cfg(all(windows, test))]
@@ -891,7 +1440,16 @@ pub(crate) fn fail_next_windows_post_persist_validation(path: &Path) {
 }
 
 #[cfg(windows)]
-pub(crate) fn validate_owned_file_handle(file: &File, path: &Path) -> Result<fs::Metadata> {
+pub(crate) fn validate_owned_file_handle(
+    file: &File,
+    path: &Path,
+    _guard: PrivateGuard,
+) -> Result<fs::Metadata> {
+    validate_windows_owned_file_handle(file, path)
+}
+
+#[cfg(windows)]
+fn validate_windows_owned_file_handle(file: &File, path: &Path) -> Result<fs::Metadata> {
     let metadata = validate_windows_file_shape(file, path)?;
     verify_windows_owner_only_handle(file)
         .context("Codewhale-owned xAI OAuth file is not current-user-only")?;
@@ -1229,7 +1787,12 @@ pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_owned_directory(directory: &Path, protect: bool, create: bool) -> Result<PrivateDirectory> {
+fn open_owned_directory(
+    directory: &Path,
+    protect: bool,
+    create: bool,
+    _guard: PrivateGuard,
+) -> Result<PrivateDirectory> {
     anyhow::ensure!(
         protect,
         "private endpoint authentication is unsupported on this platform"
@@ -1295,7 +1858,11 @@ impl PrivateDirectory {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn validate_owned_file_handle(file: &File, _path: &Path) -> Result<fs::Metadata> {
+pub(crate) fn validate_owned_file_handle(
+    file: &File,
+    _path: &Path,
+    _guard: PrivateGuard,
+) -> Result<fs::Metadata> {
     let metadata = file.metadata()?;
     anyhow::ensure!(metadata.is_file(), "xAI OAuth path must be a regular file");
     Ok(metadata)
@@ -1341,10 +1908,15 @@ impl PrivateDirectory {
             )
             .into());
         }
-        anyhow::ensure!(
-            metadata.st_uid == Self::current_user_id(),
-            "private socket is not owned by the current user"
-        );
+        // Ownership is evidence only where the mount stores it. The socket
+        // type above and the identity this returns are stored properties, so
+        // they still hold on a mount that reports an owner of its own.
+        if matches!(self.guard, PrivateGuard::Required) {
+            anyhow::ensure!(
+                metadata.st_uid == Self::current_user_id(),
+                "private socket is not owned by the current user"
+            );
+        }
         Ok(Some(PrivateSocketIdentity {
             device: metadata.st_dev,
             inode: metadata.st_ino,
@@ -1465,6 +2037,186 @@ mod tests {
             .prefix("cw-pd-")
             .tempdir_in(selected)
             .unwrap()
+    }
+
+    #[test]
+    fn private_footing_is_native_where_the_mount_stores_modes() {
+        let root = root();
+        assert_eq!(
+            private_footing(&root.path().join("state")).unwrap(),
+            PrivateFooting::Native,
+            "a mount that keeps the mode it is given is native footing"
+        );
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            0,
+            "the probe must remove itself"
+        );
+    }
+
+    /// The synthesised branch cannot be built on a filesystem that stores
+    /// ownership and mode; the rule is pinned here instead. The observed values
+    /// are the ones HarmonyOS hmdfs produces for an app-created `0o700`
+    /// directory: the logged-in user's uid, and a group-writable mode.
+    #[test]
+    fn probe_footing_separates_a_native_mount_from_one_that_invents_ownership() {
+        assert_eq!(
+            classify_probe_footing(1000, 0o700, 1000),
+            PrivateFooting::Native
+        );
+        assert_eq!(
+            classify_probe_footing(1000, 0o500, 1000),
+            PrivateFooting::Native
+        );
+        assert_eq!(
+            classify_probe_footing(20001006, 0o2771, 20020225),
+            PrivateFooting::Synthesised {
+                observed_uid: 20001006,
+                observed_mode: 0o2771
+            },
+            "hmdfs: a different uid and a group-writable mode for our own directory"
+        );
+        assert_eq!(
+            classify_probe_footing(20020225, 0o2771, 20020225),
+            PrivateFooting::Synthesised {
+                observed_uid: 20020225,
+                observed_mode: 0o2771
+            },
+            "the right owner with the wrong mode is still not a private directory"
+        );
+        assert_eq!(
+            classify_probe_footing(0, 0o700, 1000),
+            PrivateFooting::Synthesised {
+                observed_uid: 0,
+                observed_mode: 0o700
+            },
+            "a root-owned directory is not ours even when the mode looks right"
+        );
+    }
+
+    /// A mount that applied an unexpected mode at creation but honours the one
+    /// it is asked for stores modes: it must not be reclassified as one that
+    /// cannot express ownership, because that would relax a real guard. This is
+    /// the difference between a default ACL and hmdfs.
+    #[test]
+    fn narrowing_rescues_a_mode_storing_mount_and_not_a_synthesising_one() {
+        // A default ACL widened the new directory, and the mount then applied
+        // the 0o700 it was asked for.
+        assert_eq!(
+            footing_from_observations((1000, 0o750), Some((1000, 0o700)), 1000),
+            PrivateFooting::Native
+        );
+        // hmdfs refuses the request and keeps reporting its own values.
+        assert_eq!(
+            footing_from_observations((20001006, 0o2771), None, 20020225),
+            PrivateFooting::Synthesised {
+                observed_uid: 20001006,
+                observed_mode: 0o2771
+            }
+        );
+        // A mount that accepts the call but ignores it is still synthesising.
+        assert_eq!(
+            footing_from_observations((20001006, 0o2771), Some((20001006, 0o2771)), 20020225),
+            PrivateFooting::Synthesised {
+                observed_uid: 20001006,
+                observed_mode: 0o2771
+            }
+        );
+        // A mount that honours it and is owned by us holds the guard.
+        assert_eq!(
+            footing_from_observations((1000, 0o700), None, 1000),
+            PrivateFooting::Native,
+            "the first observation already proves a native mount"
+        );
+    }
+
+    /// The cached entry point is what the write paths call, so it must answer
+    /// the same thing the probe does and leave nothing behind.
+    #[test]
+    fn cached_footing_answers_native_here_and_leaves_nothing_behind() {
+        let root = root();
+        assert_eq!(
+            mount_footing(&root.path().join("state")),
+            PrivateFooting::Native
+        );
+        assert_eq!(
+            mount_footing(&root.path().join("state")),
+            PrivateFooting::Native,
+            "the cached answer is the same answer"
+        );
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            0,
+            "no probe may survive either answer"
+        );
+        let handle = File::open(root.path()).unwrap();
+        assert_eq!(mount_footing_of(&handle), PrivateFooting::Native);
+    }
+
+    /// The trusting constructors exist for one reason: on a mount that reports
+    /// its own ownership, the strict proof can never hold, and refusing would
+    /// disable the feature for every app on that platform. On a filesystem that
+    /// stores ownership they must behave exactly like the strict ones — this is
+    /// the half a portable test can reach.
+    #[test]
+    fn trusting_constructors_keep_the_strict_guard_where_the_mount_stores_it() {
+        let root = root();
+        let selected = root.path().join("strict");
+        fs::create_dir(&selected).unwrap();
+        fs::set_permissions(&selected, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            PrivateDirectory::admit_trusting_mount(&selected).is_err(),
+            "a group-accessible directory is still refused on a native mount"
+        );
+
+        let owned = root.path().join("owned");
+        let private = PrivateDirectory::admit_trusting_mount(&owned).unwrap();
+        assert_eq!(
+            private.guard(),
+            PrivateGuard::Required,
+            "a native mount keeps the full guard"
+        );
+        private
+            .write_owned_file("owner.json", b"{}", false)
+            .unwrap();
+        assert_eq!(
+            private
+                .read_private_receipt("owner.json", 64)
+                .unwrap()
+                .unwrap()
+                .0,
+            b"{}"
+        );
+    }
+
+    /// A linked component is refused on every mount: the no-follow walk is not
+    /// the part a synthesising filesystem cannot express.
+    #[test]
+    fn trusting_constructors_still_refuse_a_linked_component() {
+        let root = root();
+        let original = root.path().join("original");
+        fs::create_dir(&original).unwrap();
+        symlink(&original, root.path().join("alias")).unwrap();
+        assert!(PrivateDirectory::admit_trusting_mount(&root.path().join("alias")).is_err());
+    }
+
+    #[test]
+    fn a_probe_that_cannot_run_is_an_error_not_a_mount_limitation() {
+        if PrivateDirectory::current_user_id() == 0 {
+            // Root ignores the mode this test relies on.
+            return;
+        }
+        let root = root();
+        let blocked = root.path().join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = private_footing(&blocked.join("state"));
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            result.is_err(),
+            "a directory this process cannot write to keeps the strict refusal instead of \
+             being reclassified as a mount that synthesises ownership"
+        );
     }
 
     #[test]
@@ -2043,9 +2795,14 @@ impl PrivateDirectory {
     ) -> Result<(Vec<u8>, File)> {
         use std::io::Read as _;
         use std::os::unix::fs::MetadataExt as _;
-        let before = validate_owned_file_handle(&file, &self.directory.join(name))?;
+        let before = validate_owned_file_handle(&file, &self.directory.join(name), self.guard)?;
+        // The mode is evidence only where the mount stores it; on a mount that
+        // invents one it is always wider than 0o600 and proves nothing. The
+        // size bound is a stored property and always applies.
+        let mode_private =
+            !matches!(self.guard, PrivateGuard::Required) || before.mode() & 0o077 == 0;
         anyhow::ensure!(
-            before.mode() & 0o077 == 0 && before.len() <= u64::try_from(max)?,
+            mode_private && before.len() <= u64::try_from(max)?,
             "private owner receipt permissions or size refused"
         );
         let mut bytes = Vec::new();
@@ -2056,7 +2813,7 @@ impl PrivateDirectory {
                     .context("receipt limit overflow")?,
             )
             .read_to_end(&mut bytes)?;
-        let after = validate_owned_file_handle(&file, &self.directory.join(name))?;
+        let after = validate_owned_file_handle(&file, &self.directory.join(name), self.guard)?;
         anyhow::ensure!(
             bytes.len() <= max
                 && u64::try_from(bytes.len())? == before.len()
@@ -2070,11 +2827,12 @@ impl PrivateDirectory {
 
     pub fn retire_private_receipt(&self, name: &str, captured: &File) -> Result<bool> {
         use std::os::unix::fs::MetadataExt as _;
-        let expected = validate_owned_file_handle(captured, &self.directory.join(name))?;
+        let expected =
+            validate_owned_file_handle(captured, &self.directory.join(name), self.guard)?;
         let Some(named) = self.open_owned_file_for_read(name)? else {
             return Ok(false);
         };
-        let actual = validate_owned_file_handle(&named, &self.directory.join(name))?;
+        let actual = validate_owned_file_handle(&named, &self.directory.join(name), self.guard)?;
         if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
             return Ok(false);
         }
@@ -2087,7 +2845,8 @@ impl PrivateDirectory {
         let Some(moved) = self.open_owned_file_for_read(&retired)? else {
             bail!("private receipt retirement is uncertain")
         };
-        let moved_metadata = validate_owned_file_handle(&moved, &self.directory.join(&retired))?;
+        let moved_metadata =
+            validate_owned_file_handle(&moved, &self.directory.join(&retired), self.guard)?;
         if (expected.dev(), expected.ino()) != (moved_metadata.dev(), moved_metadata.ino()) {
             let restored = self.move_no_replace(&retired, name);
             bail!("private receipt changed; retaining replacement (restore: {restored:?})");
@@ -2132,14 +2891,14 @@ impl PrivateDirectory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error).context("opening private owner receipt"),
         };
-        let before = validate_owned_file_handle(&file, &path)?;
+        let before = validate_windows_owned_file_handle(&file, &path)?;
         anyhow::ensure!(
             before.len() <= max as u64,
             "private owner receipt exceeds bound"
         );
         let mut bytes = Vec::new();
         (&file).take(max as u64 + 1).read_to_end(&mut bytes)?;
-        let after = validate_owned_file_handle(&file, &path)?;
+        let after = validate_windows_owned_file_handle(&file, &path)?;
         anyhow::ensure!(
             bytes.len() as u64 == before.len()
                 && before.len() == after.len()
@@ -2159,7 +2918,7 @@ impl PrivateDirectory {
             self.is_at_selected_path()?,
             "private owner parent changed before retirement"
         );
-        validate_owned_file_handle(captured, &self.directory.join(name))?;
+        validate_windows_owned_file_handle(captured, &self.directory.join(name))?;
         // Exact retained handle deletion cannot unlink a substituted pathname.
         mark_windows_file_handle_for_deletion(captured)?;
         Ok(true)

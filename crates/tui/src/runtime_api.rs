@@ -404,6 +404,15 @@ impl RuntimeWorkspaceScopes {
                 })
                 .map(|label| label.replace(['\n', '='], " "));
             let store_root = owner.owner.session_store_binding().data_dir;
+            // Three outcomes, two of them refusals. A second driver is refused
+            // with its holder's facts. A filesystem that cannot *carry* the lease
+            // is not a second driver, and failing the whole engine over it turns
+            // a mount limitation into "Engine exited before becoming ready". Run
+            // there, and say what was lost every time the scope is admitted
+            // rather than assuming exclusivity still holds. Admission relaxes
+            // only the ownership proof: the lock is a separate capability and is
+            // still taken, so this branch is only reached when the filesystem
+            // refuses advisory locks themselves.
             let drive_lease =
                 codewhale_runtime::workspace_lease::SharedWorkspaceDriveLease::acquire(
                     &lexical,
@@ -416,10 +425,21 @@ impl RuntimeWorkspaceScopes {
                         lexical.display()
                     )
                 })?;
-            let Some(drive_lease) = drive_lease else {
-                let refusal = WorkspaceDriveLeaseRefusal::named_holder(&lexical)
-                    .unwrap_or_else(WorkspaceDriveLeaseRefusal::unreadable);
-                return Err(anyhow::Error::new(refusal));
+            let drive_lease = match drive_lease {
+                codewhale_runtime::workspace_lease::LeaseAdmission::Held(lease) => Some(lease),
+                codewhale_runtime::workspace_lease::LeaseAdmission::Contended => {
+                    let refusal = WorkspaceDriveLeaseRefusal::named_holder(&lexical)
+                        .unwrap_or_else(WorkspaceDriveLeaseRefusal::unreadable);
+                    return Err(anyhow::Error::new(refusal));
+                }
+                codewhale_runtime::workspace_lease::LeaseAdmission::Unsupported(unavailable) => {
+                    tracing::warn!(
+                        workspace = %lexical.display(),
+                        "{unavailable} — running without workspace drive exclusivity; \
+                         another client may write this tree at the same time"
+                    );
+                    None
+                }
             };
             owner
                 .workers
@@ -435,7 +455,7 @@ impl RuntimeWorkspaceScopes {
                 lsp: std::sync::OnceLock::new(),
                 owner: owner.owner.clone(),
                 cleanup_runtime: owner.cleanup_runtime.clone(),
-                _drive_lease: Some(drive_lease),
+                _drive_lease: drive_lease,
             });
             scopes.insert(lexical, scope.clone());
             Ok(scope)
@@ -476,6 +496,219 @@ impl RuntimeServerShutdown {
         tokio::time::timeout(deadline, self.stopped.cancelled())
             .await
             .is_ok()
+    }
+}
+
+/// Run the long-lived components of `serve --http` until one of them ends.
+///
+/// Any ending stops the others: a Runtime API server that stops must stop the
+/// control endpoint, and an endpoint that stops must stop the server. The
+/// endpoint is optional — a filesystem that cannot hold its private directory
+/// leaves it out — and its absence has to behave like an *already finished*
+/// stop. Awaiting a future that never completes would hang a clean shutdown
+/// instead of ending it, which is why the absence is carried as a flag and the
+/// select arm for a missing endpoint can never fire.
+///
+/// `stop` is the endpoint's own way of asking it to stop, so this stays
+/// independent of how the socket is represented.
+async fn supervise_frontends<S, T, F>(
+    serve: S,
+    stdio: T,
+    endpoint: Option<(
+        tokio::task::JoinHandle<Result<(), codewhale_app_server::daemon_socket::DaemonSocketError>>,
+        F,
+    )>,
+    shutdown: &RuntimeServerShutdown,
+) -> (Result<()>, Result<()>)
+where
+    S: std::future::Future<Output = std::io::Result<()>>,
+    T: std::future::Future<Output = Result<()>>,
+    F: FnOnce(),
+{
+    let (has_endpoint, mut stop, task) = match endpoint {
+        Some((task, stop)) => (true, Some(stop), Some(task)),
+        None => (false, None, None),
+    };
+    let mut endpoint_stopped = Box::pin(async move {
+        match task {
+            Some(task) => task
+                .await
+                .context("owner control frontend task failed")
+                .and_then(|result| result.map_err(Into::into)),
+            // Never ready: an arm for a component that does not exist must not
+            // fire. The joins below check `has_endpoint` instead.
+            None => std::future::pending::<Result<()>>().await,
+        }
+    });
+    tokio::pin!(serve);
+    tokio::pin!(stdio);
+    tokio::select! {
+        result = &mut serve => {
+            if let Some(stop) = stop.take() { stop(); }
+            let owner = if has_endpoint { endpoint_stopped.await } else { Ok(()) };
+            (result.map_err(|e| anyhow!("Runtime API server error: {e}")), owner)
+        }
+        result = &mut stdio => {
+            shutdown.requested.cancel();
+            let served = serve.await.map_err(|error| anyhow!("Runtime API server error: {error}"));
+            if let Some(stop) = stop.take() { stop(); }
+            let owner = if has_endpoint { endpoint_stopped.await } else { Ok(()) };
+            (result.and(served), owner)
+        }
+        owner = &mut endpoint_stopped => {
+            shutdown.requested.cancel();
+            let result = serve.await.map_err(|e| anyhow!("Runtime API server error: {e}"));
+            (result, owner.and_then(|()| Err(anyhow!("owner control frontend stopped before its Runtime host"))))
+        }
+    }
+}
+
+#[cfg(test)]
+mod supervise_frontends_tests {
+    use super::{RuntimeServerShutdown, supervise_frontends};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    fn shutdown_handle() -> RuntimeServerShutdown {
+        RuntimeServerShutdown {
+            requested: tokio_util::sync::CancellationToken::new(),
+            stopped: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    /// A stand-in for `serve_runtime_api` that drains when asked, the way the
+    /// real one does. A fake that ignored the token would hang for reasons that
+    /// have nothing to do with the supervision being tested.
+    fn draining_server(
+        shutdown: &RuntimeServerShutdown,
+    ) -> impl std::future::Future<Output = std::io::Result<()>> {
+        let requested = shutdown.requested.clone();
+        async move {
+            requested.cancelled().await;
+            Ok(())
+        }
+    }
+
+    /// The degraded start: HTTP only. Stopping the server must end the whole
+    /// supervision instead of waiting for an endpoint task that does not exist.
+    #[tokio::test]
+    async fn a_server_without_an_endpoint_stops_instead_of_waiting_forever() {
+        let shutdown = shutdown_handle();
+        let stdio = std::future::pending::<anyhow::Result<()>>();
+        let (served, owner) = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise_frontends(
+                async { Ok(()) },
+                stdio,
+                None::<(
+                    tokio::task::JoinHandle<
+                        Result<(), codewhale_app_server::daemon_socket::DaemonSocketError>,
+                    >,
+                    fn(),
+                )>,
+                &shutdown,
+            ),
+        )
+        .await
+        .expect("a missing endpoint must not hold shutdown open");
+        served.expect("the server result is passed through");
+        owner.expect("a stop with no endpoint to wait for is a completed stop");
+    }
+
+    /// An endpoint that stops on its own is an error: nothing is serving the
+    /// Runtime host any more, so pretending the shutdown was clean would hide it.
+    #[tokio::test]
+    async fn an_endpoint_that_stops_first_is_reported() {
+        let shutdown = shutdown_handle();
+        let endpoint = Some((tokio::spawn(async { Ok(()) }), || {}));
+        let stdio = std::future::pending::<anyhow::Result<()>>();
+        let (_served, owner) = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise_frontends(draining_server(&shutdown), stdio, endpoint, &shutdown),
+        )
+        .await
+        .expect("an endpoint that ends must end the supervision");
+        let error = owner.expect_err("a stopped endpoint is not a clean shutdown");
+        assert!(
+            error
+                .to_string()
+                .contains("stopped before its Runtime host"),
+            "{error}"
+        );
+    }
+
+    /// The normal start: stopping the server asks the endpoint to stop and then
+    /// waits for it, so a second client is not left with a dead socket.
+    #[tokio::test]
+    async fn stopping_the_server_stops_and_joins_the_endpoint() {
+        let shutdown = shutdown_handle();
+        let asked = Arc::new(AtomicBool::new(false));
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let endpoint = Some((
+            tokio::spawn(async move {
+                let _ = stop_rx.await;
+                Ok(())
+            }),
+            {
+                let asked = asked.clone();
+                move || {
+                    asked.store(true, Ordering::SeqCst);
+                    let _ = stop_tx.send(());
+                }
+            },
+        ));
+        let stdio = std::future::pending::<anyhow::Result<()>>();
+        let (served, owner) = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise_frontends(async { Ok(()) }, stdio, endpoint, &shutdown),
+        )
+        .await
+        .expect("the endpoint must be asked to stop and then joined");
+        served.expect("the server result is passed through");
+        owner.expect("the endpoint stopped when asked");
+        assert!(
+            asked.load(Ordering::SeqCst),
+            "the endpoint was never asked to stop"
+        );
+    }
+
+    /// A stdio frontend ending stops both the server and the endpoint.
+    #[tokio::test]
+    async fn a_finished_stdio_frontend_stops_the_other_components() {
+        let shutdown = shutdown_handle();
+        let asked = Arc::new(AtomicBool::new(false));
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let endpoint = Some((
+            tokio::spawn(async move {
+                let _ = stop_rx.await;
+                Ok(())
+            }),
+            {
+                let asked = asked.clone();
+                move || {
+                    asked.store(true, Ordering::SeqCst);
+                    let _ = stop_tx.send(());
+                }
+            },
+        ));
+        let (served, owner) = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise_frontends(
+                draining_server(&shutdown),
+                async { Ok(()) },
+                endpoint,
+                &shutdown,
+            ),
+        )
+        .await
+        .expect("stdio ending must end the supervision");
+        served.expect("the drained server has no error");
+        owner.expect("the endpoint stopped when asked");
+        assert!(
+            asked.load(Ordering::SeqCst),
+            "the endpoint was never asked to stop"
+        );
     }
 }
 
@@ -2084,7 +2317,7 @@ pub async fn run_http_server(
         compat_stream_test_hook: None,
     };
     #[cfg(any(unix, windows))]
-    let (owner_frontend, control_state) = bind_captured_runtime_frontends(
+    let (owner_endpoint, control_state) = bind_captured_runtime_frontends(
         &state,
         control_socket.clone(),
         match options.control_frontend.as_ref() {
@@ -2173,8 +2406,6 @@ pub async fn run_http_server(
     let signal_registration = SignalShutdownRegistration::register(&shutdown);
     #[cfg(any(unix, windows))]
     let (serve_result, owner_result) = {
-        let owner_handle = owner_frontend.shutdown_handle();
-        let mut owner_task = tokio::spawn(owner_frontend.serve());
         let stdio = async {
             if acp_selected {
                 codewhale_app_server::run_owned_acp(control_state).await
@@ -2184,31 +2415,24 @@ pub async fn run_http_server(
                 std::future::pending::<Result<()>>().await
             }
         };
-        tokio::pin!(stdio);
-        let serve = serve_runtime_api(listener, app, shutdown.clone());
-        tokio::pin!(serve);
-        tokio::select! {
-            result = &mut serve => {
-                owner_handle.trigger();
-                let owner = owner_task.await.context("owner control frontend task failed")
-                    .and_then(|result| result.map_err(Into::into));
-                (result.map_err(|e| anyhow!("Runtime API server error: {e}")), owner)
-            }
-            result = &mut stdio => {
-                shutdown.requested.cancel();
-                let served = serve.await.map_err(|error|anyhow!("Runtime API server error: {error}"));
-                owner_handle.trigger();
-                let owner=owner_task.await.context("owner control frontend task failed").and_then(|result|result.map_err(Into::into));
-                (result.and(served),owner)
-            }
-            owner = &mut owner_task => {
-                shutdown.requested.cancel();
-                let result = serve.await.map_err(|e| anyhow!("Runtime API server error: {e}"));
-                let owner = owner.context("owner control frontend task failed")
-                    .and_then(|result| result.map_err(Into::into));
-                (result, owner.and_then(|()| Err(anyhow!("owner control frontend stopped before its Runtime host"))))
-            }
-        }
+        // `None` when this filesystem cannot hold the private endpoint
+        // directory. The Runtime API over HTTP is what clients connect to, so it
+        // runs either way; the endpoint socket is how a second client discovers
+        // this owner, and `bind_captured_owner` has already said what was lost.
+        let endpoint = owner_endpoint.map(|endpoint| {
+            let stop = {
+                let handle = endpoint.shutdown_handle();
+                move || handle.trigger()
+            };
+            (tokio::spawn(endpoint.serve()), stop)
+        });
+        supervise_frontends(
+            serve_runtime_api(listener, app, shutdown.clone()),
+            stdio,
+            endpoint,
+            &shutdown,
+        )
+        .await
     };
     #[cfg(not(any(unix, windows)))]
     let serve_result = serve_runtime_api(listener, app, shutdown)
@@ -2330,7 +2554,7 @@ async fn bind_captured_runtime_frontends(
     generated_auth: bool,
     recovery: Option<Arc<codewhale_app_server::daemon_client::UnavailablePublication>>,
 ) -> Result<(
-    codewhale_app_server::daemon_socket::DaemonSocket,
+    Option<codewhale_app_server::daemon_socket::DaemonSocket>,
     codewhale_app_server::AppState,
 )> {
     let captured_manager = state.runtime_threads.clone();

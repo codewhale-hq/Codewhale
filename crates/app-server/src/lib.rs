@@ -569,7 +569,15 @@ pub async fn bind_runtime_owner(
         None,
     )
     .await?;
-    Ok(daemon)
+    // A caller of this entry point has no HTTP frontend to fall back on: it
+    // exists to hand back a socket. `bind_runtime_frontends` only degrades to
+    // `None` when the filesystem cannot hold a private endpoint directory, and
+    // there is nothing to serve if that happens here.
+    daemon.ok_or_else(|| {
+        anyhow::anyhow!(
+            "this filesystem cannot hold the private directory a runtime owner endpoint needs"
+        )
+    })
 }
 
 /// Build the actual compatibility state once for all owner frontends.
@@ -581,7 +589,7 @@ pub async fn bind_runtime_frontends(
     routing: RuntimeOwnerRouting,
     owner_frontend: Option<Arc<dyn RuntimeOwnerFrontend>>,
     recovery: Option<Arc<daemon_client::UnavailablePublication>>,
-) -> Result<(daemon_socket::DaemonSocket, AppState)> {
+) -> Result<(Option<daemon_socket::DaemonSocket>, AppState)> {
     anyhow::ensure!(
         owner.version == 1 && owner.pid == std::process::id() && !owner.lease_generation.is_empty(),
         "invalid captured Runtime owner"

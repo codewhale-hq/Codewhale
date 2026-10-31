@@ -12042,8 +12042,7 @@ fn prepare_subagent_transcript_parent(state_root: &Path, path: &Path) -> Result<
     reject_state_path_symlinks(state_root, path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        codewhale_config::private_directory::tighten_mode(parent, 0o700)?;
     }
     Ok(())
 }
@@ -12075,7 +12074,7 @@ fn append_private_subagent_transcript(
 
 #[cfg(unix)]
 fn open_private_subagent_transcript(path: &Path, append: bool) -> Result<fs::File> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
     let mut options = fs::OpenOptions::new();
     options
@@ -12086,7 +12085,7 @@ fn open_private_subagent_transcript(path: &Path, append: bool) -> Result<fs::Fil
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600);
     let file = options.open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    codewhale_config::private_directory::tighten_mode_of(&file, path, 0o600)?;
     Ok(file)
 }
 
