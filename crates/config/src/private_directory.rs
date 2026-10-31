@@ -75,16 +75,19 @@ impl PrivateDirectory {
     ///
     /// A directory this process may not enter is still an error: the probe must
     /// be able to create an object of its own before a mount is blamed.
+    #[cfg(unix)]
     pub fn open_trusting_mount(directory: &Path) -> Result<Self> {
         Self::with_mount_tolerance(directory, true, true)
     }
 
     /// [`Self::admit`], accepting a mount that cannot express ownership.
+    #[cfg(unix)]
     pub fn admit_trusting_mount(directory: &Path) -> Result<Self> {
         Self::with_mount_tolerance(directory, false, true)
     }
 
     /// [`Self::inspect`], accepting a mount that cannot express ownership.
+    #[cfg(unix)]
     pub fn inspect_trusting_mount(directory: &Path) -> Result<Self> {
         Self::with_mount_tolerance(directory, false, false)
     }
@@ -466,7 +469,11 @@ fn libc_uid(metadata: &libc::stat) -> u32 {
 
 #[cfg(unix)]
 fn libc_mode(metadata: &libc::stat) -> u32 {
-    u32::from(metadata.st_mode)
+    #[allow(clippy::unnecessary_cast)]
+    // `mode_t` is `u16` on Apple and `u32` on Linux; no single conversion is
+    // lint-clean on both, and this is the widening that keeps the value exact.
+    let mode = metadata.st_mode as u32;
+    mode
 }
 
 /// Answers already obtained from a filesystem, keyed by the identity of the
@@ -1114,7 +1121,7 @@ impl PrivateDirectory {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         match options.open(&path) {
             Ok(file) => {
-                validate_owned_file_handle(&file, &path)?;
+                validate_windows_owned_file_handle(&file, &path)?;
                 Ok(Some(file))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1173,7 +1180,7 @@ impl PrivateDirectory {
                 validate_windows_file_shape(&file, &path)?;
                 secure_windows_owner_only_handle(&file, false)
                     .context("securing a new xAI OAuth lifecycle lock")?;
-                validate_owned_file_handle(&file, &path)?;
+                validate_windows_owned_file_handle(&file, &path)?;
                 Ok(())
             })();
             if let Err(error) = secured {
@@ -1215,7 +1222,7 @@ impl PrivateDirectory {
             reopen_windows_file_for_owner_security(temporary.as_file(), &temporary_path)?;
         secure_windows_owner_only_handle(&security_handle, false)
             .context("securing a new xAI OAuth temporary file before writing credentials")?;
-        validate_owned_file_handle(&security_handle, &temporary_path)
+        validate_windows_owned_file_handle(&security_handle, &temporary_path)
             .context("verifying a new xAI OAuth temporary file before writing credentials")?;
         let write_result = (|| -> Result<()> {
             temporary
@@ -1304,7 +1311,7 @@ impl PrivateDirectory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error).context("opening xAI OAuth file for exact deletion"),
         };
-        validate_owned_file_handle(&file, &path)?;
+        validate_windows_owned_file_handle(&file, &path)?;
         mark_windows_file_handle_for_deletion(&file)?;
         drop(file);
         Ok(true)
@@ -1422,7 +1429,7 @@ fn validate_persisted_windows_owned_file(file: &File, path: &Path) -> Result<fs:
             bail!("injected post-persistence xAI OAuth validation failure");
         }
     }
-    validate_owned_file_handle(file, path)
+    validate_windows_owned_file_handle(file, path)
 }
 
 #[cfg(all(windows, test))]
@@ -1433,7 +1440,16 @@ pub(crate) fn fail_next_windows_post_persist_validation(path: &Path) {
 }
 
 #[cfg(windows)]
-pub(crate) fn validate_owned_file_handle(file: &File, path: &Path) -> Result<fs::Metadata> {
+pub(crate) fn validate_owned_file_handle(
+    file: &File,
+    path: &Path,
+    _guard: PrivateGuard,
+) -> Result<fs::Metadata> {
+    validate_windows_owned_file_handle(file, path)
+}
+
+#[cfg(windows)]
+fn validate_windows_owned_file_handle(file: &File, path: &Path) -> Result<fs::Metadata> {
     let metadata = validate_windows_file_shape(file, path)?;
     verify_windows_owner_only_handle(file)
         .context("Codewhale-owned xAI OAuth file is not current-user-only")?;
@@ -1842,7 +1858,11 @@ impl PrivateDirectory {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn validate_owned_file_handle(file: &File, _path: &Path) -> Result<fs::Metadata> {
+pub(crate) fn validate_owned_file_handle(
+    file: &File,
+    _path: &Path,
+    _guard: PrivateGuard,
+) -> Result<fs::Metadata> {
     let metadata = file.metadata()?;
     anyhow::ensure!(metadata.is_file(), "xAI OAuth path must be a regular file");
     Ok(metadata)
@@ -2871,14 +2891,14 @@ impl PrivateDirectory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error).context("opening private owner receipt"),
         };
-        let before = validate_owned_file_handle(&file, &path)?;
+        let before = validate_windows_owned_file_handle(&file, &path)?;
         anyhow::ensure!(
             before.len() <= max as u64,
             "private owner receipt exceeds bound"
         );
         let mut bytes = Vec::new();
         (&file).take(max as u64 + 1).read_to_end(&mut bytes)?;
-        let after = validate_owned_file_handle(&file, &path)?;
+        let after = validate_windows_owned_file_handle(&file, &path)?;
         anyhow::ensure!(
             bytes.len() as u64 == before.len()
                 && before.len() == after.len()
@@ -2898,7 +2918,7 @@ impl PrivateDirectory {
             self.is_at_selected_path()?,
             "private owner parent changed before retirement"
         );
-        validate_owned_file_handle(captured, &self.directory.join(name))?;
+        validate_windows_owned_file_handle(captured, &self.directory.join(name))?;
         // Exact retained handle deletion cannot unlink a substituted pathname.
         mark_windows_file_handle_for_deletion(captured)?;
         Ok(true)
