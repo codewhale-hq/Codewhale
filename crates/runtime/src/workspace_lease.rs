@@ -145,6 +145,7 @@ pub struct LeaseUnavailability {
 }
 
 impl LeaseUnavailability {
+    #[cfg(unix)]
     fn new(directory: &Path, reason: impl Into<String>) -> Self {
         Self {
             directory: directory.to_path_buf(),
