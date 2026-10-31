@@ -81,3 +81,61 @@ include!("tests/test_cases_20.rs");
 
 #[path = "tests/rlm_host.rs"]
 pub(crate) mod rlm_host;
+
+#[test]
+fn run_completion_real_factories_observe_shutdown_and_direct_handles_do_not() {
+    let _env = lock_test_env();
+    let home = tempdir().unwrap();
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let config = Config::default();
+        let engine_config = || {
+            let mut config = deterministic_engine_config(home.path());
+            config.features.disable(Feature::Mcp);
+            config.memory_enabled = false;
+            config
+        };
+        let (direct, handle) = Engine::new(engine_config(), &config);
+        assert_eq!(
+            handle.wait_run_completion().await,
+            EngineRunCompletion::NotObserved
+        );
+        drop(direct);
+        let handle = spawn_engine(engine_config(), &config, None);
+        let mut completion = Box::pin(handle.wait_run_completion());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(completion.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(completion);
+        handle.send(Op::Shutdown).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), handle.wait_run_completion())
+                .await
+                .unwrap(),
+            EngineRunCompletion::NormalReturn
+        );
+        let (handle, task) = spawn_engine_with_authoritative_route_config(
+            engine_config(),
+            &config,
+            EngineHostProfile::Normal,
+            Arc::new(parking_lot::RwLock::new(config.clone())),
+            None,
+            None,
+            CancellationToken::new(),
+        );
+        handle.send(Op::Shutdown).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), handle.wait_run_completion())
+                .await
+                .unwrap(),
+            EngineRunCompletion::NormalReturn
+        );
+        task.await.unwrap();
+    });
+}
