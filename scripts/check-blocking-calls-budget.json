@@ -144,7 +144,7 @@
     "std_fs": 1
   },
   "crates/runtime/src/external_credentials.rs": {
-    "std_fs": 1
+    "std_fs": 2
   },
   "crates/runtime/src/media_originals.rs": {
     "path_canonicalize": 2,
@@ -334,7 +334,7 @@
     "std_fs": 2
   },
   "crates/tui/src/remote_control.rs": {
-    "std_fs": 7
+    "std_fs": 6
   },
   "crates/tui/src/remote_setup/bundle.rs": {
     "std_fs": 2
@@ -475,7 +475,7 @@
     "thread_sleep": 1
   },
   "crates/tui/src/tui/pet_watch/owner.rs": {
-    "std_fs": 3
+    "std_fs": 2
   },
   "crates/tui/src/tui/session_picker.rs": {
     "std_fs": 1
