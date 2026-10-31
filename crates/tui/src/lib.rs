@@ -27,6 +27,7 @@ mod codex_model_cache;
 mod command_catalog;
 mod commands;
 mod compaction;
+mod compaction_archive;
 mod composer_history;
 mod composer_stash;
 #[cfg(test)]

@@ -585,7 +585,7 @@ codewhale config unset 'providers.command_code.model_context_windows."MiniMaxAI/
 - `[compaction] summary_instructions` 和 `[compaction] retained_user_message_tokens`（config.toml）：常驻的摘要器指令，以及原样保留用户消息的预算。见下方键参考中的 `compaction.*` 条目。
 - `CODEWHALE_MAX_OUTPUT_TOKENS`（环境变量；旧别名 `DEEPSEEK_MAX_OUTPUT_TOKENS`）：覆盖请求的输出上限。没有覆盖时，Codewhale 从安全的 `65536` 请求上限开始，并与任何更小的、有文档记录的模型或路由上限取交集；catalog 的 `max_output`（如 DeepSeek V4 的 384K）仍是能力上限，而不是每个响应请求的量。显式覆盖会在解析后的路由上下文窗口和任何路由输出上限之内被保留，预检/紧急预算预留的正是能到达线路的同一个有效值。另有单独记录的路由输入上限，即使总上下文窗口更大，也会钳制预检和压缩。空白的规范变量会回落到非空的旧变量；非空但无效或为零的规范值具有权威性，会回退到安全的自动默认值，而不是启用过期的旧设置。`config.toml` 中没有 `max_output_tokens` 键。
 
-在压缩替换对话历史之前，Codewhale 会把原始消息持久地保存到会话的 `artifacts/context-transfer-<id>.json`，并在产生模型摘要时，把它的交接内容保存到对应的 `.md` 文件。这些使用现有的会话产物存储和持久化脱敏。写入失败会中止压缩，而不替换上下文。仅剪枝的执行会保存原始消息，不额外调用模型。压力元数据显示估算的输入 token 和已配置的触发点；它是估算值，而不是对 provider 剩余上下文的精确承诺。
+在压缩替换对话历史之前，Codewhale 会把原始消息持久地保存到会话的 `artifacts/context-transfer-<id>.json`，并在产生模型摘要时，把它的交接内容保存到对应的 `.md` 文件。这些使用现有的会话产物存储和持久化脱敏。写入失败会中止压缩，而不替换上下文。仅剪枝的执行会保存原始消息，不额外调用模型。模型可以通过 `context_archive_search`（ASCII 大小写不敏感的子串搜索，返回短片段和归档 id）与 `context_archive_get`（按 id 分页读取单条消息）把原文读回来；交接摘要会点名这两个工具，让模型知道归档存在。压力元数据显示估算的输入 token 和已配置的触发点；它是估算值，而不是对 provider 剩余上下文的精确承诺。
 
 压缩历史可通过 `codewhale metrics`（或 `--json`）和 Codewhale home 中的 `audit.log` 获取。已完成的执行会记录它们的触发、摘要/剪枝路径、消息数和估算 token 数、有效阈值，以及摘要器的 token 用量。自动拒绝每回合记录一次，并附上原因。这些是本地诊断，不是 provider 的账单总额；较早的产物不会被追溯计入。尝试压缩的文本模式 `exec` 会在回合完成时保存其所属会话，使其恢复产物仍可被发现。被杀死的进程可能留下没有最终会话快照的产物；审计写入器会报告 I/O 失败，而不会捏造数据。
 

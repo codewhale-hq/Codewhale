@@ -18,6 +18,7 @@ pub mod automation;
 pub(crate) mod canonical_action_tests;
 pub mod cargo_failure_summary;
 pub mod codemode;
+pub mod context_archive;
 pub mod dev_server_readiness;
 pub mod diagnostics;
 pub mod diff_format;

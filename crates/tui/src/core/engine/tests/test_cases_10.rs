@@ -1,6 +1,6 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 13] = [
+    const EXPECTED_NATIVE: [&str; 15] = [
         "read",
         "write",
         "edit",
@@ -14,6 +14,8 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
         "update_goal",
         "task_shell_wait",
         "load_skill",
+        "context_archive_get",
+        "context_archive_search",
     ];
     assert_eq!(
         default_active_native_tool_names(),
@@ -571,6 +573,8 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
         "workflow",
         "write",
         "load_skill",
+        "context_archive_get",
+        "context_archive_search",
     ]);
 
     for mode in ["plan", "act", "operate"] {

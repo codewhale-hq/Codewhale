@@ -1192,6 +1192,14 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RetrieveToolResultTool))
     }
 
+    /// Include reads of the pre-compaction transcript archive.
+    #[must_use]
+    pub fn with_compaction_archive_tools(self) -> Self {
+        use super::context_archive::{ContextArchiveGetTool, ContextArchiveSearchTool};
+        self.with_tool(Arc::new(ContextArchiveGetTool))
+            .with_tool(Arc::new(ContextArchiveSearchTool))
+    }
+
     /// Include durable task, gate, PR-attempt, GitHub, and automation tools.
     ///
     /// Each family is one tool with an `action` parameter (`tasks`, `github`,
@@ -1530,6 +1538,7 @@ impl ToolRegistryBuilder {
             .with_test_runner_tool()
             .with_validation_tools()
             .with_tool_result_retrieval_tool()
+            .with_compaction_archive_tools()
             .with_handle_tools()
             .with_runtime_task_tools()
             .with_revert_turn_tool()

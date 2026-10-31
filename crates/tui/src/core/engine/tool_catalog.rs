@@ -54,6 +54,10 @@ pub(crate) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // re-pin every time a skill was used, against ~134 pinned bytes to have
     // it eager beside the index the prefix already carries.
     "load_skill",
+    // The compaction handoff note names these two by hand. A model cannot call
+    // a tool it has never seen a schema for, and `tool_search` is not
+    // guaranteed to be the next thing it reaches for mid-task.
+    "context_archive_get", "context_archive_search",
 ];
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
