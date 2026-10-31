@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "869d7d4cd003c5ae790eb9acdcbd1261f8c86854b91dab2d5820499de19a52cc"
+    "sha256": "a1be01a513cd4ad3c80b2866ef32f4e1e80b2afc03f5c1c92112674418ff0097"
   },
   "features": [
     {
@@ -1054,6 +1054,19 @@
       "registryLine": 783
     },
     {
+      "id": "harmonyos-native",
+      "name": "HarmonyOS (native)",
+      "summary": "Signed arm64 release archive for native HarmonyOS and OpenHarmony.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/HarmonyOS.md",
+      "registryLine": 792
+    },
+    {
       "id": "chatgpt-plan-sign-in",
       "name": "Sign in with ChatGPT",
       "summary": "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app.",
@@ -1066,7 +1079,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 792
+      "registryLine": 801
     },
     {
       "id": "claude-plan-sign-in",
@@ -1081,7 +1094,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 802
+      "registryLine": 811
     },
     {
       "id": "plugin-oauth-providers",
@@ -1096,7 +1109,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 812
+      "registryLine": 821
     },
     {
       "id": "orcarouter-sign-in",
@@ -1111,7 +1124,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 822
+      "registryLine": 831
     },
     {
       "id": "merch-interest",
@@ -1126,7 +1139,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 833
+      "registryLine": 842
     },
     {
       "id": "profile-constitution",
@@ -1140,7 +1153,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 843
+      "registryLine": 852
     },
     {
       "id": "plugin-shell-install",
@@ -1153,7 +1166,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 853
+      "registryLine": 862
     },
     {
       "id": "herdr-agent-state",
@@ -1166,7 +1179,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 863
+      "registryLine": 872
     },
     {
       "id": "instruction-budgets",
@@ -1179,7 +1192,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 872
+      "registryLine": 881
     },
     {
       "id": "github-action-review",
@@ -1192,7 +1205,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 882
+      "registryLine": 891
     },
     {
       "id": "telegram-agent",
@@ -1205,7 +1218,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 892
+      "registryLine": 901
     },
     {
       "id": "dingtalk-agent",
@@ -1218,7 +1231,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 902
+      "registryLine": 911
     }
   ]
 }

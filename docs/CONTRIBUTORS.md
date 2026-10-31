@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[Felixkw12](https://github.com/Felixkw12)** — Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[ddlw](https://github.com/ddlw)** — repaired clippy, rustfmt, extension-host imports and Windows DSH receipt bytes on main for the 0.10.3 batch ([#7108](https://github.com/codewhale-hq/Codewhale/pull/7108), [#7109](https://github.com/codewhale-hq/Codewhale/pull/7109)).
 - **[laozidabo](https://github.com/laozidabo)** — localized `/diff` feedback ([#7101](https://github.com/codewhale-hq/Codewhale/pull/7101)), flushed queued saves before signal exit ([#7122](https://github.com/codewhale-hq/Codewhale/pull/7122)) and kept `/rc` start failures visible ([#7127](https://github.com/codewhale-hq/Codewhale/pull/7127)).
 - **[Boyce / Aboysky](https://github.com/Aboysky)** — refreshed the README translation source stamps ([#7104](https://github.com/codewhale-hq/Codewhale/pull/7104)) and localized `/undo` feedback ([#7121](https://github.com/codewhale-hq/Codewhale/pull/7121)).
@@ -53,7 +54,7 @@ changelog or release notes, and this contributor record.
 - **[gaord](https://github.com/gaord)** — a running turn's cost and context ([#7074](https://github.com/codewhale-hq/Codewhale/pull/7074)) and forks that measure the history they carry ([#7147](https://github.com/codewhale-hq/Codewhale/pull/7147)), and private state on a HarmonyOS mount that cannot express ownership ([#7168](https://github.com/codewhale-hq/Codewhale/pull/7168)).
 - **[luochen211](https://github.com/luochen211)** — one form per term in the zh-Hans pack ([#7150](https://github.com/codewhale-hq/Codewhale/pull/7150)) and blanket dead-code allows dropped in fleet alerts and the pet worker ([#7149](https://github.com/codewhale-hq/Codewhale/pull/7149)).
 - **[gannp](https://github.com/gannp)** — vLLM effort values that follow the local model template ([#7124](https://github.com/codewhale-hq/Codewhale/issues/7124), [#7125](https://github.com/codewhale-hq/Codewhale/pull/7125)).
-- **[Sh1Zuku / SparkofSpike](https://github.com/SparkofSpike)** — relocated state root before session-side state ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)).
+- **[Sh1Zuku / SparkofSpike](https://github.com/SparkofSpike)** — relocated state root before session-side state ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)) and goal continuation that pauses to ask ([#7175](https://github.com/codewhale-hq/Codewhale/pull/7175)).
 
 </details>
 

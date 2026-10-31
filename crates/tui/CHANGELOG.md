@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opper as a bundled provider (#7131):** `/provider` offers Opper, an
+  EU-hosted OpenAI-compatible gateway, with `OPPER_API_KEY`,
+  `https://api.opper.ai/v3/compat` and the `claude-sonnet-4-6` pool name as the
+  bootstrap model; `provider/model` ids pin one route. Live
+  `/v3/compat/models` is the model authority and billing stays Unknown. No live
+  Opper call was made here. Thanks [@Felixkw12](https://github.com/Felixkw12).
 - **Runcrate is a bundled provider:** `runcrate` reaches the OpenAI-compatible host at `https://api.runcrate.ai/v1` with `RUNCRATE_API_KEY`, and model ids come from its public `GET /v1/models` listing. Thanks @heydryft for the request and the vendor details. (#7085)
 - **MCP connection status reaches the model:** one existing history snapshot now records permitted configured, connecting, failed, authorization-required, unknown and connected servers, with bounded inert names and no raw errors. Stale status and server guidance are withdrawn on contention, configuration/scope changes and restore; observation does not connect servers or promise callable tools. (#6866)
 - **Bundled-skill policy:** `[skills.bundled]` separates automatic, authoritative and disabled installation from discovery, with per-name selection, disable and explicit-only controls. Aliases share policy; disabled shipped copies reveal user alternatives. Modified and managed files remain intact, and doctor plus `/skills inspect` show the effective policy. (#7066)
@@ -57,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A goal pauses to ask instead of inventing the answer (#7175):** the goal
+  continuation prompts now tell the model to call `update_goal` with
+  `status: "yield"` when the next pass needs an answer only the user can give,
+  and that asking in prose does not pause the goal. This is prompt steering, not
+  enforcement: a model that ignores it still keeps the goal active. Thanks
+  [@SparkofSpike](https://github.com/SparkofSpike).
 - **Newer model rows in the offline catalog:** the bundled seed now carries `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` (Moonshot), `MiniMax-M3.1-Flash` (MiniMax and its Anthropic-compatible endpoint) and `gpt-6.1-terra` (OpenAI), which Models.dev already listed and Codewhale did not pin. Live refreshes from Models.dev were already showing these online; the seed is what a first run, an offline start and a deep-offline install read, so it is now re-locked at 2026-10-30 and rendered. `seed render --check` matches and `defaults audit` reports no stale default.
 - **Skills ownership (internal):** skill discovery, provenance, mutation and bundled skill content move into `codewhale-skills`. Native roots still use the existing host manager's selection and lifetime checks. (S20, #5316)
 
@@ -299,12 +311,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Contributors
 
+- **[@Felixkw12](https://github.com/Felixkw12)** — added Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — per-scope instruction budgets with visible truncation ([#7086](https://github.com/codewhale-hq/Codewhale/pull/7086), [#6526](https://github.com/codewhale-hq/Codewhale/issues/6526)).
 - **[@Lstarsky0](https://github.com/Lstarsky0)** — kept the `/diff` pager's place across a resize ([#7087](https://github.com/codewhale-hq/Codewhale/pull/7087)), said "Goal cleared." only when there was a goal ([#7089](https://github.com/codewhale-hq/Codewhale/pull/7089)), and stopped printing an unpriced session cost as `$0.0000` in `/status` ([#7090](https://github.com/codewhale-hq/Codewhale/pull/7090)), kept Normal-mode keys out of the draft on terminals without bracketed paste ([#7126](https://github.com/codewhale-hq/Codewhale/pull/7126)) and let shifted keys such as `G` reach Normal mode ([#7130](https://github.com/codewhale-hq/Codewhale/pull/7130)), kept the quote rail on every wrapped row of a blockquote ([#7144](https://github.com/codewhale-hq/Codewhale/pull/7144)), kept a nested list paragraph's indent ([#7146](https://github.com/codewhale-hq/Codewhale/pull/7146)), rendered `~~~` fences as code ([#7156](https://github.com/codewhale-hq/Codewhale/pull/7156)), left asterisks that do not open emphasis literal ([#7157](https://github.com/codewhale-hq/Codewhale/pull/7157)), ended bare URLs at full-width punctuation ([#7158](https://github.com/codewhale-hq/Codewhale/pull/7158)), kept a link target's own parentheses ([#7170](https://github.com/codewhale-hq/Codewhale/pull/7170)), rendered code and links inside emphasis ([#7171](https://github.com/codewhale-hq/Codewhale/pull/7171)) and stopped the engine's fleet-roster and stream-timeout statuses from taking over the footer ([#7152](https://github.com/codewhale-hq/Codewhale/pull/7152), [#7169](https://github.com/codewhale-hq/Codewhale/pull/7169)).
 - **[@gaord](https://github.com/gaord)** — a running turn's cost and context in the Runtime ([#7074](https://github.com/codewhale-hq/Codewhale/pull/7074)) forks that measure the history they carry ([#7147](https://github.com/codewhale-hq/Codewhale/pull/7147)), and private state on a HarmonyOS mount that cannot express ownership ([#7168](https://github.com/codewhale-hq/Codewhale/pull/7168)).
 - **[@luochen211](https://github.com/luochen211)** — one form per term in the Simplified Chinese pack ([#7150](https://github.com/codewhale-hq/Codewhale/pull/7150)) and dropped blanket dead-code allows in fleet alerts and the pet worker ([#7149](https://github.com/codewhale-hq/Codewhale/pull/7149)).
 - **[@gannp](https://github.com/gannp)** — reported vLLM effort values that ignored the local model template and fixed it with a reviewed template registry ([#7124](https://github.com/codewhale-hq/Codewhale/issues/7124), [#7125](https://github.com/codewhale-hq/Codewhale/pull/7125)).
-- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — resolved a relocated state root before session-side state opens ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)).
+- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — resolved a relocated state root before session-side state opens ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)) and made a goal pause to ask instead of inventing the answer ([#7175](https://github.com/codewhale-hq/Codewhale/pull/7175)).
 - **[@ddlw](https://github.com/ddlw)** — repaired main for the 0.10.3 batch: clippy `-D warnings` across protocol, runtime, util and tui (boxed review and MCP-add payloads, scoped dead-code expectations, cfg-gated platform test helpers), rustfmt, split extension-host imports, the provider-registry identity check, Windows-stable DSH receipt bytes, and the first-party marketplace receipt ([#7108](https://github.com/codewhale-hq/Codewhale/pull/7108), [#7109](https://github.com/codewhale-hq/Codewhale/pull/7109)).
 - **[@laozidabo](https://github.com/laozidabo)** — localized `/diff` feedback ([#7101](https://github.com/codewhale-hq/Codewhale/pull/7101)), flushed queued saves before signal exit ([#7122](https://github.com/codewhale-hq/Codewhale/pull/7122)) and kept `/rc` start failures visible ([#7127](https://github.com/codewhale-hq/Codewhale/pull/7127)).
 - **[Boyce / @Aboysky](https://github.com/Aboysky)** — refreshed the README translation source stamps ([#7104](https://github.com/codewhale-hq/Codewhale/pull/7104)) and localized `/undo` feedback ([#7121](https://github.com/codewhale-hq/Codewhale/pull/7121)).
