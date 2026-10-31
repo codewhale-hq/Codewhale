@@ -30,9 +30,7 @@ use codewhale_protocol::runtime::{
     DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
     RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
 };
-use codewhale_secrets::account::{
-    ACCOUNT_API_BASE_ENV, DEFAULT_ACCOUNT_API_BASE, RuntimeAccountInfo,
-};
+use codewhale_secrets::account::RuntimeAccountInfo;
 #[cfg(not(test))]
 use codewhale_secrets::account::{AccountSessionStore, secure_account_session_secrets};
 use serde::{Deserialize, Serialize};
@@ -6583,7 +6581,7 @@ async fn runtime_info(
 ) -> Json<RuntimeInfoResponse> {
     let version = env!("CARGO_PKG_VERSION");
     let commit = option_env!("CODEWHALE_BUILD_COMMIT").unwrap_or("unknown");
-    let api_base = runtime_account_api_base();
+    let api_base = crate::profile_constitution::runtime_account_api_base();
     let account = runtime_account_info_for_request(
         runtime_request_is_authorized(&request, &state),
         &api_base,
@@ -6638,37 +6636,6 @@ fn runtime_account_info_for_request(
     } else {
         RuntimeAccountInfo::signed_out(api_base.to_string())
     }
-}
-
-pub(crate) fn runtime_account_api_base() -> String {
-    std::env::var(ACCOUNT_API_BASE_ENV)
-        .ok()
-        .and_then(|value| normalize_runtime_account_api_base(&value))
-        .unwrap_or_else(|| DEFAULT_ACCOUNT_API_BASE.to_string())
-}
-
-fn normalize_runtime_account_api_base(value: &str) -> Option<String> {
-    let mut url = reqwest::Url::parse(value.trim()).ok()?;
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !matches!(url.path(), "" | "/")
-    {
-        return None;
-    }
-    let host = url.host_str()?;
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return None;
-    }
-    url.set_path("/");
-    Some(url.as_str().trim_end_matches('/').to_string())
 }
 
 /// Ownership is derived using the same trust/precedence as the existing MCP

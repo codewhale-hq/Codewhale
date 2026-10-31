@@ -519,5 +519,6 @@ found that wave 1 as written is not enough. Fix these before scheduling wave 2:
     `cfg(test)` mocks do not follow moved files.
 14. P0c is wrong: the turn-support globs are in test modules.
 
-Because most of these sit inside a band, the first step is the coarse split in
+With the checker's grouped-import and `super::` fixes (2026-10-31) this map
+measures `upward_edges=120 upward_refs=411`. Because most of these sit inside a band, the first step is the coarse split in
 [COARSE_SPLIT.md](COARSE_SPLIT.md).

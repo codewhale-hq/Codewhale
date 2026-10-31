@@ -5783,7 +5783,7 @@ fn catalog_delta_from_models_body(
             listed_limits = listed_limits
                 .into_iter()
                 .map(|(id, limit)| {
-                    let canonical = crate::config::opencode_go_model_id(&id)
+                    let canonical = codewhale_runtime::config::opencode_go_model_id(&id)
                         .map_or_else(|| id.clone(), str::to_string);
                     (canonical, limit)
                 })

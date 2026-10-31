@@ -18,7 +18,8 @@ first), and edges that point up the declared layer order. The references it
 lists are the work: each must be moved, inverted or deleted before the map can
 be executed as file moves.
 
-Limits, stated so nobody mistakes this for the compiler: paths are resolved
+Grouped imports (`use crate::a::{b::C, d}`) are expanded into one path per
+leaf. Limits, stated so nobody mistakes this for the compiler: paths are resolved
 textually. Second-hop names (`use super::spec;` then `spec::ToolSpec`), glob
 re-exports, macros and `#[path]` includes are not followed, and an inline
 non-test `mod` resolves `super::` one level too high. Production lines come
@@ -57,7 +58,42 @@ import module_graph as mg  # noqa: E402
 TUI_SRC = mg.TUI_SRC
 ROOT = "<root>"
 SELF = "<self>"
-PATH_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super|[A-Za-z_][A-Za-z0-9_]*))+)")
+PATH_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))+)")
+GROUP_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))*)\s*::\s*\{")
+
+
+def group_paths(code: str, open_brace: int) -> list[list[str]]:
+    depth, i = 0, open_brace
+    while i < len(code):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    body = code[open_brace + 1 : i]
+    out, part, level, start = [], [], 0, 0
+    for j, ch in enumerate(body + ","):
+        if ch == "{":
+            level += 1
+        elif ch == "}":
+            level -= 1
+        elif ch == "," and level == 0:
+            part.append(body[start:j].strip())
+            start = j + 1
+    for p in part:
+        if not p or p == "self":
+            continue
+        brace = p.find("{")
+        if brace >= 0:
+            prefix = [t.strip() for t in p[:brace].split("::") if t.strip()]
+            for sub in group_paths(p, brace):
+                out.append(prefix + sub)
+        else:
+            p = p.split(" as ")[0]
+            out.append([t.strip() for t in p.split("::") if t.strip() and t.strip() != "*"])
+    return out
 
 
 def module_of(rel: str) -> str:
@@ -151,12 +187,22 @@ def build(split_above: int):
     for rel, (_, code, stripped) in files.items():
         mod = module_of(rel)
         src_unit = unit_of[mod]
-        for match in PATH_RE.finditer(code):
+        found = []
+        grouped = set()
+        for match in GROUP_RE.finditer(code):
             pos = match.start()
             if stripped[pos] != code[pos]:
                 continue
-            head = match.group(1)
-            tokens = [t.strip() for t in match.group(2).split("::") if t.strip()]
+            grouped.add(pos)
+            prefix = [t.strip() for t in match.group(2).split("::") if t.strip()]
+            for sub in group_paths(code, match.end() - 1):
+                found.append((match.group(1), prefix + sub))
+        for match in PATH_RE.finditer(code):
+            pos = match.start()
+            if stripped[pos] != code[pos] or pos in grouped:
+                continue
+            found.append((match.group(1), [t.strip() for t in match.group(2).split("::") if t.strip()]))
+        for head, tokens in found:
             base = "" if head == "crate" else (parent(mod) if head == "super" else mod)
             dst_mod = resolve(tokens, base, modules)
             dst_unit = unit_of.get(dst_mod, ROOT)

@@ -65,7 +65,7 @@ fn account_model_access_receipt(config: &codewhale_runtime::config::Config) -> V
         .unwrap_or_default();
     let supported = api_base.trim_end_matches('/')
         == codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL
-        && super::runtime_account_api_base()
+        && crate::profile_constitution::runtime_account_api_base()
             == codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE;
     let access = config.account_model_access.read().clone();
     let live = access
@@ -135,7 +135,8 @@ fn install_account_model_access(
     let expected_base = codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL;
     if request.api_base.trim_end_matches('/') != expected_base
         || config.base_url_for_route(&identity).trim_end_matches('/') != expected_base
-        || super::runtime_account_api_base() != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+        || crate::profile_constitution::runtime_account_api_base()
+            != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
     {
         return Err(ApiError::conflict(
             "Account model access requires the first-party Codewhale endpoint.",

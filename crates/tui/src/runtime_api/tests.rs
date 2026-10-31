@@ -10491,11 +10491,13 @@ fn unauthenticated_runtime_info_redacts_secure_account_identity_without_loading_
 #[test]
 fn runtime_account_api_origin_rejects_credentials_paths_and_non_loopback_http() {
     assert_eq!(
-        normalize_runtime_account_api_base("https://api.codewhale.net/"),
+        crate::profile_constitution::normalize_runtime_account_api_base(
+            "https://api.codewhale.net/"
+        ),
         Some("https://api.codewhale.net".to_string())
     );
     assert_eq!(
-        normalize_runtime_account_api_base("http://127.0.0.1:8787"),
+        crate::profile_constitution::normalize_runtime_account_api_base("http://127.0.0.1:8787"),
         Some("http://127.0.0.1:8787".to_string())
     );
     for invalid in [
@@ -10505,7 +10507,7 @@ fn runtime_account_api_origin_rejects_credentials_paths_and_non_loopback_http() 
         "http://api.codewhale.net",
     ] {
         assert_eq!(
-            normalize_runtime_account_api_base(invalid),
+            crate::profile_constitution::normalize_runtime_account_api_base(invalid),
             None,
             "{invalid}"
         );

@@ -9,7 +9,7 @@ use codewhale_secrets::account::{AccountSessionStore, secure_account_session_sec
 /// with their own provider key never requires a Codewhale sign-in. A
 /// host-supplied snapshot (Runtime API) still fails its turn closed.
 pub(crate) async fn load(profile: Option<&str>) -> Result<Option<ProfileConstitutionSnapshot>> {
-    let api_base = crate::runtime_api::runtime_account_api_base();
+    let api_base = runtime_account_api_base();
     let store = AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base);
     load_from(&store, &api_base).await
 }
@@ -23,13 +23,44 @@ pub(crate) fn account_is_present(profile: Option<&str>) -> Result<bool> {
     }
     #[cfg(not(test))]
     {
-        let base = crate::runtime_api::runtime_account_api_base();
+        let base = runtime_account_api_base();
         Ok(
             AccountSessionStore::new(secure_account_session_secrets()?, profile, &base)
                 .load()?
                 .is_some(),
         )
     }
+}
+
+pub(crate) fn runtime_account_api_base() -> String {
+    std::env::var(codewhale_secrets::account::ACCOUNT_API_BASE_ENV)
+        .ok()
+        .and_then(|value| normalize_runtime_account_api_base(&value))
+        .unwrap_or_else(|| codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE.to_string())
+}
+
+pub(crate) fn normalize_runtime_account_api_base(value: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(value.trim()).ok()?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return None;
+    }
+    let host = url.host_str()?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return None;
+    }
+    url.set_path("/");
+    Some(url.as_str().trim_end_matches('/').to_string())
 }
 
 async fn load_from(
