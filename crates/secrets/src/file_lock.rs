@@ -40,6 +40,8 @@ pub(crate) fn open_private(
     }
     #[cfg(unix)]
     require_private_mode(&file, path, role)?;
+    #[cfg(not(unix))]
+    let _ = role;
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -57,7 +59,6 @@ pub(crate) fn open_private(
 /// The distinction decides whether a wider-than-`0600` mode is repaired or
 /// refused, and it is not cosmetic: one file carries the secret and the other
 /// carries nothing.
-#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoreFile {
     /// `secrets.json`. A mode that let another user in means the bytes may no
@@ -277,6 +278,13 @@ fn advisory_locking_unavailable(error: &std::io::Error) -> bool {
             | Some(libc::EINVAL)
             | Some(libc::ENOSYS)
     )
+}
+
+/// Windows always offers `LockFileEx` through `fd-lock`, so a failed write
+/// lock there is genuine contention, never an absent advisory lock.
+#[cfg(not(unix))]
+fn advisory_locking_unavailable(_error: &std::io::Error) -> bool {
+    false
 }
 
 /// Serialises secret-store writers inside this process when the filesystem

@@ -466,7 +466,7 @@ fn libc_uid(metadata: &libc::stat) -> u32 {
 
 #[cfg(unix)]
 fn libc_mode(metadata: &libc::stat) -> u32 {
-    metadata.st_mode as u32
+    u32::from(metadata.st_mode)
 }
 
 /// Answers already obtained from a filesystem, keyed by the identity of the
