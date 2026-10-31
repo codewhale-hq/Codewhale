@@ -152,6 +152,13 @@ locally; no new tests or code comments are implied by this design.
 
 ## Target map
 
+The unit-by-unit assignment, with layers, the wave-1 work list and the wave-2
+extraction rounds, is [CRATE_MAP.md](CRATE_MAP.md) and its checkable
+[`crate-map.toml`](crate-map.toml) (2026-10-31). Where the two disagree, that
+map is newer; its decision D8 lists the differences. The protocol crate this
+plan called `runtime-wire` is named `app-server-protocol` (founder, App Server
+v2, 2026-10-31).
+
 Names are package names (`codewhale-` prefix omitted). Sizes are today's
 source for those modules, tests included, measured at `bd2a7b49c`. Existing
 crates are reused where their current content already fits the role.
@@ -177,7 +184,7 @@ stays below 50k.
 | `ext` | contributor traits: tool, config section, context/prompt fragment, command, thread lifecycle, approval review | new; replaces the central lists |
 | `config-types` | config schema and route identity, no I/O | split from `config` (53k) |
 | `command-contract` | portable command metadata and results | exists |
-| `runtime-wire` | Runtime API DTOs and the in-process `Op`/`Event` surface clients use | from `runtime_api` and `core/events.rs` |
+| `app-server-protocol` | Runtime API DTOs and the in-process `Op`/`Event` surface clients use | from `runtime_api` and `core/events.rs` |
 
 ### Utilities (`crates/util/`)
 
@@ -271,7 +278,7 @@ crate in the TUI tier.
 | remaining views | `tui/views` (35k), split by surface | |
 | `tui-commands` | slash-command presentation (`commands`, 72k) | |
 
-The TUI depends on `runtime-wire`, never on `runtime`, `engine` or a feature
+The TUI depends on `app-server-protocol`, never on `runtime`, `engine` or a feature
 crate. A TUI agent's sandbox therefore holds no runtime code. `cli` connects
 the TUI to the runtime in process through the existing `EngineHandle`/`Op`/
 `Event` seam; HTTP stays a transport for external clients.
@@ -317,7 +324,7 @@ so in-flight work rebases across it. Behavioral changes land separately.
    generator for a minimal sandbox workspace. Record the baseline. Extend
    `module_graph.py` with the tier table so in-TUI back-edges ratchet down
    before their crates exist.
-1. **Contracts and utilities.** Create `ext`, `config-types`, `runtime-wire`,
+1. **Contracts and utilities.** Create `ext`, `config-types`, `app-server-protocol`,
    the `util-*` crates, and the `execpolicy`/`state`/`core` absorptions. This
    cuts the back-edges above.
 2. **Contributor registration.** Migrate every `with_*_tools` builder,
@@ -389,13 +396,13 @@ part of the slice.
 | **X3 tool contract, part 1** | `crates/execpolicy/src/canonical_action.rs`, `crates/tools/src/lib.rs`, `crates/tools/src/param_alias.rs`, `crates/tools/src/patch_preflight.rs`, `crates/tui/src/tools/mod.rs` | M, no `pub use` shim (callers rewired) | Direction right; **not rename-only** (visibility widening, split test module) | none | first tool-contract move; unblocks TUI views depending on a crate, not the runtime |
 | **X4 util-schema** | `crates/util-schema/` (new), `tools/schema_sanitize.rs`, `schema_canonicalize.rs` | M | Needs `prepare_tools_for_strict_mode` moved next to its caller first (it is the only use of `codewhale_models::Tool`) | X3 not required | removes `client -> tools` schema refs |
 | **X5 config-types, part 1** | `crates/config-types/` (new), `features.rs`, `route_receipt.rs`, `plugins/types.rs` | S-M, ~400 lines | **Corrected:** move `impl Display for PluginId` with `PluginId` (orphan rule); leave out `CustomLspDef` (already in `crates/config`); the `lsp` and `plugins` edges stay | none | removes the type-only up-edges from `config`/`settings` |
-| **X6 runtime-wire, part 1** | `crates/runtime-wire/` (new), `core/events.rs`, `core/ops.rs`, `rlm/bridge.rs` | S, ~300 lines | **Corrected:** `ModelToolCall` stays in `core` (moving it makes a Cargo cycle `models -> config -> execpolicy`); widen `is_bidi_format_control` and `NESTED_RLM_STATUS_PREFIX` | none | first DTOs a TUI sandbox can depend on without `core` |
+| **X6 app-server-protocol (was runtime-wire), part 1** | `crates/app-server-protocol/` (new), `core/events.rs`, `core/ops.rs`, `rlm/bridge.rs` | S, ~300 lines | **Corrected:** `ModelToolCall` stays in `core` (moving it makes a Cargo cycle `models -> config -> execpolicy`); widen `is_bidi_format_control` and `NESTED_RLM_STATUS_PREFIX` | none | first DTOs a TUI sandbox can depend on without `core` |
 | **X7 tool rules into execpolicy** | `crates/execpolicy/src/tool_rules.rs`, `core/engine/tool_catalog.rs` | S | Part of the fleet plan; `tool_denied`, `tool_matches_any_rule`, `requires_raw_shell`, `policy_tool_aliases` | none | cuts `tools -> core` and `config -> core` rule references |
 | **X8 agent-contract** | `crates/agent-contract/` (new), `fleet/role.rs`, `fleet/worker_profile.rs`, `tools/subagent/mod.rs` | M | **Corrected:** the inherent `impl FleetRole` at `tools/subagent/mod.rs:639` becomes illegal after the move; convert to free functions first; resolve the two different `ChildAuthority` types | X7 | removes `tools -> fleet` (62 refs) |
 | **X9 sandbox pilot** | `crates/sandbox/` (new), `tui/src/sandbox/` | S then M | **Superseded by S17:** sandbox and `shell_dispatcher` move together; the integration `#[path]` include is removed and the `cfg(test)` env-lock branch is preserved under the `test-support` feature. The config/oauth edges resolve through the existing `codewhale-runtime` dependency; no edge cut is needed | none | second feature leaf after `tools-web` |
 | **W0-S1 runtime residents** | `crates/runtime/` ← `features`, `logging`, `startup_trace`, `resource_telemetry`, `runtime_policy`, `lane_control` | S, landed 2026-10-10 (8aea0265c) | **Landed.** `python3 scripts/split/move-modules.py` dry run is read-only and safe | none | six fewer tui modules; no `test_support` needed |
 | **W0-S2.. test-support and the rest of wave 0** | the existing `codewhale-runtime` `test-support` feature, then remaining leaves | M each | **Environment helpers moved in 0.10.2:** one process environment lock in the Runtime test-support owner; no new test-support crate | W0-S1 | the TUI shim retains its resolver fences; App fixtures live in the UI owner; remaining residents follow RS-10 |
-| **B billing/catalog** | new crate above `codewhale-runtime` ← `cost_status`, `pricing`, `route_billing`, `provider_catalog_live`, `provider_lake`, `models_dev_live`, `codex_model_cache`, `reasoning_preference` | L, 24,352 production lines | **Re-measured 2026-10-31 on `1b0e51005b`.** The eight modules' only production edges into the 59-module cycle are 6 refs into `client` (`CodewhaleClient::for_catalog_refresh` in `provider_lake` and `codex_model_cache`, `client::ollama_catalog::load_model`, `client::AvailableModel`) and 1 into `provider_readiness`. 590 inbound production refs from the TUI follow the move. Tests reach out 176 times, 149 of them to `test_support`. Every module uses `codewhale_runtime::config`, so the crate depends on the runtime crate; the earlier "must not depend on the runtime tier" constraint predates `Config` moving there. Not rename-only: catalog refresh stays beside `client` (split `provider_lake`/`codex_model_cache` into store and refresh driver) | the refresh-driver split; open PRs that touch `session_manager.rs` or other `pricing`/`cost_status` callers merged first | measured, not started |
+| **B billing/catalog** | new crate above `codewhale-runtime` ← `cost_status`, `pricing`, `route_billing`, `provider_catalog_live`, `provider_lake`, `models_dev_live`, `codex_model_cache`, `reasoning_preference` | M, 11,091 strict production lines (24,352 file-level; `partition_report.py`'s per-module figure is file-level) | **Re-measured 2026-10-31 on `1b0e51005b`.** The eight modules' only production edges into the 59-module cycle are 6 refs into `client` (`CodewhaleClient::for_catalog_refresh` in `provider_lake` and `codex_model_cache`, `client::ollama_catalog::load_model`, `client::AvailableModel`) and 1 into `provider_readiness`. 590 inbound production refs from the TUI follow the move. Tests reach out 176 times, 149 of them to `test_support`. Every module uses `codewhale_runtime::config`, so the crate depends on the runtime crate; the earlier "must not depend on the runtime tier" constraint predates `Config` moving there. Not rename-only: catalog refresh stays beside `client` (split `provider_lake`/`codex_model_cache` into store and refresh driver) | the refresh-driver split; open PRs that touch `session_manager.rs` or other `pricing`/`cost_status` callers merged first | measured, not started |
 | **S0 closure report** | `scripts/split/closure_report.py` | S (report), M (sandbox generator) | Held as a tool; deletes no edges | decide where sandbox third-party sources come from | the numbers the sandbox contract needs |
 
 Running them in parallel:
