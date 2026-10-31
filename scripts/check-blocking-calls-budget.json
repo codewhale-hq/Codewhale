@@ -240,6 +240,9 @@
   "crates/tui/src/commands/user_registry.rs": {
     "std_fs": 2
   },
+  "crates/tui/src/compaction_archive.rs": {
+    "std_fs": 1
+  },
   "crates/tui/src/composer_history.rs": {
     "thread_sleep": 1
   },

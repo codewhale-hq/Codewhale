@@ -76,7 +76,8 @@ impl Engine {
         let mut builder = ToolRegistryBuilder::new()
             .with_file_tools()
             .with_search_tools()
-            .with_git_tools();
+            .with_git_tools()
+            .with_compaction_archive_tools();
         if self.config.features.enabled(Feature::ApplyPatch) {
             builder = builder.with_patch_tools();
         }

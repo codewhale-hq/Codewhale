@@ -1214,7 +1214,11 @@ original messages to the session's `artifacts/context-transfer-<id>.json` and,
 when a model summary is produced, its handoff to the matching `.md` file.
 These use the existing session artifact store and persistence redaction.
 A failed write aborts compaction without replacing context. Pruning-only passes
-save the original messages without making an extra model call. Pressure metadata
+save the original messages without making an extra model call. The model can
+read them back through `context_archive_search` (ASCII case-insensitive
+substring search returning short snippets and an archive id) and
+`context_archive_get` (paged read of one message by id); the handoff note names
+both so the model knows the archive exists. Pressure metadata
 shows estimated input tokens and the configured trigger; it is an estimate, not
 an exact promise about a provider's remaining context.
 

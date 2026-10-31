@@ -113,7 +113,9 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "get_goal",
             "update_goal",
             "task_shell_wait",
-            "load_skill"
+            "load_skill",
+            "context_archive_get",
+            "context_archive_search"
         ]
     );
     let expected = [

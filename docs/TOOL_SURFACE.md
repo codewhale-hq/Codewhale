@@ -19,7 +19,7 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with thirteen eager native names plus synthetic `tool_search`:
+New turns start with fifteen eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
@@ -34,9 +34,11 @@ New turns start with thirteen eager native names plus synthetic `tool_search`:
 11. `update_goal`
 12. `task_shell_wait`
 13. `load_skill`
-14. `tool_search` (synthetic, always active)
+14. `context_archive_get`
+15. `context_archive_search`
+16. `tool_search` (synthetic, always active)
 
-The thirteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The fifteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/tui/src/core/engine/tool_catalog.rs`, pinned by
 `default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
 boundary may remove `agent` at the maximum child depth, and Plan registers only

@@ -8045,6 +8045,8 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "Web",
         "agent",
         "bash",
+        "context_archive_get",
+        "context_archive_search",
         "diagnostics",
         "file_search",
         "finance",
@@ -8075,6 +8077,8 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "Git",
         "Web",
         "agent",
+        "context_archive_get",
+        "context_archive_search",
         "diagnostics",
         "file_search",
         "finance",
@@ -8108,6 +8112,8 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "Web",
         "agent",
         "automation",
+        "context_archive_get",
+        "context_archive_search",
         "diagnostics",
         "file_search",
         "finance",
@@ -8146,6 +8152,8 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "apply_patch",
         "automation",
         "bash",
+        "context_archive_get",
+        "context_archive_search",
         "diagnostics",
         "edit",
         "file_search",
@@ -8495,6 +8503,8 @@ fn small_surface_starts_with_core_tools_and_read_only_goal_control() {
         [
             "agent",
             "bash",
+            "context_archive_get",
+            "context_archive_search",
             "edit",
             "file_search",
             "get_goal",
@@ -8879,6 +8889,8 @@ fn small_surface_depth_cap_removes_only_agent() {
         model_tool_names(model_request_tools(&mut surface)),
         [
             "bash",
+            "context_archive_get",
+            "context_archive_search",
             "edit",
             "file_search",
             "get_goal",
@@ -9479,6 +9491,8 @@ async fn read_only_roles_expose_and_dispatch_lowercase_bash_only() {
             "Web",
             "agent",
             "bash",
+            "context_archive_get",
+            "context_archive_search",
             "diagnostics",
             "file_search",
             "finance",
@@ -22688,8 +22702,10 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // machine, 209B over the previous ceiling, which only CI had been checking.
 // The 0.10.2 batch adds 227B: +145B for the `agent` tool sentence that
 // restores the legacy Operate contract, less 30B from the background-shell
-// schema edits, plus 112B for the display-only bash description. The ceiling keeps the 13B Linux margin.
-const PARENT_SURFACE_BYTE_CEILING: usize = 90_792;
+// schema edits, plus 112B for the display-only bash description. The
+// context_archive_search and context_archive_get specs (#7173) add 751B. The
+// ceiling keeps the 13B Linux margin.
+const PARENT_SURFACE_BYTE_CEILING: usize = 91_556;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {

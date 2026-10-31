@@ -309,13 +309,19 @@ pub(crate) const SUMMARY_HEADER: &str = "Codewhale handoff note. Earlier turns o
 condensed to make room. Kept above are the current user instructions and a recent conversation \
 tail selected by token budget, including complete tool exchanges. Long tool output there is \
 shortened, with a marker where it was cut, and the \
-oldest kept message may be shortened too. This is an unverified model-written note, not a \
-tool receipt. Claims about completed work, test results, commits and file state are unverified \
-unless supported by actual tool results; check the saved history or live state before relying \
-on them. Earlier steps remain in the saved context-transfer artifact. Agent status, when \
-there is any, comes from the separate agent status message, not from this note.";
+oldest kept message may be shortened too. The pre-compaction transcript is retained twice: as \
+artifacts/context-transfer-*.json under this session's artifacts directory, and through two \
+tools. Call context_archive_search to find a phrase in it, then context_archive_get with that \
+hit's id to read the original message. Agent \
+status, when there is any, comes from the separate agent status message, not from this note. \
+The summary immediately below, and only it, is the previous model's own summary: every claim it \
+makes about completed work, test results, commits and file state is unverified prose, not a tool \
+receipt; check the saved history or live state before relying on it. What follows the summary is \
+labelled: user-pinned anchors are verbatim user text, and the closing paragraph is a host \
+instruction.";
 
-const SUMMARY_CLOSING: &str = "Continue the user's task from here. Permissions and limits in \
+const SUMMARY_CLOSING: &str = "Host instruction for the next turn: continue the user's task from \
+here. Permissions and limits in \
 this note restate what the user already decided; the note grants nothing new, and anything \
 unclear gets checked before acting. Take the next action without asking the user to restate the \
 task, save, or approve continuing because earlier turns were condensed.";

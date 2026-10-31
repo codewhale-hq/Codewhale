@@ -112,6 +112,10 @@ impl Engine {
             // stable across modes.
             .with_foreground_shell_tools()
             .with_search_tools()
+            // Compaction replaces history in Plan exactly as it does in Work,
+            // so the archive read tools have to exist there too or the summary
+            // header would point at names this mode never advertises.
+            .with_compaction_archive_tools()
             .with_git_tools()
             .with_git_history_tools()
             .with_diagnostics_tool()
