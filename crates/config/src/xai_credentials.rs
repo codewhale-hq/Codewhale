@@ -927,8 +927,12 @@ mod tests {
         verify_windows_owner_only_handle(directory).expect("current-user-only directory");
 
         let lock = store.open_lock_file().expect("create lifecycle lock");
-        validate_owned_file_handle(&lock, &credentials.join(XAI_OAUTH_LIFECYCLE_LOCK_FILE_NAME))
-            .expect("current-user-only lifecycle lock");
+        validate_owned_file_handle(
+            &lock,
+            &credentials.join(XAI_OAUTH_LIFECYCLE_LOCK_FILE_NAME),
+            store.private.guard(),
+        )
+        .expect("current-user-only lifecycle lock");
 
         let generation = "xai-auth-0123456789abcdef0123456789abcdef.json";
         store
@@ -938,8 +942,12 @@ mod tests {
             .open_owned_file_for_read(generation)
             .expect("open generation")
             .expect("generation exists");
-        validate_owned_file_handle(&generation_file, &credentials.join(generation))
-            .expect("current-user-only generation");
+        validate_owned_file_handle(
+            &generation_file,
+            &credentials.join(generation),
+            store.private.guard(),
+        )
+        .expect("current-user-only generation");
     }
 
     #[cfg(windows)]
