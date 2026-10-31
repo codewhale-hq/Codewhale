@@ -196,12 +196,19 @@ fn open_log_file(path: &Path) -> std::io::Result<std::fs::File> {
     options.create(true).append(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        use std::os::unix::fs::OpenOptionsExt as _;
         options
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
         let file = options.open(path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        // Through the handle that was opened `O_NOFOLLOW`: re-resolving `path`
+        // here could narrow a substitute, and this log is the object the caller
+        // is about to write prompts and paths into. `tighten_mode_of` keeps the
+        // refusal for a filesystem that stores modes and excuses only one that
+        // cannot apply them, so a log still readable by group or other is
+        // reported rather than ignored.
+        codewhale_config::private_directory::tighten_mode_of(&file, path, 0o600)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         Ok(file)
     }
     #[cfg(not(unix))]

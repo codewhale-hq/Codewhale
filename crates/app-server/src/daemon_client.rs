@@ -230,7 +230,15 @@ mod platform {
         #[cfg(windows)]
         let name = "daemon.owner.json".to_string();
         owner_work(move || {
-            let parent = match PrivateDirectory::inspect(&directory) {
+            // This runs before the engine has anywhere to log, so a refusal
+            // here is the first thing a user sees and the last thing they can
+            // diagnose. A mount that reports its own ownership (HarmonyOS
+            // hmdfs) makes the strict proof impossible for every object on it,
+            // so discovering an owner — not authenticating one — takes the
+            // measured exception. The receipt is still read through the
+            // retained handle, must be a single-link file, and the socket
+            // identity is still compared.
+            let parent = match PrivateDirectory::inspect_trusting_mount(&directory) {
                 Ok(parent) => Arc::new(parent),
                 Err(error)
                     if error

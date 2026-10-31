@@ -623,13 +623,14 @@ impl FileKeyringStore {
 
     fn load_unlocked(&self) -> Result<FileSecretsBlob, SecretsError> {
         use std::io::Read as _;
-        let mut file = match file_lock::open_private(&self.path, false) {
-            Ok(file) => file,
-            Err(SecretsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(FileSecretsBlob::default());
-            }
-            Err(error) => return Err(error),
-        };
+        let mut file =
+            match file_lock::open_private(&self.path, false, file_lock::StoreFile::Content) {
+                Ok(file) => file,
+                Err(SecretsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(FileSecretsBlob::default());
+                }
+                Err(error) => return Err(error),
+            };
         let mut raw = String::new();
         file.read_to_string(&mut raw)?;
         if raw.trim().is_empty() {
@@ -760,14 +761,12 @@ fn atomic_write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsErro
     tmp.write_all(body).map_err(SecretsError::Io)?;
     tmp.flush().map_err(SecretsError::Io)?;
     tmp.as_file().sync_all().map_err(SecretsError::Io)?;
+    // The temp file is created at 0o600, so this is not about narrowing it: a
+    // mount can apply a mode of its own to a new file, and publishing contents
+    // under one is exactly what the store's own gate exists to prevent. The
+    // same rule that admits the store admits the file about to replace it.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        tmp.as_file()
-            .set_permissions(perms)
-            .map_err(SecretsError::Io)?;
-    }
+    file_lock::require_private_mode(tmp.as_file(), path, file_lock::StoreFile::Content)?;
     tmp.persist(path).map_err(|e| SecretsError::Io(e.error))?;
     Ok(())
 }

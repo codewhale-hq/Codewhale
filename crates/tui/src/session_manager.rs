@@ -190,13 +190,14 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<fs::File> {
     options.create(true).read(true).write(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         options
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
         let file = options.open(path)?;
         validate_private_regular_file(&file, path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        codewhale_config::private_directory::tighten_mode_of(&file, path, 0o600)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         Ok(file)
     }
     #[cfg(windows)]
@@ -2021,12 +2022,13 @@ impl SessionManager {
         let paths = self.late_usage_paths(session_id)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-            OpenOptions::new()
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let handle = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&dir)?
-                .set_permissions(fs::Permissions::from_mode(0o700))?;
+                .open(&dir)?;
+            codewhale_config::private_directory::tighten_mode_of(&handle, &dir, 0o700)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
         Ok(paths)
     }

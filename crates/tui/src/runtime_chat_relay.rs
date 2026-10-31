@@ -1673,9 +1673,10 @@ fn isolated_chat_execution_config(
         .map_err(|_| "Runtime Chat could not prepare its isolated Chat context.".to_string())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        // A mount that assigns modes itself refuses every `chmod`; the context
+        // directories are linked only from this session either way.
         for path in [&workspace, &context_dir, &skills_dir] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| {
+            codewhale_config::private_directory::tighten_mode(path, 0o700).map_err(|_| {
                 "Runtime Chat could not protect its isolated Chat context.".to_string()
             })?;
         }

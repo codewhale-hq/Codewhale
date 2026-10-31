@@ -1254,22 +1254,51 @@ fn validate_plugin_state_directory_for_read(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("failed to inspect opened plugin state directory: {error}"))?;
     // SAFETY: geteuid has no pointer or lifetime preconditions.
     let effective_uid = unsafe { libc::geteuid() };
+    let is_directory = metadata.is_dir();
+    let public = metadata.uid() != effective_uid || metadata.permissions().mode() & 0o077 != 0;
+    // Only a directory that fails the fields asks the filesystem whether it can
+    // express them at all: on a mount that stores ownership this costs nothing,
+    // and on one that does not the answer — with its warning — is remembered
+    // per directory, so repeated reads do not repeat the probe or the log line.
+    let synthesised = is_directory
+        && public
+        && matches!(
+            codewhale_config::private_directory::mount_footing(path),
+            codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+        );
     validate_unix_plugin_state_directory_fields(
-        metadata.is_dir(),
+        is_directory,
         metadata.uid(),
         metadata.permissions().mode(),
         effective_uid,
+        synthesised,
     )
 }
 
+/// Whether a directory satisfies the private-state guard.
+///
+/// `mount_cannot_express_ownership` names a filesystem that reports its own
+/// owner and mode for every object (HarmonyOS hmdfs), so neither field can
+/// prove anything there. Refusing on such a mount makes plugin state
+/// unusable for every app on that platform; accepting keeps the real guards —
+/// no-follow, single link, atomic publication — and relies on the mount's own
+/// access control for ownership, which is the same tradeoff the credential
+/// store makes on the same mount.
 #[cfg(unix)]
 fn validate_unix_plugin_state_directory_fields(
     is_directory: bool,
     owner_uid: u32,
     mode: u32,
     effective_uid: u32,
+    mount_cannot_express_ownership: bool,
 ) -> Result<(), String> {
-    if !is_directory || owner_uid != effective_uid || mode & 0o077 != 0 {
+    if !is_directory {
+        return Err("Plugin state path must be a directory".to_string());
+    }
+    if mount_cannot_express_ownership {
+        return Ok(());
+    }
+    if owner_uid != effective_uid || mode & 0o077 != 0 {
         return Err(
             "Plugin state directory must be current-user-owned and inaccessible to group or other users"
                 .to_string(),
@@ -1328,8 +1357,11 @@ fn harden_opened_plugin_state_file(
 
 #[cfg(unix)]
 pub fn harden_plugin_state_file(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+    // `tighten_mode` keeps the refusal for a filesystem that stores modes and
+    // tolerates one that assigns its own (HarmonyOS hmdfs), which is the same
+    // rule the state directory is admitted under. Refusing here would make a
+    // plugin state file unwritable after a successful write.
+    codewhale_config::private_directory::tighten_mode(path, 0o600).map_err(|error| {
         format!(
             "failed to restrict plugin state file permissions for {}: {error}",
             path.display()
@@ -1987,10 +2019,9 @@ fn set_staged_read_only_file(path: &Path, source: &fs::Metadata) -> Result<(), S
 
 #[cfg(unix)]
 fn set_owner_only_directory(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| {
+    codewhale_config::private_directory::tighten_mode(path, 0o700).map_err(|error| {
         format!(
-            "failed to restrict plugin runtime directory permissions for {}: {e}",
+            "failed to restrict plugin runtime directory permissions for {}: {error}",
             path.display()
         )
     })
@@ -2565,8 +2596,27 @@ mod unix_state_directory_tests {
 
     #[test]
     fn state_directory_validation_rejects_an_owner_mismatch() {
-        let error = validate_unix_plugin_state_directory_fields(true, 41, 0o700, 42).unwrap_err();
+        let error =
+            validate_unix_plugin_state_directory_fields(true, 41, 0o700, 42, false).unwrap_err();
         assert!(error.contains("current-user-owned"));
+    }
+
+    /// A mount that reports its own owner and mode cannot prove either, so the
+    /// fields are not evidence there. The refusal above must still apply on a
+    /// filesystem that stores them — this pins that the tolerance is a property
+    /// of the mount, not a weakening of the check.
+    #[test]
+    fn state_directory_validation_accepts_a_mount_that_cannot_express_ownership() {
+        validate_unix_plugin_state_directory_fields(true, 41, 0o2771, 42, true)
+            .expect("a synthesising mount is not an owner mismatch");
+        assert!(
+            validate_unix_plugin_state_directory_fields(true, 41, 0o2771, 42, false).is_err(),
+            "the same values are a refusal where the mount stores them"
+        );
+        assert!(
+            validate_unix_plugin_state_directory_fields(false, 42, 0o700, 42, true).is_err(),
+            "a non-directory is refused whatever the mount does"
+        );
     }
 }
 
