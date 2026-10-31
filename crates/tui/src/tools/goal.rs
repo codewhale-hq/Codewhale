@@ -1103,7 +1103,7 @@ impl ToolSpec for UpdateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress requires user input. Mark yield when you finished a stage and the next step needs the user's decision: the goal stays unfinished, the turn ends, and their next message resumes it."
+        "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it."
     }
 
     fn input_schema(&self) -> Value {
@@ -2248,9 +2248,13 @@ mod tests {
     }
 
     #[test]
-    fn update_goal_contract_treats_required_user_input_as_blocking() {
+    fn update_goal_contract_routes_required_user_input_to_yield() {
         let update = UpdateGoalTool::new(new_shared_goal_state());
-        assert!(update.description().contains("requires user input"));
+        let description = update.description();
+        assert!(
+            description.contains("needing the user's answer is a yield, not a block"),
+            "{description}"
+        );
     }
 
     #[test]

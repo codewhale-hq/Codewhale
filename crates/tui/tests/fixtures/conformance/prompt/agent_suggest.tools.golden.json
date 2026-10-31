@@ -379,7 +379,7 @@
   },
   {
     "name": "update_goal",
-    "description": "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress requires user input. Mark yield when you finished a stage and the next step needs the user's decision: the goal stays unfinished, the turn ends, and their next message resumes it.",
+    "description": "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
