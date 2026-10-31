@@ -1,0 +1,52 @@
+# Throwaway: build one Windows binary from this ref so a fix can be tried
+# locally. Not part of any pull request; delete the branch when done.
+name: Windows binary (scratch)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -Dwarnings
+  CODEWHALE_BUILD_SHA: ${{ github.sha }}
+
+jobs:
+  build:
+    name: Build windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: scratch-windows-x64
+
+      - name: Build
+        run: cargo build --release --locked -p codewhale-cli
+
+      - name: Report binary
+        shell: pwsh
+        run: |
+          $exe = "target/release/codewhale.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $item = Get-Item $exe
+          Write-Host ("size={0} bytes" -f $item.Length)
+          & $exe --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codewhale-windows-x64-scratch
+          path: target/release/codewhale.exe
+          if-no-files-found: error
+          retention-days: 7
