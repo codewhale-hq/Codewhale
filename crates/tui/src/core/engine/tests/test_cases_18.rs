@@ -871,6 +871,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // Construct a minimal EngineHandle with the tiny channel.
     let cancel_token = CancellationToken::new();
     let handle = EngineHandle {
+        run_completion: None,
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,
