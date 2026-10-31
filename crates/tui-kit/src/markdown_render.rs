@@ -1854,7 +1854,10 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             let text = &rest[1..bracket_end];
             let after_bracket = &rest[bracket_end + 1..];
             if after_bracket.starts_with('(')
-                && let Some(paren_end) = after_bracket.find(')')
+                && let Some(paren_end) = after_bracket
+                    .match_indices(')')
+                    .map(|(index, _)| index)
+                    .find(|&index| has_unmatched_closing_delimiter(&after_bracket[1..=index], ')'))
             {
                 let url = &after_bracket[1..paren_end];
                 // The runtime toggle gates backend emission, not layout.
