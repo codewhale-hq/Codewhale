@@ -48,7 +48,7 @@ oversize=0 unassigned=0 duplicates=0`. What got there:
    `remote_control` uses the chat relay's types.
 2. **Band placement.** `runtime_threads/manager` and `tools/registry` belong
    with the engine (the engine, children and tasks construct and drive them);
-   `remote_control` with app-server (only hosts and the TUI use it);
+   `remote_control` with app-server (only hosts and the TUI use it); `core/protocol_parity` with the engine, so its `impl Event` and `impl Op` stay in the crate that defines those types (the only split inherent impl a scan of `impl` blocks found);
    `doctor` and `doctor_fix` with the TUI (the doctor command lives in
    `lib.rs`).
 3. **Code.** `runtime_account_api_base` and its validator moved from
