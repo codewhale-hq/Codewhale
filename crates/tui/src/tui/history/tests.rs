@@ -177,10 +177,11 @@ fn a_system_note_leaves_a_fenced_block_verbatim() {
 
 #[test]
 fn a_system_note_leaves_inline_markup_and_table_rows_verbatim() {
-    // The renderer copies inline code, bold, strikethrough and table cells
-    // verbatim, so doubling a backslash inside one prints it doubled. These are
-    // the shapes third-party guidance brings into a note (MCP servers,
-    // extension prompts), and they already render a Windows path correctly.
+    // The renderer copies inline code and table cells verbatim, so doubling a
+    // backslash inside one prints it doubled; bold and strikethrough read a
+    // doubled backslash back as one. These are the shapes third-party guidance
+    // brings into a note (MCP servers, extension prompts), and each renders a
+    // Windows path correctly.
     for content in [
         r"see `C:\Users\asus\.codewhale` for the file".to_string(),
         r"**C:\Users\asus** is the home".to_string(),

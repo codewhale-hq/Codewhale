@@ -1777,7 +1777,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         if let Some(end) = rest.strip_prefix("**").and_then(|s| s.find("**")) {
             let inner = &rest[2..2 + end];
             if !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace) {
-                out.push(InlineToken::new(inner.to_string(), bold_style, None));
+                out.extend(parse_inline_spans(inner, bold_style, link_style));
                 rest = &rest[2 + end + 2..];
                 continue;
             }
@@ -1785,7 +1785,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         // __bold__
         if let Some(end) = rest.strip_prefix("__").and_then(|s| s.find("__")) {
             let inner = &rest[2..2 + end];
-            out.push(InlineToken::new(inner.to_string(), bold_style, None));
+            out.extend(parse_inline_spans(inner, bold_style, link_style));
             rest = &rest[2 + end + 2..];
             continue;
         }
@@ -1803,7 +1803,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
                 && !inner.ends_with(char::is_whitespace)
                 && !after.starts_with(|c: char| c.is_alphanumeric() || c == '_')
             {
-                out.push(InlineToken::new(inner.to_string(), italic_style, None));
+                out.extend(parse_inline_spans(inner, italic_style, link_style));
                 rest = after;
                 continue;
             }
@@ -1828,7 +1828,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             // Closing delimiter must not be immediately followed by a
             // letter, digit, or underscore.
             if openable && !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
-                out.push(InlineToken::new(inner.to_string(), italic_style, None));
+                out.extend(parse_inline_spans(inner, italic_style, link_style));
                 rest = after;
                 continue;
             }
@@ -1843,7 +1843,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         // ~~strikethrough~~
         if let Some(end) = rest.strip_prefix("~~").and_then(|s| s.find("~~")) {
             let inner = &rest[2..2 + end];
-            out.push(InlineToken::new(inner.to_string(), strike_style, None));
+            out.extend(parse_inline_spans(inner, strike_style, link_style));
             rest = &rest[2 + end + 2..];
             continue;
         }
