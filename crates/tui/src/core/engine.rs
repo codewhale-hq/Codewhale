@@ -4250,11 +4250,6 @@ impl Engine {
                         }
                         Op::SetStreamChunkTimeout { timeout_secs } => {
                             self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
-                            let _ = self
-                                .send_event(Event::status(format!(
-                                    "Stream chunk timeout set to {timeout_secs}s"
-                                )))
-                                .await;
                         }
                         Op::SetSubagentRuntimeConfig {
                             enabled,
