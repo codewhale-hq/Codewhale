@@ -82,7 +82,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
@@ -596,7 +596,8 @@ pub(crate) fn bind_control_socket(
 
     let listener = UnixListener::bind(&path)?;
     let identity = socket_file_identity(&path);
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    codewhale_config::private_directory::tighten_mode(&path, 0o600)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     listener.set_nonblocking(true)?;
 
     let stop = Arc::new(AtomicBool::new(false));

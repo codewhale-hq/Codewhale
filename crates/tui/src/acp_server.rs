@@ -1546,6 +1546,11 @@ mod tests {
             None,
         )
         .await?;
+        // ACP publications are discovered through this socket, so an
+        // unbound one is a failure here rather than a degraded start.
+        let daemon = daemon.ok_or_else(|| {
+            anyhow!("this filesystem cannot hold the private runtime endpoint directory")
+        })?;
         let shutdown = daemon.shutdown_handle();
         let owner = tokio::spawn(daemon.serve());
         let _abort = AbortOnDrop(owner.abort_handle());

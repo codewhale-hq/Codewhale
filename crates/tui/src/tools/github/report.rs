@@ -486,7 +486,7 @@ impl AnchoredDirectory {
     fn open(path: &Path, create: bool) -> io::Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::MetadataExt;
         use std::path::Component;
         // SAFETY: constant C string; successful descriptor immediately owned.
         let fd = unsafe {
@@ -527,13 +527,33 @@ impl AnchoredDirectory {
             // SAFETY: fd is freshly owned.
             current = unsafe { File::from_raw_fd(fd) };
         }
+        let observed = current.metadata()?;
         // SAFETY: geteuid has no preconditions.
-        if current.metadata()?.uid() != unsafe { libc::geteuid() } {
+        let foreign_owner = observed.uid() != unsafe { libc::geteuid() };
+        let wide = observed.mode() & 0o077 != 0;
+        // A mount that reports an owner and mode of its own (HarmonyOS hmdfs)
+        // cannot prove either, for this directory or any other. The no-follow
+        // walk above is the guard that still holds there. The filesystem is only
+        // asked after a field has failed, through the handle just retained, and
+        // the answer is cached per directory.
+        let synthesised = (foreign_owner || wide)
+            && matches!(
+                codewhale_config::private_directory::mount_footing_of(&current),
+                codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+            );
+        if foreign_owner && !synthesised {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if create {
-            current.set_permissions(std::fs::Permissions::from_mode(0o700))?;
-        } else if current.metadata()?.mode() & 0o077 != 0 {
+            // Writing is a repair path, exactly as it was before: a report
+            // directory that a backup restore or `cp -r` left wider than 0700 is
+            // narrowed and then used. Refusing here instead would make every
+            // save fail until someone ran `chmod` by hand.
+            codewhale_config::private_directory::tighten_mode_of(&current, path, 0o700)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        } else if wide && !synthesised {
+            // Reading cannot repair: a wide mode means these reports may already
+            // have been read or replaced, so they are not ours to trust.
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Ok(Self(current))
@@ -562,11 +582,17 @@ impl AnchoredDirectory {
         use std::os::unix::fs::MetadataExt;
         let file = self.file(name, libc::O_RDONLY)?;
         let metadata = file.metadata()?;
+        // A mount that reports an owner and mode of its own cannot prove
+        // either; the link count is a stored property, so it always holds. The
+        // mount is asked only when the fields disagree, and once per directory.
         // SAFETY: geteuid has no preconditions. Reject hardlinks and FIFOs.
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.nlink() != 1
-            || metadata.mode() & 0o077 != 0
-        {
+        let public = metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0;
+        let ownership_unproven = public
+            && !matches!(
+                codewhale_config::private_directory::mount_footing_of(&self.0),
+                codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+            );
+        if ownership_unproven || metadata.nlink() != 1 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         bounded_read(file)
@@ -663,6 +689,36 @@ mod tests {
         fn drop(&mut self) {
             codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.prior.take());
         }
+    }
+
+    /// Writing repairs a directory someone widened; reading refuses it. That
+    /// asymmetry is what this file did before the ownership guard was relaxed
+    /// for mounts that cannot express it, and it is easy to lose: a report
+    /// directory left at 0755 by a restore must not make every save fail until
+    /// someone runs `chmod` by hand.
+    #[cfg(unix)]
+    #[test]
+    fn a_widened_report_directory_is_repaired_on_write_and_refused_on_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        // The walk opens every component with O_NOFOLLOW, so the fixture needs a
+        // path with no symlinked component (`/var` is one on macOS).
+        let dir = tmp.path().canonicalize().unwrap().join("reports");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            AnchoredDirectory::open(&dir, false).is_err(),
+            "reading a directory anyone can modify is refused"
+        );
+        AnchoredDirectory::open(&dir, true).expect("writing repairs it and continues");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "the repair must actually be applied, not merely attempted"
+        );
+        AnchoredDirectory::open(&dir, false).expect("the repaired directory reads");
     }
 
     fn fields() -> ReportFields {

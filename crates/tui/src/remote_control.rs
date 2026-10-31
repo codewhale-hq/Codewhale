@@ -412,11 +412,13 @@ impl RuntimeEventJournal {
         let legacy_session_tag = runtime_journal_session_tag(session_id);
         std::fs::create_dir_all(dir).map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
-        }
+        // Journal files are written owner-only; the directory narrows to 0o700
+        // where the filesystem stores modes. A mount that assigns modes itself
+        // (HarmonyOS hmdfs) refuses the call, and `tighten_mode` tolerates only
+        // that case — refusing here would disable the recoverable-turn journal
+        // on a platform where no directory can ever satisfy the chmod.
+        codewhale_config::private_directory::tighten_mode(dir, 0o700)
+            .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         let legacy_path = dir.join(format!("journal_{legacy_session_tag}.json"));
         let active_index_path = dir.join(format!("active_classic_{legacy_session_tag}.json"));
         let classic_session_lock =

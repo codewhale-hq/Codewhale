@@ -1030,7 +1030,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn workspace_status_does_not_run_the_repository_fsmonitor() -> anyhow::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir()?;
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo)?;
@@ -1056,7 +1055,7 @@ mod tests {
             &hook,
             format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
         )?;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+        codewhale_config::private_directory::tighten_mode(&hook, 0o755)?;
         assert!(git(&["config", "core.fsmonitor", &hook.to_string_lossy()]));
 
         let status = collect_workspace_status(&repo);

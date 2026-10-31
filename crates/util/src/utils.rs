@@ -607,9 +607,12 @@ fn write_atomic_scoped(
         // executable bits of an existing workspace file before persisting.
         #[cfg(unix)]
         if let Some(mode) = existing_workspace_mode {
-            use std::os::unix::fs::PermissionsExt;
-            tmp.as_file()
-                .set_permissions(fs::Permissions::from_mode(mode))?;
+            // Restoring the access bits of the file this replaces. A mount that
+            // assigns modes itself (HarmonyOS hmdfs) returns EPERM for every
+            // `chmod`; `tighten_mode` tolerates only that, so the write lands
+            // and a real permission failure is still reported.
+            codewhale_config::private_directory::tighten_mode_of(tmp.as_file(), tmp.path(), mode)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
 
         tmp.as_file().sync_all()?;

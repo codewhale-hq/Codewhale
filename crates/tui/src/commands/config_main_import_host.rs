@@ -110,7 +110,7 @@ pub(in crate::commands) fn apply_plan(
                                     #[cfg(test)]
                                     let _membership = crate::test_support::join_env_scope(ticket);
                                     std::fs::read(&copy_source).is_ok_and(|bytes| {
-                                        codewhale_config::private_directory::PrivateDirectory::open(
+                                        codewhale_config::private_directory::PrivateDirectory::open_trusting_mount(
                                             &copy_home,
                                         )
                                         .and_then(|directory| {
@@ -131,7 +131,7 @@ pub(in crate::commands) fn apply_plan(
                             #[cfg(test)]
                             let _membership = crate::test_support::join_env_scope(ticket);
                             std::fs::read(&copy_source).is_ok_and(|bytes| {
-                                codewhale_config::private_directory::PrivateDirectory::open(
+                                codewhale_config::private_directory::PrivateDirectory::open_trusting_mount(
                                     &copy_home,
                                 )
                                 .and_then(|directory| {

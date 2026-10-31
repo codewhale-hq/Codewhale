@@ -219,6 +219,7 @@ async fn two_crash_reentries_converge_on_one_owner_and_preserve_saved_draft() ->
         Some(recovery),
     )
     .await?;
+    let daemon = daemon.expect("a private endpoint directory is available on this host");
     let stop = daemon.shutdown_handle();
     let serving = tokio::spawn(daemon.serve());
     let RuntimeHostAdmission::Attached(client) = loser.await?? else {

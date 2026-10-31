@@ -1417,7 +1417,9 @@ async fn build_test_server(
             .map_err(|error| anyhow::anyhow!(error.message))?;
         let (owner, compatibility) =
             bind_captured_runtime_frontends(&state, Some(socket), model, 1, false, None).await?;
-        (Some(owner), Some(compatibility))
+        // `owner` is already an `Option`: the helper reports an unbound
+        // endpoint when the filesystem cannot hold one.
+        (owner, Some(compatibility))
     } else {
         (None, None)
     };

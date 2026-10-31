@@ -107,8 +107,28 @@ pub enum DaemonSocketError {
         source: std::io::Error,
     },
     /// The app-server state (config, state store, runtime) failed to build.
+    ///
+    /// The source carries the real cause; a caller that prints only this
+    /// message hides it. `serve --http` on a mount where the endpoint
+    /// directory cannot be private used to surface here as a bare
+    /// "failed to build daemon state", which named neither the directory nor
+    /// the reason — see [`Self::EndpointDirectoryUnsupported`].
     #[error("failed to build daemon state")]
     State(#[source] anyhow::Error),
+    /// The filesystem cannot hold the private directory an endpoint needs.
+    ///
+    /// A private endpoint directory must be current-user-owned and closed to
+    /// group and other. HarmonyOS hmdfs — the 2in1 user directory — reports the
+    /// logged-in user's uid and a group-writable mode for every object created
+    /// on it, so `chmod` answers `EPERM` and no directory there can satisfy that
+    /// check.
+    /// This is a missing capability, not a refusal: an owner with an HTTP
+    /// frontend can run without its control socket, and does.
+    #[error(
+        "the filesystem cannot hold a private endpoint directory at {}: {reason}",
+        path.display()
+    )]
+    EndpointDirectoryUnsupported { path: PathBuf, reason: String },
 }
 
 /// How to start the daemon socket transport.
@@ -1028,26 +1048,44 @@ mod platform {
     pub async fn bind_daemon_socket(
         options: DaemonSocketOptions,
     ) -> Result<DaemonSocket, DaemonSocketError> {
-        bind_with_owner(options, None, None).await
+        // A daemon-only run has nothing else to serve with, so a mount that
+        // cannot carry the endpoint is a failure here rather than a degraded
+        // start. `bind_with_owner` reports it as such when `degrade` is false.
+        match bind_with_owner(options, None, None, false).await? {
+            Some(socket) => Ok(socket),
+            // A non-degrading bind reports a mount it cannot use as an error,
+            // so this is an internal invariant rather than a runtime state.
+            None => Err(DaemonSocketError::State(anyhow::anyhow!(
+                "a bind that cannot degrade returned no endpoint"
+            ))),
+        }
     }
 
+    /// Bind the control endpoint for an owner that also has an HTTP frontend.
+    ///
+    /// `None` means this filesystem cannot hold a private endpoint directory.
+    /// The owner still serves HTTP, which is what its clients connect to; what
+    /// it loses is the socket a second client would use to discover it. The
+    /// store owner lock still keeps a second engine out of the same store, so
+    /// this degrades discovery, not mutual exclusion.
     pub(crate) async fn bind_captured_owner(
         state: AppState,
         owner: super::RuntimeOwnerReceipt,
         recovery: Option<Arc<crate::daemon_client::UnavailablePublication>>,
-    ) -> Result<DaemonSocket, DaemonSocketError> {
+    ) -> Result<Option<DaemonSocket>, DaemonSocketError> {
         let options = DaemonSocketOptions {
             socket_path: Some(owner.socket_path.clone()),
             config_path: None,
         };
-        bind_with_owner(options, Some((state, owner)), recovery).await
+        bind_with_owner(options, Some((state, owner)), recovery, true).await
     }
 
     async fn bind_with_owner(
         options: DaemonSocketOptions,
         captured: Option<(AppState, super::RuntimeOwnerReceipt)>,
         recovery: Option<Arc<crate::daemon_client::UnavailablePublication>>,
-    ) -> Result<DaemonSocket, DaemonSocketError> {
+        degrade: bool,
+    ) -> Result<Option<DaemonSocket>, DaemonSocketError> {
         let owner_state = captured.as_ref().map(|(state, _)| state.clone());
         let path = resolve_socket_path(&SocketPathInputs::from_environment(options.socket_path)?)?;
         let parent_path = path
@@ -1078,13 +1116,57 @@ mod platform {
             }
             previous.publication.parent.clone()
         } else {
-            Arc::new(
-                socket_owner_work(owner_state.clone(), move || {
-                    PrivateDirectory::admit(&parent_path)
-                })
-                .await
-                .map_err(DaemonSocketError::State)?,
-            )
+            // The strict admission first: on a filesystem that stores owner and
+            // mode it succeeds and nothing here costs anything extra. Only a
+            // failure asks the mount what it can express, which is what turns
+            // the opaque "failed to build daemon state" into either a reason to
+            // continue without the endpoint or a named refusal.
+            let admitted = socket_owner_work(owner_state.clone(), {
+                let parent_path = parent_path.clone();
+                move || PrivateDirectory::admit(&parent_path)
+            })
+            .await;
+            match admitted {
+                Ok(directory) => Arc::new(directory),
+                Err(error) => {
+                    if let codewhale_config::private_directory::PrivateFooting::Synthesised {
+                        observed_uid,
+                        observed_mode,
+                    } = socket_owner_work(owner_state.clone(), {
+                        let parent_path = parent_path.clone();
+                        move || {
+                            Ok(codewhale_config::private_directory::mount_footing(
+                                &parent_path,
+                            ))
+                        }
+                    })
+                    .await
+                    .map_err(DaemonSocketError::State)?
+                    {
+                        if degrade {
+                            tracing::warn!(
+                                endpoint = %path.display(),
+                                "{} cannot provide workspace control-socket discovery: the \
+                                 filesystem reports uid {observed_uid} and mode \
+                                 {observed_mode:o} for objects created on it, so a private \
+                                 endpoint directory cannot be verified here; serving the control \
+                                 API over HTTP only",
+                                parent_path.display()
+                            );
+                            return Ok(None);
+                        }
+                        return Err(DaemonSocketError::EndpointDirectoryUnsupported {
+                            path: parent_path.clone(),
+                            reason: format!(
+                                "the filesystem reports uid {observed_uid} and mode \
+                                 {observed_mode:o} for objects created on it, so a private \
+                                 endpoint directory cannot be verified there"
+                            ),
+                        });
+                    }
+                    return Err(DaemonSocketError::State(error));
+                }
+            }
         };
         let name = path
             .file_name()
@@ -1219,14 +1301,14 @@ mod platform {
             .map_err(DaemonSocketError::State)?;
         }
         let (shutdown, _) = watch::channel(false);
-        Ok(DaemonSocket {
+        Ok(Some(DaemonSocket {
             listener,
             path,
             state,
             shutdown: Arc::new(shutdown),
             socket_file,
             owner,
-        })
+        }))
     }
 
     /// Only a definite refusal permits exact captured endpoint retirement.

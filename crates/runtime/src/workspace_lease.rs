@@ -17,6 +17,19 @@
 //! releases when the holder dies, plus a small holder record a contender can
 //! read to name the holder in a legible refusal. The kernel lock is the
 //! authority; recorded holder facts never authorize replacing its file.
+//!
+//! Two capabilities are involved and they are asked about separately. The
+//! directory admission needs ownership it can *prove*; HarmonyOS hmdfs — the
+//! 2in1 user directory — synthesises the owner and mode of every object created
+//! on it, so that proof can never hold there. Exclusivity itself is the kernel
+//! lock, which is a different capability and does hold there. Admission
+//! therefore relaxes only the proof, and the lease is still taken; refusing on
+//! the proof turned a limit on evidence into a failed engine start.
+//!
+//! A mount that refuses the lock itself is the one case where exclusivity is
+//! genuinely unavailable. It is reported to the caller — three outcomes, of
+//! which only contention is a refusal — so that decision is named rather than
+//! silently taken.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
@@ -118,17 +131,90 @@ struct LeaseInner {
     state: std::sync::Mutex<Option<(WorkspaceDriveLease, usize)>>,
 }
 
+/// Why the lease could not be taken even though no other process holds it.
+///
+/// This is a capability the filesystem lacks, not a refusal: the caller decides
+/// whether to run without workspace exclusivity, and the reason is carried so
+/// that decision can be explained to the user instead of looking like success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseUnavailability {
+    /// The lease state root whose filesystem could not carry the lease.
+    pub directory: PathBuf,
+    /// What the mount did, in terms a user can act on.
+    pub reason: String,
+}
+
+impl LeaseUnavailability {
+    fn new(directory: &Path, reason: impl Into<String>) -> Self {
+        Self {
+            directory: directory.to_path_buf(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for LeaseUnavailability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} cannot provide workspace exclusivity: {}",
+            self.directory.display(),
+            self.reason
+        )
+    }
+}
+
+/// One raw attempt to take a workspace's drive lease.
+///
+/// Public because [`WorkspaceDriveLease::try_acquire`] is: it is how an
+/// embedder that wants the lease without the shared-slot bookkeeping asks.
+pub enum LeaseAttempt {
+    Acquired(WorkspaceDriveLease),
+    /// A foreign process holds the kernel lock.
+    Contended,
+    /// No lock can be taken here at all.
+    Unsupported(LeaseUnavailability),
+}
+
+/// The outcome of admitting one driving engine for a workspace.
+pub enum LeaseAdmission {
+    /// This process holds (or shares) the workspace drive lease.
+    Held(SharedWorkspaceDriveLease),
+    /// Another process drives this workspace: refuse and name its holder.
+    Contended,
+    /// This filesystem cannot carry an exclusive lease. Running without one is
+    /// the caller's decision, and must be reported rather than assumed.
+    Unsupported(LeaseUnavailability),
+}
+
+/// The held handle is a guard, not a fact worth printing; the other two
+/// outcomes are what a caller or a test needs to see.
+impl std::fmt::Debug for LeaseAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held(_) => f.write_str("Held(..)"),
+            Self::Contended => f.write_str("Contended"),
+            Self::Unsupported(unavailable) => {
+                f.debug_tuple("Unsupported").field(unavailable).finish()
+            }
+        }
+    }
+}
+
 impl SharedWorkspaceDriveLease {
     /// Acquire (or join) this process's drive lease for the workspace.
     ///
-    /// `None` means a *foreign process* holds it — the caller refuses with the
-    /// holder's facts from [`WorkspaceDriveLease::read_holder`]. Same-process
-    /// joins never fail and never re-lock.
+    /// [`LeaseAdmission::Contended`] means a *foreign process* holds it — the
+    /// caller refuses with the holder's facts from
+    /// [`WorkspaceDriveLease::read_holder`]. [`LeaseAdmission::Unsupported`]
+    /// means the filesystem cannot carry the lease at all, which is a different
+    /// answer and a different decision. Same-process joins never fail and never
+    /// re-lock.
     pub fn acquire(
         workspace: &Path,
         client: Option<&str>,
         store_root: Option<&Path>,
-    ) -> Result<Option<Self>> {
+    ) -> Result<LeaseAdmission> {
         let lease_key = WorkspaceDriveLease::lease_path(workspace)?;
         let slot = {
             let mut registry = registry()
@@ -137,15 +223,18 @@ impl SharedWorkspaceDriveLease {
             if let Some(slot) = registry.get(&lease_key) {
                 slot.clone()
             } else {
-                let Some(lease) = WorkspaceDriveLease::try_acquire(workspace, client, store_root)?
-                else {
-                    return Ok(None);
+                let lease = match WorkspaceDriveLease::try_acquire(workspace, client, store_root)? {
+                    LeaseAttempt::Acquired(lease) => lease,
+                    LeaseAttempt::Contended => return Ok(LeaseAdmission::Contended),
+                    LeaseAttempt::Unsupported(unavailable) => {
+                        return Ok(LeaseAdmission::Unsupported(unavailable));
+                    }
                 };
                 let inner = std::sync::Arc::new(LeaseInner {
                     state: std::sync::Mutex::new(Some((lease, 1))),
                 });
                 registry.insert(lease_key, inner.clone());
-                return Ok(Some(Self { inner }));
+                return Ok(LeaseAdmission::Held(Self { inner }));
             }
         };
         // The returned handle is an owned clone, so moving it out never
@@ -160,13 +249,17 @@ impl SharedWorkspaceDriveLease {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((_lease, count)) = state.as_mut() {
             *count += 1;
-            return Ok(Some(Self { inner }));
+            return Ok(LeaseAdmission::Held(Self { inner }));
         }
-        let Some(lease) = WorkspaceDriveLease::try_acquire(workspace, client, store_root)? else {
-            return Ok(None);
+        let lease = match WorkspaceDriveLease::try_acquire(workspace, client, store_root)? {
+            LeaseAttempt::Acquired(lease) => lease,
+            LeaseAttempt::Contended => return Ok(LeaseAdmission::Contended),
+            LeaseAttempt::Unsupported(unavailable) => {
+                return Ok(LeaseAdmission::Unsupported(unavailable));
+            }
         };
         *state = Some((lease, 1));
-        Ok(Some(Self { inner }))
+        Ok(LeaseAdmission::Held(Self { inner }))
     }
 }
 
@@ -239,24 +332,32 @@ impl WorkspaceDriveLease {
 
     /// Try once to acquire the drive lease for this process.
     ///
-    /// `None` on contention: the kernel lock is held. Use
-    /// [`Self::read_holder`] to name the recorded holder.
+    /// [`LeaseAttempt::Contended`] means the kernel lock is held: use
+    /// [`Self::read_holder`] to name the recorded holder. An unsupported mount
+    /// is reported, not refused.
     pub fn try_acquire(
         workspace: &Path,
         client: Option<&str>,
         store_root: Option<&Path>,
-    ) -> Result<Option<Self>> {
+    ) -> Result<LeaseAttempt> {
         let path = Self::lease_path(workspace)?;
         let parent = path.parent().context("Workspace lease has no parent")?;
-        let base = parent
+        let state_root = parent
             .parent()
             .context("Workspace lease has no state root")?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .context("Workspace lease name is invalid")?;
-        let base = PrivateDirectory::admit(base)?;
-        let directory = PrivateDirectory::admit(parent)?;
+        // Admission relaxes *only* the proof that the directory is
+        // current-user-only, and only where the mount cannot express it. The
+        // exclusivity this function exists for is the kernel lock taken below,
+        // which is a different capability: on HarmonyOS hmdfs `flock` works
+        // and only the reported owner is unusable, so giving up the lease here
+        // would discard a guarantee that still holds. A mount that truly has
+        // no advisory locks is reported further down, after the lock says so.
+        let base = PrivateDirectory::admit_trusting_mount(state_root)?;
+        let directory = PrivateDirectory::admit_trusting_mount(parent)?;
         let file = directory.open_internal_file(name)?;
         #[cfg(unix)]
         let contention = {
@@ -293,10 +394,20 @@ impl WorkspaceDriveLease {
         #[cfg(not(any(unix, windows)))]
         let contention: Option<std::io::Error> = None;
         if let Some(error) = contention {
-            if !codewhale_util::lock::is_contention(&error) {
-                return Err(error).context("Failed to lock workspace lease");
+            if codewhale_util::lock::is_contention(&error) {
+                return Ok(LeaseAttempt::Contended);
             }
-            return Ok(None);
+            // No advisory locks on this mount at all: two drivers cannot be
+            // excluded here, but that is a property of the filesystem, not a
+            // holder. `EWOULDBLOCK` was handled above and stays contention.
+            #[cfg(unix)]
+            if codewhale_util::lock::advisory_locking_unavailable(&error) {
+                return Ok(LeaseAttempt::Unsupported(LeaseUnavailability::new(
+                    state_root,
+                    format!("this filesystem refuses advisory file locks ({error})"),
+                )));
+            }
+            return Err(error).context("Failed to lock workspace lease");
         }
         #[cfg(any(unix, windows))]
         anyhow::ensure!(
@@ -328,7 +439,7 @@ impl WorkspaceDriveLease {
             .set_len(0)
             .and_then(|()| lease.file.seek(SeekFrom::Start(0)).map(|_| ()))
             .and_then(|()| lease.file.write_all(holder.to_record().as_bytes()));
-        Ok(Some(lease))
+        Ok(LeaseAttempt::Acquired(lease))
     }
 
     /// Read the recorded holder, if any. Missing or malformed data is `None`;
@@ -340,7 +451,11 @@ impl WorkspaceDriveLease {
             .file_name()
             .and_then(|name| name.to_str())
             .context("Workspace lease name is invalid")?;
-        let directory = match PrivateDirectory::inspect(parent) {
+        // Naming a holder is a read. On a mount that cannot express ownership
+        // the strict proof fails for every directory, and refusing would hide
+        // the holder's pid behind "record unreadable" on exactly the platform
+        // where a user most needs to know who holds the workspace.
+        let directory = match PrivateDirectory::inspect_trusting_mount(parent) {
             Ok(directory) => directory,
             Err(error)
                 if error.chain().any(|cause| {
@@ -457,9 +572,6 @@ fn current_process_start() -> Option<String> {
     None
 }
 
-/// The base for lease files. Test isolation mirrors `snapshot::paths`: an
-/// unsealed test gets a private base, so a lease taken by a fixture never
-/// lands in the developer's real state dir.
 fn lease_state_base() -> Result<PathBuf> {
     #[cfg(test)]
     {
@@ -497,15 +609,31 @@ mod tests {
         path
     }
 
+    fn expect_held(admission: LeaseAdmission) -> SharedWorkspaceDriveLease {
+        match admission {
+            LeaseAdmission::Held(lease) => lease,
+            LeaseAdmission::Contended => panic!("expected a held lease, got contention"),
+            LeaseAdmission::Unsupported(unavailable) => {
+                panic!("expected a held lease, got {unavailable}")
+            }
+        }
+    }
+
     #[test]
     fn acquire_then_contend_reports_holder() {
         let workspace = temp_workspace("contend");
         let first =
             WorkspaceDriveLease::try_acquire(&workspace, Some("tui"), None).expect("first acquire");
-        assert!(first.is_some(), "first drive is admitted");
+        assert!(
+            matches!(first, LeaseAttempt::Acquired(_)),
+            "first drive is admitted"
+        );
         let second = WorkspaceDriveLease::try_acquire(&workspace, Some("vscode"), None)
             .expect("contend probe");
-        assert!(second.is_none(), "second drive must be refused");
+        assert!(
+            matches!(second, LeaseAttempt::Contended),
+            "second drive must be refused"
+        );
         let holder = WorkspaceDriveLease::read_holder(&workspace)
             .expect("read holder")
             .expect("holder recorded");
@@ -515,29 +643,38 @@ mod tests {
         drop(first);
         let third =
             WorkspaceDriveLease::try_acquire(&workspace, Some("vscode"), None).expect("reacquire");
-        assert!(third.is_some(), "lease frees after drop");
+        assert!(
+            matches!(third, LeaseAttempt::Acquired(_)),
+            "lease frees after drop"
+        );
     }
 
     #[test]
     fn shared_lease_reenters_within_a_process() {
         let workspace = temp_workspace("shared");
-        let first = SharedWorkspaceDriveLease::acquire(&workspace, Some("tui"), None)
-            .expect("first shared acquire")
-            .expect("lease taken");
+        let first = expect_held(
+            SharedWorkspaceDriveLease::acquire(&workspace, Some("tui"), None)
+                .expect("first shared acquire"),
+        );
         // A second engine in the same process joins by refcount instead of
         // refusing — the lease's unit is the process.
-        let second = SharedWorkspaceDriveLease::acquire(&workspace, Some("vscode"), None)
-            .expect("second shared acquire")
-            .expect("same-process join");
+        let second = expect_held(
+            SharedWorkspaceDriveLease::acquire(&workspace, Some("vscode"), None)
+                .expect("second shared acquire"),
+        );
         drop(first);
         // Still held by the second handle: a raw probe must be refused.
         let refused =
             WorkspaceDriveLease::try_acquire(&workspace, Some("probe"), None).expect("probe");
-        assert!(refused.is_none(), "lease still held while shared");
+        assert!(
+            matches!(refused, LeaseAttempt::Contended),
+            "lease still held while shared"
+        );
         drop(second);
-        let after = SharedWorkspaceDriveLease::acquire(&workspace, Some("next"), None)
-            .expect("reacquire after full release")
-            .expect("lease freed after last handle");
+        let after = expect_held(
+            SharedWorkspaceDriveLease::acquire(&workspace, Some("next"), None)
+                .expect("reacquire after full release"),
+        );
         drop(after);
     }
 
@@ -553,9 +690,10 @@ mod tests {
             let workspace = workspace.clone();
             workers.push(std::thread::spawn(move || {
                 for _ in 0..25 {
-                    let lease = SharedWorkspaceDriveLease::acquire(&workspace, Some("churn"), None)
-                        .expect("acquire")
-                        .expect("same-process join");
+                    let lease = expect_held(
+                        SharedWorkspaceDriveLease::acquire(&workspace, Some("churn"), None)
+                            .expect("acquire"),
+                    );
                     drop(lease);
                 }
             }));
@@ -565,14 +703,53 @@ mod tests {
         }
         // Every handle is gone: the lease is free and a fresh holder records
         // itself rather than joining a slot nothing released.
-        let lease = SharedWorkspaceDriveLease::acquire(&workspace, Some("after"), None)
-            .expect("acquire after churn")
-            .expect("the lease is free after the last handle");
+        let lease = expect_held(
+            SharedWorkspaceDriveLease::acquire(&workspace, Some("after"), None)
+                .expect("acquire after churn"),
+        );
         let holder = WorkspaceDriveLease::read_holder(&workspace)
             .expect("read holder")
             .expect("holder recorded");
         assert_eq!(holder.client.as_deref(), Some("after"));
         drop(lease);
+    }
+
+    /// The one branch that decides fatal from degraded. A mount with no
+    /// advisory locks must never be reported as a second driver — that would
+    /// keep the engine from starting over a property of the filesystem — and a
+    /// second driver must never be downgraded to "run anyway", which would let
+    /// two engines write one tree. The two predicates are disjoint by
+    /// construction; this pins that.
+    #[test]
+    fn only_a_held_lock_is_contention_and_only_a_lockless_mount_is_unsupported() {
+        use std::io::Error;
+
+        let held = Error::from_raw_os_error(libc::EWOULDBLOCK);
+        assert!(
+            codewhale_util::lock::is_contention(&held),
+            "a held lock is contention"
+        );
+        assert!(
+            !codewhale_util::lock::advisory_locking_unavailable(&held),
+            "a held lock is not a mount without locks"
+        );
+        for code in [
+            libc::EPERM,
+            libc::EACCES,
+            libc::ENOTSUP,
+            libc::EINVAL,
+            libc::ENOSYS,
+        ] {
+            let absent = Error::from_raw_os_error(code);
+            assert!(
+                !codewhale_util::lock::is_contention(&absent),
+                "{code} is the mount answering, not a holder"
+            );
+            assert!(
+                codewhale_util::lock::advisory_locking_unavailable(&absent),
+                "{code} means this mount has no advisory locks"
+            );
+        }
     }
 
     #[test]
@@ -679,21 +856,28 @@ mod tests {
 
         let workspace = temp_workspace("dead");
         holder_of_a_reaped_child(&workspace);
-        let first = WorkspaceDriveLease::try_acquire(&workspace, Some("next"), None)
-            .expect("acquire")
-            .expect("an unlocked lease remains acquirable despite a stale record");
+        let first =
+            WorkspaceDriveLease::try_acquire(&workspace, Some("next"), None).expect("acquire");
+        assert!(
+            matches!(first, LeaseAttempt::Acquired(_)),
+            "an unlocked lease remains acquirable despite a stale record"
+        );
         holder_of_a_reaped_child(&workspace);
         assert!(
-            WorkspaceDriveLease::try_acquire(&workspace, Some("contender"), None)
-                .expect("contend")
-                .is_none(),
+            matches!(
+                WorkspaceDriveLease::try_acquire(&workspace, Some("contender"), None)
+                    .expect("contend"),
+                LeaseAttempt::Contended
+            ),
             "a stale holder record must not replace a held kernel lock"
         );
         drop(first);
         assert!(
-            WorkspaceDriveLease::try_acquire(&workspace, Some("after"), None)
-                .expect("reacquire")
-                .is_some(),
+            matches!(
+                WorkspaceDriveLease::try_acquire(&workspace, Some("after"), None)
+                    .expect("reacquire"),
+                LeaseAttempt::Acquired(_)
+            ),
             "the same lease is available after its holder releases it"
         );
     }

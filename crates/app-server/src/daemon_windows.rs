@@ -203,7 +203,11 @@ pub(crate) async fn bind_captured_owner(
     state: AppState,
     owner: RuntimeOwnerReceipt,
     recovery: Option<Arc<UnavailablePublication>>,
-) -> Result<DaemonSocket, DaemonSocketError> {
+) -> Result<Option<DaemonSocket>, DaemonSocketError> {
+    // The named-pipe endpoint is bounded by the ACL the process applies, which
+    // NTFS always stores, so there is nothing a filesystem can fail to express
+    // here and nothing to degrade: `Some` is the only reachable answer. The
+    // shape matches the Unix one so the caller has a single code path.
     bind(
         DaemonSocketOptions {
             socket_path: Some(owner.socket_path.clone()),
@@ -213,6 +217,7 @@ pub(crate) async fn bind_captured_owner(
         recovery,
     )
     .await
+    .map(Some)
 }
 async fn bind(
     options: DaemonSocketOptions,
