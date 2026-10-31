@@ -21,7 +21,13 @@
 //! among a million messages a birthday collision is roughly 0.2% likely, and
 //! `load` keeps the first entry for a repeated id; two executions of one tool
 //! call that share provider id, name and input are one entry because
-//! `execution_id` and `caller` stay out of the hash.
+//! `execution_id` and `caller` stay out of the hash. Each message is masked
+//! whole, before search or paging, with the credential shapes and the
+//! currently configured secret values that `codewhale sessions scrub-secrets`
+//! uses, so a page boundary or snippet marker cannot split a credential past
+//! the mask; a bare secret absent from current configuration is not masked.
+//! A `/fork` starts a new session namespace, so the fork cannot read the
+//! archive its inherited handoff note refers to.
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -319,7 +325,7 @@ fn read_snapshot(session_id: &str, name: &str) -> io::Result<Vec<Message>> {
 }
 
 /// Load every reachable snapshot for this session, oldest first.
-pub fn load(session_id: &str) -> io::Result<ArchiveLoad> {
+pub fn load(session_id: &str, secrets: &[String]) -> io::Result<ArchiveLoad> {
     let (snapshots, directory_present) = list_snapshots(session_id)?;
     let mut budget = MAX_LOAD_BYTES;
     let mut selected: Vec<&Snapshot> = Vec::new();
@@ -354,7 +360,7 @@ pub fn load(session_id: &str) -> io::Result<ArchiveLoad> {
         };
         for (seq, message) in messages.iter().enumerate() {
             let role = message.role.as_str().to_ascii_lowercase();
-            let text = render_message(message);
+            let text = crate::client::redact_model_bound_text(&render_message(message), secrets);
             if text.trim().is_empty() {
                 continue;
             }

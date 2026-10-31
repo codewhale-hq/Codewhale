@@ -9,7 +9,9 @@
 //! rewrites them on request.
 //!
 //! Only transcript tool results, transcript tool-call arguments and Runtime
-//! tool receipts (including event copies) are touched. Cleanup masks credential
+//! tool receipts (including event copies) are touched, including the
+//! pre-compaction snapshots under each session's artifacts directory that the
+//! context archive tools read back. Cleanup masks credential
 //! shapes and currently configured secret values; bare secrets absent from
 //! current configuration cannot be recovered.
 //! Runtime rewrites require the exclusive process lease, and session rewrites
@@ -80,6 +82,10 @@ pub(crate) fn session_files(
                     && entry_has_type(&runtime, true, unreadable)
                 {
                     runtime_roots.push(runtime.path());
+                } else if name == crate::compaction_archive::TRANSFER_DIR_NAME
+                    && entry_has_type(&runtime, true, unreadable)
+                {
+                    dirs.push(runtime.path());
                 }
             }
         }
@@ -93,6 +99,14 @@ pub(crate) fn session_files(
     for dir in dirs {
         for entry in directory_entries(&dir, unreadable) {
             let path = entry.path();
+            if path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|dir| dir == crate::compaction_archive::TRANSFER_DIR_NAME)
+                && !is_transfer_snapshot(&path)
+            {
+                continue;
+            }
             if !entry_has_type(&entry, false, unreadable)
                 || !matches!(
                     path.extension().and_then(|ext| ext.to_str()),
@@ -201,6 +215,19 @@ fn is_import_archive(path: &Path, manager: &crate::session_manager::SessionManag
             .is_ok_and(|archive| path.parent() == Some(archive.as_path()))
 }
 
+/// Compaction writes each pre-compaction snapshot once under a fresh name and
+/// never rewrites it, so a scrub can replace it atomically without a session
+/// lock; its stem is a checkpoint, not a session id.
+fn is_transfer_snapshot(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|dir| dir == crate::compaction_archive::TRANSFER_DIR_NAME)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("context-transfer-"))
+}
+
 fn runtime_root(path: &Path) -> Option<&Path> {
     let parent = path.parent()?;
     matches!(parent.file_name()?.to_str()?, "items" | "events")
@@ -238,6 +265,9 @@ pub(crate) fn scrub_files(
                     }
                     Err(error) => return Err(io::Error::other(error)),
                 };
+                scrub_file(path, true, secrets)?
+            }
+            (Some(_), FileScan::Dirty(_)) if is_transfer_snapshot(path) => {
                 scrub_file(path, true, secrets)?
             }
             (Some(manager), FileScan::Dirty(redacted)) => {

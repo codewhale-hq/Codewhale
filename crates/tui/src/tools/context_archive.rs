@@ -17,6 +17,7 @@ const DEFAULT_GET_CHARS: usize = 4_000;
 const MAX_GET_CHARS: usize = 12_000;
 const DEFAULT_SEARCH_RESULTS: usize = 5;
 const MAX_SEARCH_RESULTS: usize = 20;
+const MAX_QUERY_CHARS: usize = 200;
 
 /// Run one whole archive read on a blocking thread and keep the namespace rules
 /// in one place: no namespace, no archive.
@@ -39,7 +40,8 @@ where
 }
 
 fn load(session_id: &str) -> Result<ArchiveLoad, ToolError> {
-    compaction_archive::load(session_id).map_err(|error| {
+    let secrets = crate::session_secret_scrub::configured_secrets(None, None).unwrap_or_default();
+    compaction_archive::load(session_id, &secrets).map_err(|error| {
         ToolError::execution_failed(format!("compaction archive read failed: {error}"))
     })
 }
@@ -228,6 +230,11 @@ impl ToolSpec for ContextArchiveSearchTool {
                 ToolError::invalid_input("context_archive_search requires a non-empty query")
             })?
             .to_string();
+        if query.chars().count() > MAX_QUERY_CHARS {
+            return Err(ToolError::invalid_input(format!(
+                "context_archive_search query is limited to {MAX_QUERY_CHARS} characters"
+            )));
+        }
         let skip = input.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
         let limit = input
             .get("limit")

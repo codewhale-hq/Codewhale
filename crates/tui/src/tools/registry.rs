@@ -705,6 +705,8 @@ pub(crate) fn enforce_tool_authority(
                 | "apply_patch"
                 | "bash"
                 | "Bash"
+                | "context_archive_get"
+                | "context_archive_search"
         ) {
             return Err(ToolError::not_available(format!(
                 "{name} is outside the ACP foreground tool profile"
