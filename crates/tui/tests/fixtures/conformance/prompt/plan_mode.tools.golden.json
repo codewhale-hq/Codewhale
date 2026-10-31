@@ -372,7 +372,7 @@
           "type": "object"
         },
         "status": {
-          "description": "Use complete only when a critical verifier proves the goal; not_achieved to record verifier gaps; blocked when meaningful progress cannot continue; yield when a stage is finished and the next step is the user's call; advisory to append best-effort context without changing lifecycle state.",
+          "description": "Use complete only when a critical verifier proves the goal; not_achieved to record verifier gaps; blocked when progress cannot continue at all; a needed user answer is a yield, not a block; yield when a stage is finished and the next step is the user's call, or when you need the user's answer before the next pass can do anything useful; advisory to append best-effort context without changing lifecycle state.",
           "enum": [
             "complete",
             "blocked",
