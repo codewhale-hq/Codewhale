@@ -2226,6 +2226,21 @@
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key."
     },
     {
+      "id": "opper",
+      "label": "Opper",
+      "wire": "openai-compatible",
+      "base_url": "https://api.opper.ai/v3/compat",
+      "api_key_env": "OPPER_API_KEY",
+      "default_model": "claude-sonnet-4-6",
+      "discovery": "models_endpoint",
+      "docs_url": "https://docs.opper.ai/build/gateway/drop-in-sdks",
+      "credential_url": "https://platform.opper.ai",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v3/compat/models). Bare pool names such as claude-sonnet-4-6 let Opper pick the route; provider/model ids such as anthropic/claude-sonnet-4-6 pin one route. Live /v3/compat/models is the model authority. Store OPPER_API_KEY, not a raw key.",
+      "aliases": [
+        "opper-ai"
+      ]
+    },
+    {
       "id": "sensenova",
       "label": "SenseNova",
       "wire": "openai-compatible",
