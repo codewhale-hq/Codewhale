@@ -2002,8 +2002,7 @@ enum ConfigSection {
     Experimental,
 }
 
-/// The seven Tideline settings categories in rail order
-/// (`docs/design/tideline-redesign.html`, "Settings categories").
+/// The seven settings categories in rail order.
 ///
 /// A category is a projection over the existing [`ConfigRow`] store: rows keep
 /// their fine-grained [`ConfigSection`]; the category follows the section
