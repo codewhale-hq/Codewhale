@@ -1332,6 +1332,20 @@ impl Drop for RuntimeCommandGuard {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StartReviewRequest {
+    pub review: codewhale_protocol::op::ReviewOperation,
+    pub operation_key: String,
+    pub account_model_owner: Option<String>,
+    pub model: String,
+    pub model_provider: Option<String>,
+    pub model_provider_id: Option<String>,
+    pub reasoning_effort: Option<String>,
+    #[serde(rename = "maxOutputTokens", alias = "max_output_tokens")]
+    pub max_output_tokens: std::num::NonZeroU32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StartTurnRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -10996,7 +11010,7 @@ impl RuntimeThreadManager {
     pub(crate) async fn start_review_turn(
         &self,
         thread_id: &str,
-        req: crate::runtime_api::review::StartReviewRequest,
+        req: StartReviewRequest,
     ) -> Result<(TurnRecord, bool)> {
         self.start_review_turn_inner(thread_id, req, None).await
     }
@@ -11004,7 +11018,7 @@ impl RuntimeThreadManager {
     pub(crate) async fn start_review_turn_with_reserved_id(
         &self,
         thread_id: &str,
-        req: crate::runtime_api::review::StartReviewRequest,
+        req: StartReviewRequest,
         reserved_turn_id: &str,
     ) -> Result<TurnRecord> {
         validated_record_id(reserved_turn_id, "reserved turn id")?;
@@ -11021,7 +11035,7 @@ impl RuntimeThreadManager {
     pub(super) async fn start_review_turn_inner(
         &self,
         thread_id: &str,
-        req: crate::runtime_api::review::StartReviewRequest,
+        req: StartReviewRequest,
         reserved_turn_id: Option<&str>,
     ) -> Result<(TurnRecord, bool)> {
         crate::core::engine::review::validate(&req.review)?;

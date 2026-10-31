@@ -792,7 +792,7 @@ impl RuntimeChatRelayHost {
             self.manager
                 .start_review_turn_with_reserved_id(
                     &binding.native_thread_id,
-                    crate::runtime_api::review::StartReviewRequest {
+                    crate::runtime_threads::manager::StartReviewRequest {
                         review: review.clone(),
                         operation_key: command.operation_key.clone(),
                         account_model_owner: command.account_model_owner.clone(),

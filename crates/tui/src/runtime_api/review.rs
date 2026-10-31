@@ -1,19 +1,5 @@
 use super::*;
-use codewhale_protocol::op::ReviewOperation;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct StartReviewRequest {
-    pub review: ReviewOperation,
-    pub operation_key: String,
-    pub account_model_owner: Option<String>,
-    pub model: String,
-    pub model_provider: Option<String>,
-    pub model_provider_id: Option<String>,
-    pub reasoning_effort: Option<String>,
-    #[serde(rename = "maxOutputTokens", alias = "max_output_tokens")]
-    pub max_output_tokens: std::num::NonZeroU32,
-}
+use crate::runtime_threads::manager::StartReviewRequest;
 
 pub(super) async fn start_thread_review(
     State(state): State<RuntimeApiState>,
