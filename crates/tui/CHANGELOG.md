@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The model can read what compaction replaced (#7173):** two read-only tools,
+  `context_archive_search` and `context_archive_get`, search the session's
+  saved pre-compaction snapshots and read one archived message by id, with
+  bounded results (12,000 characters per read, 20 hits and a 200-character
+  query per search). Each message is masked whole for credential shapes and
+  currently configured secrets before it is searched or paged, and
+  `codewhale sessions scrub-secrets` now also rewrites those snapshots. A
+  `/fork` cannot read the archive its handoff note refers to, and a bare secret
+  absent from current configuration is not masked. Thanks
+  [@SparkofSpike](https://github.com/SparkofSpike).
 - **Opper as a bundled provider (#7131):** `/provider` offers Opper, an
   EU-hosted OpenAI-compatible gateway, with `OPPER_API_KEY`,
   `https://api.opper.ai/v3/compat` and the `claude-sonnet-4-6` pool name as the
@@ -317,7 +327,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **[@gaord](https://github.com/gaord)** — a running turn's cost and context in the Runtime ([#7074](https://github.com/codewhale-hq/Codewhale/pull/7074)) forks that measure the history they carry ([#7147](https://github.com/codewhale-hq/Codewhale/pull/7147)), and private state on a HarmonyOS mount that cannot express ownership ([#7168](https://github.com/codewhale-hq/Codewhale/pull/7168)).
 - **[@luochen211](https://github.com/luochen211)** — one form per term in the Simplified Chinese pack ([#7150](https://github.com/codewhale-hq/Codewhale/pull/7150)) and dropped blanket dead-code allows in fleet alerts and the pet worker ([#7149](https://github.com/codewhale-hq/Codewhale/pull/7149)).
 - **[@gannp](https://github.com/gannp)** — reported vLLM effort values that ignored the local model template and fixed it with a reviewed template registry ([#7124](https://github.com/codewhale-hq/Codewhale/issues/7124), [#7125](https://github.com/codewhale-hq/Codewhale/pull/7125)).
-- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — resolved a relocated state root before session-side state opens ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)) and made a goal pause to ask instead of inventing the answer ([#7175](https://github.com/codewhale-hq/Codewhale/pull/7175)).
+- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — resolved a relocated state root before session-side state opens ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)) and made a goal pause to ask instead of inventing the answer ([#7175](https://github.com/codewhale-hq/Codewhale/pull/7175)), and gave the model a way back into the transcript compaction replaced ([#7173](https://github.com/codewhale-hq/Codewhale/pull/7173)).
 - **[@ddlw](https://github.com/ddlw)** — repaired main for the 0.10.3 batch: clippy `-D warnings` across protocol, runtime, util and tui (boxed review and MCP-add payloads, scoped dead-code expectations, cfg-gated platform test helpers), rustfmt, split extension-host imports, the provider-registry identity check, Windows-stable DSH receipt bytes, and the first-party marketplace receipt ([#7108](https://github.com/codewhale-hq/Codewhale/pull/7108), [#7109](https://github.com/codewhale-hq/Codewhale/pull/7109)).
 - **[@laozidabo](https://github.com/laozidabo)** — localized `/diff` feedback ([#7101](https://github.com/codewhale-hq/Codewhale/pull/7101)), flushed queued saves before signal exit ([#7122](https://github.com/codewhale-hq/Codewhale/pull/7122)) and kept `/rc` start failures visible ([#7127](https://github.com/codewhale-hq/Codewhale/pull/7127)).
 - **[Boyce / @Aboysky](https://github.com/Aboysky)** — refreshed the README translation source stamps ([#7104](https://github.com/codewhale-hq/Codewhale/pull/7104)) and localized `/undo` feedback ([#7121](https://github.com/codewhale-hq/Codewhale/pull/7121)).

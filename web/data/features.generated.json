@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "a1be01a513cd4ad3c80b2866ef32f4e1e80b2afc03f5c1c92112674418ff0097"
+    "sha256": "1fc75ea95af50fdd7db8555c0144f18e05388826715e911a6e6856f96805b6e6"
   },
   "features": [
     {
@@ -1232,6 +1232,19 @@
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
       "registryLine": 911
+    },
+    {
+      "id": "compaction-archive-recall",
+      "name": "Compaction archive recall",
+      "summary": "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": null,
+      "registryLine": 921
     }
   ]
 }
