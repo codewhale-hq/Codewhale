@@ -152,15 +152,14 @@ if (checkOnly) {
   process.exit(1);
 }
 
-// Every input must be usable before anything moves: the three files change
-// together or not at all.
-if (!matrix) {
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+if (!isRecord(matrix) || (currentMirror !== null && !isRecord(currentMirror))) {
   console.error(`[sync-latest-release] could not read ${mirror}; nothing was written.`);
   process.exit(1);
 }
 // stable.json is the unsigned cloud-facts authoring source; only the two
 // release pointers move here. yanked/min_supported/notice stay human calls.
-if (!cloud?.release || typeof cloud.release !== "object") {
+if (!isRecord(cloud?.release)) {
   console.error(`[sync-latest-release] could not read release in ${cloudFacts}; nothing was written.`);
   process.exit(1);
 }
