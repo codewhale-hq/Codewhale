@@ -711,7 +711,7 @@ fn base_source_entries(
     builder.push(SourceEntry::omitted(
         SourceKind::CompactionRelayTemplate,
         "Session relay template",
-        Some("bundled in this codewhale-tui build (COMPACT_TEMPLATE, compiled in)".to_string()),
+        Some("bundled in this codewhale-engine build (COMPACT_TEMPLATE, compiled in)".to_string()),
         Some(3),
         "loaded only when /relay is requested; automatic compaction owns its successor brief",
     ));

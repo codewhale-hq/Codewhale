@@ -57,9 +57,7 @@ mod doctor_loader_tests;
 #[cfg(test)]
 mod session_control_acceptance;
 #[cfg(test)]
-mod test_support {
-    pub(crate) use codewhale_engine::test_support::*;
-}
+mod test_support;
 mod tui;
 /// Portable, dependency-free dot-whale core and conformance helpers.
 /// The terminal and external renderers share this implementation.

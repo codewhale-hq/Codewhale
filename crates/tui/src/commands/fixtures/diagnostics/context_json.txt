@@ -6,7 +6,7 @@ message:
     {
       "source_kind": "constitution",
       "label": "Bundled constitution, language policy, and output policy",
-      "source_path": "bundled in this codewhale-tui build (BASE_PROMPT, compiled in)",
+      "source_path": "bundled in this codewhale-engine build (BASE_PROMPT, compiled in)",
       "activation_reason": "always_on",
       "estimated_tokens": 1803,
       "counting_confidence": "high",
@@ -56,7 +56,7 @@ message:
     {
       "source_kind": "compaction_relay_template",
       "label": "Session relay template",
-      "source_path": "bundled in this codewhale-tui build (COMPACT_TEMPLATE, compiled in)",
+      "source_path": "bundled in this codewhale-engine build (COMPACT_TEMPLATE, compiled in)",
       "activation_reason": "omitted",
       "estimated_tokens": 0,
       "counting_confidence": "high",

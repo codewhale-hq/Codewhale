@@ -399,7 +399,7 @@ system text. The explicit `/preview-request base-prompt` mode separately prints
 only the exact effective base-prompt bytes:
 
 - **Origin** — where the base-prompt bytes came from:
-  - `bundled in this codewhale-tui build (BASE_PROMPT, compiled in)`
+  - `bundled in this codewhale-engine build (BASE_PROMPT, compiled in)`
   - `config-directory override installed at startup (prompts/constitution.md,
     opt-in enabled)`
 - **Assembly** — how the effective prompt was built on top of that base:

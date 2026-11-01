@@ -741,11 +741,10 @@ async fn interrupted_turn_names_surviving_background_shell_jobs() {
 }
 
 /// R6 injection-size regression: the per-turn `<turn_meta>` block, built
-/// (never sent) from the same snapshot path production uses. Measured 254B
-/// on 2026-08-02; the unavailable-backend qualifier adds 48B (Linux without
-/// bwrap, all Windows). Ceiling is that host's measured size +10%
-/// so growth is a reviewed act.
-const TURN_META_BYTE_CEILING: usize = 333;
+/// (never sent) from the same snapshot path production uses. The context
+/// estimate and compaction posture brought the measured block to 396 bytes
+/// on macOS on 2026-11-01. The ceiling retains the 10% growth allowance.
+const TURN_META_BYTE_CEILING: usize = 436;
 
 #[test]
 fn turn_meta_block_stays_within_measured_ceiling() {
