@@ -732,10 +732,10 @@ enum FleetAlertAdapterArg {
     PagerDuty,
 }
 
-/// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, gives the interactive
-/// owner and persistence actor a bounded recovery window, restores terminal
-/// modes and exits with the conventional 128 + signal code.
+/// Spawn a tokio task that listens for terminating signals (SIGINT, SIGTERM
+/// and SIGHUP on Unix; Ctrl+C, Ctrl+Break and console close on Windows), gives
+/// the interactive owner and persistence actor a bounded recovery window,
+/// restores terminal modes and exits with the signal cancellation code.
 /// Multiple deliveries are tolerated: once the cleanup runs, a second
 /// signal short-circuits to plain exit so a stuck cleanup can never
 /// trap a frustrated user pressing Ctrl+C repeatedly.
@@ -872,12 +872,13 @@ impl TerminatingSignals {
     }
 }
 
-/// Windows: `ctrl_c` covers both Ctrl+C and Ctrl+Break (CTRL_C_EVENT /
-/// CTRL_BREAK_EVENT). Console-close, logoff, and shutdown events are not
-/// currently routed through tokio.
+/// Windows console events share the bounded cleanup path. Logoff and shutdown
+/// notifications are not handled here.
 #[cfg(not(unix))]
 struct TerminatingSignals {
     ctrl_c: Option<tokio::signal::windows::CtrlC>,
+    ctrl_break: Option<tokio::signal::windows::CtrlBreak>,
+    ctrl_close: Option<tokio::signal::windows::CtrlClose>,
 }
 
 #[cfg(not(unix))]
@@ -885,15 +886,16 @@ impl TerminatingSignals {
     fn register() -> Self {
         Self {
             ctrl_c: tokio::signal::windows::ctrl_c().ok(),
+            ctrl_break: tokio::signal::windows::ctrl_break().ok(),
+            ctrl_close: tokio::signal::windows::ctrl_close().ok(),
         }
     }
 
     async fn wait(&mut self) -> i32 {
-        match self.ctrl_c.as_mut() {
-            Some(s) => {
-                s.recv().await;
-            }
-            None => std::future::pending::<()>().await,
+        tokio::select! {
+            _ = async { match self.ctrl_c.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
+            _ = async { match self.ctrl_break.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
+            _ = async { match self.ctrl_close.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
         }
         130
     }
