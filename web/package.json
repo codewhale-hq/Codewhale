@@ -40,7 +40,7 @@
   "devDependencies": {
     "@cloudflare/config": "0.23.0",
     "@opennextjs/cloudflare": "^1.20.9",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.2.5",
     "autoprefixer": "^10.6.1",
