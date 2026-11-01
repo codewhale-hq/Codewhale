@@ -58,17 +58,25 @@ stage="$(mktemp -d "${BRIDGE_DST}.stage.XXXXXX")"
 previous=""
 trap 'if [[ -n "${stage}" ]]; then rm -rf "${stage}"; fi' EXIT
 chmod 0755 "${stage}"
+package="${BRIDGE_SRC##*/}"
 rsync -a \
   --exclude node_modules \
-  "${REPO_ROOT}/${BRIDGE_SRC}/" \
+  "${REPO_ROOT}/${BRIDGE_SRC}" \
+  "${REPO_ROOT}/integrations/bridge-core" \
   "${stage}/"
 chown -R "${CODEWHALE_USER}:${CODEWHALE_USER}" "${stage}"
 
-if [[ -f "${stage}/package-lock.json" ]]; then
-  sudo -u "${CODEWHALE_USER}" npm --prefix "${stage}" ci --omit=dev
+if [[ -f "${stage}/${package}/package-lock.json" ]]; then
+  sudo -u "${CODEWHALE_USER}" npm --prefix "${stage}/${package}" ci --omit=dev
 else
-  sudo -u "${CODEWHALE_USER}" npm --prefix "${stage}" install --omit=dev
+  sudo -u "${CODEWHALE_USER}" npm --prefix "${stage}/${package}" install --omit=dev
 fi
+(
+  cd "${stage}"
+  shopt -s dotglob
+  for entry in "${package}"/*; do ln -s "${entry}" .; done
+)
+sudo -u "${CODEWHALE_USER}" node "${stage}/src/lib.mjs"
 
 if [[ -e "${BRIDGE_DST}" ]]; then
   previous="${BRIDGE_DST}.previous.$$"
