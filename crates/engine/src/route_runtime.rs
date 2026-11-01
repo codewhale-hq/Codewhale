@@ -5,7 +5,7 @@ use codewhale_config::route::{
     LimitField, LogicalModelRef, OverrideSource, ReadyRouteCandidate, RouteError, RouteLimits,
     RouteRequest, RouteResolver, SourcedLimitOverride, WireModelId,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::client::CodewhaleClient;
 use crate::codex_model_cache::model_roster_for;
@@ -22,7 +22,7 @@ use codewhale_runtime::config::{
 /// receipt separate from the numeric route limits so every consumer can state
 /// whether the number is operator-configured, freshly provider-reported, a
 /// Kimi Code safety floor, catalog data, or a conservative fallback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextWindowSource {
     Configured,
@@ -111,7 +111,7 @@ impl ContextWindowSource {
 }
 
 /// Context window carried alongside an exact runtime route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextWindowResolution {
     pub tokens: u32,
     pub source: ContextWindowSource,

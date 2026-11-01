@@ -4609,6 +4609,17 @@ pub(crate) fn apply_loaded_session_with_goal(
         app.last_effective_provider_identity = Some(saved.provider_identity.clone());
         app.last_effective_model = Some(saved.model.clone());
         app.last_auto_route_receipt = Some(saved.receipt.clone());
+        app.last_effective_budget =
+            saved
+                .context_window
+                .map(|window| crate::tui::app::AutoRouteBudget {
+                    provider: saved.provider,
+                    provider_identity: saved.provider_identity.clone(),
+                    model: saved.model.clone(),
+                    limits: None,
+                    window,
+                    restored: true,
+                });
         app.last_effective_reasoning_effort = saved.effective_reasoning_effort.map(Into::into);
     }
     resolve_loaded_session_route(app, config);

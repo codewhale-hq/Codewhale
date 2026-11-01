@@ -9,6 +9,7 @@
 use crate::approval_log::{ApprovalReceipt, ApprovalReceiptStore, ApprovalReplay};
 use crate::model_routing::AutoRouteReceipt;
 use crate::project_context::find_git_root;
+use crate::route_runtime::ContextWindowResolution;
 use crate::tools::goal::{GoalPauseReason, GoalSnapshot};
 use crate::tools::plan::PlanSnapshot;
 use crate::tools::todo::TodoListSnapshot;
@@ -1032,6 +1033,7 @@ pub struct SavedAutoRouteReceipt {
     /// routes where a concrete tier cannot be proven. Optional so older
     /// sessions remain loadable.
     pub effective_reasoning_effort: Option<ReasoningEffortTier>,
+    pub context_window: Option<ContextWindowResolution>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1045,6 +1047,21 @@ struct SavedAutoRouteReceiptWire {
     /// sessions remain loadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effective_reasoning_effort: Option<ReasoningEffortTier>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_saved_context_window"
+    )]
+    context_window: Option<ContextWindowResolution>,
+}
+
+fn read_saved_context_window<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ContextWindowResolution>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<ContextWindowResolution>(value)
+        .ok()
+        .filter(|window| window.tokens > 0))
 }
 
 impl Serialize for SavedAutoRouteReceipt {
@@ -1063,6 +1080,7 @@ impl Serialize for SavedAutoRouteReceipt {
             model: self.model.clone(),
             receipt: self.receipt.clone(),
             effective_reasoning_effort: self.effective_reasoning_effort,
+            context_window: self.context_window,
         }
         .serialize(serializer)
     }
@@ -1084,6 +1102,7 @@ impl<'de> Deserialize<'de> for SavedAutoRouteReceipt {
             model: wire.model,
             receipt: wire.receipt,
             effective_reasoning_effort: wire.effective_reasoning_effort,
+            context_window: wire.context_window,
         })
     }
 }

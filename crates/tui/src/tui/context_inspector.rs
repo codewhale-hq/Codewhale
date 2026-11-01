@@ -132,6 +132,21 @@ struct PromptTextLayer<'a> {
     body: &'a str,
 }
 
+fn restored_window_label(app: &App, locale: Locale) -> Option<String> {
+    let budget = app
+        .matching_auto_budget()
+        .filter(|budget| budget.restored)?;
+    let route = tr(locale, MessageId::ModelPickerAutoLastRoute)
+        .replace("{provider}", &budget.provider_identity)
+        .replace("{model}", &budget.model);
+    Some(format!(
+        "{route} · {} {} ({})",
+        budget.window.tokens,
+        tr(locale, MessageId::CtxInspTokens),
+        budget.window.source.display_label()
+    ))
+}
+
 #[must_use]
 pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
     let mut out = String::new();
@@ -146,6 +161,9 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         tr(locale, MessageId::CtxInspModel),
         app.model
     );
+    if let Some(previous) = restored_window_label(app, locale) {
+        let _ = writeln!(out, "{previous}");
+    }
     let _ = writeln!(
         out,
         "{}: {}",
@@ -760,6 +778,7 @@ pub(crate) struct ContextInspectorView {
     percent: f64,
     model: String,
     workspace: String,
+    restored_window: Option<String>,
     auto_compact: bool,
     threshold: f64,
     rows: Vec<ContextBucket>,
@@ -777,6 +796,7 @@ impl ContextInspectorView {
             percent: 0.0,
             model: String::new(),
             workspace: String::new(),
+            restored_window: None,
             auto_compact: app.auto_compact,
             threshold: 0.0,
             rows: Vec::new(),
@@ -800,6 +820,7 @@ impl ContextInspectorView {
         self.max = max;
         self.percent = percent;
         self.model = app.model_display_label();
+        self.restored_window = restored_window_label(app, app.ui_locale);
         self.workspace = codewhale_util::utils::display_path(&app.workspace);
         self.auto_compact = app.auto_compact;
         self.threshold = if app.auto_compact && max > 0 {
@@ -972,7 +993,10 @@ impl ModalView for ContextInspectorView {
                 crate::tui::workspace_context::truncate_left(&self.workspace, width),
                 Style::default().fg(palette::TEXT_DIM),
             )),
-            Line::from(""),
+            Line::from(Span::styled(
+                self.restored_window.as_deref().unwrap_or_default(),
+                Style::default().fg(palette::TEXT_MUTED),
+            )),
         ];
 
         if content.height >= 11 && content.width >= 24 {
@@ -1300,15 +1324,19 @@ mod tests {
         app.model = "auto".to_string();
         app.auto_model = true;
         app.last_effective_model = Some("deepseek-v4-pro".to_string());
-        app.last_effective_budget = Some((
-            codewhale_config::ProviderKind::Deepseek,
-            "deepseek-v4-pro".to_string(),
-            None,
-            codewhale_engine::route_runtime::ContextWindowResolution {
+        app.last_effective_provider = Some(codewhale_config::ProviderKind::Deepseek);
+        app.last_effective_provider_identity = Some("deepseek".into());
+        app.last_effective_budget = Some(crate::tui::app::AutoRouteBudget {
+            provider: codewhale_config::ProviderKind::Deepseek,
+            provider_identity: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+            limits: None,
+            window: codewhale_engine::route_runtime::ContextWindowResolution {
                 tokens: 1_000_000,
                 source: codewhale_engine::route_runtime::ContextWindowSource::Catalog,
             },
-        ));
+            restored: false,
+        });
 
         let text = build_context_inspector_text(&app, Locale::En);
         assert!(text.contains("Model: auto"), "{text}");

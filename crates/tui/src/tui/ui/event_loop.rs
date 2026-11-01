@@ -177,9 +177,7 @@ pub(super) fn apply_engine_session_projection(
     crate::tui::ui::dispatch::settle_accepted_steers(app);
     app.system_prompt = system_prompt;
     app.instruction_assembly = instruction_assembly;
-    if app.auto_model {
-        app.last_effective_model = Some(model);
-    } else {
+    if !app.auto_model {
         let accepted_route =
             app.pending_turn_route
                 .as_ref()
