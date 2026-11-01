@@ -542,6 +542,25 @@ mod tests {
     }
 
     #[test]
+    fn bundled_catalog_resolves_the_bare_deepseek_v41_flash_spelling() {
+        // A custom `openai-compatible` endpoint whose `model` omits the vendor
+        // prefix (`model = "deepseek-v4.1-flash"`) is the shape that used to
+        // fall through to the static 128K window. This pins the curated row so
+        // the fallback cannot silently regress.
+        let data = super::super::bundled_models_dev_catalog();
+        let found = intrinsic_model_in(data, "deepseek-v4.1-flash")
+            .expect("bare spelling resolves in the bundled catalogue");
+        assert_eq!(found.context_window, Some(1_000_000));
+        assert_eq!(found.max_output, Some(384_000));
+        // The namespaced spelling keeps resolving to the same facts, so a
+        // caller cannot get two different windows from two spellings.
+        let namespaced = intrinsic_model_in(data, "deepseek/deepseek-v4.1-flash")
+            .expect("namespaced spelling resolves");
+        assert_eq!(namespaced.context_window, found.context_window);
+        assert_eq!(namespaced.max_output, found.max_output);
+    }
+
+    #[test]
     fn identical_wire_names_do_not_merge_provider_private_facts() {
         let data = catalog(serde_json::json!({ "providers": {
             "one": { "models": { "private-name": { "id": "private-name", "reasoning": true, "limit": { "context": 900000 } } } },

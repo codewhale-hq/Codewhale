@@ -8012,6 +8012,20 @@
         "source": "preserved reviewed bundled model facts; see source_receipts",
         "family": "DeepSeek"
       },
+      "deepseek-v4.1-flash": {
+        "context_window": 1000000,
+        "max_output": 384000,
+        "modalities": [
+          "text",
+          "image"
+        ],
+        "supported_parameters": [
+          "reasoning"
+        ],
+        "reasoning": true,
+        "source": "Models.dev canonical row deepseek/deepseek-v4.1-flash (context 1000000, output 384000); bare spelling added so an endpoint that names the model without the vendor prefix resolves to the same facts",
+        "family": "DeepSeek"
+      },
       "fugu-ultra": {
         "context_window": 1000000,
         "max_output": 131000,
