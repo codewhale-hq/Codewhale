@@ -617,13 +617,14 @@ export function isPublishedDigest(value: unknown): value is WeeklyDigestRecord {
     typeof d.titleZh === "string" &&
     typeof d.summaryEn === "string" &&
     typeof d.summaryZh === "string" &&
-    typeof d.generatedAt === "string" &&
-    Array.isArray(d.sections) &&
+    typeof d.generatedAt === "string" && Number.isFinite(Date.parse(d.generatedAt)) &&
+    Array.isArray(d.sections) && d.sections.length <= 16 &&
     d.sections.every(
       (s: unknown) =>
         !!s &&
         typeof (s as { heading?: unknown }).heading === "string" &&
         Array.isArray((s as { items?: unknown }).items) &&
+        (s as { items: unknown[] }).items.length <= 32 &&
         (s as { items: unknown[] }).items.every((i) => typeof i === "string")
     )
   );
