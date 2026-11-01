@@ -50,13 +50,11 @@ impl SessionEntryKind {
             Self::Message { .. } | Self::User { .. } | Self::Assistant { .. }
         )
     }
-    /// `self.as_message() == Some(message)` without materializing the
-    /// projection. Every autosave compares the whole active branch with the
-    /// live transcript, so the common `Message` entry must not be deep-cloned
-    /// just to be compared.
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
-            Self::Message { message: own } => own == message,
+            Self::Message { message: own } => {
+                codewhale_models::turn_classify::same_recorded_turn(own, message)
+            }
             other => other.as_message().as_ref() == Some(message),
         }
     }
@@ -131,6 +129,7 @@ impl SessionEntry {
 pub struct Rebranch {
     pub previous_active: usize,
     pub shared_prefix: usize,
+    pub kept_recorded_metadata: bool,
 }
 
 impl Rebranch {
@@ -344,10 +343,8 @@ impl SessionJournal {
         self.active_messages(true)
     }
 
-    /// Make `messages` the active projection without rewriting the journal.
-    ///
-    /// The existing active branch remains as evidence. We reuse its longest
-    /// unchanged prefix, then append the repaired suffix as a sibling branch.
+    /// Keep the shared prefix and its original stamps. A provisional user
+    /// entry can gain its Engine stamp until another branch shares it.
     pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
         self.rebranch_active_messages_stamped(messages, &[])
     }
@@ -359,16 +356,57 @@ impl SessionJournal {
         messages: &[Message],
         stamps: &[DateTime<Utc>],
     ) -> Rebranch {
-        let active_path = self.root_to_leaf();
-        let previous_active = active_path.len();
-        let shared_prefix = active_path
-            .iter()
-            .zip(messages)
-            .take_while(|(entry, message)| entry.kind.projects_to(message))
-            .count();
+        let path = self.root_to_leaf();
+        let previous_active = path.len();
+        let mut shared_prefix: usize = 0;
+        let mut kept_recorded_metadata = false;
+        let mut refresh = HashMap::new();
+        let mut protected_prefix = None;
+        for (index, (entry, incoming)) in path.iter().zip(messages).enumerate() {
+            if !entry.kind.projects_to(incoming) {
+                break;
+            }
+            if let SessionEntryKind::Message { message: stored } = &*entry.kind
+                && stored != incoming
+            {
+                if stored.content.len() > incoming.content.len() {
+                    kept_recorded_metadata = true;
+                } else {
+                    let shared = protected_prefix.get_or_insert_with(|| {
+                        if path.len() == self.entries.len() {
+                            return 0;
+                        }
+                        let mut parents = HashSet::new();
+                        let fork_points: HashSet<_> = self
+                            .entries
+                            .iter()
+                            .filter_map(|entry| entry.parent_id.as_deref())
+                            .filter(|parent| !parents.insert(*parent))
+                            .collect();
+                        path.iter()
+                            .rposition(|entry| fork_points.contains(entry.id.as_str()))
+                            .map_or(0, |index| index + 1)
+                    });
+                    if index < *shared {
+                        break;
+                    }
+                    refresh.insert(entry.id.clone(), incoming);
+                }
+            }
+            shared_prefix += 1;
+        }
         self.leaf_id = shared_prefix
             .checked_sub(1)
-            .map(|index| active_path[index].id.clone());
+            .map(|index| path[index].id.clone());
+        if !refresh.is_empty() {
+            for entry in &mut self.entries {
+                if let Some(&incoming) = refresh.get(&entry.id) {
+                    entry.kind = Arc::new(SessionEntryKind::Message {
+                        message: incoming.clone(),
+                    });
+                }
+            }
+        }
         for (index, message) in messages.iter().enumerate().skip(shared_prefix) {
             self.append_stamped(
                 SessionEntryKind::Message {
@@ -380,6 +418,7 @@ impl SessionJournal {
         Rebranch {
             previous_active,
             shared_prefix,
+            kept_recorded_metadata,
         }
     }
 
@@ -1157,5 +1196,82 @@ mod tests {
             .collect();
         assert!(j.remove_entries(&active).is_err());
         assert_eq!(j, before);
+    }
+
+    #[test]
+    fn rebranch_refreshes_a_metadata_only_prefix_in_place() {
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: msg("user", "hi"),
+        });
+        j.append(SessionEntryKind::Message {
+            message: msg("assistant", "there"),
+        });
+        let before = j.entries.len();
+
+        let mut stamped = msg("user", "hi");
+        stamped.content.push(ContentBlock::Text {
+            text: "<turn_meta>\nCurrent local date: 2026-10-31\nCurrent workspace: /fixture\n</turn_meta>".into(),
+            cache_control: None,
+        });
+        let live = vec![stamped, msg("assistant", "there")];
+
+        let report = j.rebranch_active_messages(&live);
+        assert_eq!(report.shared_prefix, 2);
+        assert_eq!(j.entries.len(), before);
+        assert_eq!(j.to_messages(), live);
+
+        let again = j.rebranch_active_messages(&live);
+        assert_eq!(again.shared_prefix, 2);
+        assert_eq!(j.entries.len(), before);
+    }
+
+    #[test]
+    fn rebranch_forks_when_the_content_actually_changed() {
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: msg("user", "hi"),
+        });
+        j.append(SessionEntryKind::Message {
+            message: msg("assistant", "there"),
+        });
+        let before = j.entries.len();
+
+        let report =
+            j.rebranch_active_messages(&[msg("user", "changed"), msg("assistant", "there")]);
+        assert_eq!(report.shared_prefix, 0);
+        assert_eq!(j.entries.len(), before + 2);
+    }
+
+    #[test]
+    fn a_metadata_shaped_payload_never_matches_a_shorter_turn() {
+        let stored = Message {
+            role: Role::from("user"),
+            content: vec![
+                ContentBlock::Text {
+                    text: "<turn_meta>{}</turn_meta>REAL CONTENT</turn_meta>".into(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "tail".into(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: stored.clone(),
+        });
+        let before = j.entries.len();
+
+        let report = j.rebranch_active_messages(&[msg("user", "tail")]);
+        assert_eq!(report.shared_prefix, 0);
+        assert_eq!(j.entries.len(), before + 1);
+        assert!(
+            j.entries
+                .iter()
+                .any(|entry| matches!(&*entry.kind, SessionEntryKind::Message { message } if message == &stored)),
+            "the stored payload stays in the journal as its own branch"
+        );
     }
 }
