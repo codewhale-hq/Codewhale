@@ -1886,13 +1886,15 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
                 continue;
             }
         }
-        // URL: consume until whitespace, full-width punctuation or a curly
-        // quote, then keep trailing punctuation visible but outside the
-        // hyperlink target.
+        // Keep trailing punctuation visible but outside the hyperlink target.
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let token_end = rest
-                .find(|ch: char| {
-                    ch.is_whitespace() || "。，、；：！？（）「」『』【】《》〈〉“”‘’".contains(ch)
+                .char_indices()
+                .find_map(|(offset, ch)| {
+                    (ch.is_whitespace()
+                        || "。，、；：！？（）「」『』【】《》〈〉“”‘’".contains(ch)
+                        || (ch == '<' && line_break_tag_len(&rest[offset..]).is_some()))
+                    .then_some(offset)
                 })
                 .unwrap_or(rest.len());
             let token = &rest[..token_end];
