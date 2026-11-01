@@ -1,11 +1,11 @@
 //! Receipts-only projection of every agent that ran this session (#5479).
 //!
 //! Terminal and transcript rendering for the agent roster. Data structures
-//! and projections are in [`crate::agent_roster`].
+//! and projections are in [`codewhale_engine::agent_roster`].
 
 use std::collections::BTreeMap;
 
-use crate::agent_roster::{
+use codewhale_engine::agent_roster::{
     AgentRosterRow, all_rows_have_usage, format_duration, format_tokens, roster_totals,
 };
 

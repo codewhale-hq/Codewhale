@@ -27,10 +27,10 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
-use crate::tools::approval_summary::{
+use codewhale_config::ToolAskRule;
+use codewhale_engine::tools::approval_summary::{
     delegated_authority_fields, param_preview, truncate_string_value,
 };
-use codewhale_config::ToolAskRule;
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_localization::{Locale, MessageId, tr};
 #[cfg(test)]
@@ -74,7 +74,7 @@ pub use view::ApprovalView;
 
 pub use policy::{ApprovalStakes, ToolCategory, classify_stakes, get_tool_category_for_call};
 
-use crate::core::authority::{RiskLevel, classify_risk};
+use codewhale_engine::core::authority::{RiskLevel, classify_risk};
 
 /// User's decision for a pending approval
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +202,8 @@ impl ApprovalRequest {
         let category = get_tool_category_for_call(tool_name, params);
         let risk = classify_risk(tool_name, category, params);
         let approval_grouping_key =
-            crate::tools::approval_cache::build_approval_grouping_key(tool_name, params).0;
+            codewhale_engine::tools::approval_cache::build_approval_grouping_key(tool_name, params)
+                .0;
         let persistent_ask_rules =
             build_persistent_ask_rules(semantic_tool_name, params, workspace);
         let stakes = classify_stakes(tool_name, category, risk, params);
@@ -222,7 +223,7 @@ impl ApprovalRequest {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             description: description.to_string(),
-            summary: crate::tools::approval_summary::approval_summary(
+            summary: codewhale_engine::tools::approval_summary::approval_summary(
                 tool_name,
                 params,
                 Some(workspace),
@@ -230,7 +231,7 @@ impl ApprovalRequest {
             workspace: workspace.to_path_buf(),
             category,
             risk,
-            impacts: build_impact_summary(semantic_tool_name, category, params),
+            impacts: build_impact_summary(Locale::En, semantic_tool_name, category, params),
             params: params.clone(),
             approval_key: approval_key.to_string(),
             approval_grouping_key,
@@ -264,7 +265,7 @@ impl ApprovalRequest {
         if locale == Locale::En {
             return self.summary.clone();
         }
-        crate::tools::approval_summary::approval_summary_in(
+        codewhale_engine::tools::approval_summary::approval_summary_in(
             locale,
             &self.tool_name,
             &self.params,
@@ -283,13 +284,11 @@ impl ApprovalRequest {
     }
 
     pub fn impacts_for_locale(&self, locale: Locale) -> Vec<String> {
-        let semantic_tool_name = canonical_action_alias(&self.tool_name, &self.params);
-        match locale {
-            Locale::ZhHans => {
-                build_impact_summary_zh_hans(semantic_tool_name, self.category, &self.params)
-            }
-            _ => self.impacts.clone(),
+        if locale == Locale::En {
+            return self.impacts.clone();
         }
+        let semantic_tool_name = canonical_action_alias(&self.tool_name, &self.params);
+        build_impact_summary(locale, semantic_tool_name, self.category, &self.params)
     }
 
     #[must_use]
@@ -356,7 +355,7 @@ impl ApprovalRequest {
     }
 }
 
-pub use crate::mcp::connected_app_server;
+pub use codewhale_engine::mcp::connected_app_server;
 
 fn description_is_repo_law_prompt(description: &str) -> bool {
     description.starts_with("Repo law holds this write:")
@@ -372,81 +371,102 @@ fn mcp_target_hint(tool_name: &str) -> Option<String> {
     }
 }
 
-fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value) -> Vec<String> {
+fn impact_line(locale: Locale, id: MessageId, value: String) -> String {
+    tr(locale, id).replace("{value}", &value)
+}
+
+fn build_impact_summary(
+    locale: Locale,
+    tool_name: &str,
+    category: ToolCategory,
+    params: &Value,
+) -> Vec<String> {
     let mut impacts = match category {
         ToolCategory::Safe => {
-            let mut impacts = vec!["Read-only operation.".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactSafe).into_owned()];
             if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
-                impacts.push(format!("Reads: {path}"));
+                impacts.push(impact_line(locale, MessageId::ApprovalImpactReads, path));
             }
             impacts
         }
         ToolCategory::FileWrite => {
-            let mut impacts =
-                vec!["Writes files in the workspace or an approved write scope.".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactFileWrite).into_owned()];
             if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
-                impacts.push(format!("Writes: {path}"));
+                impacts.push(impact_line(locale, MessageId::ApprovalImpactWrites, path));
             }
             impacts
         }
         ToolCategory::Shell => {
-            vec!["Runs a shell command in your workspace.".to_string()]
+            vec![tr(locale, MessageId::ApprovalImpactShell).into_owned()]
         }
         ToolCategory::Network => {
-            let mut impacts = vec!["May reach network services or remote content.".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactNetwork).into_owned()];
             if let Some(target) =
                 param_preview(params, &["url", "q", "query", "location", "repo"], 96)
             {
-                impacts.push(format!("Target: {target}"));
+                impacts.push(impact_line(locale, MessageId::ApprovalImpactTarget, target));
             }
             impacts
         }
         ToolCategory::McpRead => {
-            let mut impacts =
-                vec!["Reads from a connected app without an obvious local write.".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpRead).into_owned()];
             if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("Connected app: {target}"));
+                impacts.push(impact_line(
+                    locale,
+                    MessageId::ApprovalImpactConnectedApp,
+                    target,
+                ));
             }
             impacts
         }
         ToolCategory::McpAction => {
-            let mut impacts =
-                vec!["Uses a connected app action that may have side effects.".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpAction).into_owned()];
             if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("Connected app: {target}"));
+                impacts.push(impact_line(
+                    locale,
+                    MessageId::ApprovalImpactConnectedApp,
+                    target,
+                ));
             }
             impacts
         }
-        ToolCategory::Agent if tool_name == "workflow" => {
+        ToolCategory::Agent if tool_name == "workflow" && locale == Locale::En => {
             // #4126: elevated Workflow plan card — goal, children, capability flags, budget.
-            crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params)
+            codewhale_engine::tools::workflow_plan_approval::analyze_workflow_plan_approval(params)
                 .approval_impacts()
         }
         ToolCategory::Agent => {
-            let mut impacts = vec![
-                "Starts or checks on an agent; the agent still asks for its own approvals."
-                    .to_string(),
-            ];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactAgent).into_owned()];
             if let Some(kind) = param_preview(params, &["type"], 40) {
-                impacts.push(format!("Agent type: {kind}"));
+                impacts.push(impact_line(
+                    locale,
+                    MessageId::ApprovalImpactAgentType,
+                    kind,
+                ));
             }
             impacts
         }
         ToolCategory::Unknown => {
-            let mut impacts = vec![
-                "Tool is not classified. Review params carefully before approving.".to_string(),
-            ];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactUnknown).into_owned()];
             if let Some(target) = param_preview(
                 params,
                 &["path", "cmd", "command", "url", "q", "query", "ref_id"],
                 96,
             ) {
-                impacts.push(format!("Primary input: {target}"));
+                impacts.push(impact_line(
+                    locale,
+                    MessageId::ApprovalImpactPrimaryInput,
+                    target,
+                ));
             }
             impacts
         }
     };
-    impacts.extend(delegated_authority_impacts(tool_name, params, false));
+    impacts.extend(delegated_authority_impacts(
+        tool_name,
+        params,
+        locale == Locale::ZhHans,
+    ));
     impacts
 }
 
@@ -461,76 +481,6 @@ fn localized_description(category: ToolCategory, locale: Locale) -> String {
         ToolCategory::Agent => tr(locale, MessageId::ApprovalDescAgent).to_string(),
         ToolCategory::Unknown => tr(locale, MessageId::ApprovalDescUnknown).to_string(),
     }
-}
-
-fn build_impact_summary_zh_hans(
-    tool_name: &str,
-    category: ToolCategory,
-    params: &Value,
-) -> Vec<String> {
-    let locale = Locale::ZhHans;
-    let mut impacts = match category {
-        ToolCategory::Safe => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactSafe).to_string()];
-            if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
-                impacts.push(format!("读取：{path}"));
-            }
-            impacts
-        }
-        ToolCategory::FileWrite => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactFileWrite).to_string()];
-            if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
-                impacts.push(format!("写入：{path}"));
-            }
-            impacts
-        }
-        ToolCategory::Shell => {
-            vec![tr(locale, MessageId::ApprovalImpactShell).to_string()]
-        }
-        ToolCategory::Network => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactNetwork).to_string()];
-            if let Some(target) =
-                param_preview(params, &["url", "q", "query", "location", "repo"], 96)
-            {
-                impacts.push(format!("目标：{target}"));
-            }
-            impacts
-        }
-        ToolCategory::McpRead => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpRead).to_string()];
-            if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("已连接应用：{target}"));
-            }
-            impacts
-        }
-        ToolCategory::McpAction => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpAction).to_string()];
-            if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("已连接应用：{target}"));
-            }
-            impacts
-        }
-        ToolCategory::Agent => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactAgent).to_string()];
-            if let Some(kind) = param_preview(params, &["type"], 40) {
-                impacts.push(format!("子代理类型：{kind}"));
-            }
-            impacts
-        }
-        ToolCategory::Unknown => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactUnknown).to_string()];
-            if let Some(target) = param_preview(
-                params,
-                &["path", "cmd", "command", "url", "q", "query", "ref_id"],
-                96,
-            ) {
-                impacts.push(format!("主要输入：{target}"));
-            }
-            impacts
-        }
-    };
-    impacts.extend(delegated_authority_impacts(tool_name, params, true));
-    impacts
 }
 
 /// Tools that hand work to a later, unattended run (a durable task or a
@@ -619,7 +569,9 @@ fn build_prominent_details(
         ToolCategory::Agent if tool_name == "workflow" => {
             // #4126: elevated Workflow plan card fields.
             let summary =
-                crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params);
+                codewhale_engine::tools::workflow_plan_approval::analyze_workflow_plan_approval(
+                    params,
+                );
             for (label, value) in summary.card_fields() {
                 details.push(ApprovalDetail {
                     label: label.to_string(),

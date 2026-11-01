@@ -24,7 +24,7 @@
  */
 
 import type { Batch, Event } from "./schema";
-import { COUNTER_FIELDS, ERROR_FIELDS, TURN_WALL_FIELDS } from "./schema";
+import { COUNTER_FIELDS, ERROR_FIELDS, MODEL_COUNTER_FIELDS, TURN_WALL_FIELDS } from "./schema";
 
 /** The subset of `AnalyticsEngineDataset` this Worker uses. */
 export interface DataPointSink {
@@ -133,6 +133,19 @@ function toDataPoint(batch: Batch, event: Event): DataPoint {
       break;
     case "panic":
       blobs[15] = event.site;
+      break;
+    case "model_usage":
+      blobs[14] = event.provider;
+      blobs[15] = event.model;
+      doubles = [
+        ...MODEL_COUNTER_FIELDS.map((field) => event.counters[field]),
+        ...TURN_WALL_FIELDS.map((field) => event.turn_wall[field]),
+        ...EMPTY_DOUBLES.slice(MODEL_COUNTER_FIELDS.length + TURN_WALL_FIELDS.length),
+      ];
+      break;
+    case "tool_usage":
+      blobs[15] = event.tool;
+      doubles = [event.calls, event.errors, ...EMPTY_DOUBLES.slice(2)];
       break;
   }
 

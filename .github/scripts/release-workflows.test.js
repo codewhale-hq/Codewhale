@@ -362,6 +362,7 @@ const expectedTargets = [
   "x86_64-unknown-linux-musl",
   "aarch64-unknown-linux-musl",
   "aarch64-linux-android",
+  "aarch64-unknown-linux-ohos",
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
   "x86_64-pc-windows-msvc",
@@ -395,7 +396,7 @@ const builtAssetNames = [
   ...valuesForKey(artifacts, "shim_artifact"),
   ...valuesForKey(artifacts, "compat_tui_artifact"),
 ];
-assert.equal(builtAssetNames.length, 21);
+assert.equal(builtAssetNames.length, 24);
 assert.deepEqual(
   [...new Set(builtAssetNames)].sort(),
   [
@@ -417,6 +418,44 @@ const bundleInvocations = [...bundles.matchAll(
 assert.deepEqual(bundleInvocations.sort(), [...BUNDLE_ASSET_NAMES].sort());
 assert.match(artifacts, /aarch64-pc-windows-msvc/);
 assert.match(artifacts, /aarch64-linux-android/);
+// HarmonyOS bytes cannot be shipped unsigned: the device refuses to execute an
+// unsigned ELF, so the leg must self-sign and prove the signature before
+// staging. Assert the order too — signing after staging would publish the
+// unsigned copy.
+assert.match(artifacts, /aarch64-unknown-linux-ohos/);
+const ohosSdk = namedStep(artifacts, "Install OpenHarmony native SDK");
+assert.match(ohosSdk, /components: 'native;toolchains'/, "the SDK must include the binary signer");
+assert.match(ohosSdk, /cache: false/, "a release must download the SDK, not publish a new cache entry");
+// A step header glued onto the previous line because a `run:` block lost its
+// trailing newline parses as valid YAML (the header becomes script text) and
+// silently drops the step. Every `- name:` in these workflows must start its
+// own line.
+for (const [file, source] of [
+  ["release-artifacts.yml", artifacts],
+  ["release.yml", release],
+  ["nightly.yml", nightly],
+]) {
+  for (const match of source.matchAll(/- name:/g)) {
+    const lineStart = source.lastIndexOf("\n", match.index) + 1;
+    assert.match(
+      source.slice(lineStart, match.index),
+      /^\s*$/,
+      `${file}: a step header must start its own line, not follow other content`,
+    );
+  }
+}
+
+const ohosBuild = namedStep(artifacts, "Cross-compile and code-sign the OpenHarmony binary");
+assert.match(ohosBuild, /matrix\.platform == 'ohos-arm64'/);
+assert.match(ohosBuild, /binary-sign-tool\.jar/);
+assert.match(ohosBuild, /-selfSign 1/);
+assert.match(ohosBuild, /code signature is self-sign/);
+assert.match(ohosBuild, /scripts\/ohos-env\.sh/);
+assert.ok(
+  ohosBuild.indexOf("codesign") === -1 ||
+    ohosBuild.indexOf("binary-sign-tool.jar") < ohosBuild.indexOf("display-sign"),
+  "the signature must be applied before it is verified",
+);
 assert.match(artifacts, /codew-windows-arm64\.exe/);
 assert.match(artifacts, /CodeWhaleSetup\.exe/);
 assert.match(artifacts, /assemble-release-assets\.js --verify release-assets/);
@@ -491,7 +530,7 @@ const parityRustCache = [...parity[1].matchAll(/uses: Swatinem\/rust-cache@[\s\S
 assert.equal(parityRustCache.length, 1, "parity must pin exactly one rust-cache");
 assert.doesNotMatch(parityRustCache[0], /github\.(event|ref|sha)|inputs\./);
 
-assert.equal(allReleaseAssetNames().length, 34);
+assert.equal(allReleaseAssetNames().length, 38);
 assert.match(release, /^  artifacts:\n/m);
 assert.match(release, /uses: \.\/\.github\/workflows\/release-artifacts\.yml/);
 assert.doesNotMatch(release, /^  (build|bundle|windows-installer):/m);
@@ -620,7 +659,7 @@ assert.doesNotMatch(
 
 assert.match(runbook, /release[- ]candidate/i);
 assert.match(runbook, /expected_sha/);
-assert.match(runbook, /34/);
+assert.match(runbook, /38/);
 assert.match(runbook, /does not create a tag/i);
 assert.match(runbook, /explicit.*approval/i);
 assert.match(runbook, /last[- ]useful[- ]log/i, "runbook must document the last-useful-log rule (#5496)");
@@ -866,5 +905,5 @@ assert.ok(
 );
 
 console.log(
-  "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 7-target/34-asset release candidate.",
+  "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );

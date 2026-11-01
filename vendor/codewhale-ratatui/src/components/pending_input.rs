@@ -71,7 +71,7 @@ impl PendingInputStatus {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
-            Self::Queued => Role::Primary,
+            Self::Queued => Role::Accent,
             Self::Steering => Role::Live,
             Self::Editing => Role::Attention,
             Self::Paused => Role::Attention,
@@ -159,7 +159,7 @@ impl PendingInputAction {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
-            Self::SendNow => Role::Primary,
+            Self::SendNow => Role::Accent,
             Self::Edit => Role::Foreground,
             Self::Drop => Role::Danger,
         }
@@ -1048,7 +1048,7 @@ impl<'a> PendingInputPreview<'a> {
             "  "
         };
         let mut spans = vec![
-            Span::styled(marker, theme.fg(Role::Primary)),
+            Span::styled(marker, theme.fg(Role::Accent)),
             Span::styled(item.status.glyph(theme), theme.fg(item.status.role())),
             Span::raw(" "),
             Span::styled(
@@ -1136,7 +1136,7 @@ impl<'a> PendingInputPreview<'a> {
             plan.tail = Some(PendingTail {
                 hint,
                 omitted: text::display_safe(&self.omitted_label).into_owned(),
-                hint_style: theme.fg(Role::Primary),
+                hint_style: theme.fg(Role::Accent),
                 omitted_style: theme.fg(Role::Muted),
             });
         }

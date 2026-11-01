@@ -41,6 +41,10 @@ Keep the chosen PATH directory in your shell profile after verifying it.
 Windows: https://github.com/codewhale-hq/CodeWhale/releases/latest
 PATH and migration: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/INSTALL.md"#;
 
+pub const DESKTOP_APP_UPDATE: &str = "Codewhale > Check for Updates";
+
+pub const DESKTOP_APP_UPDATE_HELP: &str = "The Codewhale app updates this copy together with the app. Use Codewhale > Check for Updates. `codewhale update` never writes inside the app.";
+
 /// The package manager (if any) that owns the running executable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstallMethod {
@@ -56,6 +60,7 @@ pub enum InstallMethod {
     Scoop,
     /// A WinGet portable package under `Microsoft/WinGet/Packages`.
     WinGet,
+    DesktopApp,
     /// A release binary the user placed on disk themselves. The default, and
     /// the only case where in-place self-update is correct.
     Binary,
@@ -130,6 +135,15 @@ impl InstallMethod {
 
         let has = |name: &str| components.iter().any(|c| c == name);
 
+        if components.windows(3).any(|parts| {
+            parts[0].ends_with(".app") && parts[1] == "contents" && parts[2] == "macos"
+        }) || components
+            .windows(2)
+            .any(|pair| pair[0] == "gpui" && pair[1] == "engine")
+        {
+            return Self::DesktopApp;
+        }
+
         // npm is checked first: a `node_modules` install *inside* a Homebrew
         // or Termux prefix is still npm's to update.
         if has("node_modules") {
@@ -168,6 +182,7 @@ impl InstallMethod {
             "omarchy" => Some(Self::Omarchy),
             "scoop" => Some(Self::Scoop),
             "winget" => Some(Self::WinGet),
+            "desktop" | "app" => Some(Self::DesktopApp),
             "binary" | "release" => Some(Self::Binary),
             _ => None,
         }
@@ -188,6 +203,7 @@ impl InstallMethod {
             Self::Omarchy => "omarchy update",
             Self::Scoop => "scoop update codewhale",
             Self::WinGet => "winget upgrade --id HunterBown.CodeWhale",
+            Self::DesktopApp => DESKTOP_APP_UPDATE,
             Self::Binary => "codewhale update",
         }
     }
@@ -205,6 +221,7 @@ impl InstallMethod {
             }
             Self::Scoop => "scoop uninstall codewhale",
             Self::WinGet => "winget uninstall --id HunterBown.CodeWhale",
+            Self::DesktopApp => "remove the Codewhale app; this Engine is part of it",
             Self::Binary => "codewhale uninstall --yes",
         }
     }
@@ -228,6 +245,7 @@ impl InstallMethod {
             Self::Omarchy => "Omarchy",
             Self::Scoop => "Scoop",
             Self::WinGet => "WinGet",
+            Self::DesktopApp => "the Codewhale app",
             Self::Binary => "release binary",
         }
     }

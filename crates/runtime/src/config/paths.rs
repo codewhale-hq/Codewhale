@@ -207,6 +207,17 @@ pub fn default_skills_dir() -> Option<PathBuf> {
     default_user_state_path("skills")
 }
 
+pub fn owned_skills_dir() -> Option<PathBuf> {
+    #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
+    if !crate::test_support::guarded_environment_provides_state_paths() {
+        return default_skills_dir();
+    }
+    codewhale_paths::codewhale_home()
+        .ok()
+        .flatten()
+        .map(|home| home.join("skills"))
+}
+
 pub(crate) fn default_mcp_config_path() -> Option<PathBuf> {
     default_user_state_path("mcp.json")
 }

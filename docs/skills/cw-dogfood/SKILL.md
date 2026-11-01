@@ -27,12 +27,13 @@ Stage 4 of the loop: [cw-orient](../cw-orient/SKILL.md) →
 1. **Gate first.** Run [cw-gates](../cw-gates/SKILL.md) to the rung the change
    deserves. Never install an ungated build.
 
-2. **Build stamped.** Local builds are unstamped (`(dev)`), and the
+2. **Build stamped.** Release work follows `docs/RELEASE_CHECKLIST.md`.
+   Local builds are unstamped (`(dev)`), and the
    installer refuses an unstamped binary on purpose — the stamp is what proves
    the thing on your PATH is the thing you just built:
    ```bash
    CODEWHALE_BUILD_SHA=$(git rev-parse HEAD) \
-     cargo build --release --locked -p codewhale-cli --bin codewhale
+     scripts/dev-cargo.sh build --release --locked -p codewhale-cli --bin codewhale
    ```
 
 3. **Install atomically.** Use the script; do not hand-copy:
@@ -62,12 +63,19 @@ Stage 4 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    judge motion against `docs/MOTION_CONTRACT.md`.
 
    Scenarios worth exercising when they are in scope:
-   - **Liveness under fanout** — spawn several workers; typing, render, cancel,
-     and the roster stay live throughout, and Esc cancels mid-fanout.
-   - **Route isolation** — multiple terminals on distinct provider/model routes,
+   - **Liveness under fanout** (#3216, #2211) — spawn six workers; typing,
+     render, cancel, and the roster stay live throughout, and Esc cancels
+     mid-fanout (a prompt interrupt, not a wedged burst). For the Windows
+     Terminal retest path (#3289), start in plan mode, add follow-up input,
+     press Esc, switch to yolo/accept flow, trigger at least two auto/Fleet
+     worker spawns, and keep typing, cancel and mode switches live for several
+     minutes; attach logs if the freeze reproduces.
+   - **Route isolation** (#3227) — multiple terminals on distinct provider/model routes,
      zero cross-terminal contamination, no provider+model mismatch.
-   - **Running-turn input** — during a busy turn, Enter queues a follow-up, an
-     empty Enter promotes the oldest, Ctrl+Enter steers, Shift+Enter newlines.
+   - **Running-turn input** (#3203) — during a busy turn, Enter queues a
+     follow-up (the preview advertises Enter send now), an empty Enter promotes
+     the oldest, Ctrl+Enter steers, Shift+Enter newlines, and Ctrl+G/Ctrl+S
+     only stash drafts.
    - **Approvals** — ordinary tool approval vs. repository-law approval; the
      screen must name the repository constitution where it applies, and
      decorative motion must go still when the user owns the next action.

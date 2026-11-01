@@ -157,7 +157,7 @@ pub fn snapshot_path(config: &Config) -> Option<PathBuf> {
     let registration = crate::oauth::official_chatgpt_registration(config).ok()?;
     let catalog_path = crate::catalog_cache::cache_path()?;
     Some(catalog_path.parent()?.join(format!(
-        "chatgpt-plan-{}.json",
+        "chatgpt-plan-v2-{}.json",
         registration_key(
             &registration.issuer,
             &registration.client_id,

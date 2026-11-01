@@ -74,7 +74,7 @@ fn scene(area: Rect, buf: &mut Buffer, theme: &Theme, palette: WaterPalette) {
         return;
     }
     Message::new("You", "Finish this scene with one atmosphere.")
-        .role(Role::Primary)
+        .role(Role::Accent)
         .paint(band(stage, 0, 2), buf, theme);
 
     let turn = Panel::new(Depth::Raised)

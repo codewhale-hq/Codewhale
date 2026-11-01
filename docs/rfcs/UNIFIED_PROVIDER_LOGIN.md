@@ -44,7 +44,7 @@ provider picker row, `auth status`, and logout behave identically:
    provider.rs`, the shared runtime resolver in `crates/config/src/lib.rs`.
 4. **Send** — per-provider header mode. Anthropic OAuth uses
    `Authorization: Bearer` plus the required beta/identity headers and must
-   not also send `x-api-key` (`crates/tui/src/client.rs` header
+   not also send `x-api-key` (`crates/engine/src/client.rs` header
    construction). Clients capture credentials at construction today, so
    long-running sessions need request-time refresh or a rebuild path.
 5. **Status / logout** — `auth status` shows mode, source, and expiry

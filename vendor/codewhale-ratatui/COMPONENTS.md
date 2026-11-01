@@ -16,8 +16,8 @@ Source snapshots inspected for this crosswalk:
   pins `bc1044887b4ef973e444b6f8f83f9389daffee2a`; see
   [its provenance](assets/whale-motion/PROVENANCE.md).
 - **Design authority:** `codewhale-design` at
-  `642795c1f9ef465b8d4f4df8584d23be28af6e9f`, `DIRECTION.md` and
-  `tokens.json` version **1.1.2**. This kit vendors its token release in
+  `4c046da67b0d3d441eb9dfcbdec85620b480e0f2`, `DIRECTION.md` and
+  `tokens.json` version **2.3.0**. This kit vendors its token release in
   [vendor/codewhale-design](vendor/codewhale-design).
 - **Kit baseline:** `d02d14799b046fb6c9fdd3969c36ec9202251f34`, with the
   native component extraction represented below.

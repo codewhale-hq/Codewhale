@@ -27,13 +27,13 @@
 //! and at every fullness, not only from 50% up (#5950).
 //!
 //! Shed order as width drops: cache, output count and billing tier, the help
-//! hint, then rate and TTFT, then cost and balance
+//! hint, then rate and TTFT, then cost and balance, followed by goal and update
 //! ([`InfoSegmentId::shed_priority`]). The model and `ctx NN%` never shed; below that floor the row clips at its
 //! right edge.
 //!
-//! Which segments exist at all is the user's call: `/statusline` and
-//! `tui.status_items` compose the row, and [`crate::tui::ui::frame::info_segments`]
-//! builds only the ones that are on. Shedding decides what survives the
+//! `/statusline` and `tui.status_items` select the session metrics;
+//! [`crate::tui::ui::frame::info_segments`] also includes an active goal or
+//! an available-update notice. Shedding decides what survives the
 //! width that is left. `tui.metrics_line` sizes the row (#5950): `hidden`
 //! gives the line back to the transcript, and `compact` starts the shed
 //! pass with secondary counts and the help hint already gone; TTFT and rate
@@ -41,9 +41,9 @@
 //! ([`InfoLine::compact`]).
 //!
 //! Interaction: segment geometry is recorded for parity tests, but only the
-//! model/route segment and the context reading advertise an action in the
-//! live shell. Status-only facts do not brighten on hover or pretend to be
-//! controls.
+//! model/route segment, context reading and available-update notice advertise
+//! actions in the live shell. Status-only facts do not brighten on hover or
+//! pretend to be controls.
 //!
 //! Color: semantic ink only ([`ChromeInk`]); no hex, per the status-bar color
 //! grammar. ASCII-safe mode substitutes every glyph through
@@ -91,8 +91,8 @@ pub struct InfoLine<'a> {
     /// Segments in display order.
     pub segments: &'a [InfoSegment],
     /// Actionable segment under the mouse. [`InfoSegmentId::Model`] and
-    /// [`InfoSegmentId::Context`] advertise hover feedback in the live
-    /// shell; both own a click action (picker / inspector).
+    /// [`InfoSegmentId::Context`] and [`InfoSegmentId::Update`] advertise
+    /// hover feedback in the live shell; each owns a click action.
     pub hovered: Option<InfoSegmentId>,
     /// ASCII-safe / NO_COLOR mode: every glyph goes through
     /// the kit's native punctuation projection; language text stays intact.
@@ -161,7 +161,7 @@ pub(super) fn ink_role(ink: ChromeInk) -> Role {
         | ChromeInk::PolicyPlan
         | ChromeInk::PolicyOperate
         | ChromeInk::Identity
-        | ChromeInk::Info => Role::Primary,
+        | ChromeInk::Info => Role::Accent,
         ChromeInk::MetadataValue => Role::Foreground,
         ChromeInk::Metadata => Role::Muted,
         ChromeInk::MetadataHint => Role::Hint,

@@ -1,8 +1,8 @@
 //! Actual CLI consumers share the pinned speech adapter with ToolSpecs.
-use crate::extension_host::TestManagerGuard;
-use crate::extension_host::tests::node_for_tests;
-use crate::plugins::activation::TestPolicyGuard;
-use crate::tools::speech::speech_host_tests::{config, manager, provider};
+use codewhale_engine::extension_host::TestManagerGuard;
+use codewhale_engine::extension_host::test_support::node_for_tests;
+use codewhale_engine::tools::speech::test_support::{config, manager, provider};
+use codewhale_plugins::activation::TestPolicyGuard;
 use std::sync::Arc;
 use wiremock::MockServer;
 

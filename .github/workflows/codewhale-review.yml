@@ -1,70 +1,125 @@
 name: Codewhale PR Review
-
-# Account-backed, advisory findings. Failed execution stays visibly failed;
-# do not make this optional review job a required merge check.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main, master]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr-number:
-        description: Same-repository PR to review at its current revision
+        description: Pull request number
         required: true
         type: string
-
+permissions: {}
 concurrency:
-  group: codewhale-review-${{ github.event.pull_request.number || inputs.pr-number }}
-  cancel-in-progress: true
-
+  group: codewhale-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr-number }}
+  cancel-in-progress: false
 jobs:
-  codewhale-review:
-    name: Codewhale review
+  installation:
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      ((github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
+       (github.event.issue.pull_request || github.event.pull_request) &&
+       github.event.comment.user.type == 'User' && contains(github.event.comment.body, '@codewhale')))
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      pull-requests: write
-    env:
-      HAS_APP_KEY: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY != '' }}
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      # The local action is trusted base/default-branch source. Candidate PR
-      # source is fetched as Git objects by the action and is never executed.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: '22'
-      - name: Mint Codewhale Agent token
-        if: env.HAS_APP_KEY == 'true' && vars.CODEWHALE_APP_ID != '' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft))
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         id: app-token
-        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CODEWHALE_APP_ID }}
           private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
           permission-contents: read
           permission-pull-requests: write
-      - name: Review with the account model
+  review:
+    needs: installation
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      ((github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
+       (github.event.issue.pull_request || github.event.pull_request) &&
+       github.event.comment.user.type == 'User' && contains(github.event.comment.body, '@codewhale')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      findings: ${{ steps.review.outputs.findings }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+      - uses: codewhale-hq/Codewhale@c2a48723285c48978279f6c10672bbade49cc0cb
         id: review
-        uses: ./
         with:
-          version: ${{ vars.CODEWHALE_REVIEW_VERSION || 'v0.10.2' }}
-          provider: codewhale
-          model: ${{ vars.CODEWHALE_REVIEW_MODEL }}
+          version: 'v0.10.2'
+          provider: 'deepseek'
+          model: 'deepseek-flash'
+          reasoning-effort: 'off'
+          max-output-tokens: '16384'
           pr-number: ${{ inputs.pr-number }}
-          github-token: ${{ steps.app-token.outputs.token || github.token }}
-          max-chars: ${{ vars.CODEWHALE_REVIEW_MAX_CHARS || '200000' }}
-          max-passes: ${{ vars.CODEWHALE_REVIEW_MAX_PASSES || '1' }}
-          max-output-tokens: ${{ vars.CODEWHALE_REVIEW_MAX_OUTPUT_TOKENS }}
+          trigger-phrase: '@codewhale'
+          allow-forks: 'true'
+          post: 'false'
         env:
-          CODEWHALE_API_KEY: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.CODEWHALE_API_KEY || '' }}
-      - name: Save review outcome
-        if: always() && steps.review.outputs.receipt != ''
-        uses: actions/upload-artifact@v7
+          DEEPSEEK_API_KEY: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'issue_comment' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.DEEPSEEK_API_KEY || '' }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: steps.review.outputs.findings != ''
         with:
-          name: codewhale-review-${{ github.run_id }}-${{ github.run_attempt }}
+          name: codewhale-findings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.review.outputs.findings }}
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always() && steps.review.outputs.receipt != ''
+        with:
+          name: codewhale-review-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.review.outputs.receipt }}
+          retention-days: 14
+          if-no-files-found: error
+  publish:
+    needs: review
+    if: needs.review.outputs.findings != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: codewhale-findings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: findings
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        id: app-token
+        with:
+          app-id: ${{ vars.CODEWHALE_APP_ID }}
+          private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@c2a48723285c48978279f6c10672bbade49cc0cb
+        id: publish
+        with:
+          findings: findings/findings.json
+          pr-number: ${{ inputs.pr-number }}
+          trigger-phrase: '@codewhale'
+          allow-forks: 'true'
+          github-token: ${{ steps.app-token.outputs.token }}
+          reviewer-login: 'codewhale-agent[bot]'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always() && steps.publish.outputs.receipt != ''
+        with:
+          name: codewhale-publication-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.publish.outputs.receipt }}
           retention-days: 14
           if-no-files-found: error

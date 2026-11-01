@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "b19e4547654c035cbca03576682e4a195ec4e6dd18282ae5e43065d47784697e"
+    "sha256": "becfdf7f2b3331d71459d2c13562afa4e2186f52c265b115d2cd40159f7fec5d"
   },
   "features": [
     {
@@ -19,6 +19,32 @@
       "registryLine": 40
     },
     {
+      "id": "install-cleanup",
+      "name": "Installation cleanup",
+      "summary": "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/INSTALL.md#clean-up-old-copies",
+      "registryLine": 50
+    },
+    {
+      "id": "auto-update",
+      "name": "Automatic updates",
+      "summary": "Release-binary installs download updates in the background and apply them at the next start; update --rollback undoes.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/INSTALL.md#automatic-updates",
+      "registryLine": 60
+    },
+    {
       "id": "cloud-computer-dispatch",
       "name": "Cloud computer conversations",
       "summary": "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included.",
@@ -29,7 +55,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CLOUD_DISPATCH.md",
-      "registryLine": 50
+      "registryLine": 70
     },
     {
       "id": "shell-tool",
@@ -42,7 +68,7 @@
       "since": "0.1.0",
       "flag": "shell_tool",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 60
+      "registryLine": 80
     },
     {
       "id": "workspace-search",
@@ -56,7 +82,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md#default-active-contract",
-      "registryLine": 71
+      "registryLine": 91
     },
     {
       "id": "local-code-execution",
@@ -69,7 +95,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md#local-code-execution",
-      "registryLine": 81
+      "registryLine": 101
     },
     {
       "id": "subagents",
@@ -83,7 +109,7 @@
       "since": "0.1.0",
       "flag": "subagents",
       "docs": "docs/SUBAGENTS.md",
-      "registryLine": 90
+      "registryLine": 110
     },
     {
       "id": "web-search",
@@ -96,7 +122,7 @@
       "since": "0.1.0",
       "flag": "web_search",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 101
+      "registryLine": 121
     },
     {
       "id": "apply-patch",
@@ -109,12 +135,12 @@
       "since": "0.1.0",
       "flag": "apply_patch",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 112
+      "registryLine": 132
     },
     {
       "id": "mcp-client",
       "name": "MCP client",
-      "summary": "Connects local stdio and remote HTTP MCP servers and exposes their tools.",
+      "summary": "Connects MCP servers, exposes permitted tools and records connection status for the model.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -123,7 +149,7 @@
       "since": "0.1.0",
       "flag": "mcp",
       "docs": "docs/MCP.md",
-      "registryLine": 123
+      "registryLine": 143
     },
     {
       "id": "exec-policy",
@@ -136,7 +162,7 @@
       "since": "0.1.0",
       "flag": "exec_policy",
       "docs": "docs/AUTHORIZATION_ORDER.md",
-      "registryLine": 134
+      "registryLine": 154
     },
     {
       "id": "vision-model",
@@ -149,7 +175,7 @@
       "since": "0.8.32",
       "flag": "vision_model",
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 145
+      "registryLine": 165
     },
     {
       "id": "verify-tool",
@@ -162,7 +188,7 @@
       "since": "0.9.2",
       "flag": "verify_tool",
       "docs": "docs/CONFIGURATION.md#feature-flags",
-      "registryLine": 156
+      "registryLine": 176
     },
     {
       "id": "code-mode",
@@ -175,12 +201,12 @@
       "since": "0.10.0",
       "flag": "code_mode",
       "docs": "docs/TOOL_SURFACE.md#code-mode-execute_tools",
-      "registryLine": 167
+      "registryLine": 187
     },
     {
       "id": "extension-host",
       "name": "Extension host",
-      "summary": "Runs reviewed plugins' native TypeScript/JavaScript tool and slash-command code in a Bun or Node sidecar.",
+      "summary": "Runs reviewed TypeScript/JavaScript tools, commands and bounded Git review scopes through Engine approvals in a sidecar.",
       "status": "flagged",
       "surfaces": {
         "tui": "preview",
@@ -190,7 +216,7 @@
       "since": "0.10.1",
       "flag": "extension_host",
       "docs": "docs/EXTENSIONS.md",
-      "registryLine": 178
+      "registryLine": 198
     },
     {
       "id": "finance-host",
@@ -204,7 +230,7 @@
       "since": "0.10.1",
       "flag": "finance_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 189
+      "registryLine": 209
     },
     {
       "id": "data-host",
@@ -218,7 +244,7 @@
       "since": "0.10.1",
       "flag": "data_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 200
+      "registryLine": 220
     },
     {
       "id": "speech-host",
@@ -232,7 +258,7 @@
       "since": "0.10.1",
       "flag": "speech_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 211
+      "registryLine": 231
     },
     {
       "id": "pdf-host",
@@ -246,7 +272,7 @@
       "since": "0.10.1",
       "flag": "pdf_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 222
+      "registryLine": 242
     },
     {
       "id": "ocr-host",
@@ -260,7 +286,7 @@
       "since": "0.10.1",
       "flag": "ocr_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 233
+      "registryLine": 253
     },
     {
       "id": "github-host",
@@ -274,7 +300,7 @@
       "since": "0.10.1",
       "flag": "github_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 244
+      "registryLine": 264
     },
     {
       "id": "web-search-host",
@@ -288,7 +314,7 @@
       "since": "0.10.1",
       "flag": "web_search_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 255
+      "registryLine": 275
     },
     {
       "id": "web-extract-host",
@@ -302,7 +328,7 @@
       "since": "0.10.1",
       "flag": "web_extract_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 266
+      "registryLine": 286
     },
     {
       "id": "review-host",
@@ -316,7 +342,7 @@
       "since": "0.10.1",
       "flag": "review_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 277
+      "registryLine": 297
     },
     {
       "id": "modes",
@@ -330,12 +356,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md",
-      "registryLine": 290
+      "registryLine": 310
     },
     {
       "id": "permission-postures",
       "name": "Permission postures",
-      "summary": "Ask, Auto-Review and Full Access postures decide when a tool call needs approval.",
+      "summary": "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -344,7 +370,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md#permission-posture",
-      "registryLine": 299
+      "registryLine": 319
     },
     {
       "id": "sandbox",
@@ -357,12 +383,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/SANDBOX.md",
-      "registryLine": 308
+      "registryLine": 328
     },
     {
       "id": "providers",
       "name": "Providers",
-      "summary": "Provider routes with scoped facts, limits, price estimates and a disclosed OrcaRouter offer in the pickers.",
+      "summary": "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -371,7 +397,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 317
+      "registryLine": 337
     },
     {
       "id": "model-routing",
@@ -384,7 +410,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter",
-      "registryLine": 326
+      "registryLine": 346
     },
     {
       "id": "output-limit-answer-recovery",
@@ -398,7 +424,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only",
-      "registryLine": 335
+      "registryLine": 355
     },
     {
       "id": "fleet",
@@ -412,7 +438,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/FLEET.md",
-      "registryLine": 345
+      "registryLine": 365
     },
     {
       "id": "environment-placement",
@@ -426,7 +452,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/ENVIRONMENTS.md#environment-aware-fleet-placement-preview",
-      "registryLine": 354
+      "registryLine": 374
     },
     {
       "id": "workflows",
@@ -439,7 +465,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WORKFLOW_AUTHORING.md",
-      "registryLine": 363
+      "registryLine": 383
     },
     {
       "id": "automatic-workflows",
@@ -452,7 +478,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/AUTOMATIC_WORKFLOWS.md",
-      "registryLine": 372
+      "registryLine": 392
     },
     {
       "id": "goals",
@@ -466,7 +492,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#goal-loop-goal",
-      "registryLine": 381
+      "registryLine": 401
     },
     {
       "id": "thread-scheduled-turns",
@@ -479,7 +505,20 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 390
+      "registryLine": 410
+    },
+    {
+      "id": "task-suggestions",
+      "name": "Suggested tasks",
+      "summary": "The tasks tool's suggest action offers the person a task as a Start/Hide card; it starts nothing and needs no approval.",
+      "status": "experimental",
+      "surfaces": {
+        "desktop": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": null,
+      "registryLine": 420
     },
     {
       "id": "todos",
@@ -493,7 +532,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 400
+      "registryLine": 429
     },
     {
       "id": "composer-queue-steer",
@@ -507,7 +546,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 409
+      "registryLine": 438
     },
     {
       "id": "receipts",
@@ -521,7 +560,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RECEIPTS.md",
-      "registryLine": 418
+      "registryLine": 447
     },
     {
       "id": "preview-request",
@@ -534,7 +573,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PREVIEW_REQUEST.md",
-      "registryLine": 428
+      "registryLine": 457
     },
     {
       "id": "read-media",
@@ -547,7 +586,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/READ_MEDIA.md",
-      "registryLine": 437
+      "registryLine": 466
     },
     {
       "id": "memory",
@@ -561,12 +600,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/MEMORY.md",
-      "registryLine": 446
+      "registryLine": 475
     },
     {
       "id": "skills",
       "name": "Skills",
-      "summary": "Installs and loads trusted instruction packages with owned-root precedence and separate user/model invocation controls.",
+      "summary": "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -575,7 +614,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/SKILLS.md",
-      "registryLine": 457
+      "registryLine": 486
     },
     {
       "id": "plugins",
@@ -589,7 +628,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 466
+      "registryLine": 495
     },
     {
       "id": "computer-use",
@@ -603,7 +642,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGIN_BUNDLES.md",
-      "registryLine": 475
+      "registryLine": 504
     },
     {
       "id": "script-tools",
@@ -616,7 +655,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#script-tools-and-overrides",
-      "registryLine": 484
+      "registryLine": 513
     },
     {
       "id": "claude-plugin-compat",
@@ -629,7 +668,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CLAUDE_PLUGIN_COMPAT.md",
-      "registryLine": 493
+      "registryLine": 522
     },
     {
       "id": "claude-settings-import",
@@ -642,7 +681,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 502
+      "registryLine": 531
     },
     {
       "id": "hooks",
@@ -656,7 +695,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/HOOKS.md",
-      "registryLine": 510
+      "registryLine": 539
     },
     {
       "id": "lsp",
@@ -670,7 +709,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LSP_PHP_CUSTOM.md",
-      "registryLine": 519
+      "registryLine": 548
     },
     {
       "id": "runtime-api",
@@ -683,7 +722,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 528
+      "registryLine": 557
     },
     {
       "id": "compatibility-tool-free-turns",
@@ -696,7 +735,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#compatibility-execution-limits",
-      "registryLine": 537
+      "registryLine": 566
     },
     {
       "id": "runtime-provider-keys",
@@ -709,7 +748,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential",
-      "registryLine": 547
+      "registryLine": 576
     },
     {
       "id": "headless-exec",
@@ -722,7 +761,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 557
+      "registryLine": 586
     },
     {
       "id": "github-review",
@@ -735,7 +774,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/GITHUB_APP.md",
-      "registryLine": 566
+      "registryLine": 595
     },
     {
       "id": "web-client",
@@ -748,7 +787,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WEB.md",
-      "registryLine": 577
+      "registryLine": 606
     },
     {
       "id": "keybindings",
@@ -761,7 +800,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 586
+      "registryLine": 615
     },
     {
       "id": "settings",
@@ -775,7 +814,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 595
+      "registryLine": 624
     },
     {
       "id": "whats-new-notice",
@@ -788,7 +827,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#whats-new-after-an-update",
-      "registryLine": 604
+      "registryLine": 633
     },
     {
       "id": "themes",
@@ -801,7 +840,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/schemas/user-theme.schema.json",
-      "registryLine": 614
+      "registryLine": 643
     },
     {
       "id": "chat-color",
@@ -814,12 +853,12 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/GUIDE.md",
-      "registryLine": 623
+      "registryLine": 652
     },
     {
       "id": "localization",
       "name": "Localization",
-      "summary": "Interface text in 15 locales.",
+      "summary": "Interface text in 15 locales, including tool activity, file receipts and language-aware transcript caches.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"
@@ -827,7 +866,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LOCALIZATION.md",
-      "registryLine": 633
+      "registryLine": 662
     },
     {
       "id": "voice",
@@ -841,7 +880,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 642
+      "registryLine": 671
     },
     {
       "id": "pet",
@@ -855,7 +894,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PET_MODE.md",
-      "registryLine": 650
+      "registryLine": 679
     },
     {
       "id": "overview",
@@ -868,7 +907,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 659
+      "registryLine": 688
     },
     {
       "id": "account-login",
@@ -881,7 +920,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 668
+      "registryLine": 697
     },
     {
       "id": "account-computer-files",
@@ -894,7 +933,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 676
+      "registryLine": 705
     },
     {
       "id": "context-anchors",
@@ -907,7 +946,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 685
+      "registryLine": 714
     },
     {
       "id": "window-pin",
@@ -920,7 +959,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 693
+      "registryLine": 722
     },
     {
       "id": "structured-copy",
@@ -933,7 +972,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 701
+      "registryLine": 730
     },
     {
       "id": "live-thinking",
@@ -946,7 +985,22 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 709
+      "registryLine": 738
+    },
+    {
+      "id": "local-model-reasoning",
+      "name": "Local model reasoning compatibility",
+      "summary": "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable",
+        "web": "stable",
+        "api": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/LOCAL_MODEL_REASONING.md",
+      "registryLine": 746
     },
     {
       "id": "workbar",
@@ -959,7 +1013,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 717
+      "registryLine": 756
     },
     {
       "id": "terminal-dock",
@@ -972,7 +1026,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 725
+      "registryLine": 764
     },
     {
       "id": "telemetry",
@@ -985,7 +1039,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 736
+      "registryLine": 775
     },
     {
       "id": "docker",
@@ -998,7 +1052,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 745
+      "registryLine": 784
     },
     {
       "id": "termux",
@@ -1011,7 +1065,20 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 754
+      "registryLine": 793
+    },
+    {
+      "id": "harmonyos-native",
+      "name": "HarmonyOS (native)",
+      "summary": "Signed arm64 release archive for native HarmonyOS and OpenHarmony.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/HarmonyOS.md",
+      "registryLine": 802
     },
     {
       "id": "chatgpt-plan-sign-in",
@@ -1026,7 +1093,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 763
+      "registryLine": 811
     },
     {
       "id": "claude-plan-sign-in",
@@ -1041,7 +1108,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 773
+      "registryLine": 821
     },
     {
       "id": "plugin-oauth-providers",
@@ -1056,7 +1123,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 783
+      "registryLine": 831
     },
     {
       "id": "orcarouter-sign-in",
@@ -1071,7 +1138,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 793
+      "registryLine": 841
     },
     {
       "id": "merch-interest",
@@ -1086,7 +1153,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 804
+      "registryLine": 852
     },
     {
       "id": "profile-constitution",
@@ -1100,7 +1167,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 814
+      "registryLine": 862
     },
     {
       "id": "plugin-shell-install",
@@ -1113,7 +1180,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 824
+      "registryLine": 872
     },
     {
       "id": "fork-prefix-inheritance",
@@ -1124,10 +1191,10 @@
         "tui": "preview",
         "api": "preview"
       },
-      "since": "0.10.2",
+      "since": "unreleased",
       "flag": null,
       "docs": "docs/CACHE.md#fork-prefix-inheritance",
-      "registryLine": 834
+      "registryLine": 882
     },
     {
       "id": "fork-trial-diagnostics",
@@ -1138,10 +1205,10 @@
         "tui": "preview",
         "api": "preview"
       },
-      "since": "0.10.2",
+      "since": "unreleased",
       "flag": null,
       "docs": "docs/CACHE.md#fork-trial-diagnostics",
-      "registryLine": 844
+      "registryLine": 892
     },
     {
       "id": "source-navigation-echoes",
@@ -1152,10 +1219,10 @@
         "tui": "preview",
         "api": "preview"
       },
-      "since": "0.10.2",
+      "since": "unreleased",
       "flag": null,
       "docs": "docs/ECHOLOCATION.md",
-      "registryLine": 854
+      "registryLine": 902
     },
     {
       "id": "herdr-agent-state",
@@ -1168,7 +1235,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 864
+      "registryLine": 912
     },
     {
       "id": "instruction-budgets",
@@ -1181,12 +1248,12 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 873
+      "registryLine": 921
     },
     {
       "id": "github-action-review",
       "name": "GitHub Action review",
-      "summary": "Review pull requests with the Engine and publish validated findings from a separate trusted job.",
+      "summary": "Generate pinned workflows for automatic or authorized mention reviews; publish findings with recorded evidence.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview"
@@ -1194,7 +1261,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 883
+      "registryLine": 931
     },
     {
       "id": "telegram-agent",
@@ -1207,7 +1274,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 893
+      "registryLine": 941
     },
     {
       "id": "dingtalk-agent",
@@ -1220,7 +1287,20 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 903
+      "registryLine": 951
+    },
+    {
+      "id": "compaction-archive-recall",
+      "name": "Compaction archive recall",
+      "summary": "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": null,
+      "registryLine": 961
     }
   ]
 }

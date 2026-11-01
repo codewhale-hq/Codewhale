@@ -1124,7 +1124,7 @@ impl FieldChrome<'_> {
                 placed.input.y,
                 glyphs::pick(PROMPT, ascii),
                 usize::from(placed.input.width),
-                theme.fg(Role::Primary),
+                theme.fg(Role::Accent),
             );
         }
         if placed.value.width > 0 {

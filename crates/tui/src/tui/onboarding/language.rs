@@ -148,7 +148,7 @@ fn compact_option_spans(
     let prefix = format!("[{hotkey}]");
     let prefix_width = UnicodeWidthStr::width(prefix.as_str());
     let label_width = width.saturating_sub(prefix_width);
-    let label = crate::tui::ui_text::semantic_truncate(native, label_width);
+    let label = codewhale_tui_kit::ui_text::semantic_truncate(native, label_width);
     let style = if current == tag {
         Style::default()
             .fg(palette::WHALE_ACTION)
@@ -183,9 +183,9 @@ fn option_spans_inner(
     let (hotkey, tag, native, english) = *option;
     let is_current = current == tag;
     let bullet = if is_current {
-        crate::tui::glyphs::CURRENT
+        codewhale_tui_kit::glyphs::CURRENT
     } else {
-        crate::tui::glyphs::AVAILABLE
+        codewhale_tui_kit::glyphs::AVAILABLE
     };
     let bullet_color = if is_current {
         palette::WHALE_ACTION

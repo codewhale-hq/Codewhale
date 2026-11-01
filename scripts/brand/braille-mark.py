@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive the TUI launch-mark assets from the founder raster (PRD section 6).
 
-The launch mark in `crates/tui/src/tui/mark.rs` is generated here, never
+The launch mark in `crates/tui-kit/src/mark.rs` is generated here, never
 hand-drawn. The canonical product mark is the founder-supplied raster
 `brand/codewhalemarkfinal.png` (1254 x 1254 brand sheet: navy hero whale on
 white, sizing row, the white-on-navy app icon, colour/mono/reversed rows).

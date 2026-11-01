@@ -1,7 +1,7 @@
 use super::CommandResult;
 use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tools::github::report;
 use crate::tui::app::{App, AppAction};
+use codewhale_engine::tools::github::report;
 use codewhale_localization::MessageId;
 
 const SECURITY_POLICY_URL: &str = "https://github.com/codewhale-hq/CodeWhale/security/policy";
@@ -121,8 +121,8 @@ fn request_draft(app: &App, focus: &str) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::github::GithubTool;
-    use crate::tools::spec::{ToolContext, ToolSpec};
+    use codewhale_engine::tools::github::GithubTool;
+    use codewhale_engine::tools::spec::{ToolContext, ToolSpec};
     use codewhale_runtime::config::Config;
     use serde_json::json;
     use tempfile::TempDir;
@@ -184,23 +184,25 @@ mod tests {
 
     #[test]
     fn agent_draft_command_review_and_edit_share_one_session_artifact() {
-        let _lock = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        let _lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let (mut app, tmp) = test_app();
         struct Restore(Option<std::path::PathBuf>);
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::artifacts::set_test_artifact_sessions_root(self.0.take());
+                codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
             }
         }
-        let _restore = Restore(crate::artifacts::set_test_artifact_sessions_root(Some(
-            tmp.path().join("sessions"),
-        )));
+        let _restore = Restore(
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+                tmp.path().join("sessions"),
+            )),
+        );
         app.current_session_id = Some("session-a".into());
         let context = ToolContext::new(tmp.path())
             .with_state_namespace("session-a")
-            .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
+            .with_session_objects(codewhale_engine::rlm::session::SessionObjectSnapshot::new(
                 "session-a".into(),
                 "current-route-model".into(),
                 tmp.path().into(),

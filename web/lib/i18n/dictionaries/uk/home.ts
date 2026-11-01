@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: знімок термінала з розмовою, полем повідомлення й керуванням сесією.",
   latestRelease: "Останній реліз {tag}",
   releaseUnavailable: "Статус релізу недоступний",
+  proofContributors: "Учасників: {count}",
   currentSource: "Джерело",
   sourceCandidate: "Не випущено",
   publishedRelease: "випущено",

@@ -49,6 +49,12 @@ impl ModelEnvGuard {
     }
 }
 
+impl Default for ModelEnvGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for ModelEnvGuard {
     fn drop(&mut self) {
         // Safety: test-only environment restoration under the same lock.

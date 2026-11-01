@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Export the Codewhale palettes to the other Codewhale clients.
 
-The versioned `vendor/codewhale-design/tokens.json` snapshot owns the GPUI
-colors, radii, typography fallbacks and focus geometry. The adapter preserves
-this site's existing light/OS-dark/pinned-dark roles. The portable artifact's
+The versioned `vendor/codewhale-design/tokens.json` snapshot owns the
+website's colors, type roles, spacing, radii, motion, easing, elevation,
+breakpoints and focus geometry; `web/app/styles/tokens-roles.css` names the
+site's roles over them (web/docs/BRAND_COLOR_MAPPING.md). The portable artifact's
 own generator checks its digest before exporting. Update the entire vendored
 folder from the app's design package; never edit its JSON here.
 
@@ -101,9 +102,10 @@ def gpui_tokens(data):
     aliases = {
         "BG": "background", "TEXT": "foreground", "PANEL": "surface",
         "TEXT_MUTED": "muted_foreground", "BORDER": "border", "SIDEBAR": "sidebar",
-        "PRIMARY": "primary", "ON_PRIMARY": "primary_foreground", "ACCENT": "hover",
-        "LIST_ACTIVE": "selected", "ATTENTION": "attention", "LIVE": "live",
-        "DANGER": "danger", "BORDER_STRONG": "border_strong",
+        "PRIMARY": "primary", "ON_PRIMARY": "primary_foreground", "ACCENT": "accent",
+        "HOVER": "hover", "LIST_ACTIVE": "selected", "ATTENTION": "attention", "LIVE": "live",
+        "DANGER": "danger", "BORDER_STRONG": "border_strong", "OCEAN_DEPTH": "ocean_depth",
+        "DIFF_ADD": "diff_add", "DIFF_REMOVE": "diff_remove",
     }
     return [
         (f"{prefix}_{name}", tuple(bytes.fromhex(palette[key])))
@@ -120,6 +122,25 @@ def gpui_geometry(data, digest):
             lines.append(f"  --gpui-{section}-{name}: {value}px;")
     for name in ["selection_opacity", "primary_hover_opacity"]:
         lines.append(f"  --gpui-{name.replace('_', '-')}: {data[name]};")
+    for role, spec in data["type_roles"].items():
+        lines += [f"  --gpui-type-{role}-size: {spec['size_px'] / 16:g}rem;",
+                  f"  --gpui-type-{role}-line: {spec['line_px'] / spec['size_px']:.4g};",
+                  f"  --gpui-type-{role}-weight: {spec['weight']};"]
+    for name, value in data["motion"].items():
+        if name.startswith("duration_") or name.startswith("loop_") and name.endswith("_ms"):
+            lines.append(f"  --gpui-motion-{name.removesuffix('_ms').replace('_', '-')}: {value}ms;")
+    lines.append(f"  --gpui-motion-arrive-rise: {data['motion']['arrive_rise_px']}px;")
+    for name, curve in data["easing"].items():
+        lines.append(f"  --gpui-easing-{name}: cubic-bezier({', '.join(f'{v:g}' for v in curve)});")
+    e = data["elevation"]
+    for kind in ["popover", "dialog"]:
+        for mode in ["light", "dark"]:
+            lines.append(f"  --gpui-elevation-{kind}-{mode}: 0 {e[kind + '_y_px']}px "
+                         f"{e[kind + '_blur_px']}px rgb(0 0 0 / {e[kind + '_alpha_' + mode]:g});")
+    for name, value in data["breakpoints"].items():
+        lines.append(f"  --gpui-breakpoint-{name.removesuffix('_px')}: {value}px;")
+    rise, deep = data["ombre"]["rise"], data["ombre"]["deep"]
+    lines.append(f"  --gpui-ombre: linear-gradient(135deg, #{rise}, #{deep});")
     fallbacks = ", ".join(json.dumps(v) for v in data["typography"]["fallbacks"])
     lines += [f"  --gpui-font-fallbacks: {fallbacks};",
               f"  --gpui-mono-size: {data['typography']['mono_px'] / 16:g}rem;", "}"]

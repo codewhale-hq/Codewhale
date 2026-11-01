@@ -10,8 +10,7 @@ use codewhale_palette as palette;
 
 use super::{
     RenderMode, TRANSCRIPT_RAIL, ToolStatus, render_card_detail_line_single,
-    render_tool_header_with_family_and_summary, tool_status_label, tool_value_style, truncate_text,
-    wrap_text,
+    render_tool_header_with_family_and_summary, tool_value_style, truncate_text, wrap_text,
 };
 
 pub(crate) fn is_checklist_tool_name(name: &str) -> bool {
@@ -148,10 +147,11 @@ pub(super) fn render_checklist_change_card(
     lines.push(render_tool_header_with_family_and_summary(
         family,
         Some(&header_summary),
-        tool_status_label(status),
+        None,
         status,
         None,
         low_motion,
+        locale,
     ));
 
     // Look up the title from the snapshot. `id` in tool input is
@@ -210,8 +210,8 @@ pub(super) fn render_checklist_change_card(
 }
 
 fn checklist_status_label(status: &str, locale: Locale) -> String {
-    use crate::tools::todo::TodoStatus;
-    let id = match TodoStatus::from_str(status) {
+    use codewhale_engine::tools::todo::TodoStatus;
+    let id = match TodoStatus::parse(status) {
         Some(TodoStatus::Pending) => MessageId::TodoStatusPending,
         Some(TodoStatus::InProgress) => MessageId::TodoStatusInProgress,
         Some(TodoStatus::Completed) => MessageId::TodoStatusCompleted,
@@ -240,6 +240,7 @@ pub(super) fn render_checklist_card(
     width: u16,
     low_motion: bool,
     mode: RenderMode,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let header_summary = format!(
@@ -250,10 +251,11 @@ pub(super) fn render_checklist_card(
     lines.push(render_tool_header_with_family_and_summary(
         family,
         Some(&header_summary),
-        tool_status_label(status),
+        None,
         status,
         None,
         low_motion,
+        locale,
     ));
 
     let cap = match mode {

@@ -126,7 +126,7 @@ request bytes, tool order, and provider route.
 
 Symbol, import, and link sounding covers Rust, Python, JavaScript /
 TypeScript, and Go via deliberately small line scanners (see
-`crates/tui/src/tools/echolocation.rs` for the documented lookalike
+`crates/engine/src/tools/echolocation.rs` for the documented lookalike
 classes). Anything unresolvable is omitted, never guessed; links
 require an on-disk target.
 

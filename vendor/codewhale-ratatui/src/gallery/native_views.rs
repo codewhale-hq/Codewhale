@@ -83,7 +83,7 @@ fn top_section(title: &str, area: Rect, buf: &mut Buffer, theme: &Theme) -> Rect
     let mut block = Block::default()
         .title(Line::styled(
             safe(title, theme),
-            theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+            theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::TOP)
         .border_style(theme.fg(Role::Border))
@@ -140,7 +140,7 @@ fn choice_card(
     let mut block = Block::default()
         .title(Line::styled(
             safe(title, theme),
-            theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+            theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(theme.fg(Role::Border))
@@ -431,7 +431,7 @@ fn commands(area: Rect, buf: &mut Buffer, theme: &Theme) {
             heading.y,
             &Line::styled(
                 "  Commands (6)  ",
-                theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+                theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
             ),
             heading.width,
         );
@@ -740,7 +740,7 @@ fn title_action(label: &str, surface: Rect, right: u16, buf: &mut Buffer, theme:
         surface.y,
         text::truncate(label, usize::from(width), theme.ascii()),
         usize::from(width),
-        theme.fg(Role::Primary).add_modifier(Modifier::UNDERLINED),
+        theme.fg(Role::Accent).add_modifier(Modifier::UNDERLINED),
     );
 }
 
@@ -975,7 +975,7 @@ fn themes(area: Rect, buf: &mut Buffer, theme: &Theme) {
                     Role::Surface,
                     Role::Live,
                     Role::Attention,
-                    Role::Primary,
+                    Role::Accent,
                 ]
                 .map(|role| Span::styled("  ", candidate.bg(role))),
             );
@@ -1015,11 +1015,11 @@ fn files(area: Rect, buf: &mut Buffer, theme: &Theme) {
             query.x,
             query.y,
             &Line::from(vec![
-                Span::styled("> ", theme.fg(Role::Primary).add_modifier(Modifier::BOLD)),
+                Span::styled("> ", theme.fg(Role::Accent).add_modifier(Modifier::BOLD)),
                 Span::styled("tui/", theme.fg(Role::Foreground)),
                 Span::styled(
                     " ",
-                    theme.bg(Role::Primary).patch(theme.fg(Role::Background)),
+                    theme.bg(Role::Accent).patch(theme.fg(Role::Background)),
                 ),
             ]),
             query.width,
@@ -1169,7 +1169,7 @@ fn settings(area: Rect, buf: &mut Buffer, theme: &Theme) {
             line(
                 group,
                 if index == 0 {
-                    Role::Primary
+                    Role::Accent
                 } else {
                     Role::Muted
                 },
@@ -1251,7 +1251,7 @@ fn settings(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if detail_width > 0 {
         let detail = Rect::new(list.right() + 1, list.y, detail_width, list.height);
         divider(Rect::new(list.right(), list.y, 1, list.height), buf, theme);
-        line("Theme", Role::Primary, row(detail, 0), buf, theme);
+        line("Theme", Role::Accent, row(detail, 0), buf, theme);
         line("theme", Role::Dim, row(detail, 1), buf, theme);
         for (index, (name, value)) in [
             ("current", "underwater"),
@@ -1391,7 +1391,7 @@ fn rich_composer_facts(theme: &Theme) -> crate::NativeComposerFrame<'static> {
     let background = theme.tui_ground(crate::TuiGround::Composer);
     let plain = theme.fg(crate::Role::Foreground);
     let muted = theme.fg(crate::Role::Muted);
-    let primary = theme.fg(crate::Role::Primary);
+    let primary = theme.fg(crate::Role::Accent);
     let mark = if theme.ascii() { ">" } else { "▸" };
     NativeComposerFrame {
         text: if theme.ascii() {

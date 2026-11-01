@@ -12,12 +12,16 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.23.1"
 reqwest = { workspace = true, features = ["blocking"] }
+ring = "0.17.14"
 rustls.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
+toml.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 webpki-roots = "1"

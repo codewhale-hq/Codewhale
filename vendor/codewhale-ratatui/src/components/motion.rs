@@ -648,7 +648,7 @@ impl Paint for MotionDemo<'_> {
             let x = area
                 .x
                 .saturating_add(self.motions.step("slide").offset(now, policy, 0, span));
-            put(buf, x, y, marker, theme.fg(Role::Primary), area.width);
+            put(buf, x, y, marker, theme.fg(Role::Accent), area.width);
             let lx = x.saturating_add(text::width(marker) as u16 + 1);
             put(buf, lx, y, &label, theme.fg(Role::Foreground), area.width);
         }

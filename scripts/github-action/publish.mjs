@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { fingerprint, issueBody, parseArtifact, renderSummary, repositoryPath } from './findings.mjs';
-import { target, validateSnapshot } from './review.mjs';
+import { fingerprint, hasRecordedEvidence, issueBody, parseArtifact, renderSummary, repositoryPath } from './findings.mjs';
+import { authorizeRequest, target, validateSnapshot } from './review.mjs';
 
 function stop(outcome, reason) {
   throw Object.assign(new Error(reason), { outcome, reason });
@@ -53,7 +53,8 @@ export function planPublication(artifact, files, reviews, reviewer) {
   const byPath = new Map(files.map(file => [file.filename, file]));
   const normalized = value => value.trim().replace(/\s+/g, ' ').toLowerCase();
   const selected = [];
-  for (const issue of artifact.review.issues) {
+  const eligible = artifact.review.issues.filter(hasRecordedEvidence);
+  for (const issue of eligible) {
     const file = byPath.get(issue.path);
     const id = fingerprint([artifact.repository, artifact.pr_number, issue.path,
       file?.sha || artifact.head_sha, issue.line, issue.severity, issue.authorship,
@@ -61,11 +62,12 @@ export function planPublication(artifact, files, reviews, reviewer) {
     if (!known.has(id)) selected.push({ issue, id, file });
     known.add(id);
   }
-  if (artifact.review.issues.length && selected.length === 0 && artifact.review.suggestions.length === 0) return null;
-  const body = [renderSummary(artifact, selected.map(item => item.issue), artifact.review.issues.length - selected.length),
+  if (eligible.length && selected.length === 0) return null;
+  const body = [renderSummary(artifact, selected.map(item => item.issue), eligible.length - selected.length,
+    artifact.review.issues.length - eligible.length),
     marker, ...selected.map(item => `<!-- codewhale-action-finding:v1:${item.id} -->`)].join('\n\n');
   const comments = selected.filter(({ issue, file }) => file && issue.line && issue.inline_anchorable !== false
-    && issue.authorship !== 'preexisting' && issue.evidence?.tier !== 'suspected'
+    && issue.authorship === 'introduced'
     && rightLines(file.patch).includes(issue.line)).slice(0, 50)
     .map(({ issue }) => ({ path: issue.path, line: issue.line, side: 'RIGHT', body: issueBody(issue) }));
   if (Buffer.byteLength(body) > 60000 || comments.some(item => Buffer.byteLength(item.body) > 60000)) {
@@ -98,8 +100,10 @@ export function publish(env = process.env, execute = command) {
       || artifact.run_id !== env.GITHUB_RUN_ID || artifact.run_attempt !== env.GITHUB_RUN_ATTEMPT) {
       stop('configuration_missing', 'artifact_context_mismatch');
     }
+    const eligible = artifact.review.issues.filter(hasRecordedEvidence).length;
     receipt = { ...receipt, repository: repo, pr_number: number, head_sha: artifact.head_sha,
-      base_sha: artifact.base_sha, findings: artifact.review.issues.length };
+      base_sha: artifact.base_sha, findings: eligible,
+      withheld_findings: artifact.review.issues.length - eligible };
     const childEnv = Object.fromEntries(['PATH', 'SystemRoot', 'TMPDIR', 'LANG'].filter(key => env[key]).map(key => [key, env[key]]));
     Object.assign(childEnv, { HOME: root, GH_CONFIG_DIR: join(root, 'gh'), GH_TOKEN: env.GH_TOKEN,
       GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', NO_COLOR: '1', CI: 'true' });
@@ -120,11 +124,12 @@ export function publish(env = process.env, execute = command) {
     };
     const snapshot = () => {
       const pr = api(`repos/${repo}/pulls/${number}`);
-      validateSnapshot(pr, repo, event);
+      validateSnapshot(pr, repo, event, env);
       if (pr.head.sha !== artifact.head_sha || pr.base.sha !== artifact.base_sha) stop('superseded', 'revision_changed');
       return pr;
     };
     const pr = snapshot();
+    authorizeRequest(env, event, repo, number, api);
     const files = api(`repos/${repo}/pulls/${number}/files?per_page=100`, true);
     if (!Number.isSafeInteger(pr.changed_files) || files.length !== pr.changed_files
       || new Set(files.map(item => item.filename)).size !== files.length
@@ -135,6 +140,7 @@ export function publish(env = process.env, execute = command) {
     const reviews = api(`repos/${repo}/pulls/${number}/reviews?per_page=100`, true);
     const plan = planPublication(artifact, files, reviews, reviewer);
     snapshot();
+    authorizeRequest(env, event, repo, number, api);
     if (!plan) receipt = { ...receipt, outcome: 'already_published', reason: '', publication: 'deduplicated' };
     else {
       const posted = api(`repos/${repo}/pulls/${number}/reviews`, false, plan);

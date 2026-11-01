@@ -272,7 +272,7 @@ const MAX_TERMINAL_TITLE_CHARS: usize = 160;
 /// before the title is embedded in a terminal escape sequence.
 #[must_use]
 fn terminal_title_sequence(title: &str) -> String {
-    let safe: String = crate::session_manager::sanitize_session_title(title)
+    let safe: String = codewhale_engine::session_manager::sanitize_session_title(title)
         .chars()
         .take(MAX_TERMINAL_TITLE_CHARS)
         .collect();
@@ -737,8 +737,8 @@ fn macos_notification_parts(payload: &NotificationPayload) -> (String, String) {
 // *what message* to put in the body. The low-level dispatcher is
 // `notify_done`; everything in this block sits in front of it.
 
-use crate::tools::subagent::SubAgentStatus;
 use crate::tui::app::App;
+use codewhale_engine::tools::subagent::SubAgentStatus;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 
@@ -792,7 +792,7 @@ pub fn completed_turn_payload(
     current_streaming_text: &str,
     include_summary: bool,
     turn_elapsed: Duration,
-    turn_cost: Option<crate::pricing::CostEstimate>,
+    turn_cost: Option<codewhale_engine::pricing::CostEstimate>,
 ) -> NotificationPayload {
     let headline = completion_status(
         &tr(app.ui_locale, MessageId::NotificationTurnComplete),
@@ -2120,13 +2120,13 @@ impl<'a> TidelineInbox<'a> {
         if !self.ascii_safe {
             return glyph.to_string();
         }
-        if let Some(fb) = crate::tui::glyphs::ascii_fallback(glyph) {
+        if let Some(fb) = codewhale_tui_kit::glyphs::ascii_fallback(glyph) {
             return fb.to_string();
         }
         glyph
             .chars()
             .map(|c| {
-                crate::tui::glyphs::ascii_fallback(&c.to_string())
+                codewhale_tui_kit::glyphs::ascii_fallback(&c.to_string())
                     .map(str::to_string)
                     .unwrap_or_else(|| c.to_string())
             })

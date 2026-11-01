@@ -118,7 +118,9 @@ async function withoutForcedDownload(callback) {
 
 test("Linux x64 races first-party sources unless an explicit override is set", () => {
   assert.equal(shouldRaceFirstPartyMirrors({}, "linux", "x64"), true);
-  assert.equal(shouldRaceFirstPartyMirrors({}, "openharmony", "x64"), true);
+  // The CNB mirror publishes Linux assets only, and native HarmonyOS resolves to
+  // its own asset family; it must not be handed a Linux x64 URL.
+  assert.equal(shouldRaceFirstPartyMirrors({}, "openharmony", "x64"), false);
   assert.equal(shouldRaceFirstPartyMirrors({}, "linux", "arm64"), false);
   assert.equal(shouldRaceFirstPartyMirrors({}, "darwin", "arm64"), false);
   assert.equal(

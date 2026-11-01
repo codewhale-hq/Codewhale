@@ -68,12 +68,12 @@ The full Apache License 2.0 text ships in this repository at
 ## Cordis, schemastery and cosmokit (Shigma, via DeepSeek Harness) — MIT
 
 The embedded extension host bundle
-(`crates/tui/extension-host/dist/codewhale-extension-host.mjs`) contains these
+(`crates/engine/extension-host/dist/codewhale-extension-host.mjs`) contains these
 packages, as published by DeepSeek Harness:
 
-- `@deepseek-ai/cordis` 4.0.4
-- `@deepseek-ai/schemastery` 3.18.4
-- `@deepseek-ai/cosmokit` 1.8.5
+- `@deepseek-ai/cordis` 4.0.5
+- `@deepseek-ai/schemastery` 3.18.5
+- `@deepseek-ai/cosmokit` 1.8.6
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness> (`vendor/cordis`,
 `vendor/schemastery`, `vendor/cosmokit`)
@@ -104,14 +104,15 @@ SOFTWARE.
 
 ## DeepSeek Harness utility packages (`dsh-util-values`, `dsh-tools`, message compatibility) — MIT
 
-The same bundle contains `@deepseek-ai/dsh-util-values` 0.1.7-alpha.2, and
-`crates/tui/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
-excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.2 (`lib/index.js`), under the
-same licence text. `crates/tui/extension-host/src/dsh/dsh-message-compat.js`
-contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.2,
-`@deepseek-ai/dsh-llm` 0.2.1-rc.2, `@deepseek-ai/dsh-session` 0.2.1-rc.2,
-`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.2 and
-`@deepseek-ai/dsh-util-crypto` 0.2.1-rc.2, under the same licence text.
+The same bundle contains `@deepseek-ai/dsh-util-values` 0.2.1-rc.5, and
+`crates/engine/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
+excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.5 (`lib/index.js`), under the
+same licence text. `crates/engine/extension-host/src/dsh/dsh-message-compat.js`
+contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.5,
+`@deepseek-ai/dsh-llm` 0.2.1-rc.5, `@deepseek-ai/dsh-session` 0.2.1-rc.5,
+`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.5,
+`@deepseek-ai/dsh-user-questions` 0.2.1-rc.5 and
+`@deepseek-ai/dsh-util-crypto` 0.2.1-rc.5, under the same licence text.
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness>
 (`dsh-util-values` is published from `packages/util/values`)
@@ -146,7 +147,7 @@ materialises (`~/.codewhale/extension-host/<sha256>/LICENSES.txt`).
 
 ## Model Context Protocol SDK and bundled dependencies
 
-The pinned builtin MCP bundle (`crates/tui/extension-host/dist/builtin/mcp.mjs`)
+The pinned builtin MCP bundle (`crates/engine/extension-host/dist/builtin/mcp.mjs`)
 contains the following packages. The MCP packages are labeled Apache-2.0 and
 carry the upstream licensing-transition statement and full Apache-2.0 text
 reproduced below. The other packages are labeled MIT. Their exact distributed
@@ -729,35 +730,9 @@ SOFTWARE.
 
 The host and its offline composition reviewer also contain these packages.
 Vendored composition adaptations are recorded in
-`crates/tui/extension-host/src/dsh/upstream/UPSTREAM.json`.
+`crates/engine/extension-host/src/dsh/upstream/UPSTREAM.json`.
 
-### `@deepseek-ai/cordis-plugin-group` 1.0.2
-
-```text
-MIT License
-
-Copyright (c) 2021-present Shigma
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### `@deepseek-ai/cordis-plugin-include` 1.0.7
+### `@deepseek-ai/cordis-plugin-group` 1.0.5
 
 ```text
 MIT License
@@ -783,7 +758,33 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### `@deepseek-ai/cordis-plugin-loader` 1.0.3
+### `@deepseek-ai/cordis-plugin-include` 1.0.10
+
+```text
+MIT License
+
+Copyright (c) 2021-present Shigma
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### `@deepseek-ai/cordis-plugin-loader` 1.0.6
 
 ```text
 MIT License
@@ -869,21 +870,26 @@ THE SOFTWARE.
 The embedded extension host includes these pinned DeepSeek Harness packages:
 
 - `@deepseek-ai/dsh-agent-presets` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-hook-protocol` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-hooks-claude-code` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-hooks-codex` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-persona` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-system-prompt` 0.1.6-alpha.1
+- `@deepseek-ai/dsh-hook-protocol` 0.2.1-rc.5
+- `@deepseek-ai/dsh-hooks-claude-code` 0.2.1-rc.5
+- `@deepseek-ai/dsh-hooks-codex` 0.2.1-rc.5
+- `@deepseek-ai/dsh-persona` 0.2.1-rc.5
+- `@deepseek-ai/dsh-system-prompt` 0.2.1-rc.5
 
-Upstream: <https://github.com/deepseek-ai/deepseek-harness>, commit
-`0d1f50007f9bca3f52b06e1c3074fa14d5fb0720`.
+Upstream: <https://github.com/deepseek-ai/deepseek-harness>, tag
+`dsh-v0.2.1-rc.5`, commit `b830ec950faba0a46dda564be3e2d854afed94f1`.
+The legacy `dsh-agent-presets` adapter alone retains commit
+`0d1f50007f9bca3f52b06e1c3074fa14d5fb0720`; the newer preset runtime packages
+are not bundled. The reviewed composition loader is refreshed to the rc.5
+source: `cordis-plugin-loader` 1.0.6, `cordis-plugin-include` 1.0.10 and
+`cordis-plugin-group` 1.0.5 (MIT, Shigma).
 
 Preset discovery and metadata, hook matching and dialect codecs, and additive
 persona templates run through receipt-backed inputs. Core retains selection,
 prompt assembly, sessions, approvals and writable roots. Original persona source
-hashes are recorded in `crates/tui/extension-host/src/dsh/persona.UPSTREAM.json`.
+hashes are recorded in `crates/engine/extension-host/src/dsh/persona.UPSTREAM.json`.
 The identical upstream license text for all six packages is also carried in
-`crates/tui/extension-host/dist/LICENSES.txt`.
+`crates/engine/extension-host/dist/LICENSES.txt`.
 
 ```
 MIT License

@@ -55,6 +55,8 @@ fn main() -> std::process::ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    codewhale_runtime::resolve_state_from_environment();
+
     // Published codew/codewhale-tui compatibility names are copies or links
     // to this executable and use the same CLI parser and Engine entrypoint.
     codewhale_cli::run_cli()

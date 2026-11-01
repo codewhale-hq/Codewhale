@@ -6,7 +6,7 @@
 use super::*;
 
 pub(crate) struct OfflineQueueTransition {
-    lease: Arc<crate::session_manager::OfflineQueueLease>,
+    lease: Arc<codewhale_engine::session_manager::OfflineQueueLease>,
     restored: Option<OfflineQueueState>,
 }
 
@@ -19,7 +19,7 @@ pub(crate) struct OfflineQueueTransition {
 pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
     app.add_message(crate::tui::history::HistoryCell::Error {
         message: message.clone(),
-        severity: crate::error_taxonomy::ErrorSeverity::Error,
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
     });
     app.status_message = Some(message);
 }
@@ -84,12 +84,47 @@ pub(crate) fn offline_queue_projection(
     (app.queued_messages.clone(), draft)
 }
 
+#[derive(Clone)]
+pub(crate) struct SavedWorkProjection {
+    pub(super) owner: Option<String>,
+    pub(super) state: Option<codewhale_engine::session_manager::SessionWorkState>,
+}
+
+pub(crate) fn saved_work_projection(app: &App, session: &SavedSession) -> SavedWorkProjection {
+    SavedWorkProjection {
+        owner: app.current_session_id.clone(),
+        state: session.work_state.clone(),
+    }
+}
+
+pub(crate) async fn publish_saved_work_projection(
+    app: &mut App,
+    projection: &SavedWorkProjection,
+) -> Result<bool, String> {
+    let Some(work) = app.runtime_services.work.clone() else {
+        return Ok(false);
+    };
+    let published = work
+        .publish_pending_matching(
+            projection.owner.as_deref(),
+            projection
+                .state
+                .as_ref()
+                .and_then(|state| state.graph.as_ref()),
+        )
+        .await?;
+    if !published && work.has_pending_publish() {
+        return Err("a newer Work update remains pending".to_string());
+    }
+    Ok(published)
+}
+
+#[cfg(test)]
 pub(crate) async fn publish_pending_work_projection(app: &mut App) -> Result<bool, String> {
     let Some(work) = app.runtime_services.work.clone() else {
         return Ok(false);
     };
-    let published = work.publish_pending().await?;
-    Ok(published)
+    work.publish_pending().await
 }
 
 pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<bool, String> {
@@ -102,18 +137,20 @@ pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<boo
     let manager = SessionManager::default_location()
         .map_err(|err| format!("could not open sessions directory: {err}"))?;
     let session = build_session_snapshot(app, &manager)?;
+    let projection = saved_work_projection(app, &session);
     if app.current_session_id.is_none() {
         app.current_session_id = Some(session.metadata.id.clone());
     }
     if !persistence_actor::try_persist(PersistRequest::SaveCheckpoint { session }) {
         return Err("persistence actor is unavailable".to_string());
     }
-    publish_pending_work_projection(app).await
+    publish_saved_work_projection(app, &projection).await
 }
 
 pub(crate) fn persist_with_pending_work_boundary(
     app: &mut App,
     request: PersistRequest,
+    projection: &SavedWorkProjection,
 ) -> Result<(), String> {
     let has_pending = app
         .runtime_services
@@ -121,13 +158,13 @@ pub(crate) fn persist_with_pending_work_boundary(
         .as_ref()
         .is_some_and(|work| work.has_pending_publish());
     if !has_pending {
-        persistence_actor::persist(request);
-        return Ok(());
+        return persistence_actor::persist_checked(request);
     }
     if !persistence_actor::try_persist(request) {
         return Err("persistence actor is unavailable".to_string());
     }
-    app.publish_pending_work_state().map(|_| ())
+    app.publish_saved_work_state(projection.owner.as_deref(), projection.state.as_ref())
+        .map(|_| ())
 }
 
 pub(crate) fn restore_matching_offline_queue_state(
@@ -249,7 +286,7 @@ fn record_ui_stall(app: &App, phase: &str, since_progress: Duration, bound: Dura
 pub(crate) fn reconcile_turn_liveness_supervised(
     app: &mut App,
     now: Instant,
-    heartbeat: &crate::core::engine::turn_heartbeat::HeartbeatSnapshot,
+    heartbeat: &codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot,
     engine: &EngineHandle,
 ) -> bool {
     let turn_in_progress = matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
@@ -263,7 +300,7 @@ pub(crate) fn reconcile_turn_liveness_supervised(
     let has_live_agents = live_running_agent_count(app, now) > 0;
     let recovered = reconcile_turn_liveness_with(app, now, has_live_agents, Some(heartbeat));
     if recovered && turn_in_progress && app.runtime_turn_status.is_none() {
-        engine.cancel_with_reason(crate::core::engine::CancelReason::Stalled);
+        engine.cancel_with_reason(codewhale_engine::core::engine::CancelReason::Stalled);
         app.suppress_stream_events_until_turn_complete = true;
     }
     recovered
@@ -283,7 +320,7 @@ pub(crate) fn reconcile_turn_liveness_with(
     app: &mut App,
     now: Instant,
     has_running_agents: bool,
-    heartbeat: Option<&crate::core::engine::turn_heartbeat::HeartbeatSnapshot>,
+    heartbeat: Option<&codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot>,
 ) -> bool {
     // The engine is inside a wait it bounds itself and has not reported as
     // overdue (a quiet model, a live stream). Its watchdog owns that bound;
@@ -425,39 +462,56 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(session) = build_session_snapshot(app, &manager)
     {
+        let projection = saved_work_projection(app, &session);
         if app.current_session_id.is_none() {
             app.current_session_id = Some(session.metadata.id.clone());
         }
-        if let Err(err) =
-            persist_with_pending_work_boundary(app, PersistRequest::SaveCheckpoint { session })
-        {
+        if let Err(err) = persist_with_pending_work_boundary(
+            app,
+            PersistRequest::SaveCheckpoint { session },
+            &projection,
+        ) {
             app.status_message = Some(format!(
-                "To-do list update pending: recovery snapshot could not be queued ({err})"
+                "To-do list update pending while saving recovery snapshot ({err})"
             ));
         }
     }
 }
 
 pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location()
-        && let Ok(session) = build_session_snapshot(app, &manager)
-    {
-        app.current_session_id = Some(session.metadata.id.clone());
-        if let Err(err) =
-            persist_with_pending_work_boundary(app, PersistRequest::SessionSnapshot(session))
-        {
-            app.status_message = Some(format!(
-                "To-do list update pending: reset snapshot could not be queued ({err})"
-            ));
+    let session = SessionManager::default_location()
+        .map_err(|err| err.to_string())
+        .and_then(|manager| build_session_snapshot(app, &manager));
+    let session = match session {
+        Ok(session) => session,
+        Err(err) => {
+            let id = app
+                .current_session_id
+                .as_deref()
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—");
+            let message = app
+                .tr(MessageId::SessionSaveFailed)
+                .replace("{id}", id)
+                .replace("{error}", &err);
+            app.add_message(crate::tui::history::HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            });
+            app.status_message = Some(message);
+            return;
         }
-    }
-    // `/clear` and `/new` are explicit boundaries. Never let an older
-    // in-flight checkpoint resurrect the session the user just discarded,
-    // even if the replacement snapshot could not be constructed.
-    // `build_session_snapshot` reuses `current_session_id`, so this id is the
-    // discarded session's id whether or not the snapshot above succeeded.
-    if let Some(session_id) = app.current_session_id.clone() {
-        persistence_actor::persist(PersistRequest::ClearCheckpoint { session_id });
+    };
+    let projection = saved_work_projection(app, &session);
+    app.current_session_id = Some(session.metadata.id.clone());
+    if let Err(err) = persist_with_pending_work_boundary(
+        app,
+        PersistRequest::CompletedCommit { session },
+        &projection,
+    ) {
+        app.status_message = Some(format!(
+            "To-do list update pending while saving reset snapshot ({err})"
+        ));
     }
 }
 
@@ -609,7 +663,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
     app.add_message(HistoryCell::Error {
         message: "Engine stopped before completing the turn. Check ~/.codewhale/crashes and retry."
             .to_string(),
-        severity: crate::error_taxonomy::ErrorSeverity::Error,
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
     });
     app.push_status_toast(
         "Engine stopped before completing the turn.",
@@ -858,7 +912,7 @@ pub(crate) fn resume_launch_session(app: &mut App, session_id: &str) -> commands
         );
         commands::CommandResult::ok()
     };
-    let manager = match crate::session_manager::SessionManager::default_location() {
+    let manager = match codewhale_engine::session_manager::SessionManager::default_location() {
         Ok(manager) => manager,
         Err(err) => return failed(app, &err.to_string()),
     };
@@ -1266,7 +1320,7 @@ pub(crate) fn restore_loaded_session_provider(
     let provider = identity.provider;
     config.scope_to_provider_identity(&identity)?;
     app.set_provider_identity_record(identity.clone());
-    app.billing_presentation = crate::route_billing::for_route(config, &identity);
+    app.billing_presentation = codewhale_engine::route_billing::for_route(config, &identity);
     app.max_subagents = config
         .max_subagents_for_provider(&identity)
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
@@ -1290,10 +1344,11 @@ pub(crate) fn restore_loaded_session_provider(
     app.set_active_context_window_override(config, &identity);
     app.active_route_limits = app.context_window_override_limits();
     app.active_route_base_url = config.active_route_base_url();
+    app.active_context_window = app.configured_context_window_for(&app.model);
     app.active_context_window_source = app
         .configured_context_window_for(&app.model)
         .map(|resolution| resolution.source)
-        .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+        .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
     Ok(())
 }
 
@@ -1315,14 +1370,15 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
     if app.auto_model {
         app.active_route_limits = app.context_window_override_limits();
         app.active_route_base_url = config.active_route_base_url();
+        app.active_context_window = app.configured_context_window_for(&app.model);
         app.active_context_window_source = app
             .configured_context_window_for(&app.model)
             .map(|resolution| resolution.source)
-            .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+            .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         return;
     }
 
-    match crate::route_runtime::resolve_runtime_route_for_identity(
+    match codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         config,
         &identity,
         Some(&app.model),
@@ -1331,16 +1387,17 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         }
         Err(_) => {
             app.active_route_limits = app.context_window_override_limits();
             app.active_route_base_url = config.active_route_base_url();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)
-                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         }
     }
 }
@@ -1356,10 +1413,11 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
 ///
 /// Never leaks raw prompt text — the result is always a concise label.
 pub(crate) fn derive_session_title(messages: &[Message]) -> Option<String> {
-    let text = crate::session_manager::conversation_title_prompt(messages)?;
+    let text = codewhale_engine::session_manager::conversation_title_prompt(messages)?;
 
-    let first_line =
-        crate::session_manager::sanitize_session_title(text.lines().next().unwrap_or("").trim());
+    let first_line = codewhale_engine::session_manager::sanitize_session_title(
+        text.lines().next().unwrap_or("").trim(),
+    );
     let first_line = first_line.trim();
     if first_line.is_empty() {
         return None;
@@ -1411,7 +1469,7 @@ mod derived_title_tests {
 
     #[test]
     fn live_title_uses_the_same_user_prompt_after_runtime_handoffs() {
-        let handoff = crate::runtime_handoff::operate_contract_runtime_message();
+        let handoff = codewhale_engine::runtime_handoff::operate_contract_runtime_message();
         assert_eq!(derive_session_title(std::slice::from_ref(&handoff)), None);
         let messages = [handoff, user("/goal Fix the diagnostic display")];
         assert_eq!(
@@ -1419,7 +1477,7 @@ mod derived_title_tests {
             Some("/goal Fix")
         );
         assert_eq!(
-            crate::session_manager::conversation_title_prompt(&messages),
+            codewhale_engine::session_manager::conversation_title_prompt(&messages),
             Some("/goal Fix the diagnostic display")
         );
     }

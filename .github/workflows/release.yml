@@ -146,6 +146,8 @@ jobs:
       compiled_host_run_id: ${{ vars.CODEWHALE_COMPILED_HOST_QUALIFICATION_RUN_ID || '' }}
       compiled_host_targets: ${{ vars.CODEWHALE_COMPILED_HOST_TARGETS || 'linux-x64,macos-arm64,windows-x64' }}
       retention_days: 14
+    secrets:
+      CODEWHALE_RELEASE_SIGNING_KEY: ${{ secrets.CODEWHALE_RELEASE_SIGNING_KEY }}
 
   docker-build:
     needs: [artifacts, resolve]

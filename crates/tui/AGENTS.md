@@ -25,6 +25,28 @@ Read the repository guidance first.
 - User-visible prose uses `tr(locale, MessageId::...)`. Commands, key names, and
   glyphs are composed in code. Follow `locales/AGENTS.md` for string changes.
 
+## Runtime API has a consumer outside this repo
+
+`runtime_api.rs` is the only API of the community VS Code extension
+(`HengQuWorld/CodeWhale-VSCode`): it spawns `codewhale serve --http` and drives
+every feature through `/v1/*` (`src/api/api-client.ts`). No test here exercises
+that client, so an incompatible change lands silently. Additive routes and
+optional fields are safe; renaming, removing, or changing a shipped route
+(path, method, status, required fields, enum spelling) needs the extension's
+client updated in the same change, or both shapes kept.
+
+- The extension feature-detects by probing a route with the wrong method and
+  reading anything but `404` as present. Do not add a fallback that answers
+  `404` for an unrouted method; it disables those features rather than failing.
+- It reads the listener port from `RUNTIME_LISTENING_PREFIX` on stdout and
+  rejects any other port, then requires `401` anonymously and `200` with the
+  bearer token.
+- Advertise a `/v1/runtime/info` capability flag only while all its routes
+  exist; the extension cannot probe a family whose detail routes answer `404`.
+
+`docs/RUNTIME_API.md` is the written contract. That repository also holds the
+TUI/GUI parity rules for endpoint changes.
+
 ## Verification
 
 Select the smallest evidence that answers the actual risk. Direct PTY or

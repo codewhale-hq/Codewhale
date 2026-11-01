@@ -38,11 +38,12 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-10-27T20:10:16.080Z",
+  "generatedAt": "2026-10-31T23:51:59.447Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.2",
   "crates": [
+    "account-cli",
     "agent",
     "agent-contract",
     "app-server",
@@ -54,6 +55,8 @@ export const FACTS: RepoFacts = {
     "config",
     "core",
     "dependencies",
+    "engine",
+    "error-taxonomy",
     "execpolicy",
     "hooks",
     "lane",
@@ -66,6 +69,7 @@ export const FACTS: RepoFacts = {
     "notify",
     "palette",
     "paths",
+    "plugins",
     "protocol",
     "release",
     "repl",
@@ -74,11 +78,13 @@ export const FACTS: RepoFacts = {
     "sanitize",
     "secrets",
     "skill-install",
+    "skills",
     "snapshot",
     "state",
     "telemetry",
     "tools",
     "tui",
+    "tui-kit",
     "util",
     "workflow",
     "workflow-js"
@@ -1071,7 +1077,7 @@ export const FACTS: RepoFacts = {
   ],
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=18",
-  "toolCount": 79,
+  "toolCount": 81,
   "contributorCount": 393,
   "license": "MIT",
   "latestPublishedRelease": {

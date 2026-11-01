@@ -11,9 +11,9 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::tui::glyphs;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::ChromeInk;
+use codewhale_tui_kit::glyphs;
 
 /// What happened to the automation or its run. Drives the card's ink; the
 /// visible verb phrase comes from the producer (localized at construction).

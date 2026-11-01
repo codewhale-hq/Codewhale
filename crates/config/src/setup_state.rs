@@ -45,7 +45,7 @@ pub const SETUP_STATE_FILE_NAME: &str = "setup_state.json";
 /// when the collection policy, schema, or disclosure materially changes. Prior
 /// declines remain off. Keying it to the app version would re-prompt every
 /// release, which is nagging with extra steps.
-pub const TELEMETRY_NOTICE_VERSION: &str = "5";
+pub const TELEMETRY_NOTICE_VERSION: &str = "6";
 
 /// Canonical setup step ids. The ordering matches the first-run spine so a
 /// `BTreeMap<SetupStep, _>` renders in wizard order.

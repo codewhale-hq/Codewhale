@@ -183,7 +183,7 @@ impl<'a> Segmented<'a> {
             theme.fg(Role::Muted)
         };
         let bracket = if self.focused && !disabled {
-            theme.fg(Role::Primary)
+            theme.fg(Role::Accent)
         } else {
             theme.fg(Role::Foreground)
         };

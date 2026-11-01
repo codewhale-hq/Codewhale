@@ -159,7 +159,7 @@ def presentation_provider_ids() -> set[str]:
 
 def provider_tables(config_rs: str) -> set[str]:
     struct_start = require_index(
-        config_rs, "pub struct ProvidersToml", "crates/config/src/lib.rs"
+        config_rs, "pub struct ProvidersToml", "crates/config/src/provider_toml.rs"
     )
     struct_end = require_index(config_rs, "\n}", "ProvidersToml struct", struct_start)
     fields = re.findall(
@@ -219,9 +219,14 @@ def report_tui_catalog_contract(tui_config_rs: str) -> list[str]:
             errors.append(f"retired provider enum consumer: {path.relative_to(ROOT)}")
         if re.search(r"KIND_LOOKUP|FROM_KIND_LOOKUP|ProviderKind::from_kind\(", source):
             errors.append(f"retired provider ordinal bridge: {path.relative_to(ROOT)}")
-    for signature in ("pub(crate) fn active_provider_identity", "pub(crate) fn provider_identities", "pub(crate) fn resolve_provider_selection_identity", "pub(crate) fn verify_provider_identity"):
-        if signature not in tui_config_rs:
-            errors.append(f"missing canonical config identity boundary: {signature}")
+    for function_name in (
+        "active_provider_identity",
+        "provider_identities",
+        "resolve_provider_selection_identity",
+        "verify_provider_identity",
+    ):
+        if not re.search(rf"\bpub(?:\(crate\))?\s+fn\s+{function_name}\b", tui_config_rs):
+            errors.append(f"missing canonical config identity boundary: {function_name}")
     descriptor_source = read(ROOT / "crates/config/src/descriptors.rs")
     if "PROVIDER_COMPATIBILITY" not in descriptor_source or "pub fn compatibility_for_selector" not in descriptor_source:
         errors.append("released presentation identities must use the existing generated descriptor owner")
@@ -567,7 +572,7 @@ def provider_table_name(provider_id: str) -> str:
 
 def main() -> int:
     try:
-        config_rs = read(CONFIG_RS)
+        config_rs = "\n".join(read(path) for path in sorted(CONFIG_RS.parent.glob("*.rs")) if path.name != "tests.rs")
         provider_kind_rs = read(PROVIDER_KIND_RS)
         tui_config_rs = read(TUI_CONFIG_RS)
         agent_rs = read(AGENT_RS)

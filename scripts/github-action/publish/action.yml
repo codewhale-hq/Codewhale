@@ -9,6 +9,12 @@ inputs:
     default: ${{ github.token }}
   pr-number:
     description: PR number for workflow_dispatch; pull_request events use the event snapshot.
+  trigger-phrase:
+    description: Same bot mention as the analysis job.
+    default: '@codewhale'
+  allow-forks:
+    description: Same trusted-event fork policy as the analysis job.
+    default: 'false'
   reviewer-login:
     description: Exact GitHub login used by github-token; only this author's Codewhale markers deduplicate reviews.
     default: github-actions[bot]
@@ -28,6 +34,8 @@ runs:
         CW_ACTION_PATH: ${{ github.action_path }}
         CW_FINDINGS: ${{ inputs.findings }}
         CW_PR_NUMBER: ${{ inputs.pr-number }}
+        CW_TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
+        CW_ALLOW_FORKS: ${{ inputs.allow-forks }}
         CW_REVIEWER_LOGIN: ${{ inputs.reviewer-login }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: node "$CW_ACTION_PATH/../publish.mjs"

@@ -1,5 +1,7 @@
 import { docsClaudeCode as enDocsClaudeCode } from "./en/docs-claude-code";
 import { docsClaudeCode as zhDocsClaudeCode } from "./zh/docs-claude-code";
+import { enterprise as enEnterprise, type EnterpriseDict } from "./en/enterprise";
+import { enterprise as zhEnterprise } from "./zh/enterprise";
 import { docsSkills as enDocsSkills } from "./en/docs-skills";
 import { docsSkills as zhDocsSkills } from "./zh/docs-skills";
 /**
@@ -638,6 +640,10 @@ export function splitToken(template: string, token: string): string[] {
 
 export function getDocsSkills(locale: string): DocsPageDict {
   return locale === "zh" ? zhDocsSkills : enDocsSkills;
+}
+
+export function getEnterprise(locale: string): EnterpriseDict {
+  return locale === "zh" ? zhEnterprise : enEnterprise;
 }
 
 export function getDocsClaudeCode(locale: string): DocsPageDict {

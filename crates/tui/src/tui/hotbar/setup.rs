@@ -609,7 +609,7 @@ impl HotbarSetupView {
         show_description: bool,
     ) -> Line<'static> {
         let selected = idx == self.selected_action_idx(source);
-        let marker = crate::tui::glyphs::selection_marker(selected);
+        let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
         let checked = if self
             .draft_bindings
             .values()
@@ -640,7 +640,7 @@ impl HotbarSetupView {
         } else {
             (prefix.trim_end(), "")
         };
-        let text = crate::tui::ui_text::semantic_truncate_with_affixes(
+        let text = codewhale_tui_kit::ui_text::semantic_truncate_with_affixes(
             prefix,
             description,
             &suffix,
@@ -1057,7 +1057,7 @@ fn preview_line(row: &HotbarSetupActionRow) -> String {
 
 fn compact_action_id(action_id: &str) -> String {
     let suffix = action_id.rsplit('.').next().unwrap_or(action_id);
-    crate::tui::ui_text::truncate_line_to_width(suffix, 7)
+    codewhale_tui_kit::ui_text::truncate_line_to_width(suffix, 7)
 }
 
 #[cfg(test)]
@@ -1156,11 +1156,11 @@ mod tests {
         let mut app = test_app();
         let mut registry = HotbarActionRegistry::with_builtins();
         registry.register_skills(&[("demo".to_string(), "Demo skill".to_string())]);
-        registry.replace_mcp_tools(Some(&crate::mcp::McpManagerSnapshot {
+        registry.replace_mcp_tools(Some(&codewhale_engine::mcp::McpManagerSnapshot {
             config_path: PathBuf::from("mcp.json"),
             config_exists: true,
             reload_required: false,
-            servers: vec![crate::mcp::McpServerSnapshot {
+            servers: vec![codewhale_engine::mcp::McpServerSnapshot {
                 name: "search".to_string(),
                 enabled: true,
                 required: false,
@@ -1172,8 +1172,9 @@ mod tests {
                 connected: true,
                 error: None,
                 auth_required: false,
-                capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
-                tools: vec![crate::mcp::McpDiscoveredItem {
+                capability_metadata:
+                    codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
+                tools: vec![codewhale_engine::mcp::McpDiscoveredItem {
                     name: "web_search".to_string(),
                     model_name: "mcp_search_web_search".to_string(),
                     description: Some("Search the web".to_string()),
@@ -1530,7 +1531,7 @@ mod tests {
         let text = view
             .action_row_line(HotbarActionCategory::App, 0, &row, 58, true)
             .to_string();
-        assert!(crate::tui::ui_text::text_display_width(&text) <= 58);
+        assert!(codewhale_tui_kit::ui_text::text_display_width(&text) <= 58);
         assert!(text.contains("Open a detailed…"), "{text:?}");
         assert!(!text.contains("Open a detailed s"), "{text:?}");
     }
@@ -1586,7 +1587,7 @@ mod tests {
         assert_ne!(selected.metadata.id, "slash.export");
 
         let rendered = rendered_text_at(&view, 80, 24);
-        let marker = crate::tui::glyphs::selection_marker(true);
+        let marker = codewhale_tui_kit::glyphs::selection_marker(true);
         assert!(
             rendered.lines().any(|line| {
                 line.contains(marker) && line.contains(&selected.metadata.display_name)

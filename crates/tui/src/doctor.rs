@@ -43,20 +43,22 @@ impl DoctorPathReport {
             .context("could not resolve the canonical settings path")?;
         let sessions = codewhale_config::resolve_state_dir("sessions")
             .context("could not resolve the sessions path")?;
-        let logs = crate::runtime_log::log_directory()
+        let logs = codewhale_runtime::runtime_log::log_directory()
             .context("could not resolve the runtime log directory")?;
-        let automations = crate::automation_manager::default_automations_dir();
-        let task_manager_root = crate::task_manager::default_tasks_dir();
+        let automations = codewhale_engine::automation_manager::default_automations_dir();
+        let task_manager_root = codewhale_engine::task_manager::default_tasks_dir();
         let task_manager_tasks = task_manager_root.join("tasks");
         let task_manager_artifacts = task_manager_root.join("artifacts");
-        let runtime_config = crate::runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
-            task_manager_root.clone(),
-        );
+        let runtime_config =
+            codewhale_engine::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+                task_manager_root.clone(),
+            );
         let runtime_store = runtime_config.data_dir;
         let runtime_events = runtime_store.join("events");
-        let personal_fleet_definitions = crate::fleet::exact::personal_fleet_definitions_dir()
-            .context("could not resolve the personal Fleet definitions directory")?;
-        let personal_fleet_agents = crate::fleet::profile::personal_agent_profile_dir()
+        let personal_fleet_definitions =
+            codewhale_engine::fleet::exact::personal_fleet_definitions_dir()
+                .context("could not resolve the personal Fleet definitions directory")?;
+        let personal_fleet_agents = codewhale_engine::fleet::profile::personal_agent_profile_dir()
             .context("could not resolve the personal Fleet agent directory")?;
         let (secrets, _) = codewhale_secrets::FileKeyringStore::default_paths_read_only()
             .context("could not resolve the file secret backend path")?;
@@ -275,7 +277,7 @@ const SEARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) enum DoctorSearchProbeReport {
     NotChecked,
     FeatureDisabled,
-    ConfigurationError(crate::tools::web_search::SearchProbeTargetError),
+    ConfigurationError(codewhale_engine::tools::web_search::SearchProbeTargetError),
     PolicyDenied {
         authority: String,
     },
@@ -322,7 +324,8 @@ pub(crate) async fn doctor_search_probe(
         .search
         .as_ref()
         .and_then(|search| search.base_url.as_deref());
-    let target = match crate::tools::web_search::search_probe_target(provider, base_url) {
+    let target = match codewhale_engine::tools::web_search::search_probe_target(provider, base_url)
+    {
         Ok(target) => target,
         Err(error) => return DoctorSearchProbeReport::ConfigurationError(error),
     };
@@ -381,7 +384,7 @@ pub(crate) async fn doctor_search_probe(
 
 /// Plain, bounded doctor copy for a search reachability result.
 pub(crate) fn doctor_search_probe_lines(report: &DoctorSearchProbeReport) -> Vec<String> {
-    use crate::tools::web_search::SearchProbeTargetError;
+    use codewhale_engine::tools::web_search::SearchProbeTargetError;
 
     match report {
         DoctorSearchProbeReport::NotChecked => vec![
@@ -515,9 +518,15 @@ fn doctor_update_report_lines(report: &DoctorUpdateReport, update_command: &str)
 /// explicit request bit. The default branch returns before constructing an
 /// HTTP request. Failure details are deliberately typed and generic because
 /// transport errors and release metadata are untrusted strings.
-pub(crate) async fn print_update_report(probes: DoctorProbeRequest) {
+pub(crate) async fn print_update_report(
+    probes: DoctorProbeRequest,
+    update: &codewhale_runtime::config::UpdateConfig,
+) {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("  · current: v{current_version}");
+    for line in update_mode_lines(update) {
+        println!("  · {line}");
+    }
     let report = if probes.should_check_updates() {
         doctor_update_report(
             current_version,
@@ -557,8 +566,8 @@ pub(crate) fn is_keyless_ds4_route(config: &codewhale_runtime::config::Config) -
 pub(crate) async fn probe_ds4_models(
     config: &codewhale_runtime::config::Config,
 ) -> anyhow::Result<()> {
-    use crate::client::CodewhaleClient;
-    use crate::core::model_client::ModelClient;
+    use codewhale_engine::client::CodewhaleClient;
+    use codewhale_engine::core::model_client::ModelClient;
 
     let endpoint =
         codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
@@ -625,3 +634,157 @@ fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> S
 #[cfg(test)]
 #[path = "doctor/tests.rs"]
 mod tests;
+
+pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig) -> Vec<String> {
+    use codewhale_release::autoupdate;
+    let method = codewhale_release::current_install_method();
+    let resolved = autoupdate::resolve_mode(update.mode.as_deref(), update.check_for_updates);
+    let mut lines = vec![if method.supports_self_update() {
+        format!("automatic updates: {}", resolved.describe())
+    } else {
+        format!(
+            "automatic updates: not for this copy; {} updates it ({})",
+            method.label(),
+            method.update_command()
+        )
+    }];
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        if let Some(staged) = autoupdate::load_staged(&home) {
+            lines.push(format!(
+                "staged: v{} ({}){}",
+                staged.version,
+                if staged.signed {
+                    "signed; applies at next start"
+                } else {
+                    "checksum verified; waits for your OK"
+                },
+                if staged.declined {
+                    "; you declined it, run `codewhale update` to install"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if let Some(previous) = autoupdate::load_previous(&home) {
+            lines.push(format!(
+                "rollback: v{} is kept (`codewhale update --rollback`)",
+                previous.version
+            ));
+        }
+        if let Some(skip) = autoupdate::load_state(&home).skip_version {
+            lines.push(format!(
+                "skipped: v{skip} was rolled back and is not reinstalled automatically"
+            ));
+        }
+    }
+    lines
+}
+
+pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
+    let running = std::env::current_exe().ok();
+    let inventory = codewhale_release::installs::inventory(running.as_deref());
+    let mut lines = inventory.summary_lines(brief, env!("CARGO_PKG_VERSION"));
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        let now = codewhale_release::check::now_unix();
+        for folder in codewhale_release::installs::recovery_folders(&home) {
+            if folder.records.is_empty() {
+                continue;
+            }
+            lines.push(format!(
+                "Recovery {}: {} item(s), {}, deleted in {} day(s). Undo: codewhale doctor --restore {}",
+                folder.stamp,
+                folder.records.len(),
+                codewhale_release::installs::human_bytes(folder.bytes()),
+                folder.expires_in_days(now).unwrap_or(0),
+                folder.stamp
+            ));
+        }
+    }
+    lines
+}
+
+pub(crate) fn run_installs_report(json: bool, brief: bool) -> Result<()> {
+    if !json {
+        for line in installation_lines(brief) {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+    let running = std::env::current_exe().ok();
+    let inventory = codewhale_release::installs::inventory(running.as_deref());
+    let rows: Vec<_> = inventory
+        .entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "path": entry.path,
+                "class": entry.class.label(),
+                "reason": match &entry.class {
+                    codewhale_release::installs::InstallClass::NotOurs(reason) => Some(*reason),
+                    _ => None,
+                },
+                "owner": match &entry.class {
+                    codewhale_release::installs::InstallClass::PackageManaged(method) => Some(method.label()),
+                    _ => None,
+                },
+                "owner_command": entry.owner_command(),
+                "is_dir": entry.is_dir,
+                "bytes": entry.bytes,
+                "active": entry.active,
+                "running": Some(entry.path.as_path()) == running.as_deref(),
+                "same_as_running": entry.same_as_running,
+            })
+        })
+        .collect();
+    let recovery: Vec<_> = codewhale_config::codewhale_home()
+        .map(|home| codewhale_release::installs::recovery_folders(&home))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|folder| {
+            serde_json::json!({
+                "stamp": folder.stamp,
+                "path": folder.dir,
+                "items": folder.records.len(),
+                "bytes": folder.bytes(),
+                "expires_in_days": folder.expires_in_days(codewhale_release::check::now_unix()),
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "installations": rows,
+            "leftover_bytes": inventory.leftover_bytes(),
+            "summary": inventory.summary_lines(brief, env!("CARGO_PKG_VERSION")),
+            "recovery": recovery,
+        }))?
+    );
+    Ok(())
+}
+
+pub(crate) fn run_restore(stamp: &str) -> Result<()> {
+    let home = codewhale_config::codewhale_home()?;
+    let stamp = (stamp != "latest").then_some(stamp);
+    let (stamp, report) = codewhale_release::installs::restore(&home, stamp)?;
+    for path in &report.restored {
+        println!("Restored {}", path.display());
+    }
+    for (path, reason) in &report.skipped {
+        println!("Kept in recovery: {} ({reason})", path.display());
+    }
+    if let Some(displaced) = &report.displaced {
+        println!(
+            "The files that were in those places are kept in recovery {displaced}. Undo: codewhale doctor --restore {displaced}"
+        );
+    }
+    println!(
+        "Restored {} of {} item(s) from recovery {stamp}.",
+        report.restored.len(),
+        report.restored.len() + report.skipped.len()
+    );
+    if !report.skipped.is_empty() {
+        anyhow::bail!("some items could not be restored; they stay in the recovery folder");
+    }
+    Ok(())
+}

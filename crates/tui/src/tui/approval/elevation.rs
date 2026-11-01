@@ -158,12 +158,12 @@ impl ElevationView {
 
     fn select_prev(&mut self) {
         self.selected =
-            crate::tui::list_nav::wrap_index(self.selected, self.request.options.len(), -1);
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.request.options.len(), -1);
     }
 
     fn select_next(&mut self) {
         self.selected =
-            crate::tui::list_nav::wrap_index(self.selected, self.request.options.len(), 1);
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.request.options.len(), 1);
     }
 
     fn current_option(&self) -> &ElevationOption {

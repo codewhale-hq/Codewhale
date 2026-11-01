@@ -752,7 +752,7 @@ impl<'a> NativeComposer<'a> {
             .unwrap_or_default();
         let role = |role| theme.map(|t| t.fg(role)).unwrap_or_default();
         let border = background.patch(role(if self.focused {
-            Role::Primary
+            Role::Accent
         } else {
             Role::Border
         }));
@@ -797,7 +797,7 @@ impl<'a> NativeComposer<'a> {
                             format!(" {} ", safe(hint)),
                             width.map(|width| width.saturating_sub(u16::from(panel) * 2)),
                         ),
-                        background.patch(role(Role::Primary)),
+                        background.patch(role(Role::Accent)),
                     )
                 }),
             quiet_hint: self
@@ -810,7 +810,7 @@ impl<'a> NativeComposer<'a> {
                             format!(" {} ", safe(hint)),
                             width.map(|width| width.saturating_sub(u16::from(panel) * 2)),
                         ),
-                        background.patch(role(Role::Primary)),
+                        background.patch(role(Role::Accent)),
                     )
                 }),
             styles: NativeComposerStyles {
@@ -819,7 +819,7 @@ impl<'a> NativeComposer<'a> {
                 quiet_border: background.patch(role(Role::Border)),
                 text: background.patch(role(Role::Foreground)),
                 selection: background.patch(role(Role::Foreground)),
-                prompt: background.patch(role(Role::Primary)),
+                prompt: background.patch(role(Role::Accent)),
                 submit: if self.can_submit {
                     submit.add_modifier(Modifier::BOLD)
                 } else {

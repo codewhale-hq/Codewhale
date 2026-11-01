@@ -913,7 +913,7 @@ impl<'a> Picker<'a> {
         let mut row = Row::default();
 
         let marker = glyphs::pick(glyphs::selection_marker(selected), ascii);
-        row.push(format!("{marker} "), theme.fg(Role::Primary));
+        row.push(format!("{marker} "), theme.fg(Role::Accent));
         if let Some(key) = item.key {
             row.push(format!("{key} "), theme.fg(Role::Muted));
         }
@@ -945,7 +945,7 @@ impl<'a> Picker<'a> {
                 label_style.add_modifier(Modifier::UNDERLINED)
             } else {
                 label_style
-                    .patch(theme.fg(Role::Primary))
+                    .patch(theme.fg(Role::Accent))
                     .add_modifier(Modifier::UNDERLINED)
             };
             for (run, style) in label_runs(&label, positions, label_w, ascii, label_style, hit) {
@@ -1084,7 +1084,7 @@ impl<'a> Picker<'a> {
                 spans.push(Span::raw(" ".repeat(GAP)));
             }
             if i == active {
-                spans.push(Span::styled(format!("{mark} "), theme.fg(Role::Primary)));
+                spans.push(Span::styled(format!("{mark} "), theme.fg(Role::Accent)));
                 let room = room.saturating_sub(text::width(mark) + 1);
                 spans.push(Span::styled(
                     text::truncate(label, room, ascii).into_owned(),
@@ -1153,7 +1153,7 @@ impl<'a> Picker<'a> {
         let ascii = theme.ascii();
         // `/` where ASCII-safe: `>` would read as the selection marker below.
         let prompt = if ascii { "/" } else { "\u{203a}" };
-        buf.set_string(rect.x, rect.y, prompt, theme.fg(Role::Primary));
+        buf.set_string(rect.x, rect.y, prompt, theme.fg(Role::Accent));
         let Some(view) = self.query_view(query, rect.width, ascii) else {
             return;
         };

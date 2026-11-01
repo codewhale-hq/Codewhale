@@ -19,9 +19,9 @@ use ratatui::text::{Line, Span};
 use serde_json::{Value, json};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tui::ui_text::truncate_line_to_width;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Maximum phase summary chips shown in the expanded body.
 const MAX_PHASE_SUMMARY: usize = 6;
@@ -242,7 +242,7 @@ impl WorkflowTokenSource {
 /// Immutable route captured by the task-started event (#4039, #5305).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowRowRoute {
-    pub child_route: Option<crate::tools::subagent::ChildRouteReceipt>,
+    pub child_route: Option<codewhale_engine::tools::subagent::ChildRouteReceipt>,
     pub role: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -253,7 +253,7 @@ pub struct WorkflowRowRoute {
 
 impl WorkflowRowRoute {
     fn from_json(value: &Value) -> Self {
-        let child_route: Option<crate::tools::subagent::ChildRouteReceipt> = value
+        let child_route: Option<codewhale_engine::tools::subagent::ChildRouteReceipt> = value
             .get("child_route")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok());
@@ -1103,7 +1103,8 @@ impl WorkflowPanel {
         if !self.phases.is_empty() {
             let mut chips = Vec::new();
             for (idx, phase) in self.phases.iter().take(MAX_PHASE_SUMMARY).enumerate() {
-                let marker = crate::tui::glyphs::selection_marker(idx == self.selected_phase);
+                let marker =
+                    codewhale_tui_kit::glyphs::selection_marker(idx == self.selected_phase);
                 chips.push(format!(
                     "{marker}{title} ({counts})",
                     title = short_label(&phase.title, 24),
@@ -1765,7 +1766,7 @@ impl WorkflowPanel {
             .saturating_sub(rest.width() + 3)
             .max(MIN_FINISH_TITLE_COLS);
         let facts = [
-            crate::tui::ui_text::semantic_truncate(&self.short_title(), title_cols),
+            codewhale_tui_kit::ui_text::semantic_truncate(&self.short_title(), title_cols),
             rest,
         ];
         let detail = match self.lifecycle {
@@ -2395,7 +2396,7 @@ fn now_ms() -> u64 {
 /// on `run_completed.result_preview`, so the transcript and the parent receipt
 /// never describe one result two ways.
 fn summarize_result_value(value: &Value) -> Option<String> {
-    crate::tools::workflow::workflow_result_preview(value)
+    codewhale_engine::tools::workflow::workflow_result_preview(value)
 }
 
 #[cfg(test)]

@@ -217,7 +217,7 @@ pub fn apply_focus_texture(
                     }
                     stats.cells_examined += 1;
                     let dot = if ascii_safe {
-                        crate::tui::glyphs::ascii_fallback(GRAIN_DOT).unwrap_or(".")
+                        codewhale_tui_kit::glyphs::ascii_fallback(GRAIN_DOT).unwrap_or(".")
                     } else {
                         GRAIN_DOT
                     };

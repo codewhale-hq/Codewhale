@@ -39,6 +39,7 @@ list_areas() {
   cat <<'EOF'
 area              command
 ----              -------
+account-cli       cargo test -p codewhale-account-cli --lib --locked
 agent             cargo test -p codewhale-agent --lib --locked
 agent-contract    cargo test -p codewhale-agent-contract --lib --locked
 app-server        cargo test -p codewhale-app-server --lib --locked
@@ -48,10 +49,13 @@ command-contract  cargo test -p codewhale-command-contract --lib --locked
 commands          cargo test -p codewhale-commands --lib --locked
 config            cargo test -p codewhale-config --lib --locked
 core              cargo test -p codewhale-core --lib --locked
+engine            cargo test -p codewhale-engine --lib --locked
+error-taxonomy    cargo test -p codewhale-error-taxonomy --lib --locked
 execpolicy        cargo test -p codewhale-execpolicy --lib --locked
 hooks             cargo test -p codewhale-hooks --lib --locked
 lane              cargo test -p codewhale-lane --lib --locked
 mcp               cargo test -p codewhale-mcp --lib --locked
+models            cargo test -p codewhale-models --lib --locked
 net               cargo test -p codewhale-net --lib --locked
 notify            cargo test -p codewhale-notify --lib --locked
 paths             cargo test -p codewhale-paths --lib --locked
@@ -66,7 +70,10 @@ state             cargo test -p codewhale-state --lib --locked
 telemetry         cargo test -p codewhale-telemetry --lib --locked
 tools             cargo test -p codewhale-tools --lib --locked
 tui               cargo test -p codewhale-tui --lib --locked
+tui-kit           cargo test -p codewhale-tui-kit --lib --locked
 skill-install     cargo test -p codewhale-skill-install --lib --locked
+skills            cargo test -p codewhale-skills --lib --locked
+plugins           cargo test -p codewhale-plugins --lib --locked
 util              cargo test -p codewhale-util --lib --locked
 dependencies      cargo test -p codewhale-dependencies --lib --locked
 snapshot          cargo test -p codewhale-snapshot --lib --locked
@@ -81,8 +88,8 @@ path prefix                         area / extra filter
 -----------                         -------------------
 crates/<crate>/                     <crate>
 crates/tui/src/tui/                 tui  tui::
-crates/tui/src/tools/               tui  tools::
-crates/tui/src/core/                tui  core::
+crates/engine/src/tools/           engine  tools::
+crates/engine/src/core/            engine  core::
 crates/tui/src/commands/            tui  commands::
 crates/tui/src/<file>.rs            tui  <file>::
 crates/runtime/src/<file>.rs        runtime  <file>::
@@ -146,12 +153,12 @@ if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
       area=tui
       extra=tui::
       ;;
-    crates/tui/src/tools/*)
-      area=tui
+    crates/engine/src/tools/*)
+      area=engine
       extra=tools::
       ;;
-    crates/tui/src/core/*)
-      area=tui
+    crates/engine/src/core/*)
+      area=engine
       extra=core::
       ;;
     crates/tui/src/commands/*)
@@ -165,7 +172,7 @@ if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
     crates/tui/*|crates/tui)
       area=tui
       ;;
-    crates/runtime/src/*|crates/commands/src/*|crates/command-contract/src/*)
+    crates/engine/src/*|crates/runtime/src/*|crates/commands/src/*|crates/command-contract/src/*)
       area=$(printf '%s' "$rel" | awk -F/ '{print $2}')
       extra=$(printf '%s' "${rel#crates/*/src/}" | awk -F/ '{print $1}')
       extra=${extra%.rs}::
@@ -190,6 +197,7 @@ fi
 pkg=
 target=--lib
 case $area in
+  account-cli) pkg=codewhale-account-cli ;;
   agent) pkg=codewhale-agent ;;
   agent-contract) pkg=codewhale-agent-contract ;;
   app-server) pkg=codewhale-app-server ;;
@@ -199,10 +207,13 @@ case $area in
   commands) pkg=codewhale-commands ;;
   config) pkg=codewhale-config ;;
   core) pkg=codewhale-core ;;
+  engine) pkg=codewhale-engine ;;
+  error-taxonomy) pkg=codewhale-error-taxonomy ;;
   execpolicy) pkg=codewhale-execpolicy ;;
   hooks) pkg=codewhale-hooks ;;
   lane) pkg=codewhale-lane ;;
   mcp) pkg=codewhale-mcp ;;
+  models) pkg=codewhale-models ;;
   net) pkg=codewhale-net ;;
   notify) pkg=codewhale-notify ;;
   paths) pkg=codewhale-paths ;;
@@ -217,7 +228,10 @@ case $area in
   telemetry) pkg=codewhale-telemetry ;;
   tools) pkg=codewhale-tools ;;
   tui) pkg=codewhale-tui ;;
+  tui-kit) pkg=codewhale-tui-kit ;;
   skill-install) pkg=codewhale-skill-install ;;
+  skills) pkg=codewhale-skills ;;
+  plugins) pkg=codewhale-plugins ;;
   util) pkg=codewhale-util ;;
   dependencies) pkg=codewhale-dependencies ;;
   snapshot) pkg=codewhale-snapshot ;;

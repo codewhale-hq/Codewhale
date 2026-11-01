@@ -161,7 +161,7 @@ impl Paint for Sprite<'_> {
                     } else {
                         "#"
                     };
-                    cell.set_symbol(symbol).set_style(theme.fg(Role::Primary));
+                    cell.set_symbol(symbol).set_style(theme.fg(Role::Accent));
                     continue;
                 }
                 let bg = color::resolvable_rgb(cell.bg);

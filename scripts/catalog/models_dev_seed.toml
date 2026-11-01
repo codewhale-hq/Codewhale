@@ -84,6 +84,8 @@ npm = "@ai-sdk/openai-compatible"
 env = ["MOONSHOT_API_KEY", "KIMI_API_KEY"]
 default = "kimi-k2.7-code"
 models = [
+  "kimi-k3.1-pro",
+  "kimi-k3.1-pro-highspeed",
   "kimi-k3",
   "kimi-k2.7-code",
   "kimi-k2.7-code-highspeed",
@@ -98,6 +100,7 @@ npm = "@ai-sdk/openai-compatible"
 env = ["MINIMAX_API_KEY"]
 default = "MiniMax-M3"
 models = [
+  "MiniMax-M3.1-Flash",
   "MiniMax-M3",
   "MiniMax-M2.7",
   "MiniMax-M2.7-highspeed",
@@ -112,6 +115,7 @@ npm = "@ai-sdk/anthropic"
 env = ["MINIMAX_API_KEY"]
 default = "MiniMax-M3"
 models = [
+  "MiniMax-M3.1-Flash",
   "MiniMax-M3",
   "MiniMax-M2.7",
   "MiniMax-M2.7-highspeed",
@@ -220,6 +224,7 @@ models = [
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
 ]
 
 [[providers]]

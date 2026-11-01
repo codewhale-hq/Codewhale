@@ -17,10 +17,16 @@
  */
 
 /** `SCHEMA_VERSION` in `crates/telemetry/src/event.rs`. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+/** Notice-v5 batches without `model_usage`, `tool_usage` or the `ci` source. */
+export const V3_SCHEMA_VERSION = 3;
 
 /** Disclosed default-on policy, not a record of human acceptance. */
-export const NOTICE_VERSION = 5;
+export const NOTICE_VERSION = 6;
+
+/** The notice version schema v3 batches carry. */
+export const V3_NOTICE_VERSION = 5;
 
 /** Explicit consent to the PostHog processor disclosure. */
 export const CONSENT_VERSION = 4;
@@ -128,6 +134,7 @@ export const SESSION_SOURCES = [
   "fork",
   "api",
   "unknown",
+  "ci",
 ] as const;
 
 /** `DurationBucket` wire spellings. */
@@ -184,6 +191,33 @@ export const OPERATIONS_FIELDS = [
   "requests", "errors", "duration_ms_total", "duration_ms_max", "probes", "probes_failed",
 ] as const;
 
+/** `ModelCounters::FIELDS`; turn counts are u32, token counts u64. */
+export const MODEL_COUNTER_FIELDS = [
+  "turns_ok",
+  "turns_failed",
+  "turns_interrupted",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+] as const;
+
+/** `event::TOOL_NAMES` plus the `mcp` and `other` buckets. */
+export const TOOL_NAMES = [
+  "agent", "apply_patch", "authenticate", "bash", "code_execution", "create_goal",
+  "diagnostics", "edit", "edit_file", "exec_shell", "execute_tools", "fetch_url",
+  "file_search", "fim_edit", "finance", "get_goal", "git_blame", "git_commit_plan",
+  "git_diff", "git_fetch", "git_log", "git_merge_tree", "git_show", "git_status",
+  "grep_files", "handle_read", "image_ocr", "js_execution", "list_dir", "load_skill",
+  "lsp", "memory_get", "memory_search", "note", "notify", "pandoc_convert",
+  "project_map", "read", "read_file", "read_media", "remember", "request_plugin_install",
+  "request_user_input", "retrieve_tool_result", "revert_turn", "review", "rlm",
+  "run_tests", "run_verifiers", "session_get", "session_search", "start_mcp_server",
+  "task_create", "task_shell_wait", "todo_write", "tool_search", "update_goal",
+  "update_plan", "validate_data", "verify", "wait_for_dev_server", "web_search",
+  "workflow", "write", "write_file", "mcp", "other",
+] as const;
+
 /** `Counters::FIELDS`, in declaration order. */
 export const COUNTER_FIELDS = [
   "turns",
@@ -237,6 +271,8 @@ export const EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ],
   panic: ["event", "site"],
   product_usage: ["event", "counters"],
+  model_usage: ["event", "provider", "model", "counters", "turn_wall"],
+  tool_usage: ["event", "tool", "calls", "errors"],
   operations_summary: ["event", ...OPERATIONS_FIELDS],
 };
 
@@ -287,6 +323,13 @@ const PROVIDER_RE = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 
 const U32_MAX = 4294967295;
 
+/**
+ * `event::is_reported_model_id` shape: a lowercased bundled-catalog id or
+ * `other`. The client closes the value against its catalog; the server bounds
+ * the shape, as it does for providers.
+ */
+const MODEL_RE = /^[a-z0-9][a-z0-9._:/@+-]{0,127}$/;
+
 /** Derived contract for CWC's product-only ingress; runtime events stay here. */
 export const CWC_PRODUCT_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -297,8 +340,8 @@ export const CWC_PRODUCT_SCHEMA = {
   additionalProperties: false,
   required: ENVELOPE_FIELDS,
   properties: {
-    schema_version: { const: SCHEMA_VERSION },
-    notice_version: { const: NOTICE_VERSION },
+    schema_version: { const: V3_SCHEMA_VERSION },
+    notice_version: { const: V3_NOTICE_VERSION },
     sent_at: { type: "string", pattern: SENT_AT_RE.source },
     install_id: { type: "string", pattern: INSTALL_ID_RE.source },
     app_version: { type: "string", maxLength: MAX_VERSION_LEN, pattern: VERSION_RE.source },
@@ -361,6 +404,14 @@ export type Event =
     }
   | { event: "panic"; site: string }
   | { event: "product_usage"; counters: ProductCounters }
+  | {
+      event: "model_usage";
+      provider: string;
+      model: string;
+      counters: Record<(typeof MODEL_COUNTER_FIELDS)[number], number>;
+      turn_wall: TurnWall;
+    }
+  | { event: "tool_usage"; tool: string; calls: number; errors: number }
   | ({ event: "operations_summary" } & Record<(typeof OPERATIONS_FIELDS)[number], number>);
 
 export interface Batch {
@@ -411,6 +462,24 @@ function enumString(
 ): string | null {
   if (typeof value !== "string" || !allowed.includes(value)) {
     return `${where}: not one of the documented values`;
+  }
+  return null;
+}
+
+function countMap(
+  value: unknown,
+  fields: readonly string[],
+  where: string,
+  max: number,
+): string | null {
+  if (!isPlainObject(value)) return `${where}: not an object`;
+  const keyError = keysExactly(value, fields, where);
+  if (keyError) return keyError;
+  for (const field of fields) {
+    const item = value[field];
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > max) {
+      return `${where}.${field}: not a count`;
+    }
   }
   return null;
 }
@@ -520,6 +589,23 @@ function validateEvent(value: unknown, where: string): string | null {
     }
     case "product_usage":
       return u32Map(value.counters, PRODUCT_COUNTER_FIELDS, `${where}.counters`);
+    case "model_usage": {
+      if (typeof value.provider !== "string" || !PROVIDER_RE.test(value.provider)) {
+        return `${where}.provider: not a provider id`;
+      }
+      if (typeof value.model !== "string" || !MODEL_RE.test(value.model)) {
+        return `${where}.model: not a catalogued model id`;
+      }
+      return (
+        countMap(value.counters, MODEL_COUNTER_FIELDS, `${where}.counters`, Number.MAX_SAFE_INTEGER) ??
+        u32Map(value.turn_wall, TURN_WALL_FIELDS, `${where}.turn_wall`)
+      );
+    }
+    case "tool_usage":
+      return (
+        enumString(value.tool, TOOL_NAMES, `${where}.tool`) ??
+        countMap({ calls: value.calls, errors: value.errors }, ["calls", "errors"], where, U32_MAX)
+      );
     case "panic": {
       const site = value.site;
       if (typeof site !== "string" || site.length > MAX_PANIC_SITE_LEN) {
@@ -547,7 +633,13 @@ export function validateBatch(value: unknown): Accepted | Rejection {
 
   const legacy = value.schema_version === 1;
   const explicitConsent = value.schema_version === 2;
-  if (!legacy && !explicitConsent && value.schema_version !== SCHEMA_VERSION) {
+  const preUsage = value.schema_version !== SCHEMA_VERSION;
+  if (
+    !legacy &&
+    !explicitConsent &&
+    value.schema_version !== SCHEMA_VERSION &&
+    value.schema_version !== V3_SCHEMA_VERSION
+  ) {
     return { ok: false, reason: "batch.schema_version: unsupported" };
   }
   const fields = legacy ? LEGACY_ENVELOPE_FIELDS : explicitConsent ? V2_ENVELOPE_FIELDS : ENVELOPE_FIELDS;
@@ -556,7 +648,11 @@ export function validateBatch(value: unknown): Accepted | Rejection {
   if (explicitConsent && value.consent_version !== CONSENT_VERSION) {
     return { ok: false, reason: "batch.consent_version: explicit current consent required" };
   }
-  if (!legacy && !explicitConsent && value.notice_version !== NOTICE_VERSION) {
+  if (
+    !legacy &&
+    !explicitConsent &&
+    value.notice_version !== (preUsage ? V3_NOTICE_VERSION : NOTICE_VERSION)
+  ) {
     return { ok: false, reason: "batch.notice_version: current policy required" };
   }
   if (typeof value.sent_at !== "string" || !SENT_AT_RE.test(value.sent_at)) {
@@ -601,6 +697,12 @@ export function validateBatch(value: unknown): Accepted | Rejection {
     if (isPlainObject(event)) {
       if (legacy && (event.event === "product_usage" || event.event === "operations_summary")) {
         return { ok: false, reason: "events: aggregate product/operations events require schema v2 or v3" };
+      }
+      if (preUsage && (event.event === "model_usage" || event.event === "tool_usage")) {
+        return { ok: false, reason: "events: model_usage and tool_usage require schema v4" };
+      }
+      if (preUsage && event.event === "session_start" && event.source === "ci") {
+        return { ok: false, reason: "events: the ci session source requires schema v4" };
       }
       if (event.event === "operations_summary" && value.surface !== "control-plane") {
         return { ok: false, reason: "events: operations_summary requires control-plane surface" };

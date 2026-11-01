@@ -9,6 +9,7 @@ use std::path::Path;
 
 use codewhale_config::ToolAskRule;
 use codewhale_execpolicy::PermissionAction;
+use codewhale_localization::{Locale, MessageId, tr};
 use serde_json::Value;
 
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
@@ -30,13 +31,13 @@ impl PermissionRuleSavePreview {
     /// card. The entries below it name each command or file, and `omitted`
     /// counts the rest, so the summary does not repeat a rule count (#6566).
     #[must_use]
-    pub fn summary(&self) -> String {
-        match self.action {
-            PermissionAction::Allow => "always allow",
-            PermissionAction::Ask => "always ask first",
-            PermissionAction::Deny => "never allow",
-        }
-        .to_string()
+    pub fn summary(&self, locale: Locale) -> String {
+        let id = match self.action {
+            PermissionAction::Allow => MessageId::ApprovalSaveSummaryAllow,
+            PermissionAction::Ask => MessageId::ApprovalSaveSummaryAsk,
+            PermissionAction::Deny => MessageId::ApprovalSaveSummaryDeny,
+        };
+        tr(locale, id).into_owned()
     }
 }
 

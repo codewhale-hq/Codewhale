@@ -11,15 +11,15 @@ The model should learn one canonical name for each common operation.
 
 Implementation sources:
 
-- `crates/tui/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
-- `crates/tui/src/tools/registry.rs` registers canonical tools and hidden aliases.
-- `crates/tui/src/tools/{file,file_tool,shell}.rs` own the small foreground
+- `crates/engine/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
+- `crates/engine/src/tools/registry.rs` registers canonical tools and hidden aliases.
+- `crates/engine/src/tools/{file,file_tool,shell}.rs` own the small foreground
   primitive behavior and schemas; the other native tools remain searchable.
 - `docs/RUNTIME_SIMPLIFICATION_DESIGN.md` records the v0.9.1 cutover and receipt.
 
 ## Default-active contract
 
-New turns start with ten eager native names plus synthetic `tool_search`:
+New turns start with twelve eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
@@ -30,11 +30,13 @@ New turns start with ten eager native names plus synthetic `tool_search`:
 7. `todo_write`
 8. `task_shell_wait`
 9. `load_skill`
-10. `create_goal`
-11. `tool_search` (synthetic, always active)
+10. `context_archive_get`
+11. `context_archive_search`
+12. `create_goal`
+13. `tool_search` (synthetic, always active)
 
-The ten native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
-`crates/tui/src/core/engine/tool_catalog.rs`, pinned by
+The twelve native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+`crates/engine/src/core/engine/tool_catalog.rs`, pinned by
 `default_active_contract_keeps_discovery_and_core_tools_eager`. `agent`,
 `workflow`, `get_goal`, and `update_goal` are deferred by default and load
 via `tool_search` (`get_goal`/`update_goal` ride eager only while a goal is
@@ -348,7 +350,7 @@ session; it is not a substitute for tool-carrying `agent` workers.
 the request that was prepared for one `(turn, step)`. It is not a second
 registry and not an execution surface.
 
-**The seam.** The snapshot is built in `crates/tui/src/core/engine/turn_loop.rs`
+**The seam.** The snapshot is built in `crates/engine/src/core/engine/turn_loop.rs`
 immediately after `MessageRequest` is constructed, from `request.tools` — the
 same value the model client is handed. The engine resolves the surrounding
 per-turn data once in `engine.rs` (`ToolSurfaceContext`: flattened registry
@@ -374,7 +376,7 @@ Two kinds of fact are kept apart:
 Contract:
 
 - **One digest.** `active_tool_catalog_sha256`
-  (`crates/tui/src/core/engine/preview.rs`) is the single definition of the
+  (`crates/engine/src/core/engine/preview.rs`) is the single definition of the
   active-tool-catalog hash. The request manifest publishes it as
   `ToolSurfaceFacts::active_tool_catalog_sha256` and `/tools` reports the same
   value for the same prepared request; neither surface keeps a hash of its own.

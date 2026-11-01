@@ -1,9 +1,9 @@
 use super::*;
-use crate::tools::plan::PlanSnapshot;
 use crate::tui::history::{
     CellFoldAction, CellFoldActionTarget, ExecCell, ExecSource, HistoryCell, PlanUpdateCell,
     ToolCell, ToolStatus, TranscriptActionOwner, TranscriptFold,
 };
+use codewhale_engine::tools::plan::PlanSnapshot;
 use codewhale_localization::Locale;
 use codewhale_palette as palette;
 
@@ -1647,7 +1647,7 @@ fn overlay_and_streaming_entries_share_the_prose_measure() {
         .max()
         .unwrap_or(0);
 
-    let mut cache = crate::tui::markdown_render::IncrementalMarkdownRenderCache::default();
+    let mut cache = codewhale_tui_kit::markdown_render::IncrementalMarkdownRenderCache::default();
     let mut streaming_lines = Vec::new();
     let mut links = Vec::new();
     let mut separators = Vec::new();

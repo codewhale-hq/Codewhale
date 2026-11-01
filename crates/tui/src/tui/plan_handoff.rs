@@ -18,8 +18,8 @@ use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_localization::{Locale, MessageId, tr};
 
-use crate::core::events::TurnOutcomeStatus;
-use crate::tools::user_input::{
+use codewhale_engine::core::events::TurnOutcomeStatus;
+use codewhale_engine::tools::user_input::{
     UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 
@@ -67,7 +67,10 @@ pub(crate) fn request(locale: Locale) -> UserInputRequest {
         description: tr(locale, description).into_owned(),
     };
     UserInputRequest {
+        require_typed_answers: false,
         questions: vec![UserInputQuestion {
+            detail: None,
+            intent: None,
             header: tr(locale, MessageId::PlanHandoffHeader).into_owned(),
             id: QUESTION_ID.to_string(),
             question: tr(locale, MessageId::PlanHandoffQuestion).into_owned(),
@@ -118,7 +121,7 @@ pub(crate) fn choice(locale: Locale, response: &UserInputResponse) -> PlanHandof
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::user_input::UserInputAnswer;
+    use codewhale_engine::tools::user_input::UserInputAnswer;
 
     fn answer(label: &str, value: &str) -> UserInputResponse {
         UserInputResponse {
@@ -126,6 +129,7 @@ mod tests {
                 id: QUESTION_ID.to_string(),
                 label: label.to_string(),
                 value: value.to_string(),
+                kind: None,
             }],
         }
     }

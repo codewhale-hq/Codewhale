@@ -341,13 +341,22 @@ impl StdioLspTransport {
         let new_version = opened.get(&path_buf).copied().unwrap_or(0) + 1;
 
         let payload = if is_new {
+            let language_id = if self.language_id == "typescript"
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tsx"))
+            {
+                "typescriptreact"
+            } else {
+                &self.language_id
+            };
             json!({
                 "jsonrpc": "2.0",
                 "method": "textDocument/didOpen",
                 "params": {
                     "textDocument": {
                         "uri": uri.clone(),
-                        "languageId": self.language_id,
+                        "languageId": language_id,
                         "version": new_version,
                         "text": text
                     }

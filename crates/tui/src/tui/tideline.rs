@@ -170,6 +170,7 @@ impl InteractionTargetId {
     pub const HEADER_ROUTE: Self = Self("header.route");
     /// The model name and effort tier inside the info line's route segment.
     pub const HEADER_MODEL: Self = Self("header.model");
+    pub const HEADER_UPDATE: Self = Self("header.update");
     /// A live count in the posture bar; opens the dock view it counts.
     pub const FOOTER_COUNT: Self = Self("footer.count");
     pub const DOCK_TAB_AGENTS: Self = Self("dock.tab.agents");
@@ -194,6 +195,7 @@ pub enum InteractionAction {
     /// Open the existing `/model` picker. Same discipline as the provider
     /// entry: an entry point, never a second catalog.
     OpenModelPicker,
+    OpenUpdate,
     /// Open the existing automations manager.
     OpenAutomations,
     ShowDockPanel(crate::tui::work_surface::RailPanel),
@@ -220,6 +222,7 @@ pub enum InspectDetail {
     /// The topbar exposes a route entry point, not a copied route snapshot.
     /// `ProviderPickerView` remains the authoritative presentation owner.
     Route,
+    Update,
 }
 
 /// A selectable region painted in the current frame.

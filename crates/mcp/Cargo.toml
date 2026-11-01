@@ -11,5 +11,6 @@ description = "Bounded MCP guidance normalization for Codewhale"
 workspace = true
 
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

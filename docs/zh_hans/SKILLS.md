@@ -170,7 +170,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ### 目录夹具矩阵（无需提供商）
 
-[`crates/tui/assets/skills-catalog-matrix.json`](../../crates/tui/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/tui/src/skills/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
+[`crates/tui/assets/skills-catalog-matrix.json`](../../crates/tui/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/skills/src/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
 
 这些测试断言什么、不断言什么：
 
@@ -185,7 +185,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 | 单一别名所有者 | 不得有两个内置 skills 声称同一别名。 |
 | 无重复条目 | 每个规范名称最多渲染一行目录；别名渲染零行。 |
 | 预算余量 | 随附包单独渲染时低于随窗口缩放的 skills 预算（默认 128k 窗口下为 25 600 字符，下限 2 400 字符），且**没有**“additional skills omitted”行，因此用户 skills 永远不会被静默挤掉。 |
-| 无上下文污染 | 描述保持单行，并在进入提示前被截断到 `MAX_SKILL_DESCRIPTION_CHARS`（280）。 |
+| 无上下文污染 | 描述保持单行，并在进入提示前被截断到 配置的 `listing_max_description_chars`（默认 400）。 |
 
 ### 区域感知的路由元数据
 
@@ -261,6 +261,10 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ## 配置项
 
+父代理、新建或嵌套子代理及 `/context` 使用同一个环境索引渲染器。`[skills] listing_max_description_chars` 设置单条描述上限（1–40,000，默认 400）；`listing_budget_fraction` 设置索引占当前路由上下文窗口的比例（大于 0 且不大于 1，默认 0.05），按每 token 四个字符估算。总索引保留 2,400 字符下限和 40,000 字符上限。配置档中的两个值分别覆盖继承值。切换路由会重算预算，不会暗中修改描述上限。
+
+渲染器优先保留 `Use when:` 触发条件，先缩短描述，再退到仅名称，并报告缩短或省略的条目。超过配置上限且没有触发条件的描述会产生加载警告。`/skills inspect` 显示含实际上限的本地化提示，`/context` 显示同一损失计数。`load_skill name="list"` 和按名称加载仍返回完整文本。这些限制仅控制环境索引，不截断技能正文或外部 MCP 资源描述。
+
 ```toml
 # 发现偏好的可选覆盖项（除非是 Codewhale 项目/全局拥有路径，否则不会自动成为写入目标）。
 skills_dir = "/path/to/skills"
@@ -269,6 +273,8 @@ skills_dir = "/path/to/skills"
 # 为 true 时，运行时发现会跳过跨工具根目录（.claude、.agents 等）。
 # 拥有方 Codewhale 根目录与显式 skills_dir 覆盖项仍然生效。
 scan_codewhale_only = false
+listing_max_description_chars = 400
+listing_budget_fraction = 0.05
 # 仅在明确需要把项目顶层 skills/ 当作技能目录时启用。
 flat_workspace_root = false
 
@@ -278,6 +284,27 @@ flat_workspace_root = false
 ```
 
 完整配置面参见 [CONFIGURATION.md](CONFIGURATION.md)。
+
+
+### 捆绑技能
+
+`[skills.bundled]` 与发现目录独立配置：
+
+```toml
+[skills.bundled]
+install = "auto"
+selected = []
+disabled = ["debug"]
+explicit_only = ["handoff"]
+```
+
+`auto` 保留版本标记及删除目录即退出安装的规则；设置顶层 `skills_dir` 后，此模式不会安装捆绑技能。`all` 会补装已启用但缺失的名称，即使版本标记已是当前版本或配置了发现目录，也只写入全局自有目录（`$CODEWHALE_HOME/skills`，通常为 `~/.codewhale/skills`）。`none` 不写入文件，也不修改版本标记。三种模式均保留发现过程。
+
+空 `selected` 表示整个安装包，非空列表同时限制安装和发现。`disabled` 优先，在名称合并之前跳过捆绑副本，因此兼容目录的同名技能仍可生效。`explicit_only` 使已启用的捆绑副本退出模型索引和模型 `load_skill`，但保留用户显式 `/skill <name>` 调用。别名沿用规范名称的策略：`documents` 对应 `docx`，`presentations` 对应 `pptx`，`spreadsheets` 对应 `xlsx`。
+
+列表仅影响全局自有目录中可识别的发行副本。用户修改的文件、带 `.installed-from` 的托管安装、项目副本及兼容目录副本保留原有行为。配置不会删除任何技能文件，已退出安装包的旧技能也保留在磁盘上。`all` 不覆盖修改版或托管正文。目录或符号链接形式的版本标记会被拒绝，不会清除其中内容。配置档逐字段合并，显式空列表清空继承列表。
+
+`codewhale doctor` 及其 JSON 输出显示模式、标记版本、安装和缺失名称、禁用与显式调用数量、遮蔽、未知名称及被忽略的显式调用条目。`/skills inspect` 还显示每个捆绑路径和选择原因。未知配置名称会产生 doctor 警告，不会成为写入路径。
 
 ## 操作员清单
 

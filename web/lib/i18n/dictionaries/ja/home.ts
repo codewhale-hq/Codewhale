@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version} のターミナル収録画面。会話、メッセージ入力欄、セッション操作を表示。",
   latestRelease: "最新リリース {tag}",
   releaseUnavailable: "リリース情報を取得できません",
+  proofContributors: "コントリビューター {count} 人",
   currentSource: "ソース",
   sourceCandidate: "未リリース",
   publishedRelease: "リリース済み",

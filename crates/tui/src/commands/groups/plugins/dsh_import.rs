@@ -79,7 +79,7 @@ fn review(plugin: &dyn CommandPluginContext, path: &str) -> CommandResult {
             "Native host code (JavaScript; runs in the experimental extension host)",
             &preview.native_rows,
         );
-        if !crate::plugins::activation::extension_host_policy_enabled() {
+        if !codewhale_plugins::activation::extension_host_policy_enabled() {
             output.push_str(
                 "  Requires: [features] extension_host = true (off now, so this bundle cannot be enabled)\n",
             );

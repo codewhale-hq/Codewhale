@@ -31,11 +31,29 @@ pub fn private_log_options() -> std::fs::OpenOptions {
 
 /// Tighten a log created by an earlier version at the default mode. No-op
 /// outside Unix.
+///
+/// Best effort on purpose. The file was created `0600`, so this only narrows a
+/// log left wider by an earlier version or a different umask — and a mount that
+/// assigns modes itself (HarmonyOS hmdfs answers `EPERM` to every `chmod`) will
+/// refuse it for every object it holds. Failing here would turn a write that
+/// already succeeded into "permission denied"; a log left wide is reported
+/// instead, so an operator can still see it.
 pub fn restrict_to_owner(file: &std::fs::File) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::PermissionsExt as _;
+        if file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .is_err()
+            && file
+                .metadata()
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o077 != 0)
+        {
+            tracing::warn!(
+                "a private log could not be narrowed to 0600 and is still readable by group or \
+                 other; this filesystem does not apply Unix mode bits"
+            );
+        }
     }
     #[cfg(not(unix))]
     let _ = file;

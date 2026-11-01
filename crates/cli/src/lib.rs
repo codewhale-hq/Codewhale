@@ -1,9 +1,8 @@
 #![allow(clippy::uninlined_format_args)]
 
-mod cloud;
 mod config_bundles;
 mod credential_handoff;
-mod dispatch;
+#[cfg(not(target_env = "ohos"))]
 mod hashing;
 mod metrics;
 #[cfg(not(target_env = "ohos"))]
@@ -90,7 +89,7 @@ fn parse_provider_identifier(value: &str) -> std::result::Result<String, String>
 )]
 struct Cli {
     #[command(flatten)]
-    runtime_options: codewhale_tui::RuntimeOptions,
+    runtime_options: codewhale_engine::runtime_options::RuntimeOptions,
     #[arg(
         long,
         value_name = "PROVIDER",
@@ -177,7 +176,7 @@ struct Cli {
 }
 
 impl std::ops::Deref for Cli {
-    type Target = codewhale_tui::RuntimeOptions;
+    type Target = codewhale_engine::runtime_options::RuntimeOptions;
     fn deref(&self) -> &Self::Target {
         &self.runtime_options
     }
@@ -387,9 +386,9 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
     Auth(AuthArgs),
     /// Manage an existing Codewhale account; new accounts are not open.
     #[command(visible_alias = "cloud")]
-    Account(cloud::CloudArgs),
+    Account(codewhale_account_cli::CloudArgs),
     /// Run a task on a Codewhale cloud computer using your configured model.
-    Dispatch(dispatch::DispatchArgs),
+    Dispatch(codewhale_account_cli::dispatch::DispatchArgs),
     /// Run MCP server mode over stdio.
     McpServer,
     /// Read/write/list config values.
@@ -515,6 +514,64 @@ const COMPLETION_BIN_NAME: &str = "codewhale";
 /// script that fires only for `codewhale` is half-installed for anyone who
 /// types the short name.
 const COMPLETION_ALIAS_NAME: &str = "codew";
+
+const ADVANCED_COMMANDS: &[&str] = &[
+    "run",
+    "models",
+    "model",
+    "fork",
+    "rc",
+    "web",
+    "serve",
+    "app-server",
+    "mcp-server",
+    "login",
+    "logout",
+    "account",
+    "dispatch",
+    "fleet",
+    "workflow",
+    "lane",
+    "apply",
+    "install",
+    "setup",
+    "remote-setup",
+    "integrations",
+    "features",
+    "speech",
+    "thread",
+    "sandbox",
+    "eval",
+    "scorecard",
+    "session-diagnostics",
+    "metrics",
+    "providers",
+    "completion",
+];
+
+fn user_facing_command() -> clap::Command {
+    let mut cmd = Cli::command();
+    let mut listed = Vec::new();
+    for name in ADVANCED_COMMANDS {
+        if cmd.find_subcommand(name).is_some() {
+            cmd = cmd.mut_subcommand(name, |sub| sub.hide(true));
+            listed.push(*name);
+        }
+    }
+    let mut paragraph =
+        String::from("Advanced commands (`codewhale help <command>` for details):\n ");
+    let mut width = 1;
+    for name in listed {
+        if width + name.len() + 1 > 78 {
+            paragraph.push_str("\n ");
+            width = 1;
+        }
+        paragraph.push(' ');
+        paragraph.push_str(name);
+        width += name.len() + 1;
+    }
+    cmd.after_help(paragraph)
+}
 
 /// Render the completion script for `shell` from this binary's own clap tree,
 /// registered for both published command names.
@@ -647,6 +704,12 @@ struct UpdateArgs {
     /// Proxy URL to use for update HTTP requests.
     #[arg(long, value_name = "URL")]
     proxy: Option<String>,
+    /// Download and verify the latest release for the next start to apply (used by background updates).
+    #[arg(long, conflicts_with_all = ["check", "rollback"])]
+    stage: bool,
+    /// Put back the version the last update replaced, and do not reinstall the rolled-back version automatically.
+    #[arg(long, conflicts_with_all = ["check", "beta", "proxy"])]
+    rollback: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1684,8 +1747,8 @@ struct LoginArgs {
     /// Maximum time to wait for browser authorization.
     #[arg(
         long = "timeout-seconds",
-        default_value_t = cloud::DEFAULT_LOGIN_TIMEOUT_SECONDS,
-        value_parser = clap::value_parser!(u64).range(1..=cloud::MAX_LOGIN_TIMEOUT_SECONDS)
+        default_value_t = codewhale_account_cli::DEFAULT_LOGIN_TIMEOUT_SECONDS,
+        value_parser = clap::value_parser!(u64).range(1..=codewhale_account_cli::MAX_LOGIN_TIMEOUT_SECONDS)
     )]
     timeout_seconds: u64,
     /// Legacy provider-key flag: rejected with a redirect to `auth set`.
@@ -2094,7 +2157,9 @@ pub fn run_cli() -> std::process::ExitCode {
             // able to tell a bad credential from an unconfigured agent model
             // without parsing English, and the machine-readable code beside
             // it names the control-plane branch that was taken.
-            if let Some(machine) = err.downcast_ref::<cloud::machine::MachineError>() {
+            if let Some(machine) =
+                err.downcast_ref::<codewhale_account_cli::machine::MachineError>()
+            {
                 eprintln!(
                     "  codewhale: code={} status={}",
                     machine.code, machine.status
@@ -2288,7 +2353,7 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
 fn run() -> Result<()> {
     let inherited_listener = codewhale_tui::prepare_runtime_listener_handoff()?;
     let argv: Vec<_> = std::env::args_os().collect();
-    let matches = Cli::command().get_matches_from(&argv);
+    let matches = user_facing_command().get_matches_from(&argv);
     let project_bundle_scope = config_command_targets_project(&matches);
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     anyhow::ensure!(
@@ -2297,6 +2362,16 @@ fn run() -> Result<()> {
             || matches!(cli.command.as_ref(), Some(Commands::AppServer(args)) if args.http),
         "An inherited Runtime listener requires serve --http or app-server --http"
     );
+    #[cfg(not(target_env = "ohos"))]
+    if !inherited_listener
+        && !matches!(
+            cli.command.as_ref(),
+            Some(Commands::Update(_) | Commands::Uninstall { .. } | Commands::Doctor(_))
+        )
+        && !argv_requests_machine_output(&argv)
+    {
+        update::apply_staged_at_start(&argv);
+    }
     if let Some(Commands::Uninstall { yes, purge_data }) = cli.command.as_ref() {
         #[cfg(any(all(unix, not(target_env = "ohos")), windows))]
         return update::uninstall::run(*yes, *purge_data);
@@ -2518,7 +2593,7 @@ fn run() -> Result<()> {
             // configured routes, which review otherwise hard-errors on.
             let mut overrides = runtime_overrides.clone();
             if overrides.provider.is_none()
-                && let Some(provider) = cloud::machine_review_provider()?
+                && let Some(provider) = codewhale_account_cli::machine_review_provider()?
             {
                 overrides.provider = Some(provider);
             }
@@ -2561,7 +2636,10 @@ fn run() -> Result<()> {
             // process or argument owner. Keep its narrow command contract.
             let mut argv = vec!["pet".to_string()];
             argv.extend(args.args);
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -2592,8 +2670,8 @@ fn run() -> Result<()> {
         }
         Some(Commands::Login(args)) => {
             reject_legacy_login_provider_args(&args)?;
-            cloud::reject_inline_api_key(cli.api_key.as_deref())?;
-            cloud::run_account_login(
+            codewhale_account_cli::reject_inline_api_key(cli.api_key.as_deref())?;
+            codewhale_account_cli::run_account_login(
                 args.no_open,
                 args.timeout_seconds,
                 cli.profile.as_deref(),
@@ -2700,12 +2778,12 @@ fn run() -> Result<()> {
             }
         },
         Some(Commands::Account(args)) => {
-            cloud::reject_inline_api_key(cli.api_key.as_deref())?;
-            cloud::run(args, cli.profile.as_deref(), &mut store)
+            codewhale_account_cli::reject_inline_api_key(cli.api_key.as_deref())?;
+            codewhale_account_cli::run(args, cli.profile.as_deref(), &mut store)
         }
         Some(Commands::Dispatch(args)) => {
-            cloud::reject_inline_api_key(cli.api_key.as_deref())?;
-            dispatch::run(args, cli.profile.as_deref(), &mut store)
+            codewhale_account_cli::reject_inline_api_key(cli.api_key.as_deref())?;
+            codewhale_account_cli::dispatch::run(args, cli.profile.as_deref(), &mut store)
         }
         Some(Commands::McpServer) => {
             // Keep the CLI spelling, with the same tool and permission authority
@@ -2788,7 +2866,13 @@ fn run() -> Result<()> {
                 Surface::Cli,
             );
             #[cfg(not(target_env = "ohos"))]
-            let outcome = update::run_update(args.beta, args.check, args.proxy);
+            let outcome = if args.rollback {
+                update::run_rollback()
+            } else if args.stage {
+                update::run_stage(args.beta, args.proxy)
+            } else {
+                update::run_update(args.beta, args.check, args.proxy)
+            };
             #[cfg(target_env = "ohos")]
             let outcome = {
                 let _ = args;
@@ -4874,7 +4958,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::XaiDevice => {
             let argv = vec!["auth".to_string(), "xai-device".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4888,7 +4975,7 @@ fn run_auth_command_with_secrets_and_runtime(
                 "claude-revoke"
             };
             let code = codewhale_tui::run(
-                codewhale_tui::RuntimeOptions::default(),
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
                 vec!["auth".to_string(), route.to_string()],
             );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
@@ -4899,7 +4986,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::Chatgpt => {
             let argv = vec!["auth".to_string(), "chatgpt".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4908,7 +4998,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::ChatgptRevoke => {
             let argv = vec!["auth".to_string(), "chatgpt-revoke".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4917,7 +5010,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::Orcarouter => {
             let argv = vec!["auth".to_string(), "orcarouter".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -5414,9 +5510,10 @@ fn run_config_command(
     }
     match command {
         ConfigCommand::Get { key } => {
-            if per_run_overrides.is_empty() && codewhale_tui::route_preferences::is_route_key(&key)
+            if per_run_overrides.is_empty()
+                && codewhale_engine::route_preferences::is_route_key(&key)
             {
-                if let Some(value) = codewhale_tui::route_preferences::get(store.path(), &key)? {
+                if let Some(value) = codewhale_engine::route_preferences::get(store.path(), &key)? {
                     println!("{value}");
                     return Ok(());
                 }
@@ -5479,8 +5576,8 @@ fn run_config_command(
             bail!("key not found: {key}");
         }
         ConfigCommand::Set { key, value } => {
-            if codewhale_tui::route_preferences::is_route_key(&key) {
-                codewhale_tui::route_preferences::set(store.path(), &key, &value)?;
+            if codewhale_engine::route_preferences::is_route_key(&key) {
+                codewhale_engine::route_preferences::set(store.path(), &key, &value)?;
                 store.reload()?;
                 println!("set {key}");
                 return Ok(());
@@ -5559,8 +5656,8 @@ fn run_config_command(
             Ok(())
         }
         ConfigCommand::Unset { key } => {
-            if codewhale_tui::route_preferences::is_route_key(&key) {
-                codewhale_tui::route_preferences::unset(store.path(), &key)?;
+            if codewhale_engine::route_preferences::is_route_key(&key) {
+                codewhale_engine::route_preferences::unset(store.path(), &key)?;
                 store.reload()?;
                 println!("unset {key}");
                 return Ok(());
@@ -5871,7 +5968,7 @@ fn model_set_route(
             resolved_runtime.base_url.clone(),
         )));
     }
-    let (route, _, _) = codewhale_tui::route_preferences::selected_route(store.path())?;
+    let (route, _, _) = codewhale_engine::route_preferences::selected_route(store.path())?;
     Ok(ProviderKind::parse_config_identity(&route).map(|provider| {
         let base_url = store
             .config
@@ -5898,7 +5995,8 @@ fn run_model_command(
     match command {
         ModelCommand::List { provider } => {
             let filter = model_command_provider_hint(provider, top_level_provider);
-            for (provider, models) in codewhale_tui::route_preferences::list_models(store, filter)?
+            for (provider, models) in
+                codewhale_engine::route_preferences::list_models(store, filter)?
             {
                 for model in models {
                     println!("{model} ({})", provider.as_str());
@@ -5927,7 +6025,7 @@ fn run_model_command(
                         resolved_runtime.model_source,
                         codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
                     ) {
-                    Some(codewhale_tui::route_preferences::selected_route(
+                    Some(codewhale_engine::route_preferences::selected_route(
                         store.path(),
                     )?)
                 } else {
@@ -5967,7 +6065,7 @@ fn run_model_command(
                         .clone()
                         .unwrap_or_else(|| kind.provider().default_base_url().into())
                 };
-                let candidate = codewhale_tui::route_preferences::resolve_model(
+                let candidate = codewhale_engine::route_preferences::resolve_model(
                     store.path(),
                     identity,
                     &base,
@@ -6039,7 +6137,7 @@ fn run_model_command(
                     .clone()
                     .unwrap_or_else(|| provider.provider().default_base_url().into())
             };
-            let candidate = codewhale_tui::route_preferences::resolve_model(
+            let candidate = codewhale_engine::route_preferences::resolve_model(
                 store.path(),
                 identity,
                 &base,
@@ -6108,7 +6206,7 @@ fn run_model_command(
             } else {
                 expanded
             };
-            codewhale_tui::route_preferences::set(store.path(), "model", canonical)?;
+            codewhale_engine::route_preferences::set(store.path(), "model", canonical)?;
             store.reload()?;
             println!("Default model set to '{canonical}'");
             Ok(())
@@ -6795,6 +6893,7 @@ mod tests {
     }
 
     pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        codewhale_runtime::resolve_state_from_environment();
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
@@ -7757,7 +7856,8 @@ verbosity = "concise"
             Some(Commands::Update(UpdateArgs {
                 beta: false,
                 check: false,
-                proxy: None
+                proxy: None,
+                ..
             }))
         ));
 
@@ -7767,7 +7867,8 @@ verbosity = "concise"
             Some(Commands::Update(UpdateArgs {
                 beta: true,
                 check: false,
-                proxy: None
+                proxy: None,
+                ..
             }))
         ));
 
@@ -7777,7 +7878,8 @@ verbosity = "concise"
             Some(Commands::Update(UpdateArgs {
                 beta: false,
                 check: true,
-                proxy: None
+                proxy: None,
+                ..
             }))
         ));
 
@@ -7912,7 +8014,7 @@ verbosity = "concise"
         .unwrap();
         assert_eq!(store.config.providers.zai.model.as_deref(), Some("GLM-5.1"));
         assert_eq!(
-            codewhale_tui::route_preferences::get(&path, "model")
+            codewhale_engine::route_preferences::get(&path, "model")
                 .unwrap()
                 .as_deref(),
             Some("GLM-5.1")
@@ -13095,7 +13197,7 @@ verbosity = "concise"
         ]);
         assert_eq!(
             cli.runtime_options,
-            codewhale_tui::RuntimeOptions::default()
+            codewhale_engine::runtime_options::RuntimeOptions::default()
         );
         assert_eq!(
             root_tui_passthrough(&cli).unwrap(),

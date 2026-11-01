@@ -1,0 +1,59 @@
+name: Main landing gate
+
+# Why this exists
+#
+# `ci.yml` runs only on `pull_request` and `workflow_dispatch`. Nothing
+# validates a push to `main`, so a landing that is red on arrival stays red
+# until the next release candidate run, and every open PR then inherits the
+# failure: on 2026-10-29 four commits landed red behind `[skip ci]`
+# (`PersistRequest::ClearCheckpoint` became dead, `clippy` failed on
+# `codewhale-skills`, and the blocking-calls budget went stale for a file that
+# had moved crates) and all nine open PRs looked broken for reasons that had
+# nothing to do with their authors' code.
+#
+# This job is deliberately narrow. It runs `scripts/preflight.sh --check`,
+# which is the checked-in local preflight for exactly the class of breakage that
+# reaches `main` unnoticed: rustfmt, the CHANGELOG slice, README locale stamps,
+# the dead-code and blocking-calls budgets, generated-asset drift, and the
+# feature receipts. Measured at 45 s on a warm Linux runner.
+#
+# It deliberately does NOT duplicate `ci.yml`. No test suite, no clippy, no
+# multi-OS matrix: those stay pull-request and release gates. The point is to
+# catch a red landing in minutes, not to re-run the release gate on every push.
+
+on:
+  push:
+    branches: [main]
+  # Also manually runnable: GitHub does not evaluate a workflow on the push that
+  # introduces it, so the first run of this file would otherwise wait for the
+  # next landing. A maintainer can also re-run the gate after an infra outage.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-landing-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Landing preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The preflight diffs against the push's base commit to scope feature
+          # receipts, and the changelog/budget checks read history.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Preflight
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: bash scripts/preflight.sh --check

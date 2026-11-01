@@ -7,13 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::mcp::{
-    McpCommandAvailability, McpConfig, McpManagerSnapshot, McpServerConfig, McpServerSnapshot,
-    static_mcp_command_availability,
-};
 use crate::tui::app::App;
 use crate::tui::hotbar::actions::HotbarActionCategory;
+use codewhale_engine::mcp::{
+    McpCommandAvailability, McpManagerSnapshot, McpServerSnapshot, static_mcp_command_availability,
+};
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_mcp::config::{McpConfig, McpServerConfig};
 use codewhale_runtime::config::Config;
 use codewhale_util::utils::display_path;
 
@@ -122,7 +122,7 @@ impl Default for SetupToolsMcpFacts {
 
 impl SetupToolsMcpFacts {
     pub(super) fn from_app_config(app: &App, config: &Config, codewhale_home: &Path) -> Self {
-        let project_mcp_path = crate::mcp::workspace_mcp_config_path(&app.workspace);
+        let project_mcp_path = codewhale_engine::mcp::workspace_mcp_config_path(&app.workspace);
         let mcp = mcp_inventory(app, &project_mcp_path);
         let skills = skills_inventory(app);
         let tools_dir = codewhale_home.join("tools");
@@ -222,7 +222,7 @@ fn mcp_inventory(app: &App, project_mcp_path: &Path) -> McpInventoryRow {
         return mcp_snapshot_inventory(snapshot, &app.mcp_config_path, project_mcp_path);
     }
 
-    match crate::mcp::load_config_with_workspace_and_plugins(
+    match codewhale_engine::mcp::load_config_with_workspace_and_plugins(
         &app.mcp_config_path,
         &app.workspace,
         app.plugin_registry.as_ref(),
@@ -502,7 +502,7 @@ fn tools_dir_inventory(tools_dir: &Path) -> InventoryRow {
             detail: format!("tools path exists but is not a directory at {path}"),
         };
     }
-    let script_plugins = crate::tools::plugin::scan_plugin_dir(tools_dir).len();
+    let script_plugins = codewhale_engine::tools::plugin::scan_plugin_dir(tools_dir).len();
     let entries = count_dir_entries(tools_dir);
     if entries == 0 {
         return InventoryRow {
@@ -531,22 +531,25 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
     let active_commands = list
         .iter()
         .filter(|plugin| {
-            plugin
-                .component_active(crate::plugins::activation::PluginActivationCapability::Commands)
+            plugin.component_active(
+                codewhale_plugins::activation::PluginActivationCapability::Commands,
+            )
         })
         .map(|plugin| plugin.inventory.commands)
         .sum::<usize>();
     let active_agents = list
         .iter()
         .filter(|plugin| {
-            plugin.component_active(crate::plugins::activation::PluginActivationCapability::Agents)
+            plugin
+                .component_active(codewhale_plugins::activation::PluginActivationCapability::Agents)
         })
         .map(|plugin| plugin.inventory.agents)
         .sum::<usize>();
     let active_hooks = list
         .iter()
         .filter(|plugin| {
-            plugin.component_active(crate::plugins::activation::PluginActivationCapability::Hooks)
+            plugin
+                .component_active(codewhale_plugins::activation::PluginActivationCapability::Hooks)
         })
         .map(|plugin| plugin.inventory.hooks)
         .sum::<usize>();
@@ -562,7 +565,7 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
     let script_count = script_dir
         .as_ref()
         .filter(|p| p.is_dir())
-        .map(|p| crate::tools::plugin::scan_plugin_dir(p).len())
+        .map(|p| codewhale_engine::tools::plugin::scan_plugin_dir(p).len())
         .unwrap_or(0);
 
     if !plugins_dir.exists() && manifest_total == 0 && script_count == 0 {
@@ -657,9 +660,9 @@ fn count_skill_dirs(dir: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::TuiOptions;
     use crate::tui::hotbar::actions::HotbarActionRegistry;
+    use codewhale_engine::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use codewhale_localization::Locale;
     use codewhale_runtime::config::Config;
     use tempfile::TempDir;
@@ -797,16 +800,16 @@ mod tests {
         .expect("manifest");
 
         let mut app = test_app(tmp.path(), None, mcp_path, skills_dir);
-        let discovery_config = crate::plugins::discovery::DiscoveryConfig {
+        let discovery_config = codewhale_plugins::discovery::DiscoveryConfig {
             workspace: tmp.path().to_path_buf(),
             user_plugins_dir: plugins_dir,
             workspace_plugins_dir: tmp.path().join("workspace-plugins-unused"),
             builtin_plugin_dirs: Vec::new(),
             state_path: home.join("plugins/state.json"),
         };
-        let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+        let discovery = codewhale_plugins::PluginDiscoveryContext::from_config_and_environment(
             &discovery_config,
-            crate::plugins::HostEnvironment::default(),
+            codewhale_plugins::HostEnvironment::default(),
         );
         app.plugin_registry = discovery.registry_for_workspace(tmp.path());
         // Simulate the same skill registration Hotbar uses at startup.
@@ -957,7 +960,8 @@ mod tests {
                     connected: true,
                     error: None,
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
                     tools: vec![McpDiscoveredItem {
                         name: "tool_a".into(),
                         model_name: "mcp_ok_tool_a".into(),
@@ -978,7 +982,8 @@ mod tests {
                     connected: false,
                     error: Some("spawn failed: connection refused".into()),
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
                     tools: Vec::new(),
                     resources: Vec::new(),
                     prompts: Vec::new(),

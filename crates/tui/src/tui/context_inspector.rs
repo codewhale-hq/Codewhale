@@ -14,24 +14,24 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::compaction::{
-    CompactionPath, estimate_input_tokens_for_pressure, inspect_compaction_keep,
-    last_round_kept_count, last_round_start, pinned_anchors_text,
-};
-use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface,
 };
 use codewhale_core::ContextReferenceSource;
+use codewhale_engine::compaction::{
+    CompactionPath, estimate_input_tokens_for_pressure, inspect_compaction_keep,
+    last_round_kept_count, last_round_start, pinned_anchors_text,
+};
+use codewhale_engine::session_manager::SessionContextReference;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{SystemPrompt, Tool};
 use codewhale_palette as palette;
 use codewhale_runtime::context_budget::{
     CONTEXT_CRITICAL_THRESHOLD_PERCENT, CONTEXT_WARNING_THRESHOLD_PERCENT,
 };
+use codewhale_tui_kit::menu_style;
 
 /// Marker used by per-turn working-set metadata. Replicated here so the
 /// context inspector can distinguish stable prompt blocks from volatile
@@ -157,7 +157,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
             out,
             "{}: {}",
             tr(locale, MessageId::CtxInspSession),
-            crate::session_manager::truncate_id(session_id)
+            codewhale_engine::session_manager::truncate_id(session_id)
         );
     }
     // Real provider-token cache hit rate from the same records /cache
@@ -235,7 +235,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         .api_messages
         .iter()
         .rev()
-        .find_map(crate::runtime_handoff::constitution_display)
+        .find_map(codewhale_engine::runtime_handoff::constitution_display)
     {
         let source = match record
             .split_once("\n\n")
@@ -267,11 +267,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
 }
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     // The meter must show the SAME pressure signal the auto-compaction trigger
     // decides on (compaction::estimate_input_tokens_for_pressure, the
     // non-inflated estimate with framing overhead). The old conservative
@@ -690,7 +686,7 @@ fn push_tool_schema_costs(out: &mut String, app: &App, locale: Locale) {
 
     let mut built_in: Vec<(String, usize)> = catalog
         .iter()
-        .filter(|tool| !crate::mcp::McpPool::is_mcp_tool(&tool.name))
+        .filter(|tool| !codewhale_engine::mcp::McpPool::is_mcp_tool(&tool.name))
         .map(|tool| (tool.name.clone(), tool_schema_tokens(tool)))
         .collect();
     built_in.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -764,6 +760,7 @@ pub(crate) struct ContextInspectorView {
     percent: f64,
     model: String,
     workspace: String,
+    auto_compact: bool,
     threshold: f64,
     rows: Vec<ContextBucket>,
     selected: usize,
@@ -780,6 +777,7 @@ impl ContextInspectorView {
             percent: 0.0,
             model: String::new(),
             workspace: String::new(),
+            auto_compact: app.auto_compact,
             threshold: 0.0,
             rows: Vec::new(),
             selected: 0,
@@ -803,7 +801,12 @@ impl ContextInspectorView {
         self.percent = percent;
         self.model = app.model_display_label();
         self.workspace = codewhale_util::utils::display_path(&app.workspace);
-        self.threshold = app.auto_compact_threshold_percent;
+        self.auto_compact = app.auto_compact;
+        self.threshold = if app.auto_compact && max > 0 {
+            (app.compact_threshold as f64 * 100.0 / f64::from(max)).clamp(0.0, 100.0)
+        } else {
+            app.auto_compact_threshold_percent
+        };
         self.locale = app.ui_locale;
         let max_f = f64::from(max.max(1));
         let (compaction_detail, compaction_tokens) = compaction_detail_for_app(app, self.locale);
@@ -825,9 +828,19 @@ impl ContextInspectorView {
                 label: tr(self.locale, MessageId::CtxInspRowFree).into_owned(),
                 tokens: free_tokens,
                 percent: (free_tokens as f64 / max_f) * 100.0,
-                detail: tr(self.locale, MessageId::CtxInspFreeTokensDetail)
-                    .replace("{free}", &free_tokens.to_string())
-                    .replace("{threshold}", &format!("{:.0}", self.threshold)),
+                detail: if self.auto_compact {
+                    tr(self.locale, MessageId::CtxInspFreeTokensDetail)
+                        .replace("{free}", &free_tokens.to_string())
+                        .replace("{threshold}", &format!("{:.0}", self.threshold))
+                } else {
+                    format!(
+                        "{}: {free_tokens} {} · {}: {}",
+                        tr(self.locale, MessageId::CtxInspRowFree),
+                        tr(self.locale, MessageId::CtxInspTokens),
+                        tr(self.locale, MessageId::ConfigLabelAutoCompact),
+                        tr(self.locale, MessageId::SubagentsValueOff),
+                    )
+                },
             },
             ContextBucket {
                 label: tr(self.locale, MessageId::CtxInspRowCompaction).into_owned(),
@@ -956,7 +969,7 @@ impl ModalView for ContextInspectorView {
                 ),
             ]),
             Line::from(Span::styled(
-                crate::tui::ui_text::semantic_truncate(&self.workspace, width),
+                crate::tui::workspace_context::truncate_left(&self.workspace, width),
                 Style::default().fg(palette::TEXT_DIM),
             )),
             Line::from(""),
@@ -984,8 +997,16 @@ impl ModalView for ContextInspectorView {
                 ),
             ]));
             lines.push(Line::from(Span::styled(
-                tr(self.locale, MessageId::CtxInspAutoCompactAt)
-                    .replace("{threshold}", &format!("{:.0}", self.threshold)),
+                if self.auto_compact {
+                    tr(self.locale, MessageId::CtxInspAutoCompactAt)
+                        .replace("{threshold}", &format!("{:.0}", self.threshold))
+                } else {
+                    format!(
+                        "{}: {}",
+                        tr(self.locale, MessageId::ConfigLabelAutoCompact),
+                        tr(self.locale, MessageId::SubagentsValueOff),
+                    )
+                },
                 Style::default().fg(palette::TEXT_HINT),
             )));
             lines.push(Line::from(""));
@@ -994,7 +1015,7 @@ impl ModalView for ContextInspectorView {
         self.hitboxes.borrow_mut().clear();
         for (idx, row) in self.rows.iter().enumerate() {
             let selected = idx == self.selected;
-            let marker = crate::tui::glyphs::selection_marker(selected);
+            let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
             let style = if selected {
                 menu_style::selected_row_style()
             } else {
@@ -1005,11 +1026,12 @@ impl ModalView for ContextInspectorView {
                 .replace("{percent}", &format!("{:.1}", row.percent));
             // Display cells, not bytes: a CJK or localized row measured in
             // bytes padded short and pushed the value off the row (U04-m5).
-            let value_width = crate::tui::ui_text::text_display_width(&value);
+            let value_width = codewhale_tui_kit::ui_text::text_display_width(&value);
             let label_width = width.saturating_sub(value_width + 5);
-            let label = crate::tui::ui_text::semantic_truncate(&row.label, label_width);
-            let gap = width
-                .saturating_sub(crate::tui::ui_text::text_display_width(&label) + value_width + 3);
+            let label = codewhale_tui_kit::ui_text::semantic_truncate(&row.label, label_width);
+            let gap = width.saturating_sub(
+                codewhale_tui_kit::ui_text::text_display_width(&label) + value_width + 3,
+            );
             let y = content
                 .y
                 .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
@@ -1040,11 +1062,11 @@ mod tests {
         assert_eq!(short_tool_id("café"), "café");
     }
 
-    use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
-    use crate::session_manager::SessionContextReference;
     use crate::tui::app::TuiOptions;
     use crate::tui::history::HistoryCell;
     use codewhale_core::{ContextReference, ContextReferenceKind, ContextReferenceSource};
+    use codewhale_engine::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
+    use codewhale_engine::session_manager::SessionContextReference;
     use codewhale_models::{ContentBlock, Message, Tool};
     use std::path::PathBuf;
 
@@ -1278,6 +1300,15 @@ mod tests {
         app.model = "auto".to_string();
         app.auto_model = true;
         app.last_effective_model = Some("deepseek-v4-pro".to_string());
+        app.last_effective_budget = Some((
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek-v4-pro".to_string(),
+            None,
+            codewhale_engine::route_runtime::ContextWindowResolution {
+                tokens: 1_000_000,
+                source: codewhale_engine::route_runtime::ContextWindowSource::Catalog,
+            },
+        ));
 
         let text = build_context_inspector_text(&app, Locale::En);
         assert!(text.contains("Model: auto"), "{text}");
@@ -1463,7 +1494,7 @@ mod tests {
         assert_eq!(estimated_only, estimated);
         assert_ne!(
             estimated_only,
-            crate::compaction::estimate_input_tokens_conservative(
+            codewhale_engine::compaction::estimate_input_tokens_conservative(
                 &app.api_messages,
                 app.system_prompt.as_ref()
             )
@@ -1473,10 +1504,10 @@ mod tests {
     #[test]
     fn inspector_rows_name_compaction_and_anchors() {
         let mut app = test_app();
-        app.last_compaction = Some(crate::compaction::LastCompactionSnapshot {
+        app.last_compaction = Some(codewhale_engine::compaction::LastCompactionSnapshot {
             auto: true,
-            coverage: crate::compaction::CompactionCoverage {
-                path: crate::compaction::CompactionPath::Summary,
+            coverage: codewhale_engine::compaction::CompactionCoverage {
+                path: codewhale_engine::compaction::CompactionPath::Summary,
                 last_round_messages: 4,
                 last_round_tool_results: 1,
                 last_round_assistant: true,
@@ -1494,5 +1525,30 @@ mod tests {
         let view = ContextInspectorView::new(&app);
         assert!(view.row_labels().iter().any(|label| label == "making room"));
         assert!(view.row_labels().iter().any(|label| label == "anchors"));
+        let (_, max, _) = context_usage(&app);
+        app.auto_compact = true;
+        app.auto_compact_threshold_percent = 80.0;
+        app.compact_threshold = (max / 2) as usize;
+        let mut view = ContextInspectorView::new(&app);
+        assert!((view.threshold - 50.0).abs() < 0.01);
+        assert!(view.rows[2].detail.contains("Makes room at 50%"));
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("makes room at 50%"), "{rendered}");
+        app.compact_threshold = 0;
+        view.refresh_from_app(&app);
+        assert_eq!(view.threshold, 0.0);
+        assert!(view.rows[2].detail.contains("Makes room at 0%"));
+        app.auto_compact = false;
+        view.refresh_from_app(&app);
+        assert!(view.rows[2].detail.contains("Auto compact: off"));
+        assert!(!view.rows[2].detail.contains("Makes room at"));
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("Auto compact: off"), "{rendered}");
+        assert!(!rendered.contains("makes room at"), "{rendered}");
     }
 }

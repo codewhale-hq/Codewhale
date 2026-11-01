@@ -1,4 +1,4 @@
-# GitHub PR reviews
+# GitHub review bot
 
 The root `action.yml` runs the existing `codewhale review` command with an
 exact, checksummed release. It needs Node.js 22+, `gh`, Git, and a macOS or
@@ -11,11 +11,88 @@ exports a validated findings artifact. The publisher validates its repository,
 PR, workflow run and attempt, and current base/head before submitting a
 `COMMENT` review. It never approves, requests changes, commits, or runs a model.
 
-Review mode only. Autonomous mention/fix mode is not implemented in this
-Action. The original direct-review Action has been in release tags since
-`v0.10.1`; the findings output and separate publisher require a commit containing
-both features. The Action ref and the exact released CLI `version` are separate
-pins. Adding these source files does not enable a workflow.
+Automatic reviews and `@codewhale review` comments use the same review path.
+The bot posts an advisory summary and validated inline findings. It never
+approves or requests changes. Coding tasks that push a branch or open a PR
+remain part of the hosted agent; this Action handles code review.
+
+## Set up your own bot
+
+You need a GitHub repository with Actions enabled and one model API key.
+Node.js 22+ and Git are needed only to generate the workflow locally; GitHub's
+Ubuntu runner provides the review tools. No server or GitHub App is required.
+
+1. From a clean Codewhale source checkout, generate a workflow in your project:
+
+   ```sh
+   node /path/to/Codewhale/scripts/github-action/setup.mjs \
+     --directory /path/to/your-project \
+     --provider deepseek --model deepseek-flash
+   ```
+
+   Select your own provider and exact model ID. The generator pins both
+   Codewhale actions to the source checkout's full commit and the CLI to
+   `v0.10.2`, with a 16384-token output allowance for the completed review.
+   It refuses to overwrite an existing workflow. Use `--print` to
+   inspect the YAML, `--version vX.Y.Z` to choose another released CLI, or
+   `--action-ref FULL_COMMIT_SHA` with a separately downloaded `setup.mjs`.
+   `--max-output-tokens N` changes the explicit output allowance. Reasoning
+   models can exhaust smaller automatic allowances before writing findings.
+   Generated workflows use `reasoning-effort: off`: the released v0.10.2
+   binary has an internal 4000-token cap for small reviews that can be consumed
+   entirely by hidden reasoning. `--reasoning-effort auto` restores the
+   Engine default; other explicit effort levels are also available. The Action
+   writes only this non-secret setting into its isolated run configuration.
+   Increasing the Action allowance does not override a released CLI's smaller
+   internal cap. A completed review is still required before publication.
+   The generated workflow is `.github/workflows/codewhale-review.yml`.
+
+2. Store only the selected provider's API key as a repository Actions secret:
+
+   ```sh
+   gh secret set DEEPSEEK_API_KEY --repo OWNER/REPO
+   ```
+
+   This command prompts for the key. DeepSeek is the example; the provider
+   table below lists the other supported secrets. Never put a key in YAML.
+
+3. Commit the workflow to your repository's default branch and push it.
+   Same-repository PRs are reviewed automatically when opened or updated.
+   For any open, non-draft PR, a maintainer can add exactly this comment,
+   or choose **Actions → Codewhale PR Review → Run workflow**
+   and enter its number:
+
+   ```text
+   @codewhale review
+   ```
+
+The generated workflow uses `github-actions[bot]`. To use your own existing
+App, add `--app-login 'YOUR-APP[bot]'` when generating, set the
+`CODEWHALE_APP_ID` variable and `CODEWHALE_APP_PRIVATE_KEY` secret, and install
+the App on the repository. App workflows verify installation access in a
+separate job before making a model request. The publisher requests only contents read and pull
+requests write. A missing App configuration fails; it does not switch identity.
+See [GitHub App setup](GITHUB_APP.md) for creating a new App.
+
+`--trigger-phrase @my-bot` changes the mention to `@my-bot review`. A mention
+is an exact standalone comment; quoted text, arbitrary instructions, issue-only
+comments, edited comments and bot authors do not trigger inference. New PR
+review comments also work for same-repository PRs. Both the original actor
+and an actor rerunning the workflow must still have write, maintain or admin
+access when GitHub is queried. Association labels alone grant no access.
+A deleted, edited or mismatched triggering comment is rejected.
+
+Fork PRs do not receive automatic model reviews. The generated workflow opts
+into reviewing their inert diffs only through an authorized issue comment or
+manual run from the default branch. It reads pinned Git objects without
+checking out PR files, reading project configuration or executing candidate
+code. The provider key belongs to that trusted job; no fork workflow receives
+it. Leave `allow-forks: false` on both actions to disable this opt-in.
+
+The Action ref and exact CLI release are separate pins. Existing release tags
+contain the original review action; mention support and the generator require
+a commit containing these features. A moving major tag is not published by
+this setup. Source installation does not prove a live provider review.
 
 ## Account configuration
 
@@ -31,124 +108,31 @@ below.
 
 ## Use your own provider key
 
-Pick `orcarouter`, `deepseek`, `anthropic`, `openrouter`, `zai`, or `modelstudio-token-plan`,
-an exact model ID, and a released CLI tag. Store the matching provider key as
-an Actions secret. Pass only that provider's key to the analysis job. The
-Action never chooses a different credential after an authentication or payment
-failure. The example illustrates an explicitly selected OrcaRouter connection;
-it does not set the Codewhale account default. Replace its provider and secret
-together when choosing another route.
+Choose a provider and exact model, then pass only its key to the analysis job:
 
-Create or connect your own [OrcaRouter account](https://www.orcarouter.ai/ref/ref_df843907ad10d887b867),
-then store its API key as `ORCAROUTER_API_KEY`. Codewhale earns a referral fee
-from OrcaRouter. `orcarouter/free` is an available starting model when listed
-for your workspace; it still requires an API key. A direct no-key request on
-2026-10-26 returned HTTP 401. OrcaRouter's [free-route documentation](https://www.orcarouter.ai/models/orcarouter/free)
-describes zero-priced usage with request-rate limits. A limit or authentication
-failure does not authorize a paid fallback. GitHub runner compute has its own
-cost and limits.
+| Provider | Actions secret |
+| --- | --- |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `orcarouter` | `ORCAROUTER_API_KEY` |
+| `zai` | `ZAI_API_KEY` |
+| `modelstudio-token-plan` | `MODELSTUDIO_API_KEY` |
+| `codewhale` | `CODEWHALE_API_KEY`, with a separately verified account machine-key route |
 
-Set `CODEWHALE_REVIEW_VERSION` to an exact `vX.Y.Z` release and
-`CODEWHALE_REVIEW_MODEL` to the chosen provider's exact model ID (for example
-`orcarouter/free`). Replace both
-`REPLACE_WITH_REVIEWED_COMMIT_SHA` placeholders with the same reviewed Action
-commit containing the publisher. Pin third-party actions to reviewed commits
-under your repository's Actions policy.
+The Action never switches credentials after an authentication, rate-limit or
+payment failure. OrcaRouter is optional; its advertised free route still needs
+a key and has provider limits. GitHub runner usage has its own cost and limits.
 
-```yaml
-name: Codewhale review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-    inputs:
-      pr-number:
-        description: Same-repository PR number
-        required: true
-        type: string
-permissions: {}
-concurrency:
-  group: codewhale-review-${{ github.event.pull_request.number || inputs.pr-number }}
-  cancel-in-progress: false
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      findings: ${{ steps.review.outputs.findings }}
-    steps:
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-      - uses: codewhale-hq/CodeWhale@REPLACE_WITH_REVIEWED_COMMIT_SHA
-        id: review
-        with:
-          version: ${{ vars.CODEWHALE_REVIEW_VERSION }}
-          provider: orcarouter
-          model: ${{ vars.CODEWHALE_REVIEW_MODEL }}
-          pr-number: ${{ inputs.pr-number }}
-          post: 'false'
-        env:
-          ORCAROUTER_API_KEY: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.ORCAROUTER_API_KEY || '' }}
-      - uses: actions/upload-artifact@v7
-        if: steps.review.outputs.findings != ''
-        with:
-          name: codewhale-findings-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.review.outputs.findings }}
-          retention-days: 1
-      - uses: actions/upload-artifact@v7
-        if: always() && steps.review.outputs.receipt != ''
-        with:
-          name: codewhale-review-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.review.outputs.receipt }}
-          retention-days: 14
-  publish:
-    needs: review
-    if: needs.review.outputs.findings != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-      - uses: actions/download-artifact@v7
-        with:
-          name: codewhale-findings-${{ github.run_id }}-${{ github.run_attempt }}
-          path: findings
-      - uses: codewhale-hq/CodeWhale/scripts/github-action/publish@REPLACE_WITH_REVIEWED_COMMIT_SHA
-        id: publish
-        with:
-          findings: findings/findings.json
-          pr-number: ${{ inputs.pr-number }}
-      - uses: actions/upload-artifact@v7
-        if: always() && steps.publish.outputs.receipt != ''
-        with:
-          name: codewhale-publication-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.publish.outputs.receipt }}
-          retention-days: 14
-```
-
-No repository checkout is needed in either job. The publishing job must use
-trusted Action code and must not run files from the findings artifact. Keep it
-on a separate ephemeral runner; a later step on the analysis runner is not the
-same credential boundary. The analysis CLI still receives a read-only GitHub
-token for PR metadata and Git objects, alongside its selected provider key.
-
-Never use `pull_request_target` with these actions. Fork PRs and drafts are
-ineligible even on a manual run. A skipped event is not a clean review. This
-publisher accepts artifacts only from the current workflow run and attempt;
-cross-workflow `workflow_run` publication is not implemented.
-
-To publish as a dedicated GitHub App, create an installation token only in the
-publisher job, pass it as `github-token`, and set `reviewer-login` to that App's
-exact bot login, such as `codewhale-agent[bot]`. The publisher verifies the
-returned review author; a mismatch is an uncertain publication, not permission
-to retry. See [App identity setup](GITHUB_APP.md).
+The [workflow generator](../scripts/github-action/setup.mjs) is the complete
+copy-ready example. It uses two ephemeral jobs, immutable action references,
+read permissions for analysis, and write permission only for publication.
+Neither job checks out repository code. The publishing job must use trusted
+Action code and must not run files from the findings artifact. Do not combine
+these jobs on a persistent runner: a later step on the analysis runner is not
+a credential boundary. The publisher accepts only the current workflow run
+and attempt; cross-workflow `workflow_run` publication is not implemented.
+Never use `pull_request_target` with these actions.
 
 ### Account machine keys
 
@@ -165,11 +149,14 @@ your account's machine-key route has been separately verified. The Action runs
 | `version` | Required | Exact released CLI tag, never `latest` |
 | `provider` | Required | Explicit BYOK provider, or `codewhale` for a verified account machine key |
 | `model` | Required | Exact model ID; account mode uses `provider/model` |
+| `reasoning-effort` | Engine automatic | Optional explicit reasoning level; generated v0.10.2 workflows use `off` |
 | `max-chars` | 200000 | Complete diff characters per pass, maximum 8388608 |
 | `max-passes` | 1 | Complete ordered passes, maximum 64 |
 | `max-output-tokens` | CLI automatic | Optional per-pass ceiling, 8192–1000000 |
 | `timeout-seconds` | 600 | Model/publication deadline, 30–1200 |
-| `post` | `true` | Legacy direct publication; set `false` for the two-job setup |
+| `post` | `true` | Legacy direct publication; generated workflows use `false` |
+| `trigger-phrase` | `@codewhale` | Exact mention name, followed by a standalone `review` command |
+| `allow-forks` | `false` | Maintainer-triggered inert fork analysis from the default branch; set the same value on the publisher |
 
 These bounds do not guarantee a dollar cost. Model prices and reasoning
 accounting vary. Raising the pass count authorizes more model requests.
@@ -191,11 +178,23 @@ Store it only with the repository's intended artifact access and retention.
 
 The publisher reads the complete current PR file list and existing reviews,
 then rechecks the base/head. It anchors inline findings only where GitHub
-supplies a complete valid patch containing their line. Pre-existing,
-unanchorable and suspected findings remain in the summary. Suggestions are
-prose only, with no one-click replacement blocks. Up to 50 findings are also
-posted inline; every retained finding stays in the summary. Oversized review
-bodies fail before any write instead of silently dropping findings.
+supplies a complete valid patch containing their line and the Engine records
+introduced authorship. A finding needs a `reproduced` or `traced` evidence tier
+with nonempty detail to appear in the review. Missing, empty and suspected
+evidence stays in the analysis artifact; the review reports only the withheld
+count. This checks the evidence record, not the truth of the claim.
+Pre-existing findings appear in a collapsed section; unanchorable findings
+and findings without recorded authorship appear in the body. Up to 50
+eligible findings are also posted inline; every retained finding stays in the
+summary. Oversized review bodies fail before any write instead of silently
+dropping findings.
+
+Freeform model summaries, merge-risk assessments and unlinked suggestions
+stay in the analysis artifact so they cannot repeat a withheld allegation.
+The published summary links to analysis and coverage and never treats an
+empty finding list as approval. Publication receipts count evidence-eligible
+`findings` and report `withheld_findings` separately. These rules apply to the
+separate publisher; legacy `post:true` uses the pinned CLI's policy.
 
 The publisher recognizes its own review/finding fingerprints only on reviews
 by `reviewer-login`. Identical review reruns are skipped. Findings with matching
@@ -224,7 +223,7 @@ review, not proof that the PR contains no bugs.
 | `incomplete` | Coverage incomplete; revise scope or limits |
 | `publication_uncertain` | Check the PR before retrying; the write may have succeeded |
 | `superseded` | Base or head changed; analyze the current revision |
-| `not_eligible` | Fork, draft, closed PR or unsupported event; no model run/write |
+| `not_eligible` | Unapproved fork, draft, closed PR, unsupported event, stale comment or missing write access; no model run/write |
 
 Failures fail the optional job; whether it is a required merge check is the
 repository owner's policy. A provider failure is not a negative verdict about

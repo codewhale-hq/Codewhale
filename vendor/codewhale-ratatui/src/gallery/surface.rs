@@ -54,7 +54,7 @@ fn horizon(area: Rect, buf: &mut Buffer, theme: &Theme) {
     Line::from(vec![
         Span::styled(
             format!("{} ", glyphs::pick("›", theme.ascii())),
-            theme.fg(Role::Primary),
+            theme.fg(Role::Accent),
         ),
         Span::styled("Ask Codewhale to do something", theme.fg(Role::Muted)),
     ])

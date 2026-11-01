@@ -15,14 +15,14 @@ use ratatui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::automation_manager::{
+use codewhale_engine::automation_manager::{
     AutomationManager, AutomationRecord, AutomationSchedule, AutomationStatus,
     CreateAutomationRequest, UpdateAutomationRequest,
 };
-use crate::tui::ui_text::{grapheme_display_width, text_display_width};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::ui_text::{grapheme_display_width, text_display_width};
 
 const DAYS: [Weekday; 7] = [
     Weekday::Mon,
@@ -366,7 +366,7 @@ impl AutomationEditor {
         for (route, model, _) in super::super::fleet_setup::cross_provider_model_routes(
             config,
             active.as_ref(),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         ) {
             // `auto` may use configured cross-provider routing. It is not a
             // concrete provider/model pin; legacy records remain selectable.
@@ -519,7 +519,7 @@ impl AutomationEditor {
             .iter()
             .position(|field| *field == self.focus)
             .unwrap_or(0);
-        self.focus = fields[crate::tui::list_nav::wrap_index(row, fields.len(), delta)];
+        self.focus = fields[codewhale_tui_kit::list_nav::wrap_index(row, fields.len(), delta)];
     }
 
     fn text(&mut self) -> Option<&mut TextField> {
@@ -717,7 +717,7 @@ impl AutomationEditor {
             .position(|preset| *preset == self.preset)
             .unwrap();
         self.preset =
-            Preset::ALL[crate::tui::list_nav::wrap_index(index, Preset::ALL.len(), delta)];
+            Preset::ALL[codewhale_tui_kit::list_nav::wrap_index(index, Preset::ALL.len(), delta)];
         self.schedule_changed = true;
     }
 
@@ -795,7 +795,7 @@ impl AutomationEditor {
                     }
                 }
                 KeyCode::Up | KeyCode::Down if !models.is_empty() => {
-                    self.model_row = crate::tui::list_nav::wrap_index(
+                    self.model_row = codewhale_tui_kit::list_nav::wrap_index(
                         self.model_row,
                         models.len(),
                         if key.code == KeyCode::Up { -1 } else { 1 },
@@ -837,7 +837,7 @@ impl AutomationEditor {
                 }
             }
             KeyCode::Left | KeyCode::Right if self.focus == Field::Days => {
-                self.day_cursor = crate::tui::list_nav::wrap_index(
+                self.day_cursor = codewhale_tui_kit::list_nav::wrap_index(
                     self.day_cursor,
                     7,
                     if key.code == KeyCode::Left { -1 } else { 1 },
@@ -897,8 +897,11 @@ impl AutomationEditor {
                 if self.picking_model {
                     let models = self.filtered_models();
                     if !models.is_empty() {
-                        self.model_row =
-                            crate::tui::list_nav::wrap_index(self.model_row, models.len(), delta);
+                        self.model_row = codewhale_tui_kit::list_nav::wrap_index(
+                            self.model_row,
+                            models.len(),
+                            delta,
+                        );
                     }
                 } else {
                     self.move_focus(delta);
@@ -1245,7 +1248,7 @@ fn local_time(at: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation_manager::AutomationDeliveryMode;
+    use codewhale_engine::automation_manager::AutomationDeliveryMode;
 
     fn editor(root: &Path) -> AutomationEditor {
         AutomationEditor::new(&Config::default(), root, Locale::En, None)

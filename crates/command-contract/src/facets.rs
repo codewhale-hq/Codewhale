@@ -1043,7 +1043,7 @@ pub enum SkillSourceKind {
 /// Curated product tier for bundled (shipped) skills.
 ///
 /// The canonical name→tier classification stays in the TUI host
-/// (`crate::skills::system::bundled_skill_tier`); the portable projection
+/// (`codewhale_skills::bundled_skill_tier`); the portable projection
 /// carries the resolved tier so the handler can render the curated listing
 /// without duplicating the canonical bundle list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1071,6 +1071,7 @@ impl SkillBundledTier {
 /// exact-minimum).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEntry {
+    pub index_note: Option<String>,
     pub name: String,
     pub description: String,
     pub source: SkillSourceKind,
@@ -1090,6 +1091,7 @@ pub struct SkillRegistryProjection {
     pub workspace: String,
     pub skills_dir: String,
     pub mode_label: String,
+    pub bundled_status: Vec<String>,
     pub dirs: Vec<String>,
     pub entries: Vec<SkillEntry>,
     pub warnings: Vec<String>,
@@ -1241,7 +1243,7 @@ pub struct CommandApprovalState {
 /// registry + sync (`/skills --remote|sync|suggest`), review (`/review`),
 /// and snapshot list/restore plus approval state (`/restore`). The host
 /// adapter is the only place that touches `App`, `crate::plugins`,
-/// `SnapshotRepo`, `crate::skills` services, config/network policy, and the
+/// `SnapshotRepo`, `codewhale_skills` services, config/network policy, and the
 /// async runtime bridge. The shared FEAT-015 `CommandSkillsContext` is never
 /// widened; active-skill reads use that facet, mutations flow through the
 /// delegates here (D2). All results are contract-owned portable values;

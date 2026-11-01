@@ -30,8 +30,11 @@ known limitations and publication approval. These proofs are separate.
       preserving dirty/untracked files and comparing commits with current
       `origin/main`. Keep a recoverable backup and unresolved inventory; do not
       reset away work, stash it indefinitely or create another development lane.
-- [ ] Partition files among active writers. Check status before staging and
-      stage only owned paths. Historical branches/checkouts are inventoried;
+- [ ] Uncommitted work found in the checkout is yours (founder, 2026-10-22):
+      read it, prove it, and commit it by explicit path. A file changed in the
+      last 15 minutes or held by a live session is mid-edit: ask that writer
+      to commit first. Check status before staging; never `git add -A`.
+      Historical branches/checkouts are inventoried;
       deleting them requires explicit Hunter approval even if a helper calls
       their tips safe to delete.
 
@@ -150,12 +153,13 @@ known limitations and publication approval. These proofs are separate.
       A green workflow badge alone is insufficient: ordinary main-push CI can
       delegate Linux work to CNB and omit some smoke coverage. Manual full CI
       forces the release gates on Linux, macOS and Windows.
-- [ ] The candidate's Parity job succeeds, and its artifact jobs report all seven
-      targets and the complete 34-file asset inventory, including Android
-      arm64, Windows arm64, `codew`, the NSIS installer, archives, checksum
-      manifests, and seven compatibility-only `codewhale-tui-*` release
-      filenames that are not installed commands. The packed npm wrapper installs
-      against those assets and runs its delegated entrypoints. Keep run URLs and
+- [ ] The candidate's Parity job succeeds, and its artifact jobs report all eight
+      targets and the complete 38-file asset inventory, including Android
+      arm64, Windows arm64, native HarmonyOS arm64, `codew`, the NSIS installer,
+      archives, checksum manifests, and eight compatibility-only
+      `codewhale-tui-*` release filenames that are not installed commands. The
+      packed npm wrapper installs against those assets and runs its delegated
+      entrypoints. Keep run URLs and
       required evidence before the Actions artifacts expire; these are not a
       public release.
 - [ ] Windows static import receipts cover x64/ARM64 CLI, shim and compatibility

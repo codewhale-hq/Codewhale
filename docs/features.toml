@@ -47,6 +47,26 @@ docs = "docs/INSTALL.md"
 owner = "crates/cli/src/update/uninstall.rs"
 
 [[feature]]
+id = "install-cleanup"
+name = "Installation cleanup"
+summary = "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/INSTALL.md#clean-up-old-copies"
+owner = "crates/release/src/installs.rs"
+
+[[feature]]
+id = "auto-update"
+name = "Automatic updates"
+summary = "Release-binary installs download updates in the background and apply them at the next start; update --rollback undoes."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/INSTALL.md#automatic-updates"
+owner = "crates/release/src/autoupdate.rs"
+
+[[feature]]
 id = "cloud-computer-dispatch"
 name = "Cloud computer conversations"
 summary = "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included."
@@ -54,7 +74,7 @@ status = "experimental"
 surfaces = { tui = "preview" }
 since = "unreleased"
 docs = "docs/CLOUD_DISPATCH.md"
-owner = "crates/cli/src/cloud/computer.rs"
+owner = "crates/account-cli/src/computer.rs"
 
 [[feature]]
 id = "shell-tool"
@@ -65,7 +85,7 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "shell_tool"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/shell.rs"
+owner = "crates/engine/src/tools/shell.rs"
 
 [[feature]]
 id = "workspace-search"
@@ -75,7 +95,7 @@ status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "unreleased"
 docs = "docs/TOOL_SURFACE.md#default-active-contract"
-owner = "crates/tui/src/core/engine/tool_catalog.rs"
+owner = "crates/engine/src/core/engine/tool_catalog.rs"
 
 [[feature]]
 id = "local-code-execution"
@@ -84,7 +104,7 @@ summary = "Runs Python and Node with the shared execution policy and explicitly 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/TOOL_SURFACE.md#local-code-execution"
-owner = "crates/tui/src/core/engine/tool_catalog.rs"
+owner = "crates/engine/src/core/engine/tool_catalog.rs"
 
 [[feature]]
 id = "subagents"
@@ -95,7 +115,7 @@ surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
 flag = "subagents"
 docs = "docs/SUBAGENTS.md"
-owner = "crates/tui/src/tools/subagent"
+owner = "crates/engine/src/tools/subagent"
 
 [[feature]]
 id = "web-search"
@@ -106,7 +126,7 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "web_search"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web_search.rs"
+owner = "crates/engine/src/tools/web_search.rs"
 
 [[feature]]
 id = "apply-patch"
@@ -117,12 +137,12 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "apply_patch"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/apply_patch.rs"
+owner = "crates/engine/src/tools/apply_patch.rs"
 
 [[feature]]
 id = "mcp-client"
 name = "MCP client"
-summary = "Connects local stdio and remote HTTP MCP servers and exposes their tools."
+summary = "Connects MCP servers, exposes permitted tools and records connection status for the model."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
@@ -150,7 +170,7 @@ surfaces = { tui = "stable" }
 since = "0.8.32"
 flag = "vision_model"
 docs = "docs/CONFIGURATION.md"
-owner = "crates/tui/src/vision"
+owner = "crates/engine/src/vision"
 
 [[feature]]
 id = "verify-tool"
@@ -161,7 +181,7 @@ surfaces = { tui = "stable" }
 since = "0.9.2"
 flag = "verify_tool"
 docs = "docs/CONFIGURATION.md#feature-flags"
-owner = "crates/tui/src/tools/verify.rs"
+owner = "crates/engine/src/tools/verify.rs"
 
 [[feature]]
 id = "code-mode"
@@ -172,18 +192,18 @@ surfaces = { tui = "stable" }
 since = "0.10.0"
 flag = "code_mode"
 docs = "docs/TOOL_SURFACE.md#code-mode-execute_tools"
-owner = "crates/tui/src/tools/codemode.rs"
+owner = "crates/engine/src/tools/codemode.rs"
 
 [[feature]]
 id = "extension-host"
 name = "Extension host"
-summary = "Runs reviewed plugins' native TypeScript/JavaScript tool and slash-command code in a Bun or Node sidecar."
+summary = "Runs reviewed TypeScript/JavaScript tools, commands and bounded Git review scopes through Engine approvals in a sidecar."
 status = "flagged"
 surfaces = { tui = "preview", web = "none", api = "preview" }
 since = "0.10.1"
 flag = "extension_host"
 docs = "docs/EXTENSIONS.md"
-owner = "crates/tui/src/extension_host"
+owner = "crates/engine/src/extension_host"
 
 [[feature]]
 id = "finance-host"
@@ -194,7 +214,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "finance_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/finance.rs"
+owner = "crates/engine/src/tools/finance.rs"
 
 [[feature]]
 id = "data-host"
@@ -205,7 +225,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "data_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/validate_data.rs"
+owner = "crates/engine/src/tools/validate_data.rs"
 
 [[feature]]
 id = "speech-host"
@@ -216,7 +236,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "speech_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/speech.rs"
+owner = "crates/engine/src/tools/speech.rs"
 
 [[feature]]
 id = "pdf-host"
@@ -227,7 +247,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "pdf_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/pdf.rs"
+owner = "crates/engine/src/tools/pdf.rs"
 
 [[feature]]
 id = "ocr-host"
@@ -238,7 +258,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "ocr_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/image_ocr.rs"
+owner = "crates/engine/src/tools/image_ocr.rs"
 
 [[feature]]
 id = "github-host"
@@ -249,7 +269,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "github_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/github"
+owner = "crates/engine/src/tools/github"
 
 [[feature]]
 id = "web-search-host"
@@ -260,7 +280,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "web_search_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web/adapter.rs"
+owner = "crates/engine/src/tools/web/adapter.rs"
 
 [[feature]]
 id = "web-extract-host"
@@ -271,7 +291,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "web_extract_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web/extract.rs"
+owner = "crates/engine/src/tools/web/extract.rs"
 
 [[feature]]
 id = "review-host"
@@ -282,7 +302,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "review_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/review_host.rs"
+owner = "crates/engine/src/tools/review_host.rs"
 
 # --- Working with the agent ---
 
@@ -298,7 +318,7 @@ owner = "crates/config/src/app_mode.rs"
 [[feature]]
 id = "permission-postures"
 name = "Permission postures"
-summary = "Ask, Auto-Review and Full Access postures decide when a tool call needs approval."
+summary = "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md#permission-posture"
@@ -316,7 +336,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes with scoped facts, limits, price estimates and a disclosed OrcaRouter offer in the pickers."
+summary = "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -329,7 +349,7 @@ summary = "Picks a model per turn under Auto; /router sets up the router."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
-owner = "crates/tui/src/model_routing.rs"
+owner = "crates/engine/src/model_routing.rs"
 
 [[feature]]
 id = "output-limit-answer-recovery"
@@ -339,7 +359,7 @@ status = "flagged"
 surfaces = { tui = "preview", api = "preview" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only"
-owner = "crates/tui/src/core/engine/turn_loop/continuation.rs"
+owner = "crates/engine/src/core/engine/turn_loop/continuation.rs"
 
 [[feature]]
 id = "fleet"
@@ -348,7 +368,7 @@ summary = "Runs and supervises groups of worker agents with receipts and a pre-s
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/FLEET.md"
-owner = "crates/tui/src/fleet"
+owner = "crates/engine/src/fleet"
 
 [[feature]]
 id = "environment-placement"
@@ -357,7 +377,7 @@ summary = "Places Fleet tasks by environment requirements and connects explicitl
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 docs = "docs/ENVIRONMENTS.md#environment-aware-fleet-placement-preview"
-owner = "crates/tui/src/fleet/placement.rs"
+owner = "crates/engine/src/fleet/placement.rs"
 
 [[feature]]
 id = "workflows"
@@ -375,7 +395,7 @@ summary = "Turns a broad request into a compact Workflow plan without writing a 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/AUTOMATIC_WORKFLOWS.md"
-owner = "crates/tui/src/tools/workflow"
+owner = "crates/engine/src/tools/workflow"
 
 [[feature]]
 id = "goals"
@@ -384,7 +404,7 @@ summary = "/goal keeps the agent working toward one objective across turns."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/CONFIGURATION.md#goal-loop-goal"
-owner = "crates/tui/src/tools/goal.rs"
+owner = "crates/engine/src/tools/goal.rs"
 
 [[feature]]
 id = "thread-scheduled-turns"
@@ -394,7 +414,16 @@ status = "experimental"
 surfaces = { api = "preview" }
 since = "unreleased"
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/automation_manager.rs"
+owner = "crates/engine/src/automation_manager.rs"
+
+[[feature]]
+id = "task-suggestions"
+name = "Suggested tasks"
+summary = "The tasks tool's suggest action offers the person a task as a Start/Hide card; it starts nothing and needs no approval."
+status = "experimental"
+surfaces = { desktop = "preview" }
+since = "unreleased"
+owner = "crates/engine/src/tools/tasks.rs"
 
 [[feature]]
 id = "todos"
@@ -403,7 +432,7 @@ summary = "The agent keeps a visible todo list for multi-step work."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/todo.rs"
+owner = "crates/engine/src/tools/todo.rs"
 
 [[feature]]
 id = "composer-queue-steer"
@@ -422,7 +451,7 @@ status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.1"
 docs = "docs/RECEIPTS.md"
-owner = "crates/tui/src/receipts.rs"
+owner = "crates/engine/src/receipts.rs"
 
 [[feature]]
 id = "preview-request"
@@ -431,7 +460,7 @@ summary = "/preview-request shows the redacted outbound request without sending 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/PREVIEW_REQUEST.md"
-owner = "crates/tui/src/request_manifest.rs"
+owner = "crates/engine/src/request_manifest.rs"
 
 [[feature]]
 id = "read-media"
@@ -440,7 +469,7 @@ summary = "Reads and preprocesses images for vision-capable models with size and
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/READ_MEDIA.md"
-owner = "crates/tui/src/tools/read_media.rs"
+owner = "crates/engine/src/tools/read_media.rs"
 
 [[feature]]
 id = "memory"
@@ -456,11 +485,11 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skills"
-summary = "Installs and loads trusted instruction packages with owned-root precedence and separate user/model invocation controls."
+summary = "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
-owner = "crates/tui/src/skills"
+owner = "crates/skills/src"
 
 [[feature]]
 id = "plugins"
@@ -469,7 +498,7 @@ summary = "Installs, reviews and trusts plugin bundles, including the first-part
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
-owner = "crates/tui/src/plugins"
+owner = "crates/plugins/src"
 
 [[feature]]
 id = "computer-use"
@@ -478,7 +507,7 @@ summary = "Reviewed app control: one approval covers background and foreground u
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 docs = "docs/PLUGIN_BUNDLES.md"
-owner = "crates/tui/src/plugins/marketplace"
+owner = "crates/plugins/src/marketplace"
 
 [[feature]]
 id = "script-tools"
@@ -487,7 +516,7 @@ summary = "Scripts in ~/.codewhale/tools become approval-gated tools; [tools.ove
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#script-tools-and-overrides"
-owner = "crates/tui/src/tools/plugin.rs"
+owner = "crates/engine/src/tools/plugin.rs"
 
 [[feature]]
 id = "claude-plugin-compat"
@@ -496,7 +525,7 @@ summary = "Loads Claude Code plugin bundles and skill folders where their featur
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CLAUDE_PLUGIN_COMPAT.md"
-owner = "crates/tui/src/plugins/agent_plugin.rs"
+owner = "crates/plugins/src/agent_plugin.rs"
 
 [[feature]]
 id = "claude-settings-import"
@@ -569,7 +598,7 @@ summary = "codewhale review --pr N writes an advisory review; posting to GitHub 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/GITHUB_APP.md"
-owner = "crates/tui/src/tools/github"
+owner = "crates/engine/src/tools/github"
 
 # --- Interface ---
 
@@ -589,7 +618,7 @@ summary = "Terminal key bindings, documented from the keybinding catalog."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/KEYBINDINGS.md"
-owner = "crates/tui/src/keybinding_table.rs"
+owner = "crates/engine/src/keybinding_table.rs"
 
 [[feature]]
 id = "settings"
@@ -632,7 +661,7 @@ owner = "crates/tui/src/commands/groups/session/color.rs"
 [[feature]]
 id = "localization"
 name = "Localization"
-summary = "Interface text in 15 locales."
+summary = "Interface text in 15 locales, including tool activity, file receipts and language-aware transcript caches."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/LOCALIZATION.md"
@@ -644,7 +673,7 @@ name = "Voice input"
 summary = "/voice, /voicecontrol and /voicesend use the selected ASR backend without switching providers."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
-owner = "crates/tui/src/voice.rs"
+owner = "crates/engine/src/voice.rs"
 
 [[feature]]
 id = "pet"
@@ -679,7 +708,7 @@ summary = "Save computer files as account versions, restore with revision checks
 status = "experimental"
 surfaces = { tui = "preview" }
 since = "0.10.2"
-owner = "crates/cli/src/cloud.rs"
+owner = "crates/account-cli/src/lib.rs"
 
 [[feature]]
 id = "context-anchors"
@@ -712,6 +741,16 @@ summary = "/verbose toggles live model thinking in the transcript."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/mod.rs"
+
+[[feature]]
+id = "local-model-reasoning"
+name = "Local model reasoning compatibility"
+summary = "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder."
+status = "stable"
+surfaces = { tui = "stable", web = "stable", api = "stable" }
+since = "unreleased"
+docs = "docs/LOCAL_MODEL_REASONING.md"
+owner = "crates/config/src/local_reasoning.rs"
 
 [[feature]]
 id = "workbar"
@@ -760,6 +799,15 @@ docs = "docs/TERMUX.md"
 owner = ".github/workflows/release-artifacts.yml"
 
 [[feature]]
+id = "harmonyos-native"
+name = "HarmonyOS (native)"
+summary = "Signed arm64 release archive for native HarmonyOS and OpenHarmony."
+status = "experimental"
+surfaces = { tui = "preview" }
+docs = "docs/HarmonyOS.md"
+owner = ".github/workflows/release-artifacts.yml"
+
+[[feature]]
 id = "chatgpt-plan-sign-in"
 name = "Sign in with ChatGPT"
 summary = "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app."
@@ -787,7 +835,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "0.10.1"
 docs = "docs/PLUGIN_PROVIDERS.md"
-owner = "crates/tui/src/plugins/providers.rs"
+owner = "crates/plugins/src/providers.rs"
 
 [[feature]]
 id = "orcarouter-sign-in"
@@ -818,7 +866,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 docs = "docs/RUNTIME_API.md#profile-constitution"
-owner = "crates/tui/src/profile_constitution.rs"
+owner = "crates/engine/src/profile_constitution.rs"
 
 [[feature]]
 id = "plugin-shell-install"
@@ -828,7 +876,7 @@ status = "experimental"
 surfaces = { tui = "preview" }
 since = "0.10.2"
 docs = "docs/PLUGINS.md"
-owner = "crates/tui/src/plugins/mutation.rs"
+owner = "crates/plugins/src/mutation.rs"
 
 [[feature]]
 id = "fork-prefix-inheritance"
@@ -836,9 +884,9 @@ name = "Fork prefix inheritance"
 summary = "Allows matching first-level Chat Completions forks to reuse a parent request header."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
-since = "0.10.2"
+since = "unreleased"
 docs = "docs/CACHE.md#fork-prefix-inheritance"
-owner = "crates/tui/src/core/engine/turn_loop/preparation.rs"
+owner = "crates/engine/src/core/engine/turn_loop/preparation.rs"
 
 [[feature]]
 id = "fork-trial-diagnostics"
@@ -846,7 +894,7 @@ name = "Fork trial diagnostics"
 summary = "Opt-in JSON stderr observations of classified fork decisions and actual first-response cache usage."
 status = "flagged"
 surfaces = { tui = "preview", api = "preview" }
-since = "0.10.2"
+since = "unreleased"
 docs = "docs/CACHE.md#fork-trial-diagnostics"
 owner = "crates/runtime/src/prompt_zones.rs"
 
@@ -856,9 +904,9 @@ name = "Source navigation echoes"
 summary = "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
-since = "0.10.2"
+since = "unreleased"
 docs = "docs/ECHOLOCATION.md"
-owner = "crates/tui/src/tools/echolocation.rs"
+owner = "crates/engine/src/tools/echolocation.rs"
 
 [[feature]]
 id = "herdr-agent-state"
@@ -877,12 +925,12 @@ status = "stable"
 since = "unreleased"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526"
-owner = "crates/tui/src/project_context/budget.rs"
+owner = "crates/engine/src/project_context/budget.rs"
 
 [[feature]]
 id = "github-action-review"
 name = "GitHub Action review"
-summary = "Review pull requests with the Engine and publish validated findings from a separate trusted job."
+summary = "Generate pinned workflows for automatic or authorized mention reviews; publish findings with recorded evidence."
 status = "experimental"
 since = "unreleased"
 surfaces = { tui = "preview" }
@@ -908,3 +956,12 @@ since = "unreleased"
 surfaces = { api = "preview" }
 docs = "integrations/dingtalk-bridge/README.md"
 owner = "integrations/dingtalk-bridge/src/index.mjs"
+
+[[feature]]
+id = "compaction-archive-recall"
+name = "Compaction archive recall"
+summary = "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced."
+status = "experimental"
+since = "unreleased"
+surfaces = { tui = "preview" }
+owner = "crates/engine/src/tools/context_archive.rs"

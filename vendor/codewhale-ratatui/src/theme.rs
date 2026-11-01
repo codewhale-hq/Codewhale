@@ -93,7 +93,7 @@ impl Role {
     /// when the role takes the terminal's own foreground.
     const fn ansi16(self) -> Option<Color> {
         match self {
-            Role::Primary => Some(Color::Blue),
+            Role::Accent => Some(Color::Blue),
             Role::Live => Some(Color::Green),
             Role::Attention => Some(Color::Yellow),
             Role::Danger => Some(Color::Red),
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn ansi16_state_hues_are_distinct() {
         let t = theme(ColorDepth::Ansi16, Appearance::Dark);
-        let hues: Vec<_> = [Role::Primary, Role::Live, Role::Attention, Role::Danger]
+        let hues: Vec<_> = [Role::Accent, Role::Live, Role::Attention, Role::Danger]
             .iter()
             .map(|r| t.color(*r).unwrap())
             .collect();
@@ -633,6 +633,7 @@ mod tests {
                         (Role::Foreground, 4.5),
                         (Role::Muted, 4.5),
                         (Role::Primary, 4.5),
+                        (Role::Accent, 4.5),
                         (Role::Live, 4.5),
                         (Role::Attention, 4.5),
                         (Role::Danger, 4.5),
@@ -750,7 +751,7 @@ mod tests {
             for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
                 let t = theme(depth, appearance);
                 for tint in [Role::DiffAddedTint, Role::DiffRemovedTint] {
-                    assert!(tint.is_ground() && tint.is_content_tint() && tint.is_derived());
+                    assert!(tint.is_ground() && tint.is_content_tint() && !tint.is_derived());
                     for other in others {
                         assert!(
                             t.grounds_differ(tint, other),
@@ -786,19 +787,11 @@ mod tests {
     }
 
     #[test]
-    fn eighteen_roles_four_of_them_derived() {
-        assert_eq!(Role::COUNT, 18);
-        assert_eq!(Role::ALL.len(), 18);
+    fn nineteen_roles_two_of_them_derived() {
+        assert_eq!(Role::COUNT, 19);
+        assert_eq!(Role::ALL.len(), 19);
         let derived: Vec<Role> = Role::ALL.into_iter().filter(|r| r.is_derived()).collect();
-        assert_eq!(
-            derived,
-            [
-                Role::Hint,
-                Role::Dim,
-                Role::DiffAddedTint,
-                Role::DiffRemovedTint
-            ]
-        );
+        assert_eq!(derived, [Role::Hint, Role::Dim]);
         for role in Role::ALL {
             assert_eq!(role.token_name().is_none(), role.is_derived(), "{role:?}");
         }

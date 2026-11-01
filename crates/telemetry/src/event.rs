@@ -1,9 +1,9 @@
 //! The wire schema. This module is the whole of what may leave the machine.
 //!
 //! Every field below is an integer, a boolean, or a **closed enum string**,
-//! except exactly three bounded strings: `app_version`, `git_sha`, and
-//! `panic_site`. Each of those three has a written rule and a test pinning the
-//! rule. There is no free-form string type here and no open-keyed map, which is
+//! except exactly four bounded strings: `app_version`, `git_sha`,
+//! `panic_site`, and `model_usage.model`, which is closed against the bundled
+//! model catalog. Each of those four has a written rule. There is no free-form string type here and no open-keyed map, which is
 //! what makes "aggregates and events, never content" a property the compiler
 //! and the test suite can enforce rather than a promise.
 //!
@@ -33,10 +33,10 @@ use serde::{Deserialize, Serialize};
 
 /// Wire schema version. Bumped on any field add, remove, or retype; never
 /// reused. `crates/telemetry/tests/golden/v1.json` pins what v1 was.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Default-on policy disclosure version. This is not human consent.
-pub const NOTICE_VERSION: u32 = 5;
+pub const NOTICE_VERSION: u32 = 6;
 
 /// Which product surface produced a batch.
 ///
@@ -274,6 +274,9 @@ pub enum SessionSource {
     Api,
     /// Not stated.
     Unknown,
+    /// Started under CI (`CI` or `GITHUB_ACTIONS` set), including the GitHub
+    /// Action, so automation is never counted as a person.
+    Ci,
 }
 
 impl SessionSource {
@@ -284,6 +287,7 @@ impl SessionSource {
         Self::Fork,
         Self::Api,
         Self::Unknown,
+        Self::Ci,
     ];
 
     /// The wire spelling.
@@ -295,6 +299,7 @@ impl SessionSource {
             Self::Fork => "fork",
             Self::Api => "api",
             Self::Unknown => "unknown",
+            Self::Ci => "ci",
         }
     }
 }
@@ -681,6 +686,185 @@ pub enum Event {
         /// Closed counts; never a URL, user identity, or work content.
         counters: ProductCounters,
     },
+    /// One session's model turns and token counts for one provider and model.
+    ModelUsage {
+        /// A known provider id ([`is_known_provider_id`]).
+        provider: String,
+        /// A bundled-catalog model id, or `other` ([`is_reported_model_id`]).
+        model: String,
+        /// Turn outcomes and token totals.
+        counters: ModelCounters,
+        /// Turn wall-clock buckets for these turns.
+        turn_wall: TurnWall,
+    },
+    /// One session's calls of one tool.
+    ToolUsage {
+        /// A first-party tool name, `mcp` or `other` ([`is_reported_tool_name`]).
+        tool: String,
+        /// Calls made.
+        calls: u32,
+        /// Calls that returned an error.
+        errors: u32,
+    },
+}
+
+/// Turn outcomes and token totals for one provider and model in a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCounters {
+    /// Turns that completed.
+    pub turns_ok: u32,
+    /// Turns that failed.
+    pub turns_failed: u32,
+    /// Turns the user or the runtime interrupted.
+    pub turns_interrupted: u32,
+    /// Input tokens, including cache reads.
+    pub input_tokens: u64,
+    /// Output tokens, including reasoning.
+    pub output_tokens: u64,
+    /// Input tokens served from the provider's prompt cache.
+    pub cache_read_tokens: u64,
+    /// Input tokens written to the provider's prompt cache.
+    pub cache_write_tokens: u64,
+}
+
+impl ModelCounters {
+    /// Wire keys, in order.
+    pub const FIELDS: &'static [&'static str] = &[
+        "turns_ok",
+        "turns_failed",
+        "turns_interrupted",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    ];
+}
+
+/// First-party tool names reported by `tool_usage`. Any other name is
+/// reported as `mcp` or `other`, so a plugin's or server's tool name never
+/// leaves the machine.
+pub const TOOL_NAMES: &[&str] = &[
+    "agent",
+    "apply_patch",
+    "authenticate",
+    "bash",
+    "code_execution",
+    "context_archive_get",
+    "context_archive_search",
+    "create_goal",
+    "diagnostics",
+    "edit",
+    "edit_file",
+    "exec_shell",
+    "execute_tools",
+    "fetch_url",
+    "file_search",
+    "fim_edit",
+    "finance",
+    "get_goal",
+    "git_blame",
+    "git_commit_plan",
+    "git_diff",
+    "git_fetch",
+    "git_log",
+    "git_merge_tree",
+    "git_show",
+    "git_status",
+    "grep_files",
+    "handle_read",
+    "image_ocr",
+    "js_execution",
+    "list_dir",
+    "load_skill",
+    "lsp",
+    "memory_get",
+    "memory_search",
+    "note",
+    "notify",
+    "pandoc_convert",
+    "project_map",
+    "read",
+    "read_file",
+    "read_media",
+    "remember",
+    "request_plugin_install",
+    "request_user_input",
+    "retrieve_tool_result",
+    "revert_turn",
+    "review",
+    "rlm",
+    "run_tests",
+    "run_verifiers",
+    "session_get",
+    "session_search",
+    "start_mcp_server",
+    "task_create",
+    "task_shell_wait",
+    "todo_write",
+    "tool_search",
+    "update_goal",
+    "update_plan",
+    "validate_data",
+    "verify",
+    "wait_for_dev_server",
+    "web_search",
+    "workflow",
+    "write",
+    "write_file",
+];
+
+/// The `tool` value for a tool name: itself when first-party, `mcp` for an
+/// MCP pool tool, otherwise `other`.
+#[must_use]
+pub fn reported_tool_name(name: &str, is_mcp: bool) -> &'static str {
+    match TOOL_NAMES.iter().find(|known| **known == name) {
+        Some(known) => known,
+        None if is_mcp => "mcp",
+        None => "other",
+    }
+}
+
+/// Whether `value` may appear as `tool_usage.tool`.
+#[must_use]
+pub fn is_reported_tool_name(value: &str) -> bool {
+    value == "mcp" || value == "other" || TOOL_NAMES.contains(&value)
+}
+
+/// The `model` value for a model id: the lowercased id when the bundled model
+/// catalog lists it, otherwise `other`. Custom, local and fine-tuned model
+/// names therefore never leave the machine.
+#[must_use]
+pub fn reported_model_id(model: &str) -> String {
+    let id = model.trim().to_ascii_lowercase();
+    if is_catalogued_model(&id) {
+        id
+    } else {
+        "other".to_string()
+    }
+}
+
+/// Whether `value` may appear as `model_usage.model`.
+#[must_use]
+pub fn is_reported_model_id(value: &str) -> bool {
+    value == "other" || (value == value.to_ascii_lowercase() && is_catalogued_model(value))
+}
+
+fn is_catalogued_model(id: &str) -> bool {
+    if id.is_empty() || id.len() > 128 {
+        return false;
+    }
+    let catalog = codewhale_config::catalog::bundled_models_dev_catalog();
+    catalog.reviewed.intrinsic.contains_key(id)
+        || catalog
+            .models
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case(id))
+        || catalog.providers.values().any(|provider| {
+            provider
+                .models
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case(id))
+        })
 }
 
 impl Event {
@@ -693,6 +877,8 @@ impl Event {
             Self::SessionEnd { .. } => "session_end",
             Self::Panic { .. } => "panic",
             Self::ProductUsage { .. } => "product_usage",
+            Self::ModelUsage { .. } => "model_usage",
+            Self::ToolUsage { .. } => "tool_usage",
             Self::OperationsSummary { .. } => "operations_summary",
         }
     }
@@ -727,6 +913,10 @@ impl Event {
                 providers.iter().all(|name| is_known_provider_id(name))
             }
             Self::Panic { site } => is_reduced_panic_site(site),
+            Self::ModelUsage {
+                provider, model, ..
+            } => is_known_provider_id(provider) && is_reported_model_id(model),
+            Self::ToolUsage { tool, .. } => is_reported_tool_name(tool),
         }
     }
 }

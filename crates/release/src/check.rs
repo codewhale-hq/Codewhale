@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 pub const UPDATE_CHECK_CACHE_FILE: &str = "update-check.json";
 
 /// Default hours between network update checks.
-pub const DEFAULT_CHECK_INTERVAL_HOURS: u64 = 1;
+pub const DEFAULT_CHECK_INTERVAL_HOURS: u64 = 6;
 
 /// Explicit opt-out, and the `update-notifier` convention many CLIs honour.
 const OPT_OUT_ENV: &[&str] = &["CODEWHALE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER"];

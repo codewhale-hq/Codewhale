@@ -22,7 +22,7 @@ use codewhale_runtime::config::ApprovalDefaultSelection;
 use super::previews::exact_edit_file_preview_lines;
 use super::{ApprovalRequest, ReviewDecision};
 #[cfg(test)]
-use crate::core::authority::RiskLevel;
+use codewhale_engine::core::authority::RiskLevel;
 
 /// Indices into the option list shared by both variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,25 +35,14 @@ pub enum ApprovalOption {
 }
 
 impl ApprovalOption {
-    const ORDER: [ApprovalOption; 4] = [
+    const ORDER: [ApprovalOption; 3] = [
         ApprovalOption::ApproveOnce,
         ApprovalOption::ApproveAlways,
         ApprovalOption::Deny,
-        ApprovalOption::Abort,
     ];
-    const ORDER_WITH_PERSISTENT_ALLOW: [ApprovalOption; 5] = [
+    const ORDER_WITH_PERSISTENT_ALLOW: [ApprovalOption; 3] = [
         ApprovalOption::ApproveOnce,
-        ApprovalOption::ApproveAlways,
         ApprovalOption::AllowExactRepo,
-        ApprovalOption::Deny,
-        ApprovalOption::Abort,
-    ];
-
-    /// A child agent's card (approvals C1): the person can hide it, never
-    /// stop the parent's turn from it, so "Stop this turn" is not offered.
-    const CHILD_ORDER: [ApprovalOption; 3] = [
-        ApprovalOption::ApproveOnce,
-        ApprovalOption::ApproveAlways,
         ApprovalOption::Deny,
     ];
 
@@ -67,9 +56,7 @@ impl ApprovalOption {
     fn order_for(request: &ApprovalRequest) -> &'static [ApprovalOption] {
         if request.tool_name == "workflow" {
             &Self::WORKFLOW_ORDER
-        } else if request.owner.is_some() {
-            &Self::CHILD_ORDER
-        } else if request.can_save_allow_rule() {
+        } else if request.owner.is_none() && request.can_save_allow_rule() {
             &Self::ORDER_WITH_PERSISTENT_ALLOW
         } else {
             &Self::ORDER
@@ -109,10 +96,11 @@ pub struct ApprovalView {
     pub(super) selected: usize,
     pub(super) row_hitboxes: RefCell<Vec<Rect>>,
     /// Whether the last paint showed the persistent-rule save preview. The
-    /// save offers (`[p]` and `s`) only work while it is on screen, so a
+    /// save offer (`[2 / p]`) only works while it is on screen, so a
     /// person never saves a rule without seeing what it covers. Starts
     /// false: nothing is offered before the card has been painted.
     save_preview_shown: Cell<bool>,
+    details_shown: Cell<bool>,
     locale: Locale,
     pub(super) timeout: Option<Duration>,
     pub(super) requested_at: Instant,
@@ -151,6 +139,7 @@ impl ApprovalView {
             selected,
             row_hitboxes: RefCell::new(Vec::new()),
             save_preview_shown: Cell::new(false),
+            details_shown: Cell::new(false),
             locale,
             timeout: None,
             requested_at: Instant::now(),
@@ -181,7 +170,7 @@ impl ApprovalView {
         let order = ApprovalOption::order_for(&self.request);
         let mut selected = self.selected;
         for _ in 0..order.len() {
-            selected = crate::tui::list_nav::wrap_index(selected, order.len(), delta);
+            selected = codewhale_tui_kit::list_nav::wrap_index(selected, order.len(), delta);
             if self.offers(order[selected]) {
                 break;
             }
@@ -189,10 +178,17 @@ impl ApprovalView {
         self.selected = selected;
     }
 
-    /// Whether the card currently offers `option`. Saving a persistent allow
-    /// rule is offered only while its save preview is on screen.
+    /// Whether the card currently offers `option`. Persistent rules require
+    /// their painted preview; hidden session grants require opening details.
     pub(crate) fn offers(&self, option: ApprovalOption) -> bool {
-        option != ApprovalOption::AllowExactRepo || self.save_preview_shown.get()
+        match option {
+            ApprovalOption::AllowExactRepo => self.save_preview_shown.get(),
+            ApprovalOption::ApproveAlways => {
+                ApprovalOption::order_for(&self.request).contains(&option)
+                    || self.details_shown.get()
+            }
+            _ => true,
+        }
     }
 
     /// Record whether the paint that just ran showed the save preview.
@@ -309,12 +305,48 @@ impl ApprovalView {
             }
             content.push('\n');
         }
+        if !self.is_workflow_plan_approval() {
+            content.push_str(&format!(
+                "[a] {}\n",
+                tr(locale, MessageId::ApprovalOptionApproveAlways)
+            ));
+        }
+        if let Some(preview) = self.request.ask_rule_save_preview() {
+            content.push_str(&format!(
+                "[s] {}\n    {} {} · {}{}\n",
+                tr(locale, MessageId::ApprovalSaveAskRuleHint)
+                    .trim_start_matches(|c: char| c.is_whitespace() || c == '·')
+                    .trim_start_matches("s ")
+                    .trim(),
+                tr(locale, MessageId::ApprovalFieldSave).trim_end(),
+                preview.summary(locale),
+                preview.entries.join(" · "),
+                if preview.omitted > 0 {
+                    format!(
+                        " +{}",
+                        tr(locale, MessageId::ApprovalSaveMore)
+                            .replace("{count}", &preview.omitted.to_string())
+                    )
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        if self.request.owner.is_none() {
+            content.push_str(&format!(
+                "[Esc] {}\n",
+                tr(locale, MessageId::ApprovalOptionAbortTurn)
+            ));
+        }
+        content.push('\n');
         content.push_str(
             &serde_json::to_string_pretty(&self.request.params)
                 .unwrap_or_else(|_| self.request.params.to_string()),
         );
+        self.details_shown.set(true);
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: format!("Tool Params: {}", self.request.tool_name),
+            title: tr(locale, MessageId::ApprovalToolParamsTitle)
+                .replace("{tool}", &self.request.tool_name),
             content,
         })
     }
@@ -371,15 +403,17 @@ impl ModalView for ApprovalView {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1') => {
                 self.commit_option(ApprovalOption::ApproveOnce)
             }
+            KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Char('2')
+                if !self.is_workflow_plan_approval()
+                    && ApprovalOption::order_for(&self.request)
+                        .contains(&ApprovalOption::AllowExactRepo) =>
+            {
+                self.commit_option(ApprovalOption::AllowExactRepo)
+            }
             KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('2')
                 if !self.is_workflow_plan_approval() =>
             {
                 self.commit_option(ApprovalOption::ApproveAlways)
-            }
-            KeyCode::Char('p') | KeyCode::Char('P')
-                if self.request.can_save_allow_rule() && self.save_preview_shown.get() =>
-            {
-                self.commit_option(ApprovalOption::AllowExactRepo)
             }
             // Workflow plan card (#4126): [2/e] Edit plan, [3/n/d] Cancel.
             KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('2')
@@ -388,7 +422,7 @@ impl ModalView for ApprovalView {
                 self.commit_option(ApprovalOption::Deny)
             }
             KeyCode::Char('s') | KeyCode::Char('S')
-                if self.request.can_save_ask_rule() && self.save_preview_shown.get() =>
+                if self.request.can_save_ask_rule() && self.details_shown.get() =>
             {
                 self.emit_decision_with_rules(
                     ReviewDecision::Approved,

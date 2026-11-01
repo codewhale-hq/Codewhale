@@ -191,6 +191,11 @@ bundle linux-arm64 \
   codewhale-linux-arm64 codew-linux-arm64 tar.gz ""
 bundle android-arm64 \
   codewhale-android-arm64 codew-android-arm64 tar.gz ""
+# The archive carries install.sh like the other Unix bundles, but on HarmonyOS
+# the binary is already self-signed by the release build; re-signing is only
+# needed if someone rebuilds it from source.
+bundle ohos-arm64 \
+  codewhale-ohos-arm64 codew-ohos-arm64 tar.gz ""
 bundle macos-x64 \
   codewhale-macos-x64 codew-macos-x64 tar.gz ""
 bundle macos-arm64 \

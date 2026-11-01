@@ -481,7 +481,7 @@ fn output_rows(output: &str, width: u16) -> Vec<OutputRow> {
     let mut sanitized = String::with_capacity(output.len());
     for line in output.lines() {
         sanitized.clear();
-        crate::tui::osc8::strip_ansi_into(line, &mut sanitized);
+        codewhale_tui_kit::osc8::strip_ansi_into(line, &mut sanitized);
         let styled = styled_segments(line, &sanitized);
         let intact = is_path_or_url_like(&sanitized);
         if intact {
@@ -530,7 +530,7 @@ fn styled_segments(line: &str, plain: &str) -> Option<Vec<StyledSegment>> {
         return None;
     }
     let mut kept = String::with_capacity(line.len());
-    crate::tui::osc8::strip_ansi_keep_sgr_into(line, &mut kept);
+    codewhale_tui_kit::osc8::strip_ansi_keep_sgr_into(line, &mut kept);
     let text = kept.into_text().ok()?;
     let mut segments: Vec<StyledSegment> = Vec::new();
     for parsed in text.lines {

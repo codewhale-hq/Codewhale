@@ -1,0 +1,25 @@
+[package]
+name = "codewhale-tui-kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal rendering kit for Codewhale: markdown, diff, text, scrolling, paste and link helpers."
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+codewhale-palette = { path = "../palette", version = "0.10.2" }
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.1.3" }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+crossterm = "0.29"
+ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
+similar = { version = "3", features = ["unicode"] }
+syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
+unicode-segmentation = "1.12"
+unicode-width = "0.2"

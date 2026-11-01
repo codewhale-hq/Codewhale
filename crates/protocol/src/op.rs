@@ -2,7 +2,7 @@
 //! core/protocol extraction spec).
 //!
 //! The TUI engine already had an internal channel (`Op` in
-//! `crates/tui/src/core/ops.rs` with `tx_op` / `rx_op` and `tx_steer`).
+//! `crates/engine/src/core/ops.rs` with `tx_op` / `rx_op` and `tx_steer`).
 //! This protocol file formalizes that channel so TUI, CLI, app-server, and
 //! tests share one serializable API. The wire is `OpEnvelope` + `Op`;
 //! transports that already speak JSON (app-server, tests) can send the
@@ -10,7 +10,7 @@
 //! enum.
 //!
 //! Parity is compile-enforced from the engine side:
-//! `crates/tui/src/core/protocol_parity.rs` matches every engine `Op`
+//! `crates/engine/src/core/protocol_parity.rs` matches every engine `Op`
 //! variant exhaustively into a protocol `Op` (`protocol_covers_engine_ops`).
 //!
 //! What is deliberately stripped at this boundary:
@@ -103,7 +103,7 @@ fn default_capability_state() -> String {
 }
 
 /// Per-turn authority payload carried by [`Op::SendMessage`]. Serializable
-/// twin of `crates/tui/src/core/ops::TurnSpec`; extracted from the enum arm so
+/// twin of `crates/engine/src/core/ops::TurnSpec`; extracted from the enum arm so
 /// new per-turn fields accrete here instead of widening the variant. The
 /// `SendMessage(TurnSpec)` newtype keeps the internally-tagged wire shape
 /// byte-identical: `{"kind":"send_message", ...fields}`.
@@ -185,6 +185,32 @@ pub struct ReviewOperationIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReviewSourceFile {
+    pub path: String,
+    pub revision: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewPriorFinding {
+    pub key: String,
+    pub path: String,
+    pub line: u32,
+    pub summary: String,
+    pub discussion: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOperationContext {
+    pub files: Vec<ReviewSourceFile>,
+    pub omitted: Vec<String>,
+    pub previous_findings: Vec<ReviewPriorFinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewOperation {
     pub version: u32,
     pub repository: String,
@@ -197,10 +223,12 @@ pub struct ReviewOperation {
     pub max_claims: usize,
     pub max_nits: usize,
     pub max_chars: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ReviewOperationContext>,
 }
 
 /// Operations that can be submitted to the core engine. This is the
-/// protocol view of `crates/tui/src/core/ops::Op` — same lifecycle,
+/// protocol view of `crates/engine/src/core/ops::Op` — same lifecycle,
 /// same provenance gate — but serializable and free of `mpsc` / `oneshot`
 /// fields. In-process callers convert at the boundary; out-of-process
 /// callers send the JSON directly.
@@ -208,7 +236,7 @@ pub struct ReviewOperation {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Op {
     Review {
-        turn: TurnSpec,
+        turn: Box<TurnSpec>,
         request: ReviewOperation,
     },
     /// Drive one model turn: `role=user` content plus the resolved route
@@ -629,7 +657,7 @@ mod tests {
         };
         vec![
             Op::Review {
-                turn,
+                turn: Box::new(turn),
                 request: ReviewOperation {
                     version: 1,
                     repository: "owner/repo".into(),
@@ -647,6 +675,7 @@ mod tests {
                     max_claims: 40,
                     max_nits: 3,
                     max_chars: 60_000,
+                    context: None,
                 },
             },
             headless_send_message_op(ThreadId::new(), "hello").op,

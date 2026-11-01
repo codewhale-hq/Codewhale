@@ -18,14 +18,13 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
-use crate::compaction::{
+use crate::tui::app::App;
+use codewhale_config::AppMode;
+use codewhale_engine::compaction::{
     estimate_input_tokens_conservative, estimate_input_tokens_for_pressure,
     estimate_text_tokens_conservative,
 };
-use crate::prompts::CORE_EXECUTION_PROFILE_PROMPT;
-use crate::route_budget::route_context_window_tokens;
-use crate::tui::app::App;
-use codewhale_config::AppMode;
+use codewhale_engine::prompts::CORE_EXECUTION_PROFILE_PROMPT;
 use codewhale_models::{CacheControl, ContentBlock, Message, SystemPrompt, Tool};
 use codewhale_runtime::config::Config;
 #[cfg(test)]
@@ -234,7 +233,7 @@ impl ReportBuilder {
     /// tokens to another rung.
     fn finish(
         self,
-        context_window: crate::route_runtime::ContextWindowResolution,
+        context_window: codewhale_engine::route_runtime::ContextWindowResolution,
         active_context_estimated_tokens: usize,
         overflow_guard_estimated_tokens: Option<usize>,
         note: impl Into<String>,
@@ -262,22 +261,16 @@ impl ReportBuilder {
 }
 
 pub fn build_context_report(app: &App) -> PromptSourceMap {
-    // The host still stores the rung apart from the number; pair them against
-    // the same route limits the pressure meter reads.
-    let context_window = crate::route_runtime::ContextWindowResolution {
-        tokens: route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        ),
-        source: app.active_context_window_source,
+    let context_window = codewhale_engine::route_runtime::ContextWindowResolution {
+        tokens: app.effective_context_window(),
+        source: app.effective_context_window_source(),
     };
     let mut builder = base_source_entries(
         &app.model,
         &app.workspace,
         Some(&app.skills_dir),
         app.project_context_pack_enabled,
-        app.skills_discovery_mode,
+        &app.skills_config,
         app.ui_locale.tag(),
         app.mode,
         Some(app.plugin_registry.as_ref()),
@@ -363,14 +356,18 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
         .map(|identity| identity.key.to_string())
         .unwrap_or_else(|| "unavailable".to_string());
     let route = identity.as_ref().and_then(|identity| {
-        crate::route_runtime::resolve_runtime_route_for_identity(config, identity, Some(&model))
-            .ok()
+        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+            config,
+            identity,
+            Some(&model),
+        )
+        .ok()
     });
     // A route we could not resolve does not erase an operator-configured
     // window: doctor must report the same number the session would use.
     let context_window = route.as_ref().map_or_else(
         || {
-            crate::route_runtime::resolve_context_window(
+            codewhale_engine::route_runtime::resolve_context_window(
                 provider,
                 &model,
                 None,
@@ -387,41 +384,48 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let global_skills_dir = config.skills_dir();
     let selected_skills_dir =
         crate::tui::app::resolve_skills_dir(workspace, &global_skills_dir, config);
-    let settings = crate::project_context::InstructionSettings::from_config(config);
+    let settings = codewhale_engine::project_context::InstructionSettings::from_config(config);
     let configured: Vec<_> = config
         .instructions_paths()
         .into_iter()
         .map(Into::into)
         .collect();
-    let mut raw =
-        crate::project_context::capture_instruction_context(workspace, &configured, &settings);
-    let limits = route
-        .as_ref()
-        .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits()));
-    let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
+    let mut raw = codewhale_engine::project_context::capture_instruction_context(
+        workspace,
+        &configured,
+        &settings,
+    );
+    let limits = route.as_ref().and_then(|route| {
+        codewhale_engine::route_budget::known_route_limits(route.candidate.limits())
+    });
+    let budgets = codewhale_engine::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         context_window.instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            provider,
-            &model,
-            limits,
-            None,
-            crate::core::engine::turn_loop::resolve_auto_effort(
-                config.reasoning_effort(),
+        Some(
+            codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
                 provider,
-                &config.active_route_base_url(),
                 &model,
-            )
-            .as_deref(),
-        ) as usize),
+                limits,
+                Some(context_window.tokens),
+                None,
+                codewhale_engine::core::engine::turn_loop::resolve_auto_effort(
+                    config.reasoning_effort(),
+                    provider,
+                    &config.active_route_base_url(),
+                    &model,
+                )
+                .as_deref(),
+            ) as usize,
+        ),
     );
-    let assembly = crate::project_context::assemble_instruction_block(&mut raw, &[], &budgets);
+    let assembly =
+        codewhale_engine::project_context::assemble_instruction_block(&mut raw, &[], &budgets);
     let mut builder = base_source_entries(
         &model,
         workspace,
         Some(&selected_skills_dir),
         config.project_context_pack_enabled(),
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config()),
+        &config.skills_config(),
         "en",
         AppMode::Agent,
         None,
@@ -498,28 +502,32 @@ fn base_source_entries(
     workspace: &Path,
     skills_dir: Option<&Path>,
     project_pack_enabled: bool,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     locale_tag: &str,
     mode: AppMode,
-    plugin_registry: Option<&crate::plugins::PluginRegistry>,
+    plugin_registry: Option<&codewhale_plugins::PluginRegistry>,
     context_window_tokens: Option<u32>,
-    instruction_assembly: Option<&crate::project_context::InstructionAssembly>,
+    instruction_assembly: Option<&codewhale_engine::project_context::InstructionAssembly>,
     instruction_preview: bool,
 ) -> ReportBuilder {
     let mut builder = ReportBuilder::new();
 
-    let constitution = crate::prompts::compose_default_static_layers(model);
+    let constitution = codewhale_engine::prompts::compose_default_static_layers(model);
     builder.push(SourceEntry::text(
         SourceKind::Constitution,
         "Bundled constitution, language policy, and output policy",
-        Some(crate::prompts::base_prompt_origin().label().to_string()),
+        Some(
+            codewhale_engine::prompts::base_prompt_origin()
+                .label()
+                .to_string(),
+        ),
         ActivationReason::AlwaysOn,
         &constitution,
         CountingConfidence::High,
         Some(1),
     ));
 
-    if let Some(block) = crate::prompts::load_user_constitution_block() {
+    if let Some(block) = codewhale_engine::prompts::load_user_constitution_block() {
         builder.push(SourceEntry::text(
             SourceKind::UserConstitution,
             "User-global constitution",
@@ -640,7 +648,9 @@ fn base_source_entries(
     }
 
     if project_pack_enabled {
-        if let Some(pack) = crate::project_context::generate_project_context_pack(workspace) {
+        if let Some(pack) =
+            codewhale_engine::project_context::generate_project_context_pack(workspace)
+        {
             builder.push(SourceEntry::text(
                 SourceKind::ProjectContextPack,
                 "Project context pack",
@@ -661,25 +671,14 @@ fn base_source_entries(
         ));
     }
 
-    let skill_discovery_mode = skills_discovery_mode;
-    let skills_budget = crate::skills::skills_prompt_budget_chars(context_window_tokens);
-    let skills_block = match skills_dir {
-        Some(dir) => crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(
-            workspace,
-            dir,
-            skill_discovery_mode,
-            locale_tag,
-            plugin_registry,
-            skills_budget,
-        ),
-        None => crate::skills::render_available_skills_context_for_workspace_with_mode_and_plugins(
-            workspace,
-            skill_discovery_mode,
-            locale_tag,
-            plugin_registry,
-            skills_budget,
-        ),
-    };
+    let skills_block = codewhale_skills::render_index(
+        workspace,
+        skills_dir,
+        skills_config,
+        locale_tag,
+        plugin_registry,
+        context_window_tokens,
+    );
     if let Some(block) = skills_block {
         let mut entry = SourceEntry::text(
             SourceKind::SkillsBlock,
@@ -690,7 +689,7 @@ fn base_source_entries(
             CountingConfidence::High,
             Some(5),
         );
-        entry.truncation_reason = crate::skills::shortened_skills_note(&block);
+        entry.truncation_reason = codewhale_skills::shortened_skills_note(&block);
         builder.push(entry);
     } else {
         builder.push(SourceEntry::omitted(
@@ -730,7 +729,7 @@ fn base_source_entries(
         "Authority recap",
         None,
         ActivationReason::AlwaysOn,
-        crate::prompts::effective_authority_recap(),
+        codewhale_engine::prompts::effective_authority_recap(),
         CountingConfidence::High,
         Some(1),
     ));
@@ -739,7 +738,7 @@ fn base_source_entries(
         "Runtime environment",
         Some(workspace.display().to_string()),
         ActivationReason::AlwaysOn,
-        &crate::prompts::render_environment_block(workspace, locale_tag),
+        &codewhale_engine::prompts::render_environment_block(workspace, locale_tag),
         CountingConfidence::High,
         Some(4),
     ));
@@ -823,7 +822,7 @@ fn add_app_runtime_entries(builder: &mut ReportBuilder, app: &App) {
 }
 
 fn add_handoff_entry(builder: &mut ReportBuilder, workspace: &Path) {
-    let (path, _) = crate::prompts::resolve_handoff_path(workspace);
+    let (path, _) = codewhale_engine::prompts::resolve_handoff_path(workspace);
     let Some(raw) = std::fs::read_to_string(&path)
         .ok()
         .filter(|raw| !raw.trim().is_empty())
@@ -833,7 +832,7 @@ fn add_handoff_entry(builder: &mut ReportBuilder, workspace: &Path) {
             "Previous session relay",
             Some(
                 workspace
-                    .join(crate::prompts::HANDOFF_RELATIVE_PATH)
+                    .join(codewhale_engine::prompts::HANDOFF_RELATIVE_PATH)
                     .display()
                     .to_string(),
             ),
@@ -978,9 +977,9 @@ mod pressure_fixture_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route_runtime::{ContextWindowResolution, ContextWindowSource};
     use codewhale_config::ProviderKind;
     use codewhale_config::route::RouteLimits;
+    use codewhale_engine::route_runtime::{ContextWindowResolution, ContextWindowSource};
     use codewhale_models::Role;
     use codewhale_models::Tool;
     use codewhale_runtime::config::Config;
@@ -1090,10 +1089,11 @@ mod tests {
         let tmp = tempdir().expect("workspace");
         std::fs::write(tmp.path().join("AGENTS.md"), "T".repeat(20_000)).expect("write agents");
         let config = {
-            let __cw_config_init_0_0 = Some(crate::project_context::InstructionBudgetConfig {
-                project_budget_tokens: Some(50),
-                ..Default::default()
-            });
+            let __cw_config_init_0_0 =
+                Some(codewhale_engine::project_context::InstructionBudgetConfig {
+                    project_budget_tokens: Some(50),
+                    ..Default::default()
+                });
             let mut __cw_config_init_0_value: Config = Default::default();
             __cw_config_init_0_value.instruction_budget = __cw_config_init_0_0;
             __cw_config_init_0_value
@@ -1481,7 +1481,7 @@ mod tests {
             output_tokens: None,
             output_declared: false,
         };
-        let resolved = crate::route_runtime::resolve_context_window(
+        let resolved = codewhale_engine::route_runtime::resolve_context_window(
             ProviderKind::Deepseek,
             "deepseek-v4-pro",
             Some(limits),

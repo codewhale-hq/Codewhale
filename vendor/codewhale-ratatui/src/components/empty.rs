@@ -225,7 +225,7 @@ impl Paint for EmptyState<'_> {
 
         if let Some(art) = &plan.art {
             let x0 = area.x + (area.width - art.grid.cols) / 2;
-            let ink = theme.fg(Role::Primary);
+            let ink = theme.fg(Role::Accent);
             for r in 0..art.rows {
                 for c in 0..art.grid.cols {
                     let ch = art.grid.char_at(c, art.first + r);
@@ -266,7 +266,7 @@ impl Paint for EmptyState<'_> {
         {
             let action = text::display_safe(action);
             let shown = text::truncate_words(&action, usize::from(area.width), ascii);
-            Line::from(Span::styled(shown.into_owned(), theme.fg(Role::Primary)))
+            Line::from(Span::styled(shown.into_owned(), theme.fg(Role::Accent)))
                 .centered()
                 .render(line(y), buf);
         }

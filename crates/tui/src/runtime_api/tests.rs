@@ -1,10 +1,10 @@
 use super::*;
-use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
-use crate::core::ops::{Op, TurnSpec};
-use crate::runtime_threads::RuntimeEventRecord;
-use crate::runtime_threads::install_mock_engine;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use anyhow::{Context, bail};
+use codewhale_engine::core::events::{Event as EngineEvent, TurnOutcomeStatus};
+use codewhale_engine::core::ops::{Op, TurnSpec};
+use codewhale_engine::runtime_threads::RuntimeEventRecord;
+use codewhale_engine::runtime_threads::manager::install_mock_engine;
 use codewhale_models::Role;
 use codewhale_models::Usage;
 use futures_util::StreamExt;
@@ -164,7 +164,7 @@ fn runtime_request_model_uses_the_active_provider_default() {
 #[tokio::test(flavor = "current_thread")]
 async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_budgets() -> Result<()>
 {
-    let _workshop_guard = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temp = tempfile::tempdir()?;
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace)?;
@@ -188,17 +188,17 @@ async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_bu
             sessions_dir: None,
             max_active_threads: 2,
         },
-        Arc::new(crate::plugins::PluginRegistry::empty(&workspace)),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
     )?;
 
     assert_eq!(startup_activation.read_result_max_bytes, Some(73_728));
     assert_eq!(startup_activation.tool_result_max_bytes, Some(65_536));
     assert_eq!(
-        crate::tools::large_output_router::active_read_result_max_bytes(),
+        codewhale_runtime::active_workshop::active_read_result_max_bytes(),
         Some(73_728)
     );
     assert_eq!(
-        crate::tools::large_output_router::active_tool_result_max_bytes(),
+        codewhale_runtime::active_workshop::active_tool_result_max_bytes(),
         Some(65_536)
     );
 
@@ -217,14 +217,14 @@ async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_bu
     assert_eq!(reload_activation.read_result_max_bytes, Some(81_920));
     assert_eq!(reload_activation.tool_result_max_bytes, Some(77_824));
     assert_eq!(
-        crate::tools::large_output_router::active_read_result_max_bytes(),
+        codewhale_runtime::active_workshop::active_read_result_max_bytes(),
         Some(81_920)
     );
     assert_eq!(
-        crate::tools::large_output_router::active_tool_result_max_bytes(),
+        codewhale_runtime::active_workshop::active_tool_result_max_bytes(),
         Some(77_824)
     );
-    crate::tools::large_output_router::install_active_workshop(None);
+    codewhale_runtime::active_workshop::install_active_workshop(None);
     Ok(())
 }
 
@@ -272,32 +272,32 @@ fn runtime_tui_settings_reject_legacy_modes_and_do_not_save_env_overlays() -> Re
 }
 
 #[async_trait::async_trait]
-impl crate::task_manager::TaskExecutor for MockExecutor {
+impl codewhale_engine::task_manager::TaskExecutor for MockExecutor {
     async fn execute(
         &self,
-        _task: crate::task_manager::ExecutionTask,
-        events: mpsc::Sender<crate::task_manager::TaskExecutionEvent>,
+        _task: codewhale_engine::task_manager::ExecutionTask,
+        events: mpsc::Sender<codewhale_engine::task_manager::TaskExecutionEvent>,
         cancel: tokio_util::sync::CancellationToken,
-    ) -> crate::task_manager::TaskExecutionResult {
+    ) -> codewhale_engine::task_manager::TaskExecutionResult {
         let _ = events
-            .send(crate::task_manager::TaskExecutionEvent::Status {
+            .send(codewhale_engine::task_manager::TaskExecutionEvent::Status {
                 message: "started".to_string(),
             })
             .await;
         sleep(Duration::from_millis(100)).await;
         if cancel.is_cancelled() {
-            return crate::task_manager::TaskExecutionResult {
-                status: crate::task_manager::TaskStatus::Canceled,
+            return codewhale_engine::task_manager::TaskExecutionResult {
+                status: codewhale_engine::task_manager::TaskStatus::Canceled,
                 result_text: None,
                 error: None,
-                terminal_reason: crate::task_manager::TaskTerminalReason::Canceled,
+                terminal_reason: codewhale_engine::task_manager::TaskTerminalReason::Canceled,
             };
         }
-        crate::task_manager::TaskExecutionResult {
-            status: crate::task_manager::TaskStatus::Completed,
+        codewhale_engine::task_manager::TaskExecutionResult {
+            status: codewhale_engine::task_manager::TaskStatus::Completed,
             result_text: Some("ok".to_string()),
             error: None,
-            terminal_reason: crate::task_manager::TaskTerminalReason::Completed,
+            terminal_reason: codewhale_engine::task_manager::TaskTerminalReason::Completed,
         }
     }
 }
@@ -472,6 +472,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         archived: false,
         system_prompt: None,
         task_id: None,
+        parent_thread_id: None,
         title: None,
         session_id: None,
         saved_session_checkpoint: None,
@@ -530,7 +531,7 @@ fn messages_from_thread_detail_batches_tool_results() {
                 summary: &str,
                 detail: Option<&str>,
                 metadata: Option<Value>| {
-        crate::runtime_threads::TurnItemRecord {
+        codewhale_engine::runtime_threads::TurnItemRecord {
             schema_version: 2,
             id: id.to_string(),
             turn_id: turn_id.clone(),
@@ -620,12 +621,11 @@ fn messages_from_thread_detail_batches_tool_results() {
             .or_insert_with(Vec::new)
             .push(item.clone());
     }
-    let messages =
-        crate::runtime_threads::RuntimeThreadManager::reconstruct_messages_from_turns_with(
-            &detail.turns,
-            &items_by_turn,
-        )
-        .expect("rebuild thread history");
+    let messages = codewhale_engine::runtime_threads::reconstruct_messages_from_turns_with(
+        &detail.turns,
+        &items_by_turn,
+    )
+    .expect("rebuild thread history");
     let roles = messages
         .iter()
         .map(|message| message.role.as_str())
@@ -696,6 +696,7 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             archived: false,
             system_prompt: None,
             task_id: None,
+            parent_thread_id: None,
             title: None,
             session_id: None,
             saved_session_checkpoint: None,
@@ -728,7 +729,7 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
         __cw_config_init_5_value.providers = __cw_config_init_5_1;
         __cw_config_init_5_value
     };
-    let mut session = crate::session_manager::create_saved_session_with_mode(
+    let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
         &[],
         "local-model",
         std::path::Path::new("."),
@@ -1032,8 +1033,8 @@ async fn spawn_test_server_with_root_token_mobile_workspace(
 struct TestServerOverrides {
     automation_handles: Option<
         oneshot::Sender<(
-            crate::automation_manager::SharedAutomationManager,
-            crate::task_manager::SharedTaskManager,
+            codewhale_engine::automation_manager::SharedAutomationManager,
+            codewhale_engine::task_manager::SharedTaskManager,
         )>,
     >,
     /// Publish the exact manager using the production owner/frontend factory.
@@ -1050,7 +1051,7 @@ struct TestServerOverrides {
     mobile: Option<mobile::RuntimeMobileState>,
     web: Option<web::RuntimeWebState>,
     compat_stream_test_hook: Option<mpsc::UnboundedSender<CompatStreamTestPoint>>,
-    plugin_discovery: Option<Arc<crate::plugins::PluginDiscoveryContext>>,
+    plugin_discovery: Option<Arc<codewhale_plugins::PluginDiscoveryContext>>,
     /// Pre-seeded workspace LSP manager (test transports, disabled configs).
     lsp_manager: Option<Arc<codewhale_lsp::LspManager>>,
     /// Engine LRU capacity; `None` keeps the fixture default of 8.
@@ -1179,9 +1180,9 @@ fn spawn_product_stack_server(
         .shutdown
         .get_or_insert_with(RuntimeServerShutdown::default)
         .clone();
-    let catalog = crate::command_catalog::installed();
-    let extension_manager = crate::extension_host::manager();
-    let extension_policy = crate::plugins::activation::extension_host_policy_enabled();
+    let catalog = codewhale_engine::command_catalog::installed();
+    let extension_manager = codewhale_engine::extension_host::manager();
+    let extension_policy = codewhale_plugins::activation::extension_host_policy_enabled();
     std::thread::Builder::new()
         .name("runtime-api-test-server".to_string())
         .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
@@ -1189,11 +1190,11 @@ fn spawn_product_stack_server(
             // Adopted for the thread's lifetime; the scope's generation check
             // refuses enrollment once the sealing test has ended.
             let _membership = crate::test_support::join_env_scope(env_ticket);
-            let _catalog = catalog.map(crate::command_catalog::CatalogGuard::install);
+            let _catalog = catalog.map(codewhale_engine::command_catalog::CatalogGuard::install);
             let _extension_manager =
-                crate::extension_host::TestManagerGuard::install(extension_manager);
+                codewhale_engine::extension_host::TestManagerGuard::install(extension_manager);
             let _extension_policy =
-                crate::plugins::activation::TestPolicyGuard::extension_host(extension_policy);
+                codewhale_plugins::activation::TestPolicyGuard::extension_host(extension_policy);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1286,7 +1287,7 @@ async fn build_test_server(
     let mut config = if let Some(config) = overrides.config.clone() {
         config
     } else if let Some(path) = overrides.config_path.clone() {
-        crate::plugins::providers::load_config(Some(path), None)?
+        codewhale_plugins::providers::load_config(Some(path), None)?
     } else {
         Config::default().with_legacy_root(
             Some("runtime-api-test-key".to_string()),
@@ -1303,7 +1304,7 @@ async fn build_test_server(
             default_mode: "agent".to_string(),
             allow_shell: false,
             trust_mode: false,
-            execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+            execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
         },
         Arc::new(MockExecutor),
     )
@@ -1382,7 +1383,7 @@ async fn build_test_server(
         workspace,
         plugin_discovery: overrides
             .plugin_discovery
-            .unwrap_or_else(crate::plugins::PluginDiscoveryContext::capture_pre_dotenv),
+            .unwrap_or_else(codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv),
         task_manager: manager,
         runtime_threads: runtime_threads.clone(),
         cors_origins: Vec::new(),
@@ -1418,13 +1419,15 @@ async fn build_test_server(
             .map_err(|error| anyhow::anyhow!(error.message))?;
         let (owner, compatibility) =
             bind_captured_runtime_frontends(&state, Some(socket), model, 1, false, None).await?;
-        (Some(owner), Some(compatibility))
+        // `owner` is already an `Option`: the helper reports an unbound
+        // endpoint when the filesystem cannot hold one.
+        (owner, Some(compatibility))
     } else {
         (None, None)
     };
     let mut app = build_router(state.clone());
     if let Some(compatibility) = compatibility {
-        app = app.merge(codewhale_app_server::runtime_compatibility_router(
+        app = app.merge(codewhale_app_server::http::runtime_compatibility_router(
             compatibility,
             &state.cors_origins,
             state.runtime_token.clone(),
@@ -2635,27 +2638,31 @@ async fn workspace_and_automation_endpoints_work() -> Result<()> {
     assert!(refused.text().await?.contains("still active"));
     let task_id = run_now["task_id"].as_str().context("missing task id")?;
     let run_id = run_now["id"].as_str().context("missing run id")?;
-    let task = crate::task_manager::wait_for_terminal_state(
+    let task = codewhale_engine::task_manager::wait_for_terminal_state(
         &tasks,
         task_id,
         ci_scaled(Duration::from_secs(15)),
     )
     .await?;
-    assert_eq!(task.status, crate::task_manager::TaskStatus::Completed);
+    assert_eq!(
+        task.status,
+        codewhale_engine::task_manager::TaskStatus::Completed
+    );
     let cancel = tokio_util::sync::CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
     let scheduler = spawn_scheduler(
         automations.clone(),
         tasks,
         cancel.clone(),
-        crate::automation_manager::AutomationSchedulerConfig::default(),
+        codewhale_engine::automation_manager::AutomationSchedulerConfig::default(),
     );
     tokio::time::timeout(ci_scaled(Duration::from_secs(15)), async {
         loop {
             let runs = automations.lock().await.list_runs(&automation_id, None)?;
             if runs.iter().any(|run| {
                 run.id == run_id
-                    && run.status == crate::automation_manager::AutomationRunStatus::Completed
+                    && run.status
+                        == codewhale_engine::automation_manager::AutomationRunStatus::Completed
             }) {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -2748,7 +2755,7 @@ async fn fleet_status_runtime_api_exposes_state_and_actions() -> Result<()> {
         metadata: std::collections::BTreeMap::new(),
     };
     let report = manager.create_run(
-        crate::fleet::task_spec::FleetTaskSpecDocument {
+        codewhale_engine::fleet::task_spec::FleetTaskSpecDocument {
             name: Some("api smoke".to_string()),
             labels: std::collections::BTreeMap::new(),
             security_policy: None,
@@ -2986,13 +2993,13 @@ fn fleet_worker_json_includes_runtime_state_projection() {
 
 #[tokio::test]
 async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()> {
-    use crate::tools::subagent::{
+    use codewhale_agent_contract::role::FleetRole;
+    use codewhale_agent_contract::worker_profile::{ModelRoute, ToolScope, WorkerRuntimeProfile};
+    use codewhale_engine::tools::subagent::{
         AgentRunArtifactRef, AgentRunFollowUpTarget, AgentRunRecommendedAction,
         AgentRunTakeoverTarget, AgentRunUsage, AgentRunVerificationSummary, AgentWorkerEvent,
         AgentWorkerRecord, AgentWorkerSpec, AgentWorkerStatus, AgentWorkerToolProfile,
     };
-    use codewhale_agent_contract::role::FleetRole;
-    use codewhale_agent_contract::worker_profile::{ModelRoute, ToolScope, WorkerRuntimeProfile};
     use std::collections::VecDeque;
 
     let root = std::env::temp_dir().join(format!("codewhale-agent-runs-api-{}", Uuid::new_v4()));
@@ -3019,13 +3026,14 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
                 let mut profile = WorkerRuntimeProfile::for_role(FleetRole::Verifier);
                 profile.tools = ToolScope::Explicit(vec!["read_file".to_string()]);
                 profile.model = ModelRoute::Fixed("deepseek-v4-flash".to_string());
-                profile.max_spawn_depth = crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH;
+                profile.max_spawn_depth =
+                    codewhale_engine::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH;
                 profile.spawn_depth = 1;
                 profile
             },
             max_steps: 4,
             spawn_depth: 1,
-            max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+            max_spawn_depth: codewhale_engine::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             child_route: None,
             launch_manifest: None,
         },
@@ -3170,7 +3178,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
             .is_none()
     );
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(codewhale_engine::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     let engine = runtime_threads.get_engine(&thread.id).await?;
     let actual = engine.subagent_manager();
@@ -3226,7 +3234,8 @@ async fn agent_run_cancel_stops_a_live_child_and_returns_its_receipt() -> Result
     let root = std::env::temp_dir().join(format!("codewhale-agent-run-cancel-{}", Uuid::new_v4()));
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
-    let manager = crate::tools::subagent::new_shared_subagent_manager(workspace.clone(), 2);
+    let manager =
+        codewhale_engine::tools::subagent::new_shared_subagent_manager(workspace.clone(), 2);
     let agent_id = {
         let mut guard = manager.write().await;
         let id = guard.insert_test_running_agent("stoppable", &workspace);
@@ -3260,7 +3269,7 @@ async fn agent_run_cancel_stops_a_live_child_and_returns_its_receipt() -> Result
     assert_eq!(receipt["status"], "cancelled");
     assert_eq!(
         manager.read().await.get_result(&agent_id)?.status,
-        crate::tools::subagent::SubAgentStatus::Cancelled
+        codewhale_engine::tools::subagent::SubAgentStatus::Cancelled
     );
 
     // Stopping a stopped run is a no-op that answers with the same receipt.
@@ -3292,7 +3301,7 @@ async fn agent_run_cancel_remains_idempotent_before_receipt_persistence() -> Res
     // A memory-only manager deterministically models a disk projection that
     // has not caught up. Repeated stops must use its authoritative receipt.
     let manager = Arc::new(tokio::sync::RwLock::new(
-        crate::tools::subagent::SubAgentManager::new(workspace.clone(), 2),
+        codewhale_engine::tools::subagent::SubAgentManager::new(workspace.clone(), 2),
     ));
     let agent_id = {
         let mut guard = manager.write().await;
@@ -3345,7 +3354,8 @@ async fn agent_run_cancel_refuses_a_run_owned_by_a_session_it_does_not_host() ->
     // A child parked on a question in another terminal session: in flight on
     // disk, but no engine in this runtime owns it.
     let mut record = {
-        let manager = crate::tools::subagent::new_shared_subagent_manager(workspace.clone(), 1);
+        let manager =
+            codewhale_engine::tools::subagent::new_shared_subagent_manager(workspace.clone(), 1);
         let mut guard = manager.write().await;
         let id = guard.insert_test_running_agent("elsewhere", &workspace);
         guard.assign_test_session_owner(&id, "terminal-session");
@@ -3355,7 +3365,7 @@ async fn agent_run_cancel_refuses_a_run_owned_by_a_session_it_does_not_host() ->
             .find(|record| record.spec.worker_id == id)
             .expect("seeded record")
     };
-    record.status = crate::tools::subagent::AgentWorkerStatus::WaitingForUser;
+    record.status = codewhale_engine::tools::subagent::AgentWorkerStatus::WaitingForUser;
     fs::write(
         workspace.join(".codewhale/state/subagents.v1.json"),
         serde_json::to_vec_pretty(&json!({
@@ -3689,29 +3699,37 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
                 submission_id: None,
             })
             .await?;
-        let request = crate::tools::user_input::UserInputRequest {
-            questions: vec![crate::tools::user_input::UserInputQuestion {
+        let request = codewhale_engine::tools::user_input::UserInputRequest {
+            require_typed_answers: true,
+            questions: vec![codewhale_engine::tools::user_input::UserInputQuestion {
+                detail: Some("Inspect the full plan".into()),
+                intent: Some(
+                    codewhale_engine::tools::user_input::UserInputIntent::PlanReview {
+                        approve: "Continue".into(),
+                        call_id: Some("plan-compat".into()),
+                    },
+                ),
                 header: "Continue".to_string(),
                 id: "choice".to_string(),
                 question: "Continue the compatibility turn?".to_string(),
                 options: vec![
-                    crate::tools::user_input::UserInputOption {
+                    codewhale_engine::tools::user_input::UserInputOption {
                         label: "Continue".to_string(),
                         description: "Finish the turn".to_string(),
                     },
-                    crate::tools::user_input::UserInputOption {
+                    codewhale_engine::tools::user_input::UserInputOption {
                         label: "Stop".to_string(),
                         description: "Cancel the turn".to_string(),
                     },
                 ],
-                allow_free_text: false,
+                allow_free_text: true,
                 multi_select: false,
             }],
         };
         harness
             .tx_event
             .send(EngineEvent::ToolCallStarted {
-                model_call: Some(crate::core::events::ModelToolCall {
+                model_call: Some(codewhale_engine::core::events::ModelToolCall {
                     provider_id: "input_compat".to_string(),
                     caller: None,
                     thought_signature: None,
@@ -3731,7 +3749,7 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
         let submission = harness.recv_user_input_submission().await;
         let tool_result = submission
             .as_ref()
-            .map(|(_, response)| crate::tools::spec::ToolResult::json(response))
+            .map(|(_, response)| codewhale_engine::tools::spec::ToolResult::json(response))
             .transpose()?
             .context("compatibility user input was canceled before tool completion")?;
         let _ = submission_tx.send(submission);
@@ -3852,6 +3870,44 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
     assert_eq!(required_payload["request"]["questions"][0]["id"], "choice");
     assert!(required_payload.get("answers").is_none());
 
+    assert_eq!(required_payload["request"]["require_typed_answers"], true);
+    assert_eq!(
+        required_payload["request"]["questions"][0]["detail"],
+        "Inspect the full plan"
+    );
+    assert_eq!(
+        required_payload["request"]["questions"][0]["intent"]["kind"],
+        "plan-review"
+    );
+    for answer in [
+        json!({"id":"choice","label":"Continue","value":"Continue"}),
+        json!({"kind":"choice","id":"choice","label":"Continue","value":"forged"}),
+        json!({"kind":"custom","id":"choice","label":"Other","value":"text"}),
+        json!({"kind":"skipped","id":"choice","label":"","value":"not empty"}),
+    ] {
+        let rejected = client
+            .post(format!(
+                "http://{addr}/v1/user-input/{thread_id}/input_compat"
+            ))
+            .json(&json!({"answers":[answer]}))
+            .send()
+            .await?;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            runtime_threads
+                .get_thread_detail(&thread_id)
+                .await?
+                .pending_user_inputs
+                .len(),
+            1
+        );
+        assert!(
+            !runtime_threads
+                .events_since(&thread_id, None)?
+                .iter()
+                .any(|event| event.event == "user_input.answered")
+        );
+    }
     const SECRET_ANSWER: &str = "compat-answer-must-not-be-echoed";
     let submitted: serde_json::Value = client
         .post(format!(
@@ -3860,7 +3916,8 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
         .json(&json!({
             "answers": [{
                 "id": "choice",
-                "label": "Continue",
+                "kind": "custom",
+                "label": "",
                 "value": SECRET_ANSWER,
             }],
         }))
@@ -3878,6 +3935,10 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
             .context("compatibility user input was canceled instead of submitted")?;
     assert_eq!(submitted_id, "input_compat");
     assert_eq!(submitted_response.answers[0].value, SECRET_ANSWER);
+    assert_eq!(
+        submitted_response.answers[0].kind,
+        Some(codewhale_engine::tools::user_input::UserInputAnswerKind::Custom)
+    );
     release_completion
         .send(())
         .map_err(|_| anyhow::anyhow!("mock interaction engine dropped completion release"))?;
@@ -4474,7 +4535,8 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
             .await?;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
-    let overlong = "x".repeat(crate::runtime_threads::MAX_RUNTIME_TURN_OPERATION_KEY_BYTES + 1);
+    let overlong =
+        "x".repeat(codewhale_engine::runtime_threads::MAX_RUNTIME_TURN_OPERATION_KEY_BYTES + 1);
     for (thread_id, operation_key) in [
         (thread.id.as_str(), "%20leading"),
         (thread.id.as_str(), "control%0Acharacter"),
@@ -6575,7 +6637,7 @@ async fn session_export_of_a_resumed_thread_leaves_the_source_document_untouched
         .await?;
     assert_eq!(exported.status(), StatusCode::CREATED);
     let exported: serde_json::Value = exported.json().await?;
-    let expected_id = crate::runtime_threads::thread_session_id(&thread_id);
+    let expected_id = codewhale_engine::runtime_threads::thread_session_id(&thread_id);
     assert_eq!(exported["session_id"], expected_id.as_str());
     assert_eq!(
         fs::read(&source_path)?,
@@ -6631,7 +6693,7 @@ async fn session_resume_thread_mints_a_fresh_thread_when_the_document_grew() -> 
         .to_string();
 
     // The TUI keeps working on the same conversation and autosaves.
-    let manager = crate::session_manager::SessionManager::new(sessions_dir.clone())?;
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())?;
     let mut grown = manager.load_session("sess_grown_resume")?;
     for (role, text) in [
         (Role::User, "One more question from the terminal"),
@@ -6834,7 +6896,8 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
         .context("missing session id")?
         .to_string();
 
-    let session_manager = crate::session_manager::SessionManager::new(root.join("sessions"))?;
+    let session_manager =
+        codewhale_engine::session_manager::SessionManager::new(root.join("sessions"))?;
     let created_session = session_manager.load_session_by_prefix(&saved_session_handle)?;
     assert_eq!(created_session.metadata.title, "Thread title fallback");
     assert_eq!(created_session.metadata.model, "deepseek-v4-pro");
@@ -6843,15 +6906,16 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
     assert_eq!(created_session.messages[0].role, "user");
     assert_eq!(created_session.messages[1].role, "assistant");
 
-    let mut endpoint_session = crate::session_manager::create_saved_session_with_id_and_mode(
-        "sess_endpoint_fetch".to_string(),
-        &created_session.messages,
-        "deepseek-v4-pro",
-        &root,
-        0,
-        None,
-        Some("plan"),
-    );
+    let mut endpoint_session =
+        codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
+            "sess_endpoint_fetch".to_string(),
+            &created_session.messages,
+            "deepseek-v4-pro",
+            &root,
+            0,
+            None,
+            Some("plan"),
+        );
     endpoint_session.metadata.title = "Thread title fallback".to_string();
     session_manager.save_session(&endpoint_session)?;
 
@@ -6938,10 +7002,12 @@ async fn session_export_retry_after_a_crash_binds_the_document_it_wrote() -> Res
     };
     let client = codewhale_release::tls::reqwest_client();
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
-            workspace: Some(root.join("workspace")),
-            ..Default::default()
-        })
+        .create_thread(
+            codewhale_engine::runtime_threads::manager::CreateThreadRequest {
+                workspace: Some(root.join("workspace")),
+                ..Default::default()
+            },
+        )
         .await?;
     let messages = [
         Message {
@@ -6963,10 +7029,10 @@ async fn session_export_retry_after_a_crash_binds_the_document_it_wrote() -> Res
         .seed_thread_from_messages(&thread.id, &messages)
         .await?;
     // The first attempt got as far as the document, then died.
-    let expected_id = crate::runtime_threads::thread_session_id(&thread.id);
-    let manager = crate::session_manager::SessionManager::new(sessions_dir.clone())?;
+    let expected_id = codewhale_engine::runtime_threads::thread_session_id(&thread.id);
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())?;
     manager.save_session(
-        &crate::session_manager::create_saved_session_with_id_and_mode(
+        &codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
             expected_id.clone(),
             &messages,
             "deepseek-v4-pro",
@@ -7003,10 +7069,12 @@ async fn session_export_retry_after_a_crash_binds_the_document_it_wrote() -> Res
 
     // Another thread may not rebind itself onto this thread's document.
     let other = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
-            workspace: Some(root.join("workspace")),
-            ..Default::default()
-        })
+        .create_thread(
+            codewhale_engine::runtime_threads::manager::CreateThreadRequest {
+                workspace: Some(root.join("workspace")),
+                ..Default::default()
+            },
+        )
         .await?;
     let conflict = client
         .put(format!("http://{addr}/v1/sessions"))
@@ -7110,7 +7178,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
     tokio::spawn(async move {
         while let Some(op) = rx_op.recv().await {
             if let Op::GetSessionSnapshot { tx } = op {
-                let snapshot = crate::core::ops::SessionSnapshot {
+                let snapshot = codewhale_engine::core::ops::SessionSnapshot {
                     session_id: CONVERSATION_ID.to_string(),
                     messages: vec![Message {
                         role: Role::User,
@@ -7597,8 +7665,8 @@ fn dropped_turn(
     turn_id: &str,
     may_change_files: bool,
     snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
-) -> crate::runtime_threads::DroppedTurnSnapshots {
-    crate::runtime_threads::DroppedTurnSnapshots {
+) -> codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+    codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
         turn_id: turn_id.to_string(),
         may_change_files,
         snapshots,
@@ -8819,9 +8887,9 @@ async fn spawn_server_with_saved_sessions(
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
-    let manager = crate::session_manager::SessionManager::new(sessions_dir.clone())?;
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())?;
     for (id, title, archived) in sessions {
-        let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+        let mut saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
             (*id).to_string(),
             &[
                 codewhale_models::Message {
@@ -8954,7 +9022,7 @@ async fn session_patch_route_renames_archives_and_reports_real_changes() -> Resu
     assert_eq!(patched["changes"]["archived"], true);
 
     // Durable, not just echoed back.
-    let manager = crate::session_manager::SessionManager::new(sessions_dir)?;
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir)?;
     let reloaded = manager.load_session("sess-patch")?;
     assert_eq!(reloaded.metadata.title, "After");
     assert!(reloaded.metadata.archived);
@@ -9020,7 +9088,7 @@ async fn session_patch_route_refuses_a_live_session_with_a_conflict() -> Result<
     };
     let client = codewhale_release::tls::reqwest_client();
 
-    crate::session_manager::set_live_session(Some("sess-live"));
+    codewhale_engine::session_manager::set_live_session(Some("sess-live"));
     let conflict = client
         .patch(format!(
             "http://127.0.0.1:{}/v1/sessions/sess-live",
@@ -9031,7 +9099,7 @@ async fn session_patch_route_refuses_a_live_session_with_a_conflict() -> Result<
         .await?;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
 
-    crate::session_manager::set_live_session(None);
+    codewhale_engine::session_manager::set_live_session(None);
     let allowed = client
         .patch(format!(
             "http://127.0.0.1:{}/v1/sessions/sess-live",
@@ -9802,8 +9870,8 @@ async fn thread_history_operation_routes_require_auth() -> Result<()> {
 /// session log is skipped (warned server-side), never a 500.
 #[tokio::test]
 async fn approvals_endpoint_lists_decided_and_pending_newest_first() -> Result<()> {
-    use crate::approval_log::{ApprovalOutcome, ApprovalReceipt, ApprovalReceiptStore};
     use chrono::{DateTime, Utc};
+    use codewhale_engine::approval_log::{ApprovalOutcome, ApprovalReceipt, ApprovalReceiptStore};
 
     let root = std::env::temp_dir().join(format!("codewhale-approvals-api-{}", Uuid::new_v4()));
     let sessions_dir = root.join("sessions");
@@ -9840,7 +9908,7 @@ async fn approvals_endpoint_lists_decided_and_pending_newest_first() -> Result<(
             tool_call_id: "tool-1".into(),
             outcome: ApprovalOutcome::Denied,
             created_at: at(11),
-            decided_by: Some(crate::approval_log::ApprovalDecider::User),
+            decided_by: Some(codewhale_engine::approval_log::ApprovalDecider::User),
             grant_id: None,
             matched_label: None,
         },
@@ -9969,16 +10037,18 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
         effective_billing_mode: None,
         effective_dispatched_at: None,
         effective_model: None,
-        routed_usage: vec![crate::cost_status::EffectiveRouteUsage {
-            route: crate::cost_status::EffectiveRouteEnvelope {
+        routed_usage: vec![codewhale_engine::cost_status::EffectiveRouteUsage {
+            route: codewhale_engine::cost_status::EffectiveRouteEnvelope {
                 openrouter_vendor: None,
                 provider: ProviderKind::Deepseek,
                 provider_identity: ProviderKind::Deepseek.as_str().to_string(),
                 model: "deepseek-v4-flash".to_string(),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: now,
             },
             usage: Usage {
@@ -10004,9 +10074,9 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
     turn.effective_provider = Some(ProviderKind::Deepseek.as_str().to_string());
     turn.effective_provider_id = Some(ProviderKind::Deepseek.as_str().to_string());
     turn.effective_billing_surface =
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string());
+        Some(codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string());
     turn.effective_endpoint_fingerprint = None;
-    turn.effective_billing_mode = Some(crate::cost_status::RouteBillingMode::Metered);
+    turn.effective_billing_mode = Some(codewhale_engine::cost_status::RouteBillingMode::Metered);
     turn.effective_dispatched_at = Some(now);
     turn.effective_model = Some("deepseek-v4-flash".to_string());
     store.save_turn(&turn)?;
@@ -10028,8 +10098,9 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
 
     // Pre-existing session file carrying TUI-written sub-agent spend — the
     // shape a GUI save of a resumed TUI session merges into.
-    let session_manager = crate::session_manager::SessionManager::new(sessions_dir.clone())?;
-    let mut prior = crate::session_manager::create_saved_session_with_id_and_mode(
+    let session_manager =
+        codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())?;
+    let mut prior = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "sess_cost_merge".to_string(),
         &[],
         "deepseek-v4-flash",
@@ -10170,16 +10241,18 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
         effective_billing_mode: None,
         effective_dispatched_at: None,
         effective_model: None,
-        routed_usage: vec![crate::cost_status::EffectiveRouteUsage {
-            route: crate::cost_status::EffectiveRouteEnvelope {
+        routed_usage: vec![codewhale_engine::cost_status::EffectiveRouteUsage {
+            route: codewhale_engine::cost_status::EffectiveRouteEnvelope {
                 openrouter_vendor: None,
                 provider: ProviderKind::Deepseek,
                 provider_identity: ProviderKind::Deepseek.as_str().to_string(),
                 model: "deepseek-v4-flash".to_string(),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: now,
             },
             usage: Usage {
@@ -10201,9 +10274,10 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
     };
     turn.effective_provider = Some(ProviderKind::Openai.as_str().to_string());
     turn.effective_provider_id = Some(ProviderKind::Openai.as_str().to_string());
-    turn.effective_billing_surface = Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE.to_string());
+    turn.effective_billing_surface =
+        Some(codewhale_engine::pricing::UNCLASSIFIED_BILLING_SURFACE.to_string());
     turn.effective_endpoint_fingerprint = None;
-    turn.effective_billing_mode = Some(crate::cost_status::RouteBillingMode::Metered);
+    turn.effective_billing_mode = Some(codewhale_engine::cost_status::RouteBillingMode::Metered);
     turn.effective_dispatched_at = Some(now);
     turn.effective_model = Some("gpt-5.5".to_string());
     store.save_turn(&turn)?;
@@ -10221,7 +10295,7 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
         .await?
         .error_for_status()?;
 
-    let session_manager = crate::session_manager::SessionManager::new(sessions_dir)?;
+    let session_manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir)?;
     let saved = session_manager.load_session_by_prefix("sess_cny_reasons")?;
     let cost = &saved.metadata.cost;
     assert_eq!(
@@ -10441,11 +10515,15 @@ fn unauthenticated_runtime_info_redacts_secure_account_identity_without_loading_
 #[test]
 fn runtime_account_api_origin_rejects_credentials_paths_and_non_loopback_http() {
     assert_eq!(
-        normalize_runtime_account_api_base("https://api.codewhale.net/"),
+        codewhale_engine::profile_constitution::normalize_runtime_account_api_base(
+            "https://api.codewhale.net/"
+        ),
         Some("https://api.codewhale.net".to_string())
     );
     assert_eq!(
-        normalize_runtime_account_api_base("http://127.0.0.1:8787"),
+        codewhale_engine::profile_constitution::normalize_runtime_account_api_base(
+            "http://127.0.0.1:8787"
+        ),
         Some("http://127.0.0.1:8787".to_string())
     );
     for invalid in [
@@ -10455,7 +10533,7 @@ fn runtime_account_api_origin_rejects_credentials_paths_and_non_loopback_http() 
         "http://api.codewhale.net",
     ] {
         assert_eq!(
-            normalize_runtime_account_api_base(invalid),
+            codewhale_engine::profile_constitution::normalize_runtime_account_api_base(invalid),
             None,
             "{invalid}"
         );
@@ -11453,7 +11531,7 @@ fn thread_summary_resolves_git_metadata_once_per_distinct_workspace() {
 }
 
 fn seed_summary_search_transcript(
-    store: &crate::runtime_threads::RuntimeThreadStore,
+    store: &codewhale_engine::runtime_threads::RuntimeThreadStore,
     thread_id: &str,
     thread_index: usize,
     turns: usize,
@@ -11475,7 +11553,7 @@ fn seed_summary_search_transcript(
                 TurnItemKind::AgentMessage
             };
             let text = format!("{preview_token} {thread_index} {turn_offset} {item_offset}");
-            store.save_item(&crate::runtime_threads::TurnItemRecord {
+            store.save_item(&codewhale_engine::runtime_threads::TurnItemRecord {
                 schema_version: 2,
                 id: item_id.clone(),
                 turn_id: turn_id.clone(),
@@ -11591,6 +11669,61 @@ async fn submit_user_input_404s_without_entering_engine_mailbox_for_unknown_id()
         "unknown user input reached the engine mailbox"
     );
 
+    let client = codewhale_release::tls::reqwest_client();
+    let missing = client
+        .delete(format!(
+            "http://{addr}/v1/user-input/{}/input-missing",
+            thread.id
+        ))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    runtime_threads.register_pending_user_input_for_thread_for_test(&thread.id, "cancel-known");
+    let cancellation = client
+        .delete(format!(
+            "http://{addr}/v1/user-input/{}/cancel-known",
+            thread.id
+        ))
+        .send();
+    let (response, delivered) = tokio::join!(cancellation, harness.recv_user_input_cancellation());
+    let response: Value = response?.error_for_status()?.json().await?;
+    assert_eq!(
+        response,
+        json!({"ok":true,"input_id":"cancel-known","delivered":true})
+    );
+    assert_eq!(delivered.as_deref(), Some("cancel-known"));
+    assert!(
+        runtime_threads
+            .get_thread_detail(&thread.id)
+            .await?
+            .pending_user_inputs
+            .is_empty()
+    );
+    let replay = client
+        .delete(format!(
+            "http://{addr}/v1/user-input/{}/cancel-known",
+            thread.id
+        ))
+        .send()
+        .await?;
+    assert_eq!(replay.status(), StatusCode::NOT_FOUND);
+    let late = client
+        .post(format!(
+            "http://{addr}/v1/user-input/{}/cancel-known",
+            thread.id
+        ))
+        .json(&json!({"answers":[]}))
+        .send()
+        .await?;
+    assert_eq!(late.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        runtime_threads
+            .events_since(&thread.id, None)?
+            .iter()
+            .filter(|event| event.event == "user_input.canceled")
+            .count(),
+        1
+    );
     handle.abort();
     Ok(())
 }
@@ -11840,7 +11973,7 @@ async fn skills_endpoint_includes_enabled_field() -> Result<()> {
 
 #[tokio::test]
 async fn unicode_skill_activation_matches_api_load_and_owned_lifecycle() -> Result<()> {
-    use crate::tools::spec::{ToolContext, ToolSpec as _};
+    use codewhale_engine::tools::spec::{ToolContext, ToolSpec as _};
 
     let _env = lock_test_env();
     let tmp = tempfile::tempdir()?;
@@ -11857,8 +11990,8 @@ async fn unicode_skill_activation_matches_api_load_and_owned_lifecycle() -> Resu
     let (original_dir, _) = create_managed_skill(&workspace, "技能")?;
     create_managed_skill(&workspace, "分析")?;
     create_managed_skill(&workspace, "skill")?;
-    let a = crate::skills::normalize_skill_name_for_lookup("技能");
-    let b = crate::skills::normalize_skill_name_for_lookup("分析");
+    let a = codewhale_skill_install::skill_parse::normalize_skill_name_for_lookup("技能");
+    let b = codewhale_skill_install::skill_parse::normalize_skill_name_for_lookup("分析");
     assert_ne!(a, b);
     let state_path = root.join("skills_state.toml");
     let initial = b"disabled = [\"skill\"]\n";
@@ -11873,11 +12006,9 @@ async fn unicode_skill_activation_matches_api_load_and_owned_lifecycle() -> Resu
     .await?
     .context("isolated skill API fixture requires loopback")?;
     let client = codewhale_release::tls::reqwest_client();
-    let context = ToolContext::new(&workspace).with_skills_config(
-        workspace.join(".codewhale/skills"),
-        crate::skills::SkillDiscoveryMode::Compatible,
-    );
-    let tool = crate::tools::skill::LoadSkillTool;
+    let context = ToolContext::new(&workspace)
+        .with_skills_config(workspace.join(".codewhale/skills"), Default::default());
+    let tool = codewhale_engine::tools::skill::LoadSkillTool;
 
     let before: serde_json::Value = client
         .get(format!("http://{addr}/v1/skills"))
@@ -11991,16 +12122,16 @@ async fn skills_endpoint_exposes_safe_plugin_provenance_and_shared_toggle() -> R
         plugin_root.join("skills/review/SKILL.md"),
         "---\nname: review\ndescription: reviewed plugin Skill\n---\nbody\n",
     )?;
-    let plugin_config = crate::plugins::discovery::DiscoveryConfig {
+    let plugin_config = codewhale_plugins::discovery::DiscoveryConfig {
         workspace: workspace.clone(),
         user_plugins_dir: tmp.path().join("plugins"),
         workspace_plugins_dir: workspace.join(".codewhale/plugins"),
         builtin_plugin_dirs: Vec::new(),
         state_path: tmp.path().join("plugin-state/state.json"),
     };
-    let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+    let discovery = codewhale_plugins::PluginDiscoveryContext::from_config_and_environment(
         &plugin_config,
-        crate::plugins::HostEnvironment::default(),
+        codewhale_plugins::HostEnvironment::default(),
     );
     let mut plugins = discovery.registry_for_workspace(&workspace);
     Arc::make_mut(&mut plugins)
@@ -12191,7 +12322,7 @@ fn skills_search_directories_includes_custom_skills_dir() {
     let directories = skills_search_directories(
         &workspace,
         &custom_skills,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        codewhale_skills::SkillDiscoveryMode::Compatible,
     );
 
     assert!(
@@ -12229,29 +12360,29 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
     )
     .expect("write override skill");
 
-    let bundled_skill = crate::skills::Skill {
+    let bundled_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
         localized_descriptions: std::collections::HashMap::new(),
-        invocation: crate::skills::SkillInvocation::ModelAndUser,
+        invocation: codewhale_skill_install::skill_parse::SkillInvocation::ModelAndUser,
         aliases: Vec::new(),
         argument_hint: None,
         body: String::new(),
         path: bundled_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
-    let override_skill = crate::skills::Skill {
+    let override_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
         localized_descriptions: std::collections::HashMap::new(),
-        invocation: crate::skills::SkillInvocation::ModelAndUser,
+        invocation: codewhale_skill_install::skill_parse::SkillInvocation::ModelAndUser,
         aliases: Vec::new(),
         argument_hint: None,
         body: String::new(),
         path: override_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
 
     assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
@@ -13808,6 +13939,12 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
         );
+        let entry = provider_model_entry_for_api(
+            &config,
+            &config.test_identity_for_kind(ProviderKind::Deepseek),
+            "deepseek-v4-pro".to_string(),
+        );
+        assert_eq!(entry.reasoning_effort_levels, ["off", "low", "high", "max"]);
         assert!(
             models
                 .iter()
@@ -13865,11 +14002,17 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
         codewhale_config::route::CapabilityState::Unknown,
         "same-name custom proxy must not surface first-party vision capability as verified"
     );
+    let proxy = provider_model_entry_for_api(
+        &custom,
+        &custom.test_identity_for_kind(ProviderKind::Deepseek),
+        "deepseek-v4-pro".to_string(),
+    );
+    assert!(proxy.reasoning_effort_levels.is_empty());
 }
 
 #[test]
 fn provider_credential_state_wire_values_are_stable_and_sanitized() {
-    use crate::provider_readiness::CredentialState;
+    use codewhale_engine::provider_readiness::CredentialState;
 
     for (internal, expected) in [
         (CredentialState::Saved, "configured"),
@@ -13941,7 +14084,7 @@ api_key_env = "CW_OPERATE_MISSING_TEST_KEY"
     assert_eq!(started["operation"]["credentialsPresent"], true);
     assert_eq!(started["operation"]["leadOperator"]["model"], "fleet-model");
     let manager = AutomationManager::open_for_test(root.path().join("automations"))?;
-    let mut record = manager.get_automation(crate::operate::OPERATE_KEEPALIVE_ID)?;
+    let mut record = manager.get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)?;
     assert_eq!(record.model.as_deref(), Some("fleet-model"));
     assert_eq!(record.model_provider.as_deref(), Some("custom"));
     assert_eq!(record.model_provider_id.as_deref(), Some("fleet-route"));
@@ -15106,7 +15249,7 @@ model = "glm-2"
     // The receipt that matters: what was written still loads under the new
     // route, and resolves the selected leaf rather than the root fallback.
     // Validating the root alias instead of the selection returned 500 here.
-    let reloaded = crate::plugins::providers::load_config(Some(config_file.clone()), None)?;
+    let reloaded = codewhale_plugins::providers::load_config(Some(config_file.clone()), None)?;
     assert_eq!(
         reloaded.active_provider_identity().unwrap().provider,
         codewhale_config::ProviderKind::Deepseek
@@ -15236,11 +15379,13 @@ api_key = "local-test-key"
         return Ok(());
     };
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
-            model: Some("local-model".to_string()),
-            model_provider: Some("lm-studio".to_string()),
-            ..Default::default()
-        })
+        .create_thread(
+            codewhale_engine::runtime_threads::manager::CreateThreadRequest {
+                model: Some("local-model".to_string()),
+                model_provider: Some("lm-studio".to_string()),
+                ..Default::default()
+            },
+        )
         .await?;
     let harness = install_mock_engine(&runtime_threads, &thread.id).await;
 
@@ -16461,9 +16606,9 @@ fn fleet_receipt_json_receipt_artifact_sets_evidence_available() {
 
 #[tokio::test]
 async fn fleet_receipt_api_list_and_get_round_trip() -> Result<()> {
-    use crate::fleet::ledger::FleetLedger;
-    use crate::fleet::task_spec::FleetTaskVerificationInput;
-    use crate::fleet::task_spec::{
+    use codewhale_engine::fleet::ledger::FleetLedger;
+    use codewhale_engine::fleet::task_spec::FleetTaskVerificationInput;
+    use codewhale_engine::fleet::task_spec::{
         FleetTaskSpecDocument, FleetTaskVerification, prepare_verification_receipt,
     };
     use codewhale_protocol::fleet::{FleetScore, FleetTaskResult};
@@ -16500,7 +16645,7 @@ async fn fleet_receipt_api_list_and_get_round_trip() -> Result<()> {
         timeout_seconds: None,
         metadata: std::collections::BTreeMap::new(),
     };
-    let manager = crate::fleet::manager::FleetManager::open(&workspace)?
+    let manager = codewhale_engine::fleet::manager::FleetManager::open(&workspace)?
         .with_session_model(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL)
         .with_route_config(test_fleet_route_config());
     let report = manager.create_run(
@@ -17472,7 +17617,8 @@ fn create_managed_skill(root_dir: &std::path::Path, name: &str) -> Result<(PathB
     )?;
     // Write an `.installed-from` marker so the mutation module considers it
     // managed (and therefore eligible for update/remove/trust).
-    let digest = crate::skills::audit::compute_package_digest(&skill_dir).expect("package digest");
+    let digest =
+        codewhale_skills::audit::compute_package_digest(&skill_dir).expect("package digest");
     codewhale_skill_install::install::write_installed_from_v2(
         &skill_dir,
         &format!("github:test/{name}"),
@@ -18140,18 +18286,18 @@ async fn skill_lifecycle_runtime_info_advertises_skill_lifecycle_capability() ->
 fn receipt_evidence_paths_must_stay_confined_to_the_workspace() {
     use std::path::Path;
 
-    assert!(crate::fleet::artifacts::path_is_confined(Path::new(
-        "receipts/run-1/task-a.json"
-    )));
-    assert!(!crate::fleet::artifacts::path_is_confined(Path::new(
-        "/etc/passwd"
-    )));
-    assert!(!crate::fleet::artifacts::path_is_confined(Path::new(
-        "receipts/../../escape.json"
-    )));
-    assert!(!crate::fleet::artifacts::path_is_confined(Path::new(
-        "../escape.json"
-    )));
+    assert!(codewhale_engine::fleet::artifacts::path_is_confined(
+        Path::new("receipts/run-1/task-a.json")
+    ));
+    assert!(!codewhale_engine::fleet::artifacts::path_is_confined(
+        Path::new("/etc/passwd")
+    ));
+    assert!(!codewhale_engine::fleet::artifacts::path_is_confined(
+        Path::new("receipts/../../escape.json")
+    ));
+    assert!(!codewhale_engine::fleet::artifacts::path_is_confined(
+        Path::new("../escape.json")
+    ));
 }
 
 // ─── Plugin management API tests ────────────────────────────────────────────
@@ -18181,18 +18327,18 @@ fn write_plugin_source_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
 fn isolated_plugin_discovery(
     root: &Path,
     workspace: &Path,
-) -> Arc<crate::plugins::PluginDiscoveryContext> {
-    crate::plugins::PluginDiscoveryContext::from_config_and_environment(
-        &crate::plugins::discovery::DiscoveryConfig {
+) -> Arc<codewhale_plugins::PluginDiscoveryContext> {
+    codewhale_plugins::PluginDiscoveryContext::from_config_and_environment(
+        &codewhale_plugins::discovery::DiscoveryConfig {
             workspace: workspace.to_path_buf(),
             user_plugins_dir: root.join("plugins"),
-            workspace_plugins_dir: crate::plugins::discovery::default_workspace_plugins_dir(
+            workspace_plugins_dir: codewhale_plugins::discovery::default_workspace_plugins_dir(
                 workspace,
             ),
             builtin_plugin_dirs: Vec::new(),
             state_path: root.join("plugins").join("state.json"),
         },
-        crate::plugins::HostEnvironment::from_entries(Vec::new()),
+        codewhale_plugins::HostEnvironment::from_entries(Vec::new()),
     )
 }
 
@@ -18303,11 +18449,11 @@ async fn terminal_routes_serve_a_live_engine_session_over_http() -> Result<()> {
     // The agent's terminal tools own session creation; stand in for that
     // producer on the same workspace the server was started with, which is
     // what makes this the Engine's own shell rather than a second one.
-    let _session = crate::tools::terminal_session::get_or_create(
+    let _session = codewhale_engine::tools::terminal_session::get_or_create(
         "pane",
         &workspace,
         codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-        &crate::tools::shell::new_shared_shell_manager(workspace.clone()),
+        &codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone()),
     )
     .map_err(anyhow::Error::msg)?;
 
@@ -18902,17 +19048,17 @@ async fn marketplace_builtin_name_is_reviewable_without_install_or_network_acces
     let workspace = tmp.path().join("ws");
     fs::create_dir_all(&root)?;
     let bundle = write_plugin_source_bundle(&tmp.path().join("builtin"), "computer-use")?;
-    let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
-        &crate::plugins::discovery::DiscoveryConfig {
+    let discovery = codewhale_plugins::PluginDiscoveryContext::from_config_and_environment(
+        &codewhale_plugins::discovery::DiscoveryConfig {
             workspace: workspace.clone(),
             user_plugins_dir: root.join("plugins"),
-            workspace_plugins_dir: crate::plugins::discovery::default_workspace_plugins_dir(
+            workspace_plugins_dir: codewhale_plugins::discovery::default_workspace_plugins_dir(
                 &workspace,
             ),
             builtin_plugin_dirs: vec![bundle.parent().unwrap().to_path_buf()],
             state_path: root.join("plugins/state.json"),
         },
-        crate::plugins::HostEnvironment::from_entries(Vec::new()),
+        codewhale_plugins::HostEnvironment::from_entries(Vec::new()),
     );
     let Some((addr, _, handle)) = spawn_test_server_with_root_token_mobile_workspace_and_overrides(
         root.clone(),
@@ -19025,7 +19171,7 @@ async fn stream_compat_mapping_forwards_runtime_store_failures() -> Result<()> {
         thread_id: "thr_test".to_string(),
         turn_id: Some("turn_test".to_string()),
         item_id: Some("item_1".to_string()),
-        event: crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT.to_string(),
+        event: codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT.to_string(),
         payload: json!({
             "operation": "read",
             "record_kind": "item",
@@ -19078,7 +19224,7 @@ vendor = "{vendor}"
         let old_client = if old_config.active_provider_identity().unwrap().provider
             == codewhale_config::ProviderKind::Openrouter
         {
-            Some(crate::client::CodewhaleClient::new(&old_config)?)
+            Some(codewhale_engine::client::CodewhaleClient::new(&old_config)?)
         } else {
             None
         };
@@ -19087,7 +19233,7 @@ vendor = "{vendor}"
             .send()
             .await?;
         assert_eq!(reload.status(), StatusCode::OK);
-        let fresh = crate::client::CodewhaleClient::new(&manager.read_config())?;
+        let fresh = codewhale_engine::client::CodewhaleClient::new(&manager.read_config())?;
         assert_eq!(
             fresh.openrouter_vendor(),
             (!vendor.is_empty()).then_some(vendor)
@@ -19103,11 +19249,11 @@ vendor = "{vendor}"
 #[test]
 fn oauth_pass_through_provider_lists_catalog_models_without_a_live_listing() {
     let _env = crate::test_support::lock_test_env();
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     let mut config = {
         let __cw_config_init_17_0 = Some("deepseek".into());
         let mut __cw_config_init_17_value: Config = Default::default();
@@ -19125,7 +19271,7 @@ fn oauth_pass_through_provider_lists_catalog_models_without_a_live_listing() {
         .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Xai))
         .unwrap()
         .auth_mode = Some("oauth".into());
-    assert!(crate::provider_lake::live_catalog_unavailable(
+    assert!(codewhale_engine::provider_lake::live_catalog_unavailable(
         &config,
         &(config).test_identity_for_kind(ProviderKind::Xai)
     ));
@@ -19145,11 +19291,11 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
     };
 
     let _env = crate::test_support::lock_test_env();
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     let provider = ProviderKind::Ollama;
     let endpoint = "http://localhost:11455/v1";
     let mut config = {
@@ -19181,9 +19327,10 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
     );
     let fingerprint = base_url_fingerprint(endpoint);
     let fetched_at = now_unix();
-    let ticket =
-        crate::provider_catalog_live::begin_refresh_for_identity(provider, "ollama", endpoint);
-    crate::provider_catalog_live::record_success_if_current(
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        provider, "ollama", endpoint,
+    );
+    codewhale_engine::provider_catalog_live::record_success_if_current(
         &ticket,
         ProviderCatalogDelta {
             provider: "ollama".into(),
@@ -19224,7 +19371,7 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
         ""
     );
     assert!(provider_models_for_api(&other, &(other).test_identity_for_kind(provider)).is_empty());
-    crate::provider_catalog_live::record_failure_if_current(
+    codewhale_engine::provider_catalog_live::record_failure_if_current(
         &ticket,
         "ollama",
         &fingerprint,
@@ -19245,8 +19392,8 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
         provider_default_model_for_api(&config, &(config).test_identity_for_kind(provider)),
         "chosen:tag"
     );
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -19257,11 +19404,11 @@ async fn api_config_reports_local_default_availability_without_blocking_config_r
     };
 
     let _env = lock_test_env();
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     let config_file = home.path().join("config.toml");
     let endpoint = "http://localhost:11457/v1";
     fs::write(
@@ -19297,12 +19444,12 @@ async fn api_config_reports_local_default_availability_without_blocking_config_r
     }
     let fetched_at = now_unix();
     let fingerprint = base_url_fingerprint(endpoint);
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
         ProviderKind::Ollama,
         "ollama",
         endpoint,
     );
-    crate::provider_catalog_live::record_success_if_current(
+    codewhale_engine::provider_catalog_live::record_success_if_current(
         &ticket,
         ProviderCatalogDelta {
             provider: "ollama".into(),
@@ -19326,8 +19473,8 @@ async fn api_config_reports_local_default_availability_without_blocking_config_r
     assert_eq!(available["model_available"], true);
     assert_eq!(available["default_model"], DEFAULT_TEXT_MODEL);
     handle.abort();
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     Ok(())
 }
 
@@ -19442,11 +19589,11 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
     };
     assert_eq!(reload().send().await?.status(), StatusCode::OK);
     let mut thread = manager
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(codewhale_engine::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     thread.latest_turn_id = Some("test-turn".into());
     manager.test_store().save_thread(&thread)?;
-    let mut turn: crate::runtime_threads::TurnRecord = serde_json::from_value(json!({
+    let mut turn: codewhale_engine::runtime_threads::TurnRecord = serde_json::from_value(json!({
         "id": "test-turn", "thread_id": thread.id, "status": "completed", "input_summary": "private user text",
         "created_at": Utc::now(), "duration_ms": 30000
     }))?;
@@ -19533,7 +19680,7 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
         assert_eq!(result["status"], expected, "{key}={value}");
     }
     let other = manager
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(codewhale_engine::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     let other_event = manager
         .emit_event_for_test(&other.id, None, "turn.completed", json!({}))
@@ -19574,7 +19721,7 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
     fs::write(&event_path, original_events)?;
     // Approval/input notifications are eligible only while the matching current
     // request is actionable, even if a stale pending projection survived.
-    turn.status = crate::runtime_threads::RuntimeTurnStatus::InProgress;
+    turn.status = codewhale_engine::runtime_threads::RuntimeTurnStatus::InProgress;
     manager.test_store().save_turn(&turn)?;
     let (approval_id, _approval) =
         manager.register_pending_approval_for_thread_for_test(&thread.id, "approval-current");
@@ -19605,7 +19752,7 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
         assert_eq!(value["status"], "prepared");
         assert!(!value.to_string().contains("private"));
     }
-    turn.status = crate::runtime_threads::RuntimeTurnStatus::Completed;
+    turn.status = codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed;
     manager.test_store().save_turn(&turn)?;
     for seq in [approval.seq, input.seq] {
         let value: Value = post(request(seq, false, 2500))
@@ -19685,7 +19832,7 @@ async fn native_notification_replay_rechecks_requests_settled_during_the_read() 
             .await?;
         thread.latest_turn_id = Some("test-turn".into());
         manager.test_store().save_thread(&thread)?;
-        let turn: crate::runtime_threads::TurnRecord = serde_json::from_value(json!({
+        let turn: codewhale_engine::runtime_threads::TurnRecord = serde_json::from_value(json!({
             "id": "test-turn", "thread_id": thread.id, "status": "in_progress",
             "input_summary": "silent settlement fixture", "created_at": Utc::now()
         }))?;
@@ -19765,7 +19912,7 @@ async fn native_notification_replay_rechecks_requests_settled_during_the_read() 
         assert!(settled.pending_user_inputs.is_empty());
         assert_eq!(
             settled.turns[0].status,
-            crate::runtime_threads::RuntimeTurnStatus::InProgress,
+            codewhale_engine::runtime_threads::RuntimeTurnStatus::InProgress,
             "settlement must happen within the same active turn"
         );
         point
@@ -19797,8 +19944,8 @@ async fn native_notification_replay_rechecks_requests_settled_during_the_read() 
 #[tokio::test]
 async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_bytes() -> Result<()>
 {
-    use crate::image_attach::tests::runtime_image_fixture;
     use base64::Engine as _;
+    use codewhale_engine::image_attach::test_support::runtime_image_fixture;
     let _env = crate::test_support::lock_test_env();
     let dir = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
@@ -19913,7 +20060,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
             usage: Default::default(),
             parent_route_usage: Default::default(),
             routed_usage_dropped_records: 0,
-            status: crate::core::events::TurnOutcomeStatus::Completed,
+            status: codewhale_engine::core::events::TurnOutcomeStatus::Completed,
             error: None,
             tool_catalog: None,
             base_url: None,
@@ -19925,7 +20072,9 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
 
 #[tokio::test]
 async fn runtime_image_stream_rejection_does_not_leave_empty_threads() -> Result<()> {
-    use crate::image_attach::tests::{runtime_image_fixture, runtime_image_fixture_bytes};
+    use codewhale_engine::image_attach::test_support::{
+        runtime_image_fixture, runtime_image_fixture_bytes,
+    };
     let _env = crate::test_support::lock_test_env();
     let dir = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
@@ -19975,7 +20124,7 @@ async fn runtime_image_stream_rejection_does_not_leave_empty_threads() -> Result
         assert!(
             manager
                 .list_threads(
-                    crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                    codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None
                 )
                 .await?
@@ -20134,9 +20283,13 @@ async fn runtime_image_saved_session_import_validates_before_creating_a_thread()
             .await?
             .context("loopback listener required")?;
     let client = codewhale_release::tls::reqwest_client();
-    let expected =
-        vec![crate::image_attach::tests::runtime_image_fixture_bytes(3 * 1024 * 1024); 2];
-    let historical = crate::image_attach::prepare_stored_images(&expected)?;
+    let expected = vec![
+        codewhale_engine::image_attach::test_support::runtime_image_fixture_bytes(
+            3 * 1024 * 1024
+        );
+        2
+    ];
+    let historical = codewhale_engine::image_attach::prepare_stored_images(&expected)?;
     let cases = [
         vec![ContentBlock::ImageUrl {
             image_url: ImageUrlContent {
@@ -20178,7 +20331,7 @@ async fn runtime_image_saved_session_import_validates_before_creating_a_thread()
             assert!(
                 manager
                     .list_threads(
-                        crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                        codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                         None
                     )
                     .await?
@@ -20197,13 +20350,15 @@ async fn runtime_image_saved_session_import_validates_before_creating_a_thread()
             let item = detail
                 .items
                 .iter()
-                .find(|item| item.kind == crate::runtime_threads::TurnItemKind::UserMessage)
+                .find(|item| {
+                    item.kind == codewhale_engine::runtime_threads::TurnItemKind::UserMessage
+                })
                 .context("imported user item")?;
             let blocks: Vec<ContentBlock> = serde_json::from_value(
                 item.metadata.as_ref().context("image metadata")?["runtime_image_content"].clone(),
             )?;
             assert_eq!(
-                crate::image_attach::runtime_images_from_blocks(&blocks)?,
+                codewhale_engine::image_attach::runtime_images_from_blocks(&blocks)?,
                 expected
             );
             assert_eq!(detail.thread.schema_version, 3);
@@ -20794,9 +20949,9 @@ async fn session_artifacts_list_and_bounded_read() -> Result<()> {
     let sessions_dir = tmp.path().join("sessions");
     let workspace = tmp.path().join("workspace");
     fs::create_dir_all(&workspace)?;
-    let manager = crate::session_manager::SessionManager::new(sessions_dir.clone())?;
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())?;
     let session_id = "sess_artifacts_route".to_string();
-    let mut session = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut session = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         session_id.clone(),
         &[],
         "deepseek-v4-pro",
@@ -20809,7 +20964,7 @@ async fn session_artifacts_list_and_bounded_read() -> Result<()> {
     fs::create_dir_all(&artifact_dir)?;
     let body = "line one\nline two\n".repeat(64);
     fs::write(artifact_dir.join("art_call_1.txt"), &body)?;
-    let served = crate::artifacts::record_tool_output_artifact_with_size(
+    let served = codewhale_runtime::artifacts::record_tool_output_artifact_with_size(
         &session_id,
         "call_1",
         "bash",
@@ -20817,7 +20972,7 @@ async fn session_artifacts_list_and_bounded_read() -> Result<()> {
         body.len() as u64,
         "line one",
     );
-    let escaping = crate::artifacts::record_tool_output_artifact_with_size(
+    let escaping = codewhale_runtime::artifacts::record_tool_output_artifact_with_size(
         &session_id,
         "call_2",
         "bash",
@@ -20826,7 +20981,7 @@ async fn session_artifacts_list_and_bounded_read() -> Result<()> {
         "nope",
     );
     fs::write(tmp.path().join("escape.txt"), "nope")?;
-    let missing = crate::artifacts::record_tool_output_artifact_with_size(
+    let missing = codewhale_runtime::artifacts::record_tool_output_artifact_with_size(
         &session_id,
         "call_3",
         "bash",
@@ -20951,16 +21106,18 @@ struct TestArtifactRoot {
 
 impl Drop for TestArtifactRoot {
     fn drop(&mut self) {
-        crate::artifacts::set_test_artifact_sessions_root(self.previous.take());
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.previous.take());
     }
 }
 
 fn test_artifact_root(root: &Path) -> TestArtifactRoot {
-    let guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+    let guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     TestArtifactRoot {
-        previous: crate::artifacts::set_test_artifact_sessions_root(Some(root.to_path_buf())),
+        previous: codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            root.to_path_buf(),
+        )),
         _guard: guard,
     }
 }
@@ -21005,14 +21162,14 @@ async fn turn_artifact_routes_list_and_read_by_reference() -> Result<()> {
     // The turn: page.html written as v1 (then edited after the turn),
     // current.md written and untouched since.
     // Turn records name snapshots by tree id: a prune rewrites commit ids.
-    let pre = crate::core::turn::pre_turn_snapshot(&workspace, 1, 0, None, None)
+    let pre = codewhale_engine::core::turn::pre_turn_snapshot(&workspace, 1, 0, None, None)
         .context("pre-turn snapshot")?
         .tree
         .as_str()
         .to_string();
     fs::write(workspace.join("page.html"), "<p>v1</p>\n")?;
     fs::write(workspace.join("current.md"), "current\n")?;
-    let post = crate::core::turn::post_turn_snapshot(&workspace, 1, 0, None, None)
+    let post = codewhale_engine::core::turn::post_turn_snapshot(&workspace, 1, 0, None, None)
         .context("post-turn snapshot")?
         .tree
         .as_str()
@@ -21085,7 +21242,7 @@ async fn turn_artifact_routes_list_and_read_by_reference() -> Result<()> {
     let mut early_page =
         file_ref_json("page.html", "created", Some(&rev(b"<p>v0</p>\n")), Some(10));
     early_page["source"] = json!("tool_mutation");
-    let item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
+    let item: codewhale_engine::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
         "id": "item_page", "turn_id": "turn_artifacts_route", "kind": "tool_call",
         "status": "completed", "summary": "write", "artifacts": [early_page],
     }))?;
@@ -21268,39 +21425,44 @@ async fn call_change_route_reads_one_calls_workspace_span() -> Result<()> {
         .await?;
 
     let store = runtime_threads.test_store();
-    let shell_item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
-        "id": "item_shell", "turn_id": "turn_call_changes", "kind": "command_execution",
-        "status": "completed", "summary": "exec_shell started",
-        "metadata": { "tool_use_id": SHELL_CALL, "tool_name": "exec_shell" },
-    }))?;
+    let shell_item: codewhale_engine::runtime_threads::TurnItemRecord =
+        serde_json::from_value(json!({
+            "id": "item_shell", "turn_id": "turn_call_changes", "kind": "command_execution",
+            "status": "completed", "summary": "exec_shell started",
+            "metadata": { "tool_use_id": SHELL_CALL, "tool_name": "exec_shell" },
+        }))?;
     store.save_item(&shell_item)?;
     // A call the engine judged read-only: the turn has its item, and no
     // restore point was ever taken for it.
-    let read_item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
-        "id": "item_read", "turn_id": "turn_call_changes", "kind": "command_execution",
-        "status": "completed", "summary": "exec_shell started",
-        "metadata": { "tool_use_id": "call_read", "tool_name": "exec_shell" },
-    }))?;
+    let read_item: codewhale_engine::runtime_threads::TurnItemRecord =
+        serde_json::from_value(json!({
+            "id": "item_read", "turn_id": "turn_call_changes", "kind": "command_execution",
+            "status": "completed", "summary": "exec_shell started",
+            "metadata": { "tool_use_id": "call_read", "tool_name": "exec_shell" },
+        }))?;
     store.save_item(&read_item)?;
-    let pruned_item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
-        "id": "item_pruned", "turn_id": "turn_call_changes", "kind": "command_execution",
-        "status": "completed", "summary": "bash started",
-        "metadata": { "tool_use_id": PRUNED_CALL, "tool_name": "bash" },
-    }))?;
+    let pruned_item: codewhale_engine::runtime_threads::TurnItemRecord =
+        serde_json::from_value(json!({
+            "id": "item_pruned", "turn_id": "turn_call_changes", "kind": "command_execution",
+            "status": "completed", "summary": "bash started",
+            "metadata": { "tool_use_id": PRUNED_CALL, "tool_name": "bash" },
+        }))?;
     store.save_item(&pruned_item)?;
     // A call whose closing snapshot was lost: the opening receipt is recorded
     // and the span will never resolve.
-    let half_item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
-        "id": "item_half", "turn_id": "turn_call_half", "kind": "command_execution",
-        "status": "completed", "summary": "exec_shell started",
-        "metadata": { "tool_use_id": "call_half", "tool_name": "exec_shell" },
-    }))?;
+    let half_item: codewhale_engine::runtime_threads::TurnItemRecord =
+        serde_json::from_value(json!({
+            "id": "item_half", "turn_id": "turn_call_half", "kind": "command_execution",
+            "status": "completed", "summary": "exec_shell started",
+            "metadata": { "tool_use_id": "call_half", "tool_name": "exec_shell" },
+        }))?;
     store.save_item(&half_item)?;
-    let storeless_item: crate::runtime_threads::TurnItemRecord = serde_json::from_value(json!({
-        "id": "item_storeless", "turn_id": "turn_storeless", "kind": "command_execution",
-        "status": "completed", "summary": "bash started",
-        "metadata": { "tool_use_id": STORELESS_CALL, "tool_name": "bash" },
-    }))?;
+    let storeless_item: codewhale_engine::runtime_threads::TurnItemRecord =
+        serde_json::from_value(json!({
+            "id": "item_storeless", "turn_id": "turn_storeless", "kind": "command_execution",
+            "status": "completed", "summary": "bash started",
+            "metadata": { "tool_use_id": STORELESS_CALL, "tool_name": "bash" },
+        }))?;
     store.save_item(&storeless_item)?;
 
     let turn: TurnRecord = serde_json::from_value(json!({
@@ -23633,7 +23795,7 @@ async fn threads_running_lists_active_turns_and_clears_on_settle() -> Result<()>
         .list_turns_for_thread(thread_id)?
         .pop()
         .context("missing started turn")?;
-    started.status = crate::runtime_threads::RuntimeTurnStatus::InProgress;
+    started.status = codewhale_engine::runtime_threads::RuntimeTurnStatus::InProgress;
     manager.test_store().save_turn(&started)?;
 
     let running: serde_json::Value = client
@@ -23668,7 +23830,7 @@ async fn threads_running_lists_active_turns_and_clears_on_settle() -> Result<()>
         }
         if std::time::Instant::now() >= settle_deadline {
             let mut turn = turn;
-            turn.status = crate::runtime_threads::RuntimeTurnStatus::Completed;
+            turn.status = codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed;
             manager.test_store().save_turn(&turn)?;
             break;
         }
@@ -23790,7 +23952,7 @@ async fn provider_models_refresh_uses_exact_configured_route_without_switching()
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
     let _cli = crate::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
-    crate::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
     let upstream = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/v1/models"))
@@ -24693,7 +24855,7 @@ fn the_mobile_page_follows_agents_by_name() {
 /// is the one under test.
 mod thread_snapshot_ownership {
     use super::*;
-    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
 
     struct Fixture {
         root: PathBuf,
@@ -24720,7 +24882,7 @@ mod thread_snapshot_ownership {
         fs::create_dir_all(&workspace)?;
         // The directory the Runtime's fork and resume paths read saved
         // sessions from, as production wires it.
-        let sessions_dir = crate::session_manager::default_sessions_dir()?;
+        let sessions_dir = codewhale_engine::session_manager::default_sessions_dir()?;
         let Some((addr, threads, server)) =
             spawn_test_server_with_root_token_mobile_workspace_and_overrides(
                 root.to_path_buf(),
@@ -24784,7 +24946,8 @@ mod thread_snapshot_ownership {
                 let call_id = format!("call_{}", &Uuid::new_v4().simple().to_string()[..12]);
                 let mut args = json!({ "path": path, "content": content });
                 if let Some(bytes) = current.get(path) {
-                    args["expected_hash"] = json!(crate::tools::file::content_hash(bytes));
+                    args["expected_hash"] =
+                        json!(codewhale_engine::tools::file::content_hash(bytes));
                 }
                 current.insert(path, content.as_bytes().to_vec());
                 self.mock.push_turn(canned::tool_call_turn(
@@ -24894,6 +25057,88 @@ mod thread_snapshot_ownership {
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("codewhale-6621-{name}-{}", Uuid::new_v4()))
+    }
+
+    /// A session save must not be refused because a finished turn still lists
+    /// an item as running.
+    ///
+    /// A stream retry — system sleep, a mid-stream network drop — discards a
+    /// reasoning fragment without emitting its completion frame, and builds
+    /// before the boundary close left the superseded record `in_progress`
+    /// inside a turn that went on to complete. The save guard used to scan
+    /// items, so one such row refused every later save with a 409 naming an
+    /// "active turn" that did not exist, and the thread's session file stopped
+    /// updating while the conversation kept going.
+    #[tokio::test]
+    async fn session_save_accepts_a_completed_turn_with_a_stale_live_item() -> Result<()> {
+        let _env = lock_test_env();
+        let root = test_root("stale-item");
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+        let Some(fx) = fixture(&root, TestServerOverrides::default()).await? else {
+            return Ok(());
+        };
+        let thread_id = fx.create_thread().await?;
+        fx.write_turn(&thread_id, &[]).await?;
+        let store = fx.threads.test_store();
+        let settled = store
+            .list_turns_for_thread(&thread_id)?
+            .into_iter()
+            .find(|turn| turn.status == RuntimeTurnStatus::Completed)
+            .context("the completed turn")?;
+
+        // One of the turn's own records is left live, exactly as an older
+        // build left a superseded reasoning segment.
+        let item_id = settled
+            .item_ids
+            .first()
+            .context("the turn recorded no items")?
+            .clone();
+        let mut item = store.load_item(&item_id)?;
+        item.status = codewhale_engine::runtime_threads::TurnItemLifecycleStatus::InProgress;
+        item.ended_at = None;
+        store.save_item(&item)?;
+
+        // The guard reads the turn, not its items: with the turn live the
+        // thread is busy, and the same live item under a finished turn is not.
+        let mut live = settled.clone();
+        live.status = RuntimeTurnStatus::InProgress;
+        live.ended_at = None;
+        store.save_turn(&live)?;
+        let detail = fx.threads.get_thread_detail(&thread_id).await?;
+        assert!(
+            crate::runtime_api::sessions::thread_detail_has_live_work(&detail),
+            "a live turn is live work"
+        );
+        let mut finished = detail.clone();
+        for turn in &mut finished.turns {
+            turn.status = RuntimeTurnStatus::Completed;
+        }
+        assert!(
+            finished.items.iter().any(|item| {
+                item.id == item_id
+                    && item.status
+                        == codewhale_engine::runtime_threads::TurnItemLifecycleStatus::InProgress
+            }),
+            "precondition: the snapshot still carries the live item"
+        );
+        assert!(
+            !crate::runtime_api::sessions::thread_detail_has_live_work(&finished),
+            "an item cannot outvote the turn it belongs to"
+        );
+
+        // And the symptom the user saw: the save goes through.
+        store.save_turn(&settled)?;
+        let response = fx
+            .client
+            .put(fx.url("/v1/sessions"))
+            .json(&json!({ "thread_id": thread_id }))
+            .send()
+            .await?;
+        let status = response.status();
+        let body: Value = response.json().await?;
+        assert_eq!(status, StatusCode::OK, "{body:#}");
+        assert!(body["session_id"].as_str().is_some(), "{body:#}");
+        Ok(())
     }
 
     /// The issue's reproduction: a fresh HTTP thread writes a new file and
@@ -25645,7 +25890,7 @@ mod thread_snapshot_ownership {
         let Some(fx) = fixture(&root, TestServerOverrides::default()).await? else {
             return Ok(());
         };
-        crate::core::turn::test_max_snapshots::set(&fx.workspace, 3);
+        codewhale_engine::core::turn::test_max_snapshots::set(&fx.workspace, 3);
         fs::write(fx.workspace.join("f0.txt"), "original")?;
         let thread_id = fx.create_thread().await?;
         let writes: Vec<(String, String)> = (0..5)
@@ -25699,8 +25944,8 @@ mod thread_snapshot_ownership {
             .or_else(|| created["id"].as_str())
             .context("saved session id")?
             .to_string();
-        let manager = crate::session_manager::SessionManager::new(
-            crate::session_manager::default_sessions_dir()?,
+        let manager = codewhale_engine::session_manager::SessionManager::new(
+            codewhale_engine::session_manager::default_sessions_dir()?,
         )?;
         let messages_before = manager.load_session(&document)?.messages.len();
 
@@ -25941,7 +26186,7 @@ async fn session_export_keeps_execution_identity_and_rejects_invalid_item_correl
     assert_eq!(exported.status(), StatusCode::CREATED);
     let exported: Value = exported.json().await?;
     let id = exported["session_id"].as_str().context("session id")?;
-    let manager = crate::session_manager::SessionManager::new(sessions.clone())?;
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions.clone())?;
     let saved = manager.load_session(id)?;
     assert_eq!(saved.messages, original);
     assert_eq!(

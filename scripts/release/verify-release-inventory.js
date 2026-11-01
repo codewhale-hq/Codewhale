@@ -24,7 +24,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { allReleaseAssetNames, CHECKSUM_MANIFEST } = require("../../npm/codewhale/scripts/artifacts");
+const { allReleaseAssetNames, CHECKSUM_MANIFEST, CHECKSUM_SIGNATURE } = require("../../npm/codewhale/scripts/artifacts");
 const compiledHosts = require("../../npm/codewhale/scripts/compiled-hosts");
 const { validateTarget } = require("./ensure-release-assets-absent");
 
@@ -158,6 +158,7 @@ function run(argv, gh = ghRunner(), log = console.log) {
   }
   const manifestDigests = flags.manifest ? manifestInventory(repo, tag, gh) : null;
   const expected = manifestDigests ? [...manifestDigests.keys(), CHECKSUM_MANIFEST] : allReleaseAssetNames(catalog);
+  if (release.assets.some((asset) => asset.name === CHECKSUM_SIGNATURE)) expected.push(CHECKSUM_SIGNATURE);
   const count = assertInventory(release, tag, expected, flags.assetDir, manifestDigests);
   log(`Verified ${count} assets on the ${flags.draft ? "draft" : "published"} release ${tag}`);
   if (!flags.publish) return;

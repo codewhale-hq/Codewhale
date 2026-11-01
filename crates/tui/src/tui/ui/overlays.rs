@@ -327,7 +327,7 @@ pub(crate) fn open_diff_pager(app: &mut App, title: String, diff: &str) {
     // A patch is file content. Keep the terminal-injection boundary
     // `PagerView::from_text` applies to every other pager body.
     let mut sanitized = String::with_capacity(diff.len());
-    crate::tui::osc8::strip_ansi_into(diff, &mut sanitized);
+    codewhale_tui_kit::osc8::strip_ansi_into(diff, &mut sanitized);
     app.view_stack.push(PagerView::from_diff(
         title,
         sanitized,
@@ -497,7 +497,7 @@ pub(crate) fn refresh_config_view_after_commit(app: &mut App, focus_key: &str, r
 pub(crate) fn refresh_skills_manager_if_open(
     app: &mut App,
     status: Option<String>,
-    focus: Option<&crate::skills::audit::AuditedSkillId>,
+    focus: Option<&codewhale_skills::audit::AuditedSkillId>,
 ) {
     if app.view_stack.top_kind() != Some(ModalKind::SkillsManager) {
         return;
@@ -548,9 +548,9 @@ pub(crate) fn push_approval_request_view(
         request.approval_grouping_key = approval_grouping_key.to_string();
     }
     // A child's gate never consults saved repo allow rules, so a child card
-    // must not offer "Always allow in this repo" — it would do nothing. The
+    // must not offer "Always for this command" — it would do nothing. The
     // card names its agent (approvals C1).
-    if crate::tools::subagent::SubAgentManager::is_child_approval_id(id) {
+    if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) {
         request.persistent_allow_rules.clear();
         if let Some(agent_id) = crate::tui::pending_requests::child_agent_id(id) {
             request.owner = Some(crate::tui::pending_requests::owner_for(app, agent_id));
@@ -559,7 +559,7 @@ pub(crate) fn push_approval_request_view(
         // The same edit runs without a card inside a git repository. Say why
         // this folder asks, so two folders behaving differently is explained
         // on the card. The engine already decided to ask; this only labels it.
-        request.asks_without_git = crate::core::authority::file_write_asks_without_git(
+        request.asks_without_git = codewhale_engine::core::authority::file_write_asks_without_git(
             app.mode,
             app.approval_mode,
             &app.workspace,
@@ -629,7 +629,7 @@ pub(crate) fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirecti
         .min(line_meta.len().saturating_sub(1));
     let current_cell = line_meta
         .get(top)
-        .and_then(crate::tui::scrolling::TranscriptLineMeta::cell_line)
+        .and_then(codewhale_tui_kit::scrolling::TranscriptLineMeta::cell_line)
         .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index));
 
     let mut scan_indices = Vec::new();

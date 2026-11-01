@@ -788,7 +788,7 @@ impl Workbar {
         }
         if self.opened.as_deref() == Some(&value.id) {
             style = style
-                .patch(theme.fg(Role::Primary))
+                .patch(theme.fg(Role::Accent))
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
         }
         if self.focused && self.selected.as_deref() == Some(&value.id) {
@@ -968,10 +968,10 @@ impl Paint for Workbar {
                 }
                 if self.opened.as_deref() == Some(&value.id) {
                     normal = normal
-                        .patch(theme.fg(Role::Primary))
+                        .patch(theme.fg(Role::Accent))
                         .add_modifier(Modifier::UNDERLINED);
                     muted = muted
-                        .patch(theme.fg(Role::Primary))
+                        .patch(theme.fg(Role::Accent))
                         .add_modifier(Modifier::UNDERLINED);
                 }
                 let columns = agent_columns(

@@ -51,7 +51,7 @@ impl<'a> Message<'a> {
     /// streaming clock, or session state is introduced by this constructor.
     #[must_use]
     pub fn native(body: impl Into<Cow<'a, str>>) -> Self {
-        Self::new("", body).role(Role::Primary)
+        Self::new("", body).role(Role::Accent)
     }
 
     #[must_use]
@@ -250,7 +250,7 @@ impl<'a> ToolCard<'a> {
             subject
                 .lines
                 .into_iter()
-                .map(|line| Line::from(Span::styled(line, theme.fg(Role::Primary)))),
+                .map(|line| Line::from(Span::styled(line, theme.fg(Role::Accent)))),
         );
         lines
     }
@@ -423,7 +423,7 @@ impl<'a> Composer<'a> {
             Role::Foreground
         };
         let prompt_role = if self.focused {
-            Role::Primary
+            Role::Accent
         } else {
             Role::Muted
         };

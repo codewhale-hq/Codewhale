@@ -1,0 +1,44 @@
+[
+  {
+    "id": "qwen38",
+    "prefixes": ["qwen3.8-27b", "qwen3.8-flash-next"],
+    "tiers": ["off", "low", "medium", "max"],
+    "default": "low",
+    "aliases": {"high": "max", "xhigh": "max"},
+    "wire": {"off": null, "low": "low", "medium": "medium", "max": "xhigh"},
+    "sources": [
+      "https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4/blob/319f741cce68d7914884900c138a1fbb70a42f30/chat_template.jinja",
+      "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4/blob/fc694b54fb0174e0913e6adf86691ef85a4ead47/chat_template.jinja"
+    ]
+  },
+  {
+    "id": "qwen_boolean_thinking",
+    "prefixes": ["ornith-1.5-35b-a3b", "qwen3.6-35b-a3b"],
+    "tiers": ["off", "high"],
+    "default": "high",
+    "aliases": {"low": "high", "medium": "high", "max": "high", "xhigh": "high"},
+    "wire": {"off": null, "high": null},
+    "sources": [
+      "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-NVFP4/blob/94e431d9cc47fa1986a7a1a4e9a80f7f118b03aa/tokenizer_config.json",
+      "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-NVFP4-Fast/blob/1c3f884bc99aac2524f6d49bcbac8c88401afd66/chat_template.jinja"
+    ]
+  },
+  {
+    "id": "glm53_flash",
+    "prefixes": ["glm-5.3-flash"],
+    "tiers": ["low", "high", "max"],
+    "default": "low",
+    "aliases": {"off": "low", "medium": "high", "xhigh": "max"},
+    "wire": {"low": "low", "high": "high", "max": "max"},
+    "sources": ["https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/blob/09b04e5e74bca08ca8549fc736d4cdd8624bfde3/chat_template.jinja"]
+  },
+  {
+    "id": "deepseek_v4_vision",
+    "prefixes": ["deepseek-v4-flash-vision-exp"],
+    "tiers": ["off", "low", "high", "max"],
+    "default": "low",
+    "aliases": {"medium": "high", "xhigh": "max"},
+    "wire": {"off": null, "low": "low", "high": "high", "max": "max"},
+    "sources": ["https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp/tree/86f746b36186f0e567729a5c06a8c918caba82a9"]
+  }
+]

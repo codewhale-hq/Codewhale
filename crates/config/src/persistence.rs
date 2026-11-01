@@ -26,9 +26,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 /// Restrictive file mode for setup-owned files (owner read/write only).
 #[cfg(unix)]
 const SETUP_FILE_MODE: u32 = 0o600;
@@ -56,21 +53,104 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.flush()
         .with_context(|| format!("failed to flush temp file for {}", path.display()))?;
 
+    // A filesystem that assigns modes itself (HarmonyOS hmdfs) refuses the
+    // call outright; `tighten_mode` tolerates only that case and reports every
+    // other failure. The temp file sits in `path`'s directory, which is where
+    // the question about the mount is answered.
     #[cfg(unix)]
-    {
-        let perms = fs::Permissions::from_mode(SETUP_FILE_MODE);
-        tmp.as_file()
-            .set_permissions(perms)
-            .with_context(|| format!("failed to set permissions for {}", path.display()))?;
-    }
+    crate::private_directory::tighten_mode_of(tmp.as_file(), tmp.path(), SETUP_FILE_MODE)
+        .with_context(|| format!("failed to set permissions for {}", path.display()))?;
 
     tmp.as_file()
         .sync_all()
         .with_context(|| format!("failed to sync temp file for {}", path.display()))?;
-    tmp.persist(path)
-        .map_err(|e| e.error)
-        .with_context(|| format!("failed to persist {}", path.display()))?;
+
+    // Two Codewhale instances share one home. The loser of a race can find the
+    // destination held open for a read — Windows refuses the replacing rename
+    // for as long as that handle lives, because the reader does not pass
+    // `FILE_SHARE_DELETE`. That refusal is transient, so retry briefly instead
+    // of reporting a write the caller could have made.
+    let mut attempt: u32 = 0;
+    loop {
+        match tmp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if attempt + 1 < PERSIST_ATTEMPTS && rename_is_retryable(&error.error) => {
+                attempt += 1;
+                tmp = error.file;
+                std::thread::sleep(std::time::Duration::from_millis(
+                    u64::from(attempt) * PERSIST_RETRY_STEP_MS,
+                ));
+            }
+            Err(error) => {
+                // Some directories refuse every directory-entry rename for as
+                // long as they are held — Codewhale's own home is one of them
+                // here — and no amount of waiting changes that. Only that shape
+                // falls back: a full disk or a real permission refusal keeps its
+                // own error, because an in-place rewrite would fail there too and
+                // this way the caller learns the actual cause.
+                if !rename_is_retryable(&error.error) {
+                    return Err(error.error)
+                        .with_context(|| format!("failed to persist {}", path.display()));
+                }
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error.error,
+                    "replacing rename refused; rewriting the file in place"
+                );
+                rewrite_in_place(path, bytes)?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Last-resort delivery: rewrite the existing file without a rename.
+///
+/// This is deliberately not atomic — an interruption between truncate and the
+/// last byte can leave a partial file — so it runs only after every replacing
+/// call has been refused. The alternative is a save that never lands at all,
+/// which for a setup checkpoint means the same write is attempted and fails on
+/// every launch.
+fn rewrite_in_place(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("failed to open {} for an in-place write", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("failed to rewrite {} in place", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync {} after an in-place write", path.display()))?;
     Ok(())
+}
+
+/// How many times the replacing rename is attempted before the error surfaces.
+const PERSIST_ATTEMPTS: u32 = 6;
+
+/// Backoff step; attempt *n* sleeps `n * step`, so the last wait is 250ms and the
+/// whole budget is 750ms. A setup checkpoint is written on a user action, so it
+/// can afford to outlast a scanner or a second instance holding the file for a
+/// moment; it cannot afford to hang.
+const PERSIST_RETRY_STEP_MS: u64 = 50;
+
+/// Whether a failed rename is worth retrying: another process holds the
+/// destination open, which is a momentary condition rather than a refusal the
+/// caller should hear about.
+#[cfg(windows)]
+fn rename_is_retryable(error: &std::io::Error) -> bool {
+    // 5 = ERROR_ACCESS_DENIED, 32 = ERROR_SHARING_VIOLATION,
+    // 33 = ERROR_LOCK_VIOLATION, 1175 = ERROR_UNABLE_TO_DELETE_FILE (what
+    // `ReplaceFileW` raises when it cannot displace the destination it must
+    // delete first). A reader holding the file raises 5 or 32.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33 | 1175))
+}
+
+#[cfg(not(windows))]
+fn rename_is_retryable(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
 }
 
 /// Atomically write `value` as pretty-printed JSON to `path`.
@@ -254,6 +334,27 @@ mod tests {
         ["abc123", "def456", "ghi"].concat()
     }
 
+    /// The last-resort writer delivers the bytes by truncating the target.
+    ///
+    /// It is what runs when a directory refuses every replacing rename —
+    /// observed on Codewhale's own home, where a save otherwise never lands —
+    /// so it must actually replace a longer document with a shorter one, and
+    /// leave nothing of the old tail behind.
+    #[test]
+    fn an_in_place_rewrite_replaces_a_longer_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("setup_state.json");
+        fs::write(&path, b"{\"old\": true, \"padding\": \"aaaaaaaaaaaaaaaa\"}").unwrap();
+
+        rewrite_in_place(&path, b"{\"new\":1}").unwrap();
+
+        assert_eq!(read(&path), "{\"new\":1}");
+        assert!(
+            !read(&path).contains("padding"),
+            "the old tail must be gone"
+        );
+    }
+
     #[test]
     fn atomic_write_creates_parent_dirs_and_content() {
         let tmp = tempfile::tempdir().unwrap();
@@ -265,6 +366,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("state.json");
         atomic_write(&path, b"x").unwrap();
@@ -286,6 +389,39 @@ mod tests {
             .filter(|e| e.file_name() != "state.json")
             .collect();
         assert!(leftovers.is_empty(), "stray temp files: {leftovers:?}");
+    }
+
+    #[test]
+    fn only_a_contended_rename_is_retried() {
+        // The retry exists for one situation: another instance holds the
+        // destination open while it reads the same sidecar. Anything else —
+        // a missing directory, a full disk — must surface at once instead of
+        // being retried five more times.
+        #[cfg(windows)]
+        {
+            // 1175 is the code `ReplaceFileW` raises when it cannot displace the
+            // destination it must delete first — the same contention as 32, one
+            // API further along. The pet-mode save hit it.
+            for code in [5, 32, 33, 1175] {
+                assert!(
+                    rename_is_retryable(&std::io::Error::from_raw_os_error(code)),
+                    "os error {code}"
+                );
+            }
+            assert!(!rename_is_retryable(&std::io::Error::from_raw_os_error(2)));
+            assert!(!rename_is_retryable(&std::io::Error::from_raw_os_error(
+                112
+            )));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(rename_is_retryable(&std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )));
+            assert!(!rename_is_retryable(&std::io::Error::from(
+                std::io::ErrorKind::NotFound
+            )));
+        }
     }
 
     #[test]

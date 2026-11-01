@@ -11,7 +11,7 @@ description = "Codewhale shared utilities, confined workspace files, path identi
 workspace = true
 
 [features]
-test-support = ["dep:codewhale-runtime", "codewhale-runtime/test-support"]
+test-support = []
 
 [dependencies]
 anyhow.workspace = true
@@ -20,7 +20,6 @@ codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-models = { path = "../models", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2", optional = true }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
 futures-util = "0.3.31"
 ignore = "0.4"

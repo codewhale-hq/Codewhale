@@ -20,14 +20,14 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::plugins::marketplace::document::{
+use codewhale_plugins::marketplace::document::{
     CatalogInstallResolution, load_catalog_document, resolve_candidate_install,
 };
-use crate::plugins::marketplace::store::MarketplaceStore;
-use crate::plugins::mutation::{
+use codewhale_plugins::marketplace::store::MarketplaceStore;
+use codewhale_plugins::mutation::{
     PluginMutationContext, PluginMutationOutcome, PluginMutationRequest,
 };
-use crate::plugins::types::{LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel};
+use codewhale_plugins::types::{LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel};
 
 use super::{ApiError, RuntimeApiState};
 
@@ -193,7 +193,7 @@ pub(super) struct DshPreviewResponse {
     /// reviewed bundle.
     pub(super) install_source: String,
     pub(super) content_hash: String,
-    pub(super) conversion: crate::plugins::install::dsh::DshConversion,
+    pub(super) conversion: codewhale_plugins::install::dsh::DshConversion,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,7 +220,7 @@ pub(super) struct InstallMarketplaceCandidateRequest {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn registry_for_state(state: &RuntimeApiState) -> Arc<crate::plugins::PluginRegistry> {
+fn registry_for_state(state: &RuntimeApiState) -> Arc<codewhale_plugins::PluginRegistry> {
     state
         .plugin_discovery
         .registry_for_workspace(&state.workspace)
@@ -288,7 +288,10 @@ fn plugin_summary(plugin: &LoadedPlugin) -> PluginSummaryEntry {
     }
 }
 
-fn mcp_server_review(name: &str, cfg: &crate::mcp::McpServerConfig) -> PluginMcpServerReview {
+fn mcp_server_review(
+    name: &str,
+    cfg: &codewhale_mcp::config::McpServerConfig,
+) -> PluginMcpServerReview {
     let mut env_keys: Vec<String> = cfg.env.keys().cloned().collect();
     env_keys.sort();
     let mut header_keys: Vec<String> = cfg.headers.keys().cloned().collect();
@@ -407,17 +410,20 @@ async fn run_plugin_mutation(
     };
     let ctx = PluginMutationContext {
         network: &network,
-        max_size: crate::plugins::install::DEFAULT_MAX_SIZE_BYTES,
+        max_size: codewhale_plugins::install::DEFAULT_MAX_SIZE_BYTES,
     };
     let mut registry = (*registry_for_state(state)).clone();
-    let receipt = crate::plugins::mutation::execute(request, &ctx, &mut registry)
+    let receipt = codewhale_plugins::mutation::execute(request, &ctx, &mut registry)
         .await
         .map_err(|error| {
             if error
-                .downcast_ref::<crate::plugins::install::PluginNameConflict>()
+                .downcast_ref::<codewhale_plugins::install::PluginNameConflict>()
                 .is_some()
                 || error
-                    .downcast_ref::<crate::plugins::install::PluginContentMismatch>()
+                    .downcast_ref::<codewhale_plugins::install::PluginContentMismatch>()
+                    .is_some()
+                || error
+                    .downcast_ref::<codewhale_plugins::install::PluginArchiveMismatch>()
                     .is_some()
             {
                 ApiError::conflict(format!("plugin mutation failed: {error:#}"))
@@ -525,7 +531,7 @@ async fn run_registry_mutation(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     let fresh = registry_for_state(state);
-    crate::extension_host::plugins_changed(Arc::clone(&fresh));
+    codewhale_engine::extension_host::plugins_changed(Arc::clone(&fresh));
     let Some(plugin) = fresh.get(selector) else {
         return Ok(PluginActionResponse {
             name: selector.to_string(),
@@ -574,7 +580,7 @@ fn open_marketplace_store(state: &RuntimeApiState) -> Result<MarketplaceStore, A
 
 fn load_marketplace_state(
     store: &MarketplaceStore,
-) -> Result<crate::plugins::marketplace::store::MarketplaceState, ApiError> {
+) -> Result<codewhale_plugins::marketplace::store::MarketplaceState, ApiError> {
     store.load().map_err(|error| {
         ApiError::internal(format!(
             "marketplace state is fail-closed and will not be rewritten: {error}"
@@ -646,9 +652,9 @@ pub(super) struct MarketplaceActionResponse {
 }
 
 fn marketplace_candidate_entry(
-    entry: &crate::plugins::marketplace::store::StoredMarketplaceCatalog,
-    candidate: &crate::plugins::marketplace::types::MarketplaceCandidate,
-    registry: &crate::plugins::PluginRegistry,
+    entry: &codewhale_plugins::marketplace::store::StoredMarketplaceCatalog,
+    candidate: &codewhale_plugins::marketplace::types::MarketplaceCandidate,
+    registry: &codewhale_plugins::PluginRegistry,
 ) -> MarketplaceCandidateEntry {
     let mut existing_plugin = None;
     let install = match resolve_candidate_install(entry, candidate, registry) {
@@ -719,8 +725,8 @@ fn marketplace_candidate_entry(
 
 fn marketplace_catalog_entry(
     name: &str,
-    entry: &crate::plugins::marketplace::store::StoredMarketplaceCatalog,
-    registry: &crate::plugins::PluginRegistry,
+    entry: &codewhale_plugins::marketplace::store::StoredMarketplaceCatalog,
+    registry: &codewhale_plugins::PluginRegistry,
 ) -> MarketplaceCatalogEntry {
     MarketplaceCatalogEntry {
         name: name.to_string(),
@@ -791,7 +797,7 @@ pub(super) async fn install_plugin_api(
     Json(req): Json<InstallPluginRequest>,
 ) -> Result<(StatusCode, Json<PluginMutationResponse>), ApiError> {
     let source =
-        crate::plugins::install::PluginInstallSource::parse(&req.source).map_err(|error| {
+        codewhale_plugins::install::PluginInstallSource::parse(&req.source).map_err(|error| {
             ApiError::bad_request(format!(
                 "invalid plugin install source '{}': {error:#}; expected a local \
                  path, github:owner/repo, or an HTTPS tarball URL",
@@ -826,7 +832,7 @@ pub(super) async fn preview_dsh_plugin_api(
         let canonical = path
             .canonicalize()
             .map_err(|_| format!("DSH package not found at {}", path.display()))?;
-        crate::plugins::install::preview_dsh(&canonical)
+        codewhale_plugins::install::preview_dsh(&canonical)
             .map(|(conversion, content_hash)| (canonical, conversion, content_hash))
             .map_err(|error| format!("{error:#}"))
     })
@@ -1032,7 +1038,7 @@ pub(super) async fn install_marketplace_candidate_api(
             let response = run_plugin_mutation(
                 &state,
                 PluginMutationRequest::Install {
-                    source: crate::plugins::install::PluginInstallSource::parse(&spec).map_err(
+                    source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
                         |error| {
                             ApiError::internal(format!(
                                 "resolved install spec '{spec}' no longer parses: {error:#}"
@@ -1084,12 +1090,13 @@ mod review_tests {
                 "unparseable (configured value omitted)",
             ),
         ] {
-            let cfg: crate::mcp::McpServerConfig = serde_json::from_value(serde_json::json!({
-                "url": raw,
-                "env": { "REVIEW_ENV": "review-env-value" },
-                "headers": { "Authorization": "review-header-value" }
-            }))
-            .unwrap();
+            let cfg: codewhale_mcp::config::McpServerConfig =
+                serde_json::from_value(serde_json::json!({
+                    "url": raw,
+                    "env": { "REVIEW_ENV": "review-env-value" },
+                    "headers": { "Authorization": "review-header-value" }
+                }))
+                .unwrap();
             let review = mcp_server_review("demo", &cfg);
             assert_eq!(review.url.as_deref(), Some(expected));
             assert_eq!(review.kind, "remote");
@@ -1112,10 +1119,11 @@ mod review_tests {
             // or the manifest from which the trust receipt is derived.
             assert_eq!(cfg.url.as_deref(), Some(raw));
         }
-        let stdio: crate::mcp::McpServerConfig = serde_json::from_value(serde_json::json!({
-            "command": "npx", "args": ["demo-server"]
-        }))
-        .unwrap();
+        let stdio: codewhale_mcp::config::McpServerConfig =
+            serde_json::from_value(serde_json::json!({
+                "command": "npx", "args": ["demo-server"]
+            }))
+            .unwrap();
         let review = mcp_server_review("stdio", &stdio);
         assert_eq!(review.kind, "stdio");
         assert_eq!(review.url, None);

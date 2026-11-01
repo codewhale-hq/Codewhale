@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 
-use crate::working_set::Workspace;
+use codewhale_runtime::working_set::Workspace;
 
 /// Keep discovery memory and background work bounded even when the workspace
 /// is an unignored drive root. The popup itself renders far fewer rows, but a

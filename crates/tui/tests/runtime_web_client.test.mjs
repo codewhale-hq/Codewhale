@@ -587,10 +587,13 @@ test("uses the stream predecessor cursor to detect real gaps without assuming gl
 });
 
 test("registers the full emitted Runtime vocabulary and advances continuity for every event", async () => {
-  const runtimeSource = await readFile(
-    new URL("../src/runtime_threads.rs", import.meta.url),
-    "utf8",
-  );
+  const runtimeSource = (
+    await Promise.all(
+      ["../src/runtime_threads.rs", "../src/runtime_threads/manager.rs"].map((path) =>
+        readFile(new URL(path, import.meta.url), "utf8"),
+      ),
+    )
+  ).join("\n");
   const emittedNames = new Set(
     [...runtimeSource.matchAll(
       /"((?:thread|turn|item|approval|user_input|sandbox|agent|tool_call)\.[a-z_]+)"/g,

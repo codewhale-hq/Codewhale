@@ -14,7 +14,7 @@ const FLEET_TOGGLE_TOAST_TTL_MS: u64 = 6_000;
 /// takes: the saved-fleet views call it directly, and `/fleet add|remove`,
 /// ⇧F, and auto-enroll reach it through `App::fleet_roster_stale`.
 pub(crate) fn sync_fleet_roster(app: &mut App, config: &Config, engine_handle: &EngineHandle) {
-    let roster = crate::fleet::identity::load_effective_roster(
+    let roster = codewhale_engine::fleet::identity::load_effective_roster(
         &config.fleet_config(),
         &app.workspace,
         Some(app.extension_plugin_view().as_ref()),
@@ -119,7 +119,7 @@ pub(super) fn toggle_model_picker_fleet(
     provider_key: &str,
     model: &str,
 ) {
-    use crate::fleet::members::{FleetModelChange, change_receipt, toggle_fleet_model};
+    use codewhale_engine::fleet::members::{FleetModelChange, change_receipt, toggle_fleet_model};
     let locale = app.ui_locale;
     let (receipt, level) = if let Some(rejection) =
         crate::commands::fleet_provider_rejection(app, config, provider_key)
@@ -576,7 +576,7 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
 
     tokio::spawn(async move {
         let handshake = async {
-            let cfg = crate::mcp::load_config_with_workspace_and_plugins(
+            let cfg = codewhale_engine::mcp::load_config_with_workspace_and_plugins(
                 &path,
                 &workspace,
                 plugin_registry.as_ref(),
@@ -587,7 +587,7 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
                         .replace("{server}", &name)
                 )
             })?;
-            crate::mcp::oauth::begin_oauth_login_for_server_tool(
+            codewhale_engine::mcp::oauth::begin_oauth_login_for_server_tool(
                 &name,
                 server,
                 (!scopes.is_empty()).then_some(scopes),
@@ -618,7 +618,7 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
             biased;
             () = cancel.cancelled() => return,
             result = operation => result.map_err(|error| {
-                crate::mcp::oauth::mask_oauth_secrets(&format!("{error:#}"))
+                codewhale_engine::mcp::oauth::mask_oauth_secrets(&format!("{error:#}"))
             }),
         };
         if let Ok(mut cell) = progress.lock() {
@@ -652,7 +652,7 @@ pub(crate) fn poll_mcp_login(app: &mut App) {
         McpLoginProgress::Finished(outcome) => {
             app.mcp_login = None;
             match outcome {
-                Ok(()) if crate::mcp::mcp_name_is_command_safe(&server) => {
+                Ok(()) if codewhale_engine::mcp::mcp_name_is_command_safe(&server) => {
                     app.mcp_login_reconnect = Some(server);
                     return;
                 }
@@ -709,7 +709,7 @@ fn mcp_scoped_config_path(
     global_path: &std::path::Path,
     name: &str,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let scope = crate::mcp::resolve_server_scope(global_path, &app.workspace, name);
+    let scope = codewhale_engine::mcp::resolve_server_scope(global_path, &app.workspace, name);
     scope.config_path(global_path).ok_or_else(|| {
         anyhow::anyhow!(
             "MCP server '{name}' is provided by a plugin, not by a config file. \
@@ -764,7 +764,7 @@ pub(crate) fn start_mcp_retry(app: &mut App, engine_handle: &EngineHandle, name:
             let outcome = handle
                 .retry_mcp_server(server)
                 .await
-                .map_err(|error| crate::mcp::format_mcp_error_for_display(&error));
+                .map_err(|error| codewhale_engine::mcp::format_mcp_error_for_display(&error));
             if let Ok(mut cell) = result.lock() {
                 *cell = Some(outcome);
             }
@@ -837,7 +837,7 @@ pub(crate) fn poll_mcp_retries(app: &mut App) {
 fn mcp_retry_receipt(
     app: &App,
     server: &str,
-    snapshot: &crate::mcp::McpManagerSnapshot,
+    snapshot: &codewhale_engine::mcp::McpManagerSnapshot,
 ) -> (String, StatusToastLevel) {
     let Some(observed) = snapshot.servers.iter().find(|row| row.name == server) else {
         return (
@@ -864,7 +864,7 @@ fn mcp_retry_receipt(
                 .replace("{server}", server)
                 .replace(
                     "{command}",
-                    &crate::mcp::McpRecoveryKind::Reauth.slash_command(server),
+                    &codewhale_engine::mcp::McpRecoveryKind::Reauth.slash_command(server),
                 ),
             StatusToastLevel::Warning,
         )
@@ -888,7 +888,7 @@ pub(crate) async fn handle_mcp_ui_action(
     config: &Config,
     action: crate::tui::app::McpUiAction,
 ) {
-    use crate::mcp::{self, McpWriteStatus};
+    use codewhale_engine::mcp::{self, McpWriteStatus};
 
     let path = app.mcp_config_path.clone();
     let mut changed = false;
@@ -1364,10 +1364,10 @@ pub(crate) fn handle_shell_job_action(app: &mut App, action: crate::tui::app::Sh
 
 pub(crate) async fn handle_skill_mutation_requested(
     app: &mut App,
-    request: crate::skills::mutation::SkillMutationRequest,
+    request: codewhale_skills::mutation::SkillMutationRequest,
 ) {
-    use crate::skills::mutation::{MutationContext, SkillMutationOutcome, SkillMutationRequest};
     use codewhale_skill_install::install::{DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL};
+    use codewhale_skills::mutation::{MutationContext, SkillMutationOutcome, SkillMutationRequest};
 
     let focus = match &request {
         SkillMutationRequest::ImportExternal { source_id, .. } => Some(source_id.clone()),
@@ -1382,7 +1382,7 @@ pub(crate) async fn handle_skill_mutation_requested(
 
     let workspace = app.workspace.clone();
     let home = codewhale_paths::user_home();
-    let cfg = crate::plugins::providers::load_config(None, None).unwrap_or_default();
+    let cfg = codewhale_plugins::providers::load_config(None, None).unwrap_or_default();
     let network = cfg
         .network
         .clone()
@@ -1406,7 +1406,7 @@ pub(crate) async fn handle_skill_mutation_requested(
             max_size,
             registry_url: &registry_url,
         };
-        crate::skills::mutation::execute(request, &ctx).await
+        codewhale_skills::mutation::execute(request, &ctx).await
     };
 
     let (status, refresh_skills) = match result {
@@ -1620,7 +1620,7 @@ async fn seed_plan_handoff_todos(
         return if todos.items.iter().any(|item| {
             item.id == id
                 && item.content == content
-                && item.status == crate::tools::todo::TodoStatus::Pending
+                && item.status == codewhale_engine::tools::todo::TodoStatus::Pending
         }) {
             Ok(())
         } else {
@@ -1635,10 +1635,10 @@ async fn seed_plan_handoff_todos(
         .unwrap_or(0)
         .checked_add(1)
         .ok_or_else(|| "To-do item IDs are exhausted".to_string())?;
-    todos.items.push(crate::tools::todo::TodoItem {
+    todos.items.push(codewhale_engine::tools::todo::TodoItem {
         id,
         content,
-        status: crate::tools::todo::TodoStatus::Pending,
+        status: codewhale_engine::tools::todo::TodoStatus::Pending,
     });
     work.apply_todo_update(&plan.session_id, "todo_write", &todos)
         .await?;
@@ -1666,7 +1666,7 @@ async fn rollback_plan_handoff_seed(
     let mut todos = work.current_todos().await?;
     if let Some(item) = todos.items.iter().find(|item| item.id == id) {
         if item.content != plan_handoff_seed_title(plan)
-            || item.status != crate::tools::todo::TodoStatus::Pending
+            || item.status != codewhale_engine::tools::todo::TodoStatus::Pending
         {
             return Err(
                 "The approved plan's To-do changed; review it before continuing".to_string(),
@@ -2028,7 +2028,10 @@ pub(crate) async fn handle_view_events(
                     });
                 }
             }
-            ViewEvent::SessionSelected { session_id } => {
+            ViewEvent::SessionSelected {
+                session_id,
+                workspace,
+            } => {
                 let manager = match SessionManager::default_location() {
                     Ok(manager) => manager,
                     Err(err) => {
@@ -2040,14 +2043,14 @@ pub(crate) async fn handle_view_events(
 
                 // Another window's open session is refused, not attached
                 // as a second autosaving writer.
-                match manager.attach_session(&session_id) {
+                match manager.attach_session_in_workspace(&session_id, Some(&workspace)) {
                     Ok((recovery, lease)) => {
                         let session = recovery.session;
                         let next_config = config.clone();
                         let message_count = session.metadata.message_count;
                         // Keep the saved-store confinement check a pure
                         // comparison on this runtime (#6522).
-                        crate::runtime_threads::prepare_canonical_sessions_root().await;
+                        codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
                         let respawn = match apply_loaded_session_config_snapshot(
                             app,
                             config,
@@ -2108,7 +2111,7 @@ pub(crate) async fn handle_view_events(
                         // no findable record that the resume happened.
                         let loaded_message = format!(
                             "Session loaded (ID: {}, {} messages)",
-                            crate::session_manager::truncate_id(&session_id),
+                            codewhale_engine::session_manager::truncate_id(&session_id),
                             message_count
                         );
                         app.add_message(HistoryCell::System {
@@ -2123,7 +2126,7 @@ pub(crate) async fn handle_view_events(
                             app,
                             format!(
                                 "Failed to load session {}: {err}",
-                                crate::session_manager::truncate_id(&session_id)
+                                codewhale_engine::session_manager::truncate_id(&session_id)
                             ),
                         );
                     }
@@ -2138,14 +2141,16 @@ pub(crate) async fn handle_view_events(
                 {
                     match build_session_snapshot(app, &manager) {
                         Ok(session) => {
+                            let projection = saved_work_projection(app, &session);
                             if let Err(err) = persist_with_pending_work_boundary(
                                 app,
                                 PersistRequest::SessionSnapshot(session),
+                                &projection,
                             ) {
                                 tracing::warn!(
                                     session_id = %session_id,
                                     error = %err,
-                                    "Could not queue active session rename Work snapshot"
+                                    "Could not complete active session rename Work boundary"
                                 );
                                 work_snapshot_warning = Some(format!(
                                     "Session renamed, but Work snapshot is pending ({err})"
@@ -2164,7 +2169,7 @@ pub(crate) async fn handle_view_events(
                 app.status_message = Some(work_snapshot_warning.unwrap_or_else(|| {
                     format!(
                         "Renamed session {} to \"{}\"",
-                        crate::session_manager::truncate_id(&session_id),
+                        codewhale_engine::session_manager::truncate_id(&session_id),
                         title
                     )
                 }));
@@ -2186,14 +2191,14 @@ pub(crate) async fn handle_view_events(
                     } else {
                         "Restored"
                     },
-                    crate::session_manager::truncate_id(&metadata.id),
+                    codewhale_engine::session_manager::truncate_id(&metadata.id),
                     metadata.title
                 ));
             }
             ViewEvent::SessionDeleted { session_id, title } => {
                 app.status_message = Some(format!(
                     "Deleted session {} ({})",
-                    crate::session_manager::truncate_id(&session_id),
+                    codewhale_engine::session_manager::truncate_id(&session_id),
                     title
                 ));
             }
@@ -2554,7 +2559,7 @@ pub(crate) async fn handle_view_events(
                 let validation = scoped
                     .scope_to_provider_identity(&identity)
                     .and_then(|()| {
-                        crate::route_runtime::resolve_runtime_route_for_identity(
+                        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
                             &scoped,
                             &identity,
                             Some(&model),
@@ -2628,8 +2633,8 @@ pub(crate) async fn handle_view_events(
                 // A project-scope save is refused (never silently redirected)
                 // when project profiles are disabled for this launch: the file
                 // would be written where nothing loads it.
-                if scope == crate::fleet::profile::FleetProfileScope::Project
-                    && !crate::fleet::roster::project_agent_profiles_enabled()
+                if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project
+                    && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
                 {
                     app.set_sticky_status(
                         tr(app.ui_locale, MessageId::FleetDestProjectDisabledSave).into_owned(),
@@ -2643,8 +2648,10 @@ pub(crate) async fn handle_view_events(
                 // draft and written atomically; the target path is derived
                 // from the sanitized id, never model-chosen.
                 let profile_dir =
-                    match crate::fleet::profile::agent_profile_dir_for_scope(scope, &app.workspace)
-                    {
+                    match codewhale_engine::fleet::profile::agent_profile_dir_for_scope(
+                        scope,
+                        &app.workspace,
+                    ) {
                         Ok(dir) => dir,
                         Err(err) => {
                             app.set_sticky_status(
@@ -2667,13 +2674,16 @@ pub(crate) async fn handle_view_events(
                 // profile cannot block saving a current one. Malformed TOML,
                 // unreadable files, and invalid ids still fail closed because
                 // then we cannot prove there is no collision.
-                let existing_profiles = if scope
-                    == crate::fleet::profile::FleetProfileScope::Project
-                {
-                    crate::fleet::profile::load_workspace_agent_profile_identities(&app.workspace)
-                } else {
-                    crate::fleet::profile::load_agent_profile_identities_from_dir(&profile_dir)
-                };
+                let existing_profiles =
+                    if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project {
+                        codewhale_engine::fleet::profile::load_workspace_agent_profile_identities(
+                            &app.workspace,
+                        )
+                    } else {
+                        codewhale_engine::fleet::profile::load_agent_profile_identities_from_dir(
+                            &profile_dir,
+                        )
+                    };
                 if let Err(err) = &existing_profiles {
                     let message = tr(app.ui_locale, MessageId::FleetProfileIdentityVerifyFailed)
                         .replace("{error}", &format!("{err:#}"));
@@ -2706,7 +2716,7 @@ pub(crate) async fn handle_view_events(
                             .resolve_provider_pin_identity(provider_id)
                             .and_then(|identity| {
                                 let active = app.admitted_provider_identity()?;
-                                if crate::provider_readiness::provider_is_configured_for_active(
+                                if codewhale_engine::provider_readiness::provider_is_configured_for_active(
                                     config, &identity, active,
                                 ) {
                                     Ok(())
@@ -2732,12 +2742,13 @@ pub(crate) async fn handle_view_events(
                 txn.stage(target.clone(), draft.render_toml().into_bytes());
                 match txn.commit() {
                     Ok(()) => {
-                        let roster =
-                            std::sync::Arc::new(crate::fleet::identity::load_effective_roster(
+                        let roster = std::sync::Arc::new(
+                            codewhale_engine::fleet::identity::load_effective_roster(
                                 &config.fleet_config(),
                                 &app.workspace,
                                 Some(app.extension_plugin_view().as_ref()),
-                            ));
+                            ),
+                        );
                         let roster_refresh_failed = engine_handle
                             .try_send(Op::SetFleetRoster { roster })
                             .is_err();

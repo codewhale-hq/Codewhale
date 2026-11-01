@@ -15,6 +15,7 @@ test-support = []
 workspace = true
 
 [dependencies]
+chrono.workspace = true
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-core = { path = "../core", version = "0.10.2" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }

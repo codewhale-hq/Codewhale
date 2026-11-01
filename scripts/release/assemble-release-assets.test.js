@@ -35,7 +35,7 @@ function sha256(filePath) {
 function createBundleInputs(input) {
   fs.mkdirSync(input, { recursive: true });
   for (const name of allReleaseAssetNames().filter((asset) =>
-    /^(codewhale|codew)-(linux|android|macos|windows)-/.test(asset) &&
+    /^(codewhale|codew)-(linux|android|ohos|macos|windows)-/.test(asset) &&
     !asset.endsWith(".tar.gz") &&
     !asset.endsWith(".zip"),
   )) {
@@ -91,13 +91,17 @@ function makeIntermediateArtifacts(root) {
   );
 }
 
-test("authoritative release inventory contains seven targets and 34 bridge assets", () => {
+test("authoritative release inventory contains eight targets and 38 bridge assets", () => {
   const assets = allReleaseAssetNames();
-  assert.equal(assets.length, 34);
-  assert.equal(checksummedReleaseAssetNames().length, 33);
+  assert.equal(assets.length, 38);
+  assert.equal(checksummedReleaseAssetNames().length, 37);
   for (const required of [
     "codewhale-android-arm64",
     "codew-android-arm64",
+    "codewhale-ohos-arm64",
+    "codew-ohos-arm64",
+    "codewhale-ohos-arm64.tar.gz",
+    "codewhale-tui-ohos-arm64",
     "codewhale-windows-arm64.exe",
     "codew-windows-arm64.exe",
     "codewhale-windows-arm64.zip",

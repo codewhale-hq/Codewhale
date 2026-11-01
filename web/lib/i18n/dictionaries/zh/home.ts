@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
   latestRelease: "最新发布 {tag}",
   releaseUnavailable: "发布状态暂不可用",
+  proofContributors: "{count} 位贡献者",
   currentSource: "源码",
   sourceCandidate: "未发布",
   publishedRelease: "已发布",

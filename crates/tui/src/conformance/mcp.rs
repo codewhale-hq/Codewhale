@@ -75,11 +75,12 @@ use tokio_util::sync::CancellationToken;
 
 use self::server::{ServerOptions, TranscriptServer};
 use super::golden::{self, Failures, Sandbox};
-use crate::core::engine::Engine;
-use crate::core::events::Event;
-use crate::mcp::{McpConfig, McpPool, McpToolApprovalHint};
 use crate::test_support::EnvVarGuard;
-use crate::tools::spec::{RichToolResult, ToolError};
+use codewhale_engine::core::engine::Engine;
+use codewhale_engine::core::events::Event;
+use codewhale_engine::mcp::{McpPool, McpToolApprovalHint};
+use codewhale_engine::tools::spec::{RichToolResult, ToolError};
+use codewhale_mcp::config::McpConfig;
 
 const FAMILY: &str = "mcp";
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -200,7 +201,7 @@ impl McpDispatchUnderTest for McpPoolDispatch {
     }
 
     async fn approval_hint(&self, model_name: &str) -> Option<&'static str> {
-        crate::mcp::mcp_tool_approval_hint(model_name).map(|hint| match hint {
+        codewhale_engine::mcp::mcp_tool_approval_hint(model_name).map(|hint| match hint {
             McpToolApprovalHint::TrustedReadOnly => "trusted_read_only",
             McpToolApprovalHint::Destructive => "destructive",
         })
@@ -217,25 +218,28 @@ impl McpDispatchUnderTest for McpPoolDispatch {
 /// current-thread runtime, so host workers never inherit another case's policy.
 struct HostMcpDispatch {
     inner: McpPoolDispatch,
-    manager: Arc<crate::extension_host::ExtensionHostManager>,
-    _manager: crate::extension_host::TestManagerGuard,
-    _policy: crate::plugins::activation::TestPolicyGuard,
+    manager: Arc<codewhale_engine::extension_host::ExtensionHostManager>,
+    _manager: codewhale_engine::extension_host::TestManagerGuard,
+    _policy: codewhale_plugins::activation::TestPolicyGuard,
 }
 impl HostMcpDispatch {
     fn boxed(setup: DispatchSetup) -> Box<dyn McpDispatchUnderTest> {
-        let node = crate::extension_host::tests::node_for_tests("recorded MCP Host SDK parity")
-            .expect("recorded Host SDK parity requires a supported local Node runtime");
+        let node = codewhale_engine::extension_host::test_support::node_for_tests(
+            "recorded MCP Host SDK parity",
+        )
+        .expect("recorded Host SDK parity requires a supported local Node runtime");
         let root =
             PathBuf::from(std::env::var_os("CODEWHALE_HOME").expect("sealed conformance home"));
-        let manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
-            crate::extension_host::ExtensionHostOptions {
+        let manager = Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+            codewhale_engine::extension_host::ExtensionHostOptions {
                 node_override: Some(node),
                 root: Some(root),
                 ..Default::default()
             },
         ));
-        let policy = crate::plugins::activation::TestPolicyGuard::extension_host(true);
-        let manager_guard = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+        let policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
+        let manager_guard =
+            codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&manager));
         let (tx_event, rx_event) = mpsc::channel(64);
         let pool = McpPool::new(setup.config)
             .with_disallowed_tools(setup.disallowed_tools.clone())

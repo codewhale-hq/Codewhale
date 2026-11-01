@@ -64,7 +64,7 @@ fn palette_entries(tmpdir: &TempDir) -> Vec<CommandPaletteEntry> {
     command_palette::build_entries(
         Locale::En,
         tmpdir.path().join("skills").as_path(),
-        crate::skills::SkillDiscoveryMode::Compatible,
+        &Default::default(),
         tmpdir.path(),
         tmpdir.path().join("mcp.json").as_path(),
         None,

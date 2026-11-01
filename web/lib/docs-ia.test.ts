@@ -97,7 +97,7 @@ describe("sitemap and hreflang preservation", () => {
     const existingEntries = sitemapEntries.filter(
       (entry) => new URL(entry.url).pathname.split("/")[2] !== "ratatui",
     );
-    expect(existingEntries).toHaveLength(110);
+    expect(existingEntries).toHaveLength(112);
     expect(sitemapEntries.filter(entry => entry.url.endsWith("/install")).map(entry => entry.url))
       .toEqual([`${SITE_URL}/en/install`]);
     expect(sitemapEntries.some(entry => entry.url.endsWith("/pricing"))).toBe(false);

@@ -26,11 +26,9 @@ exclude = [
   "src/conformance/**",
   "src/lib/terminal_mode_test_cases_*.rs",
   "src/llm_client/mock.rs",
-  "src/plugins/test_fixture.rs",
   "src/skills/catalog_matrix.rs",
   "src/compaction/survival_contract.rs",
   "src/compaction/SURVIVAL_CONTRACT.md",
-  "src/compaction/validate_survival_contract.mjs",
   "src/compaction/fixtures/**",
   "src/commands/contract/config_policy_baseline.rs",
   "src/commands/contract/fixtures/**",
@@ -69,8 +67,8 @@ workspace = true
 
 [features]
 default = []
-long-running-tests = []
-test-thread-scoped-state = []
+long-running-tests = ["codewhale-engine/long-running-tests"]
+test-thread-scoped-state = ["codewhale-engine/test-thread-scoped-state"]
 # Accepted compatibility feature names. Allocators belong exclusively to the
 # canonical codewhale-cli executable; these library aliases have no effect.
 mimalloc-allocator = []
@@ -83,7 +81,7 @@ doctest = false
 
 [dependencies]
 # Independent terminal kit, pinned and vendored for reproducible binary builds.
-codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.1.2" }
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.1.3" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
 codewhale-memory = { path = "../memory", version = "0.10.2" }
 ahash = "0.8"
@@ -91,6 +89,7 @@ anyhow.workspace = true
 codewhale-agent = { path = "../agent", version = "0.10.2" }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2" }
 codewhale-app-server = { path = "../app-server", version = "0.10.2" }
+codewhale-engine = { path = "../engine", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
@@ -115,8 +114,12 @@ codewhale-dependencies = { path = "../dependencies", version = "0.10.2" }
 codewhale-lsp = { path = "../lsp", version = "0.10.2" }
 codewhale-repl = { path = "../repl", version = "0.10.2" }
 codewhale-snapshot = { path = "../snapshot", version = "0.10.2" }
+codewhale-plugins = { path = "../plugins", version = "0.10.2" }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
+codewhale-skills = { path = "../skills", version = "0.10.2" }
 codewhale-util = { path = "../util", version = "0.10.2" }
+codewhale-tui-kit = { path = "../tui-kit", version = "0.10.2" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2" }
 codewhale-tools = { path = "../tools", version = "0.10.2" }
 codewhale-workflow = { path = "../workflow", version = "0.10.2" }
 codewhale-workflow-js = { path = "../workflow-js", version = "0.10.2" }
@@ -146,12 +149,6 @@ rustls.workspace = true
 qrcode = { version = "0.14", default-features = false }
 similar = { version = "3", features = ["unicode"] }
 ansi-to-tui = { version = "8.0.1", default-features = false }
-# The renderer uses embedded syntax/theme dumps, not external YAML/plist loaders.
-# `regex-onig` (syntect's reference engine) instead of `regex-fancy`: compiled
-# fancy-regex programs for the default syntaxes cost tens of MB of process-lifetime
-# heap once a few languages have been highlighted; Oniguruma holds the same
-# grammars in single-digit MB. The TUI already builds C (bundled SQLite, QuickJS).
-syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 yaml-rust2 = { workspace = true }
@@ -211,7 +208,11 @@ shell-words = "1.1.1"
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]
+codewhale-engine = { path = "../engine", version = "0.10.2", features = ["test-support"] }
+codewhale-skills = { path = "../skills", version = "0.10.2", features = ["test-support"] }
+codewhale-tui-kit = { path = "../tui-kit", version = "0.10.2", features = ["test-support"] }
 codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2", features = ["test-support"] }
 codewhale-lsp = { path = "../lsp", version = "0.10.2", features = ["test-support"] }
 codewhale-snapshot = { path = "../snapshot", version = "0.10.2", features = ["test-support"] }
 codewhale-notify = { path = "../notify", version = "0.10.2", features = ["test-thread-scoped-state"] }
@@ -224,6 +225,7 @@ codewhale-runtime = { path = "../runtime", version = "0.10.2", features = [
     "test-thread-scoped-state",
 ] }
 codewhale-sandbox = { path = "../sandbox", version = "0.10.2", features = ["test-support"] }
+codewhale-plugins = { path = "../plugins", version = "0.10.2", features = ["test-support"] }
 codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
 codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }
 codewhale-models = { path = "../models", version = "0.10.2", features = [

@@ -1,5 +1,12 @@
 /** Optional processor for the existing validated ingest; no second collector. */
-import { CONSENT_VERSION, NOTICE_VERSION, SCHEMA_VERSION, type Batch } from "./schema";
+import {
+  CONSENT_VERSION,
+  NOTICE_VERSION,
+  SCHEMA_VERSION,
+  V3_NOTICE_VERSION,
+  V3_SCHEMA_VERSION,
+  type Batch,
+} from "./schema";
 
 export interface PostHogConfig {
   /** Unset by default. Exactly one of the two regional HTTPS capture origins. */
@@ -16,7 +23,9 @@ const HOSTS = ["https://us.i.posthog.com", "https://eu.i.posthog.com"];
 /** V2 keeps its opt-in contract; v3 identifies the disclosed opt-out policy. */
 export async function deliverPostHog(batch: Batch, config: PostHogConfig): Promise<void> {
   const explicitConsent = batch.schema_version === 2 && batch.consent_version === CONSENT_VERSION;
-  const disclosedPolicy = batch.schema_version === SCHEMA_VERSION && batch.notice_version === NOTICE_VERSION;
+  const disclosedPolicy =
+    (batch.schema_version === SCHEMA_VERSION && batch.notice_version === NOTICE_VERSION) ||
+    (batch.schema_version === V3_SCHEMA_VERSION && batch.notice_version === V3_NOTICE_VERSION);
   if (
     !(explicitConsent || disclosedPolicy) ||
     batch.events.length === 0 ||

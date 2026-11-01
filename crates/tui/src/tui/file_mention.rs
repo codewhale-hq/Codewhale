@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use crate::tui::app::{App, MentionCompletionCache};
 use crate::tui::git_mention::{self, GitMentionCache, GitMentionKind};
 use crate::tui::mention_completion::{MentionDiscoveryBehavior, MentionDiscoveryKey};
-use crate::working_set::Workspace;
 use codewhale_core::{
     ContextReference, ContextReferenceKind, ContextReferenceSource, MediaAttachmentReference,
     media_attachment_references,
 };
+use codewhale_runtime::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
 /// message. Beyond this we stop appending blocks but the raw `@token` text
@@ -239,7 +239,9 @@ fn mention_menu_entries(app: &mut App, partial: &str, limit: usize) -> (Vec<Stri
     };
     let entries = match &discovery_key.behavior {
         MentionDiscoveryBehavior::Fuzzy => {
-            let ranked = crate::working_set::rank_completion_candidates(candidates, partial, limit);
+            let ranked = codewhale_runtime::working_set::rank_completion_candidates(
+                candidates, partial, limit,
+            );
             super::file_frecency::rerank_by_frecency(ranked)
         }
         MentionDiscoveryBehavior::Browser { .. } => {

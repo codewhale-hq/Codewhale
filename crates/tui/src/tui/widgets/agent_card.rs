@@ -18,13 +18,15 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::todo_snapshot::{TodoCardProjection, card_omission_line, card_todo_projection};
-use crate::tools::subagent::MailboxMessage;
-use crate::tools::todo::TodoListSnapshot;
-use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph};
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::todo_snapshot::{
+    TodoCardProjection, card_omission_line, card_todo_projection,
+};
+use codewhale_engine::tools::subagent::MailboxMessage;
+use codewhale_engine::tools::todo::TodoListSnapshot;
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 use unicode_width::UnicodeWidthStr;
 
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries
@@ -187,7 +189,7 @@ impl DelegateCard {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
         let content_width = usize::from(width);
         let role = public_role_label(&self.agent_type);
-        let short_id = crate::session_manager::truncate_id(&self.agent_id).to_string();
+        let short_id = codewhale_engine::session_manager::truncate_id(&self.agent_id).to_string();
         let detail = if self.status.is_terminal() {
             String::new()
         } else if let Some(action) = self.actions.last() {
@@ -1134,7 +1136,7 @@ mod tests {
 
     // === #4810: a child's own To-do on its own card ===
 
-    use crate::tools::todo::{TodoItem, TodoStatus};
+    use codewhale_engine::tools::todo::{TodoItem, TodoStatus};
 
     fn todo(items: &[(u32, &str, TodoStatus)], in_progress_id: Option<u32>) -> TodoListSnapshot {
         let items: Vec<TodoItem> = items
@@ -1332,11 +1334,11 @@ mod tests {
         let projection = card.todo_projection().expect("projection");
         assert_eq!(
             projection.items.len(),
-            crate::todo_snapshot::MAX_CARD_ITEM_LINES
+            codewhale_engine::todo_snapshot::MAX_CARD_ITEM_LINES
         );
         assert_eq!(
             projection.omitted,
-            9 - crate::todo_snapshot::MAX_CARD_ITEM_LINES
+            9 - codewhale_engine::todo_snapshot::MAX_CARD_ITEM_LINES
         );
         assert!(
             projection

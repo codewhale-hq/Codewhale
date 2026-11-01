@@ -42,6 +42,24 @@ if [ -z "$libclang_path" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
+# crates with a CMake build script (aws-lc-sys, which the TLS stack pulls in)
+# need a `cmake` and a build tool on PATH. The SDK ships both under
+# build-tools/cmake/bin, and CI's Linux runners happen to have cmake installed
+# already, so a host without it fails deep inside aws-lc-sys' build script with
+# "Required build dependency is missing. Halting build." rather than with
+# anything that names the target. Prefer the SDK's copies so the build does not
+# depend on what the host happens to have.
+sdk_cmake_bin=$sdk/build-tools/cmake/bin
+if [ -f "$sdk_cmake_bin/cmake" ]; then
+    case ":${PATH}:" in
+        *":${sdk_cmake_bin}:"*) ;;
+        *) PATH=$sdk_cmake_bin:$PATH ;;
+    esac
+    export PATH
+    CMAKE=${CMAKE:-$sdk_cmake_bin/cmake}
+    export CMAKE
+fi
+
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=$clang
 export AR_aarch64_unknown_linux_ohos=$ar
 export CC_aarch64_unknown_linux_ohos=$clang

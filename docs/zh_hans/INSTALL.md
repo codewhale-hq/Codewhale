@@ -46,7 +46,7 @@ target/release/codewhale --version
 curl -fsSL https://codewhale.net/install.sh | sh
 
 # 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh: use ~/.zshrc
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
@@ -126,9 +126,15 @@ curl -fsSL https://codewhale.net/install.sh | sh
 它做了什么（已验证）：
 
 * 检测你的平台（`linux-x64`、`linux-arm64`、`macos-x64`、`macos-arm64`）。对 Android/Termux 和 riscv64，它会给出明确提示并拒绝安装。
-* 从最新的 GitHub Release 下载 `codewhale-<platform>`、`codew-<platform>` 和 `codewhale-artifacts-sha256.txt`，并对照清单校验两个二进制。只要有一个不匹配，就会在安装任何东西之前停止（`codewhale install: checksum mismatch for …`）。
-* 安装 `~/.local/bin/codewhale` 和 `~/.local/bin/codew`：两个内容相同的 78 MB 文件。
-* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew、`node_modules`、`/nix/store` 等），也拒绝覆盖一个*不同的*已有 `codewhale`。
+* 从最新的 GitHub Release 下载 `codewhale-<platform>` 和
+  `codewhale-artifacts-sha256.txt`。当清单中 `codewhale` 和 `codew` 的摘要相同
+  时，两个命令名会复用同一次下载；摘要不同时才会单独下载并校验
+  `codew-<platform>`。只要有一个摘要不匹配，就会在安装任何东西之前停止
+  （`codewhale install: checksum mismatch for …`）。
+* 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
+  `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
+  失败时使用临时副本。
+* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：
 
@@ -144,7 +150,8 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 …
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
+The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
 Then run: . ~/.bashrc   (or open a new terminal)
 …
 ```
@@ -167,12 +174,15 @@ Then run: . ~/.bashrc   (or open a new terminal)
 一次性修复：
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # zsh
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
+# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
 # fish_add_path ~/.local/bin                               # fish (untested on this VM)
 export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
+
+这个三行块带有标记，`codewhale uninstall` 之后可以精确地移除它。你自己加的裸 `export PATH=…`
+行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
 
@@ -204,8 +214,9 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 
 ### 升级 / 卸载
 
-* 升级：`codewhale update`（见 §7）。
-* 卸载：`rm ~/.local/bin/codewhale ~/.local/bin/codew`，数据的清理见 §12。
+* 升级：此安装会自动更新（见 §7），也可以立即运行 `codewhale update`。
+* 卸载：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
+  `--yes` 才会删除。数据的清理见 §12。
 
 ---
 
@@ -256,7 +267,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 （注意：校验清单是 *bundles*，不是 *artifacts*。）
 
-压缩包里的 `install.sh` 与网站上的安装器行为一致：不用 sudo，不动内容不同的已有文件，并打印同样的 PATH 提示。
+压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，从不修改 shell 配置文件，也不提问；它只打印针对当前 shell 的 `export` 行。
 
 **升级：** `codewhale update` 对 3a 和 3b 都适用，因为它们都属于"直接二进制"安装。**卸载：** 删除那两个文件（见 §12）。
 
@@ -658,41 +669,57 @@ tmux 会吃掉 **F1**，所以在 tmux 里请用 `/help`。有些组合键（Ctr
 
 ## 12. 卸载
 
-### 第 1 步：忘掉已保存的密钥（如果你用过 `auth set` 或 F3）
+### 第 1 步：清除需要移除的已保存密钥
+
+程序卸载不会自动清除系统钥匙串。先针对实际使用的提供商运行：
 
 ```bash
-codewhale auth clear --provider deepseek
+codewhale auth clear --provider <id>
 ```
 
-### 第 2 步：删除程序
+### 第 2 步：预览并删除所选安装
+
+先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。
+使用要移除的程序的完整路径运行 `uninstall` 查看计划，确认后再加 `--yes`。
+普通卸载保留会话、配置和文件快照。
 
 | 安装方式 | 删除方法 |
 |---|---|
-| 安装器（§2）或手动下载（§3） | `rm ~/.local/bin/codewhale ~/.local/bin/codew`（或你的 `CODEWHALE_INSTALL_DIR`） |
-| npm | `npm uninstall -g codewhale` |
-| Cargo | `cargo uninstall codewhale-cli` |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`（同时会移除它的 node 依赖） |
+| 当前 Unix 安装器 | 用完整路径运行 `codewhale uninstall`，确认计划后再运行 `uninstall --yes`。 |
+| Windows 发布归档（`install.ps1`） | 用完整路径运行 `codewhale.exe uninstall`，再加 `--yes`；已知旧安装可核对命令字节后建立收据，其他无收据副本会保留。 |
+| Windows 安装程序（NSIS） | 在“设置 > 应用”中卸载，或运行该安装目录的 `Uninstall.exe`。 |
+| WinGet / Scoop | `winget uninstall --id HunterBown.CodeWhale` / `scoop uninstall codewhale`。 |
+| npm | `npm uninstall -g codewhale`；`codewhale uninstall` 会显示该副本所属的 `--prefix`。 |
+| Cargo | `cargo uninstall codewhale-cli`；`codewhale uninstall` 会显示所属的 `--root`。 |
+| Homebrew | `brew uninstall codewhale`；不再使用该 tap 时才执行 untap。 |
+| 旧 curl 安装或其他手动副本 | 已知旧安装目录内、与当前程序字节完全一致且确属当前用户的文件可建立收据后移除；其他来源不明的文件会保留，需先核实具体路径和来源。 |
 
-### 第 3 步：删除数据。没有任何卸载器会替你做这件事。
+卸载移除所选安装收据拥有的命令、宿主文件和收据；对带收据的发布版安装，还会移除
+该安装在 shell 配置文件中的精确三行 `# >>> codewhale PATH >>>` 块，以及文档中
+约定路径上由 Codewhale 生成的补全文件（`~/.local/share/bash-completion/completions/codewhale`、
+`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish`，并遵循
+`XDG_DATA_HOME` 和 `XDG_CONFIG_HOME`）。配置文件中的其他内容一概不动；符号链接或
+无法读取的配置文件留给你手动修改；只要 PATH 上还有其他 Codewhale 副本，补全文件
+就会保留。这部分清理若有失败，命令会如实报告并以非零状态退出，即使程序本身已经删除。
+Windows 正在运行的程序会先改名，退出后由辅助进程删除。Windows 分支已通过编译检查，仍需在真实 Windows 主机上验证。
+重复卸载不会取得其他副本的所有权；重新安装会创建新的收据。
 
-| 路径 | 内容 | 所见大小 |
-|---|---|---|
-| `~/.codewhale/` | config.toml、**secrets/secrets.json（明文密钥）**、sessions/、logs/、catalog/（模型列表，约 5 MB）、skills/、builtin-plugins/、tasks/、automations/、crashes/、audit.log、输入框历史 | 6–7 MB |
-| `~/.deepseek/snapshots/` | v0.10.0 把每个回合的**工作区副本**存在这里（一个旧路径）。里面包含你运行过它的每个仓库的内容。 | 这里为 0.2–0.6 MB；随仓库大小增长 |
-| `<你用过的每个仓库>/.codewhale/` | 每个工作区的状态/锁目录 | 很小 |
-| 补全文件 | `~/.local/share/bash-completion/completions/codewhale`、`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish` | – |
-| 你添加的 PATH 行 | `~/.bashrc`、`~/.zshrc`、`~/.profile` | – |
+### 第 3 步：可选的数据清理
 
-```bash
-rm -rf ~/.codewhale ~/.deepseek/snapshots
-rmdir ~/.deepseek 2>/dev/null   # removes the parent only if it is now empty
-# per-repo dirs, e.g.:
-find ~ -type d -name .codewhale -prune -print     # review, then delete the ones you want
-```
+`codewhale uninstall --purge-data` 先预览清理范围。未显式设置
+`CODEWHALE_HOME` 时，范围是 `~/.codewhale` 和旧的
+`~/.deepseek/snapshots`；显式设置后只考虑该目录，保留旧快照。
+自定义目录必须名为 `.codewhale` 才可自动清理。
 
-（注释含义：仅当父目录已为空时才会删除它；逐个仓库的目录，先查看再删除想删的。）
+数据清理必须与成功移除带收据安装的 `--yes` 操作在同一次运行中完成。
+包管理器安装、仅预览或移除失败时均保留数据。程序删除前会检查所有目标，拒绝
+符号链接、其他用户拥有的目录、主目录及其父目录，以及包含安装目录的目标。
+清理会删除这些目标内的会话、工作区快照和恢复副本；确认前应先核对预览并保留
+仍需使用的内容。重新安装程序不能恢复已清理的数据。
 
-Codewhale 没有在 `$HOME` 和它被使用过的仓库之外写入任何东西：没有系统文件、服务或 cron 任务。（我检查了测试用户在其主目录之外拥有的每一个文件。）上面的命令只删除 `~/.deepseek/snapshots`。如果你仍在使用较早的 DeepSeek-TUI，`~/.deepseek` 里的其余部分（它的配置和会话）不会被动。
+每个工作区的 `.codewhale` 和系统钥匙串不在自动清理范围内；你自己加的裸 `export PATH=…`
+行，以及约定路径之外的补全文件，也由你自己检查。请逐项检查已知路径；卸载不会扫描整个主目录。远程服务和桌面应用也有
+各自的安装所有权，不由所选 CLI 安装的收据代管。
 
 ---
 

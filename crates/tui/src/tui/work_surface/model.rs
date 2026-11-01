@@ -6,7 +6,6 @@ use std::time::Instant;
 use codewhale_localization::{Locale, MessageId, tr};
 use ratatui::layout::Rect;
 
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use crate::tui::app::{
     AgentCurrentActivityStatus, AgentProgressMeta, App, SidebarRowAction, TaskPanelEntry,
     TaskPanelEntryKind,
@@ -15,13 +14,14 @@ use crate::tui::background_indicator::is_live_shell_entry;
 use crate::tui::history::{
     FileActivityKind, FileActivitySummary, FileMutationReceipt, HistoryCell, ToolCell,
 };
-use crate::tui::menu_style::{StatusKind, status_mark};
-use crate::work_graph::{
+use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
+use codewhale_engine::work_graph::{
     AcceptanceRequirement, EdgeKind, EvidenceKind, EvidenceKindTag, NodeKind, NodeState,
     OperationBinding, OwnerState, Provenance, WorkGraphSnapshot, WorkNode,
 };
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_runtime::settings::InlineDiffMode;
+use codewhale_tui_kit::menu_style::{StatusKind, status_mark};
 
 /// Persisted Ocean work-surface placement. Bottom is deliberately absent: the
 /// composer and phase footer own the shell's lower edge. `Off` hides the rail
@@ -777,7 +777,7 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
             retained.push(agents.remove(index));
             continue;
         }
-        let parked = receipt.state == crate::agent_roster::RosterState::Parked;
+        let parked = receipt.state == codewhale_engine::agent_roster::RosterState::Parked;
         let status = if parked {
             current_activity_status_label(AgentCurrentActivityStatus::Parked, app.ui_locale)
         } else {
@@ -1018,9 +1018,9 @@ fn finished_background_rows(app: &App) -> Vec<WorkRow> {
                 WorkTone::Muted
             };
             let mark = match entry.status.as_str() {
-                "completed" => crate::tui::glyphs::DONE,
-                _ if failed => crate::tui::glyphs::ATTENTION,
-                _ => crate::tui::glyphs::NEUTRAL,
+                "completed" => codewhale_tui_kit::glyphs::DONE,
+                _ if failed => codewhale_tui_kit::glyphs::ATTENTION,
+                _ => codewhale_tui_kit::glyphs::NEUTRAL,
             };
             if is_shell_entry(entry) {
                 let command = shell_command(entry);
@@ -1047,7 +1047,7 @@ fn finished_background_rows(app: &App) -> Vec<WorkRow> {
             } else {
                 let took = entry
                     .duration_ms
-                    .map(|ms| format!(" · {}", crate::agent_roster::format_duration(ms)))
+                    .map(|ms| format!(" · {}", codewhale_engine::agent_roster::format_duration(ms)))
                     .unwrap_or_default();
                 WorkRow {
                     id: WorkRowId(format!("task:{}", entry.id)),
@@ -1099,7 +1099,7 @@ fn finished_shell_outcome(locale: Locale, entry: &TaskPanelEntry) -> String {
         "completed" => {
             let took = entry
                 .duration_ms
-                .map(|ms| format!(" · {}", crate::agent_roster::format_duration(ms)))
+                .map(|ms| format!(" · {}", codewhale_engine::agent_roster::format_duration(ms)))
                 .unwrap_or_default();
             format!(
                 "{}{took}",
@@ -1203,8 +1203,8 @@ fn update_session_instance_scope(app: &mut App) {
 
 fn session_record_from_prior_instance(surface: &WorkSurfaceState, session_id: &str) -> bool {
     let manager = match surface.session_owner_probe_dir.as_ref() {
-        Some(dir) => crate::session_manager::SessionManager::new(dir.clone()),
-        None => crate::session_manager::SessionManager::default_location(),
+        Some(dir) => codewhale_engine::session_manager::SessionManager::new(dir.clone()),
+        None => codewhale_engine::session_manager::SessionManager::default_location(),
     };
     manager.is_ok_and(|manager| manager.session_from_prior_instance(session_id))
 }
@@ -1260,8 +1260,9 @@ struct RankedWorkRow {
 }
 
 /// Complete unique targets; only the aggregate summary presentation is capped.
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct SettledFileActivity {
+    pub(super) locale: Locale,
     pub(super) summary: FileActivitySummary,
     pub(super) read: Vec<String>,
     list: Vec<String>,
@@ -1269,6 +1270,21 @@ pub(super) struct SettledFileActivity {
     pub(super) write: Vec<String>,
     pub(super) mutations: Vec<FileMutationReceipt>,
     pub(super) inline_diff_mode: InlineDiffMode,
+}
+
+impl Default for SettledFileActivity {
+    fn default() -> Self {
+        Self {
+            locale: Locale::En,
+            summary: FileActivitySummary::default(),
+            read: Vec::new(),
+            list: Vec::new(),
+            search: Vec::new(),
+            write: Vec::new(),
+            mutations: Vec::new(),
+            inline_diff_mode: InlineDiffMode::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for SettledFileActivity {
@@ -1617,9 +1633,9 @@ fn coordination_row(app: &App) -> Option<RankedWorkRow> {
         row: WorkRow {
             id: WorkRowId("coordination".to_string()),
             mark: if attention {
-                crate::tui::glyphs::ATTENTION
+                codewhale_tui_kit::glyphs::ATTENTION
             } else {
-                crate::tui::glyphs::DONE
+                codewhale_tui_kit::glyphs::DONE
             },
             label: title.clone(),
             detail: crate::tui::coordination_detail::summary(app.ui_locale, projection),
@@ -2168,13 +2184,13 @@ fn freeze_terminal_agent_elapsed(app: &mut App) {
 }
 
 /// Frozen elapsed for a finished agent, live elapsed for a running one.
-fn agent_elapsed_ms(app: &App, agent: &crate::tools::subagent::SubAgentResult) -> u64 {
+fn agent_elapsed_ms(app: &App, agent: &codewhale_engine::tools::subagent::SubAgentResult) -> u64 {
     // Live ticking (4b): derive from start timestamp at render when running,
     // otherwise use frozen snapshot. The redraw already happens; stale cached
     // duration is the bug.
     if matches!(
         agent.status,
-        crate::tools::subagent::SubAgentStatus::Running
+        codewhale_engine::tools::subagent::SubAgentStatus::Running
     ) && let Some(started_at) = agent.started_at
     {
         return u64::try_from(started_at.elapsed().as_millis()).unwrap_or(agent.duration_ms);
@@ -2307,10 +2323,10 @@ const fn bucket_tone(bucket: WorkBucket) -> WorkTone {
 
 const fn agent_mark(bucket: WorkBucket) -> &'static str {
     match bucket {
-        WorkBucket::Active => crate::tui::glyphs::SELECTION,
-        WorkBucket::Attention => crate::tui::glyphs::ATTENTION,
-        WorkBucket::Ready => crate::tui::glyphs::READY,
-        WorkBucket::Recent => crate::tui::glyphs::DONE,
+        WorkBucket::Active => codewhale_tui_kit::glyphs::SELECTION,
+        WorkBucket::Attention => codewhale_tui_kit::glyphs::ATTENTION,
+        WorkBucket::Ready => codewhale_tui_kit::glyphs::READY,
+        WorkBucket::Recent => codewhale_tui_kit::glyphs::DONE,
     }
 }
 
@@ -2321,6 +2337,7 @@ const fn agent_mark(bucket: WorkBucket) -> &'static str {
 /// one of these changed without its bump.
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub(super) struct FileActivityStamp {
+    locale: Locale,
     history_version: u64,
     details_epoch: u64,
     inline_diff_mode: InlineDiffMode,
@@ -2331,6 +2348,7 @@ pub(super) struct FileActivityStamp {
 /// computed once per input change instead of once per frame (#6565).
 pub(super) fn settled_file_activity(app: &mut App) -> &SettledFileActivity {
     let stamp = FileActivityStamp {
+        locale: app.ui_locale,
         history_version: app.history_version,
         details_epoch: app.details_epoch,
         inline_diff_mode: app.inline_diff_mode,
@@ -2347,6 +2365,7 @@ pub(super) fn settled_file_activity(app: &mut App) -> &SettledFileActivity {
 /// cache above must always reproduce.
 pub(super) fn compute_settled_file_activity(app: &App) -> SettledFileActivity {
     let mut activity = SettledFileActivity {
+        locale: app.ui_locale,
         inline_diff_mode: app.inline_diff_mode,
         ..SettledFileActivity::default()
     };
@@ -2416,7 +2435,8 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
     if activity.is_empty() {
         return None;
     }
-    let summaries = activity.summary.compact_display();
+    let locale = activity.locale;
+    let summaries = activity.summary.compact_display(locale);
     if summaries.is_empty() {
         return None;
     }
@@ -2428,21 +2448,28 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
     };
     let mutation_detail = activity.mutations.last().map(|receipt| {
         if activity.inline_diff_mode == InlineDiffMode::Off {
-            receipt.outcome_label()
+            receipt.outcome_label(locale)
         } else {
-            receipt.semantic_summary()
+            receipt.semantic_summary(locale)
         }
     });
-    let mutation_body = settled_mutation_body(&activity.mutations, activity.inline_diff_mode);
+    let mutation_body =
+        settled_mutation_body(&activity.mutations, activity.inline_diff_mode, locale);
     let mut body_parts = Vec::new();
     if !mutation_body.is_empty() {
         body_parts.push(mutation_body);
     }
     for (kind, details) in [
-        ("Read", &activity.read),
-        ("List", &activity.list),
-        ("Search", &activity.search),
-        ("Write", &activity.write),
+        (tr(locale, MessageId::FileActivityReadLabel), &activity.read),
+        (tr(locale, MessageId::FileActivityListLabel), &activity.list),
+        (
+            tr(locale, MessageId::FileActivitySearchLabel),
+            &activity.search,
+        ),
+        (
+            tr(locale, MessageId::FileActivityWriteLabel),
+            &activity.write,
+        ),
     ] {
         if details.is_empty() {
             continue;
@@ -2453,7 +2480,7 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
         ));
     }
     if body_parts.is_empty() {
-        body_parts.push("No safe target detail retained".to_string());
+        body_parts.push(tr(locale, MessageId::FileActivityNoDetail).into_owned());
     }
     let detail = mutation_detail
         .or_else(|| {
@@ -2462,10 +2489,15 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
                 .first()
                 .cloned()
                 .or_else(|| activity.read.first().cloned())
-                .or_else(|| activity.search.first().map(|_| "patterns".to_string()))
+                .or_else(|| {
+                    activity
+                        .search
+                        .first()
+                        .map(|_| tr(locale, MessageId::FileActivityPatterns).into_owned())
+                })
                 .or_else(|| activity.list.first().cloned())
         })
-        .unwrap_or_else(|| "settled".to_string());
+        .unwrap_or_else(|| tr(locale, MessageId::FileActivitySettled).into_owned());
     let detail = sanitize_summary_title(&detail);
     Some(RankedWorkRow {
         bucket: WorkBucket::Recent,
@@ -2473,13 +2505,13 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
         is_plan_step: false,
         row: WorkRow {
             id: WorkRowId("activity:aggregate".to_string()),
-            mark: crate::tui::glyphs::DONE,
+            mark: codewhale_tui_kit::glyphs::DONE,
             label,
             detail,
             tone: WorkTone::Success,
             selectable: true,
             primary_action: Some(SidebarRowAction::InspectWork {
-                title: "Work · file activity".to_string(),
+                title: tr(locale, MessageId::FileActivityDetailTitle).into_owned(),
                 body: body_parts.join("\n\n"),
                 stop_action: None,
             }),
@@ -2496,17 +2528,18 @@ fn activity_rows(activity: SettledFileActivity) -> Vec<RankedWorkRow> {
 pub(super) fn settled_mutation_body(
     receipts: &[FileMutationReceipt],
     mode: InlineDiffMode,
+    locale: Locale,
 ) -> String {
     let Some(receipt) = receipts.last() else {
         return String::new();
     };
     let details = crate::tui::key_shortcuts::tool_details_shortcut_action_hint(
-        "exact change evidence on the matching File receipt",
+        tr(locale, MessageId::FileMutationExactEvidence).as_ref(),
     );
-    let hint = format!("Select the matching File receipt; {details}.");
+    let hint = tr(locale, MessageId::FileMutationSelectReceipt).replace("{hint}", &details);
     match mode {
-        InlineDiffMode::Off => format!("{}\n\n{hint}", receipt.outcome_label()),
-        InlineDiffMode::Summary => format!("{}\n\n{hint}", receipt.semantic_summary()),
+        InlineDiffMode::Off => format!("{}\n\n{hint}", receipt.outcome_label(locale)),
+        InlineDiffMode::Summary => format!("{}\n\n{hint}", receipt.semantic_summary(locale)),
         InlineDiffMode::Full => {
             let diff = receipt
                 .display_diff
@@ -2515,9 +2548,9 @@ pub(super) fn settled_mutation_body(
                 .collect::<Vec<_>>()
                 .join("\n");
             if diff.trim().is_empty() {
-                format!("{}\n\n{hint}", receipt.semantic_summary())
+                format!("{}\n\n{hint}", receipt.semantic_summary(locale))
             } else {
-                format!("{}\n\n{diff}\n\n{hint}", receipt.semantic_summary())
+                format!("{}\n\n{diff}\n\n{hint}", receipt.semantic_summary(locale))
             }
         }
     }
@@ -2569,7 +2602,7 @@ fn privacy_safe_path<'a>(workspace: &'a Path, raw: &'a str) -> Option<std::borro
         (!relative.is_empty()).then(|| std::borrow::Cow::Owned(relative.to_string()))
     } else {
         let relative = relative_workspace_path(workspace, raw, absolute)?;
-        (!relative.is_empty()).then(|| std::borrow::Cow::Borrowed(relative))
+        (!relative.is_empty()).then_some(std::borrow::Cow::Borrowed(relative))
     }
 }
 
@@ -2771,10 +2804,10 @@ fn shells_section_heading(shells: &[WorkRow]) -> WorkRow {
 
 fn graph_node_row(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> WorkRow {
     let (mark, tone) = match node.state {
-        NodeState::Ready => (crate::tui::glyphs::READY, WorkTone::Muted),
-        NodeState::Initializing => (crate::tui::glyphs::SELECTION, WorkTone::Live),
-        NodeState::Active => (crate::tui::glyphs::SELECTION, WorkTone::Live),
-        NodeState::Waiting => (crate::tui::glyphs::ATTENTION, WorkTone::Attention),
+        NodeState::Ready => (codewhale_tui_kit::glyphs::READY, WorkTone::Muted),
+        NodeState::Initializing => (codewhale_tui_kit::glyphs::SELECTION, WorkTone::Live),
+        NodeState::Active => (codewhale_tui_kit::glyphs::SELECTION, WorkTone::Live),
+        NodeState::Waiting => (codewhale_tui_kit::glyphs::ATTENTION, WorkTone::Attention),
         NodeState::Blocked => (
             status_mark(StatusKind::Attention).glyph,
             WorkTone::Attention,
@@ -2789,7 +2822,7 @@ fn graph_node_row(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> WorkRow {
         NodeState::Verified => (status_mark(StatusKind::Done).glyph, WorkTone::Success),
         NodeState::Stale => ("?", WorkTone::Attention),
         NodeState::Superseded | NodeState::Cancelled => ("−", WorkTone::Muted),
-        NodeState::Failed => (crate::tui::glyphs::FAILED, WorkTone::Failure),
+        NodeState::Failed => (codewhale_tui_kit::glyphs::FAILED, WorkTone::Failure),
     };
     let state = state_label(node);
     let kind = kind_label(node.kind);
@@ -3166,7 +3199,7 @@ fn last_output_ref(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> Option<Stri
         })
 }
 
-fn format_evidence_ref(evidence: &crate::work_graph::EvidenceRef) -> String {
+fn format_evidence_ref(evidence: &codewhale_engine::work_graph::EvidenceRef) -> String {
     let kind = match evidence.kind() {
         EvidenceKind::ToolRun => "tool run".to_string(),
         EvidenceKind::Artifact { .. } => "artifact".to_string(),
@@ -3213,7 +3246,7 @@ fn section_list(out: &mut String, title: &str, items: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::spec::ToolResult;
+    use codewhale_engine::tools::spec::ToolResult;
     use codewhale_runtime::config::Config;
 
     /// #6565: a fact is dropped from a dock row only when the detail names
@@ -3233,7 +3266,7 @@ mod tests {
     use crate::tui::app::TuiOptions;
     use crate::tui::history::ToolStatus;
     use crate::tui::tool_routing::{handle_tool_call_complete, handle_tool_call_started};
-    use crate::work_graph::{CompatTodoBinding, OperationBinding, WorkNodeId};
+    use codewhale_engine::work_graph::{CompatTodoBinding, OperationBinding, WorkNodeId};
 
     fn test_app() -> App {
         App::new(
@@ -3284,15 +3317,15 @@ mod tests {
             workspace: None,
             git_branch: None,
             agent_type: codewhale_agent_contract::role::FleetRole::Worker,
-            assignment: crate::tools::subagent::SubAgentAssignment {
+            assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "sweep the lane".to_string(),
                 role: Some("builder".to_string()),
             },
             model: "test-model".to_string(),
-            nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                agent_id, "en",
-            )),
+            nickname: Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en"),
+            ),
             status: SubAgentStatus::Running,
             worker_status: None,
             runtime_permissions: None,
@@ -3314,9 +3347,9 @@ mod tests {
     fn retained_agent_receipt(
         id: &str,
         status: AgentWorkerStatus,
-        state: crate::agent_roster::RosterState,
-    ) -> crate::agent_roster::AgentRosterRow {
-        crate::agent_roster::AgentRosterRow {
+        state: codewhale_engine::agent_roster::RosterState,
+    ) -> codewhale_engine::agent_roster::AgentRosterRow {
+        codewhale_engine::agent_roster::AgentRosterRow {
             worker_id: id.to_string(),
             display_name: format!("retained {id}"),
             model: "test-model".to_string(),
@@ -3340,7 +3373,7 @@ mod tests {
     /// expires (or a session restore filters it out of `subagent_cache`).
     #[test]
     fn a_roster_only_waiting_worker_opens_the_dock() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3361,7 +3394,7 @@ mod tests {
     /// A parked husk counts as settled too — nothing will answer it (#5906).
     #[test]
     fn retained_settled_receipts_do_not_hold_the_dock_open() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3430,7 +3463,7 @@ mod tests {
     /// degrades symmetrically: see the sibling test below.
     #[test]
     fn a_retained_child_renders_flat_under_a_retained_parent() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3464,7 +3497,7 @@ mod tests {
     /// stamped on one half of one.
     #[test]
     fn a_live_child_flattens_once_its_parent_has_expired_to_a_receipt() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3499,8 +3532,8 @@ mod tests {
 
     #[test]
     fn agents_register_retains_expired_receipts_alongside_fresh_live_rows() {
-        use crate::agent_roster::RosterState;
         use crate::tui::subagent_routing::reconcile_subagent_activity_state_at;
+        use codewhale_engine::agent_roster::RosterState;
         use std::time::Duration;
 
         let mut app = test_app();
@@ -3556,7 +3589,7 @@ mod tests {
 
     #[test]
     fn retained_agents_register_is_bound_to_the_exact_parent_session() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.agent_roster_session_id = Some("original-session".to_string());
@@ -3593,7 +3626,7 @@ mod tests {
 
     #[test]
     fn retained_agents_register_distinguishes_parked_from_waiting_for_input() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3645,7 +3678,10 @@ mod tests {
         assert_eq!(label("agent_named_lane"), "branch-triage");
         assert_eq!(
             label("agent_plain_lane"),
-            crate::tools::subagent::whale_name_for_id_in_locale("agent_plain_lane", "en")
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                "agent_plain_lane",
+                "en"
+            )
         );
     }
 
@@ -3653,7 +3689,7 @@ mod tests {
     fn agent_identity_column_prefers_resolved_profile_over_generated_whale() {
         let mut app = test_app();
         let mut agent = running_agent("agent_flash_lane");
-        agent.child_route = Some(crate::tools::subagent::ChildRouteReceipt {
+        agent.child_route = Some(codewhale_engine::tools::subagent::ChildRouteReceipt {
             requested_type: "custom".to_string(),
             requested_profile: Some("DeepSeek V4 Flash".to_string()),
             resolved_profile_id: Some("flash-scout".to_string()),
@@ -3844,11 +3880,11 @@ mod tests {
     /// rail must follow the projection, not every plan step ever written.
     #[tokio::test]
     async fn cleared_todo_list_leaves_no_plan_step_rows() {
-        use crate::tools::todo::{TodoList, TodoStatus};
+        use codewhale_engine::tools::todo::{TodoList, TodoStatus};
 
-        let todos = crate::tools::todo::new_shared_todo_list();
-        let plan = crate::tools::plan::new_shared_plan_state();
-        let work = crate::work_graph::new_shared_work_runtime(todos.clone(), plan);
+        let todos = codewhale_engine::tools::todo::new_shared_todo_list();
+        let plan = codewhale_engine::tools::plan::new_shared_plan_state();
+        let work = codewhale_engine::work_graph::new_shared_work_runtime(todos.clone(), plan);
         let mut written = TodoList::new();
         written.add("stale finished item".to_string(), TodoStatus::Completed);
         work.apply_todo_update("session-6546", "todo_write", &written.snapshot())
@@ -4510,6 +4546,17 @@ mod tests {
             assert!(body.contains(&format!("{action}-11.rs")));
             assert!(!body.contains(&format!("{action}-12.rs")));
         }
+        app.ui_locale = Locale::ZhHans;
+        settled_file_activity(&mut app);
+        let rows = files_rows(&mut app);
+        assert!(rows.iter().any(|row| row.label == "读取 13"));
+        assert!(rows.iter().any(|row| row.label == "已编辑 13"));
+        let summary = aggregate_activity_row(&app.work_surface.file_activity).unwrap();
+        assert!(
+            summary.row.label.contains("读取了14个文件"),
+            "{}",
+            summary.row.label
+        );
     }
 
     #[test]

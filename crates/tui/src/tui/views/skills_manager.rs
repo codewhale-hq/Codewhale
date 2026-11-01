@@ -1,7 +1,7 @@
 //! Dedicated `/skills manage` manager — audit inventory + mutation actions.
 //!
 //! This view never writes files. Keys emit [`ViewEvent::SkillMutationRequested`];
-//! the host runs [`crate::skills::mutation`] and rebuilds the view.
+//! the host runs [`codewhale_skills::mutation`] and rebuilds the view.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -16,16 +16,16 @@ use super::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
     render_modal_footer, render_underwater_surface, truncate_view_text,
 };
-use crate::skills::audit::{
+use crate::tui::app::App;
+use codewhale_palette as palette;
+use codewhale_skills::audit::{
     AuditedSkill, AuditedSkillId, DigestState, IntegrityState, ParserState, PrecedenceState,
     ProvenanceState, SkillActionKind, SkillAuditMode, SkillAuditSnapshot, SkillSourceKind,
     TrustState, expand_owned_scan_to_compatible, scan_with_configured,
 };
-use crate::skills::mutation::{ConflictPolicy, SkillMutationRequest, SkillTargetScope};
-use crate::skills::roots::SkillRootKind;
-use crate::tui::app::App;
-use crate::tui::menu_style;
-use codewhale_palette as palette;
+use codewhale_skills::mutation::{ConflictPolicy, SkillMutationRequest, SkillTargetScope};
+use codewhale_skills::roots::SkillRootKind;
+use codewhale_tui_kit::menu_style;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagerMode {
@@ -398,7 +398,7 @@ impl SkillsManagerView {
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
-            let mark = crate::tui::glyphs::selection_marker(selected);
+            let mark = codewhale_tui_kit::glyphs::selection_marker(selected);
             let line = format!(
                 "{mark} {:<6} {}  {}  {}",
                 skill_tier_label(skill),
@@ -491,7 +491,7 @@ impl SkillsManagerView {
             )));
             for w in &skill.warnings {
                 match w {
-                    crate::skills::audit::SkillAuditWarning::Message(msg) => {
+                    codewhale_skills::audit::SkillAuditWarning::Message(msg) => {
                         lines.push(Line::from(format!("• {msg}")));
                     }
                 }
@@ -564,8 +564,8 @@ fn skill_tier_label(skill: &AuditedSkill) -> &'static str {
     if skill.source_kind != SkillSourceKind::BuiltIn {
         return "custom";
     }
-    crate::skills::bundled_skill_tier(&skill.name)
-        .map_or("custom", crate::skills::BundledSkillTier::label)
+    codewhale_skills::bundled_skill_tier(&skill.name)
+        .map_or("custom", codewhale_skills::BundledSkillTier::label)
 }
 
 fn precedence_label(state: &PrecedenceState) -> String {
@@ -763,7 +763,6 @@ mod tests {
     use crate::tui::app::{App, TuiOptions};
     use codewhale_runtime::config::Config;
     use crossterm::event::{KeyEventKind, KeyModifiers};
-    use std::ffi::OsString;
     use std::fs;
     use tempfile::TempDir;
 
@@ -777,9 +776,10 @@ mod tests {
     }
 
     struct IsolatedHome {
+        _home: crate::test_support::EnvVarGuard,
+        _userprofile: crate::test_support::EnvVarGuard,
+        _codewhale_home: crate::test_support::EnvVarGuard,
         _lock: crate::test_support::TestEnvLock,
-        home_prev: Option<OsString>,
-        userprofile_prev: Option<OsString>,
     }
 
     impl IsolatedHome {
@@ -787,32 +787,14 @@ mod tests {
             let lock = crate::test_support::lock_test_env();
             let home = tmpdir.path().join("home");
             fs::create_dir_all(&home).unwrap();
-            let home_prev = std::env::var_os("HOME");
-            let userprofile_prev = std::env::var_os("USERPROFILE");
-            // SAFETY: serialized by TestEnvLock in this crate's tests.
-            unsafe {
-                std::env::set_var("HOME", &home);
-                std::env::set_var("USERPROFILE", &home);
-            }
             Self {
+                _home: crate::test_support::EnvVarGuard::set("HOME", &home),
+                _userprofile: crate::test_support::EnvVarGuard::set("USERPROFILE", &home),
+                _codewhale_home: crate::test_support::EnvVarGuard::set(
+                    "CODEWHALE_HOME",
+                    home.join(".codewhale"),
+                ),
                 _lock: lock,
-                home_prev,
-                userprofile_prev,
-            }
-        }
-    }
-
-    impl Drop for IsolatedHome {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.home_prev {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match &self.userprofile_prev {
-                    Some(v) => std::env::set_var("USERPROFILE", v),
-                    None => std::env::remove_var("USERPROFILE"),
-                }
             }
         }
     }
@@ -856,7 +838,7 @@ mod tests {
             "---\nname: demo\ndescription: d\n---\nbody\n",
         )
         .unwrap();
-        let digest = crate::skills::audit::compute_package_digest(&skill_dir).unwrap();
+        let digest = codewhale_skills::audit::compute_package_digest(&skill_dir).unwrap();
         codewhale_skill_install::install::write_installed_from_v2(
             &skill_dir,
             "github:o/r",
@@ -916,7 +898,8 @@ mod tests {
         let _home = IsolatedHome::new(&tmp);
         let mut app = app_in(&tmp);
         app.skills_dir = tmp.path().join("home").join(".codewhale").join("skills");
-        crate::skills::install_system_skills(&app.skills_dir).unwrap();
+        codewhale_skills::install_system_skills(&app.skills_dir, &app.skills_config.bundled)
+            .unwrap();
 
         let view = SkillsManagerView::new(&app);
         assert!(!view.skills.is_empty());
@@ -936,7 +919,7 @@ mod tests {
             .map(|position| buf[position].symbol())
             .collect::<String>();
         assert!(
-            text.contains(crate::tui::glyphs::SELECTION),
+            text.contains(codewhale_tui_kit::glyphs::SELECTION),
             "selected skill row must carry the charter pointer: {text}"
         );
     }
@@ -947,7 +930,8 @@ mod tests {
         let _home = IsolatedHome::new(&tmp);
         let mut app = app_in(&tmp);
         app.skills_dir = tmp.path().join("home").join(".codewhale").join("skills");
-        crate::skills::install_system_skills(&app.skills_dir).unwrap();
+        codewhale_skills::install_system_skills(&app.skills_dir, &app.skills_config.bundled)
+            .unwrap();
         write_skill_pkg(&app.skills_dir.join("my-workflow"), "my-workflow", "mine");
 
         let view = SkillsManagerView::new(&app);

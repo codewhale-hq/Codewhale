@@ -6,7 +6,7 @@
 //! Help lead with commands, while keyboard shortcuts lead with the key
 //! reference that the footer promises. The command list is sourced from
 //! [`crate::commands::command_infos()`] and the keybinding list from
-//! [`crate::keybinding_table::KEYBINDINGS`] so neither can drift from the
+//! [`codewhale_engine::keybinding_table::KEYBINDINGS`] so neither can drift from the
 //! wired-up handlers.
 //!
 //! Keys: any printable character extends the filter, `Backspace` (or `Ctrl+H`)
@@ -32,14 +32,14 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::commands;
-use crate::keybinding_table::KEYBINDINGS;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, render_modal_footer, render_panel_scroll_rail,
     render_underwater_surface,
 };
+use codewhale_engine::keybinding_table::KEYBINDINGS;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 /// Two top-level sections rendered in the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,7 +324,7 @@ impl HelpView {
             .iter()
             .position(|candidate| self.focus.as_ref() == Some(candidate))
             .unwrap_or(0);
-        let next = crate::tui::list_nav::wrap_index(pos, focusable.len(), delta);
+        let next = codewhale_tui_kit::list_nav::wrap_index(pos, focusable.len(), delta);
         self.set_focus(focusable[next].clone());
     }
 
@@ -769,14 +769,16 @@ fn group_label(entry: &HelpEntry, locale: Locale) -> String {
     }
 }
 
-fn keybinding_section_for_rank(rank: u8) -> Option<crate::keybinding_table::KeybindingSection> {
-    crate::keybinding_table::KeybindingSection::ALL
+fn keybinding_section_for_rank(
+    rank: u8,
+) -> Option<codewhale_engine::keybinding_table::KeybindingSection> {
+    codewhale_engine::keybinding_table::KeybindingSection::ALL
         .into_iter()
         .find(|section| section.rank() == rank)
 }
 
 fn default_collapsed(ordering: HelpOrdering) -> HashSet<String> {
-    use crate::keybinding_table::KeybindingSection;
+    use codewhale_engine::keybinding_table::KeybindingSection;
     let kb_keys = KeybindingSection::ALL
         .into_iter()
         .map(|section| format!("kb:{}", section.rank()));
@@ -1308,8 +1310,10 @@ impl ModalView for HelpView {
                         ));
                         let entry = &self.entries[entry_idx];
                         let is_selected = self.focus.as_ref() == Some(&HelpHit::Entry(slot));
-                        let cursor =
-                            format!("{} ", crate::tui::glyphs::selection_marker(is_selected));
+                        let cursor = format!(
+                            "{} ",
+                            codewhale_tui_kit::glyphs::selection_marker(is_selected)
+                        );
                         let label_width = label_widths
                             .get(&group_key(entry))
                             .copied()

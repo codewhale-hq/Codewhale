@@ -80,7 +80,7 @@ Codewhale 有多个指令层级（instruction surfaces）。它们刻意保持�
 
   每个 `protected_invariants` 条目可以是普通字符串(建议性散文，历史形态)，也可以是携带路径 glob 的对象，后者会在工具门禁中额外被**机械强制执行**。见下文[强制执行的仓库保护规则](#强制执行的仓库保护规则)。
 
-  这是**仓库本地宪章**层。指引发生冲突时，以当前生效的基础宪章中 **Whose word wins** 一节为准；内置版本的源代码位于 [`BASE_PROMPT`](../../crates/tui/src/prompts/text.rs)。使用 `/constitution base` 可查看实际生效的基础提示词，包括明确启用的专家覆盖版本。这里介绍文件的顺序、以及提示词的组装顺序，都不代表权威排序。运行时策略（代码强制执行的权限、沙箱和成本上限）独立于提示词指引；编辑宪章不会授予权限。
+  这是**仓库本地宪章**层。指引发生冲突时，以当前生效的基础宪章中 **Whose word wins** 一节为准；内置版本的源代码位于 [`BASE_PROMPT`](../../crates/engine/src/prompts/text.rs)。使用 `/constitution base` 可查看实际生效的基础提示词，包括明确启用的专家覆盖版本。这里介绍文件的顺序、以及提示词的组装顺序，都不代表权威排序。运行时策略（代码强制执行的权限、沙箱和成本上限）独立于提示词指引；编辑宪章不会授予权限。
 
 > **`WHALE.md` 已弃用。** 它与 `AGENTS.md` 混淆重叠。Codewhale 不再把 `WHALE.md` 作为项目或全局上下文读取。如果存在，setup/上下文诊断会报告它被忽略，以便你迁移它。把普通指令移到 `AGENTS.md`，把 Codewhale 特有的权威策略移到 `.codewhale/constitution.json`。个人常驻指引属于 `/constitution` / `$CODEWHALE_HOME/constitution.json`。(随模型提示一起提供的全局 Codewhale 宪章是另一回事，不受影响。)
 
@@ -125,7 +125,7 @@ Codewhale 有多个指令层级（instruction surfaces）。它们刻意保持�
 
 ### 专家级完整基础提示覆盖(#3638)
 
-全局宪章(基础系统提示，通常从 `crates/tui/src/prompts/text.rs` 编译为 `BASE_PROMPT`)可以不重新构建就按用户替换。这是专家逃生舱，不是常规 `/constitution` 引导式设置的产物。因为这是一个提示信任边界，它需要**两个刻意的步骤**——单靠文件不够：
+全局宪章(基础系统提示，通常从 `crates/engine/src/prompts/text.rs` 编译为 `BASE_PROMPT`)可以不重新构建就按用户替换。这是专家逃生舱，不是常规 `/constitution` 引导式设置的产物。因为这是一个提示信任边界，它需要**两个刻意的步骤**——单靠文件不够：
 
 1. 把替换文件放到 `~/.codewhale/prompts/constitution.md`(设置了 `$CODEWHALE_HOME` 时在其下)。
 2. 设置显式的选择加入标志 `CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE=1`(也接受 `true`/`on`/`yes`)。
@@ -356,7 +356,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
 ### 自动模型路由（`[auto]`、`[auto.router]`）
 
-使用 `model = "auto"` 时，每个回合都运行在你**声明的默认模型**上，除非你选择加入了别的东西。Auto 绝不会根据请求的措辞去猜测该用更便宜还是更强的模型；旧的关键词加长度启发式已被移除（`crates/tui/src/model_routing.rs` 中的 `auto_route_declared_fallback`）。有两个可选的层会改变这一点：
+使用 `model = "auto"` 时，每个回合都运行在你**声明的默认模型**上，除非你选择加入了别的东西。Auto 绝不会根据请求的措辞去猜测该用更便宜还是更强的模型；旧的关键词加长度启发式已被移除（`crates/engine/src/model_routing.rs` 中的 `auto_route_declared_fallback`）。有两个可选的层会改变这一点：
 
 - 由你写下的 `[auto.router]` 分类器，它逐回合挑选模型；以及
 - `[auto] cost_saving`，它偏向使用活动 provider 的快速同系模型。
@@ -375,7 +375,7 @@ thinking = "off"        # optional; defaults to off
 timeout_secs = 4        # optional; default 4, 0 = default, capped at 300
 ```
 
-只有当 `[auto.router]` 同时指定了 `provider` 和 `model`，**并且**该 provider 有 key 时，才会发生分类器调用：`ModelInventory::from_config`（`crates/tui/src/model_inventory.rs`）中的 `router_available = router_configured && has_api_key_for(...)`。任一条件不满足，或分类器调用出错/超时时，由本地回退决定：默认模型，或在 `cost_saving` 下的快速同系模型。回合的路由回执（回合检查器：Ctrl+Alt+O 或 `/turn inspect` 的“Model route + tokens/cost”）会记录走了哪条路径；你配置了但无法运行或失败的路由器（缺 key、HTTP 错误、超时、无效回答）会显示为 `Auto router: failing — …`，而不是被静默忽略。
+只有当 `[auto.router]` 同时指定了 `provider` 和 `model`，**并且**该 provider 有 key 时，才会发生分类器调用：`ModelInventory::from_config`（`crates/engine/src/model_inventory.rs`）中的 `router_available = router_configured && has_api_key_for(...)`。任一条件不满足，或分类器调用出错/超时时，由本地回退决定：默认模型，或在 `cost_saving` 下的快速同系模型。回合的路由回执（回合检查器：Ctrl+Alt+O 或 `/turn inspect` 的“Model route + tokens/cost”）会记录走了哪条路径；你配置了但无法运行或失败的路由器（缺 key、HTTP 错误、超时、无效回答）会显示为 `Auto router: failing — …`，而不是被静默忽略。
 
 #### 设置模型路由
 
@@ -585,7 +585,7 @@ codewhale config unset 'providers.command_code.model_context_windows."MiniMaxAI/
 - `[compaction] summary_instructions` 和 `[compaction] retained_user_message_tokens`（config.toml）：常驻的摘要器指令，以及原样保留用户消息的预算。见下方键参考中的 `compaction.*` 条目。
 - `CODEWHALE_MAX_OUTPUT_TOKENS`（环境变量；旧别名 `DEEPSEEK_MAX_OUTPUT_TOKENS`）：覆盖请求的输出上限。没有覆盖时，Codewhale 从安全的 `65536` 请求上限开始，并与任何更小的、有文档记录的模型或路由上限取交集；catalog 的 `max_output`（如 DeepSeek V4 的 384K）仍是能力上限，而不是每个响应请求的量。显式覆盖会在解析后的路由上下文窗口和任何路由输出上限之内被保留，预检/紧急预算预留的正是能到达线路的同一个有效值。另有单独记录的路由输入上限，即使总上下文窗口更大，也会钳制预检和压缩。空白的规范变量会回落到非空的旧变量；非空但无效或为零的规范值具有权威性，会回退到安全的自动默认值，而不是启用过期的旧设置。`config.toml` 中没有 `max_output_tokens` 键。
 
-在压缩替换对话历史之前，Codewhale 会把原始消息持久地保存到会话的 `artifacts/context-transfer-<id>.json`，并在产生模型摘要时，把它的交接内容保存到对应的 `.md` 文件。这些使用现有的会话产物存储和持久化脱敏。写入失败会中止压缩，而不替换上下文。仅剪枝的执行会保存原始消息，不额外调用模型。压力元数据显示估算的输入 token 和已配置的触发点；它是估算值，而不是对 provider 剩余上下文的精确承诺。
+在压缩替换对话历史之前，Codewhale 会把原始消息持久地保存到会话的 `artifacts/context-transfer-<id>.json`，并在产生模型摘要时，把它的交接内容保存到对应的 `.md` 文件。这些使用现有的会话产物存储和持久化脱敏。写入失败会中止压缩，而不替换上下文。仅剪枝的执行会保存原始消息，不额外调用模型。模型可以通过 `context_archive_search`（ASCII 大小写不敏感的子串搜索，返回短片段和归档 id）与 `context_archive_get`（按 id 分页读取单条消息）把原文读回来；交接摘要会点名这两个工具，让模型知道归档存在。压力元数据显示估算的输入 token 和已配置的触发点；它是估算值，而不是对 provider 剩余上下文的精确承诺。
 
 压缩历史可通过 `codewhale metrics`（或 `--json`）和 Codewhale home 中的 `audit.log` 获取。已完成的执行会记录它们的触发、摘要/剪枝路径、消息数和估算 token 数、有效阈值，以及摘要器的 token 用量。自动拒绝每回合记录一次，并附上原因。这些是本地诊断，不是 provider 的账单总额；较早的产物不会被追溯计入。尝试压缩的文本模式 `exec` 会在回合完成时保存其所属会话，使其恢复产物仍可被发现。被杀死的进程可能留下没有最终会话快照的产物；审计写入器会报告 I/O 失败，而不会捏造数据。
 
@@ -1085,7 +1085,7 @@ continue_on_error = true
 - 输入区为空且可见排队后续动作时，**Enter** 现在把最旧的排队后续动作送入活动回合。
 - **Ctrl+Enter**(或终端转发它时的 **Cmd+Enter**)显式引导（steer）活动回合。空闲时它正常发送。
 - 默认情况下，**Shift+Enter**、**Alt+Enter** 和 **Ctrl+J** 插入换行。
-- 设置 `composer_multiline_mode = true` 让 **Enter** 插入换行、**Shift+Enter** 发送。**Alt+Enter**、**Ctrl+J** 以及受支持的 **Ctrl+Enter** / **Cmd+Enter** 行为不变。
+- 设置 `composer_multiline_mode = true` 让 **Enter** 插入换行、**Alt+Enter** 发送。终端能够区分 **Shift+Enter** 时，它也会发送；传统终端可能将它报告为普通 **Enter**。**Ctrl+J** 始终插入换行，受支持的 **Ctrl+Enter** / **Cmd+Enter** 行为不变。
 - **Ctrl+G** 和 **Ctrl+S** 只暂存草稿；它们从不发送或引导。
 
 ### 输入区暂存(`/stash`，Ctrl+G / Ctrl+S)
@@ -1329,8 +1329,12 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   `/config subagents status` 打印全局值和活动 provider 的解析 profile，这样速率限制调整在 TUI 中可见。`[subagents.models]` 接受小写的 Fleet 角色键，如 `worker`、`scout`、`planner`、`reviewer`、`builder` 和 `verifier`；旧类型键在 v0.9.x 期间仍被接受。值在派生时对照活动 provider 验证；直接 DeepSeek 需要 DeepSeek ID，而 OpenAI 兼容/自定义 provider 路由把显式模型 ID 透传给该 provider。要把子智能体路由到不同于父会话的 provider，保存带显式 `provider` 和 `model` 字段的 Fleet/AgentProfile(包括 `lm-studio` 这样的用户命名自定义 provider)，并调用 `agent(profile: "...")`；见 [SUBAGENTS.md](SUBAGENTS.md)。
 
-- `skills_dir`(字符串，可选)：默认 `~/.codewhale/skills`(每个技能是包含 `SKILL.md` 的目录)。工作区获得信任后，项目技能优先于全局技能，其中 `.codewhale/skills` 优先于 `.agents/skills` 等兼容目录。顶层 `./skills` 需要显式设置 `[skills] flat_workspace_root = true` 或 `skills_dir` 才会加载。运行时还发现全局 agentskills.io 兼容的 `~/.agents/skills` 和更广的 Claude 生态系统 `~/.claude/skills`。首次启动为常见工作流安装带版本的捆绑技能，包括技能创建、委派、MCP/插件脚手架、文档、演示文稿、电子表格、PDF 和飞书/Lark。只有 CodeWhale 自有的根(`<workspace>/.codewhale/skills` 和 `~/.codewhale/skills`)是可写安装/导入目标；兼容 harness 根保持只读。裸 `/skills` 打开 Extensions → Skills(仅自有，零网络)；`/skills manage` 打开技能管理器。管理器、审计状态、来源标记和变更规则见 [SKILLS.md](SKILLS.md)，可移植 `SKILL.md` 包与 Claude Code 插件运行时之间的受支持边界见 [CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md)。
+- `skills_dir`(字符串，可选)：默认 `~/.codewhale/skills`(每个技能是包含 `SKILL.md` 的目录)。工作区获得信任后，项目技能优先于全局技能，其中 `.codewhale/skills` 优先于 `.agents/skills` 等兼容目录。顶层 `./skills` 需要显式设置 `[skills] flat_workspace_root = true` 或 `skills_dir` 才会加载。运行时还发现全局 agentskills.io 兼容的 `~/.agents/skills` 和更广的 Claude 生态系统 `~/.claude/skills`。在默认捆绑策略且未设置 `skills_dir` 时，首次启动为常见工作流安装带版本的捆绑技能，包括技能创建、委派、MCP/插件脚手架、文档、演示文稿、电子表格及 PDF。飞书/Lark 不属于默认安装包。只有 CodeWhale 自有的根(`<workspace>/.codewhale/skills` 和 `~/.codewhale/skills`)是可写安装/导入目标；兼容 harness 根保持只读。裸 `/skills` 打开 Extensions → Skills(仅自有，零网络)；`/skills manage` 打开技能管理器。管理器、审计状态、来源标记和变更规则见 [SKILLS.md](SKILLS.md)，可移植 `SKILL.md` 包与 Claude Code 插件运行时之间的受支持边界见 [CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md)。
 
+- `[skills.bundled].install`（默认 `"auto"`，另可设 `"all"` 或 `"none"`）：独立控制捆绑安装。`auto` 保留删除即退出规则，设置 `skills_dir` 时停止安装；`all` 补装已启用的缺失技能，只写入 `$CODEWHALE_HOME/skills`（通常为 `~/.codewhale/skills`），不受发现目录覆盖影响；`none` 不写文件或版本标记。修改版和托管正文始终保留。
+- `[skills.bundled].selected` / `disabled` / `explicit_only`（名称数组，默认 `[]`）：空选择列表启用整个安装包，非空列表限制安装和发现。禁用优先，并允许低优先级目录的同名副本生效。显式调用保留用户调用，移除模型索引及模型加载权限。别名沿用规范名称策略；仅影响全局自有目录中可识别的发行副本，不删除文件。配置档逐字段合并，显式空列表清空继承值。`doctor` 报告未知及忽略条目，`/skills inspect` 显示路径和原因。详见 [SKILLS.md](SKILLS.md#捆绑技能)。
+- `[skills].listing_max_description_chars`（整数，默认 `400`，范围 `1..=40000`）：父代理、子代理提示及 `/skills inspect` 共用的索引描述上限。
+- `[skills].listing_budget_fraction`（有限数值，默认 `0.05`，大于 `0` 且不大于 `1`）：同一索引占路由窗口的比例，按每 token 四个字符估算，并限制在 `2400..=40000` 字符。配置档中的字段分别覆盖继承值；`/context` 使用相同解析。完整技能加载不受影响。
 - `[skills].scan_codewhale_only`(bool，默认 `false`)：为 `true` 时，会话技能发现忽略跨工具根，如 `.claude/skills`、`.opencode/skills`、`.cursor/skills` 和 `~/.agents/skills`。Codewhale 仍扫描 `<workspace>/.codewhale/skills`、`~/.codewhale/skills` 和任何显式 `skills_dir` 覆盖。技能管理器仍可独立于这个运行时旋钮切换本地兼容审计扫描——见 [SKILLS.md](SKILLS.md)。
 
 - `[skills].registry_url` / `[skills].max_install_size_bytes`(可选)：`/skills --remote`、`/skills suggest <task>`、`/skills sync` 和 `/skill install|update` 使用。默认管理器打开路径不联系 registry。
@@ -1923,7 +1927,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 
 ## 为什么引擎剥离 XML/`[TOOL_CALL]` 文本
 
-codewhale 只通过 API 工具通道(结构化 `tool_use` / `tool_call` 项)发送和接收工具调用。`crates/tui/src/core/engine.rs` 中的流循环识别一组固定的假包装开始标记——`[TOOL_CALL]`、`<codewhale:tool_call`、`<tool_call`、`<invoke `、`<function_calls>`——并把它们从可见助手文本中擦除，从不让它们变成结构化工具调用。包装被剥离时，循环每回合发出一条紧凑 `status` 通知，让用户看到可见文本为何缩小。把任何重新启用基于文本工具执行的更改视为回归；`crates/tui/tests/integration/protocol_recovery.rs` 中的协议恢复测试锁定该契约。
+codewhale 只通过 API 工具通道(结构化 `tool_use` / `tool_call` 项)发送和接收工具调用。`crates/engine/src/core/engine.rs` 中的流循环识别一组固定的假包装开始标记——`[TOOL_CALL]`、`<codewhale:tool_call`、`<tool_call`、`<invoke `、`<function_calls>`——并把它们从可见助手文本中擦除，从不让它们变成结构化工具调用。包装被剥离时，循环每回合发出一条紧凑 `status` 通知，让用户看到可见文本为何缩小。把任何重新启用基于文本工具执行的更改视为回归；`crates/tui/tests/integration/protocol_recovery.rs` 中的协议恢复测试锁定该契约。
 
 ## 面向模型的脱敏（`[redaction] model_bound`）
 

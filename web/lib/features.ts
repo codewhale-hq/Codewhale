@@ -8,7 +8,7 @@ export interface Feature {
   name: string;
   summary: string;
   status: FeatureStatus;
-  surfaces: Partial<Record<"tui" | "api" | "web", SurfaceStatus>>;
+  surfaces: Partial<Record<"tui" | "desktop" | "web" | "api", SurfaceStatus>>;
   since: string | null;
   flag: string | null;
   docs: string | null;

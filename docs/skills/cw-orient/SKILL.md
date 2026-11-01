@@ -1,13 +1,13 @@
 ---
 name: cw-orient
-description: "Use at the start of any Codewhale work session, or when unsure which checkout, branch, or worktree is authoritative: establish live repo truth before reading a plan or editing a file."
+description: "Use at the start of any Codewhale work session, or when unsure whether the canonical checkout is on current `main` and what is dirty in it: establish live repo truth before reading a plan or editing a file."
 ---
 
 # cw-orient
 
 Open every session on live truth, not on a handoff note, a directory name, or
-what was true last time. This repo runs many worktrees at once; the cheapest bug
-to avoid is editing the wrong one. Five commands, then you know where you are.
+what was true last time. Several agents share this one checkout on `main`; the
+cheapest bug to avoid is committing a live writer's half-written edit.
 
 This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
 [cw-gates](../cw-gates/SKILL.md) → [cw-dogfood](../cw-dogfood/SKILL.md) →
@@ -18,7 +18,7 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
 - Starting a session, resuming one, or taking over from another agent.
 - A handoff, issue, or plan tells you the state of the repo — verify before
   trusting it.
-- You are about to edit and are not certain this checkout owns the files.
+- You are about to edit and are not certain what is dirty or who is writing.
 
 ## Workflow
 
@@ -29,28 +29,28 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
    git status --short --branch
    git log --oneline --decorate -10
    ```
-   A detached HEAD or a branch with no upstream is normal here — note it, don't
-   "fix" it silently.
+   Agent work happens on `main`. A detached HEAD or another branch here is a
+   state to reconcile (preserve dirt and stranded commits, compare with
+   `origin/main`, return to `main`) before editing; see `AGENTS.md` § Working
+   rules.
 
-2. **See the other lanes.** Worktree sprawl is the standing hazard: several
-   checkouts of this repo are usually live, each with its own dirty state.
+2. **Look for stranded work, not lanes.** `git worktree list` and recent
+   branches tell you what may hold unlanded commits. Inventory them; do not
+   start work in one, and do not create one.
    ```bash
    git worktree list
    git branch --sort=-committerdate --format='%(committerdate:short) %(refname:short)' | head -20
    ```
-   If the work you were asked to do already has a checkout or worktree, use
-   it. Do not start a second copy of the same lane, and do not create a
-   worktree just because another agent is in this one — partition by file.
 
-3. **Read the dirt before you touch it.** Modified files you did not write
-   belong to someone else — another agent, another lane, an in-flight slice:
+3. **Dirt in this checkout is yours** (`AGENTS.md`, founder 2026-10-22).
    ```bash
    git status --porcelain
    git diff --stat
    ```
-   Preserve them. Leave them unstaged, and do not `git checkout --` or stash
-   another writer's work to get a clean tree. Only if your change genuinely
-   conflicts with that dirt is a fresh worktree warranted ([cw-land](../cw-land/SKILL.md)).
+   Check mtimes: a file changed in the last 15 minutes, or one a live session
+   is editing, is mid-edit — ask that writer to commit, and commit the rest
+   yourself in coherent verified groups ([cw-land](../cw-land/SKILL.md)). Never
+   stash, `checkout --`, reset or clean it.
 
 4. **Fix which guidance applies.** The nearest scoped `AGENTS.md` wins over the
    root one, and it is where the per-area rules actually live:
@@ -77,14 +77,13 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
 
 ## Red flags / don't
 
-- Don't infer the active lane from a directory name, a stale handoff, or a
+- Don't infer the current state from a directory name, a stale handoff, or a
   `.md` file's confident prose. All three have been wrong here.
 - Don't treat a plan document as current state. Plans describe intent; `git`
   describes reality.
-- Don't clean, stash, reset, or `git checkout --` files you did not modify.
-  Worktree dirt is usually another writer, not garbage.
-- Don't start work in a worktree whose branch is already merged to `main` —
-  that lane is retirement material, not a base.
+- Don't clean, stash, reset, or `git checkout --` dirt in the checkout; read
+  it, prove it, and commit it, or hand it to the live writer.
+- Don't create a branch, worktree or clone to escape dirt or a conflict.
 - Don't skip step 4 because the root `AGENTS.md` "probably covers it". The
   scoped files carry the rules that actually get violated.
 - Don't fetch, browse, or hit GitHub when the task was scoped local-only.
@@ -92,10 +91,10 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
 ## Output
 
 Open with a short status block. Skip fields that are empty or normal — a
-clean tree on `main` with no related worktrees is one line, not five:
+clean tree on `main` with no stranded work is one line, not five:
 
 - checkout path, branch (or detached HEAD), base commit;
-- dirty files and whose they appear to be;
-- other worktrees that own related work;
+- dirty files and whether a live writer owns them;
+- stranded branches or checkouts holding unlanded commits;
 - workspace version and whether `check-versions.sh` agrees;
 - which `AGENTS.md` files govern this change.

@@ -193,4 +193,4 @@ today. By itself it does not prove endpoint identity, durable account
 entitlement, or the absence of a harness defect; corroborate those claims
 separately. It says nothing about skill selection, alias resolution, locale
 routing, or prompt budget — all of which are covered deterministically and
-provider-free in `crates/tui/src/skills/catalog_matrix.rs`.
+provider-free in `crates/skills/src/catalog_matrix.rs`.

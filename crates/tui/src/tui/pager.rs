@@ -31,12 +31,12 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::ui_text::grapheme_display_width;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
     render_modal_footer, render_panel_scroll_rail, render_underwater_surface,
 };
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::grapheme_display_width;
 
 #[derive(Debug, Clone)]
 struct PagerDestructiveAction {
@@ -77,15 +77,15 @@ enum PagerSource {
 
 /// The display rows of one page and the column width they were wrapped to.
 #[derive(Debug, Clone, Default)]
-struct PagerRows {
+pub(super) struct PagerRows {
     /// `None` until the page is first laid out.
     width: Option<usize>,
     plain: Vec<String>,
     /// Styled rows of a styled-line page; text pages paint `plain`.
-    styled: Vec<Line<'static>>,
+    pub(super) styled: Vec<Line<'static>>,
     /// The source line each row was wrapped from, so a re-wrap can keep the
     /// same line at the top of the view.
-    origin: Vec<usize>,
+    pub(super) origin: Vec<usize>,
 }
 
 impl PagerRows {
@@ -103,7 +103,7 @@ impl PagerRows {
         rows
     }
 
-    fn wrap_lines(lines: &[Line<'static>], width: usize) -> Self {
+    pub(super) fn wrap_lines(lines: &[Line<'static>], width: usize) -> Self {
         let mut rows = Self {
             width: Some(width),
             ..Self::default()
@@ -146,7 +146,7 @@ impl PagerPage {
         // Pager bodies frequently carry tool output or worker transcripts.
         // Keep the same terminal-injection boundary as the single-page path.
         let mut sanitized = String::with_capacity(text.len());
-        crate::tui::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
         Self::new(title, PagerSource::Text(sanitized), usize::from(width))
     }
 
@@ -177,7 +177,7 @@ impl PagerPage {
             PagerSource::Text(source) => PagerRows::wrap_text(source, width),
             PagerSource::Lines(lines) => PagerRows::wrap_lines(lines, width),
             PagerSource::Diff(diff) => {
-                let rendered = crate::tui::diff_render::render_diff_bounded(
+                let rendered = codewhale_tui_kit::diff_render::render_diff_bounded(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
                     usize::MAX,
@@ -308,7 +308,7 @@ impl PagerView {
             self.follow = true;
         }
         let mut sanitized = String::with_capacity(text.len());
-        crate::tui::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
         let page = self.current_page_mut();
         page.source = PagerSource::Text(sanitized);
         page.copy_text = Some(text.to_string());

@@ -10,7 +10,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, looks_like_slash_command_input};
-use super::paste_burst::CharDecision;
+use codewhale_tui_kit::paste_burst::CharDecision;
 
 /// Terminals known to deliver `Event::Paste` for a real paste.
 ///
@@ -454,7 +454,7 @@ mod tests {
         assert!(app.input.is_empty(), "paste remains buffered until idle");
         assert!(app.flush_paste_burst_if_due(
             t0 + Duration::from_millis(3)
-                + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+                + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
         ));
         assert_eq!(app.input, "abc\n");
     }
@@ -547,7 +547,8 @@ mod tests {
         }
         let last_char = t0 + Duration::from_millis(2);
         assert!(app.flush_paste_burst_if_due(
-            last_char + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+            last_char
+                + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
         ));
         assert_eq!(app.input, "abc");
 
@@ -583,7 +584,7 @@ mod tests {
         assert!(app.input.is_empty(), "shortcut char stays buffered first");
         assert!(app.view_stack.is_empty(), "help modal must not open");
         assert!(app.flush_paste_burst_if_due(
-            t0 + crate::tui::paste_burst::PasteBurst::recommended_flush_delay()
+            t0 + codewhale_tui_kit::paste_burst::PasteBurst::recommended_flush_delay()
         ));
         assert_eq!(app.input, "?");
     }
@@ -612,7 +613,7 @@ mod tests {
         // Past the active-flush delay so any buffered burst commits.
         let after = t0
             + Duration::from_millis(50 * 4)
-            + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay();
+            + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
         let _ = app.flush_paste_burst_if_due(after);
 
         assert_eq!(

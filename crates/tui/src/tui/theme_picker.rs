@@ -28,7 +28,6 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::tui::menu_style;
 use crate::tui::settings_picker::{
     PickerNavResult, SettingAvailability, SettingOption, SettingValues, SettingsPickerController,
     SettingsPickerLayout, handle_nav_key,
@@ -40,6 +39,7 @@ use crate::tui::views::{
 use codewhale_config::settings_schema::DEFAULT_TUI_THEME;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::{SELECTABLE_THEMES, ThemeId, UiTheme};
+use codewhale_tui_kit::menu_style;
 
 pub struct ThemePickerView {
     controller: SettingsPickerController,
@@ -419,7 +419,7 @@ impl ModalView for ThemePickerView {
             } else {
                 Style::default().fg(live.text_hint)
             };
-            let pointer = crate::tui::glyphs::selection_marker(is_selected);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
 
             // 3-cell color swatch per row using the candidate theme's own
             // accent + panel + border colors so the picker doubles as a
@@ -457,7 +457,7 @@ impl ModalView for ThemePickerView {
             spans.push(Span::raw("  "));
 
             let prefix_width = Line::from(spans.clone()).width();
-            let tagline = crate::tui::ui_text::semantic_truncate(
+            let tagline = codewhale_tui_kit::ui_text::semantic_truncate(
                 option.summary.as_ref(),
                 usize::from(content.width).saturating_sub(prefix_width),
             );
@@ -800,7 +800,7 @@ mod tests {
         assert!(text.contains('…'), "{text}");
         for (idx, row) in rows.iter().enumerate() {
             assert!(
-                crate::tui::ui_text::text_display_width(row) <= usize::from(area.width),
+                codewhale_tui_kit::ui_text::text_display_width(row) <= usize::from(area.width),
                 "line {idx} overflows: {row:?}"
             );
         }

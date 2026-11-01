@@ -4,7 +4,7 @@ import type { DocsTroubleshootingDict } from "../types";
  * English reference dictionary for `app/[locale]/docs/troubleshooting/page.tsx`
  * ("Fix a problem"). Error texts and fixes come from docs/INSTALL.md §13
  * (every one was hit while writing that guide), docs/OPERATIONS_RUNBOOK.md,
- * docs/KEYBINDINGS.md (Ctrl-B), crates/tui/src/runtime_log.rs (log path),
+ * docs/KEYBINDINGS.md (Ctrl-B), crates/runtime/src/runtime_log.rs (log path),
  * and docs/DOCKER.md.
  */
 export const docsTroubleshooting: DocsTroubleshootingDict = {

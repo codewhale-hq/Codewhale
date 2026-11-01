@@ -15,11 +15,11 @@
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::mcp::{McpManagerSnapshot, McpServerSnapshot};
-use crate::plugins::PluginRegistry;
-use crate::plugins::types::{PluginDiagnosticLevel, PluginTrustStatus};
 use crate::tui::app::App;
+use codewhale_engine::mcp::{McpManagerSnapshot, McpServerSnapshot};
 use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_plugins::PluginRegistry;
+use codewhale_plugins::types::{PluginDiagnosticLevel, PluginTrustStatus};
 
 pub(crate) const ITEM_SEPARATOR: &str = " · ";
 const MAX_NAMED_CHIPS: usize = 4;
@@ -128,7 +128,7 @@ fn spawn_render_prewarm_once() {
         // loads the sets lazily exactly as before.
         let _ = std::thread::Builder::new()
             .name("cw-syntax-prewarm".to_string())
-            .spawn(crate::tui::markdown_render::prewarm_syntax_highlighting);
+            .spawn(codewhale_tui_kit::markdown_render::prewarm_syntax_highlighting);
     });
 }
 
@@ -409,7 +409,7 @@ fn row_from_snapshot(
 #[must_use]
 pub fn mcp_error_requires_login(error: &str) -> bool {
     let lowered = error.to_ascii_lowercase();
-    crate::mcp::oauth::error_text_looks_auth_required(error)
+    codewhale_engine::mcp::oauth::error_text_looks_auth_required(error)
         || (lowered.contains("oauth") && lowered.contains("authenticat"))
 }
 
@@ -417,7 +417,7 @@ pub fn mcp_error_requires_login(error: &str) -> bool {
 /// server whose login is missing, expired, or revoked.
 #[must_use]
 pub fn mcp_auth_required_state_label() -> String {
-    format!("{} auth required", crate::tui::glyphs::ATTENTION)
+    format!("{} auth required", codewhale_tui_kit::glyphs::ATTENTION)
 }
 
 fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> String {
@@ -441,7 +441,9 @@ fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+    use codewhale_engine::mcp::{
+        McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+    };
     use std::path::PathBuf;
 
     fn server(
@@ -531,7 +533,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
 
-        let registry = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
+        let registry = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv()
             .registry_for_workspace(&workspace);
         let summary = PluginBootSummary::from_registry(&registry);
         assert_eq!(summary.loaded, registry.list().len());

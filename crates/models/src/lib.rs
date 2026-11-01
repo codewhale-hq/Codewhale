@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod auto_route_evidence;
+pub mod hand_pricing;
 pub mod image_window;
 pub mod reasoning_effort_tier;
 pub mod schema_canonicalize;

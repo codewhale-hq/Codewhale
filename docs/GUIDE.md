@@ -784,6 +784,10 @@ lease expires so two controllers never race. Every folder you enroll from one
 terminal shares a single stable device id, so the web app lists one computer
 per machine rather than one per session.
 
+If remote control fails, the reason remains in the current terminal transcript
+and TUI log after the error toast expires. The footer then shows `/rc status`;
+run it to inspect the failure and whether retrying must wait for a prior lease.
+
 > Note (2026-09-14): the hosted web app at app.codewhale.net sunsets in phases
 > under the 2026-09-14 product-client decision; the native GPUI desktop app
 > (private `codehwhale-gpui` repo, phase map in `docs/TRANSITION.md`) is the

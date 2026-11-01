@@ -10,10 +10,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::tools::spec::ToolResult;
-use crate::tui::diff_render;
+use codewhale_engine::tools::spec::ToolResult;
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::settings::InlineDiffMode;
+use codewhale_tui_kit::diff_render;
 
 use super::details_affordance_line;
 
@@ -111,38 +112,74 @@ impl FileMutationReceipt {
     }
 
     #[must_use]
-    pub fn outcome_label(&self) -> String {
+    pub fn outcome_label(&self, locale: Locale) -> String {
         let created = self.count(FileMutationOutcome::Created);
         let updated = self.count(FileMutationOutcome::Updated);
         let deleted = self.count(FileMutationOutcome::Deleted);
         let renamed = self.count(FileMutationOutcome::Renamed);
         let mut outcome_parts = Vec::new();
-        push_count(&mut outcome_parts, created, "created");
-        push_count(&mut outcome_parts, updated, "updated");
-        push_count(&mut outcome_parts, deleted, "deleted");
-        push_count(&mut outcome_parts, renamed, "renamed");
+        push_count(
+            &mut outcome_parts,
+            created,
+            locale,
+            MessageId::FileMutationCreatedCount,
+        );
+        push_count(
+            &mut outcome_parts,
+            updated,
+            locale,
+            MessageId::FileMutationUpdatedCount,
+        );
+        push_count(
+            &mut outcome_parts,
+            deleted,
+            locale,
+            MessageId::FileMutationDeletedCount,
+        );
+        push_count(
+            &mut outcome_parts,
+            renamed,
+            locale,
+            MessageId::FileMutationRenamedCount,
+        );
 
         if self.files.is_empty() {
-            "Changed files".to_string()
+            tr(locale, MessageId::FileMutationChangedFiles).into_owned()
         } else if self.files.len() == 1 {
             let file = &self.files[0];
             match file.outcome {
-                FileMutationOutcome::Created => format!("Created {}", file.path),
-                FileMutationOutcome::Updated => format!("Updated {}", file.path),
-                FileMutationOutcome::Deleted => format!("Deleted {}", file.path),
-                FileMutationOutcome::Renamed => format!(
-                    "Renamed {} → {}",
-                    file.previous_path.as_deref().unwrap_or("file"),
-                    file.path
-                ),
+                FileMutationOutcome::Created => {
+                    tr(locale, MessageId::FileMutationCreated).replace("{path}", &file.path)
+                }
+                FileMutationOutcome::Updated => {
+                    tr(locale, MessageId::FileMutationUpdated).replace("{path}", &file.path)
+                }
+                FileMutationOutcome::Deleted => {
+                    tr(locale, MessageId::FileMutationDeleted).replace("{path}", &file.path)
+                }
+                FileMutationOutcome::Renamed => {
+                    let fallback = tr(locale, MessageId::FileMutationMissingFile);
+                    let paths = format!(
+                        "{} → {}",
+                        file.previous_path.as_deref().unwrap_or(fallback.as_ref()),
+                        file.path
+                    );
+                    tr(locale, MessageId::FileMutationRenamed).replace("{path}", &paths)
+                }
             }
         } else {
-            format!("{} files · {}", self.files.len(), outcome_parts.join(" · "))
+            let count = super::tool_run::counted(
+                self.files.len(),
+                locale,
+                MessageId::ActivityFileOne,
+                MessageId::ActivityFileMany,
+            );
+            format!("{count} · {}", outcome_parts.join(" · "))
         }
     }
 
     #[must_use]
-    pub fn semantic_summary(&self) -> String {
+    pub fn semantic_summary(&self, locale: Locale) -> String {
         let stats = format!("+{} -{}", self.added, self.deleted);
         let separator_chars = " · ".chars().count();
         let outcome_budget = MAX_SUMMARY_CHARS
@@ -150,23 +187,28 @@ impl FileMutationReceipt {
             .saturating_sub(separator_chars);
         format!(
             "{} · {stats}",
-            bounded_text(&self.outcome_label(), outcome_budget)
+            bounded_text(&self.outcome_label(locale), outcome_budget)
         )
     }
 
     #[must_use]
-    pub fn inspect_text(&self) -> String {
-        let summary = self.semantic_summary();
+    pub fn inspect_text(&self, locale: Locale) -> String {
+        let summary = self.semantic_summary(locale);
         if self.exact_diff.trim().is_empty() {
-            format!("{summary}\n\n(no textual changes)")
+            format!("{summary}\n\n{}", tr(locale, MessageId::FileMutationNoText))
         } else {
             format!("{summary}\n\n{}", self.exact_diff)
         }
     }
 
-    pub fn render_inline(&self, width: u16, mode: InlineDiffMode) -> Vec<Line<'static>> {
+    pub fn render_inline(
+        &self,
+        width: u16,
+        mode: InlineDiffMode,
+        locale: Locale,
+    ) -> Vec<Line<'static>> {
         match mode {
-            InlineDiffMode::Off | InlineDiffMode::Summary => vec![exact_evidence_hint()],
+            InlineDiffMode::Off | InlineDiffMode::Summary => vec![exact_evidence_hint(locale)],
             InlineDiffMode::Full => {
                 let mut lines = Vec::new();
                 if !self.display_diff.trim().is_empty() {
@@ -178,16 +220,20 @@ impl FileMutationReceipt {
                     lines.extend(rendered.lines);
                     if rendered.omitted_rows > 0 {
                         let detail_hint =
-                            crate::tui::key_shortcuts::tool_details_shortcut_action_hint("change");
+                            crate::tui::key_shortcuts::tool_details_shortcut_action_hint(
+                                tr(locale, MessageId::FileMutationChange).as_ref(),
+                            );
                         lines.push(details_affordance_line(
-                            &format!("+{} diff lines · {detail_hint}", rendered.omitted_rows),
+                            &tr(locale, MessageId::FileMutationMoreDiff)
+                                .replace("{count}", &rendered.omitted_rows.to_string())
+                                .replace("{hint}", &detail_hint),
                             Style::default().fg(palette::TEXT_MUTED).italic(),
                         ));
                     } else {
-                        lines.push(exact_evidence_hint());
+                        lines.push(exact_evidence_hint(locale));
                     }
                 } else {
-                    lines.push(exact_evidence_hint());
+                    lines.push(exact_evidence_hint(locale));
                 }
                 lines
             }
@@ -202,16 +248,18 @@ impl FileMutationReceipt {
     }
 }
 
-fn exact_evidence_hint() -> Line<'static> {
+fn exact_evidence_hint(locale: Locale) -> Line<'static> {
     details_affordance_line(
-        &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("change"),
+        &crate::tui::key_shortcuts::tool_details_shortcut_action_hint(
+            tr(locale, MessageId::FileMutationChange).as_ref(),
+        ),
         Style::default().fg(palette::TEXT_MUTED).italic(),
     )
 }
 
-fn push_count(parts: &mut Vec<String>, count: usize, label: &str) {
+fn push_count(parts: &mut Vec<String>, count: usize, locale: Locale, label: MessageId) {
     if count > 0 {
-        parts.push(format!("{count} {label}"));
+        parts.push(tr(locale, label).replace("{count}", &count.to_string()));
     }
 }
 
@@ -340,7 +388,7 @@ mod tests {
         assert!(!receipt.display_diff.contains("alice"));
         assert!(
             receipt
-                .semantic_summary()
+                .semantic_summary(Locale::En)
                 .contains("Created <external file>")
         );
     }
@@ -358,9 +406,34 @@ mod tests {
         assert_eq!(receipt.added, 1);
         assert_eq!(receipt.deleted, 1);
         assert_eq!(
-            receipt.semantic_summary(),
+            receipt.semantic_summary(Locale::En),
             "2 files · 1 updated · 1 renamed · +1 -1"
         );
+        let renamed = FileMutationReceipt {
+            exact_diff: String::new(),
+            display_diff: String::new(),
+            files: vec![FileMutationFile {
+                path: "new{path}.rs".into(),
+                previous_path: Some("old{path}.rs".into()),
+                outcome: FileMutationOutcome::Renamed,
+            }],
+            added: 0,
+            deleted: 0,
+        };
+        assert_eq!(
+            renamed.outcome_label(Locale::En),
+            "Renamed old{path}.rs → new{path}.rs"
+        );
+        for (locale, verb) in [
+            (Locale::ZhHans, "已重命名"),
+            (Locale::ZhHant, "已重新命名"),
+            (Locale::Ja, "名前変更"),
+        ] {
+            let text = renamed.semantic_summary(locale);
+            assert!(text.starts_with(verb), "{text}");
+            assert!(text.contains("old{path}.rs → new{path}.rs"), "{text}");
+            assert!(text.ends_with("+0 -0"), "{text}");
+        }
     }
 
     #[test]
@@ -389,7 +462,7 @@ mod tests {
         let receipt =
             FileMutationReceipt::from_success(Path::new("/workspace"), &result).expect("receipt");
 
-        let full = receipt.render_inline(80, InlineDiffMode::Full);
+        let full = receipt.render_inline(80, InlineDiffMode::Full, Locale::En);
         let full_text = plain(&full);
         assert!(full.len() <= MAX_INLINE_DIFF_LINES + 2, "{full_text}");
         assert!(full_text.contains("line 0"), "{full_text}");
@@ -397,13 +470,13 @@ mod tests {
         assert!(full_text.contains(":change"), "{full_text}");
         assert!(!full_text.contains("summary:"), "{full_text}");
 
-        let summary = plain(&receipt.render_inline(80, InlineDiffMode::Summary));
+        let summary = plain(&receipt.render_inline(80, InlineDiffMode::Summary, Locale::En));
         assert!(!summary.contains("Created src/lib.rs"), "{summary}");
         assert!(!summary.contains("+30 -0"), "{summary}");
         assert!(!summary.contains("line 0"), "{summary}");
         assert!(summary.contains(":change"), "{summary}");
 
-        let off = plain(&receipt.render_inline(80, InlineDiffMode::Off));
+        let off = plain(&receipt.render_inline(80, InlineDiffMode::Off, Locale::En));
         assert!(!off.contains("line 0"), "{off}");
         assert!(!off.contains("+30 -0"), "{off}");
         assert!(off.contains(":change"), "{off}");
@@ -418,7 +491,7 @@ mod tests {
         }));
         let receipt =
             FileMutationReceipt::from_success(Path::new("/workspace"), &result).expect("receipt");
-        let full_text = plain(&receipt.render_inline(80, InlineDiffMode::Full));
+        let full_text = plain(&receipt.render_inline(80, InlineDiffMode::Full, Locale::En));
 
         assert!(full_text.contains("- old"), "{full_text}");
         assert!(full_text.contains("+ new"), "{full_text}");
@@ -435,7 +508,7 @@ mod tests {
         }));
         let receipt =
             FileMutationReceipt::from_success(Path::new("/workspace"), &result).expect("receipt");
-        let summary = receipt.semantic_summary();
+        let summary = receipt.semantic_summary(Locale::En);
         assert!(summary.ends_with(" · +1 -1"), "{summary}");
         assert!(summary.chars().count() <= MAX_SUMMARY_CHARS);
     }

@@ -15,21 +15,23 @@ struct CatalogReset;
 impl Drop for CatalogReset {
     fn drop(&mut self) {
         cold_process();
-        crate::tools::large_output_router::install_active_workshop(None);
+        codewhale_runtime::active_workshop::install_active_workshop(None);
     }
 }
 
 fn cold_process() {
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
 }
 
 fn persist_catalog(kind: ProviderKind, identity: &str, endpoint: &str, images: bool) {
     let fingerprint = base_url_fingerprint(endpoint);
     let fetched_at = now_unix();
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(kind, identity, endpoint);
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        kind, identity, endpoint,
+    );
     assert_eq!(
-        crate::provider_catalog_live::record_success_if_current(
+        codewhale_engine::provider_catalog_live::record_success_if_current(
             &ticket,
             ProviderCatalogDelta {
                 provider: identity.into(),
@@ -103,7 +105,7 @@ fn open_server_manager(config: &Config, root: &Path) -> Result<SharedRuntimeThre
             sessions_dir: None,
             max_active_threads: 2,
         },
-        Arc::new(crate::plugins::PluginRegistry::empty(&workspace)),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
     )?;
     Ok(manager)
 }
@@ -114,9 +116,9 @@ fn headless_startup_publishes_cold_endpoint_catalog_capabilities() -> Result<()>
     // gate and holds both (#6306), so it is the whole lock acquisition. Taking
     // `lock_test_env()` again here parks this thread on a non-reentrant mutex
     // it already owns; the ordering that #6049 hand-rolled now lives in the guard.
-    let _workshop = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let _offline = EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;
@@ -147,9 +149,9 @@ fn headless_startup_publishes_cold_endpoint_catalog_capabilities() -> Result<()>
 async fn headless_reload_publishes_only_the_accepted_identity_and_endpoint() -> Result<()> {
     // The guard owns the env barrier and the workshop gate — see the
     // headless_startup twin.
-    let _workshop = crate::tools::large_output_router::active_workshop_test_guard();
+    let _workshop = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let _offline = EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;

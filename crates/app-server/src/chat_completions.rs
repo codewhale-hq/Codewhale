@@ -524,7 +524,8 @@ mod tests {
     use tokio::sync::mpsc;
     use tower::ServiceExt;
 
-    use super::super::{app_router, build_state};
+    use super::super::build_state;
+    use crate::http::app_router;
 
     fn install_crypto_provider() {
         crate::install_test_crypto_provider();

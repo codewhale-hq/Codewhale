@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use codewhale_models::{ContentBlock, Message, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 pub const CURRENT_JOURNAL_SCHEMA_VERSION: u32 = 1;
 pub type EntryId = String;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -106,7 +107,7 @@ pub struct SessionEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<EntryId>,
     #[serde(flatten)]
-    pub kind: SessionEntryKind,
+    pub kind: Arc<SessionEntryKind>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub spawn_depth: u32,
@@ -116,13 +117,26 @@ impl SessionEntry {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             parent_id,
-            kind,
+            kind: Arc::new(kind),
             created_at: Utc::now(),
             spawn_depth,
         }
     }
     pub fn short_id(&self) -> &str {
         char_prefix(&self.id, 8)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rebranch {
+    pub previous_active: usize,
+    pub shared_prefix: usize,
+}
+
+impl Rebranch {
+    #[must_use]
+    pub fn replaced_from_root(&self) -> bool {
+        self.previous_active > 0 && self.shared_prefix == 0
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -334,8 +348,8 @@ impl SessionJournal {
     ///
     /// The existing active branch remains as evidence. We reuse its longest
     /// unchanged prefix, then append the repaired suffix as a sibling branch.
-    pub fn rebranch_active_messages(&mut self, messages: &[Message]) {
-        self.rebranch_active_messages_stamped(messages, &[]);
+    pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
+        self.rebranch_active_messages_stamped(messages, &[])
     }
 
     /// Preserve existing entry identity and timestamps; only append the changed
@@ -344,8 +358,9 @@ impl SessionJournal {
         &mut self,
         messages: &[Message],
         stamps: &[DateTime<Utc>],
-    ) {
+    ) -> Rebranch {
         let active_path = self.root_to_leaf();
+        let previous_active = active_path.len();
         let shared_prefix = active_path
             .iter()
             .zip(messages)
@@ -361,6 +376,10 @@ impl SessionJournal {
                 },
                 stamps.get(index).copied().unwrap_or_else(Utc::now),
             );
+        }
+        Rebranch {
+            previous_active,
+            shared_prefix,
         }
     }
 
@@ -402,7 +421,7 @@ impl SessionJournal {
             .collect();
         let summary = |e: &SessionEntry| {
             matches!(
-                e.kind,
+                *e.kind,
                 SessionEntryKind::Compaction { .. } | SessionEntryKind::BranchSummary { .. }
             )
         };
@@ -650,11 +669,17 @@ fn tree_label(kind: &SessionEntryKind) -> String {
     match kind {
         SessionEntryKind::Message { message } => {
             let role = &message.role;
+            let meta_index = codewhale_models::turn_classify::turn_metadata_text(message)
+                .filter(|_| message.role == Role::User)
+                .map(|(index, _)| index);
             let snippet: String = message
                 .content
                 .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                .enumerate()
+                .filter_map(|(index, b)| match b {
+                    ContentBlock::Text { text, .. } if Some(index) != meta_index => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -815,7 +840,7 @@ mod tests {
         let id = j.append_compaction("summary".into(), Some(1000), Some(100), None);
         assert!(j.contains(&id));
         assert!(matches!(
-            j.leaf().unwrap().kind,
+            *j.leaf().unwrap().kind,
             SessionEntryKind::Compaction { .. }
         ));
     }

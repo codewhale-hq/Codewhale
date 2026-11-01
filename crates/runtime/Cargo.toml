@@ -38,6 +38,7 @@ base64 = "0.23.1"
 codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
 codewhale-localization = { path = "../localization", version = "0.10.2" }
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 dirs.workspace = true
@@ -52,6 +53,7 @@ anyhow.workspace = true
 chrono.workspace = true
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2" }
 codewhale-core = { path = "../core", version = "0.10.2" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
 codewhale-lane = { path = "../lane", version = "0.10.2" }
@@ -61,9 +63,10 @@ codewhale-palette = { path = "../palette", version = "0.10.2", default-features 
 codewhale-secrets = { path = "../secrets", version = "0.10.2" }
 colored = "3.0.0"
 fd-lock = "4.0.4"
+ignore = "0.4"
 lru = "0.18"
 regex = "1.11"
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
 tempfile.workspace = true
@@ -72,6 +75,7 @@ tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true
 wait-timeout = "0.2"
 

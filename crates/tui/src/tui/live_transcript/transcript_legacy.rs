@@ -67,7 +67,7 @@ struct CellSnapshot {
 
 struct FlattenedTranscript {
     lines: Vec<Line<'static>>,
-    line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
+    line_links: Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
     highlighted_range: Option<(usize, usize)>,
 }
 
@@ -289,7 +289,7 @@ impl LiveTranscriptOverlay {
     fn flatten(&self, width: u16) -> FlattenedTranscript {
         let width = width.max(1);
         let mut out: Vec<Line<'static>> = Vec::new();
-        let mut out_links: Vec<Vec<crate::tui::osc8::LineLink>> = Vec::new();
+        let mut out_links: Vec<Vec<codewhale_tui_kit::osc8::LineLink>> = Vec::new();
         let mut highlighted_range = None;
 
         // Pre-compute which cell index (in `self.snapshots`) is the one
@@ -728,8 +728,8 @@ impl ModalView for LiveTranscriptOverlay {
         // escape payload into the buffer. Replace the opaque popup's portion
         // of the frame map so links in the obscured transcript cannot leak
         // through unrelated modal text.
-        let regions = crate::tui::osc8::link_regions_for_lines(content, &visible_line_links);
-        crate::tui::osc8::overlay_frame_links(popup_area, regions);
+        let regions = codewhale_tui_kit::osc8::link_regions_for_lines(content, &visible_line_links);
+        codewhale_tui_kit::osc8::overlay_frame_links(popup_area, regions);
     }
 }
 

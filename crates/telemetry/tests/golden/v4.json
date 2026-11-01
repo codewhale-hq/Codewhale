@@ -1,0 +1,117 @@
+{
+  "schema_version": 4,
+  "notice_version": 6,
+  "sent_at": "2026-08-03T18:04:11Z",
+  "install_id": "3f2a9c1e-0000-4000-8000-000000000001",
+  "app_version": "0.9.4",
+  "git_sha": "abcdef012345",
+  "surface": "control-plane",
+  "os": "macos",
+  "arch": "aarch64",
+  "libc": "none",
+  "tty": true,
+  "events": [
+    {
+      "event": "install_or_upgrade",
+      "kind": "upgrade",
+      "previous_version": "0.9.3-rc.1"
+    },
+    {
+      "event": "session_start",
+      "source": "resume"
+    },
+    {
+      "event": "session_end",
+      "duration_bucket": "1m_10m",
+      "exit_class": "panic",
+      "cold_start_bucket": "250_1000",
+      "providers": [
+        "custom",
+        "deepseek"
+      ],
+      "counters": {
+        "turns": 14,
+        "tool_calls": 61,
+        "fleet_dispatch": 0,
+        "workflow_run": 0,
+        "subagent_spawn": 2,
+        "mcp_server_connected": 0,
+        "memory_search": 0,
+        "approval_modal_shown": 0,
+        "approval_auto_allowed": 0,
+        "command_palette_open": 3
+      },
+      "errors": {
+        "auth_preflight_failed": 0,
+        "provider_http_4xx": 0,
+        "provider_http_5xx": 1,
+        "tool_denied_by_policy": 0,
+        "tool_timeout": 0,
+        "network_error": 0
+      },
+      "turn_wall": {
+        "lt_5s": 9,
+        "5_30s": 4,
+        "30_120s": 1,
+        "gte_120s": 0
+      }
+    },
+    {
+      "event": "panic",
+      "site": "crates/tui/src/tui/ui.rs:8801:17"
+    },
+    {
+      "event": "product_usage",
+      "counters": {
+        "page_view": 1,
+        "docs_view": 0,
+        "install_copy": 0,
+        "download": 0,
+        "signup": 0,
+        "login": 0,
+        "session_create": 0,
+        "session_resume": 0,
+        "turn_submit": 0,
+        "turn_complete": 0,
+        "settings_open": 0,
+        "integration_connect": 0,
+        "error_shown": 0
+      }
+    },
+    {
+      "event": "operations_summary",
+      "requests": 10,
+      "errors": 1,
+      "duration_ms_total": 1500,
+      "duration_ms_max": 300,
+      "probes": 2,
+      "probes_failed": 0
+    },
+    {
+      "event": "model_usage",
+      "provider": "deepseek",
+      "model": "other",
+      "counters": {
+        "turns_ok": 12,
+        "turns_failed": 1,
+        "turns_interrupted": 0,
+        "input_tokens": 418230,
+        "output_tokens": 9120,
+        "cache_read_tokens": 380001,
+        "cache_write_tokens": 0
+      },
+      "turn_wall": {
+        "lt_5s": 3,
+        "5_30s": 8,
+        "30_120s": 2,
+        "gte_120s": 0
+      }
+    },
+    {
+      "event": "tool_usage",
+      "tool": "read_file",
+      "calls": 41,
+      "errors": 2
+    }
+  ]
+}

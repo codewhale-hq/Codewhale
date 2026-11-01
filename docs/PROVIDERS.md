@@ -59,6 +59,8 @@ against the vendor's own docs before trusting any value here:
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini`, `claude-sonnet-5`, `gemini-3.1-pro` | `CHEAPER_INFERENCE_API_KEY` |
 | Yolo-Auto | `https://yolo-auto.com/v1` | `qwen3.8-flash`; `yolo` / `yolo-small` | `YOLO_AUTO_API_KEY` |
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute` (router); `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
+| Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
+| Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 
 AICraft's roster spans DeepSeek, Anthropic Claude, Google Gemini, Qwen, GLM,
 MiniMax and Doubao ids on its OpenAI-compatible endpoint. The authority is
@@ -84,6 +86,20 @@ vendor-prefixed ids such as `deepseek/deepseek-v4-pro` pin one model. The
 authority is `GET https://api.stdcmpt.com/v1/models`.
 Docs: <https://docs.standardcompute.com/quickstart>.
 
+Runcrate is an OpenAI-compatible gateway with one key for models from several
+labs. Model ids are case-sensitive `org/Name` ids such as
+`deepseek-ai/DeepSeek-V4.1-Flash`. The authority is
+`GET https://api.runcrate.ai/v1/models`, which is public and needs no key.
+Docs: <https://www.runcrate.ai/docs/getting-started/quickstart>.
+
+Opper is an EU-hosted, OpenAI-compatible gateway with 700+ models from 50+
+providers behind one key. Bare pool names such as `claude-sonnet-4-6` let Opper
+pick the route per request; a `provider/model` id such as
+`anthropic/claude-sonnet-4-6` pins one route. Token rates are the model
+providers' rates with no markup. The authority is
+`GET https://api.opper.ai/v3/compat/models` with your key.
+Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
+
 OpenCode Zen and OpenCode Go are first-class provider routes, configured like
 any other provider below; they are not part of this table. In `/provider`,
 type to filter the list (letters not bound to a row action); `Ctrl+T` probes the
@@ -103,7 +119,7 @@ Sources to keep in sync:
 - `crates/config/assets/catalog_corrections.json` `reviewed` - intrinsic facts,
   scoped selector aliases, completion references and pure transport metadata.
   The existing seed renderer embeds this reviewed supplement in Models.dev.
-- `crates/tui/src/provider_lake.rs` and `route_runtime.rs` - resolve current
+- `crates/engine/src/provider_lake.rs` and `route_runtime.rs` - resolve current
   model facts for both CLI model commands, the picker and Runtime API. Public
   catalog facts, provider/account rosters and explicit configuration retain
   their separate ownership. `crates/agent/src/lib.rs` keeps the legacy selector
@@ -1501,7 +1517,7 @@ provider docs work, but they are not native shipped behavior in this checkout:
 - A unified `Provider` trait in `codewhale-agent` that owns env precedence,
   secret resolution, base URL normalization, auth-header construction, and
   provider metadata. Those responsibilities are still split across
-  `crates/config`, `crates/secrets`, and `crates/tui/src/client.rs`.
+  `crates/config`, `crates/secrets`, and `crates/engine/src/client.rs`.
 - Hugging Face model passport metadata in the picker, including license, base
   model, context length, chat template, tool-call support, reasoning support,
   and gated/private status.

@@ -7,6 +7,7 @@ import { serializeJsonLd } from "./json-ld";
 import { extractText, flattenExtractedText } from "./react-text";
 import { SITE_URL } from "./page-meta";
 
+const faqContent = readFileSync(new URL("./content/faq.tsx", import.meta.url), "utf8");
 const faqPage = readFileSync(new URL("../app/[locale]/faq/page.tsx", import.meta.url), "utf8");
 
 describe("FAQPage structured data", () => {
@@ -59,13 +60,13 @@ describe("FAQPage structured data", () => {
     });
   });
 
-  it("covers all 42 curated pairs from the FAQ page arrays", () => {
-    const questions = [...faqPage.matchAll(/^\s+q: "(.+)"/gm)].map((match) => match[1]);
+  it("covers all 48 curated pairs from the shared FAQ content", () => {
+    const questions = [...faqContent.matchAll(/^\s+q: "(.+)"/gm)].map((match) => match[1]);
     questions.push(AUTO_ROUTING_COPY.question.en, AUTO_ROUTING_COPY.question.zh);
-    expect(questions).toHaveLength(42);
-    expect(new Set(questions).size).toBe(42);
-    expect(faqPage).toContain("const faqEn");
-    expect(faqPage).toContain("const faqZh");
+    expect(questions).toHaveLength(48);
+    expect(new Set(questions).size).toBe(48);
+    expect(faqContent).toContain("const faqEn");
+    expect(faqContent).toContain("const faqZh");
     expect(faqPage).toContain("buildFaqPageJsonLd({");
     expect(faqPage).toContain("items,");
     expect(faqPage).toContain('canonicalLocaleForPath("/faq", locale)');
@@ -76,7 +77,7 @@ describe("FAQPage structured data", () => {
   it("keeps every internal answer link on the reader's locale", () => {
     // Every locale without its own FAQ reads the English answers, so a
     // literal `/en/...` link sent a /ja reader to the English site (W01-02).
-    expect(faqPage).not.toMatch(/href=\{?["'`]\/[a-z]{2}(?:-[A-Za-z]+)?\//);
+    expect(faqContent).not.toMatch(/href=\{?["'`]\/[a-z]{2}(?:-[A-Za-z]+)?\//);
   });
 });
 

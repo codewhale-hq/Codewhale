@@ -69,10 +69,10 @@ Models.dev 数据上——离线种子和实时刷新都一样——所以修正
 
 | 组成部分 | 路径 | 作用 |
 |---|---|---|
-| 实时抓取 + 缓存 | `crates/tui/src/models_dev_live.rs` | 后台刷新、TTL、原子写入、新鲜度状态 |
+| 实时抓取 + 缓存 | `crates/engine/src/models_dev_live.rs` | 后台刷新、TTL、原子写入、新鲜度状态 |
 | Schema / 解析 | `crates/config/src/models_dev.rs` | 不联网的 Models.dev JSON 结构 |
 | 编译 + 来源 | `crates/config/src/catalog.rs` | 有序来源、独立的价格来源、policy deny、id 归一化 |
-| provider lake 合并 | `crates/tui/src/provider_lake.rs` | 共享目录投影，提供商权威严格限定在路由范围内 |
+| provider lake 合并 | `crates/engine/src/provider_lake.rs` | 共享目录投影，提供商权威严格限定在路由范围内 |
 | 离线种子资产 | `crates/config/assets/models_dev.bundled.json` | 仅作紧凑的离线兜底（`_meta.role` 已注明） |
 | Codewhale 修正 | `crates/config/assets/catalog_corrections.json` | 应用到每一行 Models.dev 数据的字段补丁（`crates/config/src/catalog/corrections.rs`） |
 | 校验脚本 | `scripts/catalog_models_dev.py` | 不含密钥的抓取/校验试运行（#4117） |
@@ -106,7 +106,7 @@ TUI/运行时启动时（且未被禁用）：
 该命令派发 `AppAction::RefreshModelsDevCatalog`（异步执行，不会阻塞输入框）。
 如果启用了受准入控制的云事实设置，它还会请求一次云刷新；硬禁用和信任密钥检查
 依旧生效。实现位于 `crates/tui/src/commands/groups/core/core.rs` 和
-`crates/tui/src/models_dev_live.rs`。
+`crates/engine/src/models_dev_live.rs`。
 
 ### 环境变量开关（测试 / dogfood / 离线）
 

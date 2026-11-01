@@ -1,7 +1,7 @@
 # 工具表面（tool surface）
 
 > 英文原文：[TOOL_SURFACE.md](../TOOL_SURFACE.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-10-17。
+> 默认激活清单于 2026-10-31 核对；其余章节最近完整同步英文日期：2026-10-17。
 > 2026-10-06 补齐本地解释器权限与后端限制；现有 MCP 有界发现段落已核对。
 
 本文描述当前面向模型的工具（tool）契约。产生它的 v0.9.1 切换记录在
@@ -12,37 +12,38 @@
 
 实现来源：
 
-- `crates/tui/src/core/engine/tool_catalog.rs` 掌管预加载（eager）与延迟（deferred）目录。
-- `crates/tui/src/tools/registry.rs` 注册规范工具与隐藏别名。
-- `crates/tui/src/tools/{file,file_tool,shell}.rs` 掌管小型前台原语的行为与 schema；
+- `crates/engine/src/core/engine/tool_catalog.rs` 掌管预加载（eager）与延迟（deferred）目录。
+- `crates/engine/src/tools/registry.rs` 注册规范工具与隐藏别名。
+- `crates/engine/src/tools/{file,file_tool,shell}.rs` 掌管小型前台原语的行为与 schema；
   其余原生工具仍可被搜索。
 - `docs/RUNTIME_SIMPLIFICATION_DESIGN.md` 记录了 v0.9.1 切换及其回执（receipt）。
 
 ## 默认激活契约
 
-新回合开始时带有十三个预加载（eager）的原生名称，外加合成的 `tool_search`：
+新回合开始时带有十二个预加载（eager）的原生名称，外加合成的 `tool_search`：
 
 1. `read`
 2. `write`
 3. `edit`
 4. `file_search`
-5. `bash`
-6. `agent`
-7. `workflow`
-8. `todo_write`
-9. `create_goal`
-10. `get_goal`
-11. `update_goal`
-12. `task_shell_wait`
-13. `load_skill`
-14. `tool_search`（合成，始终激活）
+5. `grep_files`
+6. `bash`
+7. `todo_write`
+8. `task_shell_wait`
+9. `load_skill`
+10. `context_archive_get`
+11. `context_archive_search`
+12. `create_goal`
+13. `tool_search`（合成，始终激活）
 
-这十三个原生名称就是 `crates/tui/src/core/engine/tool_catalog.rs` 里的
+这十二个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
 `DEFAULT_ACTIVE_NATIVE_TOOLS`，由
 `default_active_contract_keeps_discovery_and_core_tools_eager` 固定住。
-权限边界（authority boundary）可以在子智能体达到最大深度时移除 `agent`，
-Plan 只注册前台 shell 表面（因此没有 `task_shell_wait`），但仅凭路由大小不得改变
-这套核心词汇。
+`agent`、`workflow`、`get_goal` 和 `update_goal` 默认延迟加载，通过
+`tool_search` 发现；有活动目标时，`get_goal` 和 `update_goal` 会预加载。
+权限边界可以在子智能体达到最大深度时移除 `agent`；Plan 只注册前台 shell
+表面，因此没有 `task_shell_wait`。仅凭路由大小不得改变这套核心词汇。
+`file_search` 搜索名称和路径，`grep_files` 搜索内容；两者仍遵守读取守卫和权限。
 
 直接 schema 刻意保持精简：
 
@@ -263,7 +264,7 @@ RLM 的子查询批处理属于另一种更便宜的成本类别。它的 `sub_q
 **只读、有界的人类投影**。它不是第二个注册表，也不是执行表面。
 
 **接缝。** 快照在 `MessageRequest` 构造完成后立即于
-`crates/tui/src/core/engine/turn_loop.rs` 中、基于 `request.tools` 构建——
+`crates/engine/src/core/engine/turn_loop.rs` 中、基于 `request.tools` 构建——
 也就是交给模型客户端的同一个值。引擎在 `engine.rs` 中一次性解析周边的每回合数据
 （`ToolSurfaceContext`：扁平化的注册表事实、MCP 池自己的服务器归属、
 引擎注入的目录名称，以及已解析模型客户端的回执），并以纯数据传入，
@@ -285,7 +286,7 @@ RLM 的子查询批处理属于另一种更便宜的成本类别。它的 `sub_q
 契约：
 
 - **一个摘要。** `active_tool_catalog_sha256`
-  （`crates/tui/src/core/engine/preview.rs`）是激活工具目录哈希的唯一定义。
+  （`crates/engine/src/core/engine/preview.rs`）是激活工具目录哈希的唯一定义。
   请求清单把它发布为 `ToolSurfaceFacts::active_tool_catalog_sha256`，
   而 `/tools` 对同一个准备好的请求报告相同的值；两个表面都不自己留一份哈希。
 - **什么都不猜。** 只有当真实的池把那个确切的模型工具名称归属出来时，
@@ -330,7 +331,7 @@ cargo test --locked -p codewhale-tui --lib core::engine::tests::print_mode_tool_
 `1 passed`（被忽略的指标测试报告 `1 passed` 只是因为 `--ignored` 选中了它）；
 `0 passed` 意味着过滤器没匹配到任何东西，检查根本没跑。
 
-不依赖提供商的回执必须报告上面列出的十三个默认激活名称。另一份仓库范围的
+不依赖提供商的回执必须报告上面列出的十五个默认激活名称。另一份仓库范围的
 工具计数可能包含延迟、动态、受特性开关控制以及仅为兼容而存在的注册；
 它不是放进首回合模型目录的工具数量。
 

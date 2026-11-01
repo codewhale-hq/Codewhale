@@ -158,7 +158,7 @@ Each repo can carry two distinct, complementary files:
   This is the **repo-local law** layer. When guidance conflicts, the
   **Whose word wins** section of the effective base constitution owns the
   ordering; the bundled source is
-  [`BASE_PROMPT`](../crates/tui/src/prompts/text.rs). Use `/constitution base`
+  [`BASE_PROMPT`](../crates/engine/src/prompts/text.rs). Use `/constitution base`
   to inspect the effective base, including any opted-in expert override.
   The order in which these files are described or assembled is not an
   authority ranking. Runtime policy (permissions, sandbox and cost limits
@@ -241,7 +241,7 @@ and shell-write gates, not by this mechanism.
 ### Expert full base-prompt override (#3638)
 
 The global Constitution (the base system prompt, normally compiled in from
-`crates/tui/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
+`crates/engine/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
 without rebuilding. This is
 an expert escape hatch, not the normal `/constitution` guided setup output.
 Because this is a prompt trust boundary, it takes **two deliberate steps** — a
@@ -733,7 +733,7 @@ auto-select MiMo endpoints. Use
 With `model = "auto"`, each turn runs on your **declared default model** unless
 you have opted into something else. Auto never guesses a cheaper or stronger
 model from how a request is worded; the old keyword-and-length heuristic was
-removed (`auto_route_declared_fallback` in `crates/tui/src/model_routing.rs`).
+removed (`auto_route_declared_fallback` in `crates/engine/src/model_routing.rs`).
 Two optional layers change that:
 
 - an `[auto.router]` classifier, which you write down, that picks a model per
@@ -763,7 +763,7 @@ timeout_secs = 4        # optional; default 4, 0 = default, capped at 300
 A classifier call happens only when `[auto.router]` names both `provider` and
 `model` *and* that provider has a key:
 `router_available = router_configured && has_api_key_for(...)` in
-`ModelInventory::from_config` (`crates/tui/src/model_inventory.rs`). If either
+`ModelInventory::from_config` (`crates/engine/src/model_inventory.rs`). If either
 condition fails, or the classifier call errors or times out, the local
 fallback decides: the default model, or the fast sibling under `cost_saving`.
 The turn's route receipt (Turn Inspector, Ctrl+Alt+O or `/turn inspect`, "Model
@@ -911,20 +911,37 @@ desktop environments:
 check_for_updates = false
 ```
 
+#### Automatic updates
+
+`mode` decides what happens when a newer release is found (release-binary
+installs only; package-manager and desktop-app copies always just notify):
+
+```toml
+[update]
+mode = "auto"    # auto (default): download in the background, apply at next start
+                 # notify: tell me only;  off: no checks
+```
+
+`codewhale config set update.mode notify` writes it. `CODEWHALE_UPDATE_MODE`
+overrides it, and an organization policy file overrides both; see
+[INSTALL.md](INSTALL.md#automatic-updates) for the full flow, signing, the
+policy file and `codewhale update --rollback`.
+
 #### Throttling
 
 The answer is cached in `~/.codewhale/update-check.json` and reused for
-`check_interval_hours` (default `1`). Only the *network request* is throttled —
+`check_interval_hours` (default `6`). Only the *network request* is throttled —
 the notice still appears on every launch while an update is outstanding. Set `0`
 to check on every launch.
 
 ```toml
 [update]
-check_interval_hours = 1
+check_interval_hours = 6
 ```
 
-A failed check is not cached, so an outage does not suppress the notice until
-the interval elapses.
+A failed check keeps the last answer (so the notice stays) and retries about an
+hour later rather than on every launch, which keeps offline and rate-limited
+machines quiet.
 
 #### Automatic suppression
 
@@ -1197,7 +1214,11 @@ original messages to the session's `artifacts/context-transfer-<id>.json` and,
 when a model summary is produced, its handoff to the matching `.md` file.
 These use the existing session artifact store and persistence redaction.
 A failed write aborts compaction without replacing context. Pruning-only passes
-save the original messages without making an extra model call. Pressure metadata
+save the original messages without making an extra model call. The model can
+read them back through `context_archive_search` (ASCII case-insensitive
+substring search returning short snippets and an archive id) and
+`context_archive_get` (paged read of one message by id); the handoff note names
+both so the model knows the archive exists. Pressure metadata
 shows estimated input tokens and the configured trigger; it is an estimate, not
 an exact promise about a provider's remaining context.
 
@@ -2023,8 +2044,10 @@ Composer shortcuts keep the same role throughout a session:
   steers the active turn. It sends normally when idle.
 - By default, **Shift+Enter**, **Alt+Enter**, and **Ctrl+J** insert a newline.
 - Set `composer_multiline_mode = true` to make **Enter** insert a newline and
-  **Shift+Enter** send instead. **Alt+Enter**, **Ctrl+J**, and supported
-  **Ctrl+Enter** / **Cmd+Enter** behavior is unchanged.
+  **Alt+Enter** send instead. **Shift+Enter** also sends when the terminal
+  reports it distinctly; legacy terminals may report it as plain **Enter**.
+  **Ctrl+J** still inserts a newline, and supported **Ctrl+Enter** /
+  **Cmd+Enter** behavior is unchanged.
 - **Ctrl+G** and **Ctrl+S** only stash drafts; they never send or steer.
 
 ### Composer stash (`/stash`, Ctrl+G / Ctrl+S)
@@ -2679,9 +2702,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   `.agents/skills`. Flat `./skills` requires explicit opt-in below. The runtime
   also discovers global agentskills.io-compatible `~/.agents/skills` and the
   broader Claude-ecosystem
-  `~/.claude/skills`. First launch installs versioned bundled skills for common
+  `~/.claude/skills`. With the default bundle policy and no `skills_dir` override, first launch installs versioned bundled skills for common
   workflows including skill creation, delegation, MCP/plugin scaffolding,
-  documents, presentations, spreadsheets, PDFs, and Feishu/Lark. Only
+  documents, presentations, spreadsheets and PDFs. Feishu/Lark is outside the
+  default pack. Only
   Codewhale-owned roots (`<workspace>/.codewhale/skills` and
   `~/.codewhale/skills`) are writable install/import targets; compatible harness
   roots stay read-only. Bare `/skills` opens Extensions → Skills (owned-only,
@@ -2689,6 +2713,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   for the manager, audit statuses, provenance markers, and mutation rules, and
   [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) for the supported boundary
   between portable `SKILL.md` bundles and Claude Code plugin runtimes.
+- `[skills.bundled].install` (`"auto"` default, `"all"`, `"none"`): controls bundle writes independently of discovery. `auto` keeps deletion-as-opt-out and disables installation when `skills_dir` is set. `all` repairs enabled missing skills into `$CODEWHALE_HOME/skills` (normally `~/.codewhale/skills`) even with a discovery override. `none` writes nothing and leaves the marker untouched. Modified and managed bodies are preserved in every mode.
+- `[skills.bundled].selected` / `disabled` / `explicit_only` (arrays of names, default `[]`): selection limits installation and discovery; empty selects the whole bundle. Disabled wins and reveals lower-root copies. Explicit-only retains user invocation while removing the shipped copy from the model index and model loading. Aliases share canonical policy. These settings affect recognized global bundle copies only and never delete files. Profile fields merge separately; `[]` clears an inherited list. `doctor` warns about unknown/ignored entries and `/skills inspect` reports per-path reasons. See [bundled skills](SKILLS.md#bundled-skills).
+- `[skills].listing_max_description_chars` (integer, default `400`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
+- `[skills].listing_budget_fraction` (finite number, default `0.05`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
 - `[skills].scan_codewhale_only` (bool, default `false`): when `true`, session
   skill discovery ignores cross-tool roots such as `.claude/skills`,
   `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. Codewhale still
@@ -3447,6 +3475,12 @@ restart. Its `[extension_host]` table (`runtime`, `node`, `bun`) and what the
 host's sandbox does on each platform are in
 [Writing an extension tool](EXTENSIONS.md).
 
+`[extension_host] mcp_backend` (user config only) chooses the MCP client
+independently of the `extension_host` flag: `"host"` (default) uses the official
+MCP SDK behind the Rust broker; `"rust"` keeps the previous Rust client for one
+release. A host refusal never falls back to Rust. See
+[MCP connection lifecycle](MCP.md#connection-lifecycle).
+
 Every flag has a row in [`docs/features.toml`](features.toml), the feature
 registry; a test fails when a flag and its row disagree.
 
@@ -3763,7 +3797,7 @@ configure reasoning effort.
 
 codewhale sends and receives tool calls only over the API tool channel
 (structured `tool_use` / `tool_call` items). The streaming loop in
-`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
+`crates/engine/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
 markers — `[TOOL_CALL]`, `<codewhale:tool_call`, `<tool_call`, `<invoke `,
 `<function_calls>` — and scrubs them from visible assistant text without ever
 turning them into structured tool calls. When a wrapper is stripped, the loop

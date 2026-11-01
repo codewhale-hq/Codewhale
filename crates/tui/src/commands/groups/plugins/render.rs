@@ -40,7 +40,7 @@ pub(super) fn render_bundle_detail(
     } else {
         "none".to_string()
     };
-    let extension_host = crate::plugins::activation::extension_host_policy_enabled();
+    let extension_host = codewhale_plugins::activation::extension_host_policy_enabled();
     let (content_hash, capability_hash) = if include_hashes {
         (
             detail.content_hash.as_str(),
@@ -99,7 +99,7 @@ pub(super) fn render_bundle_detail(
 /// The hashed label itself (`PluginActivationCapability::as_str`) never
 /// changes.
 fn display_component_labels(labels: &[String]) -> String {
-    let extension_host = crate::plugins::activation::extension_host_policy_enabled();
+    let extension_host = codewhale_plugins::activation::extension_host_policy_enabled();
     labels
         .iter()
         .map(|label| match label.as_str() {
@@ -370,10 +370,10 @@ fn _diagnostic_path(diagnostic: &PluginDiagnostic) -> Option<String> {
 /// the state-file effect. Every dynamic string is escaped; paths and ids come
 /// from the filesystem and from plugin state, which a bundle can influence.
 pub(super) fn render_gc_report(
-    report: &crate::plugins::registry::gc::GcReport,
+    report: &codewhale_plugins::registry::gc::GcReport,
     fixed: bool,
 ) -> String {
-    use crate::plugins::registry::gc::format_bytes;
+    use codewhale_plugins::registry::gc::format_bytes;
 
     const SHOWN: usize = 40;
     let mut out = String::new();
@@ -395,7 +395,7 @@ pub(super) fn render_gc_report(
         let records = report
             .items
             .iter()
-            .filter(|item| item.kind == crate::plugins::registry::gc::GcKind::Record)
+            .filter(|item| item.kind == codewhale_plugins::registry::gc::GcKind::Record)
             .count();
         let _ = writeln!(
             out,

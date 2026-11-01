@@ -594,6 +594,18 @@ codewhale mcp tools codewhale
 
 ## Connection Lifecycle
 
+As a client, Codewhale connects servers through the official MCP SDK (2.4)
+behind its Rust broker by default (`[extension_host] mcp_backend = "host"` in
+your user config; `"rust"` selects the previous Rust client and stays available
+for one release, and a host refusal never falls back to it). Servers that speak
+the 2026-07-28 revision are discovered with `server/discover`. Other stdio and
+HTTP servers, including ones that answer the discovery probe with an error or
+an unrelated result, connect through the legacy `initialize` handshake, and
+configured SSE servers keep theirs. A server that rejects sign-in reports its
+real 401 with the `/mcp login` hint, and one whose command cannot start says
+why. Rust keeps process, network, credential, catalog, approval and
+cancellation authority.
+
 Session boot connects in the background: every enabled, allowed server —
 user-configured or contributed by an enabled plugin — is started at session
 start, concurrently and without holding the first turn. A plugin server passes
@@ -637,14 +649,30 @@ force. General searches do not boot all optional servers. Only actual
 revoked servers do not acquire fabricated tools. Narrow a broad search by
 server name when more than eight configured servers match.
 
-So that a plain question can reach a server the user never names, each turn
-tells the model which configured servers it may load: one short runtime note
-in session history listing the enabled, allowed server names (at most 24) and
-asking it to `tool_search` a name before searching files or reporting that no
-tool exists. The note is appended to history, never to the cached system
-prompt, and is repeated only when the list changes or a compaction dropped
-it. It carries names only — no server is started and no schema is loaded
-until the model searches. Disabled or denied servers are never named.
+Before a model request, one bounded runtime note records the current connection
+observations for permitted servers. It uses fixed states: `configured` (no
+connection outcome recorded), `connecting`, `failed`, `authorization_required`,
+`unknown` and `connected`. Failures and authorization needs are listed first;
+at most 24 names are shown, with 64 characters per name and an omission count.
+Names are inert data. Raw errors, commands, URLs and credentials are excluded.
+
+The note supersedes earlier snapshots and lives in session history, after the
+cached system prompt. Unchanged observations are recorded once and are recorded
+again if compaction removes them. No server is started or schema loaded by this
+observation. When `tool_search` is available, the model can search a permitted
+configured name to obtain actual tools or retry a relevant connection. Without
+it, only servers identified by their actually exposed MCP tools are included.
+Disabled servers and servers outside the current discovery ceiling are omitted.
+`connected` means a current authorized transport was observed; it does not
+promise available schemas, tool permissions or a successful call.
+
+The same nonblocking capture supplies server guidance. A busy pool, changed
+configuration source or removed scope withdraws old guidance and status instead
+of replaying stale success. Restore withdraws saved MCP notes until the live
+runtime observes the current pool. Child, RLM, ACP and isolated hosts do not
+acquire new discovery authority from these notes. Observations happen at request
+boundaries; this is not continuous monitoring or semantic verification of server
+claims. The existing MCP manager owns configuration and authorization recovery.
 
 `codewhale mcp connect`, `validate`, and `tools` inspect their own process's
 pool. They do not attach transports to a running TUI or exec session. Use
@@ -661,8 +689,8 @@ discovers them again, and allow/deny rules and approvals are checked on each
 call rather than cached with the catalog. Within one connection the catalog is
 revalidated in place, on the five-second supervision sweep, when either:
 
-- a list page carried `ttlMs` and the earliest of those TTLs (capped at 24
-  hours) has passed, or
+- a list page carried `ttlMs` and the earliest of those TTLs (held between
+  60 seconds and 24 hours) has passed, or
 - the server sent `notifications/tools/list_changed`,
   `notifications/resources/list_changed` or
   `notifications/prompts/list_changed`.
@@ -707,7 +735,7 @@ Per-server settings:
 - `args` (array of strings, optional)
 - `env` (object, optional)
 - `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional). A per-server value overrides the global `timeouts` block, and each budget is independent of the others:
-  - `connect_timeout` (default 30) covers spawn, `initialize` and the first `tools/list`, so a cold `uvx`/`npx` package download counts against it.
+  - `connect_timeout` (default 30) covers spawn, `initialize` and the first `tools/list`, so a cold `uvx`/`npx` package download counts against it. A server launched through `npx`, `pnpx`, `bunx` or `uvx` without its own `connect_timeout` gets at least 120 seconds for that first download.
   - `execute_timeout` (default 1800) is the budget for each `tools/call` and `prompts/get`. An explicit shorter value is respected, and `read_timeout` never cuts a running tool short.
   - `read_timeout` (default 120) bounds each reply wait during the handshake and tool discovery, and is the budget for `resources/read`.
   - A request that runs out of budget fails with a timeout. The connection is kept, and a reply that arrives later is discarded instead of being handed to another call. Interrupting the turn stops the wait at once, but Codewhale does not send `notifications/cancelled` yet, so a server that handles one request at a time finishes the abandoned call before it answers the next one.

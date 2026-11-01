@@ -312,7 +312,7 @@ impl CatalogOffering {
                     .filter(|provider| *provider != crate::ProviderKind::Custom)
                     .map(|provider| provider.provider().default_base_url())
             });
-        match (&self.source, &lower.source) {
+        let endpoint_facts = match (&self.source, &lower.source) {
             (
                 CatalogSource::Live {
                     base_url_fingerprint: current,
@@ -323,7 +323,10 @@ impl CatalogOffering {
                     ..
                 },
             ) if current == prior
-                && base_url.is_none_or(|url| base_url_fingerprint(url) == *current) => {}
+                && base_url.is_none_or(|url| base_url_fingerprint(url) == *current) =>
+            {
+                true
+            }
             (
                 CatalogSource::Live {
                     base_url_fingerprint: current,
@@ -333,8 +336,9 @@ impl CatalogOffering {
                 | CatalogSource::ModelsDevLive { .. }
                 | CatalogSource::CloudFacts { .. }
                 | CatalogSource::CodewhaleBundled { .. },
-            ) if published_base.is_some_and(|url| base_url_fingerprint(url) == *current)
-                && base_url.is_none_or(|url| base_url_fingerprint(url) == *current) => {}
+            ) if base_url.is_none_or(|url| base_url_fingerprint(url) == *current) => {
+                published_base.is_some_and(|url| base_url_fingerprint(url) == *current)
+            }
             (
                 CatalogSource::ConfigOverride | CatalogSource::UserOverride,
                 CatalogSource::Bundled
@@ -345,13 +349,20 @@ impl CatalogOffering {
                 .zip(published_base)
                 .is_some_and(|(current, prior)| {
                     base_url_fingerprint(current) == base_url_fingerprint(prior)
-                }) => {}
+                }) =>
+            {
+                true
+            }
             _ => return false,
-        }
-        self.complete_facts_from(lower)
+        };
+        self.complete_facts(lower, endpoint_facts)
     }
 
     pub(crate) fn complete_facts_from(&mut self, lower: &Self) -> bool {
+        self.complete_facts(lower, true)
+    }
+
+    fn complete_facts(&mut self, lower: &Self, endpoint_facts: bool) -> bool {
         let mut changed = false;
         macro_rules! fill {
             ($field:ident) => {
@@ -376,10 +387,12 @@ impl CatalogOffering {
         fill!(temperature);
         fill!(open_weights);
         fill!(interleaved);
-        fill!(transport);
-        fill!(provider_api);
-        fill!(provider_npm);
-        fill!(status);
+        if endpoint_facts {
+            fill!(transport);
+            fill!(provider_api);
+            fill!(provider_npm);
+            fill!(status);
+        }
         fill!(experimental);
         fill!(license);
         fill!(links);
@@ -407,7 +420,8 @@ impl CatalogOffering {
                 self.limit = Some(limit);
             }
         }
-        if self.cost.is_none()
+        if endpoint_facts
+            && self.cost.is_none()
             && self.cost_source.is_none()
             && (lower.cost.is_some() || lower.cost_source.is_some())
         {

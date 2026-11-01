@@ -27,6 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::hashing::sha256_hex;
+use codewhale_release::signing::{self, SIGNATURE_ASSET, SignatureCheck};
+use codewhale_release::{autoupdate, installs};
 
 mod compiled_host;
 #[cfg(any(unix, windows))]
@@ -46,6 +48,8 @@ const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// connection and then stalls. GitHub gets the first attempt; an unavailable
 /// manifest falls back to the supported mirror without waiting for a binary.
 const MANIFEST_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const STAGED_MANIFEST: &str = "codewhale-artifacts-sha256.txt";
+const STAGED_SIGNATURE: &str = "codewhale-artifacts-sha256.txt.sig";
 #[cfg(target_os = "android")]
 const ANDROID_PROC_SELF_MAPS: &str = "/proc/self/maps";
 
@@ -167,13 +171,13 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         );
     }
 
-    // Reject unrelated command paths before downloads or any sibling changes.
+    let divergent = divergent_aliases(&plan, &executable_identity);
     for target in &plan.target_paths {
-        validate_update_target(target, &executable_identity)?;
+        if !divergent.contains(target) {
+            validate_update_target(target, &executable_identity)?;
+        }
     }
 
-    // Step 2: Prefer GitHub, then a supported mirror if its manifest is
-    // unavailable. Keep the manifest and binary locked to the same source.
     let download = resolve_download_plan(
         &fetched,
         &plan.asset_stem,
@@ -181,36 +185,23 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         compiled_host::required_for(&current_exe)?,
     )?;
     println!("Release source: {}", download.source.describe());
+    let signature = fetch_signature(&download, latest_tag, proxy.as_ref())?;
 
-    // Step 3: Download and verify the sole implementation binary once. The
-    // installed `codew` and pre-0.9.5 `codewhale-tui` command paths are
-    // compatibility names for these exact bytes, not separate release assets.
     println!("Downloading {}...", download.binary_name);
-    let bytes = download_url(&download.binary_url, proxy.as_ref()).with_context(|| {
-        format!(
-            "failed to download {} from {}\n{}",
-            download.binary_name,
-            download.source.describe(),
-            update_network_fallback_hint()
-        )
-    })?;
-
-    verify_downloaded_asset(&download, &bytes)?;
+    let bytes = download_pinned_binary(&download, proxy.as_ref())?;
 
     preflight_downloaded_binary(&download.binary_name, &bytes)?;
 
     println!(
-        "SHA256 checksum verified against {CHECKSUM_MANIFEST_ASSET} from {}.",
-        download.source.label()
+        "SHA256 checksum verified against {CHECKSUM_MANIFEST_ASSET} from {}{}.",
+        download.source.label(),
+        if signature.is_verified() {
+            "; release signature verified"
+        } else {
+            ""
+        }
     );
 
-    // Step 4: Replace command paths only after the download and the running
-    // executable identity verify. The preflight happens before a colocated
-    // compatibility path can change, then the identity is checked just in time.
-    #[cfg(unix)]
-    let mut command_receipt = uninstall::CommandReceipt::capture(&current_exe)?;
-    #[cfg(windows)]
-    let had_receipt = uninstall::CommandReceipt::capture(&current_exe)?.is_some();
     let mut host_update = compiled_host::prepare(
         &download,
         latest_tag,
@@ -218,38 +209,194 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         &current_exe,
         proxy.as_ref(),
     )?;
-    let replaced = (|| {
-        validate_primary_update_identity(&executable_identity)?;
+    let replaced =
+        replace_command_paths(&executable_identity, &plan, &bytes, &divergent, &mut || {
+            if let Some(host) = &mut host_update {
+                host.publish()?;
+            }
+            Ok(())
+        });
+    if let Err(error) = replaced {
         if let Some(host) = &mut host_update {
-            host.publish()?;
+            host.rollback()
+                .context("compiled-host rollback failed; retained backup path is reported below")?;
         }
-        replace_verified_downloads(&plan.target_paths, &bytes, |target| {
-            validate_primary_update_identity(&executable_identity)?;
-            validate_update_target(target, &executable_identity)
+        return Err(error);
+    }
+    if let Some(host) = &host_update {
+        println!(
+            "Updated the qualified compiled image, notices and relink source beside this CLI; Node remains default."
+        );
+        for path in host.recovery_paths() {
+            println!("Previous companion bytes retained at {}", path.display());
+        }
+    }
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        autoupdate::discard_staged(&home);
+        let mut state = autoupdate::load_state(&home);
+        if state.skip_version.take().is_some() {
+            let _ = autoupdate::store_state(&home, &state);
+        }
+    }
+
+    println!(
+        "\n✅ Successfully updated to {latest_tag}!\n\
+         Release source: {source}\n\
+         Updated binaries:\n{targets}\n\
+         \n\
+         Restart the application to use the new version.\n\
+         What's new: {notes}\n\
+         Undo: codewhale update --rollback",
+        source = download.source.describe(),
+        notes = autoupdate::changelog_url(latest_tag),
+        targets = plan
+            .target_paths
+            .iter()
+            .map(|path| format!("  - {} ({})", path.display(), download.binary_name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    Ok(())
+}
+
+fn fetch_signature(
+    download: &DownloadPlan,
+    tag: &str,
+    proxy: Option<&Proxy>,
+) -> Result<SignatureCheck> {
+    if signing::trusted_keys().is_empty() {
+        return Ok(SignatureCheck::NotConfigured);
+    }
+    let signature = download_url_with_timeout(
+        &format!("{}.sig", download.manifest_url),
+        proxy,
+        MANIFEST_PROBE_TIMEOUT,
+    )
+    .with_context(|| {
+        format!(
+            "{SIGNATURE_ASSET} could not be fetched from {}; this build requires signed releases, so nothing was installed",
+            download.source.describe()
+        )
+    })?;
+    match signing::verify_manifest(tag, &download.manifest_bytes, Some(&signature)) {
+        SignatureCheck::Verified => Ok(SignatureCheck::Verified),
+        other => bail!(
+            "{SIGNATURE_ASSET} from {} does not verify for {tag} ({other:?}); nothing was installed",
+            download.source.describe()
+        ),
+    }
+}
+
+fn divergent_aliases(plan: &UpdatePlan, identity: &UpdateExecutableIdentity) -> Vec<PathBuf> {
+    plan.target_paths
+        .iter()
+        .filter(|target| **target != identity.path)
+        .filter(|target| {
+            let Ok(meta) = std::fs::symlink_metadata(target) else {
+                return false;
+            };
+            meta.is_file()
+                && same_owner(&meta, &identity.path)
+                && InstallMethod::from_path(target).supports_self_update()
+                && !protected_update_path(target)
+                && std::fs::read(target).is_ok_and(|bytes| sha256_hex(&bytes) != identity.file_hash)
+                && installs::is_codewhale_binary(target)
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(unix)]
+fn same_owner(meta: &std::fs::Metadata, reference: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(reference).is_ok_and(|reference| reference.uid() == meta.uid())
+}
+
+#[cfg(not(unix))]
+fn same_owner(_meta: &std::fs::Metadata, _reference: &Path) -> bool {
+    true
+}
+
+fn save_previous(home: &Path, identity: &UpdateExecutableIdentity) -> Result<()> {
+    let bytes = std::fs::read(&identity.path).context("failed to read the running executable")?;
+    if sha256_hex(&bytes) != identity.file_hash {
+        bail!("the running executable changed before it could be kept for rollback");
+    }
+    let dir = autoupdate::previous_dir(home);
+    installs::write_file_atomically(&dir, &autoupdate::binary_name(), &bytes, true)?;
+    autoupdate::store_json(
+        &dir.join("previous.json"),
+        &autoupdate::PreviousBinary {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            sha256: identity.file_hash.clone(),
+        },
+    )
+}
+
+fn replace_command_paths(
+    identity: &UpdateExecutableIdentity,
+    plan: &UpdatePlan,
+    bytes: &[u8],
+    divergent: &[PathBuf],
+    before_replace: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
+    let home = codewhale_config::codewhale_home().ok();
+    #[cfg(unix)]
+    let mut command_receipt = uninstall::CommandReceipt::capture(&identity.path)?;
+    #[cfg(unix)]
+    let had_receipt = command_receipt.is_some();
+    #[cfg(windows)]
+    let had_receipt = uninstall::CommandReceipt::capture(&identity.path)?.is_some();
+    match &home {
+        Some(home) => save_previous(home, identity)
+            .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?,
+        None => println!("Codewhale home is unavailable; `codewhale update --rollback` will not have this version."),
+    }
+    if !divergent.is_empty() {
+        let home = home
+            .as_deref()
+            .context("cannot resolve the Codewhale home for the recovery folder")?;
+        let mut batch = installs::RecoveryBatch::open(home)?;
+        for path in divergent {
+            validate_primary_update_identity(identity)?;
+            let moved = batch.move_in(path)?;
+            println!(
+                "Bringing {} in line with this release; the old copy is kept in {} for {} days. Undo: {}",
+                path.display(),
+                batch.dir.display(),
+                installs::RECOVERY_RETENTION_DAYS,
+                moved.undo_command()
+            );
+        }
+        batch.finish();
+    }
+    let replaced = (|| {
+        validate_primary_update_identity(identity)?;
+        before_replace()?;
+        replace_verified_downloads(&plan.target_paths, bytes, |target| {
+            validate_primary_update_identity(identity)?;
+            validate_update_target(target, identity)
         })
     })();
     #[cfg(unix)]
     let receipt_renewal = command_receipt
         .as_mut()
-        .map(|receipt| receipt.renew(&bytes))
+        .map(|receipt| receipt.renew(bytes))
         .transpose();
     #[cfg(windows)]
     let receipt_renewal = if had_receipt {
-        uninstall::CommandReceipt::capture_accepting(&current_exe, Some(&sha256_hex(&bytes)))
+        uninstall::CommandReceipt::capture_accepting(&identity.path, Some(&sha256_hex(bytes)))
             .and_then(|receipt| {
                 receipt
                     .context("command ownership receipt disappeared during update")?
-                    .renew(&bytes)
+                    .renew(bytes)
             })
             .map(Some)
     } else {
         Ok(None)
     };
     if let Err(error) = replaced {
-        if let Some(host) = &mut host_update {
-            host.rollback()
-                .context("compiled-host rollback failed; retained backup path is reported below")?;
-        }
         #[cfg(any(unix, windows))]
         if let Err(renewal) = receipt_renewal {
             return Err(error.context(format!(
@@ -260,30 +407,305 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     }
     #[cfg(any(unix, windows))]
     receipt_renewal.context("binaries updated, but command ownership receipt renewal failed; preserved receipt/recovery paths require attention")?;
-    if let Some(host) = &host_update {
-        println!(
-            "Updated the qualified compiled image, notices and relink source beside this CLI; Node remains default."
+    #[cfg(any(unix, windows))]
+    if !had_receipt {
+        adopt_receipt_for(&identity.path, bytes);
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn adopt_receipt_for(executable: &Path, bytes: &[u8]) {
+    let Some(directory) = executable.parent() else {
+        return;
+    };
+    let directory = directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.to_path_buf());
+    let digest = sha256_hex(bytes);
+    let entries: Vec<(String, String)> = uninstall::COMMANDS
+        .iter()
+        .filter(|name| {
+            installs::file_sha256(&directory.join(name)).is_ok_and(|hash| hash == digest)
+        })
+        .map(|name| ((*name).to_string(), digest.clone()))
+        .collect();
+    if entries.is_empty() {
+        return;
+    }
+    match installs::adopt_receipt(&directory, &entries) {
+        Ok(true) => println!(
+            "Recorded an install receipt in {}; `codewhale uninstall` can now remove this copy.",
+            directory.display()
+        ),
+        Ok(false) => {}
+        Err(error) => println!("Could not record an install receipt: {error:#}"),
+    }
+}
+
+pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
+    let identity = update_executable_identity()?;
+    let exe = identity.path.clone();
+    if !InstallMethod::detect(&exe).supports_self_update() || protected_update_path(&exe) {
+        bail!("This copy is not a release-binary install; nothing was staged.");
+    }
+    if compiled_host::required_for(&exe)? {
+        bail!(
+            "Background updates skip installs with the optional compiled host; run `codewhale update`."
         );
-        for path in host.recovery_paths() {
-            println!("Previous companion bytes retained at {}", path.display());
+    }
+    ensure_supported_release_target(std::env::consts::OS, std::env::consts::ARCH)?;
+    let home = codewhale_config::codewhale_home()?;
+    let mut state = autoupdate::load_state(&home);
+    state.last_stage_attempt_unix = codewhale_release::check::now_unix();
+    let _ = autoupdate::store_state(&home, &state);
+    let channel = ReleaseChannel::from_beta_flag(beta);
+    let proxy = proxy_arg
+        .as_deref()
+        .map(validate_and_build_proxy)
+        .transpose()?;
+    let fetched =
+        fetch_latest_release(channel, proxy.as_ref()).with_context(update_network_fallback_hint)?;
+    let tag = fetched.release.tag_name.clone();
+    let version = tag.trim_start_matches('v').to_string();
+    state.last_stage_version = Some(version.clone());
+    let _ = autoupdate::store_state(&home, &state);
+    if !update_is_needed(channel, env!("CARGO_PKG_VERSION"), &tag)? {
+        autoupdate::discard_staged(&home);
+        println!("Already up to date; nothing staged.");
+        return Ok(());
+    }
+    if state.skip_version.as_deref() == Some(version.as_str()) {
+        println!("v{version} was rolled back on this machine; it is not staged again.");
+        return Ok(());
+    }
+    if let Some(staged) = autoupdate::load_staged(&home)
+        && staged.version == version
+        && installs::file_sha256(&autoupdate::staged_dir(&home).join(autoupdate::binary_name()))
+            .is_ok_and(|hash| hash == staged.sha256)
+    {
+        println!("v{version} is already staged.");
+        return Ok(());
+    }
+    let plan = update_plan_for_exe(&exe);
+    let download = resolve_download_plan(&fetched, &plan.asset_stem, proxy.as_ref(), false)?;
+    let signature = fetch_signature(&download, &tag, proxy.as_ref())?;
+    let bytes = download_pinned_binary(&download, proxy.as_ref())?;
+    preflight_downloaded_binary(&download.binary_name, &bytes)?;
+    autoupdate::discard_staged(&home);
+    let dir = autoupdate::staged_dir(&home);
+    installs::write_file_atomically(&dir, &autoupdate::binary_name(), &bytes, true)?;
+    installs::write_file_atomically(&dir, STAGED_MANIFEST, &download.manifest_bytes, false)?;
+    if signature.is_verified() {
+        let signature_bytes = download_url_with_timeout(
+            &format!("{}.sig", download.manifest_url),
+            proxy.as_ref(),
+            MANIFEST_PROBE_TIMEOUT,
+        )?;
+        installs::write_file_atomically(&dir, STAGED_SIGNATURE, &signature_bytes, false)?;
+    }
+    let target_dir = exe
+        .parent()
+        .context("executable has no parent")?
+        .canonicalize()?;
+    autoupdate::store_staged(
+        &home,
+        &autoupdate::StagedUpdate {
+            version: version.clone(),
+            sha256: sha256_hex(&bytes),
+            signed: signature.is_verified(),
+            source: download.source.describe(),
+            target_dir,
+            declined: false,
+            staged_at_unix: codewhale_release::check::now_unix(),
+        },
+    )?;
+    println!(
+        "Staged v{version} from {} ({}). {}",
+        download.source.describe(),
+        if signature.is_verified() {
+            "signature verified"
+        } else {
+            "checksum verified; releases are not signed yet"
+        },
+        if signature.is_verified() {
+            "It is applied the next time Codewhale starts."
+        } else {
+            "The next start asks before applying it."
+        }
+    );
+    Ok(())
+}
+
+pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
+    use std::io::IsTerminal;
+    let Ok(home) = codewhale_config::codewhale_home() else {
+        return;
+    };
+    let Some(mut staged) = autoupdate::load_staged(&home) else {
+        return;
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    if compare_release_versions(current, &staged.version).ok() != Some(Ordering::Less)
+        || autoupdate::load_state(&home).skip_version.as_deref() == Some(staged.version.as_str())
+    {
+        autoupdate::discard_staged(&home);
+        return;
+    }
+    if autoupdate::resolve_mode(None, true).mode != autoupdate::UpdateMode::Auto {
+        return;
+    }
+    let Ok(identity) = update_executable_identity() else {
+        return;
+    };
+    if !InstallMethod::detect(&identity.path).supports_self_update()
+        || protected_update_path(&identity.path)
+        || identity
+            .path
+            .parent()
+            .and_then(|dir| dir.canonicalize().ok())
+            .as_deref()
+            != Some(staged.target_dir.as_path())
+    {
+        return;
+    }
+    let version = staged.version.clone();
+    let fail = |reason: String| {
+        eprintln!(
+            "Couldn't apply v{version} ({reason}). Still on v{current}. Details: codewhale doctor"
+        );
+    };
+    let dir = autoupdate::staged_dir(&home);
+    let verified = (|| -> Result<(Vec<u8>, bool)> {
+        let bytes = std::fs::read(dir.join(autoupdate::binary_name()))
+            .context("the downloaded file is unreadable")?;
+        let manifest = std::fs::read(dir.join(STAGED_MANIFEST))
+            .context("the downloaded checksum manifest is missing")?;
+        let signature = std::fs::read(dir.join(STAGED_SIGNATURE)).ok();
+        let signed = match signing::verify_manifest(&version, &manifest, signature.as_deref()) {
+            SignatureCheck::Verified => true,
+            SignatureCheck::NotConfigured => false,
+            other => bail!("the release signature does not verify ({other:?})"),
+        };
+        let asset = release_asset_name_for_prefix(
+            "codewhale",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
+        let checksums = parse_checksum_manifest(
+            std::str::from_utf8(&manifest).context("the checksum manifest is not UTF-8")?,
+        )?;
+        let expected = checksums
+            .get(&asset)
+            .with_context(|| format!("the checksum manifest does not list {asset}"))?;
+        if !sha256_hex(&bytes).eq_ignore_ascii_case(expected) {
+            bail!("the downloaded file does not match its checksum manifest");
+        }
+        Ok((bytes, signed))
+    })();
+    let (bytes, signed) = match verified {
+        Ok(verified) => verified,
+        Err(error) => {
+            autoupdate::discard_staged(&home);
+            return fail(format!("{error:#}"));
+        }
+    };
+    if !signed {
+        if staged.declined || !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return;
+        }
+        eprint!(
+            "Codewhale v{version} is downloaded and its checksum verified. Releases are not signed yet, so it waits for your OK.\nInstall v{version} now? [y/N] "
+        );
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let accepted = std::io::stdin().read_line(&mut answer).is_ok()
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+        if !accepted {
+            staged.declined = true;
+            let _ = autoupdate::store_staged(&home, &staged);
+            eprintln!("Kept v{current}. Run `codewhale update` whenever you want v{version}.");
+            return;
         }
     }
-
-    println!(
-        "\n✅ Successfully updated to {latest_tag}!\n\
-         Release source: {source}\n\
-         Updated binaries:\n{targets}\n\
-         \n\
-         Restart the application to use the new version.",
-        source = download.source.describe(),
-        targets = plan
-            .target_paths
-            .iter()
-            .map(|path| format!("  - {} ({})", path.display(), download.binary_name))
-            .collect::<Vec<_>>()
-            .join("\n")
+    let plan = update_plan_for_exe(&identity.path);
+    let divergent = divergent_aliases(&plan, &identity);
+    let applied = (|| {
+        for target in &plan.target_paths {
+            if !divergent.contains(target) {
+                validate_update_target(target, &identity)?;
+            }
+        }
+        replace_command_paths(&identity, &plan, &bytes, &divergent, &mut || Ok(()))
+    })();
+    if let Err(error) = applied {
+        return fail(format!("{error:#}"));
+    }
+    autoupdate::discard_staged(&home);
+    eprintln!(
+        "Updated to v{version} · What's new: {} · Undo: codewhale update --rollback",
+        autoupdate::changelog_url(&version)
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new(&identity.path)
+            .args(argv.iter().skip(1))
+            .exec();
+        eprintln!("Restart Codewhale to run v{version} ({error}).");
+        std::process::exit(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = argv;
+        eprintln!("v{version} runs from the next start; this session continues on v{current}.");
+    }
+}
 
+pub fn run_rollback() -> Result<()> {
+    let identity = update_executable_identity()?;
+    let method = InstallMethod::detect(&identity.path);
+    if let Some(warning) = managed_install_warning(method) {
+        println!("{warning}");
+        bail!("The package-managed executable was not changed.");
+    }
+    if protected_update_path(&identity.path) {
+        bail!("System/package directory: rollback is disabled here.");
+    }
+    let home = codewhale_config::codewhale_home()?;
+    let previous = autoupdate::load_previous(&home)
+        .context("There is no previous version to roll back to on this machine.")?;
+    let bytes = std::fs::read(autoupdate::previous_dir(&home).join(autoupdate::binary_name()))
+        .context("The previous version's binary is missing; nothing was changed.")?;
+    if sha256_hex(&bytes) != previous.sha256 {
+        bail!(
+            "The kept previous version no longer matches its recorded checksum; nothing was changed."
+        );
+    }
+    if previous.sha256 == identity.file_hash {
+        println!("v{} is already the running version.", previous.version);
+        return Ok(());
+    }
+    preflight_downloaded_binary(&autoupdate::binary_name(), &bytes)?;
+    let current = env!("CARGO_PKG_VERSION");
+    let plan = update_plan_for_exe(&identity.path);
+    for target in &plan.target_paths {
+        validate_update_target(target, &identity)?;
+    }
+    println!(
+        "Rolling back {} from v{current} to v{}...",
+        identity.path.display(),
+        previous.version
+    );
+    replace_command_paths(&identity, &plan, &bytes, &[], &mut || Ok(()))?;
+    let mut state = autoupdate::load_state(&home);
+    state.skip_version = Some(current.to_string());
+    autoupdate::store_state(&home, &state)?;
+    autoupdate::discard_staged(&home);
+    println!(
+        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. Undo: codewhale update --rollback",
+        previous.version
+    );
     Ok(())
 }
 
@@ -316,6 +738,9 @@ fn verify_manifest_asset(download: &DownloadPlan, name: &str, bytes: &[u8]) -> R
 fn managed_install_warning(method: InstallMethod) -> Option<String> {
     if method.supports_self_update() {
         return None;
+    }
+    if method == InstallMethod::DesktopApp {
+        return Some(codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string());
     }
     Some(format!(
         "This executable is managed by {label}; in-place self-update is disabled.\n\n\
@@ -842,6 +1267,9 @@ struct DownloadPlan {
     /// Parsed checksums from this same source, already confirmed to cover
     /// `binary_name`. A plan cannot exist without this proof.
     checksums: HashMap<String, String>,
+    manifest_url: String,
+    manifest_bytes: Vec<u8>,
+    fallback_binaries: Vec<(UpdateReleaseSource, String)>,
 }
 
 /// Fetches one candidate's checksum manifest. Injected so the selection logic
@@ -1064,6 +1492,9 @@ fn single_source_download_plan(
         binary_name: asset.name.clone(),
         binary_url: asset.browser_download_url.clone(),
         checksums,
+        manifest_url: checksum_asset.browser_download_url.clone(),
+        manifest_bytes: checksum_bytes,
+        fallback_binaries: Vec::new(),
     })
 }
 
@@ -1085,35 +1516,71 @@ fn select_release_source(
     candidates: Vec<ReleaseSourceCandidate>,
     fetch_manifest: Arc<ManifestFetcher>,
 ) -> Result<DownloadPlan> {
-    if candidates.is_empty() {
-        bail!("no release source publishes an asset for this platform");
-    }
+    let mut candidates = candidates.into_iter();
+    let primary = candidates
+        .next()
+        .context("no release source publishes an asset for this platform")?;
+    let (checksums, manifest_bytes) = probe_release_source(&primary, &*fetch_manifest)
+        .with_context(|| {
+            format!(
+                "{} has no usable {CHECKSUM_MANIFEST_ASSET}; mirrors may only serve binaries that this manifest pins, so nothing was downloaded",
+                primary.source.describe()
+            )
+        })?;
+    let fallback_binaries = candidates
+        .filter(|candidate| candidate.binary_name == primary.binary_name)
+        .map(|candidate| (candidate.source, candidate.binary_url))
+        .collect();
+    Ok(DownloadPlan {
+        source: primary.source,
+        binary_name: primary.binary_name,
+        binary_url: primary.binary_url,
+        checksums,
+        manifest_url: primary.manifest_url,
+        manifest_bytes,
+        fallback_binaries,
+    })
+}
 
+fn download_pinned_binary(download: &DownloadPlan, proxy: Option<&Proxy>) -> Result<Vec<u8>> {
     let mut failures = Vec::new();
-    for candidate in candidates {
-        match probe_release_source(&candidate, &*fetch_manifest) {
-            Ok(checksums) => {
-                return Ok(DownloadPlan {
-                    source: candidate.source,
-                    binary_name: candidate.binary_name,
-                    binary_url: candidate.binary_url,
-                    checksums,
-                });
+    let sources = std::iter::once((&download.source, &download.binary_url)).chain(
+        download
+            .fallback_binaries
+            .iter()
+            .map(|(source, url)| (source, url)),
+    );
+    for (source, url) in sources {
+        match download_url(url, proxy)
+            .and_then(|bytes| verify_downloaded_asset(download, &bytes).map(|()| bytes))
+        {
+            Ok(bytes) => {
+                if source != &download.source {
+                    println!(
+                        "Downloaded {} from {}; its SHA256 matches the {} manifest.",
+                        download.binary_name,
+                        source.describe(),
+                        download.source.label()
+                    );
+                }
+                return Ok(bytes);
             }
-            Err(error) => failures.push(format!("  - {}: {error:#}", candidate.source.describe())),
+            Err(error) => failures.push(format!("  - {}: {error:#}", source.describe())),
         }
     }
-
     bail!(
-        "no release source published a usable {CHECKSUM_MANIFEST_ASSET} for this platform:\n{}",
-        failures.join("\n")
+        "failed to download a {} whose SHA256 matches {CHECKSUM_MANIFEST_ASSET} from {}:\n{}\n{}",
+        download.binary_name,
+        download.source.describe(),
+        failures.join("\n"),
+        update_network_fallback_hint()
     )
 }
 
 fn probe_release_source(
     candidate: &ReleaseSourceCandidate,
     fetch_manifest: &ManifestFetcher,
-) -> Result<HashMap<String, String>> {
+) -> Result<(HashMap<String, String>, Vec<u8>)> {
     let bytes = fetch_manifest(candidate)
         .with_context(|| format!("failed to fetch {}", candidate.manifest_url))?;
     let text = std::str::from_utf8(&bytes)
@@ -1127,7 +1594,7 @@ fn probe_release_source(
             candidate.binary_name
         );
     }
-    Ok(checksums)
+    Ok((checksums, bytes))
 }
 
 fn ensure_supported_release_target(os: &str, arch: &str) -> Result<()> {
@@ -1495,6 +1962,13 @@ impl UpdateTransportPolicy {
 
     /// Refuse anything that is not HTTPS to an allowed host.
     fn check_url(&self, url: &reqwest::Url) -> std::result::Result<(), String> {
+        if cfg!(debug_assertions)
+            && std::env::var_os("CODEWHALE_UPDATE_ALLOW_LOOPBACK_HTTP").is_some()
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        {
+            return Ok(());
+        }
         #[cfg(test)]
         if self.allow_loopback_http
             && url.scheme() == "http"
@@ -3910,7 +4384,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     }
 
     #[test]
-    fn cnb_is_used_only_after_github_manifest_failure() {
+    fn cnb_never_supplies_the_manifest_after_a_github_manifest_failure() {
         for first_answer in [
             Err("connection timed out".to_string()),
             Ok(manifest_missing_linux_x64()),
@@ -3930,26 +4404,29 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                     Ok(manifest_covering_linux_x64().into_bytes())
                 }
             });
-            let plan = select_release_source(linux_x64_candidates("v9.9.9"), fetch).unwrap();
-            assert_eq!(
-                *requested.lock().unwrap(),
-                ["GitHub Releases", "CNB mirror"]
-            );
-            assert_eq!(
-                plan.source,
+            let err = select_release_source(linux_x64_candidates("v9.9.9"), fetch)
+                .expect_err("a mirror must never vouch for its own bytes");
+            assert!(format!("{err:#}").contains("GitHub Releases"), "{err:#}");
+            assert_eq!(*requested.lock().unwrap(), ["GitHub Releases"]);
+        }
+    }
+
+    #[test]
+    fn the_mirror_is_only_a_fallback_for_bytes_github_pins() {
+        let fetch: Arc<ManifestFetcher> =
+            Arc::new(|_| Ok(manifest_covering_linux_x64().into_bytes()));
+        let plan = select_release_source(linux_x64_candidates("v9.9.9"), fetch).unwrap();
+        assert_eq!(plan.source, UpdateReleaseSource::GitHub);
+        assert_eq!(
+            plan.fallback_binaries,
+            vec![(
                 UpdateReleaseSource::Cnb {
                     base_url: cnb_release_base_url("v9.9.9"),
-                }
-            );
-            assert_eq!(
-                plan.binary_url,
+                },
                 "https://cnb.cool/codewhale.net/codewhale/-/releases/download/v9.9.9/codewhale-linux-x64"
-            );
-            assert_eq!(
-                plan.checksums.get("codewhale-linux-x64"),
-                Some(&"a".repeat(64))
-            );
-        }
+                    .to_string()
+            )]
+        );
     }
 
     #[test]
@@ -3964,20 +4441,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let message = format!("{err:#}");
 
         assert!(
-            message.contains("no release source published a usable"),
+            message.contains("dns failure") && message.contains("GitHub Releases"),
             "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("dns failure"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("does not list codewhale-linux-x64"),
-            "the unusable manifest must be reported as unusable: {message}"
-        );
-        assert!(
-            message.contains("GitHub Releases") && message.contains("CNB mirror"),
-            "both failures must be attributed: {message}"
         );
     }
 
@@ -4347,6 +4812,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             binary_name: "codewhale-linux-x64".to_string(),
             binary_url: "https://cnb.example/codewhale-linux-x64".to_string(),
             checksums: HashMap::from([("codewhale-linux-x64".to_string(), "a".repeat(64))]),
+            manifest_url: String::new(),
+            manifest_bytes: Vec::new(),
+            fallback_binaries: Vec::new(),
         };
 
         let err = verify_downloaded_asset(&plan, b"tampered bytes")

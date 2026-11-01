@@ -49,7 +49,7 @@ codewhale config doctor     # unknown keys, empty secrets, malformed URLs`,
         {
           p: "`--set KEY=VALUE` 只在这一次启动中修改设置，不保存任何内容。它支持 `provider`、`model`、`verbosity`、`approval_policy`、`sandbox_mode` 和 `telemetry`，可以重复使用。",
         },
-        { code: "codewhale --set model=deepseek-v4-pro --set sandbox_mode=read-only", lang: "终端" },
+        { code: "codewhale --set model=deepseek-flash --set sandbox_mode=read-only", lang: "终端" },
       ],
     },
     {

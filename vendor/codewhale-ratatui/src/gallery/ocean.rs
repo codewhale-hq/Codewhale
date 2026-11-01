@@ -34,7 +34,7 @@ fn column(area: Rect, buf: &mut Buffer, theme: &Theme) {
         .meta("Working / fixture")
         .paint(band(area, 0, 1), buf, theme);
     Message::new("You", "Keep the code and the decision clear.")
-        .role(Role::Primary)
+        .role(Role::Accent)
         .paint(band(area, 2, 3), buf, theme);
     Message::new(
         "Codewhale",

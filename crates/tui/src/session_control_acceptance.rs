@@ -15,12 +15,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session_manager::{
+use codewhale_engine::session_manager::{
     SavedSession, SessionListFilter, SessionManager, SessionMutator,
     create_saved_session_with_id_and_mode,
 };
-use crate::session_projection::{SessionQuery, SessionSortMode, project_sessions};
-use crate::session_resume::{AutoResumeDecision, ResumeRequest, decide_auto_resume};
+use codewhale_engine::session_projection::{SessionQuery, SessionSortMode, project_sessions};
+use codewhale_engine::session_resume::{AutoResumeDecision, ResumeRequest, decide_auto_resume};
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message};
 
@@ -221,7 +221,7 @@ mod tests {
         id: &str,
         title: &str,
         workspace: &str,
-    ) -> crate::session_manager::SessionMetadata {
+    ) -> codewhale_engine::session_manager::SessionMetadata {
         let mut session = saved(id, title, Path::new(workspace));
         session.metadata.workspace = PathBuf::from(workspace);
         session.metadata
@@ -519,9 +519,9 @@ mod tests {
         // test-only listing helper that would prove nothing about them.
         let listed = reopened.list_sessions().expect("list");
         let ids_for = |filter| {
-            crate::session_projection::select_sessions(
+            codewhale_engine::session_projection::select_sessions(
                 &listed,
-                &crate::session_projection::SessionQuery::default().with_filter(filter),
+                &codewhale_engine::session_projection::SessionQuery::default().with_filter(filter),
             )
             .into_iter()
             .map(|s| s.id.clone())
@@ -545,9 +545,9 @@ mod tests {
         assert!(!restored.archived);
         let relisted = reopened.list_sessions().expect("list");
         assert_eq!(
-            crate::session_projection::select_sessions(
+            codewhale_engine::session_projection::select_sessions(
                 &relisted,
-                &crate::session_projection::SessionQuery::default()
+                &codewhale_engine::session_projection::SessionQuery::default()
                     .with_filter(SessionListFilter::ActiveOnly),
             )
             .len(),
@@ -634,7 +634,7 @@ mod tests {
 
     /// The API's answer for a query, as ids.
     fn api_ids(
-        sessions: &[crate::session_manager::SessionMetadata],
+        sessions: &[codewhale_engine::session_manager::SessionMetadata],
         query: &SessionQuery,
     ) -> Vec<String> {
         project_sessions(sessions, query, None)
@@ -732,7 +732,7 @@ mod tests {
         let _lock = crate::test_support::lock_test_env();
         let fx = Fixture::new();
         fx.save("owned", "Open in the TUI", &fx.workspace);
-        crate::session_manager::set_live_session(Some("owned"));
+        codewhale_engine::session_manager::set_live_session(Some("owned"));
 
         let refused = fx
             .manager
@@ -762,7 +762,7 @@ mod tests {
         );
 
         // Releasing the claim re-opens external writes.
-        crate::session_manager::set_live_session(None);
+        codewhale_engine::session_manager::set_live_session(None);
         assert!(
             fx.manager
                 .rename_session("owned", "Now allowed", SessionMutator::External)
@@ -837,7 +837,7 @@ mod tests {
     fn auto_resume_candidate_walk_is_bounded() {
         const {
             assert!(
-                crate::session_resume::MAX_AUTO_RESUME_CANDIDATES <= 16,
+                codewhale_engine::session_resume::MAX_AUTO_RESUME_CANDIDATES <= 16,
                 "a damaged sessions directory must not turn startup into a long scan"
             );
         }
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn session_and_thread_archive_filters_share_one_resolution() {
-        use crate::runtime_threads::ThreadListFilter;
+        use codewhale_engine::runtime_threads::manager::ThreadListFilter;
 
         for (include, only, expected_session, expected_thread) in [
             (
@@ -896,8 +896,14 @@ mod tests {
         // provider or HTTP client. A test that "made no network call" during
         // one run would prove nothing about the next one.
         for (name, source) in [
-            ("session_projection", include_str!("session_projection.rs")),
-            ("session_resume", include_str!("session_resume.rs")),
+            (
+                "session_projection",
+                include_str!("../../engine/src/session_projection.rs"),
+            ),
+            (
+                "session_resume",
+                include_str!("../../engine/src/session_resume.rs"),
+            ),
         ] {
             for forbidden in [
                 "reqwest",
@@ -939,7 +945,7 @@ mod tests {
                 .with_limit(usize::MAX),
             None,
         );
-        assert!(unbounded.len() <= crate::session_projection::MAX_PROJECTED_SESSIONS);
+        assert!(unbounded.len() <= codewhale_engine::session_projection::MAX_PROJECTED_SESSIONS);
 
         // Row text is bounded too, so one pathological title cannot blow up a
         // row or a response.

@@ -79,15 +79,13 @@ pub(crate) async fn drain_remote_control_events(
             }
             crate::remote_control::RemoteEvent::FailedPreLease(error) => {
                 let status = format!("WEB MIRROR · could not start · {error} · /rc to retry");
-                app.status_message = Some(status.clone());
-                app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Error, None));
+                report_remote_control_failure(app, status);
             }
             crate::remote_control::RemoteEvent::Failed(error) => {
                 let status = format!(
                     "WEB MIRROR LOST · {error} · this terminal is unaffected; reconnecting waits briefly for the server lease to drain"
                 );
-                app.status_message = Some(status.clone());
-                app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Error, None));
+                report_remote_control_failure(app, status);
             }
             crate::remote_control::RemoteEvent::Stopped => {
                 app.sticky_status = None;
@@ -403,6 +401,29 @@ fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
     app.remote_control.attach_current_local_turn(turn_id)
 }
 
+fn report_remote_control_failure(app: &mut App, error: String) {
+    let error = codewhale_config::persistence::redact_secrets(&error);
+    tracing::warn!(%error, "remote-control failure");
+    app.add_message(HistoryCell::System {
+        content: error.clone(),
+    });
+    app.status_message = None;
+    app.set_sticky_status(error, StatusToastLevel::Error, None);
+}
+
+fn report_remote_control_start_failure(app: &mut App, error: String) {
+    app.remote_control.record_start_failure(&error);
+    if app.remote_control.status() == crate::remote_control::Status::Failed {
+        report_remote_control_failure(app, error);
+    } else {
+        app.push_status_toast(
+            codewhale_config::persistence::redact_secrets(&error),
+            StatusToastLevel::Error,
+            Some(12_000),
+        );
+    }
+}
+
 pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
     let session_id = app
         .current_session_id
@@ -419,7 +440,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
         .filter(|value| !value.is_empty())
         .unwrap_or("Codewhale session")
         .to_string();
-    let git_remote = crate::git_status::observed_git_repo(&app.workspace);
+    let git_remote = codewhale_engine::git_status::observed_git_repo(&app.workspace);
     let runtime_commit = option_env!("CODEWHALE_BUILD_COMMIT")
         .unwrap_or("")
         .to_string();
@@ -432,8 +453,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
             let error =
                 "Remote control needs a writable Codewhale home directory for its delivery journal."
                     .to_string();
-            app.status_message = Some(error.clone());
-            app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
+            report_remote_control_start_failure(app, error);
             return;
         }
     };
@@ -442,7 +462,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
         &target_ref,
         &session_id,
     ) {
-        app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
+        report_remote_control_start_failure(app, error);
         return;
     }
     if let Err(error) = app.remote_control.configure_runtime_chat(
@@ -452,7 +472,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
         target_ref.clone(),
         session_id.clone(),
     ) {
-        app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
+        report_remote_control_start_failure(app, error);
         return;
     }
     match app
@@ -472,8 +492,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
             app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Warning, None));
         }
         Err(error) => {
-            app.status_message = Some(error.clone());
-            app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
+            report_remote_control_start_failure(app, error);
         }
     }
 }

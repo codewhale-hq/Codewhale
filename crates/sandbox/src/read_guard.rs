@@ -425,7 +425,7 @@ pub fn with_test_active_denylist<R>(list: ReadDenylist, callback: impl FnOnce() 
             *ACTIVE.write().unwrap() = self.0.take();
         }
     }
-    let previous = std::mem::replace(&mut *ACTIVE.write().unwrap(), Some(Arc::new(list)));
+    let previous = (*ACTIVE.write().unwrap()).replace(Arc::new(list));
     let _restore = RestoreActive(previous);
     callback()
 }

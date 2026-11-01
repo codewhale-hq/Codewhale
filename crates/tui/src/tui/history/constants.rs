@@ -70,20 +70,21 @@ pub(super) const TOOL_OUTPUT_HEAD_LINES: usize = 10;
 /// budget, leaving 4 rows for importance-ranked lines from the middle.
 pub(super) const TOOL_OUTPUT_TAIL_LINES: usize = 6;
 #[cfg(test)]
-pub(super) const TOOL_RUNNING_SYMBOLS: [&str; 8] = crate::tui::spinner::BRAILLE_SPINNER_FRAMES;
+pub(super) const TOOL_RUNNING_SYMBOLS: [&str; 8] =
+    codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAMES;
 #[cfg(test)]
-pub(super) const TOOL_STATUS_SYMBOL_MS: u64 = crate::tui::spinner::BRAILLE_SPINNER_FRAME_MS;
+pub(super) const TOOL_STATUS_SYMBOL_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 /// Visual marker for the user role at the start of their message line. Solid
 /// vertical bar — no animation; user input is a finished thing.
-pub(super) const USER_GLYPH: &str = crate::tui::glyphs::USER;
+pub(super) const USER_GLYPH: &str = codewhale_tui_kit::glyphs::USER;
 /// Visual marker for the assistant role. Solid bullet that pulses at 2s
 /// cycle while the response is streaming, holds full brightness when idle.
-pub(super) const ASSISTANT_GLYPH: &str = crate::tui::glyphs::CURRENT;
+pub(super) const ASSISTANT_GLYPH: &str = codewhale_tui_kit::glyphs::CURRENT;
 /// Transcript body left rail. Solid 1/8 block (`▏`) followed by a space —
 /// used as a visual left-margin anchor for continuation lines, tool-card
 /// detail rows, and affordance lines. Dimmed so it guides the eye without
 /// competing with content.
-pub(super) const TRANSCRIPT_RAIL: &str = crate::tui::glyphs::TRANSCRIPT_RAIL;
+pub(super) const TRANSCRIPT_RAIL: &str = codewhale_tui_kit::glyphs::TRANSCRIPT_RAIL;
 /// Total rendered rows a non-failed tool card keeps when `show_tool_details`
 /// is off or calm mode is on — both shipped defaults, so this is the cap a user
 /// actually sees.
@@ -97,5 +98,5 @@ pub(super) const TRANSCRIPT_RAIL: &str = crate::tui::glyphs::TRANSCRIPT_RAIL;
 /// budget.
 pub(super) const TOOL_SUMMARY_CARD_LINES: usize = 6;
 
-pub(super) const TOOL_DONE_SYMBOL: &str = crate::tui::glyphs::DONE;
-pub(super) const TOOL_FAILED_SYMBOL: &str = crate::tui::glyphs::FAILED;
+pub(super) const TOOL_DONE_SYMBOL: &str = codewhale_tui_kit::glyphs::DONE;
+pub(super) const TOOL_FAILED_SYMBOL: &str = codewhale_tui_kit::glyphs::FAILED;

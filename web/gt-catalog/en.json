@@ -203,6 +203,7 @@
     "screenshotAlt": "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
     "latestRelease": "Latest release {tag}",
     "releaseUnavailable": "Release status unavailable",
+    "proofContributors": "{count} contributors",
     "currentSource": "Source",
     "sourceCandidate": "Unreleased",
     "publishedRelease": "released",
@@ -758,7 +759,7 @@
             "p": "`--set KEY=VALUE` changes a setting for one launch and saves nothing. It accepts `provider`, `model`, `verbosity`, `approval_policy`, `sandbox_mode`, and `telemetry`, and can be repeated."
           },
           {
-            "code": "codewhale --set model=deepseek-v4-pro --set sandbox_mode=read-only",
+            "code": "codewhale --set model=deepseek-flash --set sandbox_mode=read-only",
             "lang": "Terminal"
           }
         ]
@@ -1068,7 +1069,7 @@
         "note": "Drive Codewhale from your own app or script over HTTP."
       }
     ],
-    "sourceNote": "Source documents: docs/MCP.md, crates/tui/src/tools/codemode.rs · Update docs-map.ts when changing."
+    "sourceNote": "Source documents: docs/MCP.md, crates/engine/src/tools/codemode.rs · Update docs-map.ts when changing."
   },
   "docs-modes": {
     "metaTitle": "Set modes and approvals · Codewhale Docs",

@@ -57,7 +57,7 @@ codewhale config doctor     # unknown keys, empty secrets, malformed URLs`,
           p: "`--set KEY=VALUE` changes a setting for one launch and saves nothing. It accepts `provider`, `model`, `verbosity`, `approval_policy`, `sandbox_mode`, and `telemetry`, and can be repeated.",
         },
         {
-          code: 'codewhale --set model=deepseek-v4-pro --set sandbox_mode=read-only',
+          code: 'codewhale --set model=deepseek-flash --set sandbox_mode=read-only',
           lang: "Terminal",
         },
       ],

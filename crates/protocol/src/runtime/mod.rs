@@ -82,6 +82,8 @@ pub struct RuntimeCapabilities {
     pub turn_operation_lookup: bool,
     #[serde(default)]
     pub structured_review_turns: bool,
+    #[serde(default)]
+    pub structured_review_version: u32,
     /// Automation patch/run/pause/resume honor `expected_revision` (409
     /// `revision_conflict` carrying `current_revision`); create/patch/run/pause/
     /// resume honor a bounded, persisted `Idempotency-Key`. Delete honors
@@ -463,6 +465,7 @@ mod tests {
             turn_operation_idempotency: true,
             turn_operation_lookup: true,
             structured_review_turns: true,
+            structured_review_version: 2,
             automation_mutation_preconditions: true,
             turn_image_inputs: true,
             turn_steer: true,

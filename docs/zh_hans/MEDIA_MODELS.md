@@ -17,8 +17,8 @@
 选择器或任意模型 ID 覆盖。选定本地/Groq 后失败，不会静默上传给另一提供商；
 把变量设为 Qwen/Index 模型名也不会安装后端。
 
-源码 owner：[语音工具](../../crates/tui/src/tools/speech.rs)、
-[合成客户端](../../crates/tui/src/client.rs)、[语音选择](../../crates/tui/src/voice.rs)、
+源码 owner：[语音工具](../../crates/engine/src/tools/speech.rs)、
+[合成客户端](../../crates/engine/src/client.rs)、[语音选择](../../crates/engine/src/voice.rs)、
 [Runtime 语音](../../crates/tui/src/runtime_api/voice.rs)。真实麦克风、合成请求及完整
 用户语音旅程仍需独立验收。
 

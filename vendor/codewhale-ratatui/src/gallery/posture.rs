@@ -19,8 +19,8 @@ pub(crate) fn working_posture() -> PostureBar<'static> {
 
 pub(crate) fn working_metrics() -> MetricsLine<'static> {
     MetricsLine::new(vec![
-        MetricSegment::new(MetricKind::Model, "", "deepseek-v4").role(Role::Primary),
-        MetricSegment::new(MetricKind::Context, "ctx", "61%").role(Role::Primary),
+        MetricSegment::new(MetricKind::Model, "", "deepseek-v4").role(Role::Accent),
+        MetricSegment::new(MetricKind::Context, "ctx", "61%").role(Role::Accent),
         MetricSegment::new(MetricKind::Cost, "", "$0.42"),
         MetricSegment::new(MetricKind::Ttft, "ttft", "400ms"),
         MetricSegment::new(MetricKind::Rate, "", "38 tok/s"),
@@ -42,7 +42,7 @@ fn cap(area: Rect, buf: &mut Buffer, theme: &Theme) {
 fn compact_posture(area: Rect, buf: &mut Buffer, theme: &Theme) {
     working_posture()
         .compact(true)
-        .right("/rc connected", Role::Primary)
+        .right("/rc connected", Role::Accent)
         .paint(area, buf, theme);
 }
 
@@ -57,7 +57,7 @@ fn compact_metrics(area: Rect, buf: &mut Buffer, theme: &Theme) {
 fn startup_metrics(area: Rect, buf: &mut Buffer, theme: &Theme) {
     MetricsLine::new(vec![
         MetricSegment::new(MetricKind::Model, "", "model not connected").role(Role::Attention),
-        MetricSegment::new(MetricKind::Context, "ctx", "0%").role(Role::Primary),
+        MetricSegment::new(MetricKind::Context, "ctx", "0%").role(Role::Accent),
     ])
     .help_hint("/help")
     .paint(area, buf, theme);

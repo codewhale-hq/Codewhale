@@ -184,7 +184,7 @@ impl<'a> Panel<'a> {
         let layout = self.layout(area, theme);
         if layout.edged {
             let edge_role = if self.focused {
-                Role::Primary
+                Role::Accent
             } else if self.depth == Depth::Overlay {
                 Role::BorderStrong
             } else {

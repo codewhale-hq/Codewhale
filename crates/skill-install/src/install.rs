@@ -707,11 +707,11 @@ struct CacheMeta {
 /// For every skill listed in `index.json` this function:
 ///
 /// 1. Resolves the download URL (same logic as `install`).
-/// 2. Checks the cached [`CacheMeta`] (etag + sha256) for freshness; skips
+/// 2. Checks the cached `CacheMeta` (etag + sha256) for freshness; skips
 ///    the download if unchanged.
 /// 3. Downloads SKILL.md (and any companion files if the source is a tarball)
 ///    into `<cache_dir>/<name>/`.
-/// 4. Writes updated [`CacheMeta`] so the next sync is fast.
+/// 4. Writes updated `CacheMeta` so the next sync is fast.
 ///
 /// Failures per-skill are non-fatal: [`SkillSyncOutcome::Failed`] is recorded
 /// and the sync continues. The caller decides how to surface per-skill errors.
@@ -1098,7 +1098,7 @@ pub enum FetchOutcome {
 /// Resolve a *remote* [`InstallSource`] (GitHub repo or direct tarball URL)
 /// and download the first reachable candidate under the network policy.
 /// Registry sources are rejected: skill registry resolution stays inside
-/// [`candidate_urls`], and the plugin install on-ramp has no registry index.
+/// `candidate_urls`, and the plugin install on-ramp has no registry index.
 pub async fn fetch_tarball(
     source: &InstallSource,
     network: &NetworkPolicy,

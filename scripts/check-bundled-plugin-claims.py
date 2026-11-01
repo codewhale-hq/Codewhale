@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CHANGELOG = ROOT / "CHANGELOG.md"
-MARKETPLACE = ROOT / "crates/tui/assets/first-party-marketplace.json"
+MARKETPLACE = ROOT / "crates/plugins/assets/first-party-marketplace.json"
 PLUGIN_DIR = ROOT / "crates/tui/plugins"
 
 

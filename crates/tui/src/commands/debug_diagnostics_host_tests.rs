@@ -3,10 +3,10 @@
 //! `commands::debug_diagnostics` filter; mutation-only tests stay in the group.
 
 use super::debug_mutation_host_tests::{create_test_app, test_tool};
-use crate::client::CacheWarmupKey;
 use crate::tui::app::{App, AppAction, TurnCacheRecord};
 use crate::tui::history::HistoryCell;
 use codewhale_commands::debug::cache_format::format_tokens;
+use codewhale_engine::client::CacheWarmupKey;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, SystemBlock, SystemPrompt};
 use std::time::Instant;
@@ -136,6 +136,41 @@ fn test_cost_shows_spending_info() {
     assert!(msg.contains("Covered: 1 of 1"), "{msg}");
     assert!(!msg.contains("Provider API Pricing"), "{msg}");
     assert!(!msg.contains("DeepSeek API Pricing"), "{msg}");
+
+    let mut subscription = create_test_app();
+    subscription.session.cost_route_receipts.insert(
+        "provider=example identity=- model=example surface=api endpoint_fp=- billing_mode=subscription currency=USD".to_string(),
+    );
+    let summary = cost(&mut subscription)
+        .message
+        .expect("subscription summary");
+    assert!(summary.contains("subscription billing"), "{summary}");
+    assert!(
+        summary.contains("does not know the amount charged"),
+        "{summary}"
+    );
+    let details = dispatch(&mut subscription, "cost", Some("details"))
+        .expect("cost details")
+        .message
+        .expect("details message");
+    assert!(details.contains("billing_mode=subscription"), "{details}");
+    subscription.session.session_cost = 0.5;
+    let unknown = cost(&mut subscription)
+        .message
+        .expect("unknown cost report");
+    assert!(
+        !unknown.contains("These routes use subscription billing"),
+        "{unknown}"
+    );
+    subscription.session.session_cost = 0.0;
+    subscription.session.cost_route_receipts.insert(
+        "provider=example identity=- model=example surface=api endpoint_fp=- billing_mode=metered currency=USD".to_string(),
+    );
+    let mixed = cost(&mut subscription).message.expect("mixed cost report");
+    assert!(
+        !mixed.contains("These routes use subscription billing"),
+        "{mixed}"
+    );
 }
 
 /// The same accumulator with no coverage behind it is not a total. It is the
@@ -153,7 +188,7 @@ fn cost_report_will_not_promote_an_unqualified_accumulator_to_a_total() {
 
 #[test]
 fn cost_report_states_its_coverage_and_names_what_it_excludes() {
-    use crate::pricing::audit_turn_cost_for_provider_at;
+    use codewhale_engine::pricing::audit_turn_cost_for_provider_at;
 
     let mut app = create_test_app();
     let write_heavy = codewhale_models::Usage {
@@ -186,14 +221,17 @@ fn cost_report_states_its_coverage_and_names_what_it_excludes() {
     assert!(!unpriced.is_priced(), "fixture must fail closed");
     app.record_turn_cost_audit(&unpriced);
 
-    let billing =
-        crate::route_billing::for_dispatched_receipt(crate::route_billing::DispatchedReceipt {
+    let billing = codewhale_engine::route_billing::for_dispatched_receipt(
+        codewhale_engine::route_billing::DispatchedReceipt {
             provider: codewhale_config::ProviderKind::OpenaiCodex,
             identity: Some("openai_codex"),
             base_url: "https://api.openai.com/v1",
-            product: crate::route_billing::RouteProduct::Subscription("ChatGPT plan allowance"),
-        });
-    let oauth = crate::pricing::audit_turn_cost_for_route(
+            product: codewhale_engine::route_billing::RouteProduct::Subscription(
+                "ChatGPT plan allowance",
+            ),
+        },
+    );
+    let oauth = codewhale_engine::pricing::audit_turn_cost_for_route(
         codewhale_config::ProviderKind::OpenaiCodex,
         "gpt-5.5",
         None,
@@ -238,13 +276,13 @@ fn cost_coverage_is_currency_specific_for_mixed_deepseek_openai() {
         output_tokens: 1_000,
         ..Default::default()
     };
-    let deepseek = crate::pricing::audit_turn_cost_for_provider_at(
+    let deepseek = codewhale_engine::pricing::audit_turn_cost_for_provider_at(
         codewhale_config::ProviderKind::Deepseek,
         "deepseek-v4-flash",
         &usage,
         chrono::Utc::now(),
     );
-    let openai = crate::pricing::audit_turn_cost_for_provider_at(
+    let openai = codewhale_engine::pricing::audit_turn_cost_for_provider_at(
         codewhale_config::ProviderKind::Openai,
         "gpt-5.5",
         &usage,
@@ -324,7 +362,7 @@ fn cost_report_distinguishes_bundled_fallback_from_no_usable_fallback() {
 #[test]
 fn all_zero_legacy_coverage_stays_unknown_when_rendered_and_resaved() {
     let mut app = create_test_app();
-    let legacy: crate::session_manager::SessionCostSnapshot =
+    let legacy: codewhale_engine::session_manager::SessionCostSnapshot =
         serde_json::from_value(serde_json::json!({
             "session_cost_usd": 0.0,
             "session_cost_cny": 0.0
@@ -337,7 +375,7 @@ fn all_zero_legacy_coverage_stays_unknown_when_rendered_and_resaved() {
     assert!(msg.contains("Coverage: unknown"), "{msg}");
     assert!(!msg.contains("Covered: 0 of 0"), "{msg}");
 
-    let mut metadata = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut metadata = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "legacy-zero".to_string(),
         &[],
         "deepseek-v4-flash",
@@ -356,7 +394,7 @@ fn all_zero_legacy_coverage_stays_unknown_when_rendered_and_resaved() {
 /// attached to a total that no longer contains those turns.
 #[test]
 fn reset_cost_coverage_clears_every_counter() {
-    use crate::pricing::audit_turn_cost_for_provider_at;
+    use codewhale_engine::pricing::audit_turn_cost_for_provider_at;
 
     let mut app = create_test_app();
     let usage = codewhale_models::Usage {
@@ -413,7 +451,7 @@ fn reset_cost_coverage_clears_every_counter() {
 fn tokens_report_says_estimate_and_exposes_coverage_and_cache_write() {
     let mut app = create_test_app();
     app.session.total_cache_write_tokens = 250_000;
-    app.record_turn_cost_audit(&crate::pricing::audit_turn_cost_for_provider_at(
+    app.record_turn_cost_audit(&codewhale_engine::pricing::audit_turn_cost_for_provider_at(
         codewhale_config::ProviderKind::Moonshot,
         "kimi-k2.7-code",
         &codewhale_models::Usage {
@@ -592,7 +630,7 @@ fn cache_inspect_json_keys_auto_replay_to_the_last_concrete_route() {
     let mut app = create_test_app();
     app.model = "auto".to_string();
     app.auto_model = true;
-    app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::Off;
+    app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::Off;
     app.last_effective_provider = Some(codewhale_config::ProviderKind::OpenaiCodex);
     app.last_effective_provider_identity = Some(
         codewhale_config::ProviderKind::OpenaiCodex
@@ -972,7 +1010,7 @@ fn cache_command_renders_recorded_turns_with_ratio() {
 
 #[test]
 fn cache_history_shows_cache_write_tokens_and_explains_unpriced_turns() {
-    use crate::pricing::audit_turn_cost_for_provider_at;
+    use codewhale_engine::pricing::audit_turn_cost_for_provider_at;
 
     let mut app = create_test_app();
     let write_heavy = codewhale_models::Usage {
@@ -1438,7 +1476,7 @@ fn tools_command_is_truthful_before_any_request_snapshot() {
 fn tools_command_and_compatibility_alias_render_same_exact_snapshot() {
     let mut app = create_test_app();
     app.session.last_tool_request_snapshot = Some(
-        crate::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
+        codewhale_engine::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
             "turn-1",
             2,
             Some(&[test_tool("read_file")]),
@@ -1468,7 +1506,7 @@ fn tools_command_and_compatibility_alias_render_same_exact_snapshot() {
 fn tools_command_rejects_unknown_formats_without_mutating_state() {
     let mut app = create_test_app();
     app.session.last_tool_request_snapshot = Some(
-        crate::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
+        codewhale_engine::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
             "turn-1",
             1,
             Some(&[]),
@@ -1486,10 +1524,10 @@ fn tools_command_rejects_unknown_formats_without_mutating_state() {
 mod cost_breakdown_tests {
     use super::*;
     use crate::commands::contract::DebugCostComponents as CostComponents;
-    use crate::pricing::{CostEstimate, TurnCostAudit};
     use crate::tui::app::App;
     use crate::tui::app::{TuiOptions, TurnCacheRecord};
     use codewhale_config::pricing::CostCurrency;
+    use codewhale_engine::pricing::{CostEstimate, TurnCostAudit};
     use codewhale_runtime::config::Config;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -1857,7 +1895,7 @@ mod preview_host_tests {
 
     #[test]
     fn base_prompt_provenance_is_runtime_not_a_source_path() {
-        let label = crate::prompts::base_prompt_origin().label();
+        let label = codewhale_engine::prompts::base_prompt_origin().label();
         assert!(!label.contains("crates/"), "{label}");
         assert!(!label.contains(".rs"), "{label}");
         assert!(

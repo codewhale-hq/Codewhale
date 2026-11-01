@@ -16,21 +16,6 @@ use codewhale_config::{AppMode, ProviderChain, route::RouteLimits};
 use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 
-use crate::artifacts::ArtifactRecord;
-use crate::client::{CacheWarmupKey, PromptInspection};
-use crate::compaction::CompactionConfig;
-use crate::core::authority::{ModeSessionPrefs, base_policy_for_mode};
-use crate::core::events::TurnRoute;
-use crate::hooks::{HookContext, HookExecutor};
-use crate::pricing::CostEstimate;
-use crate::provider_readiness::{has_api_key, has_api_key_for};
-use crate::reasoning_preference::{EffectiveReasoningEffort, ReasoningEffort};
-use crate::session_manager::{SessionContextReference, SessionMetadata, SessionWorkState};
-use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::new_shared_shell_manager;
-use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult};
-use crate::tools::todo::{SharedTodoList, TodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::tui::history::{
@@ -38,22 +23,39 @@ use crate::tui::history::{
 };
 use crate::tui::hotbar::HotbarActionRegistry;
 use crate::tui::motion::MotionPolicy;
-use crate::tui::paste_burst::{FlushResult, PasteBurst};
-use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::shell_key_routing::Focus;
-use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_config::hooks::HookEvent;
 use codewhale_config::pricing::CostCurrency;
+use codewhale_engine::client::{CacheWarmupKey, PromptInspection};
+use codewhale_engine::compaction::CompactionConfig;
+use codewhale_engine::core::authority::{ModeSessionPrefs, base_policy_for_mode};
+use codewhale_engine::core::events::TurnRoute;
+use codewhale_engine::hooks::{HookContext, HookExecutor};
+use codewhale_engine::pricing::CostEstimate;
+use codewhale_engine::provider_readiness::{has_api_key, has_api_key_for};
+use codewhale_engine::reasoning_preference::{EffectiveReasoningEffort, ReasoningEffort};
+use codewhale_engine::session_manager::{
+    SessionContextReference, SessionMetadata, SessionWorkState,
+};
+use codewhale_engine::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
+use codewhale_engine::tools::shell::new_shared_shell_manager;
+use codewhale_engine::tools::spec::RuntimeToolServices;
+use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentResult};
+use codewhale_engine::tools::todo::{SharedTodoList, TodoList, new_shared_todo_list};
 use codewhale_localization::{Locale, MessageId, resolve_locale, tr};
 use codewhale_models::{ContentBlock, Message, SystemPrompt, Tool, Usage};
 use codewhale_palette::{self as palette, UiTheme};
+use codewhale_runtime::artifacts::ArtifactRecord;
 use codewhale_runtime::config::{ApprovalPolicyControl, Config};
 use codewhale_runtime::settings::{InlineDiffMode, Settings};
+use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
+use codewhale_tui_kit::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
+use codewhale_tui_kit::streaming::StreamingState;
 
 mod composer;
 mod init;
@@ -110,7 +112,7 @@ pub(crate) struct PendingMcpRetry {
     /// that turn to finish before it connects.
     pub queued: bool,
     pub result: std::sync::Arc<
-        std::sync::Mutex<Option<Result<crate::core::ops::McpManagerUpdate, String>>>,
+        std::sync::Mutex<Option<Result<codewhale_engine::core::ops::McpManagerUpdate, String>>>,
     >,
 }
 
@@ -130,7 +132,7 @@ pub struct ActiveTurnMetadata {
     pub created_at: DateTime<Utc>,
     pub route: Option<TurnRoute>,
     /// Auto decision metadata captured with this exact authoritative route.
-    pub auto_route_receipt: Option<crate::model_routing::AutoRouteReceipt>,
+    pub auto_route_receipt: Option<codewhale_engine::model_routing::AutoRouteReceipt>,
     /// Non-secret proof of the exact endpoint + credential this turn launched
     /// against, adopted at `TurnStarted` from the engine's route receipt — not
     /// re-resolved from mutable config. Only populated for routes that can
@@ -199,12 +201,13 @@ pub(crate) fn resolve_skills_dir(
     config: &Config,
 ) -> PathBuf {
     let admitted =
-        |dir: &Path| crate::skills::skills_dir_allowed_by_workspace_trust(workspace, dir);
+        |dir: &Path| codewhale_skills::skills_dir_allowed_by_workspace_trust(workspace, dir);
     if config.skills_config().scan_codewhale_only() {
         if config.skills_dir.is_some() {
             return global_skills_dir.to_path_buf();
         }
-        if let Some(codewhale_skills_dir) = crate::skills::codewhale_workspace_skills_dir(workspace)
+        if let Some(codewhale_skills_dir) =
+            codewhale_skills::codewhale_workspace_skills_dir(workspace)
             && admitted(&codewhale_skills_dir)
         {
             return codewhale_skills_dir;
@@ -232,7 +235,7 @@ pub(crate) fn resolve_skills_dir(
         return global_skills_dir.to_path_buf();
     }
     if config.skills_dir.is_none()
-        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && let Some(global_agents) = codewhale_skills::agents_global_skills_dir()
         && global_agents.exists()
     {
         return global_agents;
@@ -388,7 +391,7 @@ pub struct TurnCacheRecord {
     /// The turn's cost with its provenance and per-class completeness, taken
     ///   from the same call that fed the session total. `None` for records made
     ///   without route provenance (legacy rows, synthetic test rows).
-    pub cost_audit: Option<crate::pricing::TurnCostAudit>,
+    pub cost_audit: Option<codewhale_engine::pricing::TurnCostAudit>,
     /// Approximate tokens spent re-sending prior `reasoning_content` on
     ///   V4-thinking tool-calling turns (chars/3 heuristic). Helps separate
     ///   cache misses caused by reasoning-replay churn from misses caused by
@@ -515,7 +518,7 @@ impl AgentCurrentActivity {
 /// can enter the parent transcript/sidebar pass through this seam.
 pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
-    crate::tui::osc8::strip_ansi_into(value, &mut visible);
+    codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
     crate::tui::history::summarize_tool_output(&redacted)
 }
@@ -728,21 +731,27 @@ pub(crate) const LAUNCH_CARD_DISSOLVE_MS: u128 = 240;
 /// exist at all so the card never claims "no recent sessions" while
 /// `/resume` has some.
 fn load_launch_recent(workspace: &std::path::Path) -> (Vec<LaunchRecentSession>, usize, bool) {
-    let manager = crate::session_manager::SessionManager::default_location().ok();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().ok();
     let sessions = manager
         .as_ref()
         .and_then(|manager| manager.list_sessions().ok())
         .unwrap_or_default();
     let any_scoped = sessions.iter().any(|session| {
         !session.archived
-            && crate::session_manager::workspace_scope_matches(&session.workspace, workspace)
+            && codewhale_engine::session_manager::workspace_scope_matches(
+                &session.workspace,
+                workspace,
+            )
     });
     let mut scoped: Vec<LaunchRecentSession> = sessions
         .into_iter()
         .filter(|session| {
             !session.archived
-                && !crate::session_manager::is_empty_auto_created_session(session)
-                && crate::session_manager::workspace_scope_matches(&session.workspace, workspace)
+                && !codewhale_engine::session_manager::is_empty_auto_created_session(session)
+                && codewhale_engine::session_manager::workspace_scope_matches(
+                    &session.workspace,
+                    workspace,
+                )
         })
         .map(|session| LaunchRecentSession {
             interrupted: false,
@@ -1123,7 +1132,7 @@ pub struct HostGoalState {
     pub continuation_count: u32,
     /// Why an unfinished goal is paused. Kept separate from the four-state
     /// status so usage, budget, and run-limit stops stay distinguishable.
-    pub pause_reason: Option<crate::tools::goal::GoalPauseReason>,
+    pub pause_reason: Option<codewhale_engine::tools::goal::GoalPauseReason>,
     pub started_at: Option<Instant>,
     /// When the goal reached a terminal status (Complete/Blocked).
     /// While `None`, elapsed time keeps growing; once set, the sidebar freezes
@@ -1131,8 +1140,8 @@ pub struct HostGoalState {
     pub finished_at: Option<Instant>,
     /// Latest progress the model reported for the active goal. Runtime-only
     /// display state; never persisted and never treated as verified.
-    pub progress: Option<crate::tools::goal::GoalProgressReport>,
-    pub status: crate::tools::goal::GoalStatus,
+    pub progress: Option<codewhale_engine::tools::goal::GoalProgressReport>,
+    pub status: codewhale_engine::tools::goal::GoalStatus,
 }
 
 /// Session cost and token telemetry state.
@@ -1161,7 +1170,7 @@ pub struct SessionState {
     /// fingerprints are persisted by the session and worker projections.
     pub subagent_usage_sources: HashSet<String>,
     pub missing_usage_sources:
-        std::collections::BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
+        std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
     pub missing_usage_overflowed: bool,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
@@ -1241,7 +1250,8 @@ pub struct SessionState {
     /// that were eligible for the provider's prefix cache.
     pub last_tool_catalog: Option<Vec<Tool>>,
     /// Exact tool field captured at the latest model request seam.
-    pub last_tool_request_snapshot: Option<crate::tool_inspection::ToolInspectionSnapshot>,
+    pub last_tool_request_snapshot:
+        Option<codewhale_engine::tool_inspection::ToolInspectionSnapshot>,
     /// API base URL used by the most recent model request or cache warmup.
     pub last_base_url: Option<String>,
 }
@@ -1411,7 +1421,7 @@ impl SessionState {
             || usage.prompt_cache_miss_tokens.is_some()
             || usage.prompt_cache_write_tokens.is_some()
         {
-            let classes = crate::pricing::token_usage_for_pricing(usage);
+            let classes = codewhale_engine::pricing::token_usage_for_pricing(usage);
             self.pending_turn_cache_hit_tokens = self
                 .pending_turn_cache_hit_tokens
                 .saturating_add(u32::try_from(classes.cache_read).unwrap_or(u32::MAX));
@@ -1485,7 +1495,8 @@ pub(crate) struct PendingProviderSwitch {
     pub previous_model_ids_passthrough: bool,
     pub previous_route_limits: Option<RouteLimits>,
     pub previous_route_base_url: String,
-    pub previous_context_window_source: crate::route_runtime::ContextWindowSource,
+    pub previous_context_window_source: codewhale_engine::route_runtime::ContextWindowSource,
+    pub previous_context_window: Option<codewhale_engine::route_runtime::ContextWindowResolution>,
     pub previous_context_window_override: Option<u32>,
     pub previous_config: Config,
     pub previous_onboarding: OnboardingState,
@@ -1498,7 +1509,7 @@ pub(crate) struct PendingProviderSwitch {
 pub type DispatchApplyFn = Box<
     dyn FnOnce(
             &mut App,
-            &crate::core::engine::EngineHandle,
+            &codewhale_engine::core::engine::EngineHandle,
             &codewhale_runtime::config::Config,
         ) -> anyhow::Result<()>
         + Send,
@@ -1516,7 +1527,7 @@ pub struct PendingRouteSave {
     /// Exact model id the session is now on.
     pub model: String,
     /// The selected Fleet at change time, when one exists.
-    pub fleet: Option<(String, crate::fleet::store::FleetScope)>,
+    pub fleet: Option<(String, codewhale_engine::fleet::store::FleetScope)>,
 }
 
 /// Write `provider_identity`/`model` to the user-global config as the route the next
@@ -1539,8 +1550,12 @@ fn try_persist_route_as_startup_default(
 ) -> anyhow::Result<()> {
     let path = codewhale_runtime::config::home_config_path()
         .ok_or_else(|| anyhow::anyhow!("Cannot resolve the user-global model configuration."))?;
-    crate::route_preferences::persist_provider_selection(Some(&path), identity, Some(model))
-        .map(|_| ())
+    codewhale_engine::route_preferences::persist_provider_selection(
+        Some(&path),
+        identity,
+        Some(model),
+    )
+    .map(|_| ())
 }
 
 /// Caller scope captured by a background catalog scan; results never install
@@ -1550,8 +1565,8 @@ pub(crate) struct SkillCacheScope {
     pub(crate) epoch: u64,
     pub(crate) workspace: std::path::PathBuf,
     pub(crate) skills_dir: std::path::PathBuf,
-    pub(crate) mode: crate::skills::SkillDiscoveryMode,
-    pub(crate) plugins: std::sync::Arc<crate::plugins::PluginRegistry>,
+    pub(crate) config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+    pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
 pub struct App {
@@ -1615,6 +1630,9 @@ pub struct App {
     /// length-mismatched site degrades to save-time stamps, never to a
     /// dropped message.
     pub api_message_stamps: Vec<DateTime<Utc>>,
+    /// Why the live window's first message last changed, kept until the next
+    /// snapshot reports it in `session.window.rerooted`.
+    pub(crate) window_reroot_cause: Option<&'static str>,
     /// Full saved history, including inactive branches. API messages remain
     /// the active projection; snapshots reconcile it without rebuilding IDs.
     pub session_journal: codewhale_runtime::session_tree::SessionJournal,
@@ -1675,9 +1693,9 @@ pub struct App {
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
     pub status_toasts: VecDeque<StatusToast>,
-    /// Header chip label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
+    /// Metrics-line label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
     /// startup version check when a newer stable release exists. Drives the
-    /// small persistent update chip in the header so the affordance survives
+    /// persistent update notice so the affordance survives
     /// the transient toast without nagging (FINISH-0.9.4 #14).
     pub update_available: Option<String>,
     /// Sticky status toast used for important warnings/errors.
@@ -1690,7 +1708,7 @@ pub struct App {
     pub context_pressure_warning_dismissed:
         Option<codewhale_runtime::context_budget::PressureLevel>,
     /// Last on-disk plugin catalog stamp we already nudged `/plugin reload` for.
-    pub plugin_reload_nudge_stamp: Option<crate::plugins::PluginCatalogStamp>,
+    pub plugin_reload_nudge_stamp: Option<codewhale_plugins::PluginCatalogStamp>,
     /// Last idle catalog fingerprint poll, so disk changes can surface between turns.
     pub last_plugin_catalog_poll: Option<Instant>,
     /// Live composer plugin CTA (debounce + one match, never auto-install).
@@ -1702,7 +1720,7 @@ pub struct App {
     /// Which routes this person actually used recently (#6533): built from
     /// saved sessions off the UI thread at startup, bumped on route switches.
     /// The `/model` picker's default view ranks by it.
-    pub route_usage: crate::model_relevance::SharedRouteUsage,
+    pub route_usage: codewhale_engine::model_relevance::SharedRouteUsage,
     /// Non-secret declarations from the loaded config snapshot. Completion
     /// reads this snapshot without reloading credentials on each keystroke.
     pub configured_models: Vec<codewhale_config::catalog::configured::ConfiguredModel>,
@@ -1715,6 +1733,12 @@ pub struct App {
     pub auto_model: bool,
     /// Last concrete model chosen while `auto_model` is active.
     pub last_effective_model: Option<String>,
+    pub(crate) last_effective_budget: Option<(
+        ProviderKind,
+        String,
+        Option<RouteLimits>,
+        codewhale_engine::route_runtime::ContextWindowResolution,
+    )>,
     /// Provider that actually served the latest auto-routed turn.
     pub last_effective_provider: Option<ProviderKind>,
     /// Exact non-secret identity for the provider that served the latest Auto
@@ -1722,12 +1746,13 @@ pub struct App {
     /// `ProviderKind::Custom` enum variant.
     pub(crate) last_effective_provider_identity: Option<String>,
     /// Auto decision metadata for the most recently resolved Auto turn.
-    pub(crate) last_auto_route_receipt: Option<crate::model_routing::AutoRouteReceipt>,
+    pub(crate) last_auto_route_receipt: Option<codewhale_engine::model_routing::AutoRouteReceipt>,
     /// Route selected for the next turn, retained for in-flight UI details
     /// until the engine confirms the authoritative `TurnStarted` route.
     pub pending_turn_route: Option<(ProviderKind, String, bool)>,
     /// Auto decision metadata waiting to be paired with `pending_turn_route`.
-    pub(crate) pending_auto_route_receipt: Option<crate::model_routing::AutoRouteReceipt>,
+    pub(crate) pending_auto_route_receipt:
+        Option<codewhale_engine::model_routing::AutoRouteReceipt>,
     /// Authoritative lifecycle metadata attached to the most recent
     /// `TurnStarted`. Kept separate from `pending_turn_route` so a preceding
     /// compaction completion cannot consume the next model turn's route.
@@ -1758,7 +1783,7 @@ pub struct App {
     /// Session-local evidence from real provider requests and verification
     /// probes. Unlike `provider_readiness` above, this never treats a saved key
     /// as proof that the endpoint is healthy.
-    pub(crate) provider_health: crate::provider_readiness::ProviderReadinessSnapshot,
+    pub(crate) provider_health: codewhale_engine::provider_readiness::ProviderReadinessSnapshot,
     /// Human-readable description of the last provider fallback event.
     pub last_fallback_reason: Option<String>,
     /// True when the active provider/base URL accepts arbitrary model IDs
@@ -1773,7 +1798,9 @@ pub struct App {
     pub active_route_base_url: String,
     /// Provenance for `active_route_limits`' effective context window. This
     /// is an operator-facing receipt, not a claim about provider billing.
-    pub active_context_window_source: crate::route_runtime::ContextWindowSource,
+    pub active_context_window_source: codewhale_engine::route_runtime::ContextWindowSource,
+    pub(crate) active_context_window:
+        Option<codewhale_engine::route_runtime::ContextWindowResolution>,
     /// User-configured provider context-window override for the active route.
     pub active_context_window_override: Option<u32>,
     /// `[providers.<id>.model_context_windows]` for the active provider
@@ -1820,7 +1847,7 @@ pub struct App {
     /// (#4022).
     pub lane_control: codewhale_runtime::lane_control::LaneControlQueue,
     /// Immutable plugin catalogue scoped to this App's effective workspace.
-    pub plugin_registry: std::sync::Arc<crate::plugins::PluginRegistry>,
+    pub plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
     pub config_path: Option<PathBuf>,
     pub config_profile: Option<String>,
     /// Legacy executable plugin-tool directory resolved from the already
@@ -1830,7 +1857,7 @@ pub struct App {
     pub legacy_plugin_tools_dir: Option<PathBuf>,
     pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
-    pub skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    pub skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
     /// Whether the optional project context pack was enabled when this
     /// session loaded its configuration. Context diagnostics consult this
     /// source of truth even before the first system prompt is assembled.
@@ -1891,7 +1918,8 @@ pub struct App {
     /// Resolved once at startup, so tests and headless runs stay hermetic.
     pub bracketed_paste_trusted: bool,
     pub system_prompt: Option<SystemPrompt>,
-    pub instruction_assembly: Option<std::sync::Arc<crate::project_context::InstructionAssembly>>,
+    pub instruction_assembly:
+        Option<std::sync::Arc<codewhale_engine::project_context::InstructionAssembly>>,
     pub auto_compact: bool,
     pub auto_compact_user_configured: bool,
     pub auto_compact_threshold_percent: f64,
@@ -1979,7 +2007,7 @@ pub struct App {
     pub cost_currency: CostCurrency,
     /// Route payment truth. Model pricing alone cannot distinguish metered
     /// API calls from OAuth or token-plan quota.
-    pub billing_presentation: crate::route_billing::BillingPresentation,
+    pub billing_presentation: codewhale_engine::route_billing::BillingPresentation,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub composer_multiline_mode: bool,
@@ -2088,7 +2116,7 @@ pub struct App {
     /// Receipts-only roster of every agent that ran this session (#5479).
     /// Refreshed wholesale on each `AgentList` event; shared by `/agents`,
     /// the Agents register and the Price view.
-    pub agent_roster: Vec<crate::agent_roster::AgentRosterRow>,
+    pub agent_roster: Vec<codewhale_engine::agent_roster::AgentRosterRow>,
     /// Original conversation owner of the retained snapshot. A process boot
     /// marker or a worker's parent run is not a conversation identity.
     pub agent_roster_session_id: Option<String>,
@@ -2206,7 +2234,10 @@ pub struct App {
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
     /// Last `request_user_input` prompt, retained so a failed modal submit can reopen (#1198).
-    pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
+    pub pending_user_input_prompt: Option<(
+        String,
+        codewhale_engine::tools::user_input::UserInputRequest,
+    )>,
     /// Child-agent approval requests shown to the person and not yet
     /// answered, keyed by approval id (approvals C1). The footer row, the
     /// `/agents` re-open, and retiring answered cards all read this store.
@@ -2224,14 +2255,14 @@ pub struct App {
     pub current_session_id: Option<String>,
     /// Exclusive editor ownership, shared with outstanding queue writes.
     pub(crate) offline_queue_lease:
-        Option<std::sync::Arc<crate::session_manager::OfflineQueueLease>>,
+        Option<std::sync::Arc<codewhale_engine::session_manager::OfflineQueueLease>>,
     /// Last non-contended Work snapshot captured in this App. The outer
     /// option distinguishes "never captured" from a captured empty state.
     pub(crate) last_known_work_state: Option<Option<SessionWorkState>>,
     /// Latest bounded runtime goal projection. Persistence stores this beside
     /// the owning saved session so a resumed process rebuilds the same goal
     /// control state instead of inferring it from transcript prose.
-    pub(crate) last_known_goal_state: Option<crate::session_manager::SessionGoalState>,
+    pub(crate) last_known_goal_state: Option<codewhale_engine::session_manager::SessionGoalState>,
     /// FIFO of accepted typed controls not yet reconciled by GoalUpdated.
     /// The durable desired state lives in `last_known_goal_state`; this queue
     /// preserves in-process ordering and mailbox retry state only.
@@ -2244,7 +2275,7 @@ pub struct App {
     pub session_artifacts: Vec<ArtifactRecord>,
     /// Turns in this session that ended `Failed`, persisted with the session
     /// so the reason survives the TUI closing.
-    pub(crate) session_turn_outcomes: Vec<crate::session_manager::SavedTurnOutcome>,
+    pub(crate) session_turn_outcomes: Vec<codewhale_engine::session_manager::SavedTurnOutcome>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
     /// Translation mode — when enabled, the model is instructed to respond in
@@ -2288,9 +2319,10 @@ pub struct App {
     /// Latest bounded coordination receipt delivered by the engine. This is
     /// the same typed projection returned to headless inspection; the TUI does
     /// not parse tool text to reconstruct it.
-    pub coordination_detail: Option<crate::tools::subagent::CoordinationDetailProjection>,
+    pub coordination_detail:
+        Option<codewhale_engine::tools::subagent::CoordinationDetailProjection>,
     /// Last MCP manager/discovery snapshot shown in the UI.
-    pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
+    pub mcp_snapshot: Option<codewhale_engine::mcp::McpManagerSnapshot>,
     /// True while the engine-owned MCP boot connection pass is in flight.
     /// Configured rows render as connecting until its snapshot lands.
     pub mcp_initializing: bool,
@@ -2322,7 +2354,7 @@ pub struct App {
     pub active_skill: Option<String>,
     /// Content-bound plugin authority carried with `active_skill`, when the
     /// selected skill came from a reviewed plugin bundle.
-    pub active_skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub active_skill_provenance: Option<codewhale_skills::SkillProvenance>,
     /// Cached (name, description) pairs from the skill registry.
     /// Populated once at startup and refreshed on install/uninstall so
     /// the slash menu can show skills without filesystem I/O on every keystroke.
@@ -2401,7 +2433,7 @@ pub struct App {
     pub last_billed_input_tokens: Option<u32>,
     /// Last successful compaction, so `/context` and the inspector can name
     /// the path and the last-round floor instead of looking empty.
-    pub last_compaction: Option<crate::compaction::LastCompactionSnapshot>,
+    pub last_compaction: Option<codewhale_engine::compaction::LastCompactionSnapshot>,
     /// Accumulated reasoning text
     pub reasoning_buffer: String,
     /// Live reasoning header extracted from bold text
@@ -2453,7 +2485,8 @@ pub struct App {
     pub session_metrics: crate::tui::session_metrics::SessionMetrics,
     /// DeepSeek account balance, refreshed once per turn completion.
     /// Shared cell updated by background fetch tasks; read lock in the UI thread.
-    pub balance_cell: std::sync::Arc<std::sync::Mutex<Option<crate::pricing::BalanceInfo>>>,
+    pub balance_cell:
+        std::sync::Arc<std::sync::Mutex<Option<codewhale_engine::pricing::BalanceInfo>>>,
     /// The route `balance_cell` belongs to (provider, endpoint, key
     /// fingerprint). A route change swaps in a fresh cell; see
     /// `provider_routes::balance_cell_for_route`.
@@ -2482,7 +2515,7 @@ pub struct App {
                 // The reasoning tier selected when the operator pressed `m`
                 // (#4137). `None` means inherit.
                 Option<String>,
-                Result<Box<crate::fleet::profile::FleetProfileDraft>, String>,
+                Result<Box<codewhale_engine::fleet::profile::FleetProfileDraft>, String>,
             )>,
         >,
     >,
@@ -2715,6 +2748,7 @@ pub(crate) struct ToolRunCache {
     pub(crate) threshold: usize,
     pub(crate) mode: ToolCollapseMode,
     pub(crate) calm_mode: bool,
+    pub(crate) locale: Locale,
     #[cfg(test)]
     pub(crate) projection_builds: usize,
     pub(crate) history_len: usize,
@@ -2788,6 +2822,7 @@ impl Default for ToolRunCache {
             threshold: usize::MAX,
             mode: ToolCollapseMode::Expanded,
             calm_mode: false,
+            locale: Locale::En,
             #[cfg(test)]
             projection_builds: 0,
             history_len: usize::MAX,
@@ -2885,7 +2920,7 @@ impl App {
     }
 
     pub(crate) fn should_adopt_live_local_ollama(&mut self) -> bool {
-        crate::local_ollama::should_adopt_live_local_ollama(
+        codewhale_engine::local_ollama::should_adopt_live_local_ollama(
             self.startup_route_configured,
             self.api_provider,
             self.view_stack.provider_picker_interacted(),
@@ -2894,7 +2929,7 @@ impl App {
     }
 
     /// A retained roster remains readable only in its owning conversation.
-    pub(crate) fn current_agent_roster(&self) -> &[crate::agent_roster::AgentRosterRow] {
+    pub(crate) fn current_agent_roster(&self) -> &[codewhale_engine::agent_roster::AgentRosterRow] {
         if self
             .current_session_id
             .as_deref()
@@ -2956,8 +2991,8 @@ impl App {
         &mut self,
         choice: crate::tui::views::route_save_prompt::RouteSaveChoice,
     ) -> String {
-        use crate::fleet::store::{FleetFile, FleetOperator, save_fleet, set_selected};
         use crate::tui::views::route_save_prompt::RouteSaveChoice;
+        use codewhale_engine::fleet::store::{FleetFile, FleetOperator, save_fleet, set_selected};
         let locale = self.ui_locale;
         let Some(pending) = self.pending_route_save.take() else {
             return tr(locale, MessageId::RouteSaveNothingPending).into_owned();
@@ -2968,7 +3003,11 @@ impl App {
                 let Some((name, scope)) = pending.fleet.clone() else {
                     return tr(locale, MessageId::RouteSaveNoTeamSelected).into_owned();
                 };
-                match crate::fleet::store::load_fleet_in_scope(&name, scope, &self.workspace) {
+                match codewhale_engine::fleet::store::load_fleet_in_scope(
+                    &name,
+                    scope,
+                    &self.workspace,
+                ) {
                     Ok((mut fleet, _source_path)) => {
                         fleet.operator = Some(FleetOperator {
                             provider: pending.provider_identity.clone(),
@@ -3009,13 +3048,13 @@ impl App {
                 });
                 match save_fleet(
                     &fleet,
-                    crate::fleet::store::FleetScope::Personal,
+                    codewhale_engine::fleet::store::FleetScope::Personal,
                     &self.workspace,
                 ) {
                     Ok(path) => {
                         let selected_note = match set_selected(
                             &display,
-                            crate::fleet::store::FleetScope::Personal,
+                            codewhale_engine::fleet::store::FleetScope::Personal,
                             &self.workspace,
                         ) {
                             Ok(sel_path) => tr(locale, MessageId::RouteSaveSelectedNote)
@@ -3102,8 +3141,8 @@ impl App {
     /// `model`. The change is temporary until the user explicitly chooses how
     /// to save it; nothing is written here.
     pub fn note_session_route_change(&mut self, provider_identity: &str, model: &str) {
-        let fleet =
-            crate::fleet::store::selected_fleet(&self.workspace).map(|sel| (sel.name, sel.scope));
+        let fleet = codewhale_engine::fleet::store::selected_fleet(&self.workspace)
+            .map(|sel| (sel.name, sel.scope));
         self.pending_route_save = Some(PendingRouteSave {
             provider_identity: provider_identity.to_string(),
             model: model.to_string(),
@@ -3118,8 +3157,8 @@ impl App {
     /// an unpriced turn turns a displayed amount into a subtotal rather than a
     /// complete total.
     #[must_use]
-    pub fn cumulative_usage_chip(&self) -> crate::route_billing::UsageChip {
-        use crate::pricing::UnpricedReason;
+    pub fn cumulative_usage_chip(&self) -> codewhale_engine::route_billing::UsageChip {
+        use codewhale_engine::pricing::UnpricedReason;
         let displayed = self.displayed_session_cost_for_currency(self.cost_currency);
         let (priced, unpriced) = match self.cost_display_currency(self.cost_currency) {
             CostCurrency::Usd => (
@@ -3146,34 +3185,36 @@ impl App {
         }
         if self.session.cost_coverage_unknown_legacy {
             return if displayed.is_finite() && displayed > 0.0 {
-                crate::route_billing::UsageChip::PricedSubtotal {
+                codewhale_engine::route_billing::UsageChip::PricedSubtotal {
                     amount: self.format_cost_amount(displayed),
                     legacy: true,
                     reasons,
                 }
             } else {
-                crate::route_billing::UsageChip::Unknown(reasons)
+                codewhale_engine::route_billing::UsageChip::Unknown(reasons)
             };
         }
         if unpriced > 0 {
             return if displayed.is_finite() && displayed > 0.0 {
-                crate::route_billing::UsageChip::PricedSubtotal {
+                codewhale_engine::route_billing::UsageChip::PricedSubtotal {
                     amount: self.format_cost_amount(displayed),
                     legacy: false,
                     reasons,
                 }
             } else {
-                crate::route_billing::UsageChip::Unknown(reasons)
+                codewhale_engine::route_billing::UsageChip::Unknown(reasons)
             };
         }
         if priced > 0 {
             return if displayed.is_finite() && displayed > 0.0 {
-                crate::route_billing::UsageChip::Money(self.format_cost_amount(displayed))
+                codewhale_engine::route_billing::UsageChip::Money(
+                    self.format_cost_amount(displayed),
+                )
             } else {
-                crate::route_billing::UsageChip::Hidden
+                codewhale_engine::route_billing::UsageChip::Hidden
             };
         }
-        crate::route_billing::usage_chip(
+        codewhale_engine::route_billing::usage_chip(
             self.billing_presentation,
             self.api_provider,
             &self.model,
@@ -3230,6 +3271,7 @@ impl App {
         self.pending_auto_route_receipt = None;
         self.active_turn = None;
         self.last_effective_model = None;
+        self.last_effective_budget = None;
         self.last_effective_provider = None;
         self.last_effective_provider_identity = None;
         self.last_auto_route_receipt = None;
@@ -3252,6 +3294,7 @@ impl App {
         self.last_effective_reasoning_effort = None;
         if self.auto_model {
             self.last_effective_model = None;
+            self.last_effective_budget = None;
             self.last_effective_provider = None;
             self.last_effective_provider_identity = None;
             self.last_auto_route_receipt = None;
@@ -3265,25 +3308,22 @@ impl App {
     pub(crate) fn discover_cached_skills(
         workspace: &std::path::Path,
         skills_dir: &std::path::Path,
-        discovery_mode: crate::skills::SkillDiscoveryMode,
-        plugins: &crate::plugins::PluginRegistry,
+        config: &codewhale_runtime::config::SkillsConfig,
+        plugins: &codewhale_plugins::PluginRegistry,
     ) -> Vec<(String, String)> {
-        crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
-            workspace,
-            skills_dir,
-            discovery_mode,
-            Some(plugins),
-        )
-        .into_enabled()
-        .list()
-        .iter()
-        .filter(|s| s.invocation.user_invocable())
-        .map(|s| (s.name.clone(), s.user_menu_description()))
-        .collect()
+        codewhale_skills::discover_for_workspace(workspace, Some(skills_dir), config, Some(plugins))
+            .into_enabled()
+            .list()
+            .iter()
+            .filter(|s| s.invocation.user_invocable())
+            .map(|s| (s.name.clone(), s.user_menu_description()))
+            .collect()
     }
 
-    pub(crate) fn extension_plugin_view(&self) -> std::sync::Arc<crate::plugins::PluginRegistry> {
-        crate::extension_host::caller_view(
+    pub(crate) fn extension_plugin_view(
+        &self,
+    ) -> std::sync::Arc<codewhale_plugins::PluginRegistry> {
+        codewhale_engine::extension_host::caller_view(
             &self.workspace,
             self.current_session_id.as_deref(),
             self.agent_focus
@@ -3294,12 +3334,12 @@ impl App {
     }
 
     pub fn refresh_skill_cache(&mut self) {
-        crate::skills::clear_skill_discovery_cache();
+        codewhale_skills::clear_skill_discovery_cache();
         let skills_dir = self.skills_dir.clone();
         let cached_skills = Self::discover_cached_skills(
             &self.workspace,
             &skills_dir,
-            self.skills_discovery_mode,
+            &self.skills_config,
             self.extension_plugin_view().as_ref(),
         );
         self.install_skill_cache(cached_skills);
@@ -3310,7 +3350,7 @@ impl App {
             epoch,
             workspace: self.workspace.clone(),
             skills_dir: self.skills_dir.clone(),
-            mode: self.skills_discovery_mode,
+            config: self.skills_config.clone(),
             plugins: self.extension_plugin_view(),
         }
     }
@@ -3324,7 +3364,7 @@ impl App {
         if scope.epoch != epoch
             || scope.workspace != self.workspace
             || scope.skills_dir != self.skills_dir
-            || scope.mode != self.skills_discovery_mode
+            || !std::sync::Arc::ptr_eq(&scope.config, &self.skills_config)
             || !std::sync::Arc::ptr_eq(&scope.plugins, &self.extension_plugin_view())
         {
             return false;
@@ -3826,8 +3866,9 @@ impl App {
             || self.provider_identity_for_persistence().to_string(),
             |(_, provider_identity, _, _)| provider_identity.to_string(),
         );
-        let endpoint_identity = route_truth
-            .map(|(_, _, endpoint, _)| crate::route_receipt::endpoint_identity(endpoint));
+        let endpoint_identity = route_truth.map(|(_, _, endpoint, _)| {
+            codewhale_engine::route_receipt::endpoint_identity(endpoint)
+        });
         let model = route_truth.map(|(_, _, _, model)| model.to_string());
         if let Some(work) = self.runtime_services.work.clone()
             && let Err(err) = work.record_reasoning_effort_change(
@@ -4232,7 +4273,7 @@ impl App {
                 // the placeholder `format_task_list` already uses.
                 let duration = task
                     .duration_ms
-                    .map(crate::agent_roster::format_duration)
+                    .map(codewhale_engine::agent_roster::format_duration)
                     .unwrap_or_else(|| "-".to_string());
                 // Panel summaries carry the `shell: ` prefix the Work rows
                 // strip; a blocker row names the command, not its source kind.
@@ -4274,7 +4315,7 @@ impl App {
         rows.iter()
             .map(|(id, status, duration, summary)| {
                 let summary =
-                    crate::tui::ui_text::truncate_line_to_width(summary, summary_width);
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(summary, summary_width);
                 format!(
                     "{id:<id_width$}  {status:<status_width$}  {duration:<duration_width$}  {summary}"
                 )
@@ -4337,7 +4378,7 @@ impl App {
     /// Create a hook context with common fields pre-populated
     pub fn base_hook_context(&self) -> HookContext {
         HookContext::new()
-            .with_caller(crate::hooks::HookCaller {
+            .with_caller(codewhale_engine::hooks::HookCaller {
                 workspace: self.workspace.clone(),
                 plugins: Some(self.extension_plugin_view()),
                 session_id: self.current_session_id.clone(),
@@ -4417,7 +4458,7 @@ impl App {
     /// Routes that do not meter money at all (OAuth, token plans, local models)
     /// are not counted in either bucket — there is no dollar figure to be
     /// incomplete about.
-    pub fn record_turn_cost_audit(&mut self, audit: &crate::pricing::TurnCostAudit) {
+    pub fn record_turn_cost_audit(&mut self, audit: &codewhale_engine::pricing::TurnCostAudit) {
         // Provenance is recorded for every audited turn, priced or not: knowing
         // *which* row a total was built from is part of explaining the total.
         if let Some(provenance) = audit.provenance.as_ref() {
@@ -4498,7 +4539,7 @@ impl App {
     /// value, so the two can never disagree.
     pub fn absorb_background_cost_coverage(
         &mut self,
-        pool: &crate::cost_status::PendingBackgroundCost,
+        pool: &codewhale_engine::cost_status::PendingBackgroundCost,
     ) {
         self.session.cost_priced_turns = self
             .session
@@ -4557,9 +4598,9 @@ impl App {
     /// ordinary TurnComplete save).
     pub fn absorb_pending_background_cost(
         &mut self,
-        pool: &crate::cost_status::PendingBackgroundCost,
+        pool: &codewhale_engine::cost_status::PendingBackgroundCost,
     ) -> bool {
-        let pool = crate::cost_status::project_missing_usage_ledger(
+        let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
             &mut self.session.missing_usage_sources,
             &mut self.session.missing_usage_overflowed,
             &mut self.session.cost_unpriced_turns,
@@ -4675,7 +4716,10 @@ impl App {
 
     /// Copy current session/subagent cost accumulators into session metadata
     /// for persistence.
-    pub fn sync_cost_to_metadata(&self, metadata: &mut crate::session_manager::SessionMetadata) {
+    pub fn sync_cost_to_metadata(
+        &self,
+        metadata: &mut codewhale_engine::session_manager::SessionMetadata,
+    ) {
         metadata.cost.session_cost_usd = self.session.session_cost;
         metadata.cost.session_cost_cny = self.session.session_cost_cny;
         metadata.cost.subagent_cost_usd = self.session.subagent_cost;
@@ -4803,14 +4847,17 @@ impl App {
     }
 
     pub fn format_cost_amount(&self, amount: f64) -> String {
-        crate::pricing::format_cost_amount(amount, self.cost_display_currency(self.cost_currency))
+        codewhale_engine::pricing::format_cost_amount(
+            amount,
+            self.cost_display_currency(self.cost_currency),
+        )
     }
 
     /// A [`CostEstimate`] in the session's display currency — the same rule
     /// `format_cost_amount` applies, so a turn receipt and the session total
     /// never disagree on `$` versus `¥`.
     pub fn format_cost_estimate(&self, estimate: CostEstimate) -> String {
-        crate::pricing::format_cost_estimate(
+        codewhale_engine::pricing::format_cost_estimate(
             estimate,
             self.cost_display_currency(self.cost_currency),
         )
@@ -4824,9 +4871,13 @@ impl App {
     #[must_use]
     pub fn session_cost_label(&self) -> String {
         let chip = self.cumulative_usage_chip();
-        crate::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(|| {
-            self.format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency))
-        })
+        codewhale_engine::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(
+            || {
+                self.format_cost_amount(
+                    self.displayed_session_cost_for_currency(self.cost_currency),
+                )
+            },
+        )
     }
 
     pub(crate) fn cost_display_currency(&self, currency: CostCurrency) -> CostCurrency {
@@ -4987,7 +5038,7 @@ impl App {
         self.subagent_cache
             .iter()
             .find(|agent| agent.agent_id == agent_id)
-            .map(crate::tools::subagent::subagent_result_display_name)
+            .map(codewhale_engine::tools::subagent::subagent_result_display_name)
             .or_else(|| {
                 self.agent_progress_meta
                     .get(agent_id)
@@ -5030,7 +5081,7 @@ impl App {
             .subagent_cache
             .iter()
             .find(|agent| agent.agent_id == agent_id)?;
-        crate::tools::subagent::explicit_nickname(agent_id, agent.nickname.as_deref())
+        codewhale_engine::tools::subagent::explicit_nickname(agent_id, agent.nickname.as_deref())
             .map(str::to_string)
             .or_else(|| self.agent_session_name(agent_id))
     }
@@ -5307,7 +5358,7 @@ impl App {
     /// Restored/older receipts cannot cause a new hand-off.
     pub(crate) fn prepare_plan_handoff(
         &mut self,
-        status: crate::core::events::TurnOutcomeStatus,
+        status: codewhale_engine::core::events::TurnOutcomeStatus,
         turn_id: Option<&str>,
         has_open_todos: bool,
     ) -> Option<String> {
@@ -5482,6 +5533,9 @@ impl App {
             .resize_with(messages.len(), Utc::now);
         self.session_turn_outcomes
             .retain(|outcome| outcome.after_message_count <= unchanged);
+        if unchanged == 0 && !self.api_messages.is_empty() && !messages.is_empty() {
+            self.window_reroot_cause = Some("engine_projection");
+        }
         self.api_messages = messages;
         unchanged
     }
@@ -5493,7 +5547,7 @@ impl App {
     pub fn restore_api_messages(
         &mut self,
         messages: Vec<Message>,
-        session: &crate::session_manager::SavedSession,
+        session: &codewhale_engine::session_manager::SavedSession,
     ) {
         let journal = session.journal.clone().unwrap_or_else(|| {
             codewhale_runtime::session_tree::SessionJournal::from_messages(
@@ -5511,7 +5565,7 @@ impl App {
     /// note M3). `session.journal` and `session.messages` are left empty.
     pub fn restore_api_messages_from_owned(
         &mut self,
-        session: &mut crate::session_manager::SavedSession,
+        session: &mut codewhale_engine::session_manager::SavedSession,
     ) {
         let stamps = session.journal_message_stamps();
         let journal = match session.journal.take() {
@@ -5523,9 +5577,9 @@ impl App {
                 session.metadata.spawn_depth,
             ),
         };
-        let messages = crate::runtime_handoff::project_owned_messages_for_restore(std::mem::take(
-            &mut session.messages,
-        ));
+        let messages = codewhale_engine::runtime_handoff::project_owned_messages_for_restore(
+            std::mem::take(&mut session.messages),
+        );
         self.install_restored_api_messages(messages, journal, stamps);
     }
 
@@ -5539,6 +5593,7 @@ impl App {
         self.api_message_stamps = stamps;
         self.api_message_stamps
             .resize_with(messages.len(), Utc::now);
+        self.window_reroot_cause = Some("session_restore");
         self.api_messages = Arc::new(messages);
     }
 
@@ -6977,14 +7032,13 @@ impl App {
         if let Some(work) = self.runtime_services.work.as_ref() {
             let empty = SessionWorkState::default();
             let state = state.unwrap_or(&empty);
-            work.restore_with_workspace_owner_bindings(
+            let restored = work.restore_with_workspace_owner_bindings(
                 session_id,
                 workspace,
                 state.graph.as_ref(),
                 &state.todos,
                 &state.plan,
             )?;
-            let restored = work.capture(Some(session_id))?;
             let normalized_state = restored.map(|state| SessionWorkState {
                 graph: Some(state.graph),
                 todos: state.todos,
@@ -7050,36 +7104,42 @@ impl App {
         true
     }
 
-    /// Publish a validated Work Graph transaction after a synchronous caller
-    /// has completed its atomic session write.
-    pub fn publish_pending_work_state(&mut self) -> Result<bool, String> {
-        let published = self
-            .runtime_services
-            .work
-            .as_ref()
-            .map_or(Ok(false), |work| work.publish_pending_sync())?;
+    pub fn publish_saved_work_state(
+        &mut self,
+        owner: Option<&str>,
+        state: Option<&SessionWorkState>,
+    ) -> Result<bool, String> {
+        let Some(work) = self.runtime_services.work.as_ref() else {
+            return Ok(false);
+        };
+        let published = work
+            .publish_pending_sync_matching(owner, state.and_then(|state| state.graph.as_ref()))?;
+        if !published && work.has_pending_publish() {
+            return Err("a newer Work update remains pending".to_string());
+        }
         Ok(published)
     }
 
     pub fn update_model_compaction_budget(&mut self) {
-        let model = self.effective_model_for_budget().to_string();
-        self.compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            self.api_provider,
-            &model,
-            self.active_route_limits,
-            self.auto_compact_threshold_percent,
-        );
-        if !self.auto_compact_user_configured {
-            self.auto_compact = crate::route_budget::auto_compact_default_for_route(
-                self.api_provider,
+        let (provider, model, limits, window) = self.effective_budget_route();
+        let model = model.to_string();
+        self.compact_threshold =
+            codewhale_engine::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                provider,
                 &model,
-                self.active_route_limits,
+                limits,
+                window.map(|window| window.tokens),
+                self.auto_compact_threshold_percent,
+            );
+        if !self.auto_compact_user_configured {
+            self.auto_compact = codewhale_engine::route_budget::auto_compact_default_for_route(
+                provider, &model, limits,
             );
         }
     }
 
     pub fn set_active_route_limits(&mut self, limits: RouteLimits) {
-        self.active_route_limits = crate::route_budget::known_route_limits(limits);
+        self.active_route_limits = codewhale_engine::route_budget::known_route_limits(limits);
     }
 
     /// Install an already-resolved runtime route receipt in one operation so
@@ -7088,11 +7148,12 @@ impl App {
         &mut self,
         base_url: impl Into<String>,
         limits: RouteLimits,
-        context_window_source: crate::route_runtime::ContextWindowSource,
+        context_window: codewhale_engine::route_runtime::ContextWindowResolution,
     ) {
         self.active_route_base_url = base_url.into();
         self.set_active_route_limits(limits);
-        self.active_context_window_source = context_window_source;
+        self.active_context_window_source = context_window.source;
+        self.active_context_window = Some(context_window);
     }
 
     /// Refresh the operator-configured windows for the active provider
@@ -7104,7 +7165,8 @@ impl App {
     ) {
         self.active_context_window_override = config.context_window_for_provider_config(identity);
         self.active_model_context_windows = config.model_context_windows_for(identity).cloned();
-        if let Some(resolution) = self.configured_context_window_for(&self.model.clone()) {
+        self.active_context_window = self.configured_context_window_for(&self.model.clone());
+        if let Some(resolution) = self.active_context_window {
             self.active_context_window_source = resolution.source;
         }
         if self.active_route_limits.is_none() {
@@ -7118,22 +7180,27 @@ impl App {
     pub(crate) fn configured_context_window_for(
         &self,
         model: &str,
-    ) -> Option<crate::route_runtime::ContextWindowResolution> {
+    ) -> Option<codewhale_engine::route_runtime::ContextWindowResolution> {
         self.active_model_context_windows
             .as_ref()
             .and_then(|table| table.get(model).copied())
             .filter(|window| *window > 0)
-            .map(|tokens| crate::route_runtime::ContextWindowResolution {
-                tokens,
-                source: crate::route_runtime::ContextWindowSource::ConfiguredModel,
-            })
+            .map(
+                |tokens| codewhale_engine::route_runtime::ContextWindowResolution {
+                    tokens,
+                    source: codewhale_engine::route_runtime::ContextWindowSource::ConfiguredModel,
+                },
+            )
             .or_else(|| {
                 self.active_context_window_override
                     .filter(|window| *window > 0)
-                    .map(|tokens| crate::route_runtime::ContextWindowResolution {
-                        tokens,
-                        source: crate::route_runtime::ContextWindowSource::Configured,
-                    })
+                    .map(
+                        |tokens| codewhale_engine::route_runtime::ContextWindowResolution {
+                            tokens,
+                            source:
+                                codewhale_engine::route_runtime::ContextWindowSource::Configured,
+                        },
+                    )
             })
     }
 
@@ -7147,13 +7214,32 @@ impl App {
 
     pub fn set_model_selection(&mut self, model: String) {
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        let model_changed = self.model != model || self.auto_model != auto_model;
         self.model = if auto_model {
             "auto".to_string()
         } else {
             model
         };
         self.auto_model = auto_model;
+        if model_changed {
+            self.active_route_limits = self.context_window_override_limits();
+            self.active_context_window = self.configured_context_window_for(&self.model);
+            self.active_context_window_source = self.active_context_window.map_or_else(
+                || {
+                    codewhale_engine::route_runtime::resolve_context_window(
+                        self.api_provider,
+                        &self.model,
+                        self.active_route_limits,
+                        None,
+                        None,
+                    )
+                    .source
+                },
+                |window| window.source,
+            );
+        }
         self.last_effective_model = None;
+        self.last_effective_budget = None;
         self.last_effective_provider = None;
         self.last_effective_provider_identity = None;
         self.last_auto_route_receipt = None;
@@ -7188,7 +7274,7 @@ impl App {
     #[must_use]
     pub(crate) fn auto_route_for_persistence(
         &self,
-    ) -> Option<crate::session_manager::SavedAutoRouteReceipt> {
+    ) -> Option<codewhale_engine::session_manager::SavedAutoRouteReceipt> {
         if !self.auto_model {
             return None;
         }
@@ -7210,7 +7296,7 @@ impl App {
                     provider.as_str().to_string()
                 }
             });
-        Some(crate::session_manager::SavedAutoRouteReceipt {
+        Some(codewhale_engine::session_manager::SavedAutoRouteReceipt {
             provider,
             provider_identity,
             model: model.clone(),
@@ -7315,6 +7401,44 @@ impl App {
         &self.model
     }
 
+    pub(crate) fn effective_context_window(&self) -> u32 {
+        let (provider, model, limits, window) = self.effective_budget_route();
+        window.map_or_else(
+            || codewhale_engine::route_budget::route_context_window_tokens(provider, model, limits),
+            |window| window.tokens,
+        )
+    }
+
+    pub(crate) fn effective_budget_route(
+        &self,
+    ) -> (
+        ProviderKind,
+        &str,
+        Option<RouteLimits>,
+        Option<codewhale_engine::route_runtime::ContextWindowResolution>,
+    ) {
+        if self.auto_model
+            && let Some((provider, model, limits, window)) = self.last_effective_budget.as_ref()
+            && self.last_effective_model.as_deref() == Some(model.as_str())
+        {
+            return (*provider, model, *limits, Some(*window));
+        }
+        (
+            self.api_provider,
+            self.effective_model_for_budget(),
+            self.active_route_limits,
+            self.active_context_window,
+        )
+    }
+
+    pub(crate) fn effective_context_window_source(
+        &self,
+    ) -> codewhale_engine::route_runtime::ContextWindowSource {
+        self.effective_budget_route()
+            .3
+            .map_or(self.active_context_window_source, |window| window.source)
+    }
+
     pub fn model_display_label(&self) -> String {
         if self.auto_model {
             if let Some(effective) = self.last_effective_model.as_deref()
@@ -7414,12 +7538,14 @@ impl App {
         // If it is unavailable, only use the configured route when no pending
         // or active foreign route could make that identity stale.
         if let Some((provider, _, base_url, model)) = route_truth {
-            if let Some(constrained) = crate::work_graph::constrained_effective_reasoning_for_route(
-                requested.into(),
-                provider,
-                base_url,
-                model,
-            ) {
+            if let Some(constrained) =
+                codewhale_engine::work_graph::constrained_effective_reasoning_for_route(
+                    requested.into(),
+                    provider,
+                    base_url,
+                    model,
+                )
+            {
                 return constrained.into();
             }
         } else if self.active_turn.as_ref().is_some_and(|turn| {
@@ -7644,11 +7770,8 @@ impl App {
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {
-        let mut config = self.compaction_config_for_route(
-            self.api_provider,
-            self.effective_model_for_budget(),
-            self.active_route_limits,
-        );
+        let (provider, model, limits, window) = self.effective_budget_route();
+        let mut config = self.compaction_config_for_route(provider, model, limits, window);
         // These cached fields are the active-route compatibility authority and
         // are updated together by `update_model_compaction_budget`. Commands
         // and embedders may also adjust them directly between route updates.
@@ -7668,24 +7791,26 @@ impl App {
         provider: ProviderKind,
         model: &str,
         route_limits: Option<RouteLimits>,
+        context_window: Option<codewhale_engine::route_runtime::ContextWindowResolution>,
     ) -> CompactionConfig {
         CompactionConfig {
             enabled: if self.auto_compact_user_configured {
                 self.auto_compact
             } else {
-                crate::route_budget::auto_compact_default_for_route(provider, model, route_limits)
+                codewhale_engine::route_budget::auto_compact_default_for_route(provider, model, route_limits)
             },
-            token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent(
-                provider,
-                model,
-                route_limits,
-                self.auto_compact_threshold_percent,
-            ),
+            token_threshold:
+                codewhale_engine::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                    provider,
+                    model,
+                    route_limits,
+                    context_window.map(|window| window.tokens),
+                    self.auto_compact_threshold_percent,
+                ),
             model: model.to_string(),
-            effective_context_window: Some(crate::route_budget::route_context_window_tokens(
-                provider,
-                model,
-                route_limits,
+            effective_context_window: Some(context_window.map_or_else(
+                || codewhale_engine::route_budget::route_context_window_tokens(provider, model, route_limits),
+                |window| window.tokens,
             )),
             summary_instructions: self.compaction_summary_instructions.clone(),
             retained_user_message_tokens: self.compaction_retained_user_message_tokens,

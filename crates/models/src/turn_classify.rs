@@ -1,7 +1,7 @@
 use crate::{ContentBlock, Message, Role};
 
 /// Detection marker for a new-format checkpoint: the opening words of
-/// [`SUMMARY_HEADER`]. A new checkpoint is recognised only when its first
+/// `SUMMARY_HEADER`. A new checkpoint is recognised only when its first
 /// block starts with this marker and its second block is the provenance
 /// block, so a user message that merely quotes the phrase stays a user
 /// message.

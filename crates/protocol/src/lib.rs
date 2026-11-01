@@ -940,19 +940,43 @@ pub struct UserInputOptionEvent {
     /// Short label for the option (also the value submitted when picked).
     pub label: String,
     /// Longer description shown alongside the label.
+    #[serde(default)]
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum UserInputIntentEvent {
+    PlanReview {
+        approve: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputAnswerKindEvent {
+    Choice,
+    Custom,
+    Skipped,
 }
 
 /// A single clarification question posed to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputQuestionEvent {
     /// Compact header shown as the question title.
+    #[serde(default)]
     pub header: String,
     /// Stable identifier used to correlate answers back to this question.
     pub id: String,
     /// The question body.
     pub question: String,
-    /// 2-4 suggested answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<UserInputIntentEvent>,
+    #[serde(default)]
     pub options: Vec<UserInputOptionEvent>,
     /// When `true`, the client should also offer a free-text response.
     #[serde(default)]
@@ -975,16 +999,19 @@ pub struct UserInputRequestEvent {
     pub turn_id: String,
     /// Unique identifier for this user-input request (clients reply with it).
     pub request_id: String,
-    /// 1-3 questions to present.
+    #[serde(default)]
+    pub require_typed_answers: bool,
     pub questions: Vec<UserInputQuestionEvent>,
 }
 
 /// One answer to a clarification question.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputAnswerEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<UserInputAnswerKindEvent>,
     /// The `id` of the question this answer corresponds to.
     pub id: String,
-    /// The selected option's label, or `"Other"` for a free-text response.
+    /// The selected option's label, or empty for typed custom/skip responses.
     pub label: String,
     /// The resolved value (option label, or the typed free-text).
     pub value: String,

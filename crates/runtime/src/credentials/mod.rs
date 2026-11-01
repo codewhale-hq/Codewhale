@@ -9,7 +9,7 @@
 //! | pi-mono file                              | ported into                                    |
 //! |-------------------------------------------|------------------------------------------------|
 //! | `packages/ai/src/auth/types.ts`           | [`Credential`], [`CredentialStore`], [`AuthContext`] |
-//! | `packages/ai/src/auth/credential-store.ts`| [`store::InMemoryCredentialStore`]             |
+//! | `packages/ai/src/auth/credential-store.ts`| `store::InMemoryCredentialStore`             |
 //! | `packages/ai/src/auth/context.ts`         | [`context::ProcessAuthContext`]                |
 //! | `packages/ai/src/auth/resolve.ts`         | `codewhale_tui::config::credential_resolve`    |
 //!
@@ -91,7 +91,7 @@ pub enum Credential {
 }
 
 impl Credential {
-    /// Only [`store::InMemoryCredentialStore::list`] needs this today; the
+    /// Only `store::InMemoryCredentialStore::list` needs this today; the
     /// secret-store adapter knows every slot it holds is an api key.
     pub fn kind(&self) -> CredentialKind {
         match self {

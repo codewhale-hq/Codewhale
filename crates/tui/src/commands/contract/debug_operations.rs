@@ -19,7 +19,7 @@ impl CommandDebugReceiptsContext for DebugOperationsAdapter<'_> {
     fn receipt(&self, turn: Option<&str>) -> Result<Receipt, DebugReceiptError> {
         let app = self.host.app.borrow();
         let approvals = match app.current_session_id.as_deref() {
-            Some(id) => crate::approval_log::ApprovalReceiptStore::default_location()
+            Some(id) => codewhale_engine::approval_log::ApprovalReceiptStore::default_location()
                 .and_then(|store| store.load(id))
                 .map_err(|error| DebugReceiptError::ApprovalLog(error.to_string()))?,
             None => Vec::new(),
@@ -36,7 +36,7 @@ impl CommandDebugReceiptsContext for DebugOperationsAdapter<'_> {
             started_at: Some(app.session_started_at),
             updated_at: None,
         };
-        crate::receipts::session_receipt(
+        codewhale_engine::receipts::session_receipt(
             source,
             &app.api_messages,
             &approvals,
@@ -262,7 +262,7 @@ fn request_is_last(
     owned_request_snippets: &[Option<String>],
     label: &str,
 ) -> RequestPositionResult {
-    use crate::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
+    use codewhale_engine::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
     if requests.is_empty() {
         return Ok(None);
     }
@@ -349,7 +349,7 @@ pub(in crate::commands) fn snapshot_owners(app: &App) -> Vec<SnapshotOwner> {
     let Some(current) = app.current_session_id.clone() else {
         return Vec::new();
     };
-    let manager = crate::session_manager::SessionManager::default_location().ok();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().ok();
     let load = |id: &str| {
         manager
             .as_ref()
@@ -497,8 +497,8 @@ fn plan_undo_step(
         }
         let mut backup = None;
         let bounded = index.checked_sub(1).is_some_and(|newer| {
-            let start = crate::core::turn::parse_snapshot_label(&target.label);
-            let end = crate::core::turn::parse_snapshot_label(&owned[newer].label);
+            let start = codewhale_engine::core::turn::parse_snapshot_label(&target.label);
+            let end = codewhale_engine::core::turn::parse_snapshot_label(&owned[newer].label);
             end.kind == "post-turn" && end.seq.is_some() && end.seq == start.seq
         });
         let end = match index.checked_sub(1) {
@@ -694,7 +694,9 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
         .iter()
         .filter(|snapshot| is_undo_step_label(&snapshot.label))
         .filter(|snapshot| owners.iter().any(|owner| owner.owns(snapshot)))
-        .map(|snapshot| crate::core::turn::parse_snapshot_label(&snapshot.label).prompt_snippet)
+        .map(|snapshot| {
+            codewhale_engine::core::turn::parse_snapshot_label(&snapshot.label).prompt_snippet
+        })
         .collect();
     let request_position = |label: &str| request_is_last(&requests, &owned_request_snippets, label);
     let step = match plan_undo_step(&repo, snapshots, &owners, force, &request_position) {
@@ -762,7 +764,7 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
     };
 
     DebugUndoOutcome::Restored(DebugUndoRestored {
-        request: crate::core::turn::parse_snapshot_label(&target.label).prompt_snippet,
+        request: codewhale_engine::core::turn::parse_snapshot_label(&target.label).prompt_snippet,
         conversation_removed,
         forced: step.forced,
         files: outcomes

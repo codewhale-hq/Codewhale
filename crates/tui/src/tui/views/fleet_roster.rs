@@ -34,13 +34,15 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::fleet::profile::AgentProfile;
-use crate::fleet::roster::{FleetRoster, ProfileLayer, ProfileOrigin, layers_from_parts};
-use crate::fleet::worker_runtime::roster_member_agent_type;
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::fleet::profile::AgentProfile;
+use codewhale_engine::fleet::roster::{
+    FleetRoster, ProfileLayer, ProfileOrigin, layers_from_parts,
+};
+use codewhale_engine::fleet::worker_runtime::roster_member_agent_type;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 /// Rows one PageUp/PageDown travels. Pages clamp at the ends per the shared
 /// vocabulary instead of wrapping (#6290).
@@ -113,7 +115,7 @@ impl OperatorInfo {
 #[derive(Debug, Clone)]
 struct SelectedFleetSummary {
     name: String,
-    scope: crate::fleet::store::FleetScope,
+    scope: codewhale_engine::fleet::store::FleetScope,
 }
 
 /// View-owned action attached to a painted saved-profile row.
@@ -138,7 +140,7 @@ pub struct FleetRosterView {
     members: Vec<AgentProfile>,
     /// Shadow records from the roster load (#5098): which lower-precedence
     /// files the displayed members are ignoring.
-    shadowed: Vec<crate::fleet::roster::ShadowedProfile>,
+    shadowed: Vec<codewhale_engine::fleet::roster::ShadowedProfile>,
     /// Selected named Fleet + scope, when one is active for this session.
     selected_fleet: Option<SelectedFleetSummary>,
     /// A selected Fleet existed but could not become the runtime roster.
@@ -168,13 +170,15 @@ impl FleetRosterView {
     #[must_use]
     pub fn new(app: &App, config: &Config) -> Self {
         let selected_fleet =
-            crate::fleet::store::selected_fleet(&app.workspace).map(|sel| SelectedFleetSummary {
-                name: sel.name,
-                scope: sel.scope,
+            codewhale_engine::fleet::store::selected_fleet(&app.workspace).map(|sel| {
+                SelectedFleetSummary {
+                    name: sel.name,
+                    scope: sel.scope,
+                }
             });
         let mut view = Self::from_parts(
             OperatorInfo::from_app(app),
-            crate::fleet::identity::load_effective_roster(
+            codewhale_engine::fleet::identity::load_effective_roster(
                 &config.fleet_config(),
                 &app.workspace,
                 Some(app.plugin_registry.as_ref()),
@@ -252,25 +256,26 @@ impl FleetRosterView {
     }
 
     fn move_up(&mut self) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, self.row_count(), -1);
+        self.selected =
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.row_count(), -1);
         self.detail_scroll = 0;
         self.last_mouse_selected = None;
         self.hovered_row.set(None);
     }
 
     fn move_down(&mut self) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, self.row_count(), 1);
+        self.selected = codewhale_tui_kit::list_nav::wrap_index(self.selected, self.row_count(), 1);
         self.detail_scroll = 0;
         self.last_mouse_selected = None;
         self.hovered_row.set(None);
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Steps wrap; pages travel [`FLEET_ROSTER_PAGE`]
     /// rows and clamp. The region axis is declined so Tab keeps opening the
     /// workers view through the explicit arm below.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
-        use crate::tui::list_nav::Motion;
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
+        use codewhale_tui_kit::list_nav::Motion;
         match motion {
             Motion::Prev => {
                 self.move_up();
@@ -286,9 +291,12 @@ impl FleetRosterView {
                 if count == 0 {
                     return false;
                 }
-                let Some(next) =
-                    crate::tui::list_nav::apply(self.selected, count, FLEET_ROSTER_PAGE, motion)
-                else {
+                let Some(next) = codewhale_tui_kit::list_nav::apply(
+                    self.selected,
+                    count,
+                    FLEET_ROSTER_PAGE,
+                    motion,
+                ) else {
                     return false;
                 };
                 self.selected = next;
@@ -382,7 +390,7 @@ impl ModalView for FleetRosterView {
         }
         // Movement keys come from the shared vocabulary (#6290), j/k aliases
         // included — this surface captures no text.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -602,7 +610,10 @@ impl FleetRosterView {
             // Hover tints but never steals the keyboard selection.
             let hovered = !is_selected && self.hovered_row.get() == Some(idx);
             let hover_tint = || menu_style::hovered_row_style();
-            let pointer = format!("{} ", crate::tui::glyphs::selection_marker(is_selected));
+            let pointer = format!(
+                "{} ",
+                codewhale_tui_kit::glyphs::selection_marker(is_selected)
+            );
             let shadow_badge = idx.checked_sub(1).and_then(|index| {
                 member_shadow_badge(self.locale, &self.members[index], &self.shadowed)
             });
@@ -766,18 +777,18 @@ fn whale_identity_lines(member: &AgentProfile, locale: Locale) -> Vec<Line<'stat
 fn member_role_mark(member: &AgentProfile) -> &'static str {
     let role = public_role_label(&member.id);
     match role.as_str() {
-        "manager" | "explore" => crate::tui::glyphs::ROLE_MANAGER,
-        "implement" => crate::tui::glyphs::ROLE_BUILDER,
-        "reviewer" => crate::tui::glyphs::ROLE_REVIEWER,
-        "test" => crate::tui::glyphs::ROLE_VERIFIER,
-        "synthesizer" => crate::tui::glyphs::ROLE_SYNTHESIZER,
+        "manager" | "explore" => codewhale_tui_kit::glyphs::ROLE_MANAGER,
+        "implement" => codewhale_tui_kit::glyphs::ROLE_BUILDER,
+        "reviewer" => codewhale_tui_kit::glyphs::ROLE_REVIEWER,
+        "test" => codewhale_tui_kit::glyphs::ROLE_VERIFIER,
+        "synthesizer" => codewhale_tui_kit::glyphs::ROLE_SYNTHESIZER,
         _ => match roster_member_agent_type(member).as_str() {
-            "explore" | "manager" => crate::tui::glyphs::ROLE_MANAGER,
-            "implement" => crate::tui::glyphs::ROLE_BUILDER,
-            "reviewer" => crate::tui::glyphs::ROLE_REVIEWER,
-            "test" => crate::tui::glyphs::ROLE_VERIFIER,
-            "synthesizer" => crate::tui::glyphs::ROLE_SYNTHESIZER,
-            _ => crate::tui::glyphs::NEUTRAL,
+            "explore" | "manager" => codewhale_tui_kit::glyphs::ROLE_MANAGER,
+            "implement" => codewhale_tui_kit::glyphs::ROLE_BUILDER,
+            "reviewer" => codewhale_tui_kit::glyphs::ROLE_REVIEWER,
+            "test" => codewhale_tui_kit::glyphs::ROLE_VERIFIER,
+            "synthesizer" => codewhale_tui_kit::glyphs::ROLE_SYNTHESIZER,
+            _ => codewhale_tui_kit::glyphs::NEUTRAL,
         },
     }
 }
@@ -815,10 +826,12 @@ fn operator_detail_lines(operator: &OperatorInfo) -> Vec<Line<'static>> {
     // Session-route capability badges (#5038). Use the exact route key rather
     // than the display label so built-in routes get provider-scoped catalog
     // facts; custom routes still fall back conservatively to registry facts.
-    if let Some(badges) = crate::fleet::capability_badges::resolve_route_capability_badges(
-        Some(&operator.provider_id),
-        &operator.model,
-    ) {
+    if let Some(badges) =
+        codewhale_engine::fleet::capability_badges::resolve_route_capability_badges(
+            Some(&operator.provider_id),
+            &operator.model,
+        )
+    {
         detail_field(&mut lines, "Capabilities", badges.summary());
     }
     detail_field(
@@ -899,7 +912,7 @@ fn member_routing_with_session(member: &AgentProfile, session_model: Option<&str
 fn member_shadow_badge(
     locale: Locale,
     member: &AgentProfile,
-    shadowed: &[crate::fleet::roster::ShadowedProfile],
+    shadowed: &[codewhale_engine::fleet::roster::ShadowedProfile],
 ) -> Option<String> {
     let layers = layers_from_parts(member, shadowed);
     if layers.len() < 2 {
@@ -935,7 +948,7 @@ fn format_profile_layer(layer: &ProfileLayer, locale: Locale) -> String {
 fn member_detail_lines_with_session(
     member: &AgentProfile,
     session_model: Option<&str>,
-    shadowed: &[crate::fleet::roster::ShadowedProfile],
+    shadowed: &[codewhale_engine::fleet::roster::ShadowedProfile],
     locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
@@ -973,7 +986,7 @@ fn member_detail_lines_with_session(
     // Model and provider are attributes of the role: one line, together.
     let model = match (
         member.profile.model.as_deref(),
-        crate::fleet::identity::friendly_model_name(member),
+        codewhale_engine::fleet::identity::friendly_model_name(member),
     ) {
         (Some(model), Some(name)) if !name.eq_ignore_ascii_case(model.trim()) => {
             format!("{name} ({})", model.trim())
@@ -1011,10 +1024,11 @@ fn member_detail_lines_with_session(
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        && let Some(badges) = crate::fleet::capability_badges::resolve_route_capability_badges(
-            member.profile.provider.as_deref(),
-            model,
-        )
+        && let Some(badges) =
+            codewhale_engine::fleet::capability_badges::resolve_route_capability_badges(
+                member.profile.provider.as_deref(),
+                model,
+            )
     {
         detail_field(&mut lines, "Capabilities", badges.summary());
     }

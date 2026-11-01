@@ -4,7 +4,9 @@
 
 use super::pet_sim::{ChannelId, PetSim, PetState};
 use super::pet_widget::PetWidget;
-use super::{AmbientActivity, AmbientFrameStats, WhaleCameo, is_open_water, ocean};
+use super::{
+    AmbientActivity, AmbientFrameStats, WhaleCameo, is_open_water, occupied_text_bounds, ocean,
+};
 use ratatui::{buffer::Buffer, layout::Rect, style::Color, text::Line, widgets::Widget};
 use std::sync::LazyLock;
 
@@ -69,6 +71,9 @@ pub(super) fn paint(
     if presence <= 0.0 {
         return;
     }
+    let transcript_has_text = lines
+        .iter()
+        .any(|line| occupied_text_bounds(line).is_some());
     let pod = activity == AmbientActivity::Subagents;
     let tape = if pod { &*POD } else { &*SOLO };
     let slots: &[i32] = if pod { &[-1, 0, 1] } else { &[0] };
@@ -102,10 +107,11 @@ pub(super) fn paint(
                 .enumerate()
                 .filter(|(_, c)| c.symbol() != " ")
         };
-        // Atomically withhold body and label. A word touching one fluke must
-        // never leave a severed animal or an unsupported label in the water.
-        if marks()
-            .any(|(i, _)| !is_open_water(lines, x + i as u16 % WIDTH, y + i as u16 / WIDTH, 1))
+        // Atomically withhold body and label, and keep the cameo out of the
+        // transcript column entirely while any transcript text is on screen.
+        if transcript_has_text
+            || marks()
+                .any(|(i, _)| !is_open_water(lines, x + i as u16 % WIDTH, y + i as u16 / WIDTH, 1))
         {
             stats.marks_skipped_text += frame.marks;
             continue;

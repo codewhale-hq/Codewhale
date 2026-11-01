@@ -1184,7 +1184,7 @@ impl Styles {
             border: theme.fg(Role::Border),
             attention: theme.fg(Role::Attention).add_modifier(bold),
             danger: theme.fg(Role::Danger).add_modifier(bold),
-            primary: theme.fg(Role::Primary).add_modifier(bold),
+            primary: theme.fg(Role::Accent).add_modifier(bold),
             // Reversed and bold: a token is told from text by shape and
             // video, not hue, so it reads at 16 colors and under NO_COLOR.
             token: theme

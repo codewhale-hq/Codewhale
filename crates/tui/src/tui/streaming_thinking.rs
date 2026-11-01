@@ -197,6 +197,10 @@ pub(super) fn start_block(app: &mut App) -> bool {
         false
     };
 
+    // #7123: a text block can still hold an uncommitted tail when a reasoning
+    // block opens — the display beat commits once per interval, so the
+    // boundary lands between beats. `reset` below discards whatever is left.
+    flush_pending_text_tail(app);
     app.reasoning_buffer.clear();
     app.reasoning_header = None;
     app.thinking_started_at = Some(Instant::now());
@@ -206,14 +210,54 @@ pub(super) fn start_block(app: &mut App) -> bool {
     finalized_previous
 }
 
+/// Flush a text block's uncommitted tail into the assistant cell.
+///
+/// The display beat commits at most once per interval, so a block boundary
+/// that arrives between beats leaves the last slice of prose sitting in
+/// `StreamingState`. Both `start_block` and the finalize paths reset that
+/// state; without this drain the tail before a reasoning card never reaches
+/// the transcript (#7123).
+fn flush_pending_text_tail(app: &mut App) {
+    if app.streaming_state.block_is_thinking(0) {
+        return;
+    }
+    // Nothing buffered: do not create an assistant cell just to write nothing
+    // into it.
+    if app.streaming_state.pending_len(0) == 0 {
+        return;
+    }
+    // Resolve the destination before taking the buffer. Draining first and
+    // then discovering there is nowhere to put the text discarded it (#7123).
+    let index = app
+        .streaming_message_index
+        .unwrap_or_else(|| crate::tui::ui::frame::ensure_streaming_assistant_history_cell(app));
+    let remaining = app.streaming_state.finalize_block_text(0);
+    if remaining.is_empty() {
+        return;
+    }
+    crate::tui::ui::frame::append_streaming_text(app, index, &remaining);
+    crate::tui::ui::frame::accrue_streaming_token_estimate(app, &remaining);
+}
+
 /// Finalize the currently-streaming thinking entry: drain the pending
 /// state buffer, compute elapsed duration, stop the spinner.
 pub(super) fn finalize_current(app: &mut App) -> bool {
+    if app.streaming_thinking_active_entry.is_none() {
+        app.thinking_started_at = None;
+        return false;
+    }
     let duration = app
         .thinking_started_at
         .take()
         .map(|t| t.elapsed().as_secs_f32());
-    let remaining = app.streaming_state.finalize_block_text(0);
+    // #7123: drain only the reasoning block. If a text block owns index 0 at
+    // this point (a boundary lost an event), taking its buffer here would
+    // append prose to the thinking card and drop it from the answer.
+    let remaining = if app.streaming_state.block_is_thinking(0) {
+        app.streaming_state.finalize_block_text(0)
+    } else {
+        String::new()
+    };
     finalize_active_entry(app, duration, &remaining)
 }
 
@@ -246,7 +290,7 @@ pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remain
     let Some(entry_idx) = app.streaming_thinking_active_entry.take() else {
         return false;
     };
-    if !remaining.is_empty() {
+    if !remaining.is_empty() && !app.translation_enabled {
         append(app, entry_idx, remaining);
     }
     if let Some(active) = app.active_cell.as_mut()
@@ -379,6 +423,140 @@ mod tests {
         assert!(
             app.thinking_revision_last_bump_at.is_none(),
             "finalize should reset the throttle window for the next block"
+        );
+    }
+
+    /// #7123: a reasoning block that opens while the display beat still holds
+    /// an uncommitted slice of prose must not drop that slice. `start_block`
+    /// resets `StreamingState`, so the tail has to be delivered first.
+    #[test]
+    fn issue_7123_reasoning_block_keeps_the_prose_tail_it_interrupts() {
+        let mut app = test_app();
+
+        // Prose streams, and the beat has not committed the last slice yet.
+        app.streaming_state.reset();
+        app.streaming_state.start_text(0);
+        app.streaming_state.push_content(0, "answer tail");
+        app.add_message(HistoryCell::Assistant {
+            content: "answer head ".to_string(),
+            streaming: true,
+        });
+        app.streaming_message_index = Some(app.history.len() - 1);
+
+        start_block(&mut app);
+
+        let prose = match app.history.last() {
+            Some(HistoryCell::Assistant { content, .. }) => content.clone(),
+            other => panic!("expected the assistant cell: {other:?}"),
+        };
+        assert_eq!(
+            prose, "answer head answer tail",
+            "the prose tail must reach the transcript before the reasoning block"
+        );
+        assert!(
+            app.streaming_state.block_is_thinking(0),
+            "the new block must be the reasoning block"
+        );
+    }
+
+    /// #7123: `MessageStarted` must deliver a live reasoning tail *before*
+    /// `flush_active_cell`, because that flush clears
+    /// `streaming_thinking_active_entry` on every path and only marks the cell
+    /// finished. Draining afterwards is dead code and the tail is lost.
+    #[test]
+    fn issue_7123_message_started_order_keeps_the_reasoning_tail() {
+        let mut app = test_app();
+        let entry = ensure_active_entry(&mut app);
+        app.thinking_started_at = Some(Instant::now());
+        app.streaming_state.reset();
+        app.streaming_state.start_thinking(0);
+        app.streaming_state.push_content(0, "reasoning tail");
+
+        // The real handler order.
+        assert!(finalize_current(&mut app));
+        stash_reasoning_buffer_into_last_reasoning(&mut app);
+        let before_flush = thinking_content(&app, entry);
+        app.flush_active_cell();
+
+        let flushed = app
+            .history
+            .iter()
+            .find_map(|cell| match cell {
+                HistoryCell::Thinking { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            before_flush, "reasoning tail",
+            "finalize must deliver the tail into the entry while it is still live"
+        );
+        assert_eq!(
+            flushed, "reasoning tail",
+            "the flush must carry that tail into the transcript"
+        );
+        assert!(
+            app.streaming_thinking_active_entry.is_none(),
+            "flush_active_cell clears the pointer"
+        );
+
+        let mut translated = test_app();
+        translated.translation_enabled = true;
+        translated.thinking_started_at = Some(Instant::now());
+        let entry = ensure_active_entry(&mut translated);
+        set_placeholder(&mut translated, entry);
+        let placeholder = thinking_content(&translated, entry);
+        translated.streaming_state.start_thinking(0);
+        translated
+            .streaming_state
+            .push_content(0, "untranslated tail");
+        translated.reasoning_buffer.push_str("untranslated tail");
+        assert!(finalize_current(&mut translated));
+        assert_eq!(thinking_content(&translated, entry), placeholder);
+        stash_reasoning_buffer_into_last_reasoning(&mut translated);
+        assert_eq!(
+            translated.last_reasoning.as_deref(),
+            Some("untranslated tail")
+        );
+    }
+
+    /// #7123: with no live entry there is no cell to deliver into, so the
+    /// buffer must be left alone rather than drained and discarded.
+    #[test]
+    fn issue_7123_finalize_current_keeps_the_buffer_without_an_entry() {
+        let mut app = test_app();
+        app.streaming_thinking_active_entry = None;
+        app.streaming_state.reset();
+        app.streaming_state.start_thinking(0);
+        app.streaming_state.push_content(0, "orphan reasoning");
+
+        assert!(!finalize_current(&mut app));
+        assert_eq!(
+            app.streaming_state.pending_len(0),
+            "orphan reasoning".len(),
+            "text with nowhere to go must stay buffered"
+        );
+    }
+
+    /// #7123: `finalize_current` must take a reasoning tail but never consume a
+    /// text block that lost its boundary event.
+    #[test]
+    fn issue_7123_finalize_current_leaves_a_text_block_alone() {
+        let mut app = test_app();
+        let entry = ensure_active_entry(&mut app);
+        app.thinking_started_at = Some(Instant::now());
+
+        // A text block owns index 0 while a reasoning entry is live: a lost
+        // `ContentBlockStop` leaves the state in exactly this shape.
+        app.streaming_state.reset();
+        app.streaming_state.start_text(0);
+        app.streaming_state.push_content(0, "stray prose");
+
+        let _ = finalize_current(&mut app);
+
+        assert_eq!(
+            thinking_content(&app, entry),
+            "",
+            "prose must not be appended to the reasoning card"
         );
     }
 }

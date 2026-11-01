@@ -480,6 +480,7 @@ pub(crate) fn format_cache_history(
     let mut totals_input: u64 = 0;
     let mut totals_hit: u64 = 0;
     let mut totals_miss: u64 = 0;
+    let mut cache_reported = false;
     let mut totals_write: u64 = 0;
     let mut totals_reasoning: u64 = 0;
     // Preserve the host enum's reason order rather than sorting its labels.
@@ -543,6 +544,7 @@ pub(crate) fn format_cache_history(
             ));
             continue;
         }
+        cache_reported = true;
 
         let miss_reported = rec.cache_miss_tokens;
         let hit = u32::try_from(rec.priced_cache_read).unwrap_or(u32::MAX);
@@ -591,6 +593,14 @@ pub(crate) fn format_cache_history(
         )
     };
 
+    let total_cell = |total: u64| {
+        if cache_reported {
+            total.to_string()
+        } else {
+            "—".to_string()
+        }
+    };
+
     let mut footer = String::new();
     footer.push_str(&"─".repeat(TURN_CACHE_TABLE_WIDTH));
     footer.push('\n');
@@ -598,14 +608,15 @@ pub(crate) fn format_cache_history(
     // count it *inside* the completion tokens they bill, so adding the two
     // would double-count it.
     footer.push_str(&format!(
-        "sum_write: {totals_write}  sum_reasoning: {totals_reasoning} (already inside out)\n"
+        "sum_write: {}  sum_reasoning: {totals_reasoning} (already inside out)\n",
+        total_cell(totals_write)
     ));
     footer.push_str(&presentation.translate(
         "cmd_cache_totals",
         &[
             ("sum_in", &totals_input.to_string()),
-            ("sum_hit", &totals_hit.to_string()),
-            ("sum_miss", &totals_miss.to_string()),
+            ("sum_hit", &total_cell(totals_hit)),
+            ("sum_miss", &total_cell(totals_miss)),
             ("avg", &avg_ratio),
         ],
     )?);

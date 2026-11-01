@@ -68,7 +68,7 @@ impl Avatars {
             let workspace = workspace.to_path_buf();
             let key = entry.image_key(page);
             runtime.spawn(async move {
-                let png = crate::extension_host::avatars::atlas(
+                let png = codewhale_engine::extension_host::avatars::atlas(
                     workspace,
                     entry.handle,
                     page,
@@ -120,7 +120,8 @@ impl Avatars {
                 let workspace = workspace.to_path_buf();
                 self.pending = Some(rx);
                 runtime.spawn(async move {
-                    let _ = tx.send(crate::extension_host::avatars::catalog(workspace).await);
+                    let _ = tx
+                        .send(codewhale_engine::extension_host::avatars::catalog(workspace).await);
                 });
             }
         }

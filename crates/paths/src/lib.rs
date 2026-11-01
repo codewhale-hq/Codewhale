@@ -7,7 +7,7 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Canonical Codewhale app directory name under the user home.
 pub const CODEWHALE_APP_DIR: &str = ".codewhale";
@@ -225,6 +225,42 @@ fn normalize_path_value(value: OsString) -> Option<PathBuf> {
         }
         None => Some(PathBuf::from(value)),
     }
+}
+
+/// Strip a trailing `.worktrees/<name>` segment so all worktrees of the same
+/// checkout share a `project_hash`. If the path doesn't look like a worktree
+/// it's returned unchanged.
+#[must_use]
+pub fn strip_worktree_suffix(path: &Path) -> PathBuf {
+    let mut components: Vec<_> = path.components().collect();
+    if components.len() >= 2
+        && let Some(parent) = components.get(components.len() - 2)
+        && parent.as_os_str() == ".worktrees"
+    {
+        components.truncate(components.len() - 2);
+        let mut p = PathBuf::new();
+        for c in components {
+            p.push(c.as_os_str());
+        }
+        return p;
+    }
+    path.to_path_buf()
+}
+
+/// Hex-encoded deterministic FNV-1a digest. This is only a directory tag, not
+/// a security boundary, but it must remain stable across process launches.
+///
+/// Lives here, below both `codewhale-snapshot` and `codewhale-runtime`, because
+/// each derives its own on-disk layout from the same project/worktree split.
+/// Two copies would be two things to keep in step.
+#[must_use]
+pub fn stable_hex(path: &Path) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]

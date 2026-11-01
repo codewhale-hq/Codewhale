@@ -36,7 +36,7 @@ async fn work_choice_leaves_plan_with_the_chosen_permission() {
     assert_eq!(app.mode, AppMode::Agent);
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     match engine.rx_op.recv().await.expect("change mode op") {
-        crate::core::ops::Op::ChangeMode {
+        codewhale_engine::core::ops::Op::ChangeMode {
             mode,
             approval_mode,
             ..
@@ -137,7 +137,7 @@ fn completed_plan(app: &mut App, text: &str, checklist: bool) -> String {
         .iter()
         .any(|item| !item.status.is_settled());
     app.prepare_plan_handoff(
-        crate::core::events::TurnOutcomeStatus::Completed,
+        codewhale_engine::core::events::TurnOutcomeStatus::Completed,
         Some("plan-turn"),
         has_open_todos,
     )
@@ -177,12 +177,12 @@ fn reject_checkpoint_after_other_work_changes(
         let work = app.runtime_services.work.as_ref().unwrap();
         let mut todos = work.current_todos().await?;
         todos.items[0].content = "Updated unrelated work".into();
-        todos.items[0].status = crate::tools::todo::TodoStatus::InProgress;
+        todos.items[0].status = codewhale_engine::tools::todo::TodoStatus::InProgress;
         let id = todos.items.iter().map(|item| item.id).max().unwrap() + 1;
-        todos.items.push(crate::tools::todo::TodoItem {
+        todos.items.push(codewhale_engine::tools::todo::TodoItem {
             id,
             content: "Added while preparing work".into(),
-            status: crate::tools::todo::TodoStatus::Pending,
+            status: codewhale_engine::tools::todo::TodoStatus::Pending,
         });
         work.apply_todo_update("plan-session", "todo_write", &todos)
             .await?;
@@ -196,7 +196,8 @@ fn reject_checkpoint_after_owned_seed_status_changes(
     Box::pin(async move {
         let work = app.runtime_services.work.as_ref().unwrap();
         let mut todos = work.current_todos().await?;
-        todos.items.last_mut().unwrap().status = crate::tools::todo::TodoStatus::InProgress;
+        todos.items.last_mut().unwrap().status =
+            codewhale_engine::tools::todo::TodoStatus::InProgress;
         work.apply_todo_update("plan-session", "todo_write", &todos)
             .await?;
         Err("test checkpoint admission refusal".to_string())
@@ -211,15 +212,15 @@ fn completed_plan_receipt_excludes_old_empty_failed_and_interrupted_output() {
     app.ocean_turn_history_start = app.history.len();
     assert!(
         app.prepare_plan_handoff(
-            crate::core::events::TurnOutcomeStatus::Completed,
+            codewhale_engine::core::events::TurnOutcomeStatus::Completed,
             Some("plan-turn"),
             false,
         )
         .is_none()
     );
     for status in [
-        crate::core::events::TurnOutcomeStatus::Interrupted,
-        crate::core::events::TurnOutcomeStatus::Failed,
+        codewhale_engine::core::events::TurnOutcomeStatus::Interrupted,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
     ] {
         app.ocean_turn_history_start = 0;
         assert!(
@@ -236,7 +237,7 @@ fn completed_plan_receipt_excludes_old_empty_failed_and_interrupted_output() {
     app.record_completed_assistant_output(index, "  \n");
     assert!(
         app.prepare_plan_handoff(
-            crate::core::events::TurnOutcomeStatus::Completed,
+            codewhale_engine::core::events::TurnOutcomeStatus::Completed,
             Some("plan-turn"),
             false,
         )
@@ -246,7 +247,7 @@ fn completed_plan_receipt_excludes_old_empty_failed_and_interrupted_output() {
 
 #[tokio::test]
 async fn prose_work_seeds_preserves_other_work_and_queues_exact_text_once() {
-    use crate::tools::todo::TodoStatus;
+    use codewhale_engine::tools::todo::TodoStatus;
     let mut app = app_in_plan();
     app.offline_mode = true; // ordinary composer queue; no provider admission.
     app.todos
@@ -288,7 +289,7 @@ async fn prose_work_seeds_preserves_other_work_and_queues_exact_text_once() {
     );
     assert!(matches!(
         engine.rx_op.try_recv(),
-        Ok(crate::core::ops::Op::ChangeMode { .. })
+        Ok(codewhale_engine::core::ops::Op::ChangeMode { .. })
     ));
     apply_plan_handoff_with_checkpoint(
         &mut app,
@@ -307,7 +308,7 @@ async fn prose_work_seeds_preserves_other_work_and_queues_exact_text_once() {
 
 #[tokio::test]
 async fn existing_current_turn_checklist_is_not_replaced_or_seeded_again() {
-    use crate::tools::todo::TodoStatus;
+    use codewhale_engine::tools::todo::TodoStatus;
     let mut app = app_in_plan();
     app.offline_mode = true;
     app.todos
@@ -379,7 +380,7 @@ async fn refused_checkpoint_rolls_back_seed_and_retry_queues_once() {
         while app.view_stack.pop().is_some() {}
         while let Ok(op) = engine.rx_op.try_recv() {
             assert!(
-                matches!(op, crate::core::ops::Op::ChangeMode { .. }),
+                matches!(op, codewhale_engine::core::ops::Op::ChangeMode { .. }),
                 "no turn dispatch after refusal"
             );
         }
@@ -397,7 +398,7 @@ async fn refused_checkpoint_rolls_back_seed_and_retry_queues_once() {
         assert_eq!(todos.items.len(), 1);
         assert_eq!(
             todos.items[0].status,
-            crate::tools::todo::TodoStatus::Pending
+            codewhale_engine::tools::todo::TodoStatus::Pending
         );
         assert_eq!(
             todos.items[0].content,
@@ -421,7 +422,7 @@ async fn refused_checkpoint_rolls_back_seed_and_retry_queues_once() {
 
 #[tokio::test]
 async fn failed_preparation_can_keep_revise_or_escape_without_publishing_its_seed() {
-    use crate::tools::todo::TodoStatus;
+    use codewhale_engine::tools::todo::TodoStatus;
     for action in ["keep", "revise", "escape"] {
         let mut app = app_in_plan();
         app.offline_mode = true;
@@ -490,7 +491,7 @@ async fn failed_preparation_can_keep_revise_or_escape_without_publishing_its_see
         assert_eq!(app.todos.lock().await.snapshot(), current, "{action}");
         while let Ok(op) = engine.rx_op.try_recv() {
             assert!(
-                matches!(op, crate::core::ops::Op::ChangeMode { .. }),
+                matches!(op, codewhale_engine::core::ops::Op::ChangeMode { .. }),
                 "{action}"
             );
         }
@@ -542,7 +543,7 @@ async fn failed_preparation_can_keep_revise_or_escape_without_publishing_its_see
 
 #[tokio::test]
 async fn cleanup_refusal_preserves_changed_work_and_owned_pending_without_dispatch() {
-    use crate::tools::todo::TodoStatus;
+    use codewhale_engine::tools::todo::TodoStatus;
     let mut app = app_in_plan();
     app.offline_mode = true;
     app.todos
@@ -571,7 +572,10 @@ async fn cleanup_refusal_preserves_changed_work_and_owned_pending_without_dispat
     assert_eq!(changed.items[1].status, TodoStatus::InProgress);
     while app.view_stack.pop().is_some() {}
     while let Ok(op) = engine.rx_op.try_recv() {
-        assert!(matches!(op, crate::core::ops::Op::ChangeMode { .. }));
+        assert!(matches!(
+            op,
+            codewhale_engine::core::ops::Op::ChangeMode { .. }
+        ));
     }
     // Equal ID/content with a changed status is not unchanged ownership:
     // retrying Work must refuse before checkpoint or turn admission.
@@ -594,7 +598,7 @@ async fn cleanup_refusal_preserves_changed_work_and_owned_pending_without_dispat
     while app.view_stack.pop().is_some() {}
     while let Ok(op) = engine.rx_op.try_recv() {
         assert!(
-            matches!(op, crate::core::ops::Op::ChangeMode { .. }),
+            matches!(op, codewhale_engine::core::ops::Op::ChangeMode { .. }),
             "no execution after status change"
         );
     }
@@ -645,7 +649,7 @@ async fn cleanup_refusal_preserves_changed_work_and_owned_pending_without_dispat
 
 #[tokio::test]
 async fn old_checklist_evidence_does_not_suppress_current_prose_seed() {
-    use crate::tools::todo::TodoStatus;
+    use codewhale_engine::tools::todo::TodoStatus;
     let mut app = app_in_plan();
     app.offline_mode = true;
     push_checklist_receipt(&mut app);

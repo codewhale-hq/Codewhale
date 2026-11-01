@@ -13,7 +13,6 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::AppModeUi;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer, render_modal_surface,
@@ -21,6 +20,7 @@ use crate::tui::views::{
 use codewhale_config::AppMode;
 use codewhale_localization::Locale;
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 // Operate is visible because the engine now enforces a coordinator/worker
 // boundary while allowing ordinary conversation and asynchronous dispatch.
@@ -53,12 +53,12 @@ impl ModePickerView {
             .unwrap_or(AppMode::Agent)
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Vertical motions cover the whole list —
     /// Home/End and the page keys included. The horizontal axis has nowhere
     /// to go on a single-column surface, so those motions are not consumed.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
-        let Some(next) = crate::tui::list_nav::apply(
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(
             self.cursor,
             VISIBLE_MODES.len(),
             VISIBLE_MODES.len(),
@@ -95,7 +95,7 @@ impl ModalView for ModePickerView {
         // `j`/`k`, Home/End and the page keys mean here exactly what they
         // mean on every other list. This match owns only the keys the
         // vocabulary does not claim.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -113,11 +113,11 @@ impl ModalView for ModePickerView {
     fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.apply_motion(crate::tui::list_nav::Motion::Prev);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Prev);
                 ViewAction::None
             }
             MouseEventKind::ScrollDown => {
-                self.apply_motion(crate::tui::list_nav::Motion::Next);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Next);
                 ViewAction::None
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -181,7 +181,7 @@ impl ModalView for ModePickerView {
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
             };
-            let pointer = crate::tui::glyphs::selection_marker(is_cursor);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(is_cursor);
             let name = mode.display_name_localized(self.locale);
             let hint = mode.picker_hint_localized(self.locale);
             // Pad by terminal columns, not scalar count, so wide (CJK) mode
@@ -194,7 +194,7 @@ impl ModalView for ModePickerView {
             // as a bug.
             let hint_width =
                 usize::from(content.width).saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
-            let hint = crate::tui::ui_text::semantic_truncate(hint.as_ref(), hint_width);
+            let hint = codewhale_tui_kit::ui_text::semantic_truncate(hint.as_ref(), hint_width);
 
             lines.push(Line::from(vec![
                 Span::styled(prefix, row_style),
@@ -285,7 +285,7 @@ mod tests {
 
             // The cursor row carries the charter selection pointer.
             assert!(
-                text.contains(crate::tui::glyphs::SELECTION),
+                text.contains(codewhale_tui_kit::glyphs::SELECTION),
                 "{w}x{h}: missing charter selection pointer"
             );
 

@@ -342,7 +342,16 @@ impl WorkspaceFile {
             }
             if let Some(mode) = mode {
                 use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+                // The file was just created with the caller's access bits, so
+                // this only matters on a mount that applied its own. There it
+                // answers EPERM for every `chmod`, and the delivery still has
+                // to land: the handle, the single link and the publication
+                // below are what this writer guarantees.
+                if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(mode))
+                    && !mount_cannot_extend_guard(&self.directory)
+                {
+                    return Err(error);
+                }
             }
             file.write_all(bytes)?;
             file.sync_all()?;
@@ -416,11 +425,16 @@ impl WorkspaceFile {
         let owner = codewhale_config::private_directory::PrivateDirectory::current_user_id();
         let parent = self.directory.metadata()?;
         let entry = file.metadata()?;
-        if parent.uid() != owner
+        let public = parent.uid() != owner
             || parent.mode() & 0o022 != 0
             || entry.uid() != owner
-            || entry.mode() & 0o022 != 0
-        {
+            || entry.mode() & 0o022 != 0;
+        // A mount that reports an owner and mode of its own (HarmonyOS hmdfs
+        // reports the logged-in user's uid and a group-writable mode for every
+        // object) cannot satisfy any of those fields. Only a disagreement asks
+        // the mount, so a filesystem that stores them never pays for the probe
+        // and a delivery that already looks private is never delayed.
+        if public && !mount_cannot_extend_guard(&self.directory) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "delivery file and retained parent must be owned by the current user and not writable by group or others",
@@ -455,10 +469,9 @@ impl WorkspaceFile {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::MetadataExt;
         let parent = self.directory.metadata()?;
-        if parent.mode() & 0o077 != 0
-            || parent.uid() != unsafe { libc::geteuid() }
-            || !same_file(file, &self.identity_probe()?)?
-        {
+        let public = parent.mode() & 0o077 != 0 || parent.uid() != unsafe { libc::geteuid() };
+        let unverified = public && !mount_cannot_extend_guard(&self.directory);
+        if unverified || !same_file(file, &self.identity_probe()?)? {
             return Err(invalid_path());
         }
         if unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.filename.as_ptr(), 0) } != 0 {
@@ -515,7 +528,7 @@ impl WorkspaceFile {
 /// than 1, so a concurrent reader failed with InvalidData. `Ok(false)` sends
 /// the caller back to `linkat`, which keeps that window: other Unixes, and any
 /// kernel, filesystem or sandbox that refuses the exclusive rename.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn rename_exclusive(
     directory: libc::c_int,
     from: &std::ffi::CStr,
@@ -556,7 +569,10 @@ fn rename_exclusive(
     exclusive_rename_outcome(renamed == 0)
 }
 
-#[cfg(all(unix, not(any(target_os = "linux", target_vendor = "apple"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
 fn rename_exclusive(
     _: libc::c_int,
     _: &std::ffi::CStr,
@@ -568,7 +584,7 @@ fn rename_exclusive(
 
 /// Only an existing target is final. Any other refusal falls back to `linkat`,
 /// so publication is never worse off than before the exclusive rename.
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 fn exclusive_rename_outcome(renamed: bool) -> io::Result<bool> {
     if renamed {
         return Ok(true);
@@ -942,6 +958,23 @@ pub fn rename_windows_opened(
         std::thread::sleep(backoff);
         attempt += 1;
     }
+}
+
+/// Whether `directory`'s filesystem reports an owner and mode of its own for
+/// objects created in it, so neither can serve as evidence about this file.
+///
+/// The question is the one [`codewhale_config::private_directory::private_footing`]
+/// answers, asked through the directory handle the caller already holds: no
+/// path is involved, so nothing outside this directory can be reached, and the
+/// answer is cached per directory so a write path pays for it at most once.
+/// Only a directory this process cannot write to answers `false`, which keeps
+/// the strict error above — that is a real problem, and not this one.
+#[cfg(unix)]
+fn mount_cannot_extend_guard(directory: &std::fs::File) -> bool {
+    matches!(
+        codewhale_config::private_directory::mount_footing_of(directory),
+        codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+    )
 }
 
 #[cfg(all(test, unix))]

@@ -1,119 +1,43 @@
 ---
 name: codew-release-qa-sweep
-description: "Use before claiming Codewhale release work is done: run the full gate sweep and list the manual QA targets."
+description: "Use before claiming Codewhale release work is done: a pointer to docs/RELEASE_CHECKLIST.md for the gates and to cw-dogfood for the manual QA targets."
 ---
 
 # Codewhale Release QA Sweep
 
-Run this before claiming any Codewhale release work is "done." A green automated
-gate sweep plus the three manual QA targets is the evidence bar. No sweep, no
-"done" — report exactly what was run and the result of each step.
+No sweep, no "done". This skill owns nothing itself; it points at the two places
+that do.
 
-## When to use
+- **Gates and the release cut:** follow `docs/RELEASE_CHECKLIST.md` from the
+  canonical checkout on `main` (`docs/RELEASE_RUNBOOK.md` for the tools behind
+  it). Native builds go through `scripts/dev-cargo.sh` / `scripts/dev-test.sh`
+  ([cw-gates](../cw-gates/SKILL.md)). Hosted CI runs once, at the final release
+  step, against the frozen candidate commit.
+- **Manual QA targets:** [cw-dogfood](../cw-dogfood/SKILL.md) step 5. Unit and
+  build gates do not cover the live TUI.
 
-- Before telling the maintainer (or a PR thread) that release work is complete or
-  merge-ready.
-- After harvesting/landing PRs into the release branch, before the publish boundary.
-- When verifying a release candidate on the **real** landing branch
-  (e.g. `<release-branch>`), which is often local-only.
+## Regressions the manual QA must cover
 
-## Automated gate sweep
+Exercise each in a real terminal and record what you saw. The scenarios are
+described in cw-dogfood; the refs are the reports that motivated them.
 
-Run from the repo root, in order. Stop on the first failure and report it.
+- Six-worker fanout liveness, including Esc mid-fanout: #3216, #2211, and the
+  Windows Terminal retest path #3289.
+- Multi-terminal route isolation: #3227.
+- Running-turn input contract: #3203.
 
-```bash
-# 0. Confirm you are on the real release head, not a main-based assumption.
-git branch --show-current          # expect e.g. <release-branch>
-git status --short                 # working tree should be clean
+## Reporting
 
-# 1. Formatting + stray whitespace/conflict markers
-cargo fmt --all --check
-git diff --check
-
-# Core npm workspace tests plus the shared web gate (install web dependencies first).
-# check:web checks committed facts before regeneration, then docs, design tokens,
-# lint, TypeScript and the production build. These do not replace the Rust gates.
-npm test && npm run check:web
-
-# 2. Library/protocol/cli/flow/state tests, locked
-cargo test -p codewhale-config -p codewhale-protocol -p codewhale-cli \
-  -p codewhale-workflow -p codewhale-state --locked
-
-# 3. TUI test binaries, locked
-cargo test -p codewhale-tui --lib --locked
-
-# 4. TUI debug build, locked
-cargo build -p codewhale-cli --bin codewhale --locked
-
-# 5. Release build for the shipped binaries, locked
-cargo build --release --locked -p codewhale-cli --bin codewhale
-
-# 6. Version-drift gate (workspace ↔ npm ↔ Cargo.lock ↔ changelog ↔ README)
-./scripts/release/check-versions.sh
-
-# 7. Binary smoke
-./target/release/codewhale --version
-```
-
-If you are validating a PR for landing, also test mergeability against the
-**actual** release head, never the main-based clean flag:
-
-```bash
-git merge-tree $(git merge-base <release-branch> <pr-head>) <release-branch> <pr-head>
-```
-
-A PR that is clean against `main` can still conflict with the release branch.
-
-## Manual QA targets
-
-Unit/build gates do not cover the live TUI. Exercise all three and record what you saw:
-
-Use the built binary with a sealed local home and loopback fixtures, then
-exercise the relevant scenarios below in an actual terminal. Record dimensions,
-inputs, visible state, and side effects. Do not substitute a full-screen
-assertion harness for looking at and using the product.
-
-1. **Six-worker fanout liveness** (regression refs #3216, #2211). Spawn 6 sub-agents. Confirm
-   typing, render, cancel, and the workbar stay live throughout, and that **Esc
-   cancels mid-fanout** (prompt interrupt, not a wedged ~24s burst or freeze).
-   For the Windows Terminal retest path (ref #3289), start in plan mode, add
-   follow-up input to the plan, press Esc, switch to yolo/accept flow, trigger
-   at least two auto/Fleet worker spawns, and keep typing/cancel/mode-switch
-   checks live for several minutes. Attach logs if the freeze reproduces.
-2. **Multi-terminal route isolation** (regression ref #3227). Open multiple terminals on
-   distinct provider/model routes. Confirm zero cross-terminal contamination and
-   no provider+model mismatch — each terminal honors its own route.
-3. **Running-turn input contract** (regression ref #3203). During a busy turn, confirm Enter
-   queues a typed follow-up, the preview advertises **Enter send now**, and an
-   empty Enter promotes the oldest queued follow-up. Confirm Ctrl+Enter steers
-   typed text directly, Shift+Enter inserts a newline, and Ctrl+G/Ctrl+S only
-   stash drafts.
-
-## Reporting format
-
-Report a checklist: each command, pass/fail, and the salient output line
-(test counts, the `--version` string, `check-versions.sh` verdict). For manual
-QA, state what you actually observed per target, citing the regression ref where
-one applies. If a
-step was skipped or could not be run (e.g. no display for TUI QA), say so
-explicitly — do not imply coverage you do not have.
+Each command, pass or fail, and the salient output line (test counts, the
+`--version` string, the `check-versions.sh` verdict). For manual QA, what you
+observed per target, citing the ref. Name what you skipped (for example, no
+display for TUI QA) rather than implying coverage you do not have.
 
 ## Red flags / don't
 
-- Don't claim "done," "passing," or "merge-ready" without the evidence above.
-  Assertions without command output are not acceptable.
-- Don't trust the main-based mergeability flag for a release branch; use
-  `git merge-tree` against the real head.
-- Don't skip the manual TUI targets because the build is green — the freeze,
-  route-mismatch, and steering regressions live in the runtime, not the gates.
-- Don't tag, publish, create a GitHub Release, push artifacts, or merge/close
-  any PR or issue without maintainer approval. A green sweep is readiness
-  evidence, not permission.
-- Never harvest/close from a PR title or label alone — review from code, tests,
-  comments, and checks.
-- When the sweep clears a harvested PR, preserve contributor credit: cherry-pick
-  keeps the original author, otherwise add `Co-authored-by: Name <email>` and a
-  `Harvested from PR #N by @handle` body line (the spaced form the
-  auto-close-at-main workflow greps for).
-- Keep any contributor-facing comment positive and crediting; gates stay
-  dry-run/advisory unless the maintainer approves enforcement.
+- Don't claim "done", "passing" or "merge-ready" without command output.
+- Don't skip the manual targets because the build is green.
+- Don't tag, publish, create a GitHub Release, push artifacts or merge or close
+  a PR or issue without approval. A green sweep is readiness evidence, not
+  permission.
+- Credit mechanics for contributor work: [cw-land](../cw-land/SKILL.md) step 3.

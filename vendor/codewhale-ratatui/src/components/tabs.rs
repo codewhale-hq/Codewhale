@@ -339,7 +339,7 @@ impl Paint for Tabs<'_> {
             x = x.saturating_add(cells(&mark));
         }
         let lit = if self.focused {
-            theme.fg(Role::Primary)
+            theme.fg(Role::Accent)
         } else {
             theme.fg(Role::Foreground)
         };

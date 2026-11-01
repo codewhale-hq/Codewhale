@@ -89,6 +89,24 @@ try {
         $published += $row
     }
     Write-Host "Installed canonical Codewhale commands to $destination. Add this directory to your user PATH. Node remains the default host. Remove later with: `"$destination\codewhale.exe`" uninstall"
+    $kept = @($published | Where-Object { $_.OldHash -and $_.OldHash -ne $_.NewHash -and (Test-Path -LiteralPath $_.Backup) })
+    if ($kept.Count -gt 0) {
+        $dataRoot = if ($env:CODEWHALE_HOME -and [IO.Path]::IsPathRooted($env:CODEWHALE_HOME)) { $env:CODEWHALE_HOME } else { Join-Path $env:USERPROFILE '.codewhale' }
+        $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'")
+        $recovery = Join-Path (Join-Path $dataRoot 'recovery') $stamp
+        for ($attempt = 1; Test-Path -LiteralPath $recovery; $attempt++) { $recovery = Join-Path (Join-Path $dataRoot 'recovery') "$stamp-$attempt" }
+        [IO.Directory]::CreateDirectory($recovery) | Out-Null
+        $seq = 0
+        foreach ($row in $kept) {
+            $seq++
+            $stored = Join-Path $recovery ('{0:D3}-{1}' -f $seq, $row.Name)
+            Move-Item -LiteralPath $row.Backup -Destination $stored
+            [IO.File]::AppendAllText((Join-Path $recovery 'manifest.tsv'), ("{0}`t{1}`t{2}`t{3}`n" -f $row.Target, $stored, $row.OldHash, (Get-Item -LiteralPath $stored).Length))
+        }
+        Write-Host "Upgraded the earlier Codewhale. Previous files are kept in $recovery for 30 days. Undo: `"$destination\codewhale.exe`" doctor --restore $(Split-Path -Leaf $recovery)"
+    }
+    try { & (Join-Path $destination 'codewhale.exe') doctor --installs --brief 2>$null } catch { }
+    Write-Host "Updates install automatically; turn off with: codewhale config set update.mode notify"
 } catch {
     $original = $_
     [array]::Reverse($published)

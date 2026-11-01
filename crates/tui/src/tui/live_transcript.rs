@@ -67,7 +67,7 @@ struct CellSnapshot {
 
 struct FlattenedTranscript {
     lines: Vec<Line<'static>>,
-    line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
+    line_links: Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
     highlighted_range: Option<(usize, usize)>,
 }
 
@@ -291,7 +291,7 @@ impl LiveTranscriptOverlay {
     fn flatten(&self, width: u16) -> FlattenedTranscript {
         let width = width.max(1);
         let mut out: Vec<Line<'static>> = Vec::new();
-        let mut out_links: Vec<Vec<crate::tui::osc8::LineLink>> = Vec::new();
+        let mut out_links: Vec<Vec<codewhale_tui_kit::osc8::LineLink>> = Vec::new();
         let mut highlighted_range = None;
 
         // Pre-compute which cell index (in `self.snapshots`) is the one
@@ -731,8 +731,8 @@ impl ModalView for LiveTranscriptOverlay {
         // escape payload into the buffer. Replace the opaque popup's portion
         // of the frame map so links in the obscured transcript cannot leak
         // through unrelated modal text.
-        let regions = crate::tui::osc8::link_regions_for_plan(&plan, &visible_line_links);
-        crate::tui::osc8::overlay_frame_links(popup_area, regions);
+        let regions = codewhale_tui_kit::osc8::link_regions_for_plan(&plan, &visible_line_links);
+        codewhale_tui_kit::osc8::overlay_frame_links(popup_area, regions);
     }
 }
 
@@ -812,9 +812,9 @@ mod tests {
 
         let area = Rect::new(0, 0, 32, 16);
         let mut buf = Buffer::empty(area);
-        let _ = crate::tui::osc8::take_frame_links();
+        let _ = codewhale_tui_kit::osc8::take_frame_links();
         view.render(area, &mut buf);
-        let regions = crate::tui::osc8::take_frame_links();
+        let regions = codewhale_tui_kit::osc8::take_frame_links();
 
         assert!(view.scroll_offset() > 0, "fixture must render a tail slice");
         assert!(regions.len() > 1, "narrow overlay should wrap: {regions:?}");
@@ -1293,19 +1293,20 @@ mod mounted_transcript_acceptance {
                 let area = Rect::new(0, 0, width, height);
                 let mut actual = Buffer::empty(area);
                 let mut expected = actual.clone();
-                crate::tui::osc8::set_frame_links(Vec::new());
+                codewhale_tui_kit::osc8::set_frame_links(Vec::new());
                 old.render(area, &mut expected);
                 assert_eq!(old.scroll_offset(), old.frozen_metrics().0);
                 assert_eq!(old.is_sticky(), old.frozen_metrics().3);
-                let links = crate::tui::osc8::FRAME_LINKS.with(|links| links.borrow().clone());
-                crate::tui::osc8::set_frame_links(Vec::new());
+                let links =
+                    codewhale_tui_kit::osc8::FRAME_LINKS.with(|links| links.borrow().clone());
+                codewhale_tui_kit::osc8::set_frame_links(Vec::new());
                 current.render(area, &mut actual);
                 assert_eq!(
                     actual, expected,
                     "chunk={chunk:?} area={area:?} preview={preview}"
                 );
                 assert_eq!(
-                    crate::tui::osc8::FRAME_LINKS.with(|links| links.borrow().clone()),
+                    codewhale_tui_kit::osc8::FRAME_LINKS.with(|links| links.borrow().clone()),
                     links
                 );
                 assert_eq!(

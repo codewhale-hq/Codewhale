@@ -1,5 +1,5 @@
 use super::live::{Batch, Client, Scene, session_source};
-use crate::runtime_threads::RuntimeEventRecord;
+use codewhale_engine::runtime_threads::RuntimeEventRecord;
 use codewhale_protocol::engine_owner::{OwnerActivityKind, OwnerOperationOutcome};
 use serde_json::{Value, json};
 use std::{
@@ -62,7 +62,7 @@ fn identifier(value: &Value) -> Option<String> {
 }
 
 fn extract(record: RuntimeEventRecord) -> Result<Option<Observed>, ()> {
-    if record.event == crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT {
+    if record.event == codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT {
         return Err(());
     }
     if !matches!(

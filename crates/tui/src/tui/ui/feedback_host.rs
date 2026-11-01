@@ -1,7 +1,7 @@
 //! Async local report review on the existing dispatch completion mailbox.
 use super::*;
-use crate::hooks::HookCaller;
-use crate::tools::github::report;
+use codewhale_engine::hooks::HookCaller;
+use codewhale_engine::tools::github::report;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -64,7 +64,7 @@ pub(super) fn start(
         .context("Feedback completion mailbox is unavailable")?
         .try_reserve_owned()
         .context("Feedback completion mailbox is full or closed")?;
-    let manager = crate::extension_host::manager();
+    let manager = codewhale_engine::extension_host::manager();
     let handle = tokio::runtime::Handle::try_current()
         .context("Feedback Engine scheduler is unavailable")?;
     manager.bind_engine_handle(handle.clone());
@@ -185,7 +185,7 @@ mod tests {
         app.workspace = tmp.path().join("other");
         assert!(!scope.current(&app, &config));
         app.workspace = scope.caller.workspace.clone();
-        app.plugin_registry = Arc::new(crate::plugins::PluginRegistry::new());
+        app.plugin_registry = Arc::new(codewhale_plugins::PluginRegistry::new());
         assert!(!scope.current(&app, &config));
     }
     #[test]

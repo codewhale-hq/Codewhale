@@ -1,11 +1,10 @@
 //! Remaining legacy core commands: clear, exit, model and related interactions.
 
-#[cfg(test)]
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, AppAction};
 use crate::tui::views::{ModalKind, SubAgentsView, subagent_view_agents};
 use codewhale_config::ProviderKind;
-use codewhale_localization::Locale;
+#[cfg(test)]
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{MessageId, tr};
 use codewhale_runtime::config::{normalize_custom_model_id, normalize_model_name_for_provider};
 
@@ -78,7 +77,7 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     // Atomically retire background accounting before zeroing the session.
     // Late reports retain the old scope token and are discarded instead of
     // appearing in the new conversation.
-    let _settled_old_cost_scope = crate::cost_status::close_current_scope();
+    let _settled_old_cost_scope = codewhale_engine::cost_status::close_current_scope();
     app.clear_history();
     app.mark_history_updated();
     app.clear_api_messages();
@@ -90,7 +89,7 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
         .push_back(crate::tui::app::PendingGoalControl {
             goal_id: None,
             intent: crate::tui::app::GoalControlIntent::SetStatus {
-                status: crate::tools::goal::GoalStatus::Active,
+                status: codewhale_engine::tools::goal::GoalStatus::Active,
                 clear: true,
             },
             dispatched: false,
@@ -142,15 +141,6 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     true
 }
 
-/// The site locale segment for a public Codewhale URL.
-///
-/// The mapping itself lives in the portable `navigation::links` module, which
-/// the navigation proof requires to stay free of host imports; this is the
-/// host-side adapter for callers that hold a `Locale`.
-pub(crate) fn public_site_locale_segment(locale: Locale) -> &'static str {
-    super::navigation::links::public_site_locale_segment(locale.tag())
-}
-
 /// Exit the application
 pub fn exit() -> CommandResult {
     CommandResult::action(AppAction::Quit)
@@ -187,6 +177,11 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             let model_changed = !app.auto_model || app.model != "auto";
             app.set_model_selection("auto".to_string());
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
+            app.active_context_window_source = app
+                .active_context_window
+                .map(|window| window.source)
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
             app.update_model_compaction_budget();
             if model_changed {
                 app.clear_model_scoped_telemetry();
@@ -241,7 +236,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         let strict_direct_custom_endpoint = app.accepts_custom_model_ids()
             && matches!(app.api_provider, ProviderKind::Deepseek | ProviderKind::Zai);
         let route_resolution = if declared {
-            match crate::route_runtime::resolve_declared_model_candidate(
+            match codewhale_engine::route_runtime::resolve_declared_model_candidate(
                 app.api_provider,
                 app.provider_identity_for_persistence(),
                 &model_id,
@@ -270,7 +265,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
                 &model_id,
             )
             .then(|| app.active_route_base_url.clone());
-            match crate::route_runtime::resolve_route_candidate_with_context_metadata(
+            match codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata(
                 app.api_provider,
                 Some(&model_id),
                 None,
@@ -290,14 +285,15 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         } else {
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)
-                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         }
         app.update_model_compaction_budget();
         if model_changed {
@@ -369,9 +365,10 @@ pub fn profile_switch(app: &mut App, arg: Option<&str>) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::PromptInspection;
     use crate::tui::app::{App, TuiOptions, TurnCacheRecord};
     use crate::tui::history::HistoryCell;
+    use codewhale_engine::client::PromptInspection;
+    use codewhale_localization::Locale;
     use codewhale_models::Message;
     use codewhale_models::Role;
     use codewhale_runtime::config::Config;
@@ -493,9 +490,9 @@ mod tests {
         app.tool_log.push("test".to_string());
         app.current_session_id = Some("existing-session".to_string());
         app.session_artifacts
-            .push(crate::artifacts::ArtifactRecord {
+            .push(codewhale_runtime::artifacts::ArtifactRecord {
                 id: "art_call_big".to_string(),
-                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
                 session_id: "existing-session".to_string(),
                 tool_call_id: "call-big".to_string(),
                 tool_name: "exec_shell".to_string(),
@@ -593,11 +590,9 @@ mod tests {
         app.session.session_cost_cny = 3.05;
         app.session.subagent_cost = 0.11;
         app.session.subagent_cost_cny = 0.80;
-        app.session
-            .subagent_usage_sources
-            .insert(crate::cost_status::usage_source_fingerprint(
-                "response-test",
-            ));
+        app.session.subagent_usage_sources.insert(
+            codewhale_engine::cost_status::usage_source_fingerprint("response-test"),
+        );
         app.session.displayed_cost_high_water = 0.53;
         app.session.displayed_cost_high_water_cny = 3.85;
         app.session.last_prompt_cache_hit_tokens = Some(70);

@@ -3,9 +3,12 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+pub mod autoupdate;
 pub mod check;
 pub mod install;
+pub mod installs;
 pub mod launch;
+pub mod signing;
 pub mod tls;
 
 pub use check::{SuppressionReason, UpdateCheckCache, suppression_reason};

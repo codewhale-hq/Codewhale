@@ -23,8 +23,8 @@
 
 use std::path::Path;
 
-use crate::fleet::profile::{FleetProfileDraft, UntrustedProfileParse};
-use crate::llm_client::LlmClient;
+use codewhale_engine::fleet::profile::{FleetProfileDraft, UntrustedProfileParse};
+use codewhale_engine::llm_client::LlmClient;
 use codewhale_localization::Locale;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt};
@@ -293,7 +293,7 @@ pub(crate) async fn draft_fleet_profile_with_model<C: LlmClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::mock::MockLlmClient;
+    use codewhale_engine::llm_client::mock::MockLlmClient;
     use codewhale_models::{MessageResponse, Usage};
 
     fn text_response(text: &str) -> MessageResponse {

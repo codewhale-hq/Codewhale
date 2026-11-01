@@ -14,7 +14,7 @@ use crate::tui::ocean;
 /// Slice G central registry: every clickable primitive family has a kind so
 /// per-screen renderers register one rect and the shared
 /// [`crate::tui::hover_layer`] paints the feedback. Selection (keyboard)
-/// styling stays in [`crate::tui::menu_style`]; these kinds only drive the
+/// styling stays in [`codewhale_tui_kit::menu_style`]; these kinds only drive the
 /// pointer layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverTargetKind {

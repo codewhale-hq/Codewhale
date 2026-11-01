@@ -739,7 +739,7 @@ impl ShowcaseFrame<'_> {
         let regions = self.work_areas(area, theme);
         TerminalShell::new(0).paint(area, buf, theme);
         let user = Message::native("Make the session picker readable in narrow windows.")
-            .role(Role::Primary)
+            .role(Role::Accent)
             .marker(crate::glyphs::USER);
         let mut next = 1;
         let height = user.height(regions.conversation.width, theme);
@@ -796,7 +796,7 @@ impl ShowcaseFrame<'_> {
                     if theme.ascii() { "." } else { "·" },
                     queued
                 ),
-                Role::Primary,
+                Role::Accent,
             );
         }
         self.composer(regions.composer, buf, theme);
@@ -1001,7 +1001,7 @@ impl ShowcaseFrame<'_> {
             theme,
             &format!("Profile {} / Left, Right", self.state.profile.name()),
             if self.state.focus == 2 {
-                Role::Primary
+                Role::Accent
             } else {
                 Role::Muted
             },
@@ -1095,7 +1095,7 @@ impl ShowcaseFrame<'_> {
                 action.words(),
                 self.state.action.min(16) + 1
             ),
-            Role::Primary,
+            Role::Accent,
         );
         let water = band(area, 4, area.height.saturating_sub(4));
         let art = Self::life_art(area);

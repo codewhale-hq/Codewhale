@@ -93,7 +93,7 @@ impl<'a> InstrumentSurface<'a> {
         let mut block = Block::default()
             .title(Line::from(Span::styled(
                 format!(" {title} "),
-                theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+                theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
             )))
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(theme.fg(Role::Border))
@@ -223,7 +223,7 @@ fn action_lines(actions: &[KeyHint], width: u16, theme: &Theme) -> Vec<Line<'sta
             used += 1;
         }
         let key_role = if action.enabled {
-            Role::Primary
+            Role::Accent
         } else {
             Role::Dim
         };
@@ -565,7 +565,7 @@ impl Paint for SessionList<'_> {
         } else if let Some(status) = &self.status {
             lines.push(Line::styled(
                 session_truncate(&native_safe(status, theme), width),
-                theme.fg(Role::Primary),
+                theme.fg(Role::Accent),
             ));
         }
         if self.rows.is_empty() {
@@ -598,7 +598,7 @@ impl Paint for SessionList<'_> {
                         .add_modifier(Modifier::BOLD)
                 } else {
                     theme.fg(if row.current {
-                        Role::Primary
+                        Role::Accent
                     } else {
                         Role::Foreground
                     })

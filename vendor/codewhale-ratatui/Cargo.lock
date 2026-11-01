@@ -61,7 +61,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "codewhale-ratatui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crossterm",
  "insta",

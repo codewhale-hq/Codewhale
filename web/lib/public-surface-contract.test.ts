@@ -420,11 +420,11 @@ done
   it("keeps public tool facts aligned with the native core and discovery boundaries", () => {
     const toolDoc = text("docs/TOOL_SURFACE.md");
     const toolsPage = text("web/app/[locale]/docs/tools/page.tsx") + text("web/lib/content/tools.ts");
-    const registry = text("crates/tui/src/tools/registry.rs");
+    const registry = text("crates/engine/src/tools/registry.rs");
     const limits = text("crates/runtime/src/config/subagent_limits.rs");
     const roadmap = text("web/app/[locale]/roadmap/page.tsx");
 
-    const catalog = text("crates/tui/src/core/engine/tool_catalog.rs");
+    const catalog = text("crates/engine/src/core/engine/tool_catalog.rs");
     const nativeCore = catalog.match(/const DEFAULT_ACTIVE_NATIVE_TOOLS: &[\s\S]*?= &\[([\s\S]*?)\];/);
     expect(nativeCore, "native core declaration must be found").not.toBeNull();
     const nativeNames = [...nativeCore![1].matchAll(/"([^"\n]+)"/g)].map((match) => match[1]);
@@ -473,13 +473,13 @@ done
     expect(registry).toContain("Arc::new(LowercaseBashTool)");
     expect(registry).toContain('FileTool::new("File")');
     expect(registry).toContain('BashTool::new("Bash")');
-    expect(toolsPage).toContain("8 names / 24 KiB");
+    expect(toolsPage).toContain("8 names / 16 KiB");
     expect(toolsPage).toContain("Web search/fetch");
     expect(toolsPage).not.toContain("docs/TOOL_LIFECYCLE.md");
   });
 
   it("states the hosted-provider privacy boundary without a false local-only promise", () => {
-    const faq = text("web/app/[locale]/faq/page.tsx");
+    const faq = text("web/lib/content/faq.tsx");
     const roadmap = text("web/app/[locale]/roadmap/page.tsx");
     const providers = text("docs/PROVIDERS.md");
     const runtime = text("docs/RUNTIME_API.md");

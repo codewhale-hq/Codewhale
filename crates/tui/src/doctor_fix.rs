@@ -22,10 +22,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::McpServerDoctorStatus;
-use crate::mcp;
+use codewhale_engine::mcp;
 
 /// One concrete, reversible repair the doctor can apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,17 +33,41 @@ pub(crate) enum DoctorFixAction {
     /// Delete an interrupted-atomic-write leftover. Only ever a regular file
     /// whose name starts with `.tmp` directly inside the Codewhale home and
     /// whose last modification was more than an hour ago.
-    DeleteStaleTempFile { path: PathBuf },
+    DeleteStaleTempFile {
+        path: PathBuf,
+    },
     /// Restrict a secret-store file to owner-only on Unix.
     #[cfg(unix)]
-    TightenSecretPermissions { path: PathBuf, from_mode: u32 },
+    TightenSecretPermissions {
+        path: PathBuf,
+        from_mode: u32,
+    },
     /// Disable a structurally broken MCP entry by name in the given config.
     DisableMcpServer {
         config_path: PathBuf,
         server: String,
     },
     /// Create a missing user-global discovery directory.
-    ScaffoldDirectory { path: PathBuf },
+    ScaffoldDirectory {
+        path: PathBuf,
+    },
+    MoveInstallLeftover {
+        path: PathBuf,
+        bytes: u64,
+    },
+    AlignAlias {
+        alias: PathBuf,
+        primary: PathBuf,
+        sha256: String,
+    },
+    AdoptInstall {
+        dir: PathBuf,
+        sha256: String,
+    },
+    PruneRecovery {
+        stamps: Vec<String>,
+        bytes: u64,
+    },
 }
 
 /// The full repair plan for one doctor run.
@@ -91,6 +115,29 @@ impl DoctorFixPlan {
                         codewhale_util::utils::display_path(path)
                     )
                 }
+                DoctorFixAction::MoveInstallLeftover { path, bytes } => format!(
+                    "move old Codewhale backup {} ({}) to the recovery folder (kept {} days)",
+                    codewhale_util::utils::display_path(path),
+                    codewhale_release::installs::human_bytes(*bytes),
+                    codewhale_release::installs::RECOVERY_RETENTION_DAYS
+                ),
+                DoctorFixAction::AlignAlias { alias, primary, .. } => format!(
+                    "make {} match {} (v{}); the old copy goes to the recovery folder",
+                    codewhale_util::utils::display_path(alias),
+                    codewhale_util::utils::display_path(primary),
+                    env!("CARGO_PKG_VERSION")
+                ),
+                DoctorFixAction::AdoptInstall { dir, .. } => format!(
+                    "record an install receipt in {} so `codewhale update` and `codewhale uninstall` own it",
+                    codewhale_util::utils::display_path(dir)
+                ),
+                DoctorFixAction::PruneRecovery { stamps, bytes } => format!(
+                    "delete {} recovery folder(s) older than {} days ({}): {}",
+                    stamps.len(),
+                    codewhale_release::installs::RECOVERY_RETENTION_DAYS,
+                    codewhale_release::installs::human_bytes(*bytes),
+                    stamps.join(", ")
+                ),
             })
             .collect()
     }
@@ -153,7 +200,7 @@ fn secret_files_needing_tightening() -> Vec<(PathBuf, u32)> {
 fn broken_mcp_entries(
     config: &codewhale_runtime::config::Config,
     workspace: &Path,
-    plugins: &crate::plugins::PluginRegistry,
+    plugins: &codewhale_plugins::PluginRegistry,
 ) -> Vec<(PathBuf, Vec<String>)> {
     let global_path = config.mcp_config_path();
     let project_path = mcp::workspace_mcp_config_path(workspace);
@@ -200,7 +247,7 @@ fn missing_user_directories(config: &codewhale_runtime::config::Config) -> Vec<P
 pub(crate) fn plan_fixes(
     config: &codewhale_runtime::config::Config,
     workspace: &Path,
-    plugins: &crate::plugins::PluginRegistry,
+    plugins: &codewhale_plugins::PluginRegistry,
 ) -> DoctorFixPlan {
     let mut actions = Vec::new();
     actions.extend(
@@ -229,7 +276,66 @@ pub(crate) fn plan_fixes(
             .into_iter()
             .map(|path| DoctorFixAction::ScaffoldDirectory { path }),
     );
+    actions.extend(install_actions());
     DoctorFixPlan { actions }
+}
+
+fn install_actions() -> Vec<DoctorFixAction> {
+    use codewhale_release::installs::{self, InstallClass};
+    let running = std::env::current_exe().ok();
+    let inventory = installs::inventory(running.as_deref());
+    let mut actions: Vec<DoctorFixAction> = inventory
+        .leftovers()
+        .map(|entry| DoctorFixAction::MoveInstallLeftover {
+            path: entry.path.clone(),
+            bytes: entry.bytes,
+        })
+        .collect();
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(exe) = &running
+        && codewhale_release::InstallMethod::detect(exe).supports_self_update()
+        && let Some(dir) = exe.parent().map(canonical)
+        && std::fs::symlink_metadata(dir.join(installs::RECEIPT_FILE)).is_err()
+        && let Some(entry) = inventory
+            .entries
+            .iter()
+            .find(|entry| canonical(&entry.path) == canonical(exe))
+        && entry.class == InstallClass::OursUnreceipted
+        && let Ok(sha256) = installs::file_sha256(exe)
+    {
+        for alias in inventory.entries.iter().filter(|other| {
+            other.class == InstallClass::OursUnreceipted
+                && !other.same_as_running
+                && other.path.parent().map(canonical).as_deref() == Some(dir.as_path())
+                && installs::RECEIPT_COMMANDS
+                    .iter()
+                    .any(|name| other.path.file_name().and_then(|n| n.to_str()) == Some(name))
+        }) {
+            actions.push(DoctorFixAction::AlignAlias {
+                alias: alias.path.clone(),
+                primary: exe.clone(),
+                sha256: sha256.clone(),
+            });
+        }
+        if installs::directory_is_private(&dir) {
+            actions.push(DoctorFixAction::AdoptInstall { dir, sha256 });
+        }
+    }
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        let now = codewhale_release::check::now_unix();
+        let expired: Vec<_> = installs::recovery_folders(&home)
+            .into_iter()
+            .filter(|folder| folder.expires_in_days(now) == Some(0))
+            .collect();
+        if !expired.is_empty() {
+            actions.push(DoctorFixAction::PruneRecovery {
+                bytes: expired.iter().map(|folder| folder.bytes()).sum(),
+                stamps: expired.into_iter().map(|folder| folder.stamp).collect(),
+            });
+        }
+    }
+    actions
 }
 
 /// Outcome of applying one action.
@@ -242,14 +348,127 @@ pub(crate) enum DoctorFixOutcome {
 /// Apply a plan. Each action reports its own outcome; one failure never
 /// blocks the rest. Actions are idempotent, so a re-run converges.
 pub(crate) fn apply_fixes(plan: &DoctorFixPlan) -> Vec<(DoctorFixAction, DoctorFixOutcome)> {
-    plan.actions
+    let mut batch = None;
+    let results = plan
+        .actions
         .iter()
         .cloned()
         .map(|action| {
-            let outcome = apply_one(&action);
+            let outcome = match apply_install_action(&action, &mut batch) {
+                Some(Ok(())) => DoctorFixOutcome::Applied,
+                Some(Err(error)) => DoctorFixOutcome::Failed(format!("{error:#}")),
+                None => apply_one(&action),
+            };
             (action, outcome)
         })
-        .collect()
+        .collect();
+    if let Some(batch) = batch {
+        let batch: codewhale_release::installs::RecoveryBatch = batch;
+        let stamp = batch.stamp.clone();
+        let dir = batch.dir.clone();
+        let moves = batch.finish();
+        if !moves.is_empty() {
+            println!(
+                "Moved {} item(s) ({}) to {}. Undo all: codewhale doctor --restore {stamp}",
+                moves.len(),
+                codewhale_release::installs::human_bytes(moves.iter().map(|m| m.bytes).sum()),
+                dir.display()
+            );
+        }
+    }
+    results
+}
+
+fn recovery_batch(
+    batch: &mut Option<codewhale_release::installs::RecoveryBatch>,
+) -> Result<&mut codewhale_release::installs::RecoveryBatch> {
+    if batch.is_none() {
+        let home = codewhale_config::codewhale_home()?;
+        *batch = Some(codewhale_release::installs::RecoveryBatch::open(&home)?);
+    }
+    Ok(batch.as_mut().expect("recovery batch was just opened"))
+}
+
+fn apply_install_action(
+    action: &DoctorFixAction,
+    batch: &mut Option<codewhale_release::installs::RecoveryBatch>,
+) -> Option<Result<()>> {
+    use codewhale_release::installs;
+    Some(match action {
+        DoctorFixAction::MoveInstallLeftover { path, .. } => (|| {
+            let meta = std::fs::symlink_metadata(path)?;
+            anyhow::ensure!(!meta.is_symlink(), "it became a symlink; not moved");
+            let moved = recovery_batch(batch)?.move_in(path)?;
+            println!(
+                "  moved {} -> {}\n    undo: {}",
+                path.display(),
+                moved.to.display(),
+                moved.undo_command()
+            );
+            Ok(())
+        })(),
+        DoctorFixAction::AlignAlias {
+            alias,
+            primary,
+            sha256,
+        } => (|| {
+            let bytes = std::fs::read(primary)?;
+            anyhow::ensure!(
+                &installs::sha256_hex(&bytes) == sha256,
+                "{} changed since the plan; not aligned",
+                primary.display()
+            );
+            let dir = alias.parent().context("alias has no parent")?;
+            let name = alias
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("alias name is not UTF-8")?;
+            let moved = recovery_batch(batch)?.move_in(alias)?;
+            if let Err(error) =
+                codewhale_release::installs::write_file_atomically(dir, name, &bytes, true)
+            {
+                let _ = std::fs::rename(&moved.to, alias);
+                return Err(error);
+            }
+            println!(
+                "  replaced {} with v{}; old copy at {}\n    undo: rm {} && {}",
+                alias.display(),
+                env!("CARGO_PKG_VERSION"),
+                moved.to.display(),
+                alias.display(),
+                moved.undo_command()
+            );
+            Ok(())
+        })(),
+        DoctorFixAction::AdoptInstall { dir, sha256 } => (|| {
+            let entries: Vec<(String, String)> = installs::RECEIPT_COMMANDS
+                .iter()
+                .filter(|name| {
+                    installs::file_sha256(&dir.join(name)).is_ok_and(|hash| &hash == sha256)
+                })
+                .map(|name| ((*name).to_string(), sha256.clone()))
+                .collect();
+            if installs::adopt_receipt(dir, &entries)? {
+                println!(
+                    "  recorded {}\n    undo: rm {}",
+                    dir.join(installs::RECEIPT_FILE).display(),
+                    dir.join(installs::RECEIPT_FILE).display()
+                );
+            }
+            Ok(())
+        })(),
+        DoctorFixAction::PruneRecovery { .. } => (|| {
+            let home = codewhale_config::codewhale_home()?;
+            for (stamp, bytes) in installs::prune_expired(&home) {
+                println!(
+                    "  deleted expired recovery folder {stamp} ({})",
+                    installs::human_bytes(bytes)
+                );
+            }
+            Ok(())
+        })(),
+        _ => return None,
+    })
 }
 
 fn apply_one(action: &DoctorFixAction) -> DoctorFixOutcome {
@@ -284,6 +503,10 @@ fn apply_one(action: &DoctorFixAction) -> DoctorFixOutcome {
             Ok(()) => DoctorFixOutcome::Applied,
             Err(error) => DoctorFixOutcome::Failed(error.to_string()),
         },
+        DoctorFixAction::MoveInstallLeftover { .. }
+        | DoctorFixAction::AlignAlias { .. }
+        | DoctorFixAction::AdoptInstall { .. }
+        | DoctorFixAction::PruneRecovery { .. } => DoctorFixOutcome::Applied,
     }
 }
 
@@ -325,13 +548,16 @@ pub(crate) fn confirm_fix(plan: &DoctorFixPlan) -> bool {
     use std::io::{BufRead, Write};
 
     println!();
-    println!("Apply these {} repair(s) now? [y/N] ", plan.len());
+    print!("Apply these {} repair(s) now? [Y/n] ", plan.len());
     let mut answer = String::new();
     let _ = std::io::stdout().flush();
-    if std::io::stdin().lock().read_line(&mut answer).is_err() {
-        return false;
+    match std::io::stdin().lock().read_line(&mut answer) {
+        Ok(0) | Err(_) => false,
+        Ok(_) => matches!(
+            answer.trim().to_ascii_lowercase().as_str(),
+            "" | "y" | "yes"
+        ),
     }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Print apply results and return whether every action succeeded.
@@ -432,7 +658,7 @@ mod tests {
         let plan = plan_fixes(
             &config,
             workspace.path(),
-            &crate::plugins::PluginRegistry::default(),
+            &codewhale_plugins::PluginRegistry::default(),
         );
         let temp_deletions = plan
             .actions
@@ -474,7 +700,7 @@ mod tests {
     fn missing_user_directories_are_planned_and_scaffolding_is_idempotent() {
         let (home, config) = ScratchHome::new();
         let workspace = tempfile::tempdir().expect("workspace");
-        let registry = crate::plugins::PluginRegistry::default();
+        let registry = codewhale_plugins::PluginRegistry::default();
         let plan = plan_fixes(&config, workspace.path(), &registry);
         assert!(
             plan.actions
@@ -515,7 +741,7 @@ mod tests {
             .expect("loosen");
 
         let workspace = tempfile::tempdir().expect("workspace");
-        let registry = crate::plugins::PluginRegistry::default();
+        let registry = codewhale_plugins::PluginRegistry::default();
         let plan = plan_fixes(&config, workspace.path(), &registry);
         let tighten = plan
             .actions
@@ -573,7 +799,7 @@ mod tests {
         let mut config = config;
         config.mcp_config_path = Some(mcp_path.display().to_string());
 
-        let registry = crate::plugins::PluginRegistry::default();
+        let registry = codewhale_plugins::PluginRegistry::default();
         let plan = plan_fixes(&config, workspace.path(), &registry);
         let disable = plan
             .actions

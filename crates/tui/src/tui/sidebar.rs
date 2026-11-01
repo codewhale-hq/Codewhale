@@ -6,7 +6,9 @@
 //! onto the work surface's row pipeline (2026-09-02); the projection below is
 //! the part other surfaces still read.
 
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentStatus, localized_whale_display_names};
+use codewhale_engine::tools::subagent::{
+    AgentWorkerStatus, SubAgentStatus, localized_whale_display_names,
+};
 
 use super::app::{AgentCurrentActivityStatus, App};
 
@@ -352,7 +354,7 @@ mod tests {
     fn ensure_agent_label_prefers_identity_over_the_counter() {
         let mut app = create_test_app();
         let route = |profile: Option<&str>, role: &str| {
-            Some(crate::tools::subagent::ChildRouteReceipt {
+            Some(codewhale_engine::tools::subagent::ChildRouteReceipt {
                 requested_type: "custom".to_string(),
                 requested_profile: profile.map(str::to_string),
                 resolved_profile_id: None,
@@ -448,7 +450,7 @@ mod tests {
         let mut named = cached_agent("agent_named", None);
         named.name = "release-lead".to_string();
         named.assignment.role = None;
-        named.child_route = Some(crate::tools::subagent::ChildRouteReceipt {
+        named.child_route = Some(codewhale_engine::tools::subagent::ChildRouteReceipt {
             requested_type: "custom".to_string(),
             requested_profile: Some("release-lead".to_string()),
             resolved_profile_id: None,
@@ -472,8 +474,8 @@ mod tests {
     fn cached_agent(
         agent_id: &str,
         nickname: Option<&str>,
-    ) -> crate::tools::subagent::SubAgentResult {
-        crate::tools::subagent::SubAgentResult {
+    ) -> codewhale_engine::tools::subagent::SubAgentResult {
+        codewhale_engine::tools::subagent::SubAgentResult {
             usage: None,
             // An unnamed dispatch: the manager seeds `name` with the agent id
             // and only replaces it when the caller supplied one.
@@ -484,14 +486,14 @@ mod tests {
             workspace: None,
             git_branch: None,
             agent_type: codewhale_agent_contract::role::FleetRole::Worker,
-            assignment: crate::tools::subagent::SubAgentAssignment {
+            assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "task".to_string(),
                 role: Some("worker".to_string()),
             },
             model: String::new(),
             nickname: nickname.map(str::to_string),
-            status: crate::tools::subagent::SubAgentStatus::Running,
+            status: codewhale_engine::tools::subagent::SubAgentStatus::Running,
             worker_status: None,
             runtime_permissions: None,
             parent_run_id: None,
@@ -520,8 +522,9 @@ mod tests {
             child.parent_run_id = Some("workflow_parent".to_string());
             child.spawn_depth = 1;
             if index < 5 {
-                child.status = crate::tools::subagent::SubAgentStatus::Completed;
-                child.worker_status = Some(crate::tools::subagent::AgentWorkerStatus::Completed);
+                child.status = codewhale_engine::tools::subagent::SubAgentStatus::Completed;
+                child.worker_status =
+                    Some(codewhale_engine::tools::subagent::AgentWorkerStatus::Completed);
             }
             app.subagent_cache.push(child);
         }
@@ -559,7 +562,7 @@ mod tests {
     fn sidebar_agent_rows_use_worker_status_from_cached_agents() {
         let mut app = create_test_app();
         let mut agent = cached_agent("agent_model_wait", Some("Blue"));
-        agent.worker_status = Some(crate::tools::subagent::AgentWorkerStatus::ModelWait);
+        agent.worker_status = Some(codewhale_engine::tools::subagent::AgentWorkerStatus::ModelWait);
         app.subagent_cache.push(agent);
 
         let rows = sidebar_agent_rows(&app);
@@ -575,32 +578,36 @@ mod tests {
             (
                 "agent_running",
                 "Running",
-                crate::tools::subagent::SubAgentStatus::Running,
-                crate::tools::subagent::AgentWorkerStatus::RunningTool,
+                codewhale_engine::tools::subagent::SubAgentStatus::Running,
+                codewhale_engine::tools::subagent::AgentWorkerStatus::RunningTool,
                 AgentCurrentActivityStatus::RunningTool,
                 "tool",
             ),
             (
                 "agent_waiting",
                 "Waiting",
-                crate::tools::subagent::SubAgentStatus::Interrupted("approval".to_string()),
-                crate::tools::subagent::AgentWorkerStatus::WaitingForUser,
+                codewhale_engine::tools::subagent::SubAgentStatus::Interrupted(
+                    "approval".to_string(),
+                ),
+                codewhale_engine::tools::subagent::AgentWorkerStatus::WaitingForUser,
                 AgentCurrentActivityStatus::Waiting,
                 "waiting",
             ),
             (
                 "agent_failed",
                 "Failed",
-                crate::tools::subagent::SubAgentStatus::Failed("verification".to_string()),
-                crate::tools::subagent::AgentWorkerStatus::Failed,
+                codewhale_engine::tools::subagent::SubAgentStatus::Failed(
+                    "verification".to_string(),
+                ),
+                codewhale_engine::tools::subagent::AgentWorkerStatus::Failed,
                 AgentCurrentActivityStatus::Failed,
                 "failed",
             ),
             (
                 "agent_done",
                 "Done",
-                crate::tools::subagent::SubAgentStatus::Completed,
-                crate::tools::subagent::AgentWorkerStatus::Completed,
+                codewhale_engine::tools::subagent::SubAgentStatus::Completed,
+                codewhale_engine::tools::subagent::AgentWorkerStatus::Completed,
                 AgentCurrentActivityStatus::Done,
                 "done",
             ),
@@ -687,7 +694,7 @@ mod tests {
         let rows = super::sidebar_agent_rows(&app);
         assert_eq!(
             rows[0].name,
-            crate::tools::subagent::whale_name_for_id_in_locale(agent_id, "en")
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en")
         );
     }
 
@@ -698,7 +705,7 @@ mod tests {
         let mut app = create_test_app();
         let agent_id = "agent_cafe0123";
         app.ensure_agent_label(agent_id);
-        let whale = crate::tools::subagent::whale_name_for_id_in_locale(agent_id, "en");
+        let whale = codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en");
         let mut agent = cached_agent(agent_id, Some(&whale));
         agent.name = "branch-triage".to_string();
         app.subagent_cache.push(agent);
@@ -712,9 +719,9 @@ mod tests {
         let mut app = create_test_app();
         let agent_id = "agent_cafe0123";
         app.ensure_agent_label(agent_id);
-        let whale = crate::tools::subagent::whale_name_for_id_in_locale(agent_id, "en");
+        let whale = codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en");
         let mut agent = cached_agent(agent_id, Some(&whale));
-        agent.child_route = Some(crate::tools::subagent::ChildRouteReceipt {
+        agent.child_route = Some(codewhale_engine::tools::subagent::ChildRouteReceipt {
             requested_type: "custom".to_string(),
             requested_profile: Some("DeepSeek V4 Flash".to_string()),
             resolved_profile_id: Some("flash-scout".to_string()),
@@ -744,8 +751,10 @@ mod tests {
             ("agent_locale_b", "ja"),
             ("agent_locale_c", "vi"),
         ] {
-            let legacy_name =
-                crate::tools::subagent::whale_name_for_id_in_locale(agent_id, legacy_locale);
+            let legacy_name = codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                agent_id,
+                legacy_locale,
+            );
             app.subagent_cache
                 .push(cached_agent(agent_id, Some(&legacy_name)));
         }
@@ -760,7 +769,7 @@ mod tests {
             );
             assert_eq!(
                 row.name,
-                crate::tools::subagent::whale_name_for_id_in_locale(&row.id, "en")
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(&row.id, "en")
             );
         }
     }
@@ -771,18 +780,19 @@ mod tests {
     /// phrased as a question ("Resume this parked child with ..."), which is
     /// why every surface used to label it `waiting`. Build one exactly the way
     /// the runtime does and assert the row names the state instead.
-    fn parked_agent(agent_id: &str) -> crate::tools::subagent::SubAgentResult {
+    fn parked_agent(agent_id: &str) -> codewhale_engine::tools::subagent::SubAgentResult {
         let mut agent = cached_agent(agent_id, None);
-        agent.status = crate::tools::subagent::SubAgentStatus::Interrupted(
+        agent.status = codewhale_engine::tools::subagent::SubAgentStatus::Interrupted(
             "Parent turn ended before this turn-owned child settled.".to_string(),
         );
-        agent.worker_status = Some(crate::tools::subagent::AgentWorkerStatus::WaitingForUser);
-        agent.needs_input = Some(crate::tools::subagent::SubAgentNeedsInput {
+        agent.worker_status =
+            Some(codewhale_engine::tools::subagent::AgentWorkerStatus::WaitingForUser);
+        agent.needs_input = Some(codewhale_engine::tools::subagent::SubAgentNeedsInput {
             question: format!(
                 "Resume this parked child with agent(action=\"start\", resume_from=\"{agent_id}\")."
             ),
         });
-        agent.checkpoint = Some(crate::tools::subagent::SubAgentCheckpoint {
+        agent.checkpoint = Some(codewhale_engine::tools::subagent::SubAgentCheckpoint {
             checkpoint_id: format!("{agent_id}:step:2"),
             agent_id: agent_id.to_string(),
             continuation_handle: format!("agent:{agent_id}:checkpoint"),
@@ -798,10 +808,11 @@ mod tests {
         agent
     }
 
-    fn asking_agent(agent_id: &str) -> crate::tools::subagent::SubAgentResult {
+    fn asking_agent(agent_id: &str) -> codewhale_engine::tools::subagent::SubAgentResult {
         let mut agent = cached_agent(agent_id, None);
-        agent.worker_status = Some(crate::tools::subagent::AgentWorkerStatus::WaitingForUser);
-        agent.needs_input = Some(crate::tools::subagent::SubAgentNeedsInput {
+        agent.worker_status =
+            Some(codewhale_engine::tools::subagent::AgentWorkerStatus::WaitingForUser);
+        agent.needs_input = Some(codewhale_engine::tools::subagent::SubAgentNeedsInput {
             question: "Which path should I use?".to_string(),
         });
         agent

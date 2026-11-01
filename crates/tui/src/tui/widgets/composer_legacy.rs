@@ -550,7 +550,7 @@ impl Renderable for ComposerWidget<'_> {
                     } else {
                         Style::default().fg(palette::TEXT_MUTED)
                     };
-                    let marker = crate::tui::glyphs::selection_marker(is_selected);
+                    let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
                     lines.push(Line::from(vec![
                         Span::styled(" ", Style::default()),
                         Span::styled(marker, style),
@@ -598,7 +598,7 @@ impl Renderable for ComposerWidget<'_> {
                 } else {
                     Style::default().fg(palette::TEXT_MUTED)
                 };
-                let marker = crate::tui::glyphs::selection_marker(is_selected);
+                let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
                 lines.push(Line::from(vec![
                     Span::styled(" ", Style::default()),
                     Span::styled(marker, style),
@@ -663,7 +663,7 @@ impl Renderable for ComposerWidget<'_> {
                 } else {
                     Style::default().fg(palette::TEXT_MUTED)
                 };
-                let marker = crate::tui::glyphs::selection_marker(is_selected);
+                let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
 
                 // Name column
                 let name_style = if entry.is_skill && !is_selected {
@@ -689,7 +689,7 @@ impl Renderable for ComposerWidget<'_> {
 
                 let name_was_truncated = display_name.width() > label_width;
                 let mut name_display =
-                    crate::tui::ui_text::truncate_line_to_width(&display_name, label_width);
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(&display_name, label_width);
                 while name_display.width() < label_width {
                     name_display.push(' ');
                 }
@@ -702,8 +702,10 @@ impl Renderable for ComposerWidget<'_> {
                 let prefix_display_width = 1 + 1 + skill_prefix.width() + label_width + 2;
                 let desc_capacity = content_width.saturating_sub(prefix_display_width);
                 let description_was_truncated = entry.description.width() > desc_capacity;
-                let desc_display =
-                    crate::tui::ui_text::truncate_line_to_width(&entry.description, desc_capacity);
+                let desc_display = codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    &entry.description,
+                    desc_capacity,
+                );
 
                 let row_line_index = lines.len();
                 lines.push(Line::from(vec![

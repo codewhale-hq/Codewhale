@@ -108,7 +108,7 @@ guide.
 | --- | --- |
 | `codewhaleBinaryVersion` in `package.json` | Default native binary version. `deepseekBinaryVersion` is still read as a backward-compat fallback. |
 | `CODEWHALE_RELEASE_BASE_URL` | Canonical override: use an internal or mirrored release-asset directory and skip the Linux x64 GitHub/CNB race. The directory must contain `codewhale-artifacts-sha256.txt` and the platform binaries. `DEEPSEEK_TUI_RELEASE_BASE_URL` and `DEEPSEEK_RELEASE_BASE_URL` are the implemented legacy fallbacks. |
-| `CODEWHALE_USE_CNB_MIRROR=1` | Force the CNB (China-friendly) first-party mirror on Linux x64 and OpenHarmony x64, skipping the automatic race. Other targets fail with a clear unsupported-mirror error; use GitHub or a complete `CODEWHALE_RELEASE_BASE_URL` mirror there. Without this variable, Linux x64 still probes CNB and GitHub together and uses the first valid checksum manifest. |
+| `CODEWHALE_USE_CNB_MIRROR=1` | Force the CNB (China-friendly) first-party mirror on Linux x64, skipping the automatic race. Other targets, native HarmonyOS included, fail with a clear unsupported-mirror error; use GitHub or a complete `CODEWHALE_RELEASE_BASE_URL` mirror there. Without this variable, Linux x64 still probes CNB and GitHub together and uses the first valid checksum manifest. |
 | `CODEWHALE_VERSION` | Override the release version to download. |
 | `CODEWHALE_GITHUB_REPO` | Override the source repo. Defaults to `codewhale-hq/CodeWhale`. |
 | `CODEWHALE_FORCE_DOWNLOAD=1` | Force download even when the cached binary is already present. |

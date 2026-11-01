@@ -11,12 +11,12 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy)]
@@ -66,11 +66,11 @@ impl FeedbackPickerView {
     }
 
     fn move_up(&mut self) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, OPTIONS.len(), -1);
+        self.selected = codewhale_tui_kit::list_nav::wrap_index(self.selected, OPTIONS.len(), -1);
     }
 
     fn move_down(&mut self) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, OPTIONS.len(), 1);
+        self.selected = codewhale_tui_kit::list_nav::wrap_index(self.selected, OPTIONS.len(), 1);
     }
 
     fn select_number(&mut self, number: char) -> Option<ViewAction> {
@@ -183,7 +183,7 @@ impl ModalView for FeedbackPickerView {
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
             };
-            let pointer = crate::tui::glyphs::selection_marker(is_selected);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let lead = format!("{pointer} {}. ", option.number);
             let description_width = usize::from(content.width).saturating_sub(
                 UnicodeWidthStr::width(lead.as_str()) + UnicodeWidthStr::width(option.label) + 4,
@@ -385,7 +385,7 @@ mod tests {
                 assert!(text.contains(label), "{w}x{h}: missing footer '{label}'");
             }
             assert!(
-                text.contains(crate::tui::glyphs::SELECTION),
+                text.contains(codewhale_tui_kit::glyphs::SELECTION),
                 "{w}x{h}: missing charter selection pointer"
             );
             assert!(

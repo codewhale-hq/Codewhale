@@ -3,13 +3,16 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
-use super::{
-    GenericToolCell, render_tool_header_with_family_and_summary, tool_status_label, truncate_text,
-};
+use super::{GenericToolCell, render_tool_header_with_family_and_summary, truncate_text};
 
-pub(super) fn render_agent_compact(cell: &GenericToolCell, low_motion: bool) -> Vec<Line<'static>> {
+pub(super) fn render_agent_compact(
+    cell: &GenericToolCell,
+    low_motion: bool,
+    locale: Locale,
+) -> Vec<Line<'static>> {
     let family = crate::tui::widgets::tool_card::ToolFamily::Delegate;
     let agent_id = cell
         .output
@@ -21,24 +24,29 @@ pub(super) fn render_agent_compact(cell: &GenericToolCell, low_motion: bool) -> 
     // spawn — during a fan-out session every peek/status/wait would otherwise
     // read as yet another completed delegate (#4112, dogfood A5). The action
     // is stamped at the front of the args summary by tool_routing.
-    let state_label = match agent_inspection_action(cell) {
-        Some(AgentCompactAction::Check) => match cell.status {
-            super::ToolStatus::Running => "checking",
-            _ => "checked",
-        },
-        Some(AgentCompactAction::Wait) => match cell.status {
-            super::ToolStatus::Running => "waiting",
-            _ => "waited",
-        },
-        None => tool_status_label(cell.status),
+    let state_label = match (agent_inspection_action(cell), cell.status) {
+        (Some(AgentCompactAction::Check), super::ToolStatus::Running) => {
+            Some(tr(locale, MessageId::AgentActivityChecking))
+        }
+        (Some(AgentCompactAction::Check), super::ToolStatus::Success) => {
+            Some(tr(locale, MessageId::AgentActivityChecked))
+        }
+        (Some(AgentCompactAction::Wait), super::ToolStatus::Running) => {
+            Some(tr(locale, MessageId::AgentActivityWaiting))
+        }
+        (Some(AgentCompactAction::Wait), super::ToolStatus::Success) => {
+            Some(tr(locale, MessageId::AgentActivityWaited))
+        }
+        _ => None,
     };
     vec![render_tool_header_with_family_and_summary(
         family,
         Some(agent_id.as_str()),
-        state_label,
+        state_label.as_deref(),
         cell.status,
         None,
         low_motion,
+        locale,
     )]
 }
 
@@ -66,8 +74,15 @@ fn agent_inspection_action(cell: &GenericToolCell) -> Option<AgentCompactAction>
     }
 }
 
-pub(super) fn render_activity_group(cell: &GenericToolCell, width: u16) -> Vec<Line<'static>> {
-    let summary = cell.input_summary.as_deref().unwrap_or("Updated metadata");
+pub(super) fn render_activity_group(
+    cell: &GenericToolCell,
+    width: u16,
+    locale: Locale,
+) -> Vec<Line<'static>> {
+    let fallback = super::tool_run::sentence_case_activity(
+        tr(locale, MessageId::ActivityUpdatedMetadata).into_owned(),
+    );
+    let summary = cell.input_summary.as_deref().unwrap_or(&fallback);
     let suffix = cell
         .output_summary
         .as_deref()

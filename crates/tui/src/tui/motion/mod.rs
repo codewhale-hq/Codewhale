@@ -13,7 +13,7 @@
 //! | [`MotionMode::Still`] | no | static | state-change redraws only; stream still coalesces on the display clock |
 //!
 //! Provider SSE deltas are **input**, never animation timing. The display
-//! clock ([`crate::tui::streaming::StreamDisplayClock`]) coalesces them.
+//! clock ([`codewhale_tui_kit::streaming::StreamDisplayClock`]) coalesces them.
 
 pub mod frame_requester;
 pub mod mode;

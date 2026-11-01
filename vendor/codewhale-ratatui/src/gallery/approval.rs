@@ -196,7 +196,7 @@ fn native_band_collapsed(area: Rect, buf: &mut Buffer, theme: &Theme) {
         } else {
             " Run checks — command [Tab expand] "
         },
-        theme.fg(crate::Role::Primary),
+        theme.fg(crate::Role::Accent),
     ));
     band.paint(area, buf, theme);
 }
@@ -204,7 +204,7 @@ fn native_band_collapsed(area: Rect, buf: &mut Buffer, theme: &Theme) {
 fn native_band_facts(theme: &Theme) -> DecisionBand {
     let plain = theme.fg(crate::Role::Foreground);
     let muted = theme.fg(crate::Role::Muted);
-    let primary = theme.fg(crate::Role::Primary);
+    let primary = theme.fg(crate::Role::Accent);
     DecisionBand {
         body: vec![
             Line::styled(

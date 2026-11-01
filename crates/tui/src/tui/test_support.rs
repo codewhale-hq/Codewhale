@@ -71,11 +71,12 @@ pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> cra
     // settings computes context-window assertions against a different model
     // than the requested deepseek-v4-pro.
     app.set_provider_identity(codewhale_config::ProviderKind::Deepseek, "deepseek");
-    app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
+    app.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
     app.last_effective_model = None;
     app.active_route_limits = None;
+    app.active_context_window = None;
     app.active_context_window_override = None;
     // Fixtures replace `app.workspace` freely. Do not retain `App::new`'s real
     // process cwd as a second discovery root: parallel tests and a large

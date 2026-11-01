@@ -19,10 +19,10 @@ use super::workspace::{
     relative_request_path,
 };
 use super::{ApiError, RuntimeApiState, map_thread_err};
-use crate::runtime_threads::{
-    CallWorkspaceSpan, FileChangeKind, RuntimeStoreRecordFailure, RuntimeStoreRecordKind,
-    TurnArtifactKind, TurnArtifactRef, TurnArtifactsView, TurnItemLifecycleStatus,
-    TurnWorkspaceArtifacts,
+use codewhale_engine::runtime_threads::{
+    FileChangeKind, RuntimeStoreRecordFailure, RuntimeStoreRecordKind, TurnArtifactKind,
+    TurnArtifactRef, TurnItemLifecycleStatus, TurnWorkspaceArtifacts, manager::CallWorkspaceSpan,
+    manager::TurnArtifactsView,
 };
 
 pub(super) async fn list_turn_artifacts(
@@ -98,7 +98,7 @@ pub(super) async fn read_turn_artifact(
                     .session_id
                     .as_deref()
                     .ok_or_else(|| ApiError::internal("artifact reference has no session"))?;
-                let root = crate::artifacts::artifact_sessions_root()
+                let root = codewhale_runtime::artifacts::artifact_sessions_root()
                     .ok_or_else(|| ApiError::internal("session artifact root is unavailable"))?;
                 let resolved = resolve_session_artifact(
                     &root,

@@ -4,7 +4,7 @@
 //! Moved verbatim out of `ui.rs`.
 
 use super::*;
-use crate::core::ops::TurnSpec;
+use codewhale_engine::core::ops::TurnSpec;
 use codewhale_models::Role;
 
 pub(crate) fn dispatch_hotbar_slot(
@@ -377,7 +377,7 @@ pub(crate) fn validate_extension_command_context(app: &App, message: &QueuedMess
             && !app.remote_control.runtime_chat_blocks_local_dispatch(),
         "Extension command prompts require the active root session online and unpaused"
     );
-    crate::extension_host::command::validate_selected_registration(command, session_id)
+    codewhale_engine::extension_host::command::validate_selected_registration(command, session_id)
         .map_err(anyhow::Error::msg)
 }
 
@@ -598,16 +598,16 @@ pub(crate) async fn dispatch_user_message_with_recovery(
 
 pub(crate) fn lost_message_submit_outcome(
     strict_gates: &[String],
-) -> crate::hooks::MessageSubmitOutcome {
+) -> codewhale_engine::hooks::MessageSubmitOutcome {
     if strict_gates.is_empty() {
-        crate::hooks::MessageSubmitOutcome::Unchanged {
+        codewhale_engine::hooks::MessageSubmitOutcome::Unchanged {
             warning: Some(
                 "message_submit hook executor did not run; submission continued because no strict gate matched"
                     .to_string(),
             ),
         }
     } else {
-        crate::hooks::MessageSubmitOutcome::Blocked {
+        codewhale_engine::hooks::MessageSubmitOutcome::Blocked {
             reason: "message_submit hook executor did not run; a strict gate blocked submission"
                 .to_string(),
         }
@@ -755,7 +755,7 @@ pub(crate) fn prepare_user_dispatch(
         auto_compact: app.auto_compact,
         auto_compact_threshold_percent: app.auto_compact_threshold_percent,
         snapshot,
-        cost_scope: crate::cost_status::scope_token(),
+        cost_scope: codewhale_engine::cost_status::scope_token(),
         message_index,
         history_cell,
     })
@@ -908,14 +908,14 @@ where
 /// Dropping a reserved dispatch (including a closed completion mailbox) must
 /// settle its already-incurred usage in the original session scope.
 pub(super) struct UnacceptedDispatchUsage {
-    pub(super) scope: crate::cost_status::CostScopeToken,
-    pub(super) batch: Option<crate::cost_status::RuntimeUsageBatch>,
+    pub(super) scope: codewhale_engine::cost_status::CostScopeToken,
+    pub(super) batch: Option<codewhale_engine::cost_status::RuntimeUsageBatch>,
 }
 
 impl Drop for UnacceptedDispatchUsage {
     fn drop(&mut self) {
         if let Some(batch) = self.batch.as_ref() {
-            crate::cost_status::report_runtime_usage_batch(self.scope, None, batch);
+            codewhale_engine::cost_status::report_runtime_usage_batch(self.scope, None, batch);
         }
     }
 }
@@ -927,12 +927,12 @@ pub(crate) async fn spawned_dispatch_inner(
 ) -> crate::tui::app::DispatchApplyFn {
     if let Some((command, session_id)) = prepare.message.extension_command.as_ref()
         && let Err(error) =
-            crate::extension_host::command::validate_reference(command, session_id).await
+            codewhale_engine::extension_host::command::validate_reference(command, session_id).await
     {
         return build_dispatch_error_closure(prepare, recovery, error);
     }
     if !prepare.auto_model {
-        crate::provider_lake::refresh_unverified_local_context(
+        codewhale_engine::provider_lake::refresh_unverified_local_context(
             &prepare.route_config,
             &prepare.app_route_identity,
             &prepare.app_model,
@@ -996,6 +996,8 @@ pub(crate) async fn spawned_dispatch_inner(
         scope: prepare.cost_scope,
         batch: Some(initial_routed_usage.clone()),
     };
+    let route_limits = turn_route.candidate.limits();
+    let context_window = turn_route.context_window;
     let op = Op::SendMessage(TurnSpec {
         profile_constitution: None,
         max_output_tokens: None,
@@ -1040,6 +1042,8 @@ pub(crate) async fn spawned_dispatch_inner(
         effective_provider_label,
         effective_reasoning_effort: effective_reasoning_receipt,
         auto_selection,
+        route_limits,
+        context_window,
     };
     Box::new(move |app, current_engine, config| {
         // Admission stays serialized by this flag until its callback retires,
@@ -1052,7 +1056,7 @@ pub(crate) async fn spawned_dispatch_inner(
             app.suppress_stream_events_until_turn_complete = false;
         }
         if !engine_handle.tx_op.same_channel(&current_engine.tx_op)
-            || prepare.cost_scope != crate::cost_status::scope_token()
+            || prepare.cost_scope != codewhale_engine::cost_status::scope_token()
         {
             anyhow::bail!("Message dispatch belongs to a previous engine or session");
         }
@@ -1111,6 +1115,21 @@ pub(crate) fn build_dispatch_success_closure(
             app.clear_receipt();
             app.tool_evidence.clear();
 
+            if prepare.auto_model {
+                app.last_effective_model = Some(outcome.effective_model.clone());
+                app.last_effective_budget = Some((
+                    outcome.effective_provider,
+                    outcome.effective_model.clone(),
+                    codewhale_engine::route_budget::known_route_limits(outcome.route_limits),
+                    outcome.context_window,
+                ));
+            } else {
+                app.set_active_route_limits(outcome.route_limits);
+                app.active_context_window = Some(outcome.context_window);
+                app.active_context_window_source = outcome.context_window.source;
+            }
+            app.update_model_compaction_budget();
+
             app.system_prompt = Some(build_app_system_prompt_with_goal(
                 app,
                 config,
@@ -1157,7 +1176,7 @@ pub(crate) fn build_dispatch_success_closure(
             ));
 
             maybe_warn_context_pressure_for_config(app, &outcome.turn_compaction);
-            if let Some(message) = crate::plugins::plugin_reload_nudge(
+            if let Some(message) = codewhale_plugins::plugin_reload_nudge(
                 app.plugin_registry.as_ref(),
                 &mut app.plugin_reload_nudge_stamp,
             ) {
@@ -1172,15 +1191,17 @@ pub(crate) fn build_dispatch_success_closure(
             if let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
+                let projection = saved_work_projection(app, &session);
                 if app.current_session_id.is_none() {
                     app.current_session_id = Some(session.metadata.id.clone());
                 }
                 if let Err(err) = persist_with_pending_work_boundary(
                     app,
                     PersistRequest::SaveCheckpoint { session },
+                    &projection,
                 ) {
                     app.status_message = Some(format!(
-                        "To-do list update pending: turn checkpoint could not be queued ({err})"
+                        "To-do list update pending while saving turn checkpoint ({err})"
                     ));
                 }
             }
@@ -1222,7 +1243,7 @@ pub(crate) fn build_dispatch_error_closure(
             if !prepare.snapshot.suppress_stream_events_until_turn_complete {
                 app.suppress_stream_events_until_turn_complete = false;
             }
-            if prepare.cost_scope != crate::cost_status::scope_token() {
+            if prepare.cost_scope != codewhale_engine::cost_status::scope_token() {
                 anyhow::bail!("Message dispatch belongs to a previous session");
             }
             app.remote_control.fail_active_dispatch(&error);
@@ -1645,12 +1666,14 @@ pub(crate) async fn dispatch_composer_message(
         app.push_history_cell(crate::tui::history::HistoryCell::System { content: receipt });
         // #6150: the input path never awaits a full op channel. The follow-up
         // is retryable; a rejected send surfaces immediately.
-        if let Err(err) = engine_handle.try_send(crate::core::ops::Op::FollowUpSubAgent {
-            agent_id: agent_id.clone(),
-            text,
-        }) {
+        if let Err(err) =
+            engine_handle.try_send(codewhale_engine::core::ops::Op::FollowUpSubAgent {
+                agent_id: agent_id.clone(),
+                text,
+            })
+        {
             let reason = if err
-                .downcast_ref::<tokio::sync::mpsc::error::TrySendError<crate::core::ops::Op>>()
+                .downcast_ref::<tokio::sync::mpsc::error::TrySendError<codewhale_engine::core::ops::Op>>()
                 .is_some_and(|e| matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)))
             {
                 "engine busy"

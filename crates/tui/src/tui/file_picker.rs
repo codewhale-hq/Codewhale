@@ -31,7 +31,6 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
@@ -41,6 +40,7 @@ use codewhale_palette as palette;
 use codewhale_runtime::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery,
 };
+use codewhale_tui_kit::menu_style;
 
 /// Maximum number of candidates collected from the initial walk. Keeps memory
 /// bounded for very large monorepos; matches the limits codex-rs uses for the
@@ -484,17 +484,20 @@ impl FilePickerView {
         }
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. This is a typing surface, so only the
     /// typing-safe vocabulary applies — no letter alias may eat a query
     /// character. `Prev`/`Next` wrap; paging and Home/End clamp.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
         if self.filtered.is_empty() {
             return false;
         }
-        let Some(next) =
-            crate::tui::list_nav::apply(self.selected, self.filtered.len(), VISIBLE_ROWS, motion)
-        else {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(
+            self.selected,
+            self.filtered.len(),
+            VISIBLE_ROWS,
+            motion,
+        ) else {
             return false;
         };
         self.selected = next;
@@ -541,7 +544,7 @@ impl ModalView for FilePickerView {
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         // Movement keys come from the shared vocabulary (#6290), typing-safe
         // set only. This match owns the filter's own keys.
-        if let Some(motion) = crate::tui::list_nav::motion_while_typing(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion_while_typing(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -587,11 +590,11 @@ impl ModalView for FilePickerView {
     fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.apply_motion(crate::tui::list_nav::Motion::Prev);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Prev);
                 ViewAction::None
             }
             MouseEventKind::ScrollDown => {
-                self.apply_motion(crate::tui::list_nav::Motion::Next);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Next);
                 ViewAction::None
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -694,7 +697,7 @@ impl ModalView for FilePickerView {
                 } else {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
-                let prefix = format!("{} ", crate::tui::glyphs::selection_marker(selected));
+                let prefix = format!("{} ", codewhale_tui_kit::glyphs::selection_marker(selected));
                 let marker_field = if content.width >= 18 {
                     format!("{} ", self.relevance.markers_for(path))
                 } else {
@@ -727,14 +730,14 @@ fn truncate_path(path: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    if crate::tui::ui_text::text_display_width(path) <= max {
+    if codewhale_tui_kit::ui_text::text_display_width(path) <= max {
         return path.to_string();
     }
     let budget = max.saturating_sub(1);
     let mut used = 0usize;
     let mut start = path.len();
     for (idx, grapheme) in path.grapheme_indices(true).rev() {
-        let width = crate::tui::ui_text::text_display_width(grapheme);
+        let width = codewhale_tui_kit::ui_text::text_display_width(grapheme);
         if used + width > budget {
             break;
         }
