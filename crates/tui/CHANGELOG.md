@@ -158,6 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Feishu and Weixin persist each incoming message ID before handling it. Concurrent deliveries share one result. After a restart, a message with an uncertain outcome stays pending until the bridge can tell the user to check its status. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for the durability audit (#6555).
+
 - Custom OpenAI-compatible routes now honor explicit output requests within the
   configured window and serving limits. A hosted model with the same name
   could previously truncate reasoning at 32,768 tokens. Thanks
