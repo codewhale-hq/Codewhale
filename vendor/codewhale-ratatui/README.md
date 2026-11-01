@@ -27,9 +27,14 @@ Rust rendering source and controlled animation playback.
 
 ## Get started
 
+The current registry release is 0.1.2. This Engine vendor snapshot prepares
+0.2.0 and remains unpublished. Its `WorkflowRun.total` field and the total
+argument to `WorkflowRun::outcomes` use `u64`; convert existing `usize` totals
+with `as u64`. Publication requires its separate release approval.
+
 ```toml
 [dependencies]
-codewhale-ratatui = { git = "https://github.com/Hmbown/codewhale-ratatui" }
+codewhale-ratatui = "0.1.2"
 ratatui = "0.30.2"
 ```
 
