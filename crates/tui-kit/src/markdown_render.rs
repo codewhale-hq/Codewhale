@@ -2106,12 +2106,27 @@ fn render_table_row(
     // get blank-padded continuation lines so column separators stay aligned.
     let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
         .map(|i| {
-            render_line_with_links_tagged(
-                cells.get(i).map_or("", String::as_str),
-                col_width,
-                base_style,
-                link_style(),
-            )
+            let cell = cells.get(i).map_or("", String::as_str);
+            let tokens = parse_inline_spans(cell, base_style, link_style());
+            if tokens.iter().map(|token| token.text.width()).sum::<usize>() > col_width {
+                return render_line_with_links_tagged(cell, col_width, base_style, link_style());
+            }
+            let mut spans = Vec::with_capacity(tokens.len());
+            let mut links = Vec::new();
+            let mut column = 0;
+            for token in tokens {
+                let token_width = token.text.width();
+                record_inline_link(&mut links, &token, column, token_width);
+                column += token_width;
+                spans.push(token.into_span());
+            }
+            vec![RenderedMarkdownLine {
+                line: Line::from(spans),
+                links,
+                is_code: false,
+                copy_prefix_width: 0,
+                copy_separator_after: CopyLineSeparator::Newline,
+            }]
         })
         .collect();
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
