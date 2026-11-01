@@ -2,6 +2,7 @@
  * Cloudflare KV access via the OpenNext binding helper.
  * Falls back to in-memory cache for `next dev` outside of `wrangler dev`.
  */
+import { readBoundedBody } from "./bounded-body";
 import type { DraftClaimLockNamespace } from "./draft-claim-lock";
 import type { CuratedDispatch } from "./types";
 import type { MerchEnv } from "./merch/types";
@@ -19,6 +20,16 @@ export interface KVNamespace {
 export interface KVStreamNamespace {
   get(key: string, type: "stream"): Promise<ReadableStream<Uint8Array> | null>;
   put: KVNamespace["put"];
+}
+
+export async function readBoundedKvJson(kv: KVStreamNamespace | undefined, key: string, maxBytes: number): Promise<unknown> {
+  if (!kv) return null;
+  try {
+    const body = await kv.get(key, "stream");
+    if (!body) return null;
+    const bytes = await readBoundedBody({ body, headers: new Headers() }, maxBytes);
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch { return null; }
 }
 
 interface CloudflareEnv extends MerchEnv {

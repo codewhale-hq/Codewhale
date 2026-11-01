@@ -4522,6 +4522,7 @@ mod released_provider_serde {
                 effective_reasoning_effort: Some(ReasoningEffortTier::High),
             };
             let saved = codewhale_engine::session_manager::SavedAutoRouteReceipt {
+                context_window: None,
                 provider,
                 provider_identity: id.into(),
                 model: "model-A".into(),

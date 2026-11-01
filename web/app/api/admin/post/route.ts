@@ -45,7 +45,6 @@ async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: bo
   return { ok: true };
 }
 
-const ALLOWED_ACTIONS = new Set(["post", "discard"]);
 const ALLOWED_ORIGINS = new Set(["https://codewhale.net", "https://www.codewhale.net"]);
 const MAX_BODY_BYTES = 65_536;
 
@@ -127,7 +126,7 @@ export async function POST(req: Request) {
     reviewedSha256?: unknown;
   };
 
-  if (typeof action !== "string" || !ALLOWED_ACTIONS.has(action)) {
+  if (action !== "post" && action !== "discard") {
     return NextResponse.json({ error: "unknown action" }, { status: 400 });
   }
   if (typeof draftKey !== "string" || !draftKey || draftKey.length > 256) {
@@ -151,44 +150,53 @@ export async function POST(req: Request) {
   }
   const reviewLang = lang === "zh" ? "zh" : "en";
 
-  const draft = await getDraft(env.CURATED_KV, draftKey);
-  if (!draft) {
-    return NextResponse.json({ error: "draft not found" }, { status: 404 });
+  const resolution = await getDraftResolution(env.CURATED_KV, parsedKey.type, parsedKey.id);
+  if (resolution) {
+    if (action === "discard" && resolution.state === "discarded") return discarded();
+    return claimRefused({ ok: false, reason: "resolved", resolution });
   }
-  // Act only on the exact text the maintainer was shown. A draft regenerated
-  // after the admin page loaded must be reviewed again, not posted unseen.
-  const originalBody = reviewLang === "zh" ? draft.bodyZh : draft.bodyEn;
-  if ((await reviewedBodyHash(originalBody)) !== reviewedSha256) {
-    return NextResponse.json(
-      { error: "draft changed since it was loaded; reload and review it again" },
-      { status: 409 }
-    );
+  let result: DraftClaimResult;
+  try {
+    result = await claimDraft(env, parsedKey.type, parsedKey.id, action);
+  } catch (e) {
+    return NextResponse.json({ error: `could not claim draft: ${String(e)}` }, { status: 500 });
   }
+  if (!result.ok) {
+    if (action === "discard" && (
+      (result.reason === "resolved" && result.resolution.state === "discarded") ||
+      (result.reason === "held" && result.holder === "discard")
+    )) return discarded();
+    return claimRefused(result);
+  }
+  const heldClaim = result.claim;
+  const loadReviewed = async () => {
+    const draft = await getDraft(env.CURATED_KV, draftKey);
+    if (!draft) return NextResponse.json({ error: "draft not found" }, { status: 404 });
+    const originalBody = reviewLang === "zh" ? draft.bodyZh : draft.bodyEn;
+    if ((await reviewedBodyHash(originalBody)) !== reviewedSha256 ||
+        (heldClaim.revision && (await reviewedBodyHash(JSON.stringify(draft))) !== heldClaim.revision)) {
+      return NextResponse.json({ error: "draft changed since it was loaded; reload and review it again" }, { status: 409 });
+    }
+    if (draft.posted) return NextResponse.json({ error: "draft already posted" }, { status: 409 });
+    if (action === "post" && !env.MAINTAINER_GITHUB_PAT) {
+      return NextResponse.json({ error: "MAINTAINER_GITHUB_PAT not configured" }, { status: 500 });
+    }
+    if (action === "post" && draft.type !== "digest" && !draft.targetNumber) {
+      return NextResponse.json({ error: "no target number" }, { status: 400 });
+    }
+    return { draft, originalBody };
+  };
+  const reviewed = await loadReviewed().catch(async (error: unknown) => {
+    await releaseDraftClaim(env.CURATED_KV, heldClaim).catch(() => undefined);
+    throw error;
+  });
+  if (reviewed instanceof Response) {
+    await releaseDraftClaim(env.CURATED_KV, heldClaim).catch(() => undefined);
+    return reviewed;
+  }
+  const { draft, originalBody } = reviewed;
 
   if (action === "discard") {
-    // A posted draft is already public on GitHub (and, for a digest, on
-    // /digest); discarding it would silently unpublish or relabel it.
-    const resolution = await getDraftResolution(env.CURATED_KV, parsedKey.type, parsedKey.id);
-    if (draft.posted || resolution?.state === "posted" || resolution?.state === "posting") {
-      return NextResponse.json({ error: "draft already posted" }, { status: 409 });
-    }
-    // A repeated discard (double click) is a no-op, not an error: whether the
-    // first one already finished or is still running.
-    if (resolution?.state === "discarded") return discarded();
-    // Hold the same claim a post takes, so a discard and a post of one draft
-    // do not both run.
-    let result: DraftClaimResult;
-    try {
-      result = await claimDraft(env, parsedKey.type, parsedKey.id, "discard");
-    } catch (e) {
-      return NextResponse.json({ error: `could not claim draft: ${String(e)}` }, { status: 500 });
-    }
-    if (!result.ok) {
-      if (result.reason === "resolved" && result.resolution.state === "discarded") return discarded();
-      if (result.reason === "held" && result.holder === "discard") return discarded();
-      return claimRefused(result);
-    }
-    const claim = result.claim;
     let recorded = false;
     try {
       // The marker stops the next cron run from regenerating this draft.
@@ -202,38 +210,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `discard failed: ${String(e)}` }, { status: 500 });
     } finally {
       // The marker (or, if it failed, the draft) now carries the decision.
-      await releaseDraftClaim(env.CURATED_KV, claim, { recorded }).catch(() => undefined);
+      await releaseDraftClaim(env.CURATED_KV, heldClaim, { recorded }).catch(() => undefined);
     }
     if (draft.type === "digest") revalidateDigestPage();
     return discarded();
   }
 
   if (action === "post") {
-    if (!env.MAINTAINER_GITHUB_PAT) {
-      return NextResponse.json({ error: "MAINTAINER_GITHUB_PAT not configured" }, { status: 500 });
-    }
-    if (draft.type !== "digest" && !draft.targetNumber) {
-      return NextResponse.json({ error: "no target number" }, { status: 400 });
-    }
-
-    // Posting is not idempotent on GitHub: refuse a draft that is already
-    // posted or has a post in flight (second tab, retry after a partial
-    // failure), then claim it before the GitHub call.
-    if (draft.posted) {
-      return NextResponse.json({ error: "draft already posted" }, { status: 409 });
-    }
-    const resolution = await getDraftResolution(env.CURATED_KV, parsedKey.type, parsedKey.id);
-    if (resolution) {
-      return NextResponse.json({ error: `draft already ${resolution.state}` }, { status: 409 });
-    }
-    let result: DraftClaimResult;
-    try {
-      result = await claimDraft(env, parsedKey.type, parsedKey.id, "post");
-    } catch (e) {
-      return NextResponse.json({ error: `could not claim draft: ${String(e)}` }, { status: 500 });
-    }
-    if (!result.ok) return claimRefused(result);
-    const heldClaim = result.claim;
     try {
       // Keeps the cron from regenerating the draft while the post is in flight.
       await markDraftResolved(env.CURATED_KV, parsedKey.type, parsedKey.id, "posting");

@@ -159,6 +159,16 @@ pub(crate) struct ContextTokenCache {
     pub(crate) message_tokens: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AutoRouteBudget {
+    pub provider: ProviderKind,
+    pub provider_identity: String,
+    pub model: String,
+    pub limits: Option<RouteLimits>,
+    pub window: codewhale_engine::route_runtime::ContextWindowResolution,
+    pub restored: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompletedAssistantOutputReceipt {
     history_index: usize,
@@ -1727,12 +1737,7 @@ pub struct App {
     pub auto_model: bool,
     /// Last concrete model chosen while `auto_model` is active.
     pub last_effective_model: Option<String>,
-    pub(crate) last_effective_budget: Option<(
-        ProviderKind,
-        String,
-        Option<RouteLimits>,
-        codewhale_engine::route_runtime::ContextWindowResolution,
-    )>,
+    pub(crate) last_effective_budget: Option<AutoRouteBudget>,
     /// Provider that actually served the latest auto-routed turn.
     pub last_effective_provider: Option<ProviderKind>,
     /// Exact non-secret identity for the provider that served the latest Auto
@@ -5315,25 +5320,29 @@ impl App {
             });
     }
 
-    /// Rebuild receipts only from the restored typed transcript projection.
-    /// `history_cells_from_message` has already routed repair receipts to
-    /// System cells and omitted interrupted assistant salvage.
-    pub(crate) fn rebuild_completed_assistant_outputs_from_restored_history(&mut self) {
-        self.completed_assistant_outputs = self
-            .history
-            .iter()
-            .enumerate()
-            .filter_map(|(history_index, cell)| match cell {
-                HistoryCell::Assistant {
-                    content,
-                    streaming: false,
-                } if !content.trim().is_empty() => Some(CompletedAssistantOutputReceipt {
-                    history_index,
-                    text: content.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
+    pub(crate) fn extend_restored_history(&mut self, message: &Message, cells: Vec<HistoryCell>) {
+        if message.role == "assistant" {
+            let base = self.history.len();
+            self.completed_assistant_outputs
+                .extend(
+                    cells
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(offset, cell)| match cell {
+                            HistoryCell::Assistant {
+                                content,
+                                streaming: false,
+                            } if !content.trim().is_empty() => {
+                                Some(CompletedAssistantOutputReceipt {
+                                    history_index: base + offset,
+                                    text: content.clone(),
+                                })
+                            }
+                            _ => None,
+                        }),
+                );
+        }
+        self.extend_history(cells);
     }
 
     pub(crate) fn completed_assistant_output_receipt(&self) -> Option<&str> {
@@ -7297,6 +7306,7 @@ impl App {
             model: model.clone(),
             receipt: receipt.clone(),
             effective_reasoning_effort: self.last_effective_reasoning_effort.map(Into::into),
+            context_window: self.matching_auto_budget().map(|budget| budget.window),
         })
     }
 
@@ -7388,10 +7398,9 @@ impl App {
     pub fn effective_model_for_budget(&self) -> &str {
         if self.auto_model {
             return self
-                .last_effective_model
-                .as_deref()
-                .filter(|model| *model != "auto")
-                .unwrap_or(DEFAULT_TEXT_MODEL);
+                .matching_auto_budget()
+                .filter(|budget| !budget.restored)
+                .map_or(DEFAULT_TEXT_MODEL, |budget| budget.model.as_str());
         }
         &self.model
     }
@@ -7404,6 +7413,16 @@ impl App {
         )
     }
 
+    pub(crate) fn matching_auto_budget(&self) -> Option<&AutoRouteBudget> {
+        self.last_effective_budget.as_ref().filter(|budget| {
+            self.auto_model
+                && self.last_effective_provider == Some(budget.provider)
+                && self.last_effective_provider_identity.as_deref()
+                    == Some(&budget.provider_identity)
+                && self.last_effective_model.as_deref() == Some(&budget.model)
+        })
+    }
+
     pub(crate) fn effective_budget_route(
         &self,
     ) -> (
@@ -7412,11 +7431,15 @@ impl App {
         Option<RouteLimits>,
         Option<codewhale_engine::route_runtime::ContextWindowResolution>,
     ) {
-        if self.auto_model
-            && let Some((provider, model, limits, window)) = self.last_effective_budget.as_ref()
-            && self.last_effective_model.as_deref() == Some(model.as_str())
+        if let Some(budget) = self.matching_auto_budget()
+            && !budget.restored
         {
-            return (*provider, model, *limits, Some(*window));
+            return (
+                budget.provider,
+                &budget.model,
+                budget.limits,
+                Some(budget.window),
+            );
         }
         (
             self.api_provider,

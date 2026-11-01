@@ -114,6 +114,18 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
+impl Message {
+    pub fn interrupted_assistant(text: &str) -> Self {
+        Self {
+            role: Role::InterruptedAssistant,
+            content: vec![ContentBlock::Text {
+                text: text.to_owned(),
+                cache_control: None,
+            }],
+        }
+    }
+}
+
 /// Internal role used for assistant text that was visible before a turn was interrupted.
 pub const INTERRUPTED_ASSISTANT_ROLE: &str = "assistant_interrupted";
 /// Prefix attached to interrupted assistant output when it is replayed as context.

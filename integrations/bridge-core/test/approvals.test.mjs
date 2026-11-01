@@ -9,7 +9,7 @@ import path from "node:path";
 import url from "node:url";
 import {
   ApprovalOwnershipError, ThreadStore, decideApproval, settleStoredApproval,
-  admitTurn, createRuntimeClient, activeTurnBlock, latestRunningTurn, readSse, readJsonSafe, compactRuntimeError
+  admitTurn, createRuntimeClient, activeTurnBlock, latestRunningTurn, readThreadEvents, readJsonSafe, compactRuntimeError
 } from "../src/lib.mjs";
 import { isAllowed, isGroupChat } from "../../telegram-bridge/src/lib.mjs";
 import { incomingIdentity as wecomIdentity } from "../../wecom-bridge/src/lib.mjs";
@@ -302,10 +302,11 @@ for (const bridge of ["telegram-bridge", "feishu-bridge", "wecom-bridge"]) {
 test("Telegram shipping SSE mints a bound button and actual callback human controls retry, restart and replay", async () => {
   await withRuntime(async (runtime) => withStore(async (store) => {
     await store.recordTurnOrigin(chatId, threadId, turnId, owner.actorId);
-    runtime.state.events = [{ seq: 1, turn_id: turnId, event: "approval.required", payload: { approval_id: "approval-a" } }];
+    runtime.state.events = [{ seq: 1, thread_id: threadId, turn_id: turnId, event: "approval.required", payload: { approval_id: "approval-a" } },
+      { event: "stream.end", thread_id: threadId, last_seq: 1, retryable: true, reason: "runtime_shutdown" }];
     const telegram = await import("../../telegram-bridge/src/lib.mjs");
     const env = environment(store, runtime, {
-      authHeaders: runtime.authHeaders, readSse, readJsonSafe, compactRuntimeError,
+      authHeaders: runtime.authHeaders, readThreadEvents, readJsonSafe, compactRuntimeError,
       sendTypingAction: async () => {}, TYPING_INTERVAL_MS: 2000, LAST_SEQ_FLUSH_INTERVAL_MS: 2000,
       approvalKeyboard: telegram.approvalKeyboard
     });
@@ -423,10 +424,11 @@ test("WeCom shipping SSE and natural approval callback use durable Runtime-turn 
   await withRuntime(async (runtime) => withStore(async (store) => {
     const lib = await import("../../wecom-bridge/src/lib.mjs");
     await store.recordTurnOrigin(chatId, threadId, turnId, actors["wecom-bridge"]);
-    runtime.state.events = [{ seq: 1, turn_id: turnId, event: "approval.required", payload: { approval_id: "approval-a" } }];
+    runtime.state.events = [{ seq: 1, thread_id: threadId, turn_id: turnId, event: "approval.required", payload: { approval_id: "approval-a" } },
+      { event: "stream.end", thread_id: threadId, last_seq: 1, retryable: true, reason: "runtime_shutdown" }];
     const pendingApprovals = new Map();
     const values = environment(store, runtime, {
-      ...lib, authHeaders: runtime.authHeaders, readSse, readJsonSafe, compactRuntimeError,
+      ...lib, authHeaders: runtime.authHeaders, readThreadEvents, readJsonSafe, compactRuntimeError,
       config: { runtimeUrl: runtime.runtimeUrl, turnTimeoutMs: 1000, approvalTimeoutMs: 10000 },
       pendingApprovals, generateReqId: () => "stream-fixture", client: { replyStream: async () => {} }
     });

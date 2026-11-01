@@ -605,7 +605,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
             && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) =
                 app.history.get_mut(idx)
         {
-            let updated = card.claim_pending_worker(&agent_id, first_status);
+            let updated = card.upsert_worker(&agent_id, first_status);
             app.subagent_card_index.insert(agent_id, idx);
             if updated {
                 app.bump_history_cell(idx);

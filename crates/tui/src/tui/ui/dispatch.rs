@@ -1117,12 +1117,19 @@ pub(crate) fn build_dispatch_success_closure(
 
             if prepare.auto_model {
                 app.last_effective_model = Some(outcome.effective_model.clone());
-                app.last_effective_budget = Some((
-                    outcome.effective_provider,
-                    outcome.effective_model.clone(),
-                    codewhale_engine::route_budget::known_route_limits(outcome.route_limits),
-                    outcome.context_window,
-                ));
+                app.last_effective_provider = Some(outcome.effective_provider);
+                app.last_effective_provider_identity =
+                    Some(outcome.effective_provider_identity.clone());
+                app.last_effective_budget = Some(crate::tui::app::AutoRouteBudget {
+                    provider: outcome.effective_provider,
+                    provider_identity: outcome.effective_provider_identity.clone(),
+                    model: outcome.effective_model.clone(),
+                    limits: codewhale_engine::route_budget::known_route_limits(
+                        outcome.route_limits,
+                    ),
+                    window: outcome.context_window,
+                    restored: false,
+                });
             } else {
                 app.set_active_route_limits(outcome.route_limits);
                 app.active_context_window = Some(outcome.context_window);
@@ -1146,10 +1153,6 @@ pub(crate) fn build_dispatch_success_closure(
 
             app.last_effective_reasoning_effort = Some(outcome.effective_reasoning_effort);
             if prepare.auto_model {
-                app.last_effective_model = Some(outcome.effective_model.clone());
-                app.last_effective_provider = Some(outcome.effective_provider);
-                app.last_effective_provider_identity =
-                    Some(outcome.effective_provider_identity.clone());
                 if let Some(selection) = outcome.auto_selection.as_ref() {
                     app.last_auto_route_receipt = selection.receipt.clone();
                     let status = app

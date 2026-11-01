@@ -106,6 +106,7 @@ pub(super) fn retry(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandRe
                 format!("Retrying: {display_input}"),
                 DebugAction::ConversationUndo {
                     sync: undone.sync,
+                    restored_files: 0,
                     retry_input: Some(input),
                 },
             )
@@ -228,6 +229,7 @@ fn conversation_report(
             message,
             DebugAction::ConversationUndo {
                 sync: undone.sync,
+                restored_files: 0,
                 retry_input: None,
             },
         ))
@@ -391,10 +393,16 @@ fn patch_report(
         DebugUndoOutcome::Restored(restored) => {
             let summary = restored_summary(&restored, presentation)
                 .unwrap_or_else(|error| restored_fallback(&restored, &error));
-            Ok(CommandResult::with_message_and_action(
-                summary,
-                DebugAction::SyncSession(restored.sync),
-            ))
+            let action = if restored.rewind_conversation {
+                DebugAction::ConversationUndo {
+                    sync: restored.sync,
+                    restored_files: restored.files.len(),
+                    retry_input: None,
+                }
+            } else {
+                DebugAction::SyncSession(restored.sync)
+            };
+            Ok(CommandResult::with_message_and_action(summary, action))
         }
     }
 }
@@ -445,7 +453,7 @@ fn restored_summary(
     }
     summary.push('\n');
     summary.push_str(&presentation.translate(
-        if restored.conversation_removed {
+        if restored.rewind_conversation {
             "cmd_undo_conversation_removed"
         } else {
             "cmd_undo_conversation_kept"
@@ -489,7 +497,7 @@ fn restored_fallback(restored: &DebugUndoRestored, error: &str) -> String {
             "\nThe end of this request was not recorded, so edits made to these files since it started were also put back.",
         );
     }
-    report.push_str(if restored.conversation_removed {
+    report.push_str(if restored.rewind_conversation {
         "\nThe request and its reply were removed from the conversation."
     } else {
         "\nThe conversation was not changed."

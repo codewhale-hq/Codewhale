@@ -752,20 +752,16 @@ pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOu
     // The files are back. Take the request off the conversation at the same
     // boundary a conversation-only undo uses (the user's prompt, never a
     // tool result), or leave a conversation that no longer holds it alone.
-    let (conversation_removed, sync) = if is_last_request == Some(true) {
-        let before = app.api_messages.len();
-        let undone = undo_conversation_for_engine(app);
-        app.truncate_history_to(app.history.len() - undone.removed);
-        app.truncate_api_messages(undone.sync.messages.len());
-        let removed = undone.removed > 0 || undone.sync.messages.len() < before;
-        (removed, undone.sync)
+    let rewind_conversation = is_last_request == Some(true);
+    let sync = if rewind_conversation {
+        undo_conversation_for_engine(app).sync
     } else {
-        (false, session_sync_payload(app))
+        session_sync_payload(app)
     };
 
     DebugUndoOutcome::Restored(DebugUndoRestored {
         request: codewhale_engine::core::turn::parse_snapshot_label(&target.label).prompt_snippet,
-        conversation_removed,
+        rewind_conversation,
         forced: step.forced,
         files: outcomes
             .into_iter()

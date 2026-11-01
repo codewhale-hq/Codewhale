@@ -830,7 +830,7 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                             });
                         }
                     }
-                    "assistant" => {
+                    "assistant" | codewhale_models::INTERRUPTED_ASSISTANT_ROLE => {
                         if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
                             if !content.is_empty() {
                                 content.push('\n');
@@ -838,7 +838,13 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                             content.push_str(text);
                         } else {
                             cells.push(HistoryCell::Assistant {
-                                content: text.clone(),
+                                content: if msg.role == codewhale_models::INTERRUPTED_ASSISTANT_ROLE
+                                    && !text.starts_with("[interrupted]")
+                                {
+                                    format!("[interrupted] {text}")
+                                } else {
+                                    text.clone()
+                                },
                                 streaming: false,
                             });
                         }

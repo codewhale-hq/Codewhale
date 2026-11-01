@@ -495,9 +495,9 @@ fn undo_passes_force_to_the_host_and_rejects_any_other_option() {
 /// label or id.
 #[test]
 fn undo_reports_the_request_each_file_and_the_conversation() {
-    let restored = |forced, conversation_removed| DebugUndoRestored {
+    let restored = |forced, rewind_conversation| DebugUndoRestored {
         request: Some("Whole hours should read 2h".to_string()),
-        conversation_removed,
+        rewind_conversation,
         forced,
         files: vec![
             DebugRestoredFile {
@@ -526,7 +526,14 @@ fn undo_reports_the_request_each_file_and_the_conversation() {
             "Undid your request \"Whole hours should read 2h\". 3 files are back as they were before it:\n  restored duration.mjs\n  brought back old.mjs\n  removed new.mjs\nThe request and its reply were removed from the conversation."
         )
     );
-    assert!(matches!(result.action, Some(DebugAction::SyncSession(_))));
+    assert!(matches!(
+        result.action,
+        Some(DebugAction::ConversationUndo {
+            restored_files: 3,
+            retry_input: None,
+            ..
+        })
+    ));
 
     let forced = undo::patch_result(
         DebugUndoOutcome::Restored(restored(true, false)),
@@ -575,7 +582,11 @@ fn undo_reports_the_request_each_file_and_the_conversation() {
         assert!(!result.is_error);
         assert_eq!(
             result.action,
-            Some(DebugAction::SyncSession(synced_conversation()))
+            Some(DebugAction::ConversationUndo {
+                sync: synced_conversation(),
+                restored_files: 3,
+                retry_input: None
+            })
         );
     }
     let result = undo::patch_result(
@@ -713,6 +724,7 @@ fn retry_truncates_history_before_emitting_the_exact_original_input() {
         result.action,
         Some(DebugAction::ConversationUndo {
             sync: synced_conversation(),
+            restored_files: 0,
             retry_input: Some(input.clone()),
         })
     );

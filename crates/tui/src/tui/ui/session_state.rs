@@ -460,8 +460,27 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
     if let Ok(manager) = SessionManager::default_location()
-        && let Ok(session) = build_session_snapshot(app, &manager)
+        && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
+        if let Some(turn) = app.active_turn.as_ref()
+            && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
+            && !app.suppress_stream_events_until_turn_complete
+            && app
+                .api_messages
+                .last()
+                .is_some_and(|message| message.role == codewhale_models::Role::User)
+            && let Some(HistoryCell::Assistant {
+                content,
+                streaming: true,
+            }) = app
+                .streaming_message_index
+                .and_then(|index| app.history.get(index))
+            && !content.is_empty()
+            && let Some(journal) = session.journal.as_mut()
+        {
+            session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
+            session.metadata.message_count += 1;
+        }
         let projection = saved_work_projection(app, &session);
         if app.current_session_id.is_none() {
             app.current_session_id = Some(session.metadata.id.clone());

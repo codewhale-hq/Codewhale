@@ -337,9 +337,8 @@ mod tests {
                 cache_control: None,
             }],
         };
-        app.extend_history(history_cells_from_message(&visible));
-        app.extend_history(history_cells_from_message(&repair));
-        app.rebuild_completed_assistant_outputs_from_restored_history();
+        app.extend_restored_history(&visible, history_cells_from_message(&visible));
+        app.extend_restored_history(&repair, history_cells_from_message(&repair));
 
         let result = execute_copy(&mut app);
 

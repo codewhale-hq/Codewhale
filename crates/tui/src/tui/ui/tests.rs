@@ -32154,13 +32154,20 @@ fn backtrack_cut_index_skips_tool_result_user_messages() {
             }],
         },
     ];
+    let mut app = create_test_app();
+    for msg in &msgs {
+        for cell in history_cells_from_message(msg) {
+            app.add_message(cell);
+        }
+    }
+    app.set_api_messages(Arc::new(msgs));
     // depth 0 = cut at the last real user prompt ("second", idx 4).
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 0), Some(4));
+    assert_eq!(super::backtrack_api_cut_index(&app, 0), Some(4));
     // depth 1 = cut at the first real user prompt ("first", idx 0) — NOT the
     // tool_result at idx 2 that a naive role=="user" count would have hit.
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 1), Some(0));
+    assert_eq!(super::backtrack_api_cut_index(&app, 1), Some(0));
     // depth beyond available prompts.
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 2), None);
+    assert_eq!(super::backtrack_api_cut_index(&app, 2), None);
 }
 
 /// The idle BlueWhale needs 16 transcript rows. Everything above the

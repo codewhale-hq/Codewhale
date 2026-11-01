@@ -36,6 +36,7 @@ import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 
 /** In-memory KV that pages like Cloudflare KV (max 1000 keys per list call). */
 class FakeKv {
+  readonly draftStores = { CURATED_KV: this, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock() };
   readonly values = new Map<string, string>();
   failPutsMatching: RegExp | null = null;
   /** Yield to the event loop inside every call, like a network round trip. */
@@ -429,7 +430,7 @@ describe("resolved drafts are not resurrected by the cron", () => {
 
   it("does not redraft a discarded triage item", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const res = await act(kv, { action: "discard", draftKey: "draft:triage:42" });
     expect(res.status).toBe(200);
@@ -442,7 +443,7 @@ describe("resolved drafts are not resurrected by the cron", () => {
 
   it("does not turn a posted triage draft back into a pending one after the issue updates", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     stubGitHub();
     const res = await act(kv, { action: "post", draftKey: "draft:triage:42", lang: "en" });
@@ -457,7 +458,7 @@ describe("resolved drafts are not resurrected by the cron", () => {
 
   it("drafts again when the item has new activity well after the maintainer's decision", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     stubGitHub();
     expect((await act(kv, { action: "post", draftKey: "draft:triage:42" })).status).toBe(200);
@@ -503,7 +504,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("returns ok when saving state fails after GitHub accepted the comment, and a retry does not post twice", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
     kv.failPutsMatching = /^draft:triage:42$/;
@@ -519,7 +520,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("releases the claim when GitHub rejects the post so the maintainer can retry", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     stubGitHub(422);
 
@@ -536,7 +537,7 @@ describe("admin post action is idempotent and bounded", () => {
     "keeps the claim when GitHub answers %i, since the post may have been created",
     async (status) => {
       const kv = new FakeKv();
-      await saveDraft(kv, draft());
+      await saveDraft(kv.draftStores, draft());
       stubAdminEnv(kv);
       const posts = stubGitHub(status);
 
@@ -553,7 +554,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("never posts twice when two requests for the same draft race", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     kv.yieldEachOp = true;
     stubAdminEnv(kv);
     const posts = stubGitHub();
@@ -623,7 +624,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("refuses a second post whose claim lands while the first is at GitHub", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     kv.yieldEachOp = true;
     stubAdminEnv(kv);
     const posts = raceAfterAbsenceChecks(kv);
@@ -639,7 +640,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("refuses a discard that overlaps an in-flight post of the same draft", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     kv.yieldEachOp = true;
     stubAdminEnv(kv);
     const posts = raceAfterAbsenceChecks(kv);
@@ -658,7 +659,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("claims without KV list, whose results can lag writes by up to a minute", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
     // A stale listing that never shows claim keys must not affect the claim.
@@ -676,7 +677,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("answers a claim it cannot read back as retryable, not as a lost race, and the retry posts", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
     // The first read-back of the request's own claim misses the write.
@@ -699,7 +700,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("refuses a post while another request's claim is visible, and leaves that claim alone", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
     kv.values.set("draft-claim:triage:42", "other-request");
@@ -714,7 +715,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("treats a repeated discard as a no-op, including one that sees the marker only at claim time", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     stubGitHub();
 
@@ -744,11 +745,11 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("refuses an action on a draft regenerated after the page loaded, before calling GitHub", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft({ bodyEn: "reviewed A" }));
+    await saveDraft(kv.draftStores, draft({ bodyEn: "reviewed A" }));
     stubAdminEnv(kv);
     const shownA = await reviewedBodyHash("reviewed A");
     // The cron regenerates the pending draft while the admin page shows A.
-    await saveDraft(kv, draft({ bodyEn: "unseen B", generatedAt: "2026-01-02T00:00:00.000Z" }));
+    await saveDraft(kv.draftStores, draft({ bodyEn: "unseen B", generatedAt: "2026-01-02T00:00:00.000Z" }));
     const posts = stubGitHub();
 
     for (const action of ["post", "discard"]) {
@@ -763,7 +764,7 @@ describe("admin post action is idempotent and bounded", () => {
 
   it("requires the reviewed-text hash", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     stubAdminEnv(kv);
     const posts = stubGitHub();
 
@@ -803,7 +804,7 @@ describe("admin claims with the DRAFT_CLAIM_LOCK Durable Object bound", () => {
 
   async function lockedAdmin(status = 201) {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     kv.yieldEachOp = true;
     const lock = new FakeDraftClaimLock();
     stubAdminEnv(kv, lock);
@@ -999,7 +1000,7 @@ describe("post retry durability and generation admission", () => {
   const KEY = "draft:triage:42";
   async function prepared() {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     const lock = new FakeDraftClaimLock();
     stubAdminEnv(kv, lock);
     return { kv, lock };

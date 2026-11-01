@@ -735,9 +735,9 @@ enum FleetAlertAdapterArg {
 }
 
 /// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, flushes already queued
-/// persistence, restores terminal modes and exits with the conventional
-/// 128 + signal code. State not yet queued by the TUI is not captured here.
+/// always; SIGTERM and SIGHUP on Unix) and, on receipt, gives the interactive
+/// owner and persistence actor a bounded recovery window, restores terminal
+/// modes and exits with the conventional 128 + signal code.
 /// Multiple deliveries are tolerated: once the cleanup runs, a second
 /// signal short-circuits to plain exit so a stuck cleanup can never
 /// trap a frustrated user pressing Ctrl+C repeatedly.
@@ -21150,7 +21150,7 @@ mod config_stay_tests;
 mod doctor_secret_scan_tests {
     use std::path::PathBuf;
 
-    use codewhale_engine::session_secret_scrub::{doctor_files, scrub_files, session_files};
+    use codewhale_engine::session_secret_scrub::{doctor_files, scrub_files};
     use serde_json::{Value, json};
 
     const TOKEN: &str = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghij";
@@ -21186,7 +21186,11 @@ mod doctor_secret_scan_tests {
         std::fs::write(&transcript, session_with_tool_output(TOKEN).to_string()).unwrap();
         std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut unreadable = Vec::new();
-        let files = session_files(&root, &root.join("absent-runtime"), &mut unreadable);
+        let files = codewhale_engine::session_secret_scrub::session_files(
+            &root,
+            &root.join("absent-runtime"),
+            &mut unreadable,
+        );
         std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(unreadable, vec![blocked]);
         assert_eq!(files, vec![transcript]);

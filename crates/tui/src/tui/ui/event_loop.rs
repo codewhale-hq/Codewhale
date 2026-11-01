@@ -31,6 +31,22 @@ pub(super) fn event_owner_is_active(
     !owner_session_id.is_empty() && current_session_id == Some(owner_session_id)
 }
 
+fn apply_recovery_messages(
+    app: &mut App,
+    session_id: &str,
+    workspace: &std::path::Path,
+    messages: Arc<Vec<Message>>,
+) -> bool {
+    if !event_owner_is_active(app.current_session_id.as_deref(), session_id)
+        || workspace != app.workspace
+        || !messages.starts_with(&app.api_messages)
+    {
+        return false;
+    }
+    app.set_api_messages(messages);
+    true
+}
+
 /// Terminal data captured directly from an engine completion event.
 ///
 /// `runtime_turn_id` deliberately survives a completed turn for saved-session
@@ -161,9 +177,7 @@ pub(super) fn apply_engine_session_projection(
     crate::tui::ui::dispatch::settle_accepted_steers(app);
     app.system_prompt = system_prompt;
     app.instruction_assembly = instruction_assembly;
-    if app.auto_model {
-        app.last_effective_model = Some(model);
-    } else {
+    if !app.auto_model {
         let accepted_route =
             app.pending_turn_route
                 .as_ref()
@@ -1971,6 +1985,7 @@ pub(super) fn edit_replacement_result(
         message: None,
         action: Some(AppAction::ConversationUndo {
             sync,
+            restored_files: 0,
             retry_input: Some(input.to_string()),
             edit_replacement: true,
         }),
@@ -2020,6 +2035,7 @@ pub(crate) async fn run_event_loop(
     mut dispatch_completion_rx: tokio::sync::mpsc::Receiver<crate::tui::app::DispatchApplyFn>,
 ) -> Result<()> {
     // Track streaming state
+    let mut signal_checkpoint = persistence_actor::register_signal_checkpoint();
     let mut current_streaming_text = String::new();
     let mut stream_display_clock = StreamDisplayClock::default();
     let (translation_tx, mut translation_rx) =
@@ -2225,6 +2241,41 @@ pub(crate) async fn run_event_loop(
             app.add_message(HistoryCell::System { content: notice });
             app.needs_redraw = true;
             telemetry_notice_awaiting_render = true;
+        }
+
+        if let Ok(acknowledge) = signal_checkpoint.try_recv() {
+            persist_offline_queue_state(app);
+            if turn_unsettled_for_shutdown(app) {
+                app.cancel_in_flight_dispatch();
+                engine_handle
+                    .cancel_with_reason(codewhale_engine::core::engine::CancelReason::External);
+                let drain = async {
+                    let mut events = engine_handle.rx_event.write().await;
+                    while events.recv().await.is_some() {}
+                };
+                let snapshot = tokio::select! {
+                    biased;
+                    result = engine_handle.get_session_snapshot() => result.ok(),
+                    () = drain => None,
+                };
+                if let Some(snapshot) = snapshot
+                    && !acknowledge.is_closed()
+                    && apply_recovery_messages(
+                        app,
+                        &snapshot.session_id,
+                        &snapshot.workspace,
+                        Arc::new(snapshot.messages),
+                    )
+                {
+                    persist_recovery_snapshot(app);
+                } else {
+                    tracing::warn!(
+                        "signal exit kept the preceding checkpoint because the Engine snapshot did not settle on this session"
+                    );
+                }
+            }
+            let _ = acknowledge.send(());
+            return std::future::pending().await;
         }
 
         // A manual compaction deferred by a full engine mailbox retries here
@@ -2668,6 +2719,20 @@ pub(crate) async fn run_event_loop(
                         // turn starts, then keep hiding its queued deltas.
                         engine_handle.cancel();
                         continue;
+                    }
+                    if let EngineEvent::SessionUpdated {
+                        session_id,
+                        workspace,
+                        messages,
+                        checkpoint: None,
+                        ..
+                    } = &event
+                        && messages.len().checked_sub(app.api_messages.len()) == Some(1)
+                        && messages
+                            .last()
+                            .is_some_and(|message| message.role == Role::InterruptedAssistant)
+                    {
+                        apply_recovery_messages(app, session_id, workspace, Arc::clone(messages));
                     }
                     if suppress_engine_event_after_local_cancel(&event) {
                         continue;

@@ -255,26 +255,37 @@ export async function getAgentEnv(): Promise<CommunityAgentEnv> {
  * reply) reopens the identity; see `resolutionCovers`.
  */
 export async function saveDraft(
-  kv: KVNamespace | undefined,
+  stores: DraftClaimStores,
   draft: AgentDraft,
-  sourceUpdatedAt?: string
+  options: { sourceUpdatedAt?: string; digest?: WeeklyDigestRecord } = {}
 ): Promise<boolean> {
+  const kv = stores.CURATED_KV;
   if (!kv) return false;
   const key = draftKey(draft.type, draft.id);
-  const resolution = await getDraftResolution(kv, draft.type, draft.id);
-  if (resolution) {
-    if (resolutionCovers(resolution, sourceUpdatedAt)) return false;
-    // Reopened by new activity. Clear the marker first: if the put below
-    // then fails, the old posted draft still blocks a redraft, which is the
-    // safe side.
-    await clearDraftResolution(kv, draft.type, draft.id);
-  } else {
-    // A posted draft without a marker predates the markers; keep it.
-    const existing = await getDraft(kv, key);
-    if (existing?.posted) return false;
+  const { digest, sourceUpdatedAt } = options;
+  if (digest && (draft.type !== "digest" || digest.weekId !== draft.id || digest.approved !== false)) {
+    throw new Error("Invalid staged digest");
   }
-  await kv.put(key, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 30 }); // 30 days
-  return true;
+  const result = await claimDraft(stores, draft.type, draft.id, "generate");
+  if (!result.ok) return false;
+  try {
+    const resolution = await getDraftResolution(kv, draft.type, draft.id);
+    if (resolution ? resolutionCovers(resolution, sourceUpdatedAt) : (await getDraft(kv, key))?.posted) {
+      return false;
+    }
+    const serialized = JSON.stringify(draft);
+    const lock = result.claim.lock;
+    if (!lock) throw new Error("Draft generation requires DRAFT_CLAIM_LOCK");
+    await lock.act({ op: "remember-draft", token: result.claim.token, revision: await reviewedBodyHash(serialized) });
+    await kv.put(key, serialized, { expirationTtl: 60 * 60 * 24 * 30 });
+    if (digest) {
+      await kv.put(digestRecordKey(draft.id), JSON.stringify(digest), { expirationTtl: DIGEST_RECORD_TTL_SEC });
+    }
+    if (resolution) await clearDraftResolution(kv, draft.type, draft.id);
+    return true;
+  } finally {
+    await releaseDraftClaim(kv, result.claim).catch(() => undefined);
+  }
 }
 
 // --- Draft resolution markers ---
@@ -362,6 +373,7 @@ export interface DraftClaim {
   key: string;
   token: string;
   lock?: DraftClaimLockStub;
+  revision?: string;
 }
 
 /**
@@ -437,7 +449,8 @@ export async function claimDraft(
     const lock = ns.get(ns.idFromName(key));
     const granted = await lock.act({ op: "claim", token, action, leaseMs: POSTING_CLAIM_TTL_SEC * 1000 });
     if (!granted.ok) return { ok: false, reason: "held", holder: granted.holder };
-    const claim: DraftClaim = { key, token, lock };
+    const claim: DraftClaim = { key, token, lock, revision: granted.revision };
+    if (action === "generate") return { ok: true, claim };
     const drop = () => lock.act({ op: "release", token, holdMs: 0 }).catch(() => undefined);
     const resolution = await getDraftResolution(kv, type, id).catch(async (e) => {
       await drop();
@@ -450,6 +463,7 @@ export async function claimDraft(
     return { ok: true, claim };
   }
 
+  if (action === "generate") throw new Error("Draft generation requires DRAFT_CLAIM_LOCK");
   if (!kv) return { ok: true, claim: { key: "", token } };
   const visible = await kv.get(key);
   if (visible) return { ok: false, reason: "held", holder: claimHolder(visible) };
@@ -603,13 +617,14 @@ export function isPublishedDigest(value: unknown): value is WeeklyDigestRecord {
     typeof d.titleZh === "string" &&
     typeof d.summaryEn === "string" &&
     typeof d.summaryZh === "string" &&
-    typeof d.generatedAt === "string" &&
-    Array.isArray(d.sections) &&
+    typeof d.generatedAt === "string" && Number.isFinite(Date.parse(d.generatedAt)) &&
+    Array.isArray(d.sections) && d.sections.length <= 16 &&
     d.sections.every(
       (s: unknown) =>
         !!s &&
         typeof (s as { heading?: unknown }).heading === "string" &&
         Array.isArray((s as { items?: unknown }).items) &&
+        (s as { items: unknown[] }).items.length <= 32 &&
         (s as { items: unknown[] }).items.every((i) => typeof i === "string")
     )
   );

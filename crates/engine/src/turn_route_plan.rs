@@ -187,7 +187,7 @@ pub async fn plan_turn_route(
     // Without an Auto selection there is no per-request signal, so the
     // route is the configured model — the same declared default the local
     // fallback uses. Request wording is never inspected (#6290 rework).
-    let effective_model = if request.auto_model {
+    let selected_model = if request.auto_model {
         auto_selection
             .as_ref()
             .map(|selection| selection.model.clone())
@@ -199,7 +199,7 @@ pub async fn plan_turn_route(
     let turn_route = resolve_runtime_route_for_identity(
         request.route_config,
         selected_identity,
-        Some(&effective_model),
+        Some(&selected_model),
     );
 
     let turn_route = match turn_route {
@@ -302,10 +302,10 @@ pub async fn plan_turn_route(
     };
 
     Ok(PlannedTurnRoute {
+        effective_model: turn_route.model.clone(),
         route: turn_route,
         compaction: turn_compaction,
         effective_provider,
-        effective_model,
         effective_provider_identity,
         effective_provider_label,
         selected_reasoning_effort,

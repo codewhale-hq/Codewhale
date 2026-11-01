@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -58,6 +59,8 @@ pub const UPDATE_USER_AGENT: &str = "codewhale-updater";
 
 const CNB_RELEASE_ASSET_BASE: &str = "https://cnb.cool/codewhale.net/codewhale/-/releases/download";
 const RELEASE_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+const RELEASE_METADATA_MAX_BYTES: usize = 8 * 1024 * 1024;
+const ERROR_BODY_MAX_BYTES: usize = 4 * 1024;
 
 /// Build a reqwest client builder with the TLS roots appropriate for the
 /// current platform.
@@ -262,31 +265,100 @@ pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<St
         .timeout(RELEASE_METADATA_TIMEOUT)
         .build()
         .context("failed to build release check HTTP client")?;
-    let response = client
+    let mut response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
         .with_context(|| format!("failed to fetch {description} from {url}"))?;
     let status = response.status();
-    let body = response
-        .text()
+    let limit = update_body_limit(
+        status,
+        response.content_length(),
+        RELEASE_METADATA_MAX_BYTES,
+    )?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .with_context(|| format!("failed to read {description} response from {url}"));
-    release_response_body(status, body, url, description)
-}
-
-fn release_response_body(
-    status: reqwest::StatusCode,
-    body: Result<String>,
-    url: &str,
-    description: &str,
-) -> Result<String> {
-    let body = body.with_context(|| format!("failed to read {description} response from {url}"))?;
+        .with_context(|| format!("failed to read {description} response from {url}"))?
+    {
+        let remaining = limit + 1 - bytes.len();
+        bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+        if bytes.len() > limit {
+            break;
+        }
+    }
+    let bytes = finish_update_body(bytes, status, limit)?;
+    let body = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         bail!("GitHub release request failed with HTTP {status}: {body}");
     }
-    Ok(body)
+    Ok(body.into_owned())
+}
+
+fn update_body_limit(
+    status: reqwest::StatusCode,
+    content_length: Option<u64>,
+    max_bytes: usize,
+) -> Result<usize> {
+    if !status.is_success() {
+        return Ok(max_bytes.min(ERROR_BODY_MAX_BYTES));
+    }
+    if content_length.is_some_and(|length| length > max_bytes as u64) {
+        bail!("response exceeds the {max_bytes}-byte update limit");
+    }
+    Ok(max_bytes)
+}
+
+fn finish_update_body(
+    mut bytes: Vec<u8>,
+    status: reqwest::StatusCode,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    let truncated = bytes.len() > limit;
+    if status.is_success() {
+        anyhow::ensure!(!truncated, "response exceeds the {limit}-byte update limit");
+        return Ok(bytes);
+    }
+    bytes.truncate(limit);
+    let mut diagnostic =
+        codewhale_sanitize::sanitize::sanitize_text(&String::from_utf8_lossy(&bytes));
+    if truncated {
+        diagnostic.push_str(" … [truncated]");
+    }
+    Ok(diagnostic.into_bytes())
+}
+
+pub fn read_update_response(
+    response: reqwest::blocking::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let status = response.status();
+    let limit = update_body_limit(status, response.content_length(), max_bytes)?;
+    let mut bytes = Vec::new();
+    response
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    finish_update_body(bytes, status, limit)
+}
+
+pub fn read_release_metadata(response: reqwest::blocking::Response) -> Result<String> {
+    let bytes = read_update_response(response, RELEASE_METADATA_MAX_BYTES)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub fn parse_release_json<T: serde::de::DeserializeOwned>(
+    body: &str,
+    description: &str,
+) -> Result<T> {
+    serde_json::from_str(body).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to parse {description} JSON from GitHub API at line {}, column {}",
+            error.line(),
+            error.column()
+        )
+    })
 }
 
 #[derive(Deserialize)]
@@ -301,18 +373,14 @@ struct ReleaseListEntry {
 
 /// Extracts the `tag_name` field from a GitHub single-release JSON response.
 pub fn latest_tag_from_release_json(body: &str) -> Result<String> {
-    let release: ReleaseTag = serde_json::from_str(body).with_context(|| {
-        format!("failed to parse release JSON from GitHub API. Response: {body}")
-    })?;
+    let release: ReleaseTag = parse_release_json(body, "release")?;
     Ok(release.tag_name)
 }
 
 /// Scans a GitHub release-list JSON response and returns the tag of the first
 /// entry whose name contains `"beta"`.
 pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
-    let releases: Vec<ReleaseListEntry> = serde_json::from_str(body).with_context(|| {
-        format!("failed to parse release list JSON from GitHub API. Response: {body}")
-    })?;
+    let releases: Vec<ReleaseListEntry> = parse_release_json(body, "release list")?;
     releases
         .into_iter()
         .find(|release| is_beta_tag(&release.tag_name))

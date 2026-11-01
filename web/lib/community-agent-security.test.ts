@@ -1,3 +1,4 @@
+import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 import { describe, expect, it } from "vitest";
 import {
   deleteDraft,
@@ -11,6 +12,7 @@ import {
 } from "./community-agent";
 
 class FakeKv {
+  readonly draftStores = { CURATED_KV: this, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock() };
   readonly values = new Map<string, string>();
   readonly deleted: string[] = [];
 
@@ -54,7 +56,7 @@ function draft(overrides: Partial<AgentDraft> = {}): AgentDraft {
 describe("community-agent draft boundary", () => {
   it("uses the same canonical key for save and freshness checks", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
 
     expect([...kv.values.keys()]).toEqual(["draft:triage:42"]);
     await expect(hasFreshDraft(kv, "triage", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
@@ -63,7 +65,7 @@ describe("community-agent draft boundary", () => {
 
   it("uses the canonical PR review namespace for freshness checks", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv, draft({ type: "pr-review" }));
+    await saveDraft(kv.draftStores, draft({ type: "pr-review" }));
 
     expect([...kv.values.keys()]).toEqual(["draft:pr-review:42"]);
     await expect(hasFreshDraft(kv, "pr-review", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
@@ -97,7 +99,7 @@ describe("community-agent draft boundary", () => {
     expect(kv.deleted).toEqual([]);
     expect(kv.values.has("dispatch:latest")).toBe(true);
 
-    await saveDraft(kv, draft());
+    await saveDraft(kv.draftStores, draft());
     await expect(deleteDraft(kv, "draft:triage:42")).resolves.toBeUndefined();
     expect(kv.deleted).toEqual(["draft:triage:42"]);
   });
