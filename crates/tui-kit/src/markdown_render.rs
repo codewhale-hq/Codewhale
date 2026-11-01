@@ -1769,8 +1769,12 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             && let Some(ch) = escaped.chars().next()
             && ch.is_ascii_punctuation()
         {
-            out.push(InlineToken::new(ch.to_string(), base_style, None));
-            rest = &escaped[ch.len_utf8()..];
+            // Carry any combining marks that extend the escaped character into
+            // one grapheme cluster: `\*️⃣` escapes the `*` of a keycap, and
+            // emitting that `*` alone left the two marks in a span of their own.
+            let cluster = escaped.graphemes(true).next().unwrap_or_default();
+            out.push(InlineToken::new(cluster.to_string(), base_style, None));
+            rest = &escaped[cluster.len()..];
             continue;
         }
         // **bold**
@@ -1792,6 +1796,10 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         // *italic*
         if rest.starts_with('*')
             && !rest.starts_with("**")
+            // The first grapheme has to be a lone `*`. When it is the base of a
+            // cluster (`*️⃣` is U+002A U+FE0F U+20E3) it is not a delimiter, so
+            // treating it as one ate the `*` and split the marks off.
+            && rest.graphemes(true).next() == Some("*")
             && let Some(end) = rest[1..].find('*')
         {
             let inner = &rest[1..1 + end];
@@ -1811,6 +1819,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         // _italic_
         if rest.starts_with('_')
             && !rest.starts_with("__")
+            && rest.graphemes(true).next() == Some("_")
             && let Some(end) = rest[1..].find('_')
         {
             let inner = &rest[1..1 + end];
@@ -1901,6 +1910,22 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         }
         // Plain text: consume until next marker or URL; always advance at least 1 char.
         let next = find_next_marker(rest).max(rest.chars().next().map_or(1, |c| c.len_utf8()));
+        // Never split a grapheme cluster. A marker character can be the base of
+        // one: the `*` keycap is U+002A U+FE0F U+20E3, a single cluster, and
+        // `*` alone is not emphasis here (no closing `*`), so the marker search
+        // stops right after it. Cutting there left the two zero-width marks in
+        // a span of their own; the terminal then drew the cluster two columns
+        // wide while the spans reported one, and every separator after the cell
+        // moved off the box. A digit keycap never hit this because a digit is
+        // not a marker, which is why only `*` broke.
+        let next = rest
+            .grapheme_indices(true)
+            .map(|(start, grapheme)| start + grapheme.len())
+            .find(|end| *end >= next)
+            // `grapheme_indices` ends at `rest.len()`, so the find always
+            // succeeds. Clamp rather than reuse `next` so a future change to
+            // `find_next_marker` cannot slice out of bounds here.
+            .unwrap_or(rest.len());
         out.push(InlineToken::new(rest[..next].to_string(), base_style, None));
         rest = &rest[next..];
     }
@@ -2342,6 +2367,118 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// Render `lines` into a fresh ratatui buffer at the given size.
+    fn buffer_of(lines: &[Line<'static>], width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::widgets::{Paragraph, Widget};
+
+        let area = ratatui::layout::Rect::new(0, 0, width, height);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        Paragraph::new(lines.to_vec()).render(area, &mut buf);
+        buf
+    }
+
+    /// True column indices in `buf` whose symbol is the `|` box-drawing
+    /// separator. Scanning columns (not string chars) matters: a wide grapheme
+    /// such as a keycap fills one cell and leaves the next empty, so a char
+    /// index over a flattened row would not be a column index.
+    fn border_columns(buf: &ratatui::buffer::Buffer, width: u16, y: u16) -> Vec<usize> {
+        (0..width)
+            .filter(|x| buf[(*x, y)].symbol() == "\u{2502}")
+            .map(|x| x as usize)
+            .collect()
+    }
+
+    /// Flatten one buffer row for assertion messages.
+    fn row_text(buf: &ratatui::buffer::Buffer, width: u16, y: u16) -> String {
+        (0..width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn keycap_table_puts_every_border_in_the_same_column() {
+        // A cell that holds a keycap must not shift the separators after it.
+        // `Line::width()` cannot see the drift because it sums span widths,
+        // so compare the columns the buffer actually filled.
+        let md = "| A | B |\n| --- | --- |\n\
+                  | 1\u{fe0f}\u{20e3} | x |\n| *\u{fe0f}\u{20e3} | y |\n\
+                  | #\u{fe0f}\u{20e3} | z |\n| plain | w |";
+        let lines = render_markdown(md, 80, Style::default());
+        let height = lines.len() as u16;
+        let buf = buffer_of(&lines, 80, height);
+
+        // Top and bottom borders use corner and tee glyphs, so compare only the
+        // rows that carry a `|` separator against each other.
+        let separated: Vec<(u16, Vec<usize>)> = (0..height)
+            .map(|y| (y, border_columns(&buf, 80, y)))
+            .filter(|(_, cols)| !cols.is_empty())
+            .collect();
+        assert!(
+            separated.len() >= 3,
+            "expected a header and data rows with separators"
+        );
+        let expected = separated[0].1.clone();
+        for (y, cols) in &separated {
+            assert_eq!(
+                cols,
+                &expected,
+                "row {y} separators drifted: {:?}",
+                row_text(&buf, 80, *y)
+            );
+        }
+
+        // The separators alone cannot tell the two shapes apart: both the split
+        // form (`*` plus a zero-width mark span) and the joined form advance the
+        // buffer by the same number of columns, so assert the symbol too. Before
+        // the fix this cell held a bare `*` and the keycap never reached the
+        // terminal at all.
+        let row_with_keycap = (0..height)
+            .map(|y| (y, row_text(&buf, 80, y)))
+            .find(|(_, text)| text.contains('*'))
+            .map(|(y, _)| y);
+        if let Some(y) = row_with_keycap {
+            let symbols: Vec<&str> = (0..80).map(|x| buf[(x, y)].symbol()).collect();
+            assert!(
+                symbols.iter().any(|s| s.contains("\u{20e3}")),
+                "row {y} lost the keycap: the cell holds {:?} instead of the \
+                 whole cluster, so the terminal would draw a bare `*`",
+                symbols
+                    .iter()
+                    .filter(|s| !s.trim().is_empty())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_star_keycap_stays_in_one_token() {
+        // `\*️⃣` escapes the `*` of a keycap. Emitting that `*` on its own left
+        // the two combining marks in a second span, which is the same split the
+        // plain-text path had.
+        let tokens = parse_inline_spans("\\*\u{fe0f}\u{20e3}", Style::default(), Style::default());
+        assert_eq!(
+            tokens.len(),
+            1,
+            "escaped keycap split into {:?}",
+            tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(tokens[0].text, "*\u{fe0f}\u{20e3}");
+    }
+
+    #[test]
+    fn a_star_keycap_does_not_open_emphasis() {
+        // `*️⃣abc*` must not italicise `abc`: the leading `*` belongs to the
+        // keycap, so it cannot be an emphasis delimiter.
+        let tokens =
+            parse_inline_spans("*\u{fe0f}\u{20e3}abc*", Style::default(), Style::default());
+        assert!(
+            tokens
+                .iter()
+                .all(|t| !t.style.add_modifier.contains(Modifier::ITALIC)),
+            "keycap `*` opened emphasis: {:?}",
+            tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(tokens[0].text, "*\u{fe0f}\u{20e3}");
     }
 
     #[test]
