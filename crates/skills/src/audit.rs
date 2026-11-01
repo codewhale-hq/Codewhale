@@ -4,8 +4,7 @@
 //! Never executes skill bodies, never contacts the network, and never writes.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{Read, Take};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -577,35 +576,19 @@ fn parse_skill_md_bounded(
         return (ParserState::Oversized, None, None, None);
     }
 
-    let file = match File::open(path) {
-        Ok(f) => f,
+    let content = match codewhale_util::fs_confined::open_read(
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        path,
+    )
+    .and_then(super::read_skill_text)
+    {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::FileTooLarge => {
+            return (ParserState::Oversized, None, None, None);
+        }
         Err(err) => {
             return (
-                ParserState::Broken(format!("cannot open SKILL.md: {err}")),
-                None,
-                None,
-                None,
-            );
-        }
-    };
-    let mut limited: Take<File> = file.take(AUDIT_MAX_SKILL_MD_BYTES + 1);
-    let mut buf = Vec::new();
-    if let Err(err) = limited.read_to_end(&mut buf) {
-        return (
-            ParserState::Broken(format!("cannot read SKILL.md: {err}")),
-            None,
-            None,
-            None,
-        );
-    }
-    if buf.len() as u64 > AUDIT_MAX_SKILL_MD_BYTES {
-        return (ParserState::Oversized, None, None, None);
-    }
-    let content = match String::from_utf8(buf) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                ParserState::Broken("SKILL.md is not valid UTF-8".into()),
+                ParserState::Broken(format!("cannot read SKILL.md: {err}")),
                 None,
                 None,
                 None,
@@ -726,7 +709,9 @@ fn read_installed_from(package_dir: &Path) -> MarkerParse {
     if !meta.is_file() {
         return MarkerParse::Broken(".installed-from is not a regular file".into());
     }
-    let Ok(body) = fs::read_to_string(&path) else {
+    let Ok(body) =
+        codewhale_util::fs_confined::open_read(package_dir, &path).and_then(super::read_skill_text)
+    else {
         return MarkerParse::Broken("unreadable .installed-from".into());
     };
     let Ok(parsed) = serde_json::from_str::<InstalledFromFile>(&body) else {
@@ -759,7 +744,9 @@ fn read_trust_state(package_dir: &Path, digest: &DigestState) -> TrustState {
     if !meta.is_file() {
         return TrustState::Unknown;
     }
-    let Ok(body) = fs::read_to_string(&path) else {
+    let Ok(body) =
+        codewhale_util::fs_confined::open_read(package_dir, &path).and_then(super::read_skill_text)
+    else {
         return TrustState::Unknown;
     };
     if let Ok(parsed) = serde_json::from_str::<TrustFileV2>(&body)

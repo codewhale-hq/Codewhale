@@ -159,6 +159,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `web.run` refuses more than 64 operations across its command arrays before starting network work or changing its session cache (#6554).
+- Skill discovery and audit marker reads stop at 512 KiB. Approved linked global skills still load; oversized, invalid and non-regular files produce visible refusals instead of unbounded reads (#6554).
+- OpenSandbox caps successful responses at 8 MiB before parsing and limits remote error details to 4 KiB with terminal controls removed. Oversized responses fail explicitly. Remote execution cancellation remains a separate requirement (#6554).
 - The WinGet manifest generator now selects the published x64 portable executable by exact name and records its checksum and Visual C++ dependency.
 - The Windows setup uninstaller preserves a trailing separator in the current-user PATH and retains other settings stored in the CodeWhale registry key.
 - Inline code in terminal replies preserves embedded backticks. Text after an unmatched delimiter keeps its normal styling. Thanks [@Lstarsky0](https://github.com/Lstarsky0). [#7185](https://github.com/codewhale-hq/Codewhale/pull/7185)

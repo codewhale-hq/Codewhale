@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::io::{self, Read};
 use std::sync::{OnceLock, RwLock};
 
 use codewhale_runtime::{
@@ -47,6 +48,30 @@ use codewhale_runtime::{
 /// description over this cap.
 pub const DEFAULT_SKILL_DESCRIPTION_CHARS: usize = 120;
 const MAX_SKILL_WARNING_CHARS: usize = 400;
+
+fn read_skill_text(file: fs::File) -> io::Result<String> {
+    let limit = audit::AUDIT_MAX_SKILL_MD_BYTES;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Path is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    if metadata.len() <= limit {
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+    }
+    if metadata.len() > limit || bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            format!("Skill file exceeds the {limit}-byte limit"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "File is not valid UTF-8"))
+}
+
 /// Floor for the model-facing skill index budget, in chars. The real budget
 /// scales with the route's context window ([`SkillListingConfig::budget_chars`]);
 /// this floor keeps tiny local windows from erasing the index altogether.
@@ -716,15 +741,11 @@ impl SkillRegistry {
                     } else {
                         fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf())
                     };
-                    codewhale_util::fs_confined::read_to_string(&root, &skill_path)
+                    codewhale_util::fs_confined::open_read(&root, &skill_path)
+                        .and_then(read_skill_text)
                 }
-                None => match fs::metadata(&skill_path) {
-                    Ok(meta) if !meta.is_file() => Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "SKILL.md is not a regular file",
-                    )),
-                    _ => fs::read_to_string(&skill_path),
-                },
+                None => codewhale_util::fs_confined::open_user_read(&skill_path)
+                    .and_then(read_skill_text),
             };
             match read_result {
                 Ok(content) => match Self::parse_verified_content(&skill_path, &content) {

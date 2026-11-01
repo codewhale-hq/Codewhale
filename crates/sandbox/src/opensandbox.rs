@@ -15,6 +15,8 @@ use serde::Serialize;
 
 use super::backend::{SandboxBackend, SandboxKind, SandboxOutput};
 
+const RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Serialize)]
 struct SandboxRunRequest {
@@ -95,15 +97,24 @@ impl SandboxBackend for OpenSandboxBackend {
             .context("Failed to reach OpenSandbox endpoint")?;
 
         let status = response.status();
+        let body = codewhale_release::read_http_response(response, RESPONSE_MAX_BYTES)
+            .await
+            .context("Failed to read OpenSandbox response")?;
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenSandbox returned HTTP {}: {}", status.as_u16(), body);
+            anyhow::bail!(
+                "OpenSandbox returned HTTP {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(&body)
+            );
         }
 
-        let parsed: SandboxRunResponse = response
-            .json()
-            .await
-            .context("Failed to parse OpenSandbox response")?;
+        let parsed: SandboxRunResponse = serde_json::from_slice(&body).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to parse OpenSandbox response at line {}, column {}",
+                error.line(),
+                error.column()
+            )
+        })?;
 
         Ok(SandboxOutput {
             stdout: parsed.stdout,

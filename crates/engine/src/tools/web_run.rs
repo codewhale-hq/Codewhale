@@ -39,6 +39,7 @@ use super::web_search::{domain_matches, execute_search};
 // `web::fetch` so `web.run` cannot drift from `web_search` / `fetch_url`.
 const DEFAULT_OPEN_TIMEOUT_MS: u64 = super::web::fetch::DEFAULT_TIMEOUT.as_millis() as u64;
 const MAX_WEB_RUN_SESSIONS: usize = 64;
+const MAX_OPERATIONS_PER_CALL: usize = 64;
 const MAX_PAGES_PER_SESSION: usize = 256;
 const WEB_RUN_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -519,6 +520,28 @@ impl ToolSpec for WebRunTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let operation_count = [
+            "search_query",
+            "image_query",
+            "open",
+            "click",
+            "find",
+            "screenshot",
+        ]
+        .into_iter()
+        .fold(0usize, |count, field| {
+            count.saturating_add(
+                input
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
+            )
+        });
+        if operation_count > MAX_OPERATIONS_PER_CALL {
+            return Err(ToolError::invalid_input(format!(
+                "web.run accepts at most {MAX_OPERATIONS_PER_CALL} operations across all command arrays"
+            )));
+        }
         let response_length = ResponseLength::from_input(input.get("response_length"));
         let mut output = WebRunOutput::default();
         let scope = scoped_ref_prefix(&context.state_namespace);
