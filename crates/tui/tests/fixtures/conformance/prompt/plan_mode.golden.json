@@ -27,11 +27,5 @@
     "<TMP>",
     "- platform: <PLATFORM>",
     "- shell: <SHELL>"
-  ],
-  "host_probed_tools_excluded": [
-    "code_execution",
-    "image_ocr",
-    "js_execution",
-    "pandoc_convert"
   ]
 }

@@ -14,12 +14,8 @@
 //! - `<case>.tools.golden.json`: the tool catalog, readable in review.
 //!
 //! Masks are only the genuinely host-specific facts: temp paths, and the
-//! environment block's `platform` / `shell` lines. Tools the catalog admits
-//! only after probing the host for a binary are removed from the pinned
-//! catalog and pinned one by one in `host_probed_tools.golden.json`, checked
-//! whenever the probe succeeds on the running host.
-
-use std::collections::BTreeMap;
+//! environment block's platform and shell. The case pins the recorded host's
+//! optional tools before the Engine projects its first request.
 
 use serde_json::{Value, json};
 
@@ -27,16 +23,6 @@ use super::events::run_scripted_turn;
 use super::golden::{self, Failures, Sandbox};
 
 const FAMILY: &str = "prompt";
-
-/// Tools registered only when a host binary or OS service is found
-/// (`tool_catalog.rs` python probe, `registry.rs` pandoc / OCR probes,
-/// `js_execution`'s node probe).
-const HOST_PROBED_TOOLS: &[&str] = &[
-    "code_execution",
-    "image_ocr",
-    "js_execution",
-    "pandoc_convert",
-];
 
 fn default_script() -> Value {
     json!([{ "events": [
@@ -57,7 +43,6 @@ struct Prefix {
     system_flat: String,
     system_blocks: usize,
     tools: Vec<Value>,
-    probed: BTreeMap<String, Value>,
 }
 
 fn mask_host_lines(text: &str) -> String {
@@ -114,18 +99,13 @@ fn capture_prefix(name: &str, case: &Value) -> Result<Prefix, String> {
     }
 
     let mut tools = Vec::new();
-    let mut probed = BTreeMap::new();
     for tool in first.tools.iter().flatten() {
         let mut value = serde_json::to_value(tool).expect("tool serializes");
         masker.value(&mut value);
         mask_host_value(&mut value);
-        if HOST_PROBED_TOOLS.contains(&tool.name.as_str()) {
-            probed.insert(tool.name.clone(), value);
-        } else {
-            tools.push(value);
-        }
+        tools.push(value);
     }
-    if tools.is_empty() && probed.is_empty() {
+    if tools.is_empty() {
         return Err(format!("{name}: the captured tool catalog is empty"));
     }
     Ok(Prefix {
@@ -133,7 +113,6 @@ fn capture_prefix(name: &str, case: &Value) -> Result<Prefix, String> {
         system_flat,
         system_blocks,
         tools,
-        probed,
     })
 }
 
@@ -150,7 +129,6 @@ fn summary(prefix: &Prefix) -> Value {
         "tool_names": prefix.tools.iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>(),
         "prefix_sha256": codewhale_runtime::hashing::sha256_hex(combined.as_bytes()),
         "masks": ["<WORKSPACE>", "<HOME>", "<TMP>", "- platform: <PLATFORM>", "- shell: <SHELL>"],
-        "host_probed_tools_excluded": HOST_PROBED_TOOLS,
     })
 }
 
@@ -159,7 +137,6 @@ fn model_visible_prefix_bytes_match_goldens() {
     let dir = golden::family_dir(FAMILY);
     let names = golden::case_names(FAMILY);
     let mut failures = Failures::default();
-    let mut probed_seen: BTreeMap<String, Value> = BTreeMap::new();
     for name in &names {
         let case = golden::read_case(FAMILY, name);
         let prefix = match capture_prefix(name, &case) {
@@ -186,17 +163,6 @@ fn model_visible_prefix_bytes_match_goldens() {
                 continue;
             }
         }
-        for (tool, definition) in &prefix.probed {
-            if let Some(previous) = probed_seen.get(tool)
-                && previous != definition
-            {
-                failures.push(
-                    name,
-                    format!("host-probed tool `{tool}` differs across cases"),
-                );
-            }
-            probed_seen.insert(tool.clone(), definition.clone());
-        }
         failures.record(
             name,
             golden::check_golden(
@@ -220,38 +186,5 @@ fn model_visible_prefix_bytes_match_goldens() {
         );
     }
 
-    // Host-probed tools: every definition this host produced must match the
-    // pinned one. A tool this host cannot offer is skipped, not failed.
-    let probed_path = dir.join("host_probed_tools.golden.json");
-    let mut pinned: BTreeMap<String, Value> = std::fs::read_to_string(&probed_path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
-    let mut drift = Vec::new();
-    for (tool, definition) in &probed_seen {
-        if pinned.get(tool) != Some(definition) {
-            drift.push(tool.clone());
-            pinned.insert(tool.clone(), definition.clone());
-        }
-    }
-    if !drift.is_empty() {
-        let merged = Value::Object(pinned.into_iter().collect());
-        failures.record(
-            "host_probed_tools",
-            golden::check_golden(&probed_path, &golden::pretty(&merged)).map_err(|message| {
-                format!("host-probed tool definition(s) {drift:?} drifted: {message}")
-            }),
-        );
-    }
-    let skipped: Vec<&str> = HOST_PROBED_TOOLS
-        .iter()
-        .copied()
-        .filter(|tool| !probed_seen.contains_key(*tool))
-        .collect();
-    if !skipped.is_empty() {
-        eprintln!(
-            "conformance: host cannot offer {skipped:?}; their pinned definitions were not checked"
-        );
-    }
     failures.finish(FAMILY, names.len());
 }
