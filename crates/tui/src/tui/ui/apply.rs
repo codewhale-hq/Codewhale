@@ -2406,6 +2406,19 @@ async fn apply_command_result_inner(
                         return Ok(false);
                     }
                 };
+                if model.is_none()
+                    && identity.provider == ProviderKind::Ollama
+                    && identity.key.as_str() == "ollama"
+                    && app.api_provider == ProviderKind::Ollama
+                    && matches!(
+                        codewhale_runtime::config::resolve_credential_source(config, &identity)
+                            .source,
+                        codewhale_runtime::credentials::CredentialSource::KeylessRoute { .. }
+                    )
+                    && app.start_local_ollama_probe(config, true)
+                {
+                    return Ok(false);
+                }
                 switch_provider(app, engine_handle, config, identity, model).await;
                 let api_key = config.active_route_api_key().unwrap_or_default();
                 let base_url = config.active_route_base_url();

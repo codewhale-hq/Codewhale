@@ -1498,6 +1498,12 @@ pub struct ToolEvidence {
     pub summary: String,
 }
 
+pub(crate) struct LocalOllamaProbe {
+    pub task:
+        tokio::task::JoinHandle<Option<codewhale_engine::local_ollama::LiveLocalOllamaCatalog>>,
+    pub requested: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingProviderSwitch {
     pub previous_provider: ProviderKind,
@@ -2179,6 +2185,7 @@ pub struct App {
     pub onboarding_had_provider_step: bool,
     pub onboarding_had_trust_step: bool,
     pub local_runtime_detected: bool,
+    pub(crate) local_ollama_probe: Option<LocalOllamaProbe>,
     /// True when the active credential was discovered only through an
     /// environment variable. Missing-key recovery and route rollback use this
     /// provenance to decide whether a durable provider slot still exists;
@@ -2911,6 +2918,22 @@ impl App {
         self.mcp_boot_predicted_at = None;
         self.mcp_connecting.clear();
         self.needs_redraw = true;
+    }
+
+    pub(crate) fn start_local_ollama_probe(&mut self, config: &Config, requested: bool) -> bool {
+        if !self.should_adopt_live_local_ollama() {
+            return false;
+        }
+        if let Some(probe) = self.local_ollama_probe.as_mut()
+            && !probe.task.is_finished()
+        {
+            probe.requested |= requested;
+            return true;
+        }
+        self.local_ollama_probe =
+            codewhale_engine::local_ollama::spawn_local_ollama_adoption_probe(config, true)
+                .map(|task| LocalOllamaProbe { task, requested });
+        self.local_ollama_probe.is_some()
     }
 
     pub(crate) fn should_adopt_live_local_ollama(&mut self) -> bool {

@@ -1027,6 +1027,7 @@ impl App {
             onboarding_had_provider_step: !was_onboarded && needs_api_key,
             onboarding_had_trust_step: !was_onboarded && needs_workspace_trust,
             local_runtime_detected: false,
+            local_ollama_probe: None,
             api_key_env_only,
             hooks,
             lifecycle_outbox,

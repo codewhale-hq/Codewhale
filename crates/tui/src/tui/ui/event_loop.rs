@@ -2154,12 +2154,7 @@ pub(crate) async fn run_event_loop(
         spawn_startup_version_check(config.update_config());
     // First-run / missing-key: if a live local Ollama catalog answers, adopt a
     // real /api/tags model into chrome instead of leaving the DeepSeek costume.
-    let mut local_ollama_probe: Option<
-        tokio::task::JoinHandle<Option<codewhale_engine::local_ollama::LiveLocalOllamaCatalog>>,
-    > = codewhale_engine::local_ollama::spawn_local_ollama_adoption_probe(
-        config,
-        app.should_adopt_live_local_ollama(),
-    );
+    app.start_local_ollama_probe(config, false);
 
     app.launch.whats_new =
         crate::whats_new::take_after_update(app.ui_locale, config.update_config().show_whats_new);
@@ -2364,13 +2359,33 @@ pub(crate) async fn run_event_loop(
         }
 
         // Adopt a live local Ollama tag into first-run / missing-key chrome.
-        let mut local_done = false;
-        if let Some(ref handle) = local_ollama_probe {
-            local_done = handle.is_finished();
-        }
-        if local_done && let Ok(Some(catalog)) = local_ollama_probe.take().unwrap().await {
-            app.local_runtime_detected = true;
-            adopt_live_local_ollama_catalog(app, &mut engine_handle, config, catalog).await;
+        if app
+            .local_ollama_probe
+            .as_ref()
+            .is_some_and(|probe| probe.task.is_finished())
+            && let Some(probe) = app.local_ollama_probe.take()
+        {
+            let retry_current = probe.requested
+                && app.api_provider == ProviderKind::Ollama
+                && app.should_adopt_live_local_ollama();
+            if let Ok(Some(catalog)) = probe.task.await {
+                app.local_runtime_detected = true;
+                if retry_current && catalog.preferred_tag().is_none() {
+                    app.push_status_toast(
+                        app.tr(MessageId::RouteNoModels),
+                        StatusToastLevel::Warning,
+                        None,
+                    );
+                } else if !probe.requested || retry_current {
+                    adopt_live_local_ollama_catalog(app, &mut engine_handle, config, catalog).await;
+                }
+            } else if retry_current {
+                app.push_status_toast(
+                    app.tr(MessageId::ModelsUpdatePartial),
+                    StatusToastLevel::Warning,
+                    None,
+                );
+            }
         }
 
         // Non-blocking startup-default writes (mode / thinking) report their

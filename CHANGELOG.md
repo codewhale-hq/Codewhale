@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- When a keyless local Ollama route has no resolved chat model, retrying `/provider ollama` refreshes the catalog in the background. You can keep typing while the daemon responds. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)
 - The bundled catalog recognizes the bare `deepseek-v4.1-flash` model ID. It reports a 1,000,000-token context window and a 384,000-token output ceiling. [#7183](https://github.com/codewhale-hq/Codewhale/pull/7183)
 - After `/undo` restores files, Codewhale saves the conversation rewind before reporting completion. Pressing Esc twice and choosing an earlier request also saves that exact conversation boundary, even when two requests have identical text. The picker keeps workspace files as they are. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
 - Feishu and Weixin persist each incoming message ID before handling it. Concurrent deliveries share one result. After a restart, a message with an uncertain outcome stays pending until the bridge can tell the user to check its status. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for the durability audit (#6555).
