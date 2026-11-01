@@ -30,7 +30,7 @@
 //!   request.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -338,11 +338,39 @@ impl PersistActorHandle {
 
 static ACTOR_TX: OnceLock<PersistActorHandle> = OnceLock::new();
 
+static SIGNAL_CHECKPOINT: Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>> = Mutex::new(None);
+
+pub(crate) fn register_signal_checkpoint() -> oneshot::Receiver<oneshot::Sender<()>> {
+    let (tx, rx) = oneshot::channel();
+    *SIGNAL_CHECKPOINT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+    rx
+}
+
 pub(crate) async fn flush_for_signal_exit() {
     let Some(handle) = ACTOR_TX.get() else {
         return;
     };
-    match handle.flush(Duration::from_secs(2)).await {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let owner = SIGNAL_CHECKPOINT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(owner) = owner {
+        let (acknowledge, settled) = oneshot::channel();
+        if owner.send(acknowledge).is_ok()
+            && tokio::time::timeout(Duration::from_secs(1), settled)
+                .await
+                .is_err()
+        {
+            tracing::warn!("terminal session did not settle within the signal shutdown window");
+        }
+    }
+    match handle
+        .flush(deadline.saturating_duration_since(tokio::time::Instant::now()))
+        .await
+    {
         Ok(report) if !report.failures.is_empty() => tracing::warn!(
             target: "persistence",
             failures = ?report.failures,

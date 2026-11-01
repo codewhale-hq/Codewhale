@@ -5315,25 +5315,29 @@ impl App {
             });
     }
 
-    /// Rebuild receipts only from the restored typed transcript projection.
-    /// `history_cells_from_message` has already routed repair receipts to
-    /// System cells and omitted interrupted assistant salvage.
-    pub(crate) fn rebuild_completed_assistant_outputs_from_restored_history(&mut self) {
-        self.completed_assistant_outputs = self
-            .history
-            .iter()
-            .enumerate()
-            .filter_map(|(history_index, cell)| match cell {
-                HistoryCell::Assistant {
-                    content,
-                    streaming: false,
-                } if !content.trim().is_empty() => Some(CompletedAssistantOutputReceipt {
-                    history_index,
-                    text: content.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
+    pub(crate) fn extend_restored_history(&mut self, message: &Message, cells: Vec<HistoryCell>) {
+        if message.role == "assistant" {
+            let base = self.history.len();
+            self.completed_assistant_outputs
+                .extend(
+                    cells
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(offset, cell)| match cell {
+                            HistoryCell::Assistant {
+                                content,
+                                streaming: false,
+                            } if !content.trim().is_empty() => {
+                                Some(CompletedAssistantOutputReceipt {
+                                    history_index: base + offset,
+                                    text: content.clone(),
+                                })
+                            }
+                            _ => None,
+                        }),
+                );
+        }
+        self.extend_history(cells);
     }
 
     pub(crate) fn completed_assistant_output_receipt(&self) -> Option<&str> {

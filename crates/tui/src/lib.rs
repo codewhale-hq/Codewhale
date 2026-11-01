@@ -735,9 +735,9 @@ enum FleetAlertAdapterArg {
 }
 
 /// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, flushes already queued
-/// persistence, restores terminal modes and exits with the conventional
-/// 128 + signal code. State not yet queued by the TUI is not captured here.
+/// always; SIGTERM and SIGHUP on Unix) and, on receipt, gives the interactive
+/// owner and persistence actor a bounded recovery window, restores terminal
+/// modes and exits with the conventional 128 + signal code.
 /// Multiple deliveries are tolerated: once the cleanup runs, a second
 /// signal short-circuits to plain exit so a stuck cleanup can never
 /// trap a frustrated user pressing Ctrl+C repeatedly.

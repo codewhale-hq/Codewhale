@@ -4579,10 +4579,9 @@ pub(crate) fn apply_loaded_session_with_goal(
         {
             message_to_cell.insert(message_index, base + offset);
         }
-        app.extend_history(cells);
+        app.extend_restored_history(msg, cells);
         replay_outcomes_through(app, message_index + 1, message_index + 1 == messages.len());
     }
-    app.rebuild_completed_assistant_outputs_from_restored_history();
     app.sync_context_references_from_session(&session.context_references, &message_to_cell);
     app.mark_history_updated();
     app.viewport.transcript_selection.clear();
