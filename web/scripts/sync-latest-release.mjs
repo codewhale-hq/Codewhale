@@ -69,18 +69,20 @@ try {
   process.exit(1);
 }
 
-const tag = String(release.tag_name || "");
-const version = tag.startsWith("v") ? tag.slice(1) : "";
-const next = {
-  tag,
-  version,
-  publishedAt: String(release.published_at || ""),
-  url: `https://github.com/${REPO}/releases/tag/${tag}`,
-};
+function releaseFact(release) {
+  const tag = String(release.tag_name || "");
+  return {
+    tag,
+    version: tag.startsWith("v") ? tag.slice(1) : "",
+    publishedAt: String(release.published_at || ""),
+    url: `https://github.com/${REPO}/releases/tag/${tag}`,
+  };
+}
+const next = releaseFact(release);
 
 // deriveLatestPublishedRelease() silently returns null on any shape violation,
 // which would drop the fact entirely rather than report a bad one. Fail loudly.
-if (!tag || !version || tag !== `v${version}` || !Number.isFinite(Date.parse(next.publishedAt))) {
+if (!next.version || !Number.isFinite(Date.parse(next.publishedAt))) {
   console.error(`[sync-latest-release] refusing to write an unusable release fact: ${JSON.stringify(next)}`);
   process.exit(1);
 }
@@ -94,51 +96,49 @@ const matrix = readJson(mirror);
 const currentMirror = matrix?.latestPublishedRelease ?? null;
 const cloud = readJson(cloudFacts);
 
-const isCurrent = (fact) =>
-  Boolean(fact) && fact.tag === next.tag && fact.publishedAt === next.publishedAt;
-const cloudIsCurrent = (facts) =>
-  Boolean(facts?.release) && facts.release.latest === next.version && facts.release.release_url === next.url;
+const differingFields = (record, fact) =>
+  Object.keys(fact).filter((key) => record?.[key] !== fact[key]);
+const cloudMatches = (fact) =>
+  cloud?.release?.latest === fact.version && cloud.release.release_url === fact.url;
+const allMatch = (fact) =>
+  differingFields(current, fact).length === 0 && differingFields(currentMirror, fact).length === 0 && cloudMatches(fact);
 
 // True when `recordedTag` is the published (non-draft, non-prerelease) release
 // immediately before `next`, and `next` is younger than GRACE_MS. Any lookup
 // failure answers false, so the check stays strict when in doubt.
 async function isFreshlyOneBehind(recordedTag) {
   const age = Date.now() - Date.parse(next.publishedAt);
-  if (!recordedTag || !(age >= 0 && age < GRACE_MS)) return false;
+  if (!recordedTag || recordedTag === next.tag || !(age >= 0 && age < GRACE_MS)) return false;
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=20`, {
       headers,
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) return false;
-    const tags = (await res.json())
+    const [latest, previous] = (await res.json())
       .filter((r) => !r.draft && !r.prerelease && Number.isFinite(Date.parse(r.published_at)))
-      .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))
-      .map((r) => String(r.tag_name));
-    return tags[0] === next.tag && tags[1] === recordedTag;
+      .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at));
+    return latest?.tag_name === next.tag && previous?.tag_name === recordedTag && allMatch(releaseFact(previous));
   } catch {
     return false;
   }
 }
 
-if (isCurrent(current) && isCurrent(currentMirror) && (checkOnly || cloudIsCurrent(cloud))) {
+if (allMatch(next)) {
   console.log(`[sync-latest-release] already current at ${next.tag}`);
   process.exit(0);
 }
 
 if (checkOnly) {
-  if (!isCurrent(current)) {
-    console.error(
-      `[sync-latest-release] stale: ${target} says ${current?.tag ?? "(missing)"}, GitHub says ${next.tag}`,
-    );
+  for (const [path, record] of [[target, current], [mirror, currentMirror]]) {
+    const fields = differingFields(record, next);
+    if (fields.length) console.error(`[sync-latest-release] ${path} differs from ${next.tag} in ${fields.join(", ")}.`);
   }
-  if (!isCurrent(currentMirror)) {
-    console.error(
-      `[sync-latest-release] stale: docs/public-surface-facts.json says ${currentMirror?.tag ?? "(missing)"}, GitHub says ${next.tag}`,
-    );
+  if (!cloudMatches(next)) {
+    console.error(`[sync-latest-release] release version or URL in docs/cloud-facts/stable.json differs from ${next.tag}.`);
   }
   const recorded = current?.tag;
-  if ((current?.tag ?? null) === (currentMirror?.tag ?? null) && (await isFreshlyOneBehind(recorded))) {
+  if (await isFreshlyOneBehind(recorded)) {
     console.warn(
       `[sync-latest-release] warning only: ${next.tag} was published under 24h ago and release.yml's ` +
         "sync-release-record job proposes the record as a PR. Merge that; this change does not need to.",
