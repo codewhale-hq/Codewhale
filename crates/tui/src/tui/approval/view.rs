@@ -22,7 +22,7 @@ use codewhale_runtime::config::ApprovalDefaultSelection;
 use super::previews::exact_edit_file_preview_lines;
 use super::{ApprovalRequest, ReviewDecision};
 #[cfg(test)]
-use crate::core::authority::RiskLevel;
+use codewhale_engine::core::authority::RiskLevel;
 
 /// Indices into the option list shared by both variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

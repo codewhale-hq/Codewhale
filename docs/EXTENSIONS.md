@@ -356,7 +356,7 @@ it. This adapter currently accepts plain text blocks only; unsupported rich
 content or extra block fields produce an explicit error instead of disappearing.
 Nonempty registration options, `projectContent`, `finalizeContent`, `timeoutMs`
 and deferred loading are not implemented and are refused. The shared
-[`compatibility.json`](../crates/tui/extension-host/src/dsh/compatibility.json)
+[`compatibility.json`](../crates/engine/extension-host/src/dsh/compatibility.json)
 pins the definition API to DSH 0.2.1-rc.2 and records service, row-bridge and
 module mappings. Its bytes participate in Native content and capability review,
 so changing the compatibility contract invalidates prior trust.

@@ -242,7 +242,7 @@ impl WorkflowTokenSource {
 /// Immutable route captured by the task-started event (#4039, #5305).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowRowRoute {
-    pub child_route: Option<crate::tools::subagent::ChildRouteReceipt>,
+    pub child_route: Option<codewhale_engine::tools::subagent::ChildRouteReceipt>,
     pub role: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -253,7 +253,7 @@ pub struct WorkflowRowRoute {
 
 impl WorkflowRowRoute {
     fn from_json(value: &Value) -> Self {
-        let child_route: Option<crate::tools::subagent::ChildRouteReceipt> = value
+        let child_route: Option<codewhale_engine::tools::subagent::ChildRouteReceipt> = value
             .get("child_route")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok());
@@ -2396,7 +2396,7 @@ fn now_ms() -> u64 {
 /// on `run_completed.result_preview`, so the transcript and the parent receipt
 /// never describe one result two ways.
 fn summarize_result_value(value: &Value) -> Option<String> {
-    crate::tools::workflow::workflow_result_preview(value)
+    codewhale_engine::tools::workflow::workflow_result_preview(value)
 }
 
 #[cfg(test)]

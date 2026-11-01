@@ -6,7 +6,6 @@ use std::time::Instant;
 use codewhale_localization::{Locale, MessageId, tr};
 use ratatui::layout::Rect;
 
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use crate::tui::app::{
     AgentCurrentActivityStatus, AgentProgressMeta, App, SidebarRowAction, TaskPanelEntry,
     TaskPanelEntryKind,
@@ -15,7 +14,8 @@ use crate::tui::background_indicator::is_live_shell_entry;
 use crate::tui::history::{
     FileActivityKind, FileActivitySummary, FileMutationReceipt, HistoryCell, ToolCell,
 };
-use crate::work_graph::{
+use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
+use codewhale_engine::work_graph::{
     AcceptanceRequirement, EdgeKind, EvidenceKind, EvidenceKindTag, NodeKind, NodeState,
     OperationBinding, OwnerState, Provenance, WorkGraphSnapshot, WorkNode,
 };
@@ -774,7 +774,7 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
             retained.push(agents.remove(index));
             continue;
         }
-        let parked = receipt.state == crate::agent_roster::RosterState::Parked;
+        let parked = receipt.state == codewhale_engine::agent_roster::RosterState::Parked;
         let status = if parked {
             current_activity_status_label(AgentCurrentActivityStatus::Parked, app.ui_locale)
         } else {
@@ -1044,7 +1044,7 @@ fn finished_background_rows(app: &App) -> Vec<WorkRow> {
             } else {
                 let took = entry
                     .duration_ms
-                    .map(|ms| format!(" · {}", crate::agent_roster::format_duration(ms)))
+                    .map(|ms| format!(" · {}", codewhale_engine::agent_roster::format_duration(ms)))
                     .unwrap_or_default();
                 WorkRow {
                     id: WorkRowId(format!("task:{}", entry.id)),
@@ -1096,7 +1096,7 @@ fn finished_shell_outcome(locale: Locale, entry: &TaskPanelEntry) -> String {
         "completed" => {
             let took = entry
                 .duration_ms
-                .map(|ms| format!(" · {}", crate::agent_roster::format_duration(ms)))
+                .map(|ms| format!(" · {}", codewhale_engine::agent_roster::format_duration(ms)))
                 .unwrap_or_default();
             format!(
                 "{}{took}",
@@ -1200,8 +1200,8 @@ fn update_session_instance_scope(app: &mut App) {
 
 fn session_record_from_prior_instance(surface: &WorkSurfaceState, session_id: &str) -> bool {
     let manager = match surface.session_owner_probe_dir.as_ref() {
-        Some(dir) => crate::session_manager::SessionManager::new(dir.clone()),
-        None => crate::session_manager::SessionManager::default_location(),
+        Some(dir) => codewhale_engine::session_manager::SessionManager::new(dir.clone()),
+        None => codewhale_engine::session_manager::SessionManager::default_location(),
     };
     manager.is_ok_and(|manager| manager.session_from_prior_instance(session_id))
 }
@@ -2181,13 +2181,13 @@ fn freeze_terminal_agent_elapsed(app: &mut App) {
 }
 
 /// Frozen elapsed for a finished agent, live elapsed for a running one.
-fn agent_elapsed_ms(app: &App, agent: &crate::tools::subagent::SubAgentResult) -> u64 {
+fn agent_elapsed_ms(app: &App, agent: &codewhale_engine::tools::subagent::SubAgentResult) -> u64 {
     // Live ticking (4b): derive from start timestamp at render when running,
     // otherwise use frozen snapshot. The redraw already happens; stale cached
     // duration is the bug.
     if matches!(
         agent.status,
-        crate::tools::subagent::SubAgentStatus::Running
+        codewhale_engine::tools::subagent::SubAgentStatus::Running
     ) && let Some(started_at) = agent.started_at
     {
         return u64::try_from(started_at.elapsed().as_millis()).unwrap_or(agent.duration_ms);
@@ -3120,7 +3120,7 @@ fn last_output_ref(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> Option<Stri
         })
 }
 
-fn format_evidence_ref(evidence: &crate::work_graph::EvidenceRef) -> String {
+fn format_evidence_ref(evidence: &codewhale_engine::work_graph::EvidenceRef) -> String {
     let kind = match evidence.kind() {
         EvidenceKind::ToolRun => "tool run".to_string(),
         EvidenceKind::Artifact { .. } => "artifact".to_string(),
@@ -3167,7 +3167,7 @@ fn section_list(out: &mut String, title: &str, items: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::spec::ToolResult;
+    use codewhale_engine::tools::spec::ToolResult;
     use codewhale_runtime::config::Config;
 
     /// #6565: a fact is dropped from a dock row only when the detail names
@@ -3186,7 +3186,7 @@ mod tests {
     }
     use crate::tui::app::TuiOptions;
     use crate::tui::tool_routing::{handle_tool_call_complete, handle_tool_call_started};
-    use crate::work_graph::{CompatTodoBinding, OperationBinding, WorkNodeId};
+    use codewhale_engine::work_graph::{CompatTodoBinding, OperationBinding, WorkNodeId};
 
     fn test_app() -> App {
         App::new(
@@ -3237,15 +3237,15 @@ mod tests {
             workspace: None,
             git_branch: None,
             agent_type: codewhale_agent_contract::role::FleetRole::Worker,
-            assignment: crate::tools::subagent::SubAgentAssignment {
+            assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "sweep the lane".to_string(),
                 role: Some("builder".to_string()),
             },
             model: "test-model".to_string(),
-            nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                agent_id, "en",
-            )),
+            nickname: Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en"),
+            ),
             status: SubAgentStatus::Running,
             worker_status: None,
             runtime_permissions: None,
@@ -3267,9 +3267,9 @@ mod tests {
     fn retained_agent_receipt(
         id: &str,
         status: AgentWorkerStatus,
-        state: crate::agent_roster::RosterState,
-    ) -> crate::agent_roster::AgentRosterRow {
-        crate::agent_roster::AgentRosterRow {
+        state: codewhale_engine::agent_roster::RosterState,
+    ) -> codewhale_engine::agent_roster::AgentRosterRow {
+        codewhale_engine::agent_roster::AgentRosterRow {
             worker_id: id.to_string(),
             display_name: format!("retained {id}"),
             model: "test-model".to_string(),
@@ -3293,7 +3293,7 @@ mod tests {
     /// expires (or a session restore filters it out of `subagent_cache`).
     #[test]
     fn a_roster_only_waiting_worker_opens_the_dock() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3314,7 +3314,7 @@ mod tests {
     /// A parked husk counts as settled too — nothing will answer it (#5906).
     #[test]
     fn retained_settled_receipts_do_not_hold_the_dock_open() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3383,7 +3383,7 @@ mod tests {
     /// degrades symmetrically: see the sibling test below.
     #[test]
     fn a_retained_child_renders_flat_under_a_retained_parent() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3417,7 +3417,7 @@ mod tests {
     /// stamped on one half of one.
     #[test]
     fn a_live_child_flattens_once_its_parent_has_expired_to_a_receipt() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3452,8 +3452,8 @@ mod tests {
 
     #[test]
     fn agents_register_retains_expired_receipts_alongside_fresh_live_rows() {
-        use crate::agent_roster::RosterState;
         use crate::tui::subagent_routing::reconcile_subagent_activity_state_at;
+        use codewhale_engine::agent_roster::RosterState;
         use std::time::Duration;
 
         let mut app = test_app();
@@ -3509,7 +3509,7 @@ mod tests {
 
     #[test]
     fn retained_agents_register_is_bound_to_the_exact_parent_session() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.agent_roster_session_id = Some("original-session".to_string());
@@ -3546,7 +3546,7 @@ mod tests {
 
     #[test]
     fn retained_agents_register_distinguishes_parked_from_waiting_for_input() {
-        use crate::agent_roster::RosterState;
+        use codewhale_engine::agent_roster::RosterState;
 
         let mut app = test_app();
         app.current_session_id = Some("roster-owner".to_string());
@@ -3598,7 +3598,10 @@ mod tests {
         assert_eq!(label("agent_named_lane"), "branch-triage");
         assert_eq!(
             label("agent_plain_lane"),
-            crate::tools::subagent::whale_name_for_id_in_locale("agent_plain_lane", "en")
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                "agent_plain_lane",
+                "en"
+            )
         );
     }
 
@@ -3606,7 +3609,7 @@ mod tests {
     fn agent_identity_column_prefers_resolved_profile_over_generated_whale() {
         let mut app = test_app();
         let mut agent = running_agent("agent_flash_lane");
-        agent.child_route = Some(crate::tools::subagent::ChildRouteReceipt {
+        agent.child_route = Some(codewhale_engine::tools::subagent::ChildRouteReceipt {
             requested_type: "custom".to_string(),
             requested_profile: Some("DeepSeek V4 Flash".to_string()),
             resolved_profile_id: Some("flash-scout".to_string()),
@@ -3797,11 +3800,11 @@ mod tests {
     /// rail must follow the projection, not every plan step ever written.
     #[tokio::test]
     async fn cleared_todo_list_leaves_no_plan_step_rows() {
-        use crate::tools::todo::{TodoList, TodoStatus};
+        use codewhale_engine::tools::todo::{TodoList, TodoStatus};
 
-        let todos = crate::tools::todo::new_shared_todo_list();
-        let plan = crate::tools::plan::new_shared_plan_state();
-        let work = crate::work_graph::new_shared_work_runtime(todos.clone(), plan);
+        let todos = codewhale_engine::tools::todo::new_shared_todo_list();
+        let plan = codewhale_engine::tools::plan::new_shared_plan_state();
+        let work = codewhale_engine::work_graph::new_shared_work_runtime(todos.clone(), plan);
         let mut written = TodoList::new();
         written.add("stale finished item".to_string(), TodoStatus::Completed);
         work.apply_todo_update("session-6546", "todo_write", &written.snapshot())

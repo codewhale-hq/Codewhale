@@ -349,9 +349,10 @@ fn read_owned_session_artifact(
 }
 
 fn read_owned_legacy_spillover(path: &std::path::Path, session_id: &str) -> Option<String> {
-    let root = crate::tools::truncate::spillover_root()?;
+    let root = codewhale_engine::tools::truncate::spillover_root()?;
     let path = canonical_owned_file(path, &root)?;
-    let ownership = crate::tools::truncate::read_legacy_spillover_ownership(&path).ok()?;
+    let ownership =
+        codewhale_engine::tools::truncate::read_legacy_spillover_ownership(&path).ok()?;
     if ownership.origin_session != session_id {
         return None;
     }
@@ -1139,12 +1140,12 @@ fn turn_todo_lines(app: &App) -> Vec<String> {
     lines
 }
 
-fn todo_status_glyph(status: &crate::tools::todo::TodoStatus) -> &'static str {
+fn todo_status_glyph(status: &codewhale_engine::tools::todo::TodoStatus) -> &'static str {
     match status {
-        crate::tools::todo::TodoStatus::Completed => "[x]",
-        crate::tools::todo::TodoStatus::InProgress => "[~]",
-        crate::tools::todo::TodoStatus::Pending => "[ ]",
-        crate::tools::todo::TodoStatus::Cancelled => "[-]",
+        codewhale_engine::tools::todo::TodoStatus::Completed => "[x]",
+        codewhale_engine::tools::todo::TodoStatus::InProgress => "[~]",
+        codewhale_engine::tools::todo::TodoStatus::Pending => "[ ]",
+        codewhale_engine::tools::todo::TodoStatus::Cancelled => "[-]",
     }
 }
 
@@ -1635,30 +1636,32 @@ fn turn_route_lines(app: &App) -> Vec<String> {
 
     let chip = app.cumulative_usage_chip();
     match &chip {
-        crate::route_billing::UsageChip::Money(amount) => {
+        codewhale_engine::route_billing::UsageChip::Money(amount) => {
             lines.push(format!("Cost (session): {amount}"));
         }
-        crate::route_billing::UsageChip::PricedSubtotal { .. } => {
+        codewhale_engine::route_billing::UsageChip::PricedSubtotal { .. } => {
             lines.push(format!(
                 "Cost (session): {}",
-                crate::route_billing::format_usage_chip(&chip, app.ui_locale).unwrap_or_default()
+                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
+                    .unwrap_or_default()
             ));
         }
-        crate::route_billing::UsageChip::Allowance { label, used_pct } => {
+        codewhale_engine::route_billing::UsageChip::Allowance { label, used_pct } => {
             lines.push(match used_pct {
                 Some(pct) => format!("Usage plan: {label} ({pct:.0}% used)"),
                 None => format!("Usage plan: {label}"),
             });
         }
-        crate::route_billing::UsageChip::Local => {
+        codewhale_engine::route_billing::UsageChip::Local => {
             lines.push("Cost: local".to_string());
         }
-        crate::route_billing::UsageChip::Unknown(_) => {
+        codewhale_engine::route_billing::UsageChip::Unknown(_) => {
             lines.push(
-                crate::route_billing::format_usage_chip(&chip, app.ui_locale).unwrap_or_default(),
+                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
+                    .unwrap_or_default(),
             );
         }
-        crate::route_billing::UsageChip::Hidden => {}
+        codewhale_engine::route_billing::UsageChip::Hidden => {}
     }
 
     lines
@@ -1675,7 +1678,9 @@ enum ResultDetail {
 
 /// `/status` lines for the router behind an Auto receipt (#6525): the
 /// decision-model answer, its cost and latency, and a failing router.
-fn auto_router_receipt_lines(receipt: &crate::model_routing::AutoRouteReceipt) -> Vec<String> {
+fn auto_router_receipt_lines(
+    receipt: &codewhale_engine::model_routing::AutoRouteReceipt,
+) -> Vec<String> {
     let percent = |bp: u16| format!("{}%", (u32::from(bp) + 50) / 100);
     let mut lines = Vec::new();
     if let Some(decision) = receipt.decision.as_ref() {
@@ -1841,18 +1846,18 @@ mod tests {
             latency_ms: 180,
             response_model: Some("typesafe/jev-1.13-20260917".to_string()),
         };
-        let receipt = crate::model_routing::AutoRouteReceipt {
-            tier: crate::model_routing::AutoRouteTier::Strong,
-            pair: crate::model_routing::AutoRoutePair {
+        let receipt = codewhale_engine::model_routing::AutoRouteReceipt {
+            tier: codewhale_engine::model_routing::AutoRouteTier::Strong,
+            pair: codewhale_engine::model_routing::AutoRoutePair {
                 strong: "deepseek-v4-pro".to_string(),
                 fast: Some("deepseek-v4-flash".to_string()),
             },
-            scope: crate::model_routing::AutoRouteScope::ActiveProvider,
-            data_path: crate::model_routing::AutoRouteDataPath::Decision {
-                route: crate::client::system_one::DecisionRouterRoute::Openrouter,
+            scope: codewhale_engine::model_routing::AutoRouteScope::ActiveProvider,
+            data_path: codewhale_engine::model_routing::AutoRouteDataPath::Decision {
+                route: codewhale_engine::client::system_one::DecisionRouterRoute::Openrouter,
                 model: "typesafe/jev-1.13".to_string(),
             },
-            reason: crate::model_routing::AutoRouteReason::ClassifierRecommendation,
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierRecommendation,
             decision: Some(decision),
             router_failure: None,
         };
@@ -1867,12 +1872,14 @@ mod tests {
         ));
         assert!(!joined.contains("failing"));
 
-        app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-            reason: crate::model_routing::AutoRouteReason::ClassifierFallback(
-                crate::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
+        app.last_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierFallback(
+                codewhale_engine::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
             ),
             decision: None,
-            router_failure: Some(crate::model_routing::AutoRouterFailure::Http { status: 402 }),
+            router_failure: Some(codewhale_engine::model_routing::AutoRouterFailure::Http {
+                status: 402,
+            }),
             ..receipt
         });
         let joined = turn_route_lines(&app).join("\n");
@@ -1889,9 +1896,9 @@ mod tests {
         app.last_effective_provider = Some(codewhale_config::ProviderKind::Zai);
         app.last_effective_model =
             Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string());
-        app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-            tier: crate::model_routing::AutoRouteTier::Fast,
-            pair: crate::model_routing::AutoRoutePair {
+        app.last_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+            tier: codewhale_engine::model_routing::AutoRouteTier::Fast,
+            pair: codewhale_engine::model_routing::AutoRoutePair {
                 strong: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
                     .to_string(),
                 fast: Some(
@@ -1899,13 +1906,13 @@ mod tests {
                         .to_string(),
                 ),
             },
-            scope: crate::model_routing::AutoRouteScope::RunnableProviders,
-            data_path: crate::model_routing::AutoRouteDataPath::Classifier {
+            scope: codewhale_engine::model_routing::AutoRouteScope::RunnableProviders,
+            data_path: codewhale_engine::model_routing::AutoRouteDataPath::Classifier {
                 provider: "deepseek".into(),
                 provider_kind: codewhale_config::ProviderKind::Deepseek,
                 model: "deepseek-v4-flash".to_string(),
             },
-            reason: crate::model_routing::AutoRouteReason::ClassifierRecommendation,
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierRecommendation,
             decision: None,
             router_failure: None,
         });

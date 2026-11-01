@@ -34,11 +34,13 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::fleet::profile::AgentProfile;
-use crate::fleet::roster::{FleetRoster, ProfileLayer, ProfileOrigin, layers_from_parts};
-use crate::fleet::worker_runtime::roster_member_agent_type;
 use crate::tui::app::App;
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::fleet::profile::AgentProfile;
+use codewhale_engine::fleet::roster::{
+    FleetRoster, ProfileLayer, ProfileOrigin, layers_from_parts,
+};
+use codewhale_engine::fleet::worker_runtime::roster_member_agent_type;
 use codewhale_runtime::config::Config;
 use codewhale_tui_kit::menu_style;
 
@@ -113,7 +115,7 @@ impl OperatorInfo {
 #[derive(Debug, Clone)]
 struct SelectedFleetSummary {
     name: String,
-    scope: crate::fleet::store::FleetScope,
+    scope: codewhale_engine::fleet::store::FleetScope,
 }
 
 /// View-owned action attached to a painted saved-profile row.
@@ -138,7 +140,7 @@ pub struct FleetRosterView {
     members: Vec<AgentProfile>,
     /// Shadow records from the roster load (#5098): which lower-precedence
     /// files the displayed members are ignoring.
-    shadowed: Vec<crate::fleet::roster::ShadowedProfile>,
+    shadowed: Vec<codewhale_engine::fleet::roster::ShadowedProfile>,
     /// Selected named Fleet + scope, when one is active for this session.
     selected_fleet: Option<SelectedFleetSummary>,
     /// A selected Fleet existed but could not become the runtime roster.
@@ -168,13 +170,15 @@ impl FleetRosterView {
     #[must_use]
     pub fn new(app: &App, config: &Config) -> Self {
         let selected_fleet =
-            crate::fleet::store::selected_fleet(&app.workspace).map(|sel| SelectedFleetSummary {
-                name: sel.name,
-                scope: sel.scope,
+            codewhale_engine::fleet::store::selected_fleet(&app.workspace).map(|sel| {
+                SelectedFleetSummary {
+                    name: sel.name,
+                    scope: sel.scope,
+                }
             });
         let mut view = Self::from_parts(
             OperatorInfo::from_app(app),
-            crate::fleet::identity::load_effective_roster(
+            codewhale_engine::fleet::identity::load_effective_roster(
                 &config.fleet_config(),
                 &app.workspace,
                 Some(app.plugin_registry.as_ref()),
@@ -822,10 +826,12 @@ fn operator_detail_lines(operator: &OperatorInfo) -> Vec<Line<'static>> {
     // Session-route capability badges (#5038). Use the exact route key rather
     // than the display label so built-in routes get provider-scoped catalog
     // facts; custom routes still fall back conservatively to registry facts.
-    if let Some(badges) = crate::fleet::capability_badges::resolve_route_capability_badges(
-        Some(&operator.provider_id),
-        &operator.model,
-    ) {
+    if let Some(badges) =
+        codewhale_engine::fleet::capability_badges::resolve_route_capability_badges(
+            Some(&operator.provider_id),
+            &operator.model,
+        )
+    {
         detail_field(&mut lines, "Capabilities", badges.summary());
     }
     detail_field(
@@ -906,7 +912,7 @@ fn member_routing_with_session(member: &AgentProfile, session_model: Option<&str
 fn member_shadow_badge(
     locale: Locale,
     member: &AgentProfile,
-    shadowed: &[crate::fleet::roster::ShadowedProfile],
+    shadowed: &[codewhale_engine::fleet::roster::ShadowedProfile],
 ) -> Option<String> {
     let layers = layers_from_parts(member, shadowed);
     if layers.len() < 2 {
@@ -942,7 +948,7 @@ fn format_profile_layer(layer: &ProfileLayer, locale: Locale) -> String {
 fn member_detail_lines_with_session(
     member: &AgentProfile,
     session_model: Option<&str>,
-    shadowed: &[crate::fleet::roster::ShadowedProfile],
+    shadowed: &[codewhale_engine::fleet::roster::ShadowedProfile],
     locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
@@ -980,7 +986,7 @@ fn member_detail_lines_with_session(
     // Model and provider are attributes of the role: one line, together.
     let model = match (
         member.profile.model.as_deref(),
-        crate::fleet::identity::friendly_model_name(member),
+        codewhale_engine::fleet::identity::friendly_model_name(member),
     ) {
         (Some(model), Some(name)) if !name.eq_ignore_ascii_case(model.trim()) => {
             format!("{name} ({})", model.trim())
@@ -1018,10 +1024,11 @@ fn member_detail_lines_with_session(
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        && let Some(badges) = crate::fleet::capability_badges::resolve_route_capability_badges(
-            member.profile.provider.as_deref(),
-            model,
-        )
+        && let Some(badges) =
+            codewhale_engine::fleet::capability_badges::resolve_route_capability_badges(
+                member.profile.provider.as_deref(),
+                model,
+            )
     {
         detail_field(&mut lines, "Capabilities", badges.summary());
     }

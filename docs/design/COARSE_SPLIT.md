@@ -1,6 +1,7 @@
 # Coarse split of codewhale-tui — 2026-10-31
 
-Status: stage A pre-move work landed; the crate moves have not started.
+Status: stage A part 1 is implemented and locally validated (CW-7701). The Engine band now lives in `crates/engine`; the host
+band remains in `crates/tui`. This is source work, not a published release.
 Founder, 2026-10-31: make the top line of crates ~400–500k lines, like Codex
 and Grok Build, instead of going straight to ~10k crates. Measured with
 `scripts/split/crate_map.py`, using the same units as
@@ -12,7 +13,7 @@ and Grok Build, instead of going straight to ~10k crates. Measured with
 | --- | ---: | --- |
 | Codex `codex-rs` (2026-10-19) | 162 | `core` 463k, `tui` 463k, `app-server` 197k |
 | Grok Build (2026-09-29) | 104 | `xai-grok-pager` 551k, `xai-grok-shell` 430k, `xai-grok-tools` 165k |
-| Codewhale today | 51 | `tui` 1.18M (570k production) |
+| Codewhale before stage A | 51 | `tui` 1.18M (570k production) |
 
 The 66-crate map needs 411 upward refs fixed before extraction, and a
 read-only review (Codex CLI, `gpt-6.1-sol`) found more it cannot see: inherent
@@ -26,19 +27,25 @@ that lives *inside* a band. Cutting only at the band boundaries avoids it.
 
 Map: [`crate-map-coarse.toml`](crate-map-coarse.toml).
 
-| Crate | Content | Production lines | Lines incl. tests (est.) |
+| Crate | Content | Planning production lines | Lines incl. tests (est.) |
 | --- | --- | ---: | ---: |
 | `codewhale-engine` (new) | engine and the one turn loop, tool registry and tools, agents, context and `BASE_PROMPT`, the session store and the runtime thread manager, model client/catalog, MCP, extension host, fleet, tasks | 308,209 | ~620k |
 | `codewhale-app-server` (existing, 16k today) | transports: runtime API and routes, ACP/MCP/exec hosts, chat relay and remote control | 43,195 | ~70k |
 | `codewhale-tui` (what remains) | TUI, slash commands, doctor, and the `lib.rs` composition root | 219,133 | ~430k |
 
-Dependencies run `engine ← app-server ← tui`; `codewhale-tui` already
+The intended dependencies run `engine ← app-server ← tui`; `codewhale-tui` already
 depends on `codewhale-app-server`, never the reverse. The thread manager sits
 in the engine as Codex's `ThreadManager` sits in `codex-core`; app-server keeps
 only transports, which matches the App Server v2 plan.
 
-Checker on the current tree: `cycles=0 upward_edges=0 upward_refs=0
-oversize=0 unassigned=0 duplicates=0`. What got there:
+The checker now reads both Engine and TUI source roots. Its mapped bands have
+310,401 Engine, 41,829 host and 219,597 TUI production lines, with 2,146
+cross-band references and `cycles=0 upward_edges=0 upward_refs=0 oversize=0
+unassigned=0 duplicates=0`. These are the mapped bands, not all existing
+workspace dependencies; the existing App Server dependency below still has
+to move before part 2. A direct count of current `src/**/*.rs`, including
+tests, is 636,073 lines in Engine, 527,873 in TUI (still including the host
+band), and 14,726 in the existing App Server. What got there:
 
 1. **Checker fixes.** `PATH_RE` read `super::supervisor` as `super::super`
    plus `visor`, sending real references to the crate root; and grouped
@@ -56,15 +63,22 @@ oversize=0 unassigned=0 duplicates=0`. What got there:
    `client.rs` names `codewhale_runtime::config` instead of the `lib.rs`
    re-export.
 
-### The moves, still to do
+### Part 1: Engine extraction
 
-Cross-crate items once the engine is its own crate (counted by the checker,
-so a floor): the TUI names ~530 distinct engine items over ~1,150 refs, most
-of them `pub(crate)` today. Each move therefore needs, in one slice:
+The pre-move checker counted about 530 distinct Engine items over about
+1,150 TUI references. Part 1 moves the modules and their existing fixtures,
+updates consumers and path-sensitive guards, and separates shared test
+helpers from the Engine's test modules. The `test-support` feature keeps
+dependent tests isolated from real homes, keychains and provider probes.
+The coarse crate exports its module APIs; private fields and `pub(super)`
+approval constructors remain private. Internal-only exports can narrow as
+stage B establishes smaller crate boundaries.
+
+The extraction checklist is:
 
 - `git mv` of the engine band into `crates/engine/src`, keeping module paths,
   then `crate::` paths in the TUI rewritten to `codewhale_engine::`.
-- `pub(crate)` widened to `pub` only for items the TUI or app-server name;
+- Cross-crate APIs exported for the TUI and app-server;
   `pub(super)` and private mutation authority stay as they are (review #10).
 - The engine's own `test_support` (the env-scope and home fixtures it uses
   under `cfg(test)`), separate from the TUI's App fixtures.
@@ -78,6 +92,21 @@ of them `pub(crate)` today. Each move therefore needs, in one slice:
 Then the host band moves into `crates/app-server/src` the same way. Each move
 is proven with `cargo check --tests` on the affected crates and the existing
 guard tests; at most two native builds at once.
+
+Before part 2:
+
+- Move `daemon_socket::owner_work` and `RuntimeControlFrontend` below the
+  existing App Server crate. Engine currently consumes them; moving the host
+  band into App Server first would create a Cargo dependency cycle.
+- Remove extension-host avatar coupling to `codewhale-ratatui` (CRATE_MAP
+  P0b). The Engine is still linked to that terminal library.
+- Publishing `codewhale-engine` to crates.io remains a separate founder action.
+
+The blocking-call guard also needed a scope correction: an external
+`#[cfg(test)] mod tests;` declaration previously hid later production code.
+The corrected counts match the pre-move sources in every increased file;
+the budget records existing debt, including 35 filesystem and four
+canonicalization sites in TUI `lib.rs`. This move adds none of those sites.
 
 ## Stage B: split the engine near 500k
 
@@ -110,10 +139,12 @@ T packets inside the TUI. The review's findings are the entry criteria.
 
 ## Known limitations
 
-- "Lines incl. tests" is estimated by assigning each source file to its unit;
-  about 146k lines of `crates/tui/src` did not map to a unit and are left out.
+- The planning table's "Lines incl. tests" estimates predate extraction and
+  omitted about 146k lines from the original TUI unit map. The direct source
+  counts above include every Rust source file under each current crate root.
 - The checker resolves paths textually. Second-hop names, glob re-exports,
   macros and `#[path]` includes are still not followed, so zero upward refs
   is necessary, not sufficient; `cargo check` is the authority.
-- Names (`codewhale-engine`, `codewhale-engine-tools`) are placeholders;
-  `crates/core` and `crates/tools` already exist with other content.
+- `codewhale-engine` is now the extracted crate. `codewhale-engine-tools`
+  remains a proposed name; `crates/core` and `crates/tools` already exist
+  with other content.

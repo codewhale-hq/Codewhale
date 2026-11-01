@@ -11,9 +11,9 @@ The model should learn one canonical name for each common operation.
 
 Implementation sources:
 
-- `crates/tui/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
-- `crates/tui/src/tools/registry.rs` registers canonical tools and hidden aliases.
-- `crates/tui/src/tools/{file,file_tool,shell}.rs` own the small foreground
+- `crates/engine/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
+- `crates/engine/src/tools/registry.rs` registers canonical tools and hidden aliases.
+- `crates/engine/src/tools/{file,file_tool,shell}.rs` own the small foreground
   primitive behavior and schemas; the other native tools remain searchable.
 - `docs/RUNTIME_SIMPLIFICATION_DESIGN.md` records the v0.9.1 cutover and receipt.
 
@@ -39,7 +39,7 @@ New turns start with fifteen eager native names plus synthetic `tool_search`:
 16. `tool_search` (synthetic, always active)
 
 The fifteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
-`crates/tui/src/core/engine/tool_catalog.rs`, pinned by
+`crates/engine/src/core/engine/tool_catalog.rs`, pinned by
 `default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
 boundary may remove `agent` at the maximum child depth, and Plan registers only
 the foreground shell surface (so no `task_shell_wait`), but route size alone
@@ -325,7 +325,7 @@ session; it is not a substitute for tool-carrying `agent` workers.
 the request that was prepared for one `(turn, step)`. It is not a second
 registry and not an execution surface.
 
-**The seam.** The snapshot is built in `crates/tui/src/core/engine/turn_loop.rs`
+**The seam.** The snapshot is built in `crates/engine/src/core/engine/turn_loop.rs`
 immediately after `MessageRequest` is constructed, from `request.tools` — the
 same value the model client is handed. The engine resolves the surrounding
 per-turn data once in `engine.rs` (`ToolSurfaceContext`: flattened registry
@@ -351,7 +351,7 @@ Two kinds of fact are kept apart:
 Contract:
 
 - **One digest.** `active_tool_catalog_sha256`
-  (`crates/tui/src/core/engine/preview.rs`) is the single definition of the
+  (`crates/engine/src/core/engine/preview.rs`) is the single definition of the
   active-tool-catalog hash. The request manifest publishes it as
   `ToolSurfaceFacts::active_tool_catalog_sha256` and `/tools` reports the same
   value for the same prepared request; neither surface keeps a hash of its own.

@@ -173,7 +173,7 @@ units = ["tools/web", "tools/web_run", "tools/web_search", "tools/web_tool", "to
 # the one turn loop (Engine::run_turn). Over 25k by necessity: 14 files carry inherent impl Engine blocks (turn_loop, child_host, rlm_host, tool_execution...) and Rust keeps inherent impls in the defining crate; engine-free helpers already peeled to turn-support (28477 lines)
 [crates.engine]
 layer = 21
-units = ["core/engine/*"]
+units = ["engine_root", "exec_events", "core/engine/*"]
 
 # runtime thread manager hosting engines, plus the protocol-parity cross-check (18311 lines)
 [crates.thread-host]

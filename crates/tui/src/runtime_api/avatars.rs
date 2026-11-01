@@ -5,7 +5,7 @@ use axum::{Json, extract::State};
 pub(super) async fn list_avatars(
     State(state): State<RuntimeApiState>,
 ) -> Json<Vec<codewhale_ratatui::avatar::RegisteredPack>> {
-    Json(crate::extension_host::avatars::catalog(state.workspace.clone()).await)
+    Json(codewhale_engine::extension_host::avatars::catalog(state.workspace.clone()).await)
 }
 
 #[derive(serde::Deserialize)]
@@ -19,7 +19,7 @@ pub(super) async fn get_atlas(
     axum::extract::Path((handle, page)): axum::extract::Path<(u64, usize)>,
     axum::extract::Query(query): axum::extract::Query<AtlasQuery>,
 ) -> Result<Json<String>, axum::http::StatusCode> {
-    crate::extension_host::avatars::atlas(
+    codewhale_engine::extension_host::avatars::atlas(
         state.workspace.clone(),
         handle,
         page,

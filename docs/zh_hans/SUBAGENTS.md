@@ -15,7 +15,7 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 健康的子智能体在父智能体的一次普通响应结束后会继续运行。它们的完成通知经由现有的 Engine 收件箱返回，并可唤醒父智能体开始另一个正常回合。显式中断或取消仍然具有最终效力。`detached: true` 另外让一棵子树不受父回合取消的影响；它不会移除子智能体的预算，也不会移除无界面主机的截止时间。
 
-本文档涵盖角色和单个 `worker` 的控制。多项委派请使用 `workflow`，通过同一套 `worker` 运行时来协调；每个角色的提示词见 `crates/tui/src/tools/subagent/mod.rs`（`*_AGENT_INTRO`）和工具的内联描述。
+本文档涵盖角色和单个 `worker` 的控制。多项委派请使用 `workflow`，通过同一套 `worker` 运行时来协调；每个角色的提示词见 `crates/engine/src/tools/subagent/mod.rs`（`*_AGENT_INTRO`）和工具的内联描述。
 
 ## 角色分类
 
@@ -40,13 +40,13 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 角色的默认值是该角色*意图*的姿态，而父智能体的有效姿态永远是天花板（子智能体绝不会比父智能体更宽）。只读角色按意图扣留**工作区写入**；默认不会拿走其他任何东西——每个角色都保留网络读取，`custom` 继承父智能体的写入/网络/shell 姿态，并且只会被它的显式工具列表或发起调用收窄。被聚焦的 `worker` 的头部会依据运行时自身的权限快照声明有效姿态（`scout · read-only · network · read-only shell`）。
 
-**委派转移的是工作，绝不是权限。** 只读的父智能体可以委派给 `implement`，但子智能体的有效写入、网络、shell 和工具权限仍在父智能体的实时姿态范围之内。检查类角色可以使用分类过的只读 shell 界面；在具备原生强制隔离的平台上，还可以使用下文所述的显式只读分析模式。换一个角色名，或加一个 `read_only` 标志，都不能授予调用方本来没有的 shell 工具。`fleet/exact.rs` 中的 `ChildAuthority::clamp` 让每个字段都与较窄的一方取交集。拒绝列表取并集，因此 `inherit_disallowed_tools: false` 无法丢掉任何操作者或祖先的拒绝规则。恢复已保存的 `worker` 时，会再次把它保存的姿态与当前调用方的姿态取交集。这一约束由 `crates/tui/src/fleet/exact.rs` 测试中的 `a_read_only_parents_delegation_never_widens_authority` 钉住。
+**委派转移的是工作，绝不是权限。** 只读的父智能体可以委派给 `implement`，但子智能体的有效写入、网络、shell 和工具权限仍在父智能体的实时姿态范围之内。检查类角色可以使用分类过的只读 shell 界面；在具备原生强制隔离的平台上，还可以使用下文所述的显式只读分析模式。换一个角色名，或加一个 `read_only` 标志，都不能授予调用方本来没有的 shell 工具。`fleet/exact.rs` 中的 `ChildAuthority::clamp` 让每个字段都与较窄的一方取交集。拒绝列表取并集，因此 `inherit_disallowed_tools: false` 无法丢掉任何操作者或祖先的拒绝规则。恢复已保存的 `worker` 时，会再次把它保存的姿态与当前调用方的姿态取交集。这一约束由 `crates/engine/src/fleet/exact.rs` 测试中的 `a_read_only_parents_delegation_never_widens_authority` 钉住。
 
 在进程内部，解析后的权限是一个对象——`crates/agent-contract/src/worker_profile.rs` 中的 `ChildGrant`：`files`（none/read/write）、`shell`（none/inspect/verify/full）、`network`、`desktop`（绝不授予子智能体）、具名工具 `surface`、调用方的显式 `scope`，以及剩余的 `spawn` 深度。角色是这个对象上的一组预设（`ChildGrant::for_role`）；`ChildGrant::resolve` 把它与由父智能体派生的 profile 取交集。子智能体的工具目录、分发时的拒绝和能力包络读取的是同一组字段——可见的工具就可以调用，被拒绝的工具永远不会出现。
 
 会话的**权限姿态**在每个子智能体内部的适用方式，与它在父回合上完全一致：在 Auto-Review 下，同一个确定性底线和一次性的模型守护者来裁决 `worker` 被扣留的调用（从不弹提示；守护者不可用时拒绝，即 fail closed）；在 Ask 下，角色无法代为决定的被扣留调用，会作为审批提示出现在父智能体的 UI 中，`worker` 显式地等待（`waiting for user`），在无法弹提示的主机上则带着原因被拒绝；Full Access 与父回合完全一致地生效，用户已授予的调用不会再被 Auto-Review 底线拦下。每一次无人被提示的裁决，都是该 `worker` 转录中的一行备注（聚焦它时可见）和一条审计日志记录。参见 `docs/MODES.md`。
 
-每个角色完整的系统提示词位于 `crates/tui/src/tools/subagent/mod.rs`（搜索 `*_AGENT_INTRO`）。提示词前缀在子智能体启动时自动加载；父智能体的委派提示词成为第一个回合的用户消息。
+每个角色完整的系统提示词位于 `crates/engine/src/tools/subagent/mod.rs`（搜索 `*_AGENT_INTRO`）。提示词前缀在子智能体启动时自动加载；父智能体的委派提示词成为第一个回合的用户消息。
 
 ## 上下文分叉
 
@@ -54,13 +54,13 @@ Fleet 角色是委派工作面向用户的词汇：父智能体通过 `agent` �
 
 独立的探索使用全新会话。当任务依赖父智能体转录中已有的决策、文件、todo 或 plan 状态时，使用分叉会话。
 
-分叉状态显示的是父智能体的 To-do 快照——由 `todo_write` 写入的唯一的 Work 界面。子智能体的 `<codewhale:fork_state>` 块携带 `crates/tui/src/todo_snapshot.rs` 渲染的有界正文，因此分叉是从父智能体真实的进度位置继续，而不是从一段转述继续。这一 To-do 部分在生成发生时解析，所以同一个父回合中更早的 `todo_write` 也会被包含进来。
+分叉状态显示的是父智能体的 To-do 快照——由 `todo_write` 写入的唯一的 Work 界面。子智能体的 `<codewhale:fork_state>` 块携带 `crates/engine/src/todo_snapshot.rs` 渲染的有界正文，因此分叉是从父智能体真实的进度位置继续，而不是从一段转述继续。这一 To-do 部分在生成发生时解析，所以同一个父回合中更早的 `todo_write` 也会被包含进来。
 
 **该列表只在生成的那一刻显示一次，之后绝不会重新发送。** 没有哪个子智能体请求会重新陈述 To-do 列表，父智能体的请求也不会。每个智能体都保留自己的私有列表（#4810）；它对这个列表的了解，来自它自己的 `todo_write` 调用（每次调用都发送完整列表）以及这些调用返回的简短回执，而这些都是它自己转录中的普通消息。因此 `worker` 无法读取或写入父智能体或兄弟智能体的列表，被分叉出的子智能体也无法修改交给它的快照，或持续读取父智能体之后的变化。
 
 子智能体转录内卡片显示的正是这份私有列表。一张委派卡片渲染的是**它自己**那个智能体 To-do 的有界投影——已完成/总数计数、始终包含进行中的条目、最多三行，以及当界限省略其余部分时显式的 `… +N more`——由 `card_todo_projection` 用与面向模型的正文相同的快照、优先级顺序和清洗器构建。卡片只会消费 `agent_id` 与自己匹配的信封，因此父智能体的列表绝不会出现在子智能体名下，也没有兄弟智能体的列表会出现在另一个名下。没有陈述任何工作的智能体完全不显示 To-do 行，而不是显示占位任务；终态卡片保留它的智能体实际发布的最后一份快照。扇出（fanout）卡片保持为圆点网格，不显示子智能体的 To-do：一张卡片背后有许多 `worker` 时，没有一个能如实挂载单一列表的位置。只有当运行时已经把该子智能体表示为它自己的委派卡片时，才会出现子智能体的 To-do。
 
-持久化的 Runtime 账本（通过 Fleet 任务状态投影）仍然拥有生命周期状态。模型已经无法触达 `update_plan`：`model_visible()` 返回 `false`（`crates/tui/src/tools/plan.rs:408-413`），因此它会从 API 工具列表中被过滤掉，永远不会出现在子智能体面前。它只为重放更早的转录而保留。以前放在那里的策略，现在放进响应正文；生命周期状态则放进 `todo_write`。
+持久化的 Runtime 账本（通过 Fleet 任务状态投影）仍然拥有生命周期状态。模型已经无法触达 `update_plan`：`model_visible()` 返回 `false`（`crates/engine/src/tools/plan.rs:408-413`），因此它会从 API 工具列表中被过滤掉，永远不会出现在子智能体面前。它只为重放更早的转录而保留。以前放在那里的策略，现在放进响应正文；生命周期状态则放进 `todo_write`。
 
 ## Worktree 隔离
 
@@ -162,7 +162,7 @@ OUTPUT: VERDICT, EVIDENCE with file:line refs or PR refs, GAPS, NEXT.
 
 ```text
 QUESTION: Where is the child-agent prompt assembled?
-SCOPE: crates/tui/src/prompts*, crates/tui/src/tools/subagent/*.
+SCOPE: crates/engine/src/prompts*, crates/engine/src/tools/subagent/*.
 ALREADY_KNOWN: The model-facing launcher is only `agent`; do not look for removed lifecycle tools.
 EFFORT: quick
 STOP_CONDITION: Stop after identifying the prompt source files and the function that wraps assignment text.
@@ -534,9 +534,9 @@ Pending → Running → (Completed | Failed(reason) | Cancelled | Interrupted(re
 
 （各标题后面的说明文字是发给模型的协议文本，保持英文原样；含义依次是：一段话，说明做了什么、发生了什么；`path:line-range` 形式的引用和关键发现，每条一个要点；修改过的文件及一行描述，只读则写 "None."；可能出什么问题 / 父智能体应该复核什么；什么阻止了你，干净完成则写 "None."。）
 
-使用 `### HEADING` 形式的行，且 `EVIDENCE` 要在 `CHANGES` 之前。把编辑过的、相对仓库的文件路径列在 `### CHANGES` 之下；要点之前允许有空行。每个要点以文件路径开头，后面跟描述；含空格或字面末尾标点的路径需要加引号。校验器也接受较旧的显式声明 `CHANGES:`、`Changed files:` 和 `Files changed:`。`EVIDENCE` 中的证据引用以及 `RISKS` 之下的路径，都不算编辑声明。这份五标题的提示词契约是 `crates/tui/src/prompts/text.rs` 中的 `SUBAGENT_OUTPUT_FORMAT`。`crates/tui/src/prompts.rs` 中的 `prompt_documents_structured_subagent_briefs` 会对照它断言每一个标题。
+使用 `### HEADING` 形式的行，且 `EVIDENCE` 要在 `CHANGES` 之前。把编辑过的、相对仓库的文件路径列在 `### CHANGES` 之下；要点之前允许有空行。每个要点以文件路径开头，后面跟描述；含空格或字面末尾标点的路径需要加引号。校验器也接受较旧的显式声明 `CHANGES:`、`Changed files:` 和 `Files changed:`。`EVIDENCE` 中的证据引用以及 `RISKS` 之下的路径，都不算编辑声明。这份五标题的提示词契约是 `crates/engine/src/prompts/text.rs` 中的 `SUBAGENT_OUTPUT_FORMAT`。`crates/engine/src/prompts.rs` 中的 `prompt_documents_structured_subagent_briefs` 会对照它断言每一个标题。
 
-Scout 是例外（#5189 F5）：它们只以 `### SUMMARY` 和 `### EVIDENCE` 结尾（`crates/tui/src/prompts/text.rs` 中的 `SUBAGENT_SCOUT_OUTPUT_FORMAT`）。`crates/tui/src/tools/subagent/mod.rs` 中的 `FleetRole::system_prompt` 为 `FleetRole::Scout` 注入 scout 契约，为其他每个角色注入五标题契约。一项子智能体测试钉住了：scout 包含 `## Output contract (scout)`，且不包含 `### BLOCKERS`。
+Scout 是例外（#5189 F5）：它们只以 `### SUMMARY` 和 `### EVIDENCE` 结尾（`crates/engine/src/prompts/text.rs` 中的 `SUBAGENT_SCOUT_OUTPUT_FORMAT`）。`crates/engine/src/tools/subagent/mod.rs` 中的 `FleetRole::system_prompt` 为 `FleetRole::Scout` 注入 scout 契约，为其他每个角色注入五标题契约。一项子智能体测试钉住了：scout 包含 `## Output contract (scout)`，且不包含 `### BLOCKERS`。
 
 父智能体把 `EVIDENCE` 当作下一回合的工作集来读，所以 scout 和 reviewer 在这里应当精确。
 
@@ -544,11 +544,11 @@ Scout 是例外（#5189 F5）：它们只以 `### SUMMARY` 和 `### EVIDENCE` �
 
 启用记忆时（`[memory] enabled = true` 或 `DEEPSEEK_MEMORY=on`），子智能体共享父智能体的原生记忆存储。它们可以通过 `remember` 工具追加持久的笔记——这对一个发现了值得跨会话保留的项目约定的 scout，或一个得知“这个测试不稳定”的 verifier 很方便。
 
-`remember` 接受 `global` 或 `workspace` 作为 `scope`（`crates/tui/src/tools/remember.rs`，schema 枚举加上 scope 处理），并通过 `NativeMemoryStore` 写入 `~/.codewhale/memory/global/MEMORY.md` 或 `~/.codewhale/memory/workspace/<id>/MEMORY.md`。写入不经过标准的写入审批流程。旧版的单文件 `memory.md` 路径已在 v0.9.4 中移除；完整布局参见 `docs/MEMORY.md`。
+`remember` 接受 `global` 或 `workspace` 作为 `scope`（`crates/engine/src/tools/remember.rs`，schema 枚举加上 scope 处理），并通过 `NativeMemoryStore` 写入 `~/.codewhale/memory/global/MEMORY.md` 或 `~/.codewhale/memory/workspace/<id>/MEMORY.md`。写入不经过标准的写入审批流程。旧版的单文件 `memory.md` 路径已在 v0.9.4 中移除；完整布局参见 `docs/MEMORY.md`。
 
 ## 实现说明
 
-- 源码：`crates/tui/src/tools/subagent/mod.rs`。
+- 源码：`crates/engine/src/tools/subagent/mod.rs`。
 - 持久化状态：`<workspace>/.codewhale/state/subagents.v1.json`。schema 版本 `1`（向前兼容——新的可选字段使用 `#[serde(default)]`）。
 - 已结算的记录通常在 `COMPLETED_AGENT_RETENTION`（默认 1 小时）之后过期，正常保留记录的目标数量为 256。运行中/启动中/等待中的 `worker`，以及存活工作所需的延续身份和预算谱系都会被保留。清理不能在一个旧 ID 的延续仍然活跃时丢弃它，也不能抹掉为强制执行某个活跃作用域所需的用量历史。
 - `SubAgentRuntime::background_runtime()` 从 `child_runtime()` 出发，但用一个全新的取消令牌替换了回合范围的子令牌，因此父回合的取消不会停止 detached 的后台会话。

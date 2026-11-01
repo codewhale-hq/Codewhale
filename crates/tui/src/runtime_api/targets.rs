@@ -248,7 +248,7 @@ pub(super) async fn cloud_attach(State(_state): State<RuntimeApiState>) -> ApiEr
 pub(super) async fn tailnet_inventory(
     State(_state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
-    let result = tokio::task::spawn_blocking(crate::fleet::tailnet::inventory)
+    let result = tokio::task::spawn_blocking(codewhale_engine::fleet::tailnet::inventory)
         .await
         .map_err(|error| ApiError::internal(format!("Tailnet inventory task failed: {error}")))?;
     Ok(Json(match result {
@@ -261,14 +261,14 @@ pub(super) async fn tailnet_inventory(
 
 pub(super) async fn placement_preview(
     State(_state): State<RuntimeApiState>,
-    Json(mut document): Json<crate::fleet::task_spec::FleetTaskSpecDocument>,
+    Json(mut document): Json<codewhale_engine::fleet::task_spec::FleetTaskSpecDocument>,
 ) -> Result<Json<Value>, ApiError> {
     if document.tasks.len() > 64 {
         return Err(ApiError::bad_request(
             "Placement previews support up to 64 tasks",
         ));
     }
-    crate::fleet::task_spec::validate_task_spec_document(&document)
+    codewhale_engine::fleet::task_spec::validate_task_spec_document(&document)
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
     if document.workers.is_empty() {
         document.workers.push(serde_json::from_value(json!({
@@ -279,7 +279,9 @@ pub(super) async fn placement_preview(
     let decisions: Vec<_> = document
         .tasks
         .iter()
-        .map(|task| crate::fleet::placement::decide(task, &document.workers, &unavailable))
+        .map(|task| {
+            codewhale_engine::fleet::placement::decide(task, &document.workers, &unavailable)
+        })
         .collect();
     Ok(Json(
         json!({ "execution": "preview", "evidence": "operator_declared", "grants_execution": false, "decisions": decisions }),

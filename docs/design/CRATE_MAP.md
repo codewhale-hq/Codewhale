@@ -188,13 +188,13 @@ Before P0, the source has no checker-visible edges for these, but they block fil
 - **P0a. `impl App` in commands/contract.rs:4942.** command_contexts_with_config is production code. Move it into tui/app (or make it a free function taking a CommandHost) before commands-contract can exist. This goes with T7.
 - **P0b. Avatars reach ratatui.** extension_host/avatars.rs, extension_host/registry.rs and runtime_api/avatars.rs use `codewhale_ratatui::avatar`. Move the avatar-pack data types into a UI-free crate (D6 names it), so extension-host and runtime-api build without the TUI stack.
 - **P0c. Glob imports in turn-support.** 6 of its 8 files use `use super::*` over core/engine, which the checker does not follow. Replace them with explicit imports, then rerun the checker. If real coupling appears, those files go back to engine.
-- **P0d. A test-support dev crate.** Move crates/tui/src/test_support into it (doc Hosts row). This covers the statement-level `#[cfg(test)]` refs in extension_host/{execution,skills,mod,supervisor}.rs.
+- **P0d. A test-support dev crate.** Move crates/engine/src/test_support into it (doc Hosts row). This covers the statement-level `#[cfg(test)]` refs in extension_host/{execution,skills,mod,supervisor}.rs.
 
 ### P0d. test-support dev crate and resolver artifacts (2 edges, 17 refs)
 
 | edge | refs | top items (src→dst: items) | remedy |
 |---|---:|---|---|
-| extension-host (L19) → cli (L42) | 16 | extension_host/composition_review→<root>: <root>; extension_host/windows→<root>: <root>; extension_host/command→<root>: <root> | Split. extension_host/{execution,skills,mod,supervisor}.rs hold statement-level #[cfg(test)] crate::test_support uses: move crates/tui/src/test_support into a test-support dev-dependency crate. composition_review and windows are super::supervisor resolver artifacts (no code change; confirm with cargo check). |
+| extension-host (L19) → cli (L42) | 16 | extension_host/composition_review→<root>: <root>; extension_host/windows→<root>: <root>; extension_host/command→<root>: <root> | Split. extension_host/{execution,skills,mod,supervisor}.rs hold statement-level #[cfg(test)] crate::test_support uses: move crates/engine/src/test_support into a test-support dev-dependency crate. composition_review and windows are super::supervisor resolver artifacts (no code change; confirm with cargo check). |
 | commands-main (L40) → cli (L42) | 1 | commands/groups/core→<root>: test_support | test_support use: covered by the test-support dev crate. |
 
 ### P0c. turn-support glob cleanup (1 edges, 1 refs)

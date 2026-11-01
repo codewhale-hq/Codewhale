@@ -921,7 +921,7 @@ pub fn export_bundle(
         // Root model aliases are route-relative on import; reconcile them with
         // the canonical provider slots so the bundle never conflicts with
         // itself, without reparsing unrelated preserved extras as `Config`.
-        codewhale_tui::route_preferences::scrub_root_model_aliases_for_export(&mut document)?;
+        codewhale_engine::route_preferences::scrub_root_model_aliases_for_export(&mut document)?;
     }
     for (key, value) in document {
         if let Some(value) = sanitize_export_value(&key, &value) {
@@ -1218,7 +1218,8 @@ fn prepare_import(
         rendered = store.rendered_body()?;
         &rendered
     };
-    let mut document = codewhale_tui::route_preferences::prepare_document(store.path(), original)?;
+    let mut document =
+        codewhale_engine::route_preferences::prepare_document(store.path(), original)?;
     let mut candidate = config_from_document(&document.to_string())?;
     let mut model_edits = Vec::<(String, String, String)>::new();
     let mut selected_provider = None;
@@ -1248,7 +1249,7 @@ fn prepare_import(
                 continue;
             }
             collect_model_edits(&dotted, key, value, &mut model_edits)?;
-            if codewhale_tui::route_preferences::is_route_key(key) {
+            if codewhale_engine::route_preferences::is_route_key(key) {
                 continue;
             }
             apply_config_value(&mut candidate, key, value)?;
@@ -1260,7 +1261,7 @@ fn prepare_import(
     // Definitions precede the exact final selector. Root aliases then target
     // that selected route, so an old provider slot cannot mask an imported model.
     if let Some(provider) = selected_provider {
-        codewhale_tui::route_preferences::set_document(
+        codewhale_engine::route_preferences::set_document(
             store.path(),
             &mut document,
             "provider",
@@ -1269,12 +1270,12 @@ fn prepare_import(
     }
     model_edits.sort_by_key(|(_, key, _)| !key.starts_with("providers."));
     for (_, key, value) in &model_edits {
-        codewhale_tui::route_preferences::set_document(store.path(), &mut document, key, value)?;
+        codewhale_engine::route_preferences::set_document(store.path(), &mut document, key, value)?;
     }
     let final_value: toml::Value = toml::from_str(&document.to_string())?;
     for (dotted, key, value) in &model_edits {
         let mut replay = document.clone();
-        codewhale_tui::route_preferences::set_document(store.path(), &mut replay, key, value)?;
+        codewhale_engine::route_preferences::set_document(store.path(), &mut replay, key, value)?;
         if toml::from_str::<toml::Value>(&replay.to_string())? != final_value {
             plan.conflicting.push(dotted.clone());
         }
@@ -1323,7 +1324,7 @@ fn collect_model_edits(
     value: &toml::Value,
     edits: &mut Vec<(String, String, String)>,
 ) -> Result<()> {
-    if key != "provider" && codewhale_tui::route_preferences::is_route_key(key) {
+    if key != "provider" && codewhale_engine::route_preferences::is_route_key(key) {
         let value = value
             .as_str()
             .ok_or_else(|| anyhow!("config entry {dotted:?} must be a string"))?;
@@ -2182,13 +2183,13 @@ verbosity = "normal"
             later_settings
         );
         assert_eq!(
-            codewhale_tui::route_preferences::get(&path, "provider")
+            codewhale_engine::route_preferences::get(&path, "provider")
                 .unwrap()
                 .as_deref(),
             Some("zai")
         );
         assert_eq!(
-            codewhale_tui::route_preferences::get(&path, "model")
+            codewhale_engine::route_preferences::get(&path, "model")
                 .unwrap()
                 .as_deref(),
             Some("GLM-5.3")
@@ -2503,7 +2504,7 @@ verbosity = "normal"
             );
             assert_eq!(store.config.provider_id(), "OpenAI");
             assert_eq!(
-                codewhale_tui::route_preferences::get(&path, "provider")
+                codewhale_engine::route_preferences::get(&path, "provider")
                     .unwrap()
                     .as_deref(),
                 Some("OpenAI")
@@ -2549,7 +2550,7 @@ verbosity = "normal"
             store.reload().unwrap();
             assert_eq!(store.config.provider_id(), "deepseek-cn");
             assert_eq!(
-                codewhale_tui::route_preferences::get(&path, "model")
+                codewhale_engine::route_preferences::get(&path, "model")
                     .unwrap()
                     .as_deref(),
                 Some(expected_model)

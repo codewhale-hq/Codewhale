@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Measure codewhale-tui at unit granularity and check a target crate map.
+"""Measure codewhale-tui and codewhale-engine at unit granularity and check a target crate map.
 
     python3 scripts/split/crate_map.py graph [--split-above N] [--json out.json]
     python3 scripts/split/crate_map.py check docs/design/crate-map.toml [--json out.json]
 
-`graph` cuts `crates/tui/src` into units: a module whose production subtree is
+`graph` cuts `crates/tui/src` and `crates/engine/src` into units: a module whose production subtree is
 larger than `--split-above` (default 12,000 lines) is split into its own file
 (`<module>/<self>`) plus one unit per child module, recursively. It then
 resolves every `crate::`, `super::` and `self::` path in production code to the
@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import count_lines  # noqa: E402
 import module_graph as mg  # noqa: E402
 
-TUI_SRC = mg.TUI_SRC
+SOURCE_ROOTS = (mg.TUI_SRC, mg.ENGINE_SRC)
 ROOT = "<root>"
 SELF = "<self>"
 PATH_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))+)")
@@ -110,15 +110,21 @@ def parent(module: str) -> str:
 
 
 def load():
-    tui, _, _ = mg.load_graph()
-    exact, prefixes = mg.test_file_set(tui)
     files = {}
-    for rel, (src, code, stripped) in tui.files.items():
-        if rel == "main.rs" or not rel.endswith(".rs"):
-            continue
-        if mg.file_is_test(rel, exact, prefixes, tui.production_files):
-            continue
-        files[rel] = (src, code, stripped or code)
+    for root in SOURCE_ROOTS:
+        crate = mg.load_crate(root.parent.name, root)
+        exact, prefixes = mg.test_file_set(crate)
+        for rel, (src, code, stripped) in crate.files.items():
+            if rel == "main.rs" or not rel.endswith(".rs"):
+                continue
+            if mg.file_is_test(rel, exact, prefixes, crate.production_files):
+                continue
+            key = "engine_root.rs" if root == mg.ENGINE_SRC and rel == "lib.rs" else rel
+            if key in files:
+                raise ValueError(f"duplicate module path across source roots: {key}")
+            code = re.sub(r"\bcodewhale_engine\b", "crate           ", code)
+            stripped = re.sub(r"\bcodewhale_engine\b", "crate           ", stripped)
+            files[key] = (src, code, stripped or code, root / rel)
     modules = {module_of(rel) for rel in files}
     for m in list(modules):
         while m:
@@ -145,11 +151,12 @@ def resolve(tokens: list[str], base: str, modules: set[str]) -> str:
 def build(split_above: int):
     files, modules = load()
     own = collections.Counter()
-    _, measured = count_lines.classify_crate(str(TUI_SRC))
-    for path, (prod, _, _) in measured.items():
-        rel = os.path.relpath(path, TUI_SRC).replace(os.sep, "/")
-        if rel in files:
-            own[module_of(rel)] += prod
+    measured = {}
+    for root in SOURCE_ROOTS:
+        _, counts = count_lines.classify_crate(str(root))
+        measured.update({Path(path): values for path, values in counts.items()})
+    for rel, (_, _, _, path) in files.items():
+        own[module_of(rel)] += measured.get(path, (0, 0, 0))[0]
     children = collections.defaultdict(set)
     for m in modules:
         if m:
@@ -184,7 +191,7 @@ def build(split_above: int):
 
     edges = collections.Counter()
     items = collections.defaultdict(collections.Counter)
-    for rel, (_, code, stripped) in files.items():
+    for rel, (_, code, stripped, _) in files.items():
         mod = module_of(rel)
         src_unit = unit_of[mod]
         found = []

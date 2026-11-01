@@ -8,11 +8,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::runtime_handoff::is_turn_metadata_block;
-use crate::tools::plan::PlanSnapshot;
-use crate::tools::review::ReviewOutput;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::motion::MotionMode;
+use codewhale_engine::runtime_handoff::is_turn_metadata_block;
+use codewhale_engine::tools::plan::PlanSnapshot;
+use codewhale_engine::tools::review::ReviewOutput;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 use codewhale_palette as palette;
@@ -748,7 +748,7 @@ impl HistoryCell {
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     // Model-facing Operate contract; the live receipt is the goal line.
-    if crate::runtime_handoff::is_operate_contract_message(msg) {
+    if codewhale_engine::runtime_handoff::is_operate_contract_message(msg) {
         return Vec::new();
     }
     if let Some(display) =
@@ -760,25 +760,27 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     }
     // MCP server guidance is third-party text the model was shown; keep it
     // auditable in the transcript rather than hiding it with other handoffs.
-    if let Some(guidance) = crate::runtime_handoff::mcp_server_instructions_display(msg) {
+    if let Some(guidance) = codewhale_engine::runtime_handoff::mcp_server_instructions_display(msg)
+    {
         return vec![HistoryCell::System {
             content: format!("MCP server guidance shown to the model:\n{guidance}"),
         }];
     }
-    if let Some(instructions) = crate::runtime_handoff::extension_prompt_contributions_display(msg)
+    if let Some(instructions) =
+        codewhale_engine::runtime_handoff::extension_prompt_contributions_display(msg)
     {
         return vec![HistoryCell::System {
             content: instructions.to_string(),
         }];
     }
     // Raw runtime handoffs have live tool/status receipts, not user cells.
-    if let Some(instructions) = crate::runtime_handoff::constitution_display(msg) {
+    if let Some(instructions) = codewhale_engine::runtime_handoff::constitution_display(msg) {
         return vec![HistoryCell::System {
             content: instructions.to_string(),
         }];
     }
     // Keep their model-facing payload intact and filter only the display.
-    if crate::runtime_handoff::is_internal_runtime_handoff(msg) {
+    if codewhale_engine::runtime_handoff::is_internal_runtime_handoff(msg) {
         return Vec::new();
     }
 
@@ -2693,7 +2695,7 @@ fn render_spillover_annotation(width: u16) -> Line<'static> {
 /// sessions. Live cards collapse to the expand affordance for all of them.
 fn is_truncated_output_preview(content: &str) -> bool {
     content.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT)
-        || content.contains(crate::tools::truncate::SPILLOVER_PREVIEW_HINT)
+        || content.contains(codewhale_engine::tools::truncate::SPILLOVER_PREVIEW_HINT)
         || content.trim_start().starts_with("[Exact evidence retained")
 }
 

@@ -14,17 +14,17 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::compaction::{
-    CompactionPath, estimate_input_tokens_for_pressure, inspect_compaction_keep,
-    last_round_kept_count, last_round_start, pinned_anchors_text,
-};
-use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface,
 };
 use codewhale_core::ContextReferenceSource;
+use codewhale_engine::compaction::{
+    CompactionPath, estimate_input_tokens_for_pressure, inspect_compaction_keep,
+    last_round_kept_count, last_round_start, pinned_anchors_text,
+};
+use codewhale_engine::session_manager::SessionContextReference;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{SystemPrompt, Tool};
 use codewhale_palette as palette;
@@ -157,7 +157,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
             out,
             "{}: {}",
             tr(locale, MessageId::CtxInspSession),
-            crate::session_manager::truncate_id(session_id)
+            codewhale_engine::session_manager::truncate_id(session_id)
         );
     }
     // Real provider-token cache hit rate from the same records /cache
@@ -235,7 +235,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         .api_messages
         .iter()
         .rev()
-        .find_map(crate::runtime_handoff::constitution_display)
+        .find_map(codewhale_engine::runtime_handoff::constitution_display)
     {
         let source = match record
             .split_once("\n\n")
@@ -686,7 +686,7 @@ fn push_tool_schema_costs(out: &mut String, app: &App, locale: Locale) {
 
     let mut built_in: Vec<(String, usize)> = catalog
         .iter()
-        .filter(|tool| !crate::mcp::McpPool::is_mcp_tool(&tool.name))
+        .filter(|tool| !codewhale_engine::mcp::McpPool::is_mcp_tool(&tool.name))
         .map(|tool| (tool.name.clone(), tool_schema_tokens(tool)))
         .collect();
     built_in.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -1062,11 +1062,11 @@ mod tests {
         assert_eq!(short_tool_id("café"), "café");
     }
 
-    use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
-    use crate::session_manager::SessionContextReference;
     use crate::tui::app::TuiOptions;
     use crate::tui::history::HistoryCell;
     use codewhale_core::{ContextReference, ContextReferenceKind, ContextReferenceSource};
+    use codewhale_engine::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
+    use codewhale_engine::session_manager::SessionContextReference;
     use codewhale_models::{ContentBlock, Message, Tool};
     use std::path::PathBuf;
 
@@ -1304,9 +1304,9 @@ mod tests {
             codewhale_config::ProviderKind::Deepseek,
             "deepseek-v4-pro".to_string(),
             None,
-            crate::route_runtime::ContextWindowResolution {
+            codewhale_engine::route_runtime::ContextWindowResolution {
                 tokens: 1_000_000,
-                source: crate::route_runtime::ContextWindowSource::Catalog,
+                source: codewhale_engine::route_runtime::ContextWindowSource::Catalog,
             },
         ));
 
@@ -1494,7 +1494,7 @@ mod tests {
         assert_eq!(estimated_only, estimated);
         assert_ne!(
             estimated_only,
-            crate::compaction::estimate_input_tokens_conservative(
+            codewhale_engine::compaction::estimate_input_tokens_conservative(
                 &app.api_messages,
                 app.system_prompt.as_ref()
             )
@@ -1504,10 +1504,10 @@ mod tests {
     #[test]
     fn inspector_rows_name_compaction_and_anchors() {
         let mut app = test_app();
-        app.last_compaction = Some(crate::compaction::LastCompactionSnapshot {
+        app.last_compaction = Some(codewhale_engine::compaction::LastCompactionSnapshot {
             auto: true,
-            coverage: crate::compaction::CompactionCoverage {
-                path: crate::compaction::CompactionPath::Summary,
+            coverage: codewhale_engine::compaction::CompactionCoverage {
+                path: codewhale_engine::compaction::CompactionPath::Summary,
                 last_round_messages: 4,
                 last_round_tool_results: 1,
                 last_round_assistant: true,

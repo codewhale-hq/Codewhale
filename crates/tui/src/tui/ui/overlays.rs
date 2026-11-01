@@ -550,7 +550,7 @@ pub(crate) fn push_approval_request_view(
     // A child's gate never consults saved repo allow rules, so a child card
     // must not offer "Always for this command" — it would do nothing. The
     // card names its agent (approvals C1).
-    if crate::tools::subagent::SubAgentManager::is_child_approval_id(id) {
+    if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) {
         request.persistent_allow_rules.clear();
         if let Some(agent_id) = crate::tui::pending_requests::child_agent_id(id) {
             request.owner = Some(crate::tui::pending_requests::owner_for(app, agent_id));
@@ -559,7 +559,7 @@ pub(crate) fn push_approval_request_view(
         // The same edit runs without a card inside a git repository. Say why
         // this folder asks, so two folders behaving differently is explained
         // on the card. The engine already decided to ask; this only labels it.
-        request.asks_without_git = crate::core::authority::file_write_asks_without_git(
+        request.asks_without_git = codewhale_engine::core::authority::file_write_asks_without_git(
             app.mode,
             app.approval_mode,
             &app.workspace,

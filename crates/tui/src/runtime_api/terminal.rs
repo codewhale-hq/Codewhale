@@ -1,6 +1,6 @@
 //! `/v1/terminal/{name}` — the Engine's terminal byte stream.
 //!
-//! The owner is [`crate::tools::terminal_session`]: the same PTY-backed shell
+//! The owner is [`codewhale_engine::tools::terminal_session`]: the same PTY-backed shell
 //! the agent's terminal tools drive, so a client attaching here sees the
 //! session the model is already working in rather than a second shell beside
 //! it. These routes never create a session — a name with no live session is a
@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 // The owner does not exist on ohos (`tools/mod.rs`), so neither does any
 // handler that drives it; the stubs below answer there instead.
 #[cfg(all(unix, not(target_env = "ohos")))]
-use crate::tools::terminal_session;
+use codewhale_engine::tools::terminal_session;
 
 use super::{ApiError, RuntimeApiState};
 

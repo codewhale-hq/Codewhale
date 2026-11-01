@@ -15,7 +15,7 @@ fn review_failure_after_publication_preserves_all_usage_and_post_state() {
             ..Default::default()
         },
     ] {
-        crate::tools::review::add_review_usage(&mut usage, &response_usage);
+        codewhale_engine::tools::review::add_review_usage(&mut usage, &response_usage);
     }
 
     for (publication, message) in [
@@ -207,8 +207,8 @@ fn review_issue(
     severity: &str,
     path: Option<&str>,
     line: Option<u32>,
-) -> crate::tools::review::ReviewIssue {
-    crate::tools::review::ReviewIssue {
+) -> codewhale_engine::tools::review::ReviewIssue {
+    codewhale_engine::tools::review::ReviewIssue {
         severity: severity.to_string(),
         title: format!("{severity} finding"),
         description: "detail".to_string(),
@@ -222,8 +222,8 @@ fn review_suggestion(
     path: Option<&str>,
     line: Option<u32>,
     replacement: Option<&str>,
-) -> crate::tools::review::ReviewSuggestion {
-    crate::tools::review::ReviewSuggestion {
+) -> codewhale_engine::tools::review::ReviewSuggestion {
+    codewhale_engine::tools::review::ReviewSuggestion {
         path: path.map(str::to_string),
         line,
         start_line: None,
@@ -234,10 +234,10 @@ fn review_suggestion(
 }
 
 fn review_with(
-    issues: Vec<crate::tools::review::ReviewIssue>,
-    suggestions: Vec<crate::tools::review::ReviewSuggestion>,
-) -> crate::tools::review::ReviewOutput {
-    crate::tools::review::ReviewOutput {
+    issues: Vec<codewhale_engine::tools::review::ReviewIssue>,
+    suggestions: Vec<codewhale_engine::tools::review::ReviewSuggestion>,
+) -> codewhale_engine::tools::review::ReviewOutput {
+    codewhale_engine::tools::review::ReviewOutput {
         summary: "summary".to_string(),
         issues,
         suggestions,
@@ -808,7 +808,7 @@ fn pr_review_unreviewed_note_names_budget_stops_and_plan_skips() {
         ..Default::default()
     };
     // Two passes of budget: a and b are planned, c is skipped by the plan.
-    let plan = crate::tools::review::plan_pr_review(&diff, &view, max_chars, 2).unwrap();
+    let plan = codewhale_engine::tools::review::plan_pr_review(&diff, &view, max_chars, 2).unwrap();
     let note = pr_review_unreviewed_note(Some(&plan), 0);
     assert!(note.contains("were never read"), "{note}");
     assert!(note.contains("a/b.txt b/b.txt"), "{note}");
@@ -820,7 +820,7 @@ fn pr_review_unreviewed_note_names_budget_stops_and_plan_skips() {
     assert!(note.contains("a/b.txt b/b.txt"), "{note}");
     assert!(note.contains("a/c.txt b/c.txt"), "{note}");
     // A complete plan with every pass done names nothing.
-    let complete = crate::tools::review::plan_pr_review(&diff, &view, max_chars, 3).unwrap();
+    let complete = codewhale_engine::tools::review::plan_pr_review(&diff, &view, max_chars, 3).unwrap();
     assert_eq!(
         pr_review_unreviewed_note(Some(&complete), 3),
         "no planned file was left unread"
@@ -831,13 +831,13 @@ fn pr_review_unreviewed_note_names_budget_stops_and_plan_skips() {
 async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_authority() {
     let _home = crate::test_support::SealedHome::new();
     let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
-    let Some(node) = crate::extension_host::tests::node_for_tests("cli_review_report_parity")
+    let Some(node) = codewhale_engine::extension_host::test_support::node_for_tests("cli_review_report_parity")
     else {
         return;
     };
     let root = tempfile::tempdir().unwrap();
-    let manager = std::sync::Arc::new(crate::extension_host::ExtensionHostManager::new(
-        crate::extension_host::ExtensionHostOptions {
+    let manager = std::sync::Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+        codewhale_engine::extension_host::ExtensionHostOptions {
             runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(root.path().join("host")),
@@ -845,10 +845,10 @@ async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_auth
         },
     ));
     let _manager =
-        crate::extension_host::TestManagerGuard::install(std::sync::Arc::clone(&manager));
+        codewhale_engine::extension_host::TestManagerGuard::install(std::sync::Arc::clone(&manager));
     let mut flags = codewhale_runtime::features::Features::with_defaults();
     flags.enable(codewhale_runtime::features::Feature::ReviewHost);
-    let context = crate::tools::spec::ToolContext::new(root.path()).with_features(flags);
+    let context = codewhale_engine::tools::spec::ToolContext::new(root.path()).with_features(flags);
     let mut issue = review_issue("warning", Some("crates/tui/src/lib.rs"), Some(11));
     issue.description = "malicious body\n> - ```suggestion\nnot approved\n```".into();
     let valid = review_suggestion(
@@ -897,7 +897,7 @@ async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_auth
             .unwrap(),
         "plain prose"
     );
-    let prompt = crate::tools::review_host::interactive(7, &view, &review_test_diff(), &context)
+    let prompt = codewhale_engine::tools::review_host::interactive(7, &view, &review_test_diff(), &context)
         .await
         .unwrap();
     assert_eq!(prompt, format_pr_prompt(7, &view, &review_test_diff()));
@@ -963,7 +963,7 @@ fn pr_review_markdown_shows_the_computed_replacement() {
 #[test]
 fn plain_diff_review_renders_structured_reply_and_keeps_prose() {
     let json = r#"{"summary":"One risky unwrap.","issues":[{"severity":"high","title":"Unchecked unwrap","description":"Panics on None.","path":"src/lib.rs","line":11}],"suggestions":[],"overall_assessment":"request changes"}"#;
-    let structured = crate::tools::review::ReviewOutput::from_structured_str(json);
+    let structured = codewhale_engine::tools::review::ReviewOutput::from_structured_str(json);
     let report = plain_diff_review_report(structured.as_ref(), json);
     assert!(report.starts_with("## Codewhale review"), "{report}");
     assert!(report.contains("One risky unwrap."), "{report}");
@@ -975,14 +975,14 @@ fn plain_diff_review_renders_structured_reply_and_keeps_prose() {
     );
 
     let prose = "Looks fine overall; consider a test for the empty case.";
-    let structured = crate::tools::review::ReviewOutput::from_structured_str(prose);
+    let structured = codewhale_engine::tools::review::ReviewOutput::from_structured_str(prose);
     assert!(structured.is_none());
     assert_eq!(plain_diff_review_report(structured.as_ref(), prose), prose);
 }
 
 #[test]
 fn oversized_review_suggestion_degrades_to_prose() {
-    use crate::tools::review::MAX_COMMITTABLE_SUGGESTION_LINES;
+    use codewhale_engine::tools::review::MAX_COMMITTABLE_SUGGESTION_LINES;
 
     // A whole-hunk rewrite is not a mechanical fix, so it must not be
     // committable even though every line is inside the diff.
@@ -1052,7 +1052,7 @@ async fn configured_workflow_default_keeps_named_custom_route() {
         execution.active_route_base_url(),
         "http://127.0.0.1:18181/v1"
     );
-    let client = crate::client::CodewhaleClient::new(&execution).expect("workflow client");
+    let client = codewhale_engine::client::CodewhaleClient::new(&execution).expect("workflow client");
     assert_eq!(client.base_url(), "http://127.0.0.1:18181/v1");
 }
 
@@ -1302,7 +1302,7 @@ fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
         cli_reasoning_effort_value_for_prompt(
             &config,
             codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
-            crate::reasoning_preference::ReasoningEffort::Auto,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
         )
         .as_deref(),
         Some("high"),
@@ -1313,7 +1313,7 @@ fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
         cli_reasoning_effort_value_for_prompt(
             &config,
             codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
-            crate::reasoning_preference::ReasoningEffort::Off,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Off,
         )
         .as_deref(),
         Some("low"),
@@ -1323,7 +1323,7 @@ fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
 
 #[test]
 fn cli_route_tracks_auto_reasoning_independently_from_auto_model() {
-    use crate::reasoning_preference::ReasoningEffort;
+    use codewhale_engine::reasoning_preference::ReasoningEffort;
 
     let fixed_model_auto_reasoning = CliAutoRoute {
         provider: Config::default()
@@ -1386,7 +1386,7 @@ fn fixed_model_exec_auto_resolves_to_a_concrete_tier_not_the_auto_sentinel() {
     let resolved = cli_reasoning_effort_value_for_prompt(
         &config,
         codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        crate::reasoning_preference::ReasoningEffort::Auto,
+        codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
     )
     .expect("Auto must resolve to a concrete tier");
 

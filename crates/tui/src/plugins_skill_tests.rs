@@ -305,7 +305,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// installed against a stale review or keep its trust.
 #[test]
 fn dsh_packages_import_through_the_reviewed_install_and_update_flow() {
-    crate::extension_host::install_ports();
+    codewhale_engine::extension_host::install_ports();
     let tmp = tempfile::tempdir().unwrap();
     let _home = codewhale_runtime::test_support::SealedHome::at(tmp.path());
     let config = config(tmp.path());

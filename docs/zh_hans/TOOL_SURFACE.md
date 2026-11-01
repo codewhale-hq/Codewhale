@@ -12,9 +12,9 @@
 
 实现来源：
 
-- `crates/tui/src/core/engine/tool_catalog.rs` 掌管预加载（eager）与延迟（deferred）目录。
-- `crates/tui/src/tools/registry.rs` 注册规范工具与隐藏别名。
-- `crates/tui/src/tools/{file,file_tool,shell}.rs` 掌管小型前台原语的行为与 schema；
+- `crates/engine/src/core/engine/tool_catalog.rs` 掌管预加载（eager）与延迟（deferred）目录。
+- `crates/engine/src/tools/registry.rs` 注册规范工具与隐藏别名。
+- `crates/engine/src/tools/{file,file_tool,shell}.rs` 掌管小型前台原语的行为与 schema；
   其余原生工具仍可被搜索。
 - `docs/RUNTIME_SIMPLIFICATION_DESIGN.md` 记录了 v0.9.1 切换及其回执（receipt）。
 
@@ -39,7 +39,7 @@
 15. `context_archive_search`
 16. `tool_search`（合成，始终激活）
 
-这十五个原生名称就是 `crates/tui/src/core/engine/tool_catalog.rs` 里的
+这十五个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
 `DEFAULT_ACTIVE_NATIVE_TOOLS`，由
 `default_active_contract_keeps_discovery_and_core_tools_eager` 固定住。
 权限边界（authority boundary）可以在子智能体达到最大深度时移除 `agent`，
@@ -265,7 +265,7 @@ RLM 的子查询批处理属于另一种更便宜的成本类别。它的 `sub_q
 **只读、有界的人类投影**。它不是第二个注册表，也不是执行表面。
 
 **接缝。** 快照在 `MessageRequest` 构造完成后立即于
-`crates/tui/src/core/engine/turn_loop.rs` 中、基于 `request.tools` 构建——
+`crates/engine/src/core/engine/turn_loop.rs` 中、基于 `request.tools` 构建——
 也就是交给模型客户端的同一个值。引擎在 `engine.rs` 中一次性解析周边的每回合数据
 （`ToolSurfaceContext`：扁平化的注册表事实、MCP 池自己的服务器归属、
 引擎注入的目录名称，以及已解析模型客户端的回执），并以纯数据传入，
@@ -287,7 +287,7 @@ RLM 的子查询批处理属于另一种更便宜的成本类别。它的 `sub_q
 契约：
 
 - **一个摘要。** `active_tool_catalog_sha256`
-  （`crates/tui/src/core/engine/preview.rs`）是激活工具目录哈希的唯一定义。
+  （`crates/engine/src/core/engine/preview.rs`）是激活工具目录哈希的唯一定义。
   请求清单把它发布为 `ToolSurfaceFacts::active_tool_catalog_sha256`，
   而 `/tools` 对同一个准备好的请求报告相同的值；两个表面都不自己留一份哈希。
 - **什么都不猜。** 只有当真实的池把那个确切的模型工具名称归属出来时，

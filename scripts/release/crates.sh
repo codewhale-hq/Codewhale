@@ -55,6 +55,7 @@ release_crates=(
   codewhale-plugins
   codewhale-skills
   codewhale-tui-kit
+  codewhale-engine
   codewhale-tui
   codewhale-cli
 )

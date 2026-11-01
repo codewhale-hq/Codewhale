@@ -22,7 +22,7 @@ impl ProviderKeyVerifier for LiveProviderKeyVerifier {
         api_key: &'a str,
         base_url: &'a str,
     ) -> ProviderKeyVerification<'a> {
-        Box::pin(crate::client::verify_provider_api_key(
+        Box::pin(codewhale_engine::client::verify_provider_api_key(
             provider, api_key, base_url,
         ))
     }
@@ -63,16 +63,22 @@ pub(crate) fn publish_verified_roster(
         return;
     };
     let key = identity.key.as_str();
-    let has_route_roster =
-        crate::provider_catalog_live::cached_entry_for_route(identity.provider, key, base_url)
-            .ok()
-            .flatten()
-            .is_some_and(|entry| entry.fetched_at > 0);
+    let has_route_roster = codewhale_engine::provider_catalog_live::cached_entry_for_route(
+        identity.provider,
+        key,
+        base_url,
+    )
+    .ok()
+    .flatten()
+    .is_some_and(|entry| entry.fetched_at > 0);
     if !has_route_roster {
         // Without a route roster this is the catalog view: bundled, Models.dev
         // and signed rows for this provider.
-        let offered =
-            crate::provider_lake::catalog_models_for_route(identity.provider, key, base_url);
+        let offered = codewhale_engine::provider_lake::catalog_models_for_route(
+            identity.provider,
+            key,
+            base_url,
+        );
         let chat: Vec<_> = roster
             .offerings
             .iter()
@@ -92,11 +98,14 @@ pub(crate) fn publish_verified_roster(
         row.provider.clone_from(&owner);
     }
     roster.provider = owner;
-    let ticket =
-        crate::provider_catalog_live::begin_refresh_for_identity(identity.provider, key, base_url);
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        identity.provider,
+        key,
+        base_url,
+    );
     // `None` means a newer refresh for this route superseded the probe; its
     // rows win, which is the failure-preserving outcome we want.
-    let _ = crate::provider_catalog_live::record_success_if_current(&ticket, roster);
+    let _ = codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, roster);
 }
 
 pub(crate) struct RuntimePresetFileSnapshot {

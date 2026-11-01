@@ -119,7 +119,7 @@ Sources to keep in sync:
 - `crates/config/assets/catalog_corrections.json` `reviewed` - intrinsic facts,
   scoped selector aliases, completion references and pure transport metadata.
   The existing seed renderer embeds this reviewed supplement in Models.dev.
-- `crates/tui/src/provider_lake.rs` and `route_runtime.rs` - resolve current
+- `crates/engine/src/provider_lake.rs` and `route_runtime.rs` - resolve current
   model facts for both CLI model commands, the picker and Runtime API. Public
   catalog facts, provider/account rosters and explicit configuration retain
   their separate ownership. `crates/agent/src/lib.rs` keeps the legacy selector
@@ -1517,7 +1517,7 @@ provider docs work, but they are not native shipped behavior in this checkout:
 - A unified `Provider` trait in `codewhale-agent` that owns env precedence,
   secret resolution, base URL normalization, auth-header construction, and
   provider metadata. Those responsibilities are still split across
-  `crates/config`, `crates/secrets`, and `crates/tui/src/client.rs`.
+  `crates/config`, `crates/secrets`, and `crates/engine/src/client.rs`.
 - Hugging Face model passport metadata in the picker, including license, base
   model, context length, chat template, tool-call support, reasoning support,
   and gated/private status.

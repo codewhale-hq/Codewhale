@@ -71,7 +71,7 @@ pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> cra
     // settings computes context-window assertions against a different model
     // than the requested deepseek-v4-pro.
     app.set_provider_identity(codewhale_config::ProviderKind::Deepseek, "deepseek");
-    app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
+    app.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
     app.last_effective_model = None;

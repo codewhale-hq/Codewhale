@@ -6,13 +6,13 @@ and it shipped differently in two ways:
 
 - Goal 3 below ("keeping every legacy tool name registered but hidden") was
   reversed. The per-action file/git/run/web and `exec_shell*` names were
-  **removed**, not hidden — `crates/tui/src/tools/registry.rs` asserts they
+  **removed**, not hidden — `crates/engine/src/tools/registry.rs` asserts they
   must stay unregistered. Only `apply_patch` and the
   `task_*` / `github_*` / `automation_*` / `rlm_*` / `checklist_*` families
   survive as hidden aliases.
 - The default-active policy is nine names, not ten. `update_plan` and `Web` are
   not in `DEFAULT_ACTIVE_NATIVE_TOOLS`
-  (`crates/tui/src/core/engine/tool_catalog.rs:44-58`).
+  (`crates/engine/src/core/engine/tool_catalog.rs:44-58`).
 
 For the current contract see [`TOOL_SURFACE.md`](TOOL_SURFACE.md).
 

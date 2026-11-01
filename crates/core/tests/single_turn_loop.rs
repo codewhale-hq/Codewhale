@@ -80,7 +80,7 @@ struct AllowedTurnLoop {
 }
 
 const ALLOWED_TURN_LOOPS: &[AllowedTurnLoop] = &[AllowedTurnLoop {
-    path: "crates/tui/src/core/engine/turn_loop.rs",
+    path: "crates/engine/src/core/engine/turn_loop.rs",
     owner: "run_turn",
     why: "THE turn loop. `Engine::run_turn` is the single agent loop; \
               docs/ARCHITECTURE.md and AGENTS.md both name it as the owner.",
@@ -1328,7 +1328,7 @@ fn rlm_cannot_reintroduce_client_only_authority_or_a_direct_provider_producer() 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("tui/src");
+        .join("engine/src");
     for path in [
         "rlm/bridge.rs",
         "rlm/turn.rs",

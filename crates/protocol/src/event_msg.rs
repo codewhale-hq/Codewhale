@@ -1,14 +1,14 @@
 //! `EventMsg`-out API in `crates/protocol` (issue #5261, Phase A1 of the
 //! core/protocol extraction spec).
 //!
-//! Mirrors `crates/tui/src/core/events::Event` variant-by-variant as a
+//! Mirrors `crates/engine/src/core/events::Event` variant-by-variant as a
 //! serializable protocol. The TUI's `rx_event` / `Event` channel, the
 //! app-server's SSE stream, and the CLI's `stream-json` output all speak this
 //! one type so headless and TUI observe byte-identical event shapes for the
 //! same `Op`.
 //!
 //! Parity is compile-enforced from the engine side:
-//! `crates/tui/src/core/protocol_parity.rs` matches every engine `Event`
+//! `crates/engine/src/core/protocol_parity.rs` matches every engine `Event`
 //! variant exhaustively into an `EventMsg` (`protocol_covers_engine_events`).
 //! Adding an engine variant without a twin here fails to compile.
 //!

@@ -23,8 +23,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::tools::spec::{ToolError, ToolResult};
-use crate::tools::{ToolContext, ToolRegistryBuilder};
+use codewhale_engine::tools::spec::{ToolError, ToolResult};
+use codewhale_engine::tools::{ToolContext, ToolRegistryBuilder};
 use codewhale_skill_install::skill_parse::SkillInvocation;
 use codewhale_skills::SkillSource;
 
@@ -120,7 +120,7 @@ pub async fn run_mcp_server(
 
 struct McpServer {
     workspace: PathBuf,
-    registry: crate::tools::ToolRegistry,
+    registry: codewhale_engine::tools::ToolRegistry,
     exposed_tools: Vec<ExposedTool>,
     tools: Vec<Tool>,
     require_approval: bool,
@@ -203,7 +203,7 @@ impl McpServer {
     {
         let server = Arc::new(self);
         let transport = AsyncRwTransport::new_server(input, output)
-            .with_max_line_length(crate::mcp::MAX_MCP_RESPONSE_BYTES);
+            .with_max_line_length(codewhale_engine::mcp::MAX_MCP_RESPONSE_BYTES);
         let service = server
             .clone()
             .serve(transport)
@@ -453,7 +453,7 @@ impl ServerHandler for McpServer {
             .into_iter()
             .find(|item| item.resource.uri == request.uri)
             .ok_or_else(|| ErrorData::invalid_params("Resource not found", None))?;
-        if item.body.len() > crate::mcp::MAX_MCP_RESPONSE_BYTES {
+        if item.body.len() > codewhale_engine::mcp::MAX_MCP_RESPONSE_BYTES {
             return Err(ErrorData::internal_error(
                 "Skill resource exceeds the response limit",
                 None,
@@ -483,7 +483,7 @@ fn reject_cursor(request: Option<PaginatedRequestParams>) -> Result<(), ErrorDat
 fn bounded_resource_result<T: Serialize>(result: T) -> Result<T, ErrorData> {
     let bytes = serde_json::to_vec(&result)
         .map_err(|_| ErrorData::internal_error("Resource serialization failed", None))?;
-    if bytes.len() > crate::mcp::MAX_MCP_RESPONSE_BYTES - 1024 {
+    if bytes.len() > codewhale_engine::mcp::MAX_MCP_RESPONSE_BYTES - 1024 {
         return Err(ErrorData::internal_error(
             "Skill resource exceeds the response limit",
             None,
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_pipe_refuses_oversized_unterminated_input() {
-        let input = vec![b'x'; crate::mcp::MAX_MCP_RESPONSE_BYTES + 8192];
+        let input = vec![b'x'; codewhale_engine::mcp::MAX_MCP_RESPONSE_BYTES + 8192];
         let (result, output) = run_native_pipe(&input, 0).await;
         result.unwrap();
         assert!(output.is_empty());

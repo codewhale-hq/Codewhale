@@ -420,11 +420,11 @@ done
   it("keeps public tool facts aligned with the native core and discovery boundaries", () => {
     const toolDoc = text("docs/TOOL_SURFACE.md");
     const toolsPage = text("web/app/[locale]/docs/tools/page.tsx") + text("web/lib/content/tools.ts");
-    const registry = text("crates/tui/src/tools/registry.rs");
+    const registry = text("crates/engine/src/tools/registry.rs");
     const limits = text("crates/runtime/src/config/subagent_limits.rs");
     const roadmap = text("web/app/[locale]/roadmap/page.tsx");
 
-    const catalog = text("crates/tui/src/core/engine/tool_catalog.rs");
+    const catalog = text("crates/engine/src/core/engine/tool_catalog.rs");
     const nativeCore = catalog.match(/const DEFAULT_ACTIVE_NATIVE_TOOLS: &[\s\S]*?= &\[([\s\S]*?)\];/);
     expect(nativeCore, "native core declaration must be found").not.toBeNull();
     const nativeNames = [...nativeCore![1].matchAll(/"([^"\n]+)"/g)].map((match) => match[1]);

@@ -51,9 +51,9 @@ fn frame_app() -> App {
 
 fn subagent(
     id: &str,
-    status: crate::tools::subagent::SubAgentStatus,
-) -> crate::tools::subagent::SubAgentResult {
-    crate::tools::subagent::SubAgentResult {
+    status: codewhale_engine::tools::subagent::SubAgentStatus,
+) -> codewhale_engine::tools::subagent::SubAgentResult {
+    codewhale_engine::tools::subagent::SubAgentResult {
         usage: None,
         name: id.to_string(),
         agent_id: id.to_string(),
@@ -62,7 +62,7 @@ fn subagent(
         workspace: None,
         git_branch: None,
         agent_type: codewhale_agent_contract::role::FleetRole::Worker,
-        assignment: crate::tools::subagent::SubAgentAssignment {
+        assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
             native_preset: None,
             objective: format!("objective-{id}"),
             role: Some("worker".to_string()),
@@ -98,8 +98,14 @@ fn working_app() -> App {
     app.is_loading = true;
     app.turn_started_at = Some(Instant::now() - Duration::from_secs(75));
     app.subagent_cache = vec![
-        subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
-        subagent("agent_b", crate::tools::subagent::SubAgentStatus::Running),
+        subagent(
+            "agent_a",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
+        subagent(
+            "agent_b",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
     ];
     app.session_metrics
         .record_model_call(1_200, 29_600, Some(400), Some(30_000));
@@ -697,8 +703,8 @@ fn statusline_full_frame_presets_preserve_transcript_composer_and_hitboxes() {
 /// missing coverage is evidence, independent of whether today's route is known.
 #[test]
 fn statusline_full_frame_custom_cost_preserves_evidence_and_width_shedding() {
-    use crate::route_billing::{BillingPresentation, UsageChip};
     use codewhale_config::ProviderKind;
+    use codewhale_engine::route_billing::{BillingPresentation, UsageChip};
     use codewhale_runtime::config::{ChromeRowPreset, StatusItem};
 
     for (width, height) in [(40, 12), (60, 16), (80, 24), (100, 32)] {
@@ -710,7 +716,7 @@ fn statusline_full_frame_custom_cost_preserves_evidence_and_width_shedding() {
         app.set_provider_identity(ProviderKind::Custom, "my-gateway");
         app.active_route_base_url = "https://gateway.example/v1".to_string();
         app.model = "vendor-model-x".to_string();
-        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::High;
+        app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::High;
         app.billing_presentation = BillingPresentation::Unknown;
         app.session.cost_coverage_unknown_legacy = true;
         app.status_items = vec![StatusItem::ContextPercent, StatusItem::Cost];
@@ -757,7 +763,7 @@ fn statusline_full_frame_custom_cost_preserves_evidence_and_width_shedding() {
         app.session.cost_coverage_unknown_legacy = false;
         app.session.cost_unpriced_turns = 1;
         app.session.cost_unpriced_reasons.insert(
-            crate::pricing::UnpricedReason::NoPricingRow
+            codewhale_engine::pricing::UnpricedReason::NoPricingRow
                 .label()
                 .to_string(),
         );

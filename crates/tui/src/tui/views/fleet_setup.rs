@@ -38,13 +38,13 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
 };
 
-use crate::fleet::profile::FleetProfileScope;
 use crate::tui::app::App;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer_with_gutter, render_modal_surface, truncate_view_text,
 };
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::fleet::profile::FleetProfileScope;
 use codewhale_localization::{MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
@@ -67,7 +67,7 @@ pub(crate) enum FleetSetupEditTarget {
     /// A named v2 Fleet is selected; edit that exact file and scope.
     SelectedFleet {
         name: String,
-        scope: crate::fleet::store::FleetScope,
+        scope: codewhale_engine::fleet::store::FleetScope,
     },
 }
 
@@ -77,7 +77,7 @@ pub(crate) enum FleetSetupEditTarget {
 pub(crate) fn resolve_fleet_setup_edit_target(
     workspace: &Path,
 ) -> Result<FleetSetupEditTarget, String> {
-    match crate::fleet::store::resolve_selected_fleet(workspace) {
+    match codewhale_engine::fleet::store::resolve_selected_fleet(workspace) {
         Ok(Some(selected)) => Ok(FleetSetupEditTarget::SelectedFleet {
             name: selected.name,
             scope: selected.scope,
@@ -272,7 +272,7 @@ pub struct FleetSetupSnapshot {
     available_models: Vec<(
         String,
         String,
-        crate::provider_readiness::ResolvedProviderReadiness,
+        codewhale_engine::provider_readiness::ResolvedProviderReadiness,
     )>,
 }
 
@@ -304,8 +304,10 @@ impl FleetSetupSnapshot {
             .as_ref()
             .map(|fleet| fleet.exec.max_spawn_depth)
             .unwrap_or_else(|| codewhale_config::FleetExecConfig::default().max_spawn_depth);
-        let roster =
-            crate::fleet::roster::FleetRoster::load(&config.fleet_config(), &app.workspace);
+        let roster = codewhale_engine::fleet::roster::FleetRoster::load(
+            &config.fleet_config(),
+            &app.workspace,
+        );
         let roster_members = roster
             .members()
             .iter()
@@ -316,8 +318,12 @@ impl FleetSetupSnapshot {
             .iter()
             .filter_map(|member| {
                 let scope = match member.origin {
-                    crate::fleet::roster::ProfileOrigin::Workspace => FleetProfileScope::Project,
-                    crate::fleet::roster::ProfileOrigin::Personal => FleetProfileScope::Personal,
+                    codewhale_engine::fleet::roster::ProfileOrigin::Workspace => {
+                        FleetProfileScope::Project
+                    }
+                    codewhale_engine::fleet::roster::ProfileOrigin::Personal => {
+                        FleetProfileScope::Personal
+                    }
                     _ => return None,
                 };
                 Some(RosterMemberDetail {
@@ -335,7 +341,7 @@ impl FleetSetupSnapshot {
             .as_ref()
             .filter(|identity| config.verify_provider_identity(identity).is_ok());
         let provider_ready = identity.is_some_and(|identity| {
-            crate::provider_readiness::resolve_for_model(
+            codewhale_engine::provider_readiness::resolve_for_model(
                 config,
                 identity,
                 if app.auto_model { "auto" } else { &app.model },
@@ -382,8 +388,9 @@ impl FleetSetupSnapshot {
             ),
             roster_members,
             roster_details,
-            project_profiles_enabled: crate::fleet::roster::project_agent_profiles_enabled(),
-            personal_profile_dir: crate::fleet::profile::personal_agent_profile_dir()
+            project_profiles_enabled:
+                codewhale_engine::fleet::roster::project_agent_profiles_enabled(),
+            personal_profile_dir: codewhale_engine::fleet::profile::personal_agent_profile_dir()
                 .map_err(|err| format!("{err:#}")),
             available_models: cross_provider_model_routes(config, identity, &app.provider_health),
         }
@@ -403,11 +410,11 @@ impl FleetSetupSnapshot {
 pub(crate) fn cross_provider_model_routes(
     config: &Config,
     active: Option<&codewhale_runtime::config::ProviderIdentity>,
-    health: &crate::provider_readiness::ProviderReadinessSnapshot,
+    health: &codewhale_engine::provider_readiness::ProviderReadinessSnapshot,
 ) -> Vec<(
     String,
     String,
-    crate::provider_readiness::ResolvedProviderReadiness,
+    codewhale_engine::provider_readiness::ResolvedProviderReadiness,
 )> {
     let Some(active) = active.filter(|identity| config.verify_provider_identity(identity).is_ok())
     else {
@@ -416,7 +423,7 @@ pub(crate) fn cross_provider_model_routes(
     let mut routes = Vec::new();
     for identity in config.provider_identities() {
         if identity.provider == codewhale_config::ProviderKind::Antigravity
-            || !crate::provider_readiness::provider_is_configured_for_active(
+            || !codewhale_engine::provider_readiness::provider_is_configured_for_active(
                 config, &identity, active,
             )
         {
@@ -431,12 +438,12 @@ fn append_provider_model_routes(
     routes: &mut Vec<(
         String,
         String,
-        crate::provider_readiness::ResolvedProviderReadiness,
+        codewhale_engine::provider_readiness::ResolvedProviderReadiness,
     )>,
     config: &Config,
     active: &codewhale_runtime::config::ProviderIdentity,
     identity: &codewhale_runtime::config::ProviderIdentity,
-    health: &crate::provider_readiness::ProviderReadinessSnapshot,
+    health: &codewhale_engine::provider_readiness::ProviderReadinessSnapshot,
 ) {
     let mut models = Vec::new();
     if let Some(model) = config
@@ -451,12 +458,13 @@ fn append_provider_model_routes(
             push_unique_model(&mut models, &model);
         }
     }
-    for model in crate::provider_lake::models_for_provider(config, identity) {
+    for model in codewhale_engine::provider_lake::models_for_provider(config, identity) {
         push_unique_model(&mut models, &model);
     }
     for model in models {
-        let readiness =
-            crate::provider_readiness::resolve_for_model(config, identity, &model, health);
+        let readiness = codewhale_engine::provider_readiness::resolve_for_model(
+            config, identity, &model, health,
+        );
         routes.push((identity.key.to_string(), model, readiness));
     }
 }
@@ -603,7 +611,9 @@ enum FleetModelRowState {
 }
 
 impl FleetModelRowState {
-    fn from_readiness(readiness: &crate::provider_readiness::ResolvedProviderReadiness) -> Self {
+    fn from_readiness(
+        readiness: &codewhale_engine::provider_readiness::ResolvedProviderReadiness,
+    ) -> Self {
         if readiness.requires_explicit_activation() {
             return Self::NeedsActivation;
         }
@@ -633,7 +643,7 @@ fn deterministic_composition_advisory(
     available_models: &[(
         String,
         String,
-        crate::provider_readiness::ResolvedProviderReadiness,
+        codewhale_engine::provider_readiness::ResolvedProviderReadiness,
     )],
 ) -> Option<CompositionAdvisory> {
     let mut seen = BTreeSet::new();
@@ -691,7 +701,7 @@ struct RouteAssignment {
     editor_id: uuid::Uuid,
     id: String,
     template: toml::Table,
-    original_member: crate::fleet::profile::AgentProfile,
+    original_member: codewhale_engine::fleet::profile::AgentProfile,
     source: Option<(PathBuf, String)>,
     source_scope: Option<FleetProfileScope>,
     destinations: Vec<(PathBuf, Option<String>)>,
@@ -745,7 +755,7 @@ pub struct FleetSetupView {
     /// A model-drafted profile awaiting save (already sanitized and
     /// bounded by the untrusted gate). Cleared when the selection changes so
     /// a stale draft can never be saved against fresh answers.
-    model_draft: Option<Box<crate::fleet::profile::FleetProfileDraft>>,
+    model_draft: Option<Box<codewhale_engine::fleet::profile::FleetProfileDraft>>,
     /// Exact rendered TOML preview for `model_draft` (header comment + the
     /// deterministic bytes saving would persist). Rendered inline on the
     /// Review step — never in a separate pager (#4093): a standalone pager
@@ -850,7 +860,7 @@ impl FleetSetupView {
         config: &Config,
         id: &str,
     ) -> Result<Self, String> {
-        let roster = crate::fleet::identity::load_effective_roster(
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
             &config.fleet_config(),
             &app.workspace,
             Some(app.plugin_registry.as_ref()),
@@ -862,8 +872,8 @@ impl FleetSetupView {
             .ok_or_else(|| "This role is no longer available. Reopen Fleet.".to_string())?;
         if matches!(
             member.origin,
-            crate::fleet::roster::ProfileOrigin::Plugin
-                | crate::fleet::roster::ProfileOrigin::Config
+            codewhale_engine::fleet::roster::ProfileOrigin::Plugin
+                | codewhale_engine::fleet::roster::ProfileOrigin::Config
         ) {
             return Err(format!(
                 "{} is managed by {} ({}). Change its model there; copying it into a profile would discard its original controls.",
@@ -872,7 +882,7 @@ impl FleetSetupView {
                 member.source.display()
             ));
         }
-        if member.origin == crate::fleet::roster::ProfileOrigin::BuiltIn
+        if member.origin == codewhale_engine::fleet::roster::ProfileOrigin::BuiltIn
             && (member.profile.permissions != Default::default()
                 || member.profile.delegation != Default::default())
         {
@@ -880,8 +890,12 @@ impl FleetSetupView {
         }
         let mut view = Self::new_for_role(app, config, id);
         let source_scope = match member.origin {
-            crate::fleet::roster::ProfileOrigin::Workspace => Some(FleetProfileScope::Project),
-            crate::fleet::roster::ProfileOrigin::Personal => Some(FleetProfileScope::Personal),
+            codewhale_engine::fleet::roster::ProfileOrigin::Workspace => {
+                Some(FleetProfileScope::Project)
+            }
+            codewhale_engine::fleet::roster::ProfileOrigin::Personal => {
+                Some(FleetProfileScope::Personal)
+            }
             _ => None,
         };
         let source = if source_scope.is_some() {
@@ -896,7 +910,7 @@ impl FleetSetupView {
         let template = if let Some((_, text)) = &source {
             toml::from_str::<toml::Table>(text).map_err(|err| err.to_string())?
         } else {
-            let draft = crate::fleet::profile::FleetProfileDraft {
+            let draft = codewhale_engine::fleet::profile::FleetProfileDraft {
                 id: member.id.clone(),
                 display_name: member.display_name.clone(),
                 description: member.description.clone(),
@@ -966,7 +980,7 @@ impl FleetSetupView {
             provider: assignment.provider.clone(),
             model: assignment.model.clone(),
             reasoning: assignment.reasoning.as_deref().and_then(|value| {
-                crate::reasoning_preference::ReasoningEffort::parse_strict(value).ok()
+                codewhale_engine::reasoning_preference::ReasoningEffort::parse_strict(value).ok()
             }),
             allow_inherit: true,
         })
@@ -977,7 +991,7 @@ impl FleetSetupView {
         editor_id: uuid::Uuid,
         provider: String,
         model: String,
-        reasoning: Option<crate::reasoning_preference::ReasoningEffort>,
+        reasoning: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
     ) -> bool {
         let Some(assignment) = self
             .assignment
@@ -1015,7 +1029,7 @@ impl FleetSetupView {
         ) {
             return Err("The selected team changed. Reopen Fleet before saving.".into());
         }
-        let roster = crate::fleet::identity::load_effective_roster(
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
             &config.fleet_config(),
             &app.workspace,
             Some(app.plugin_registry.as_ref()),
@@ -1033,7 +1047,7 @@ impl FleetSetupView {
             return Err("Choose an available save destination first.".into());
         }
         if self.profile_scope == FleetProfileScope::Project
-            && !crate::fleet::roster::project_agent_profiles_enabled()
+            && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
         {
             return Err("Project profiles are disabled for this launch.".into());
         }
@@ -1061,9 +1075,11 @@ impl FleetSetupView {
         }
         let dir = target.parent().ok_or("Invalid profile destination")?;
         let identities = if self.profile_scope == FleetProfileScope::Project {
-            crate::fleet::profile::load_workspace_agent_profile_identities(&app.workspace)
+            codewhale_engine::fleet::profile::load_workspace_agent_profile_identities(
+                &app.workspace,
+            )
         } else {
-            crate::fleet::profile::load_agent_profile_identities_from_dir(dir)
+            codewhale_engine::fleet::profile::load_agent_profile_identities_from_dir(dir)
         }
         .map_err(|err| err.to_string())?;
         if identities.iter().any(|profile| {
@@ -1168,12 +1184,13 @@ impl FleetSetupView {
             // (#5038): shown in the word-wrapped detail pane so the picker
             // list stays narrow-terminal friendly. Unknown models honestly
             // omit the sentence instead of blocking selection.
-            let capability_note = crate::fleet::capability_badges::resolve_route_capability_badges(
-                Some(provider),
-                model,
-            )
-            .map(|badges| format!(" Capabilities: {}.", badges.summary()))
-            .unwrap_or_default();
+            let capability_note =
+                codewhale_engine::fleet::capability_badges::resolve_route_capability_badges(
+                    Some(provider),
+                    model,
+                )
+                .map(|badges| format!(" Capabilities: {}.", badges.summary()))
+                .unwrap_or_default();
             model_choices.push(Choice {
                 label: Cow::Owned(model.clone()),
                 summary: Cow::Owned(format!(
@@ -1232,7 +1249,7 @@ impl FleetSetupView {
     /// after the last `m`, so the wizard checks its own answers (U09-03).
     pub fn install_model_draft(
         &mut self,
-        mut draft: Box<crate::fleet::profile::FleetProfileDraft>,
+        mut draft: Box<codewhale_engine::fleet::profile::FleetProfileDraft>,
         model_label: String,
         picked_route: Option<(String, String)>,
         reasoning_effort: Option<String>,
@@ -1438,7 +1455,7 @@ impl FleetSetupView {
             FleetProfileScope::Project => self
                 .snapshot
                 .workspace
-                .join(crate::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR)
+                .join(codewhale_engine::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR)
                 .join(file)
                 .display()
                 .to_string(),
@@ -1909,10 +1926,10 @@ impl FleetSetupView {
     /// explicitly, so the saved profile is never ambiguously scoped to
     /// whatever provider happens to be active at launch time. `inherit`
     /// carries no provider, matching its `model: None`.
-    fn starter_profile_draft(&self) -> Box<crate::fleet::profile::FleetProfileDraft> {
+    fn starter_profile_draft(&self) -> Box<codewhale_engine::fleet::profile::FleetProfileDraft> {
         let role = &ROLES[self.role_idx.min(ROLES.len() - 1)];
         let route = self.selected_route();
-        Box::new(crate::fleet::profile::FleetProfileDraft {
+        Box::new(codewhale_engine::fleet::profile::FleetProfileDraft {
             id: profile_file_stem(&role.label),
             display_name: Some(role.label.to_string()),
             description: Some(format!("{} - {}", role.summary, role.description)),
@@ -2975,7 +2992,7 @@ fn destination_status(
 ) -> DestinationStatus {
     let dir: Result<PathBuf, String> = match scope {
         FleetProfileScope::Project => {
-            Ok(workspace.join(crate::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR))
+            Ok(workspace.join(codewhale_engine::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR))
         }
         FleetProfileScope::Personal => personal_dir.clone(),
     };
@@ -3050,7 +3067,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let directory = workspace
             .path()
-            .join(crate::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+            .join(codewhale_engine::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("different-file-name.toml");
         let original = r#"id = "custom-reviewer"
@@ -3089,7 +3106,7 @@ approval_required = true
             editor_id,
             "deepseek".into(),
             "auto".into(),
-            Some(crate::reasoning_preference::ReasoningEffort::High)
+            Some(codewhale_engine::reasoning_preference::ReasoningEffort::High)
         ));
         assert_eq!(view.step, Step::Review);
         assert_eq!(
@@ -3152,7 +3169,7 @@ approval_required = true
         assert!(view.commit_route_assignment(id, &app, &config).is_err());
         let directory = workspace
             .path()
-            .join(crate::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+            .join(codewhale_engine::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("manager.toml"), "id = \"manager\"\n").unwrap();
         view.choose_destination(FleetProfileScope::Personal);
@@ -3176,7 +3193,7 @@ approval_required = true
             fleet_spawn_depth: 3,
             api_timeout_secs: 120,
             heartbeat_timeout_secs: 300,
-            roster_members: crate::fleet::roster::FleetRoster::built_ins_only()
+            roster_members: codewhale_engine::fleet::roster::FleetRoster::built_ins_only()
                 .members()
                 .iter()
                 .map(|member| (member.id.to_lowercase(), member.origin.to_string()))
@@ -3188,12 +3205,12 @@ approval_required = true
                 (
                     "deepseek".to_string(),
                     "deepseek-v4-pro".to_string(),
-                    crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+                    codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
                 ),
                 (
                     "deepseek".to_string(),
                     "deepseek-v4-flash".to_string(),
-                    crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+                    codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
                 ),
             ],
         }
@@ -3211,17 +3228,17 @@ approval_required = true
             FleetSetupEditTarget::LegacyProfiles
         );
 
-        let fleet =
-            crate::fleet::store::FleetFile::new("Launch".to_string(), None).expect("valid Fleet");
-        let fleet_path = crate::fleet::store::save_fleet(
+        let fleet = codewhale_engine::fleet::store::FleetFile::new("Launch".to_string(), None)
+            .expect("valid Fleet");
+        let fleet_path = codewhale_engine::fleet::store::save_fleet(
             &fleet,
-            crate::fleet::store::FleetScope::Workspace,
+            codewhale_engine::fleet::store::FleetScope::Workspace,
             workspace.path(),
         )
         .expect("save Fleet");
-        crate::fleet::store::set_selected(
+        codewhale_engine::fleet::store::set_selected(
             "Launch",
-            crate::fleet::store::FleetScope::Workspace,
+            codewhale_engine::fleet::store::FleetScope::Workspace,
             workspace.path(),
         )
         .expect("select Fleet");
@@ -3230,7 +3247,7 @@ approval_required = true
             resolve_fleet_setup_edit_target(workspace.path()).expect("selected Fleet"),
             FleetSetupEditTarget::SelectedFleet {
                 name: "Launch".to_string(),
-                scope: crate::fleet::store::FleetScope::Workspace,
+                scope: codewhale_engine::fleet::store::FleetScope::Workspace,
             }
         );
 
@@ -3253,9 +3270,9 @@ approval_required = true
             .join("agents")
     }
 
-    fn sample_draft() -> Box<crate::fleet::profile::FleetProfileDraft> {
-        let crate::fleet::profile::UntrustedProfileParse::Drafted(draft) =
-            crate::fleet::profile::FleetProfileDraft::from_untrusted_json(
+    fn sample_draft() -> Box<codewhale_engine::fleet::profile::FleetProfileDraft> {
+        let codewhale_engine::fleet::profile::UntrustedProfileParse::Drafted(draft) =
+            codewhale_engine::fleet::profile::FleetProfileDraft::from_untrusted_json(
                 r#"{"id":"reviewer","role_hint":"reviewer","description":"Reviews diffs.","instructions":"Read. Report. Stop."}"#,
             )
         else {
@@ -3273,7 +3290,7 @@ approval_required = true
         snap.available_models.push((
             "deepseek".to_string(),
             "totally-made-up-model-xyz".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
         ));
         let view = FleetSetupView::from_snapshot(snap);
 
@@ -3604,7 +3621,7 @@ approval_required = true
         snap.available_models = vec![(
             "xai".to_string(),
             "grok-4.5".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::MissingKey,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::MissingKey,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
         view.handle_key(key(KeyCode::Enter)); // -> Model
@@ -3804,7 +3821,7 @@ approval_required = true
         snap.available_models.push((
             "anthropic".to_string(),
             "blocked-model".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
                 category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "auth failed".to_string(),
             },
@@ -3863,7 +3880,7 @@ approval_required = true
         snap.available_models = vec![(
             "zai".to_string(),
             "glm-5.2".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
 
@@ -3993,13 +4010,13 @@ approval_required = true
             snap.available_models.push((
                 "openrouter".to_string(),
                 format!("vendor/model-{i:03}"),
-                crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+                codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
             ));
         }
         snap.available_models.push((
             "openrouter".to_string(),
             "z-ai/glm-5-turbo".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked,
         ));
         let mut view = FleetSetupView::from_snapshot(snap);
         // Role → Model.
@@ -4559,7 +4576,7 @@ approval_required = true
         snap.available_models = vec![(
             "zai".to_string(),
             "glm-5.2".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
                 category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "auth failed".to_string(),
             },
@@ -4595,7 +4612,7 @@ approval_required = true
         snap.available_models = vec![(
             "zai".to_string(),
             "broken-model".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::InvalidRoute,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::InvalidRoute,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
         view.step = Step::Model;
@@ -4631,7 +4648,7 @@ approval_required = true
         let routes = cross_provider_model_routes(
             &config,
             Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Openrouter)),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
         assert!(routes.iter().any(|(provider, model, readiness)| {
@@ -4681,7 +4698,7 @@ approval_required = true
         let routes = cross_provider_model_routes(
             &config,
             Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Custom)),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
         assert!(
             routes
@@ -4736,7 +4753,7 @@ approval_required = true
         let routes = cross_provider_model_routes(
             &config,
             Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Custom)),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
         assert!(
@@ -4745,7 +4762,7 @@ approval_required = true
                     && model == "legacy-custom-model"
                     && matches!(
                         readiness,
-                        crate::provider_readiness::ResolvedProviderReadiness::LocalUnchecked
+                        codewhale_engine::provider_readiness::ResolvedProviderReadiness::LocalUnchecked
                     )
                     && readiness.can_attempt()
             }),
@@ -5015,7 +5032,7 @@ approval_required = true
         snap.available_models = vec![(
             "openai-codex".to_string(),
             "gpt-5.6-sol".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
         )];
         let view = FleetSetupView::from_snapshot(snap);
         assert!(
@@ -5035,7 +5052,7 @@ approval_required = true
         snap.available_models = vec![(
             "openai-codex".to_string(),
             "gpt-5.6-terra".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
         view.handle_key(key(KeyCode::Enter)); // Role -> Model
@@ -5067,7 +5084,7 @@ approval_required = true
         snap.available_models = vec![(
             "xai".to_string(),
             "grok-4.5".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
         view.handle_key(key(KeyCode::Enter)); // Role -> Model
@@ -5083,7 +5100,7 @@ approval_required = true
         refreshed.available_models = vec![(
             "xai".to_string(),
             "grok-4.5".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::Ready,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::Ready,
         )];
         view.refresh_from_snapshot(refreshed);
 
@@ -5105,7 +5122,7 @@ approval_required = true
         snap.available_models = vec![(
             "xai".to_string(),
             "grok-4.5".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::MissingKey,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::MissingKey,
         )];
         let mut view = FleetSetupView::from_snapshot(snap);
         view.step = Step::Model;
@@ -5142,7 +5159,7 @@ approval_required = true
         let routes = cross_provider_model_routes(
             &config,
             Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Moonshot)),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
         for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
@@ -5152,7 +5169,7 @@ approval_required = true
                         && m == model
                         && matches!(
                             readiness,
-                            crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked
+                            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked
                         )
                 }),
                 "missing unchecked owned ChatGPT route for {model}: {routes:?}"
@@ -5183,7 +5200,7 @@ approval_required = true
         let routes = cross_provider_model_routes(
             &config,
             Some(&(config).test_identity_for_kind(codewhale_config::ProviderKind::Moonshot)),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
 
         let xai_rows: Vec<_> = routes
@@ -5198,7 +5215,7 @@ approval_required = true
             xai_rows.iter().all(|(_, _, readiness)| {
                 matches!(
                     readiness,
-                    crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection
+                    codewhale_engine::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection
                 )
             }),
             "every xAI row must require explicit activation: {xai_rows:?}"

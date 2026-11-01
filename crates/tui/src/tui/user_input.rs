@@ -7,11 +7,11 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
-use crate::tools::user_input::{
-    UserInputAnswer, UserInputAnswerKind, UserInputQuestion, UserInputRequest, UserInputResponse,
-};
 use crate::tui::pager::PagerRows;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
+use codewhale_engine::tools::user_input::{
+    UserInputAnswer, UserInputAnswerKind, UserInputQuestion, UserInputRequest, UserInputResponse,
+};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_tui_kit::menu_style;
@@ -787,7 +787,9 @@ fn scroll_to_keep_range_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::user_input::{UserInputOption, UserInputQuestion, UserInputRequest};
+    use codewhale_engine::tools::user_input::{
+        UserInputOption, UserInputQuestion, UserInputRequest,
+    };
 
     fn render_view(view: &UserInputView, width: u16, height: u16) -> String {
         let area = Rect::new(0, 0, width, height);

@@ -70,7 +70,7 @@ pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
 pub(crate) fn agent_dispatch_brief(task: &str, max_depth: impl std::fmt::Display) -> String {
     format!(
         "Launch one sub-agent for this task by calling `agent` with name `slash_agent`, `prompt: {task:?}`, and `max_depth: {max_depth}`. Use `handle_read` on the returned transcript_handle if you need more detail ({}). Verify any claimed side effects with `read` before reporting success.",
-        crate::tools::handle::HANDLE_READ_ACTIVATION_HINT
+        codewhale_engine::tools::handle::HANDLE_READ_ACTIVATION_HINT
     )
 }
 
@@ -116,7 +116,7 @@ mod tests {
     /// deferred `handle_read` activation path.
     #[test]
     fn agent_dispatch_brief_names_only_callable_tools() {
-        crate::tools::canonical_action_tests::assert_text_names_only_callable_tools(
+        codewhale_engine::tools::canonical_action_test_support::assert_text_names_only_callable_tools(
             "/agent brief",
             &agent_dispatch_brief("inspect the repo", 1),
         );

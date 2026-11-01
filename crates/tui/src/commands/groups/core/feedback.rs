@@ -1,7 +1,7 @@
 use super::CommandResult;
 use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tools::github::report;
 use crate::tui::app::{App, AppAction};
+use codewhale_engine::tools::github::report;
 use codewhale_localization::MessageId;
 
 const SECURITY_POLICY_URL: &str = "https://github.com/codewhale-hq/CodeWhale/security/policy";
@@ -121,8 +121,8 @@ fn request_draft(app: &App, focus: &str) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::github::GithubTool;
-    use crate::tools::spec::{ToolContext, ToolSpec};
+    use codewhale_engine::tools::github::GithubTool;
+    use codewhale_engine::tools::spec::{ToolContext, ToolSpec};
     use codewhale_runtime::config::Config;
     use serde_json::json;
     use tempfile::TempDir;
@@ -202,7 +202,7 @@ mod tests {
         app.current_session_id = Some("session-a".into());
         let context = ToolContext::new(tmp.path())
             .with_state_namespace("session-a")
-            .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
+            .with_session_objects(codewhale_engine::rlm::session::SessionObjectSnapshot::new(
                 "session-a".into(),
                 "current-route-model".into(),
                 tmp.path().into(),

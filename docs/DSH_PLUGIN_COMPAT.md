@@ -2,7 +2,7 @@
 
 Codewhale runs reviewed DeepSeek Harness (DSH) plugins in its experimental
 Native extension host ([EXTENSIONS.md](EXTENSIONS.md)). The target is DSH
-**0.2.1-rc.2**, pinned in `crates/tui/extension-host/src/dsh/compatibility.json`.
+**0.2.1-rc.2**, pinned in `crates/engine/extension-host/src/dsh/compatibility.json`.
 The Rust Engine keeps turns, sessions, approvals, credentials and receipts; a
 DSH service is offered only where it maps onto one of those existing owners.
 Everything else is refused by name when the plugin activates, never faked.
@@ -31,7 +31,7 @@ The compatibility table has two lists and they answer different questions, so a
 name appearing in both is not a contradiction:
 
 - `provided_services` is what a plugin may **inject** — the host offers it.
-  Enforced at `crates/tui/extension-host/src/root.ts:715`, which fails activation
+  Enforced at `crates/engine/extension-host/src/root.ts:715`, which fails activation
   when a plugin injects a name that is not on the list.
 - `refused_services` is what a plugin may **not provide** — the Codewhale core
   owns that authority. Enforced at `root.ts:225`, which refuses a plugin that

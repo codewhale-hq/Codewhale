@@ -37,11 +37,21 @@ mod tests {
         let mut app = create_test_app(workspace.clone());
         app.current_session_id = Some("session-a".into());
         assert!(
-            crate::core::turn::pre_turn_snapshot(&workspace, 1, 1024, None, Some("session-a"))
-                .is_none()
+            codewhale_engine::core::turn::pre_turn_snapshot(
+                &workspace,
+                1,
+                1024,
+                None,
+                Some("session-a")
+            )
+            .is_none()
         );
         assert_eq!(
-            crate::core::turn::take_snapshots_disabled_notices(&workspace, Some("session-a")).len(),
+            codewhale_engine::core::turn::take_snapshots_disabled_notices(
+                &workspace,
+                Some("session-a")
+            )
+            .len(),
             1
         );
         for _ in 0..2 {
@@ -51,7 +61,7 @@ mod tests {
             // Stated once, not doubled by a raw reason plus a template.
             assert_eq!(
                 report
-                    .matches(crate::core::turn::SNAPSHOTS_CAP_CONFIG_KEY)
+                    .matches(codewhale_command_contract::config_policy::SNAPSHOTS_CAP_CONFIG_KEY)
                     .count(),
                 1,
                 "{report}"
@@ -66,8 +76,14 @@ mod tests {
         );
         app.current_session_id = Some("session-a".into());
         assert!(
-            crate::core::turn::pre_turn_snapshot(&workspace, 2, 0, None, Some("session-a"))
-                .is_some()
+            codewhale_engine::core::turn::pre_turn_snapshot(
+                &workspace,
+                2,
+                0,
+                None,
+                Some("session-a")
+            )
+            .is_some()
         );
         assert!(
             !status(&mut app)
@@ -82,12 +98,12 @@ mod tests {
         // #6035: warning only. The pin is never rewritten, and a route with
         // no fresh roster proves nothing, so it stays silent.
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let root = TempDir::new().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
         let _user_home = crate::test_support::EnvVarGuard::set("HOME", root.path());
         let _user_profile = crate::test_support::EnvVarGuard::set("USERPROFILE", root.path());
-        crate::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
         let workspace = root.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         let mut app = create_test_app(workspace);
@@ -111,7 +127,7 @@ mod tests {
         );
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
         let fetched_at = codewhale_config::catalog::now_unix();
-        crate::provider_catalog_live::record_success(
+        codewhale_engine::provider_catalog_live::record_success(
             codewhale_config::catalog::ProviderCatalogDelta {
                 provider: "deepseek".to_string(),
                 base_url_fingerprint: fingerprint.clone(),
@@ -139,7 +155,7 @@ mod tests {
         app.model = "deepseek-v4-flash".to_string();
         app.auto_model = true;
         assert!(!status(&mut app).message.unwrap().contains(notice));
-        crate::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
     }
 
     fn create_test_app(workspace: PathBuf) -> App {
@@ -347,11 +363,13 @@ mod tests {
 
         // A user override reads as a statement of fact, not as advice to set
         // something that is already set.
-        app.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
-            tokens: 262_144,
-            source: crate::route_runtime::ContextWindowSource::Configured,
-        });
-        app.active_context_window_source = crate::route_runtime::ContextWindowSource::Configured;
+        app.active_context_window =
+            Some(codewhale_engine::route_runtime::ContextWindowResolution {
+                tokens: 262_144,
+                source: codewhale_engine::route_runtime::ContextWindowSource::Configured,
+            });
+        app.active_context_window_source =
+            codewhale_engine::route_runtime::ContextWindowSource::Configured;
         let msg = status(&mut app).message.expect("status message");
         let row = msg
             .lines()
@@ -512,12 +530,13 @@ mod tests {
         // The installed window carries its own source and outranks the bare
         // field, so a fixture that only sets the source keeps whatever window
         // the test app resolved and the status reports that source instead.
-        app.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
-            tokens: 200_000,
-            source: crate::route_runtime::ContextWindowSource::ProviderReported,
-        });
+        app.active_context_window =
+            Some(codewhale_engine::route_runtime::ContextWindowResolution {
+                tokens: 200_000,
+                source: codewhale_engine::route_runtime::ContextWindowSource::ProviderReported,
+            });
         app.active_context_window_source =
-            crate::route_runtime::ContextWindowSource::ProviderReported;
+            codewhale_engine::route_runtime::ContextWindowSource::ProviderReported;
 
         let msg = format_status(&mut app);
 

@@ -35,7 +35,9 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::session_manager::{OfflineQueueLease, OfflineQueueState, SavedSession, SessionManager};
+use codewhale_engine::session_manager::{
+    OfflineQueueLease, OfflineQueueState, SavedSession, SessionManager,
+};
 use codewhale_util::utils::spawn_supervised;
 
 // ---------------------------------------------------------------------------
@@ -809,7 +811,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::session_manager::{OfflineQueueState, QueuedSessionMessage};
+    use codewhale_engine::session_manager::{OfflineQueueState, QueuedSessionMessage};
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -965,7 +967,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1013,7 +1015,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
-        let mut first = crate::session_manager::create_saved_session_with_mode(
+        let mut first = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1022,7 +1024,7 @@ mod tests {
             Some("agent"),
         );
         first.metadata.title = "Session A".to_string();
-        let mut second = crate::session_manager::create_saved_session_with_mode(
+        let mut second = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1064,7 +1066,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1131,7 +1133,7 @@ mod tests {
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         std::fs::write(sessions_dir.join("checkpoints"), b"not a directory")
             .expect("block checkpoints dir");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1184,7 +1186,7 @@ mod tests {
         // checkpoint write deterministically fails on all platforms.
         std::fs::write(sessions_dir.join("checkpoints"), b"not a directory")
             .expect("block checkpoints dir");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1246,7 +1248,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1295,7 +1297,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1335,7 +1337,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let committed = crate::session_manager::create_saved_session_with_mode(
+        let committed = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1343,7 +1345,7 @@ mod tests {
             None,
             Some("agent"),
         );
-        let inflight = crate::session_manager::create_saved_session_with_mode(
+        let inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1387,7 +1389,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let session = crate::session_manager::create_saved_session_with_mode(
+        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1419,7 +1421,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
-        let mut completed = crate::session_manager::create_saved_session_with_mode(
+        let mut completed = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1428,7 +1430,7 @@ mod tests {
             Some("agent"),
         );
         completed.metadata.title = "Completed turn".to_string();
-        let mut inflight = crate::session_manager::create_saved_session_with_mode(
+        let mut inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),

@@ -80,7 +80,7 @@ Codewhale 有多个指令层级（instruction surfaces）。它们刻意保持�
 
   每个 `protected_invariants` 条目可以是普通字符串(建议性散文，历史形态)，也可以是携带路径 glob 的对象，后者会在工具门禁中额外被**机械强制执行**。见下文[强制执行的仓库保护规则](#强制执行的仓库保护规则)。
 
-  这是**仓库本地宪章**层。指引发生冲突时，以当前生效的基础宪章中 **Whose word wins** 一节为准；内置版本的源代码位于 [`BASE_PROMPT`](../../crates/tui/src/prompts/text.rs)。使用 `/constitution base` 可查看实际生效的基础提示词，包括明确启用的专家覆盖版本。这里介绍文件的顺序、以及提示词的组装顺序，都不代表权威排序。运行时策略（代码强制执行的权限、沙箱和成本上限）独立于提示词指引；编辑宪章不会授予权限。
+  这是**仓库本地宪章**层。指引发生冲突时，以当前生效的基础宪章中 **Whose word wins** 一节为准；内置版本的源代码位于 [`BASE_PROMPT`](../../crates/engine/src/prompts/text.rs)。使用 `/constitution base` 可查看实际生效的基础提示词，包括明确启用的专家覆盖版本。这里介绍文件的顺序、以及提示词的组装顺序，都不代表权威排序。运行时策略（代码强制执行的权限、沙箱和成本上限）独立于提示词指引；编辑宪章不会授予权限。
 
 > **`WHALE.md` 已弃用。** 它与 `AGENTS.md` 混淆重叠。Codewhale 不再把 `WHALE.md` 作为项目或全局上下文读取。如果存在，setup/上下文诊断会报告它被忽略，以便你迁移它。把普通指令移到 `AGENTS.md`，把 Codewhale 特有的权威策略移到 `.codewhale/constitution.json`。个人常驻指引属于 `/constitution` / `$CODEWHALE_HOME/constitution.json`。(随模型提示一起提供的全局 Codewhale 宪章是另一回事，不受影响。)
 
@@ -125,7 +125,7 @@ Codewhale 有多个指令层级（instruction surfaces）。它们刻意保持�
 
 ### 专家级完整基础提示覆盖(#3638)
 
-全局宪章(基础系统提示，通常从 `crates/tui/src/prompts/text.rs` 编译为 `BASE_PROMPT`)可以不重新构建就按用户替换。这是专家逃生舱，不是常规 `/constitution` 引导式设置的产物。因为这是一个提示信任边界，它需要**两个刻意的步骤**——单靠文件不够：
+全局宪章(基础系统提示，通常从 `crates/engine/src/prompts/text.rs` 编译为 `BASE_PROMPT`)可以不重新构建就按用户替换。这是专家逃生舱，不是常规 `/constitution` 引导式设置的产物。因为这是一个提示信任边界，它需要**两个刻意的步骤**——单靠文件不够：
 
 1. 把替换文件放到 `~/.codewhale/prompts/constitution.md`(设置了 `$CODEWHALE_HOME` 时在其下)。
 2. 设置显式的选择加入标志 `CODEWHALE_ALLOW_BASE_PROMPT_OVERRIDE=1`(也接受 `true`/`on`/`yes`)。
@@ -356,7 +356,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
 ### 自动模型路由（`[auto]`、`[auto.router]`）
 
-使用 `model = "auto"` 时，每个回合都运行在你**声明的默认模型**上，除非你选择加入了别的东西。Auto 绝不会根据请求的措辞去猜测该用更便宜还是更强的模型；旧的关键词加长度启发式已被移除（`crates/tui/src/model_routing.rs` 中的 `auto_route_declared_fallback`）。有两个可选的层会改变这一点：
+使用 `model = "auto"` 时，每个回合都运行在你**声明的默认模型**上，除非你选择加入了别的东西。Auto 绝不会根据请求的措辞去猜测该用更便宜还是更强的模型；旧的关键词加长度启发式已被移除（`crates/engine/src/model_routing.rs` 中的 `auto_route_declared_fallback`）。有两个可选的层会改变这一点：
 
 - 由你写下的 `[auto.router]` 分类器，它逐回合挑选模型；以及
 - `[auto] cost_saving`，它偏向使用活动 provider 的快速同系模型。
@@ -375,7 +375,7 @@ thinking = "off"        # optional; defaults to off
 timeout_secs = 4        # optional; default 4, 0 = default, capped at 300
 ```
 
-只有当 `[auto.router]` 同时指定了 `provider` 和 `model`，**并且**该 provider 有 key 时，才会发生分类器调用：`ModelInventory::from_config`（`crates/tui/src/model_inventory.rs`）中的 `router_available = router_configured && has_api_key_for(...)`。任一条件不满足，或分类器调用出错/超时时，由本地回退决定：默认模型，或在 `cost_saving` 下的快速同系模型。回合的路由回执（回合检查器：Ctrl+Alt+O 或 `/turn inspect` 的“Model route + tokens/cost”）会记录走了哪条路径；你配置了但无法运行或失败的路由器（缺 key、HTTP 错误、超时、无效回答）会显示为 `Auto router: failing — …`，而不是被静默忽略。
+只有当 `[auto.router]` 同时指定了 `provider` 和 `model`，**并且**该 provider 有 key 时，才会发生分类器调用：`ModelInventory::from_config`（`crates/engine/src/model_inventory.rs`）中的 `router_available = router_configured && has_api_key_for(...)`。任一条件不满足，或分类器调用出错/超时时，由本地回退决定：默认模型，或在 `cost_saving` 下的快速同系模型。回合的路由回执（回合检查器：Ctrl+Alt+O 或 `/turn inspect` 的“Model route + tokens/cost”）会记录走了哪条路径；你配置了但无法运行或失败的路由器（缺 key、HTTP 错误、超时、无效回答）会显示为 `Auto router: failing — …`，而不是被静默忽略。
 
 #### 设置模型路由
 
@@ -1927,7 +1927,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 
 ## 为什么引擎剥离 XML/`[TOOL_CALL]` 文本
 
-codewhale 只通过 API 工具通道(结构化 `tool_use` / `tool_call` 项)发送和接收工具调用。`crates/tui/src/core/engine.rs` 中的流循环识别一组固定的假包装开始标记——`[TOOL_CALL]`、`<codewhale:tool_call`、`<tool_call`、`<invoke `、`<function_calls>`——并把它们从可见助手文本中擦除，从不让它们变成结构化工具调用。包装被剥离时，循环每回合发出一条紧凑 `status` 通知，让用户看到可见文本为何缩小。把任何重新启用基于文本工具执行的更改视为回归；`crates/tui/tests/integration/protocol_recovery.rs` 中的协议恢复测试锁定该契约。
+codewhale 只通过 API 工具通道(结构化 `tool_use` / `tool_call` 项)发送和接收工具调用。`crates/engine/src/core/engine.rs` 中的流循环识别一组固定的假包装开始标记——`[TOOL_CALL]`、`<codewhale:tool_call`、`<tool_call`、`<invoke `、`<function_calls>`——并把它们从可见助手文本中擦除，从不让它们变成结构化工具调用。包装被剥离时，循环每回合发出一条紧凑 `status` 通知，让用户看到可见文本为何缩小。把任何重新启用基于文本工具执行的更改视为回归；`crates/tui/tests/integration/protocol_recovery.rs` 中的协议恢复测试锁定该契约。
 
 ## 面向模型的脱敏（`[redaction] model_bound`）
 

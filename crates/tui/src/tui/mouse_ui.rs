@@ -981,7 +981,7 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
 }
 
 pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option<String> {
-    use crate::tools::handle::{HandleValue, VarHandle};
+    use codewhale_engine::tools::handle::{HandleValue, VarHandle};
 
     let lookup = VarHandle {
         kind: "var_handle".to_string(),
@@ -1011,7 +1011,10 @@ pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option
     // no process-local handle (for example after restart), the validated
     // artifact remains the durable source of truth.
     if let Ok(display) =
-        crate::tools::subagent::load_subagent_transcript_display_artifact(&app.workspace, agent_id)
+        codewhale_engine::tools::subagent::load_subagent_transcript_display_artifact(
+            &app.workspace,
+            agent_id,
+        )
     {
         let matches_resident_count = payload.as_ref().is_none_or(|resident| {
             resident
@@ -1573,7 +1576,7 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
                 agent.agent_id == agent_id
                     && matches!(
                         agent.status,
-                        crate::tools::subagent::SubAgentStatus::Running
+                        codewhale_engine::tools::subagent::SubAgentStatus::Running
                     )
             });
             if running {
@@ -3636,12 +3639,13 @@ mod tests {
                 }],
             },
         ];
-        let artifact = crate::tools::subagent::write_subagent_transcript_artifact_for_test(
-            tmp.path(),
-            agent_id,
-            &messages,
-        )
-        .expect("write complete worker transcript");
+        let artifact =
+            codewhale_engine::tools::subagent::write_subagent_transcript_artifact_for_test(
+                tmp.path(),
+                agent_id,
+                &messages,
+            )
+            .expect("write complete worker transcript");
         assert!(
             std::fs::metadata(artifact)
                 .expect("artifact metadata")

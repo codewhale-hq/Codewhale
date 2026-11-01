@@ -19,9 +19,9 @@ use codewhale_models::{ContentBlock, Message, MessageRequest, Role};
 
 use super::golden::{self, Failures};
 use super::stream_json;
-use crate::client::CodewhaleClient;
-use crate::llm_client::LlmClient;
 use crate::test_support::{EnvVarGuard, lock_test_env};
+use codewhale_engine::client::CodewhaleClient;
+use codewhale_engine::llm_client::LlmClient;
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 
 const FAMILY: &str = "sse";
@@ -256,7 +256,7 @@ fn client_for_route(route: &str, base: &str, model: &str) -> CodewhaleClient {
     // The fixture model and the client must share the production resolver.
     // Constructing from Config's default model can bind a different wire
     // format and record an open_failure without exercising the recording.
-    let resolved = crate::route_runtime::resolve_runtime_route(
+    let resolved = codewhale_engine::route_runtime::resolve_runtime_route(
         &config,
         config.active_provider_identity().unwrap().provider,
         Some(model),

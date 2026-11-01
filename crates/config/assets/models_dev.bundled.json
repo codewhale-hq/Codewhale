@@ -12049,7 +12049,7 @@
       "crates/config/src/opencode_go.rs": "31e304f38ead417e95c193f08ceb3662e607742bfd45ddb0daef9b8a2d3e8471",
       "crates/config/src/provider_defaults.rs": "2ca4bd17f253897ce87ac18c3b1bfec7e2ebfc652ea9ca68582de1f9fc20044f",
       "crates/tui/src/config/models.rs": "9fc84a4fa8fd8a8d175391a53b3816a8bc8b4a14ca2fd3ab6d58e826bed9747e",
-      "crates/tui/src/pricing.rs": "31606a3c11c03bf317899e5200c6d849b32c471d7edb5f4eb27d23fdbce67059",
+      "crates/engine/src/pricing.rs": "31606a3c11c03bf317899e5200c6d849b32c471d7edb5f4eb27d23fdbce67059",
       "https://docs.mistral.ai/studio/conversations/reasoning": "verified 2026-10-02: explicit reasoning support for mistral-medium-latest/mistral-medium-3-5 and mistral-small-latest/mistral-small-2603; no family-prefix inference; verified 2026-10-03: exact magistral-small-latest is explicitly listed as a native reasoning model (deprecated), historical wire capability only; no availability/default inference",
       "https://docs.mistral.ai/vibe/code/cli/configuration": "verified 2026-10-02: explicit reasoning support for mistral-medium-latest/mistral-medium-3-5 and mistral-small-latest/mistral-small-2603; no family-prefix inference",
       "https://docs.mistral.ai/models/mistral-medium-3-5-26-04": "verified 2026-10-02: explicit reasoning support for mistral-medium-latest/mistral-medium-3-5 and mistral-small-latest/mistral-small-2603; no family-prefix inference",

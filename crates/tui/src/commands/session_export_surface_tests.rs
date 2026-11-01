@@ -536,10 +536,10 @@ fn portable_export_source_has_no_host_dependency() {
     for token in [
         "use crate::",
         "crate::tui",
-        "crate::client",
+        "codewhale_engine::client",
         "codewhale_runtime::config",
         "codewhale_snapshot",
-        "crate::session_manager",
+        "codewhale_engine::session_manager",
         "std::fs",
         "std::net",
         "std::process",

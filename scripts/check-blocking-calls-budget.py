@@ -53,7 +53,7 @@ MOD_RE = re.compile(r"\bmod\s+([A-Za-z_][\w]*)")
 
 TOKEN_RE = re.compile(
     r"#\s*\[[^\]]*\]"
-    r"|\bmod\s+\w+"
+    r"|\bmod\s+\w+\s*;?"
     r"|\bimpl\b"
     r"|\basync\s+move\s*\{"
     r"|\basync\s*\{"
@@ -234,7 +234,8 @@ def file_counts(path: Path) -> dict[str, int]:
             if mm:
                 name = mm.group(1)
                 kind = "test" if (pending_attr_test or name.startswith("test")) else "mod"
-                stack.append({"kind": kind, "open": None})
+                if not tok.rstrip().endswith(";"):
+                    stack.append({"kind": kind, "open": None})
                 pending_attr_test = False
                 pending_blocking = False
                 continue

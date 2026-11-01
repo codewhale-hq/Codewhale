@@ -54,7 +54,7 @@ Invocation: `model+user`
 3. **Persist it.** Always write `.codewhale/handoff.md` in the workspace — that
    is the only path the runtime reads back. On the next session's first turn it
    is injected as the "## Previous Session Relay" block
-   (`HANDOFF_RELATIVE_PATH`, `crates/tui/src/prompts.rs:85`; loader at
+   (`HANDOFF_RELATIVE_PATH`, `crates/engine/src/prompts.rs:85`; loader at
    `prompts.rs:301-315`). A handoff written anywhere else is never picked up,
    so the next session starts cold no matter how good the note is.
 

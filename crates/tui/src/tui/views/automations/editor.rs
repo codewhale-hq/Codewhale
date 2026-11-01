@@ -15,7 +15,7 @@ use ratatui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::automation_manager::{
+use codewhale_engine::automation_manager::{
     AutomationManager, AutomationRecord, AutomationSchedule, AutomationStatus,
     CreateAutomationRequest, UpdateAutomationRequest,
 };
@@ -366,7 +366,7 @@ impl AutomationEditor {
         for (route, model, _) in super::super::fleet_setup::cross_provider_model_routes(
             config,
             active.as_ref(),
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         ) {
             // `auto` may use configured cross-provider routing. It is not a
             // concrete provider/model pin; legacy records remain selectable.
@@ -1248,7 +1248,7 @@ fn local_time(at: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation_manager::AutomationDeliveryMode;
+    use codewhale_engine::automation_manager::AutomationDeliveryMode;
 
     fn editor(root: &Path) -> AutomationEditor {
         AutomationEditor::new(&Config::default(), root, Locale::En, None)

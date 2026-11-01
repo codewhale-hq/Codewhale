@@ -68,7 +68,7 @@ The full Apache License 2.0 text ships in this repository at
 ## Cordis, schemastery and cosmokit (Shigma, via DeepSeek Harness) — MIT
 
 The embedded extension host bundle
-(`crates/tui/extension-host/dist/codewhale-extension-host.mjs`) contains these
+(`crates/engine/extension-host/dist/codewhale-extension-host.mjs`) contains these
 packages, as published by DeepSeek Harness:
 
 - `@deepseek-ai/cordis` 4.0.4
@@ -105,9 +105,9 @@ SOFTWARE.
 ## DeepSeek Harness utility packages (`dsh-util-values`, `dsh-tools`, message compatibility) — MIT
 
 The same bundle contains `@deepseek-ai/dsh-util-values` 0.1.7-alpha.2, and
-`crates/tui/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
+`crates/engine/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
 excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.2 (`lib/index.js`), under the
-same licence text. `crates/tui/extension-host/src/dsh/dsh-message-compat.js`
+same licence text. `crates/engine/extension-host/src/dsh/dsh-message-compat.js`
 contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.2,
 `@deepseek-ai/dsh-llm` 0.2.1-rc.2, `@deepseek-ai/dsh-session` 0.2.1-rc.2,
 `@deepseek-ai/dsh-system-prompt` 0.2.1-rc.2,
@@ -147,7 +147,7 @@ materialises (`~/.codewhale/extension-host/<sha256>/LICENSES.txt`).
 
 ## Model Context Protocol SDK and bundled dependencies
 
-The pinned builtin MCP bundle (`crates/tui/extension-host/dist/builtin/mcp.mjs`)
+The pinned builtin MCP bundle (`crates/engine/extension-host/dist/builtin/mcp.mjs`)
 contains the following packages. The MCP packages are labeled Apache-2.0 and
 carry the upstream licensing-transition statement and full Apache-2.0 text
 reproduced below. The other packages are labeled MIT. Their exact distributed
@@ -730,7 +730,7 @@ SOFTWARE.
 
 The host and its offline composition reviewer also contain these packages.
 Vendored composition adaptations are recorded in
-`crates/tui/extension-host/src/dsh/upstream/UPSTREAM.json`.
+`crates/engine/extension-host/src/dsh/upstream/UPSTREAM.json`.
 
 ### `@deepseek-ai/cordis-plugin-group` 1.0.2
 
@@ -882,9 +882,9 @@ Upstream: <https://github.com/deepseek-ai/deepseek-harness>, commit
 Preset discovery and metadata, hook matching and dialect codecs, and additive
 persona templates run through receipt-backed inputs. Core retains selection,
 prompt assembly, sessions, approvals and writable roots. Original persona source
-hashes are recorded in `crates/tui/extension-host/src/dsh/persona.UPSTREAM.json`.
+hashes are recorded in `crates/engine/extension-host/src/dsh/persona.UPSTREAM.json`.
 The identical upstream license text for all six packages is also carried in
-`crates/tui/extension-host/dist/LICENSES.txt`.
+`crates/engine/extension-host/dist/LICENSES.txt`.
 
 ```
 MIT License

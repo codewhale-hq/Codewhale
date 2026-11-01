@@ -129,7 +129,7 @@ DSH 定义若声明 `output`，必须同时提供 `output.schema` 和 `output.re
 宿主先验证返回的 JSON，再执行渲染。目前只支持普通文本块；富媒体及额外字段会明确
 报错，不会被静默丢弃。非空注册选项、`projectContent`、`finalizeContent`、
 `timeoutMs` 和延迟加载尚不支持。共享
-[`compatibility.json`](../../crates/tui/extension-host/src/dsh/compatibility.json)
+[`compatibility.json`](../../crates/engine/extension-host/src/dsh/compatibility.json)
 记录 DSH 0.2.1-rc.2 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
 契约改变后必须重新审查。成功及软失败结果中的 `extension` 元数据由 Rust 写入，
 记录插件、已审查内容、入口、代际、调用方选择、句柄与进程启动身份。

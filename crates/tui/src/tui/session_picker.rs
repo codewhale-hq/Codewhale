@@ -16,16 +16,16 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::session_manager::{
-    SavedSession, SessionListFilter, SessionManager, SessionMetadata, extract_title,
-    extract_user_prompt, strip_thinking_tags,
-};
-use crate::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
 use crate::tui::views::{
     ActionHint, action_footer_lines, render_modal_footer, render_panel_scroll_rail,
     render_underwater_surface,
 };
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use codewhale_engine::session_manager::{
+    SavedSession, SessionListFilter, SessionManager, SessionMetadata, extract_title,
+    extract_user_prompt, strip_thinking_tags,
+};
+use codewhale_engine::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::Role;
 use codewhale_palette as palette;
@@ -375,7 +375,7 @@ impl SessionPickerView {
 
     /// The query this picker's current view represents.
     ///
-    /// Built here and handed to [`crate::session_projection::select_sessions`]
+    /// Built here and handed to [`codewhale_engine::session_projection::select_sessions`]
     /// so the picker's list is literally the same selection the rail and
     /// `/v1/sessions` compute — filter, workspace scope, fuzzy search, sort,
     /// and tie-breaks included. The picker used to own private copies of all
@@ -454,11 +454,11 @@ impl SessionPickerView {
         if query.hide_empty_auto_created {
             sessions.retain(|session| {
                 self.recovery_sessions.contains(&session.id)
-                    || !crate::session_manager::is_empty_auto_created_session(session)
+                    || !codewhale_engine::session_manager::is_empty_auto_created_session(session)
             });
             query.hide_empty_auto_created = false;
         }
-        self.filtered = crate::session_projection::select_sessions(&sessions, &query)
+        self.filtered = codewhale_engine::session_projection::select_sessions(&sessions, &query)
             .into_iter()
             .cloned()
             .collect();
@@ -506,10 +506,10 @@ impl SessionPickerView {
         self.ensure_selected_visible();
         self.refresh_preview();
         if let Some(session) = self.selected_session() {
-            self.status = Some(
-                tr(self.locale, MessageId::SessionsOpenedHistory)
-                    .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-            );
+            self.status = Some(tr(self.locale, MessageId::SessionsOpenedHistory).replace(
+                "{id}",
+                codewhale_engine::session_manager::truncate_id(&session.id),
+            ));
         }
         true
     }
@@ -645,10 +645,10 @@ impl SessionPickerView {
         self.recovery_sessions.remove(&session.id);
         self.apply_sort_and_filter();
         self.refresh_preview();
-        self.status = Some(
-            tr(self.locale, MessageId::SessionsDeleted)
-                .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-        );
+        self.status = Some(tr(self.locale, MessageId::SessionsDeleted).replace(
+            "{id}",
+            codewhale_engine::session_manager::truncate_id(&session.id),
+        ));
         Some(ViewEvent::SessionDeleted {
             session_id: session.id,
             title: session.title,
@@ -659,7 +659,7 @@ impl SessionPickerView {
         &mut self,
         manager: &SessionManager,
         session: &SessionMetadata,
-    ) -> std::io::Result<Option<crate::session_manager::SessionLease>> {
+    ) -> std::io::Result<Option<codewhale_engine::session_manager::SessionLease>> {
         let lease = if self.current_session_id.as_deref() == Some(session.id.as_str()) {
             None
         } else {
@@ -668,7 +668,7 @@ impl SessionPickerView {
             Some(lease)
         };
         let saved = manager.load_session(&session.id)?;
-        if !crate::session_manager::workspace_scope_matches(
+        if !codewhale_engine::session_manager::workspace_scope_matches(
             &saved.metadata.workspace,
             &session.workspace,
         ) {
@@ -731,7 +731,7 @@ impl SessionPickerView {
         let metadata = match manager.set_session_archived(
             &session.id,
             archived,
-            crate::session_manager::SessionMutator::Owner,
+            codewhale_engine::session_manager::SessionMutator::Owner,
         ) {
             Ok(metadata) => metadata,
             Err(err) => {
@@ -752,10 +752,10 @@ impl SessionPickerView {
         } else {
             MessageId::SessionsRestored
         };
-        self.status = Some(
-            tr(self.locale, message_id)
-                .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-        );
+        self.status = Some(tr(self.locale, message_id).replace(
+            "{id}",
+            codewhale_engine::session_manager::truncate_id(&session.id),
+        ));
         ViewAction::Emit(ViewEvent::SessionArchived {
             metadata: Box::new(metadata),
         })
@@ -968,7 +968,7 @@ fn load_preview(session_id: &str, workspace: &Path, locale: Locale) -> PreviewLo
     };
     match loaded {
         Ok(saved)
-            if crate::session_manager::workspace_scope_matches(
+            if codewhale_engine::session_manager::workspace_scope_matches(
                 &saved.metadata.workspace,
                 workspace,
             ) =>
@@ -1532,10 +1532,14 @@ pub(super) fn format_message_count(count: usize, locale: Locale) -> String {
 
 fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Locale) -> String {
     let age = format_relative_time(&session.updated_at, locale);
-    let updated = crate::session_manager::format_session_updated_at(&session.updated_at, &age);
+    let updated =
+        codewhale_engine::session_manager::format_session_updated_at(&session.updated_at, &age);
     let raw_title = extract_title(&session.title);
     let title = if raw_title == "Session" {
-        truncate(crate::session_manager::truncate_id(&session.id), 32)
+        truncate(
+            codewhale_engine::session_manager::truncate_id(&session.id),
+            32,
+        )
     } else {
         truncate(raw_title, 32)
     };
@@ -1567,7 +1571,7 @@ fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Loca
     };
     format!(
         "{} | {} | {}{}{} | {} | {}",
-        crate::session_manager::truncate_id(&session.id),
+        codewhale_engine::session_manager::truncate_id(&session.id),
         title,
         message_count,
         current_label,
@@ -1599,7 +1603,7 @@ fn build_preview_lines(session: &SavedSession, locale: Locale) -> Vec<String> {
     for message in session
         .messages
         .iter()
-        .filter(|message| !crate::runtime_handoff::is_internal_runtime_handoff(message))
+        .filter(|message| !codewhale_engine::runtime_handoff::is_internal_runtime_handoff(message))
     {
         let text = message_text_for_history(message, locale);
         if text.trim().is_empty() {
@@ -1833,7 +1837,7 @@ mod tests {
             model_provider_id: None,
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
-            cost: crate::session_manager::SessionCostSnapshot::default(),
+            cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
             parent_session_id: None,
             forked_from_message_count: None,
             runtime_store: None,
@@ -1860,7 +1864,7 @@ mod tests {
     }
 
     fn saved_session_with_messages(messages: Vec<codewhale_models::Message>) -> SavedSession {
-        let mut session = crate::session_manager::create_saved_session(
+        let mut session = codewhale_engine::session_manager::create_saved_session(
             &messages,
             "deepseek-v4-pro",
             std::path::Path::new("/tmp"),
@@ -2151,7 +2155,7 @@ mod tests {
 
     #[test]
     fn empty_auto_created_sessions_stay_out_of_the_default_view() {
-        let mut empty = test_session(0, crate::session_manager::DEFAULT_SESSION_TITLE);
+        let mut empty = test_session(0, codewhale_engine::session_manager::DEFAULT_SESSION_TITLE);
         empty.message_count = 0;
         let view = SessionPickerView::new_with_sessions(
             std::path::Path::new("/tmp"),
@@ -2176,7 +2180,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("workspace");
         let mut saved = saved_session_with_messages(vec![]);
         saved.metadata.id = "session-01".to_string();
-        saved.metadata.title = crate::session_manager::DEFAULT_SESSION_TITLE.to_string();
+        saved.metadata.title = codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string();
         saved.metadata.message_count = 0;
         saved.metadata.workspace.clone_from(&workspace);
         manager.save_session(&saved).expect("save session");
@@ -2259,7 +2263,7 @@ mod tests {
     #[test]
     fn preview_hides_internal_runtime_traffic() {
         let saved = saved_session_with_messages(vec![
-            crate::runtime_handoff::operate_contract_runtime_message(),
+            codewhale_engine::runtime_handoff::operate_contract_runtime_message(),
             text_message("user", "ship the release"),
             text_message("assistant", "on it"),
         ]);
@@ -2311,7 +2315,7 @@ mod tests {
             }],
         };
         let saved = saved_session_with_messages(vec![
-            crate::runtime_handoff::operate_contract_runtime_message(),
+            codewhale_engine::runtime_handoff::operate_contract_runtime_message(),
             thinking_only,
             text_message("user", "ship the release"),
             text_message("assistant", "on it"),
@@ -2557,7 +2561,8 @@ mod tests {
         view.selected = 1;
         view.ensure_selected_visible();
         view.current_preview = vec!["preview".to_string()];
-        let selected_id = crate::session_manager::truncate_id(&view.filtered[view.selected].id);
+        let selected_id =
+            codewhale_engine::session_manager::truncate_id(&view.filtered[view.selected].id);
         let area = Rect::new(0, 0, 120, 28);
         let mut buf = Buffer::empty(area);
 
@@ -2610,7 +2615,8 @@ mod tests {
             view.render(area, &mut buf);
 
             let dump = buffer_text(&buf, area);
-            let selected_id = crate::session_manager::truncate_id(&view.filtered[view.selected].id);
+            let selected_id =
+                codewhale_engine::session_manager::truncate_id(&view.filtered[view.selected].id);
             assert!(
                 row_containing(&buf, area, selected_id).is_some(),
                 "{label} should render the selected session row:\n{dump}"
@@ -2626,7 +2632,7 @@ mod tests {
             );
             for (y, idx) in hitboxes.iter() {
                 let row = buffer_row_text(&buf, area, *y);
-                let id = crate::session_manager::truncate_id(&view.filtered[*idx].id);
+                let id = codewhale_engine::session_manager::truncate_id(&view.filtered[*idx].id);
                 assert!(
                     row.contains(id),
                     "{label} hitbox at y={y} should map to session {id}; got {row:?}"

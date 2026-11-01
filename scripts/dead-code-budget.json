@@ -2,13 +2,17 @@
   "_comment": "Ceiling for dead-code suppressions across crates/, counting both `#[allow(dead_code)]` and `#[expect(dead_code)]`. `total` is the sum and is the ratcheted figure. It may go down freely; raising it needs a reviewer to say why in the PR. Regenerate with: python3 scripts/check-dead-code-budget.py --update",
   "_issue": "https://github.com/codewhale-hq/CodeWhale/issues/4785",
   "_expect_blind_spot": "Until #6241 this gate counted only the `allow` spelling, so rewriting an allow as an expect lowered the number without removing any dead code. The ceiling was re-based to the true combined count when that was fixed; it is not a regression.",
-  "total": 158,
+  "total": 144,
   "allow_total": 105,
-  "expect_total": 53,
+  "expect_total": 39,
   "per_crate": {
     "cli": {
       "allow": 0,
       "expect": 1
+    },
+    "engine": {
+      "allow": 31,
+      "expect": 9
     },
     "lsp": {
       "allow": 2,
@@ -43,8 +47,8 @@
       "expect": 0
     },
     "tui": {
-      "allow": 71,
-      "expect": 46
+      "allow": 40,
+      "expect": 23
     }
   }
 }

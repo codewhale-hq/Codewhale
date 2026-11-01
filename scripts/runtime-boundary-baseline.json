@@ -3,16 +3,14 @@
   "totals": {
     "prod": 0,
     "test": 0,
-    "late": 1,
+    "late": 0,
     "uilib": 0,
     "doc": 0
   },
   "counts": {
     "prod": {},
     "test": {},
-    "late": {
-      "core|exec_agent": 1
-    },
+    "late": {},
     "uilib": {},
     "doc": {}
   }

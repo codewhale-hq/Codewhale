@@ -531,7 +531,7 @@ async fn run_registry_mutation(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     let fresh = registry_for_state(state);
-    crate::extension_host::plugins_changed(Arc::clone(&fresh));
+    codewhale_engine::extension_host::plugins_changed(Arc::clone(&fresh));
     let Some(plugin) = fresh.get(selector) else {
         return Ok(PluginActionResponse {
             name: selector.to_string(),

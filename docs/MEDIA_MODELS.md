@@ -20,8 +20,8 @@ selector or arbitrary model-ID override. A failed selected local/Groq backend
 does not silently upload to another provider. Setting a Qwen/Index model name
 in this variable does not install a new backend.
 
-Owners: [speech tool](../crates/tui/src/tools/speech.rs),
-[synthesis client](../crates/tui/src/client.rs), [voice resolver](../crates/tui/src/voice.rs),
+Owners: [speech tool](../crates/engine/src/tools/speech.rs),
+[synthesis client](../crates/engine/src/client.rs), [voice resolver](../crates/engine/src/voice.rs),
 [Runtime voice](../crates/tui/src/runtime_api/voice.rs). Real microphone capture,
 synthesis and a complete customer voice journey require separate acceptance.
 

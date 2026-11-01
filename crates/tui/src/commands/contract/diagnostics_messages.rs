@@ -5,7 +5,7 @@ use codewhale_localization::MessageId;
 
 pub(super) fn resolve(key: &str) -> Option<MessageId> {
     if let Some(reason) = key.strip_prefix("cost_reason_") {
-        return Some(crate::pricing::UnpricedReason::from_label(reason).message_id());
+        return Some(codewhale_engine::pricing::UnpricedReason::from_label(reason).message_id());
     }
     Some(match key {
         "cmd_diff_git_unavailable" => MessageId::CmdDiffGitUnavailable,

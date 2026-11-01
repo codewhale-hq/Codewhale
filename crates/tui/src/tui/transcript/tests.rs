@@ -1,9 +1,9 @@
 use super::*;
-use crate::tools::plan::PlanSnapshot;
 use crate::tui::history::{
     CellFoldAction, CellFoldActionTarget, ExecCell, ExecSource, HistoryCell, PlanUpdateCell,
     ToolCell, ToolStatus, TranscriptActionOwner, TranscriptFold,
 };
+use codewhale_engine::tools::plan::PlanSnapshot;
 use codewhale_localization::Locale;
 use codewhale_palette as palette;
 

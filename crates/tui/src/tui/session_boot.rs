@@ -15,8 +15,8 @@
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::mcp::{McpManagerSnapshot, McpServerSnapshot};
 use crate::tui::app::App;
+use codewhale_engine::mcp::{McpManagerSnapshot, McpServerSnapshot};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_plugins::PluginRegistry;
 use codewhale_plugins::types::{PluginDiagnosticLevel, PluginTrustStatus};
@@ -409,7 +409,7 @@ fn row_from_snapshot(
 #[must_use]
 pub fn mcp_error_requires_login(error: &str) -> bool {
     let lowered = error.to_ascii_lowercase();
-    crate::mcp::oauth::error_text_looks_auth_required(error)
+    codewhale_engine::mcp::oauth::error_text_looks_auth_required(error)
         || (lowered.contains("oauth") && lowered.contains("authenticat"))
 }
 
@@ -441,7 +441,9 @@ fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+    use codewhale_engine::mcp::{
+        McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+    };
     use std::path::PathBuf;
 
     fn server(

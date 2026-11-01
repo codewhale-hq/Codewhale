@@ -1,8 +1,8 @@
 //! UI-side approval disposition and durable denial receipts.
 
-use crate::core::engine::EngineHandle;
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::history::HistoryCell;
+use codewhale_engine::core::engine::EngineHandle;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_localization::MessageId;
 use codewhale_runtime::audit::log_sensitive_event;
@@ -97,7 +97,7 @@ pub(super) async fn auto_deny_session_approval(
     if let Err(error) = engine_handle
         .deny_tool_call_by(
             id.to_string(),
-            crate::approval_log::ApprovalDecider::SessionRule,
+            codewhale_engine::approval_log::ApprovalDecider::SessionRule,
         )
         .await
     {
@@ -115,8 +115,8 @@ pub(super) fn app_auto_approve_enabled(app: &App) -> bool {
 ///
 /// Shell/trust bits do not affect disposition; mode + approval_mode + the
 /// full-access shape (Bypass) are what the shared resolver consults.
-fn app_turn_authority_for_approvals(app: &App) -> crate::core::authority::TurnAuthority {
-    crate::core::authority::TurnAuthority::from_effective_fields(
+fn app_turn_authority_for_approvals(app: &App) -> codewhale_engine::core::authority::TurnAuthority {
+    codewhale_engine::core::authority::TurnAuthority::from_effective_fields(
         app.mode,
         true,
         false,
@@ -130,17 +130,19 @@ fn app_turn_authority_for_approvals(app: &App) -> crate::core::authority::TurnAu
 pub(super) fn auto_approval_decider(
     app: &App,
     approval_force_prompt: bool,
-) -> crate::approval_log::ApprovalDecider {
-    use crate::core::authority::ApprovalRequestDisposition;
-    match crate::core::authority::resolve_approval_request_disposition(
+) -> codewhale_engine::approval_log::ApprovalDecider {
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
+    match codewhale_engine::core::authority::resolve_approval_request_disposition(
         &app_turn_authority_for_approvals(app),
         false,
         false,
         approval_force_prompt,
         false,
     ) {
-        ApprovalRequestDisposition::AutoApprove => crate::approval_log::ApprovalDecider::Posture,
-        _ => crate::approval_log::ApprovalDecider::SessionRule,
+        ApprovalRequestDisposition::AutoApprove => {
+            codewhale_engine::approval_log::ApprovalDecider::Posture
+        }
+        _ => codewhale_engine::approval_log::ApprovalDecider::SessionRule,
     }
 }
 
@@ -150,8 +152,8 @@ pub(super) fn resolve_ui_approval_disposition(
     grouping_key: &str,
     approval_key: &str,
     approval_force_prompt: bool,
-) -> crate::core::authority::ApprovalRequestDisposition {
-    let disposition = crate::core::authority::resolve_approval_request_disposition(
+) -> codewhale_engine::core::authority::ApprovalRequestDisposition {
+    let disposition = codewhale_engine::core::authority::resolve_approval_request_disposition(
         &app_turn_authority_for_approvals(app),
         is_session_approved_for_tool(app, tool_name, grouping_key),
         is_session_denied_for_key(app, approval_key),
@@ -164,10 +166,10 @@ pub(super) fn resolve_ui_approval_disposition(
     // that person, and a Computer Use consent or script exists for no other
     // reason than to carry their answer, so ask instead of denying.
     if disposition
-        == crate::core::authority::ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
-        && crate::tools::approval_cache::computer_use_human_decision_tool(tool_name)
+        == codewhale_engine::core::authority::ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold
+        && codewhale_engine::tools::approval_cache::computer_use_human_decision_tool(tool_name)
     {
-        return crate::core::authority::ApprovalRequestDisposition::Prompt;
+        return codewhale_engine::core::authority::ApprovalRequestDisposition::Prompt;
     }
     disposition
 }
@@ -189,9 +191,9 @@ pub(super) fn resolve_ui_approval_disposition(
 pub(super) async fn resolve_stale_parent_request(
     app: &App,
     engine_handle: &EngineHandle,
-    event: &crate::core::events::Event,
+    event: &codewhale_engine::core::events::Event,
 ) -> bool {
-    use crate::core::events::Event;
+    use codewhale_engine::core::events::Event;
     if let Event::ApprovalRequired { id, tool_name, .. } = event
         && crate::tui::pending_requests::is_foreign_child_request(app, id)
     {
@@ -210,7 +212,7 @@ pub(super) async fn resolve_stale_parent_request(
     }
     match event {
         Event::ApprovalRequired { id, tool_name, .. }
-            if !crate::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
+            if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
             log_sensitive_event(
                 "tool.approval.stale_parent_resolved",
@@ -238,7 +240,7 @@ pub(super) async fn resolve_stale_parent_request(
             true
         }
         Event::UserInputRequired { id, .. }
-            if !crate::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
+            if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
             log_sensitive_event(
                 "tool.user_input.stale_parent_resolved",

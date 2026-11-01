@@ -137,13 +137,14 @@ pub(crate) fn active_goal_chip_state(app: &App) -> Option<(String, bool)> {
         (Some(objective), _) => {
             if matches!(
                 app.goal.status,
-                crate::tools::goal::GoalStatus::Complete | crate::tools::goal::GoalStatus::Blocked
+                codewhale_engine::tools::goal::GoalStatus::Complete
+                    | codewhale_engine::tools::goal::GoalStatus::Blocked
             ) {
                 return None;
             }
             (
                 objective.clone(),
-                app.goal.status == crate::tools::goal::GoalStatus::Paused,
+                app.goal.status == codewhale_engine::tools::goal::GoalStatus::Paused,
             )
         }
         (None, Some(objective)) => (objective.clone(), true),
