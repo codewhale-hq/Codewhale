@@ -5797,6 +5797,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
     };
     let fork_context = SubAgentForkContext {
         messages: vec![parent_message.clone()],
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         structured_state_block: Some("## Fork State\n- Mode: `AGENT`".to_string()),
         work_source: None,
     };
@@ -8361,6 +8362,79 @@ fn enabled_agent_surface_options() -> AgentToolSurfaceOptions {
     options
 }
 
+#[test]
+fn deferred_agent_and_workflow_are_discoverable_by_name() {
+    // Diet regression: deferral must never strand the tools. The real
+    // registry (not fixtures) carries them deferred, and both match
+    // algorithms surface them for the obvious queries.
+    use crate::core::engine::tool_catalog::{
+        apply_native_tool_deferral, execute_tool_search_with_cache,
+    };
+    use crate::core::session::ToolActivationCache;
+    use crate::tools::registry::ToolRegistryBuilder;
+    use crate::tools::{ToolContext, todo};
+    use codewhale_tools::names::TOOL_SEARCH_NAME;
+    use std::collections::HashSet;
+
+    let tmp = tempdir().expect("tempdir");
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let registry = ToolRegistryBuilder::new()
+        .with_agent_runtime_surface(
+            None,
+            "test-model".to_string(),
+            enabled_agent_surface_options(),
+            todo::new_shared_todo_list(),
+            crate::tools::plan::new_shared_plan_state(),
+        )
+        .with_subagent_tools(manager, stub_runtime())
+        .build(ToolContext::new(tmp.path().to_path_buf()));
+    let mut catalog = registry.to_api_tools();
+    let always_load = HashSet::new();
+    apply_native_tool_deferral(&mut catalog, &always_load);
+    for name in ["agent", "workflow"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.defer_loading),
+            Some(true),
+            "{name} is registered and deferred"
+        );
+    }
+
+    for (query, match_kind, wanted) in [
+        ("agent", "regex", "agent"),
+        ("workflow", "regex", "workflow"),
+        ("spawn subagent worker", "bm25", "agent"),
+        // The bounded toolbox need not admit both delegation schemas for
+        // one broad query. Each capability must load for its own intent.
+        ("workflow ordered phases", "bm25", "workflow"),
+    ] {
+        let mut active = HashSet::new();
+        let mut cache = ToolActivationCache::default();
+        let found = execute_tool_search_with_cache(
+            TOOL_SEARCH_NAME,
+            &json!({"query": query, "match": match_kind}),
+            &catalog,
+            &mut active,
+            &mut cache,
+        )
+        .expect("tool_search runs")
+        .metadata
+        .expect("metadata")["tool_references"]
+            .as_array()
+            .expect("refs")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            found.contains(&wanted.to_string()),
+            "{match_kind} {query:?} must surface {wanted}; got {found:?}"
+        );
+    }
+}
+
 /// Return the exact model-visible catalog built for a default General child.
 ///
 /// Request-boundary tests use this fixture so Moonshot compatibility coverage
@@ -8493,33 +8567,53 @@ async fn execute_surface_tool(
 }
 
 #[test]
-fn small_surface_starts_with_core_tools_and_read_only_goal_control() {
+fn small_surface_starts_with_core_tools_and_discoverable_goal_control() {
     let registry = small_surface_registry(FleetRole::Builder);
     let catalog = registry.deferred_catalog_for_model(&FleetRole::Builder);
     let mut surface = ChildSurfaceProbe::new(catalog, &[]);
 
+    // Token diet: agent+workflow+get_goal ride discovery, not the head.
     assert_eq!(
         model_tool_names(model_request_tools(&mut surface)),
         [
-            "agent",
             "bash",
             "context_archive_get",
             "context_archive_search",
             "edit",
             "file_search",
-            "get_goal",
+            "grep_files",
             "load_skill",
             "read",
             "task_shell_wait",
             "todo_write",
             "tool_search",
-            "workflow",
             "write",
         ]
         .into_iter()
         .map(str::to_string)
         .collect()
     );
+    // Delegation and goal inspection remain discoverable. Root goal
+    // mutation belongs to the parent, not to this child.
+    for deferred_name in ["agent", "workflow", "get_goal"] {
+        assert_eq!(
+            surface
+                .catalog()
+                .iter()
+                .find(|tool| tool.name == deferred_name)
+                .and_then(|tool| tool.defer_loading),
+            Some(true),
+            "{deferred_name} must stay discoverable"
+        );
+    }
+    for root_mutator in ["create_goal", "update_goal"] {
+        assert!(
+            !surface
+                .catalog()
+                .iter()
+                .any(|tool| tool.name == root_mutator)
+        );
+    }
     let strict = surface.request_tools(surface.catalog().to_vec(), true);
     assert_eq!(
         strict
@@ -8677,6 +8771,7 @@ fn small_surface_warms_explicitly_allowed_deferred_tools() {
 async fn small_surface_fork_context_survives_fresh_child_discovery() {
     let registry = small_surface_registry(FleetRole::Builder);
     let context = SubAgentForkContext {
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         messages: vec![
             Message {
                 role: Role::Assistant,
@@ -8777,6 +8872,48 @@ async fn small_surface_denied_warm_tool_is_not_resurrected() {
     assert!(surface.hydrate("Web", &json!({})).is_err());
 }
 
+fn synthetic_eager_tool(name: &str) -> Tool {
+    Tool {
+        tool_type: Some("function".to_string()),
+        name: name.to_string(),
+        description: "eager".to_string(),
+        input_schema: json!({"type": "object", "properties": {}}),
+        allowed_callers: None,
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }
+}
+
+#[test]
+fn warmed_surfaces_rebuild_byte_identical_wire_tools() {
+    // Same catalog plus same warm names must serialize identically,
+    // and warming must change the wire block.
+    let catalog = vec![
+        synthetic_eager_tool("read"),
+        synthetic_deferred_tool("agent", 8),
+        synthetic_eager_tool(TOOL_SEARCH_NAME),
+    ];
+    let warm = ["agent".to_string()];
+    let mut first = ChildSurfaceProbe::new(catalog.clone(), &warm);
+    let mut second = ChildSurfaceProbe::new(catalog.clone(), &warm);
+    let first_wire = model_request_tools(&mut first);
+    let second_wire = model_request_tools(&mut second);
+    let first_json =
+        codewhale_runtime::prompt_zones::wire_tool_catalog_json(&first_wire).expect("serializes");
+    let second_json =
+        codewhale_runtime::prompt_zones::wire_tool_catalog_json(&second_wire).expect("serializes");
+    assert_eq!(first_json, second_json, "same catalog plus same names");
+    assert!(first_wire.iter().any(|tool| tool.name == "agent"));
+    let mut cold = ChildSurfaceProbe::new(catalog, &[]);
+    let cold_wire = model_request_tools(&mut cold);
+    let cold_json =
+        codewhale_runtime::prompt_zones::wire_tool_catalog_json(&cold_wire).expect("serializes");
+    assert_ne!(cold_json, first_json, "warming must change the wire block");
+    assert!(!cold_wire.iter().any(|tool| tool.name == "agent"));
+}
+
 fn synthetic_deferred_tool(name: &str, description_bytes: usize) -> Tool {
     Tool {
         tool_type: Some("function".to_string()),
@@ -8820,6 +8957,7 @@ fn small_surface_caches_are_independent_bounded_and_revalidated() {
         .push(synthetic_deferred_tool("oversized", 17 * 1024));
     assert!(first.hydrate("oversized", &json!({})).is_err());
 
+    // Two schemas fit the 16 KiB budget; the third must be held.
     let mut byte_catalog = (0..3)
         .map(|index| synthetic_deferred_tool(&format!("bytes_{index}"), 6 * 1024))
         .collect::<Vec<_>>();
@@ -8842,14 +8980,8 @@ fn small_surface_caches_are_independent_bounded_and_revalidated() {
 #[tokio::test]
 async fn small_surface_successful_cached_use_touches_lru() {
     let registry = small_surface_registry(FleetRole::Builder);
-    let mut catalog = registry.deferred_catalog_for_model(&FleetRole::Builder);
-    // Exercise the LRU with a deliberately deferred read-only fixture tool;
-    // production goal controls are eager and must not consume cache slots.
-    catalog
-        .iter_mut()
-        .find(|tool| tool.name == "get_goal")
-        .expect("goal read fixture")
-        .defer_loading = Some(true);
+    let catalog = registry.deferred_catalog_for_model(&FleetRole::Builder);
+    // Exercise the LRU with deferred goal inspection, not root mutation.
     let mut others = catalog
         .iter()
         .filter(|tool| tool.defer_loading == Some(true) && tool.name != "get_goal")
@@ -8870,6 +9002,11 @@ async fn small_surface_successful_cached_use_touches_lru() {
 
 #[test]
 fn small_surface_depth_cap_removes_only_agent() {
+    let baseline = small_surface_registry(FleetRole::Builder);
+    let mut expected = model_tool_names(baseline.deferred_catalog_for_model(&FleetRole::Builder));
+    assert!(expected.remove("agent"));
+    assert!(expected.contains("get_goal") && expected.contains("workflow"));
+
     let mut runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
     runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Builder);
@@ -8881,30 +9018,11 @@ fn small_surface_depth_cap_removes_only_agent() {
         crate::tools::todo::new_shared_todo_list(),
         crate::tools::plan::new_shared_plan_state(),
     );
-    let mut surface = ChildSurfaceProbe::new(
-        registry.deferred_catalog_for_model(&FleetRole::Builder),
-        &[],
-    );
+    // Compare the entire catalog, not just its eager head: deferral must
+    // not hide an unrelated tool disappearing at the depth boundary.
     assert_eq!(
-        model_tool_names(model_request_tools(&mut surface)),
-        [
-            "bash",
-            "context_archive_get",
-            "context_archive_search",
-            "edit",
-            "file_search",
-            "get_goal",
-            "load_skill",
-            "read",
-            "task_shell_wait",
-            "todo_write",
-            "tool_search",
-            "workflow",
-            "write"
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+        model_tool_names(registry.deferred_catalog_for_model(&FleetRole::Builder)),
+        expected
     );
 }
 
@@ -12640,6 +12758,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
     );
 
     let fork_context = SubAgentForkContext {
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         messages: vec![Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -12655,7 +12774,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
         &assignment,
         &FleetRole::Reviewer,
         &system,
-        Some(&fork_context),
+        Some(fork_context),
     );
     assert!(
         forked
@@ -12671,6 +12790,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
         &direct_child,
         "agent_parent",
         SubAgentForkContext {
+            live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
             messages: Vec::new(),
             structured_state_block: None,
             work_source: None,
@@ -13446,6 +13566,7 @@ async fn parent_todo_state_still_reaches_children_as_immutable_fork_context() {
     let mut parent = stub_runtime();
     write_todos_as(&parent, &["parent step one"]).await;
     parent.fork_context = Some(SubAgentForkContext {
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         messages: Vec::new(),
         structured_state_block: Some(
             "## Fork State\n\n### Work\n\nTo-do (0% settled)\n- [ ] #1 parent step one\n"
@@ -13454,10 +13575,54 @@ async fn parent_todo_state_still_reaches_children_as_immutable_fork_context() {
         work_source: None,
     });
 
+    let parent_header = Arc::clone(&parent.fork_context.as_ref().unwrap().live_header);
+    *parent_header.lock().unwrap() = Some(codewhale_runtime::prompt_zones::LiveHeaderSnapshot {
+        system: Some(codewhale_models::SystemPrompt::Text(
+            "captured parent header".to_string(),
+        )),
+        tools_json: String::new(),
+        active_names: Vec::new(),
+        model: parent.model.clone(),
+        provider: codewhale_config::ProviderKind::Deepseek,
+        provider_identity: "fixture-parent".to_string(),
+        endpoint_fingerprint: Some("fixture-endpoint".to_string()),
+        route_receipt: Some(crate::route_receipt::TurnRouteReceipt::new(
+            codewhale_config::ProviderKind::Deepseek,
+            "fixture-parent",
+            &parent.model,
+            "https://api.example.test/v1",
+            "fake-cache-key",
+        )),
+        history: Vec::new(),
+        last_hit_tokens: Some(1),
+    });
     let direct = parent.child_runtime();
     let nested = direct.child_runtime();
+    parent_header.lock().unwrap().as_mut().unwrap().system = Some(
+        codewhale_models::SystemPrompt::Text("later parent header".to_string()),
+    );
 
     for (label, child) in [("direct child", &direct), ("nested child", &nested)] {
+        let child_header = &child.fork_context.as_ref().unwrap().live_header;
+        assert!(!Arc::ptr_eq(&parent_header, child_header));
+        let header = child_header.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            header.route_receipt.as_ref(),
+            Some(&crate::route_receipt::TurnRouteReceipt::new(
+                codewhale_config::ProviderKind::Deepseek,
+                "fixture-parent",
+                &parent.model,
+                "https://api.example.test/v1",
+                "fake-cache-key",
+            ))
+        );
+        assert_eq!(
+            header.system,
+            Some(codewhale_models::SystemPrompt::Text(
+                "captured parent header".to_string()
+            )),
+            "{label} must retain the header captured at spawn"
+        );
         let block = child
             .fork_context
             .as_ref()
@@ -17944,6 +18109,7 @@ fn nested_tool_runtime_routes_child_completions_to_local_inbox() {
     let direct_child_runtime = runtime_with_depth(1, Some(root_tx));
     let fork_context = SubAgentForkContext {
         messages: Vec::new(),
+        live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
         structured_state_block: None,
         work_source: None,
     };
@@ -22705,7 +22871,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // ceiling keeps its existing platform margin after the reviewed schema growth.
-const PARENT_SURFACE_BYTE_CEILING: usize = 91_812;
+const PARENT_SURFACE_BYTE_CEILING: usize = 92_292;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
@@ -26344,7 +26510,11 @@ fn tool_search_cannot_return_a_retired_agents_tool() {
     let tmp = tempdir().expect("tempdir");
     let registry = subagent_registry_for_catalog(tmp.path());
     let mut catalog = registry.to_api_tools();
-    apply_native_tool_deferral(&mut catalog, &HashSet::new());
+    // Token diet: agent is searchable by default; this test's subject is
+    // retired-tool exclusion, so its precondition re-eagers agent through
+    // the same always-load path discovery uses.
+    let always_load = HashSet::from(["agent".to_string()]);
+    apply_native_tool_deferral(&mut catalog, &always_load);
     assert!(
         catalog
             .iter()
@@ -26624,20 +26794,8 @@ async fn agent_claim_is_withheld_from_a_role_with_no_write_authority() {
     assert!(refusal.contains("no write authority to widen"), "{refusal}");
 }
 
-// Regression (stopship scout repair): the workflow's read-only scout
-// activates `grep_files` with one `tool_search` call before searching. That
-// two-step path only works while the scout surface keeps a first-turn-active
-// `tool_search` and a deferred, searchable `grep_files`; the hidden `File`
-// alias the brief cited before is filtered from every model-visible catalog
-// (`to_api_tools`), which is what silently broke the release-acceptance
-// explore gate. The registry is built with the scope the fixture scout really
-// runs under (`leaf_allowed_tools` lowers a read-only leaf to `["File"]`), so
-// the guard also pins the alias-family intersection that keeps `grep_files`
-// discoverable under that legacy rule. If a surface reshape fails this test,
-// re-work the fixture brief in the same change instead of leaving it
-// instructing calls the child cannot make.
 #[tokio::test]
-async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
+async fn scout_surface_keeps_content_search_eager() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
@@ -26660,7 +26818,7 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     let grep = catalog
         .iter()
         .find(|tool| tool.name == "grep_files")
-        .expect("scout must keep a deferred, searchable grep_files");
+        .expect("scout must keep an active grep_files");
     assert_eq!(
         search.defer_loading,
         Some(false),
@@ -26668,8 +26826,8 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     );
     assert_eq!(
         grep.defer_loading,
-        Some(true),
-        "grep_files must be deferred so the taught tool_search activation is required"
+        Some(false),
+        "grep_files must be first-turn active on the scout"
     );
     assert!(
         !catalog.iter().any(|tool| tool.name == "File"),
@@ -26693,7 +26851,7 @@ fn workflow_briefs_name_catalog_visible_tools() {
         .1;
     assert!(
         body.contains("`tool_search`") && body.contains("`grep_files`"),
-        "the scout brief must teach the two-step activation path:\n{body}"
+        "the scout brief must name content search and its discovery fallback:\n{body}"
     );
     // Every catalog-invisible execution name (hidden replay aliases and the
     // retired `search_content` action) is denied as a whole word, so an
@@ -26719,13 +26877,8 @@ fn workflow_briefs_name_catalog_visible_tools() {
     );
 }
 
-// Behavioral counterpart to the two composition guards above: on the scout's
-// live surface, one `tool_search` call must make the deferred `grep_files`
-// dispatchable through the same gate the child step loop uses. Saved `File`
-// calls retain a hidden compatibility handler for safe reads, but neither
-// model visibility nor that handler grants the scout mutation authority.
 #[tokio::test]
-async fn scout_activation_makes_grep_files_dispatchable() {
+async fn scout_grep_files_dispatches_without_activation() {
     let tmp = tempdir().expect("tempdir");
     let evidence = tmp.path().join("evidence.txt");
     std::fs::write(&evidence, "stopship evidence\n").expect("fixture evidence");
@@ -26742,6 +26895,7 @@ async fn scout_activation_makes_grep_files_dispatchable() {
 
     assert!(!surface.catalog().iter().any(|tool| tool.name == "File"));
     assert!(!model_tool_names(model_request_tools(&mut surface)).contains("File"));
+    assert!(model_tool_names(model_request_tools(&mut surface)).contains("grep_files"));
     let file_read = registry
         .execute_from_surface(
             "agent_unknown",
@@ -26781,22 +26935,12 @@ async fn scout_activation_makes_grep_files_dispatchable() {
     );
     assert!(!surface.active_names().contains("File"));
 
-    registry
-        .execute_from_surface(
-            "agent_unknown",
-            "",
-            &mut surface,
-            "tool_search",
-            serde_json::json!({"query": "grep_files"}),
-        )
-        .await
-        .expect("tool_search activation must succeed on the scout surface");
     assert!(
         surface.active_names().contains("grep_files"),
-        "activation must admit grep_files into the same surface the dispatch gate reads"
+        "grep_files must start active in the same surface the dispatch gate reads"
     );
 
-    registry
+    let searched = registry
         .execute_from_surface(
             "agent_unknown",
             "",
@@ -26810,7 +26954,12 @@ async fn scout_activation_makes_grep_files_dispatchable() {
             }),
         )
         .await
-        .expect("grep_files must dispatch through the real tool after the taught activation");
+        .expect("grep_files must dispatch through the real tool without discovery");
+    assert!(searched.result.success, "{searched:?}");
+    assert!(
+        searched.result.content.contains("stopship evidence"),
+        "{searched:?}"
+    );
 }
 
 #[test]
@@ -27880,4 +28029,77 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let usage = record.usage.as_ref().unwrap();
     assert_eq!(usage.total_tokens, Some(20));
     assert_eq!(usage.cost_microusd, Some(7));
+}
+
+#[test]
+fn eager_agent_and_workflow_stay_offered_without_search_rejection() {
+    use crate::core::engine::tool_catalog::{
+        apply_native_tool_deferral, execute_tool_search_with_cache,
+    };
+    use crate::core::session::ToolActivationCache;
+    use codewhale_tools::names::TOOL_SEARCH_NAME;
+    use std::collections::HashSet;
+
+    let registry = small_surface_registry(FleetRole::Builder);
+    let mut catalog = registry.deferred_catalog_for_model(&FleetRole::Builder);
+    let always_load = ["agent", "workflow"]
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    apply_native_tool_deferral(&mut catalog, &always_load);
+    let mut surface = ChildSurfaceProbe::new(catalog.clone(), &[]);
+    let eager_names = model_tool_names(model_request_tools(&mut surface));
+    for name in ["agent", "workflow"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.defer_loading),
+            Some(false),
+            "{name} is registered and eager"
+        );
+        assert!(eager_names.contains(name), "{name} must already be offered");
+    }
+
+    for (query, match_kind, wanted) in [
+        ("agent", "regex", "agent"),
+        ("workflow", "regex", "workflow"),
+        ("spawn subagent worker", "bm25", "agent"),
+        ("spawn subagent worker", "bm25", "workflow"),
+    ] {
+        let mut active = eager_names.iter().cloned().collect::<HashSet<_>>();
+        let mut cache = ToolActivationCache::default();
+        let metadata = execute_tool_search_with_cache(
+            TOOL_SEARCH_NAME,
+            &json!({"query": query, "match": match_kind}),
+            &catalog,
+            &mut active,
+            &mut cache,
+        )
+        .expect("tool_search runs")
+        .metadata
+        .expect("metadata");
+        let found = metadata["tool_references"].as_array().expect("refs");
+        let unavailable = metadata["unavailable_tool_references"]
+            .as_array()
+            .expect("unavailable refs");
+        assert!(
+            active.contains(wanted),
+            "{match_kind} {query:?} must keep {wanted} offered"
+        );
+        for name in ["agent", "workflow"] {
+            assert!(active.contains(name), "{name} must stay active");
+            assert!(
+                !found.iter().any(|value| value.as_str() == Some(name)),
+                "{match_kind} {query:?} must not re-offer eager {name}: {found:?}"
+            );
+            assert!(
+                !unavailable
+                    .iter()
+                    .any(|value| value["tool_name"].as_str() == Some(name)),
+                "{match_kind} {query:?} must not reject eager {name}: {unavailable:?}"
+            );
+            assert!(!cache.names().any(|cached| cached == name));
+        }
+    }
 }

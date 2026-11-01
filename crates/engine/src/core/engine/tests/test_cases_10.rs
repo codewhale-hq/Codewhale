@@ -1,21 +1,20 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 15] = [
+    // Token diet: agent+workflow (21KB of schema) and get/update_goal
+    // (meaningless without an active goal) stay searchable by default.
+    const EXPECTED_NATIVE: [&str; 12] = [
         "read",
         "write",
         "edit",
         "file_search",
+        "grep_files",
         "bash",
-        "agent",
-        "workflow",
         "todo_write",
-        "create_goal",
-        "get_goal",
-        "update_goal",
         "task_shell_wait",
         "load_skill",
         "context_archive_get",
         "context_archive_search",
+        "create_goal",
     ];
     assert_eq!(
         default_active_native_tool_names(),
@@ -55,15 +54,8 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
 #[test]
 fn non_yolo_mode_retains_default_defer_policy() {
     let always_load = HashSet::new();
-    for core in [
-        "read",
-        "write",
-        "edit",
-        "bash",
-        "agent",
-        "todo_write",
-        "load_skill",
-    ] {
+    // Token diet: agent stays searchable even on wide surfaces.
+    for core in ["read", "write", "edit", "bash", "todo_write", "load_skill"] {
         assert!(!should_default_defer_tool(core, &always_load));
     }
     for searchable in [
@@ -147,9 +139,10 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash", "agent"] {
+    for core in ["read", "write", "edit", "bash"] {
         assert_eq!(defer_loading(core), Some(false));
     }
+    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("Run"), Some(true));
     assert_eq!(defer_loading("remember"), Some(true));
@@ -215,9 +208,10 @@ fn capability_compact_surface_defers_nonessential_core_tools() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash", "agent"] {
+    for core in ["read", "write", "edit", "bash"] {
         assert_eq!(defer_loading(core), Some(false));
     }
+    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("update_plan"), Some(true));
     assert_eq!(defer_loading(TOOL_SEARCH_NAME), Some(false));
@@ -245,7 +239,7 @@ fn capability_full_surface_preserves_small_default_head() {
         crate::model_profile::ToolSurfaceBudget::Full,
     );
 
-    for name in ["read", "write", "edit", "bash", "agent"] {
+    for name in ["read", "write", "edit", "bash"] {
         assert_eq!(
             catalog
                 .iter()
@@ -255,13 +249,15 @@ fn capability_full_surface_preserves_small_default_head() {
             "{name} should stay eager on full tool surfaces"
         );
     }
-    assert_eq!(
-        catalog
-            .iter()
-            .find(|tool| tool.name == "Run")
-            .and_then(|tool| tool.defer_loading),
-        Some(true)
-    );
+    for name in ["agent", "Run"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.defer_loading),
+            Some(true)
+        );
+    }
 }
 
 #[test]
@@ -522,6 +518,7 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
                 McpAccess::PassiveSnapshot,
                 route,
                 "",
+                None,
             )
             .await;
         let active = build.surface.active.clone().unwrap_or_default();
@@ -559,18 +556,15 @@ fn metric_tool_names<'a>(
 async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
     let payload = measure_production_mode_tool_catalogs().await;
     let expected_active = HashSet::from([
-        "agent",
         "bash",
         "create_goal",
-        "get_goal",
-        "update_goal",
         "task_shell_wait",
         "edit",
         "file_search",
+        "grep_files",
         "read",
         "todo_write",
         "tool_search",
-        "workflow",
         "write",
         "load_skill",
         "context_archive_get",

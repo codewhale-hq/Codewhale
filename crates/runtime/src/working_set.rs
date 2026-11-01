@@ -20,6 +20,100 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
+pub const NAVIGATION_MARKER: &str = "[Code navigation: ";
+pub const MAX_NAVIGATION_PATH_BYTES: usize = 512;
+pub const MAX_DELIVERED_REFS: usize = 32;
+
+/// An actionable snapshot-qualified line window, not a permission grant or
+/// proof that its body was delivered. Coordinates are 1-based lines, not
+/// LSP UTF-16 columns or byte offsets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeReadReference {
+    pub path: String,
+    pub offset: usize,
+    pub limit: usize,
+    pub expected_revision: String,
+}
+
+impl CodeReadReference {
+    fn valid(&self) -> bool {
+        !self.path.is_empty()
+            && self.path.len() <= MAX_NAVIGATION_PATH_BYTES
+            && Path::new(&self.path)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            && self.offset > 0
+            && self.limit > 0
+            && self.offset.checked_add(self.limit - 1).is_some()
+            && valid_source_revision(&self.expected_revision)
+    }
+
+    pub fn extends_window(&self, first_line: usize, last_line: usize) -> bool {
+        let end_line = self.offset.saturating_add(self.limit.saturating_sub(1));
+        self.offset <= last_line
+            && end_line >= first_line
+            && (self.offset < first_line || end_line > last_line)
+    }
+}
+
+pub fn valid_source_revision(revision: &str) -> bool {
+    revision.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+/// Delivery bookkeeping from projected tool-result text only. JSON strings
+/// are not recursively decoded: a log/args preview is not an explicitly
+/// returned reference. None of these references authorizes a future read.
+pub fn delivered_navigation_refs(text: &str) -> Vec<CodeReadReference> {
+    fn collect(value: &Value, refs: &mut Vec<CodeReadReference>, nodes: &mut usize, depth: usize) {
+        if *nodes == 0 || depth > 16 || refs.len() >= MAX_DELIVERED_REFS {
+            return;
+        }
+        *nodes -= 1;
+        if value
+            .as_object()
+            .is_some_and(|object| object.len() == 4 && object.contains_key("expected_revision"))
+            && let Ok(reference) = serde_json::from_value::<CodeReadReference>(value.clone())
+            && reference.valid()
+        {
+            if !refs.contains(&reference) {
+                refs.push(reference);
+            }
+            return;
+        }
+        match value {
+            Value::Object(object) => {
+                for value in object.values() {
+                    collect(value, refs, nodes, depth + 1);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    collect(value, refs, nodes, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut refs = Vec::new();
+    let value = serde_json::from_str::<Value>(text).ok().or_else(|| {
+        let start = text.rfind(NAVIGATION_MARKER)? + NAVIGATION_MARKER.len();
+        serde_json::Deserializer::from_str(&text[start..])
+            .into_iter::<Value>()
+            .next()?
+            .ok()
+    });
+    if let Some(value) = value {
+        collect(&value, &mut refs, &mut 2048, 0);
+    }
+    refs
+}
+
 /// Repo-aware resolver for `@`-mentions and file pickers.
 ///
 /// `cwd` is captured at construction; if the host's current directory changes
@@ -1006,9 +1100,54 @@ pub struct WorkingSet {
     pub turn: u64,
     /// Path entries keyed by workspace-relative path.
     pub entries: HashMap<String, WorkingSetEntry>,
+    /// Latest bounded navigation references delivered in this conversation.
+    /// Not body readership, current source freshness or read authority. This
+    /// field is never rendered into the session-pinned prompt prefix.
+    #[serde(default)]
+    pub delivered_code_refs: Vec<CodeReadReference>,
+    #[serde(skip)]
+    navigation_delivery_initialized: bool,
 }
 
 impl WorkingSet {
+    /// Only provider acceptance of the projected request establishes delivery;
+    /// intermediate program reads are absent from these messages.
+    pub fn observe_navigation_delivery(&mut self, messages: &[Message]) {
+        // Inspect inherited context on the first accepted request, then only
+        // the current result tail. Do not reparse every historical payload on
+        // every model step just to rediscover the same references.
+        let start = if self.navigation_delivery_initialized {
+            messages
+                .iter()
+                .rposition(|message| message.role == "assistant")
+                .map_or(0, |index| index + 1)
+        } else {
+            0
+        };
+        self.navigation_delivery_initialized = true;
+        for message in &messages[start..] {
+            for block in &message.content {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    self.record_delivered_navigation(delivered_navigation_refs(content));
+                }
+            }
+        }
+    }
+
+    fn record_delivered_navigation(&mut self, refs: Vec<CodeReadReference>) {
+        for reference in refs {
+            self.delivered_code_refs.retain(|old| {
+                old.path != reference.path || old.expected_revision == reference.expected_revision
+            });
+            if !self.delivered_code_refs.contains(&reference) {
+                self.delivered_code_refs.push(reference);
+                if self.delivered_code_refs.len() > MAX_DELIVERED_REFS {
+                    self.delivered_code_refs.remove(0);
+                }
+            }
+        }
+    }
+
     /// Advance to the next turn.
     pub fn next_turn(&mut self) {
         self.turn = self.turn.saturating_add(1);
@@ -1044,8 +1183,25 @@ impl WorkingSet {
     pub fn rebuild_from_messages(&mut self, messages: &[Message], workspace: &Path) {
         self.entries.clear();
         self.turn = 0;
+        self.delivered_code_refs.clear();
+        self.navigation_delivery_initialized = true;
+        let mut offered = Vec::new();
 
         for message in messages {
+            // A subsequent assistant response confirms the historical request,
+            // unlike a trailing tool result left at a crash boundary. Fresh
+            // child seeds do not invoke this resume/compaction rebuild.
+            if message.role == "assistant" {
+                self.record_delivered_navigation(std::mem::take(&mut offered));
+            }
+            for block in &message.content {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    offered.extend(delivered_navigation_refs(content));
+                    if offered.len() > MAX_DELIVERED_REFS {
+                        offered.drain(..offered.len() - MAX_DELIVERED_REFS);
+                    }
+                }
+            }
             if message.role == "user" {
                 self.next_turn();
             }
@@ -1504,7 +1660,10 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
     }
 
     let re = path_regex();
-    re.find_iter(text)
+    // Matches cannot cross line endings, and every arm needs a dot or separator.
+    text.lines()
+        .filter(|line| line.contains('/') || line.contains('\\') || line.contains('.'))
+        .flat_map(|line| re.find_iter(line))
         .map(|m| m.as_str().to_string())
         .filter(|s| looks_like_path(s))
         .collect()

@@ -16,6 +16,12 @@ use codewhale_models::{MessageRequest, MessageResponse};
 pub trait ModelClient: Send + Sync {
     fn provider_name(&self) -> &str;
     fn model(&self) -> &str;
+    fn wire_format(&self) -> Option<codewhale_config::provider::WireFormat> {
+        None
+    }
+    fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
+        None
+    }
     fn measure_outbound_tools(
         &self,
         _request: MessageRequest,
@@ -86,6 +92,12 @@ where
         LlmClient::model(self)
     }
 
+    fn wire_format(&self) -> Option<codewhale_config::provider::WireFormat> {
+        LlmClient::wire_format(self)
+    }
+    fn cache_route_receipt(&self) -> Option<crate::route_receipt::TurnRouteReceipt> {
+        LlmClient::cache_route_receipt(self)
+    }
     fn measure_outbound_tools(
         &self,
         request: MessageRequest,

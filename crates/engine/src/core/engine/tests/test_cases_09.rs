@@ -1604,10 +1604,23 @@ fn only_the_stamped_approval_note_is_hidden_from_the_person() {
 #[test]
 fn core_primitives_and_todo_write_default_to_eager() {
     let always_load = HashSet::new();
-    for core in ["read", "write", "edit", "bash", "agent", "todo_write"] {
+    for core in ["read", "write", "edit", "bash", "todo_write"] {
         assert!(!should_default_defer_tool(core, &always_load));
     }
-    for searchable in ["File", "Bash", "Git", "Run", "tasks", "git_blame"] {
+    // Token diet: agent+workflow (21KB of schema) and get/update_goal
+    // (meaningless without an active goal) stay searchable by default.
+    for searchable in [
+        "File",
+        "Bash",
+        "Git",
+        "Run",
+        "tasks",
+        "git_blame",
+        "agent",
+        "workflow",
+        "get_goal",
+        "update_goal",
+    ] {
         assert!(should_default_defer_tool(searchable, &always_load));
     }
 }

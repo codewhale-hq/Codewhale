@@ -26,18 +26,28 @@ const MAX_RESULTS: usize = 100;
 /// Maximum file size to search (skip large binaries)
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
+// Sound deeper only after the query has narrowed. Snapshots are collected from
+// the existing scan, never reread, and discarded when the result set is broad.
+const MAX_NAVIGATION_MATCHES: usize = 16;
+const MAX_NAVIGATION_FILES: usize = MAX_NAVIGATION_MATCHES;
+const MAX_NAVIGATION_BYTES: usize = 4 * 1024;
+
 /// Hard cap on a single grep_files run. The directory walk plus per-file regex
 /// is synchronous blocking work; without this it can run for minutes on a large
 /// tree. Mirrors the file_search tool so both blocking searches behave the same.
 const GREP_FILES_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Result of a grep match
+/// Result of a grep match. Empty context arrays are omitted on the
+/// wire (models request context in ~0% of calls); `default` keeps old
+/// payloads parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
     pub file: String,
     pub line_number: usize,
     pub line: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_before: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_after: Vec<String>,
 }
 
@@ -55,7 +65,7 @@ impl ToolSpec for GrepFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for a regex pattern in workspace files. The pure-Rust search skips common non-code directories by default and returns matching lines with context."
+        "Search file contents for a regex pattern or symbol; use file_search for filenames. Filter file types with include globs, not extensions. The search skips common non-code directories by default and returns matching lines with context."
     }
 
     fn input_schema(&self) -> Value {
@@ -90,10 +100,11 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 100)"
+                    "description": "Maximum number of results to return (default: 100, max: 1000)"
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
+            "additionalProperties": false
         })
     }
 
@@ -117,8 +128,12 @@ impl ToolSpec for GrepFilesTool {
             .unwrap_or(usize::MAX)
             .min(1000);
         let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
+        // Bounded like file_search's limit: an explicit value is the
+        // model's choice, but a runaway (or typo) must not mint an
+        // unbounded JSON array.
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
-            .unwrap_or(MAX_RESULTS);
+            .unwrap_or(MAX_RESULTS)
+            .clamp(1, 1000);
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -207,6 +222,9 @@ impl ToolSpec for GrepFilesTool {
             // The walk never scans past the file that fills the budget.
             let mut truncated = false;
             let mut unreadable_files = 0usize;
+            let navigation_enabled = !crate::tools::echolocation::echo_off("grep_navigation");
+            let mut snapshots = Vec::new();
+            let mut navigation_files_omitted = 0usize;
 
             let skipped_dirs = visit_files(
                 &search_path,
@@ -228,32 +246,56 @@ impl ToolSpec for GrepFilesTool {
                         return Ok(WalkControl::Continue);
                     }
 
-                    // Get relative path from workspace
+                    // Relative path from workspace. The walk root comes
+                    // back canonical while the workspace may not be
+                    // (macOS /var, Windows \\?\ verbatim paths), so
+                    // canonicalize both sides before falling back to
+                    // the absolute path.
                     let relative_path = file_path
                         .strip_prefix(&workspace)
                         .ok()
+                        .map(|rel| rel.to_string_lossy().to_string())
                         .or_else(|| {
                             workspace_canonical
                                 .as_deref()
                                 .and_then(|canonical| file_path.strip_prefix(canonical).ok())
+                                .map(|rel| rel.to_string_lossy().to_string())
                         })
-                        .unwrap_or(file_path)
-                        .to_string_lossy()
-                        .to_string();
+                        .or_else(|| {
+                            // Windows verbatim roots (\\?\C:\ws) canonicalize
+                            // the workspace but not the walked file path, so
+                            // the strip above can still miss. Canonicalize the
+                            // file too before giving up.
+                            let ws = workspace_canonical
+                                .clone()
+                                .or_else(|| workspace.canonicalize().ok());
+                            let fp = file_path.canonicalize().ok();
+                            ws.zip(fp).and_then(|(ws, fp)| {
+                                fp.strip_prefix(&ws)
+                                    .ok()
+                                    .map(|rel| rel.to_string_lossy().to_string())
+                            })
+                        })
+                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
                     let budget = max_results.saturating_sub(results.len());
-                    let (file_matches, overflowed) = match search_file_streaming(
+                    let collect_source = navigation_enabled
+                        && results.len() <= MAX_NAVIGATION_MATCHES
+                        && snapshots.len() < MAX_NAVIGATION_FILES;
+                    let (file_matches, overflowed, source) = match search_file_streaming(
                         file_path,
                         &relative_path,
                         &regex,
                         context_lines,
                         budget,
                         cancel_token,
+                        collect_source,
                     )? {
                         FileScan::Scanned {
                             matches,
                             overflowed,
-                        } => (matches, overflowed),
+                            source,
+                        } => (matches, overflowed, source),
                         FileScan::NotText => return Ok(WalkControl::Continue),
                         FileScan::Unreadable => {
                             unreadable_files += 1;
@@ -263,7 +305,32 @@ impl ToolSpec for GrepFilesTool {
 
                     files_searched += 1;
                     total_matches += file_matches.len();
+                    if navigation_enabled
+                        && !file_matches.is_empty()
+                        && file_path
+                            .extension()
+                            .is_some_and(|extension| extension == "rs")
+                    {
+                        if let Some(source) = source {
+                            if let Some((_, relative)) =
+                                crate::tools::echolocation::navigation_cache_identity(
+                                    &workspace, file_path,
+                                )
+                            {
+                                let lines: Vec<_> =
+                                    file_matches.iter().map(|item| item.line_number).collect();
+                                snapshots.push((relative, source, lines));
+                            } else {
+                                navigation_files_omitted += 1;
+                            }
+                        } else {
+                            navigation_files_omitted += 1;
+                        }
+                    }
                     results.extend(file_matches);
+                    if results.len() > MAX_NAVIGATION_MATCHES {
+                        snapshots.clear();
+                    }
                     if overflowed {
                         truncated = true;
                         return Ok(WalkControl::Stop);
@@ -277,15 +344,92 @@ impl ToolSpec for GrepFilesTool {
                 .map(|item| grep_match_to_json(item, context_lines))
                 .collect();
 
+            // Echolocation sounding: chart the matched dirs (sorted, capped)
+            // so the model sees each match's podmates without a follow-up
+            // list. Computed here, inside the blocking worker, with the
+            // workspace already at hand.
+            let matched_files: Vec<String> = results.iter().map(|item| item.file.clone()).collect();
+            let vis = crate::tools::echolocation::PodVisibility {
+                include: &include_patterns,
+                exclude: &exclude_patterns,
+                extensions: &[],
+                glob_root: &search_path,
+                gitignore: false,
+            };
+            let (pods, pods_omitted) =
+                crate::tools::echolocation::sound_match_pods(&workspace, &matched_files, &vis);
+            let pods_json: Vec<Value> = pods
+                .iter()
+                .map(|pod| {
+                    json!({
+                        "dir": pod.dir,
+                        "mates": pod.mates,
+                        "mate_total": pod.mate_total,
+                    })
+                })
+                .collect();
+
             // Build result. When context_lines == 1, return the single context
             // line as a string instead of a one-item array. That keeps the common
             // "show just the adjacent line" case easy for model callers to read.
-            let mut output = json!({
-                "matches": matches_json,
-                "total_matches": total_matches,
-                "files_searched": files_searched,
-                "truncated": truncated,
-            });
+            // json! would to_value() these already-built arrays and deep-copy
+            // every match and pod. Insert them by move; key order matches the
+            // previous object because serde_json preserves insertion order.
+            let mut built = serde_json::Map::new();
+            if navigation_enabled && !truncated && results.len() <= MAX_NAVIGATION_MATCHES {
+                let mut observations = Vec::with_capacity(snapshots.len());
+                for (path, source, lines) in snapshots {
+                    check_cancelled(cancel_token)?;
+                    observations.push(
+                        crate::tools::echolocation::SourceNavigation::from_search_source(
+                            path,
+                            crate::tools::file::content_hash(source.as_bytes()),
+                            &source,
+                            &lines,
+                            MAX_NAVIGATION_BYTES - 2,
+                        ),
+                    );
+                }
+                // Callers discovered first must not consume the evidence budget
+                // before a matched declaration. Raw grep order is unchanged.
+                observations.sort_by_key(|observation| !observation.definition_match());
+                let mut navigation = Vec::new();
+                let mut navigation_bytes = 2usize; // JSON array brackets.
+                for observation in observations {
+                    check_cancelled(cancel_token)?;
+                    let remaining = MAX_NAVIGATION_BYTES
+                        .saturating_sub(navigation_bytes + usize::from(!navigation.is_empty()));
+                    let value = serde_json::to_value(observation)
+                        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+                    let size = serde_json::to_vec(&value)
+                        .map_err(|error| ToolError::execution_failed(error.to_string()))?
+                        .len();
+                    if size > remaining {
+                        navigation_files_omitted += 1;
+                        continue;
+                    }
+                    navigation_bytes += size + usize::from(!navigation.is_empty());
+                    navigation.push(value);
+                }
+                // Put actionable evidence ahead of raw hits so ordinary output
+                // truncation does not preferentially hide the next read.
+                if !navigation.is_empty() {
+                    built.insert("navigation".to_owned(), Value::Array(navigation));
+                }
+                if navigation_files_omitted > 0 {
+                    built.insert(
+                        "navigation_files_omitted".to_owned(),
+                        Value::from(navigation_files_omitted),
+                    );
+                }
+            }
+            built.insert("matches".to_owned(), Value::Array(matches_json));
+            built.insert("total_matches".to_owned(), Value::from(total_matches));
+            built.insert("files_searched".to_owned(), Value::from(files_searched));
+            built.insert("truncated".to_owned(), Value::from(truncated));
+            built.insert("pods".to_owned(), Value::Array(pods_json));
+            built.insert("pods_omitted".to_owned(), Value::from(pods_omitted));
+            let mut output = Value::Object(built);
             if truncated {
                 output["max_results"] = json!(max_results);
             }
@@ -379,6 +523,7 @@ fn search_file_streaming(
     context_lines: usize,
     budget: usize,
     cancel_token: Option<&CancellationToken>,
+    collect_source: bool,
 ) -> Result<FileScan, ToolError> {
     let Ok(file) = fs::File::open(path) else {
         return Ok(FileScan::Unreadable);
@@ -391,7 +536,13 @@ fn search_file_streaming(
     // lines still needed). Entries complete in FIFO order.
     let mut pending: VecDeque<(usize, usize)> = VecDeque::new();
     let mut line_idx = 0usize;
+    // True when a match exists past the collected budget, so the caller
+    // can report truncation honestly instead of inferring it.
     let mut overflowed = false;
+    let mut source = (collect_source
+        && path.extension().is_some_and(|extension| extension == "rs"))
+    .then(Vec::new);
+    let mut complete = false;
 
     loop {
         raw.clear();
@@ -400,9 +551,19 @@ fn search_file_streaming(
             Err(_) => return Ok(FileScan::Unreadable),
         };
         if n == 0 {
+            complete = true;
             break;
         }
         check_cancelled(cancel_token)?;
+        if let Some(bytes) = &mut source {
+            if bytes.len().saturating_add(raw.len())
+                <= crate::tools::echolocation::MAX_NAVIGATION_SOURCE_BYTES
+            {
+                bytes.extend_from_slice(&raw);
+            } else {
+                source = None;
+            }
+        }
 
         // Mirror `str::lines`: strip the trailing '\n', and a '\r' only when
         // it directly precedes that '\n'.
@@ -428,9 +589,11 @@ fn search_file_streaming(
             pending.pop_front();
         }
 
-        if matches.len() >= budget {
-            overflowed = overflowed || regex.is_match(line);
-        } else if regex.is_match(line) {
+        // Past the budget we keep testing but stop collecting; the
+        // first surplus match proves the cut. With nothing pending (no
+        // after-context owed) we can stop scanning immediately.
+        let is_match = regex.is_match(line);
+        if matches.len() < budget && is_match {
             matches.push(GrepMatch {
                 file: relative_path.to_string(),
                 line_number: line_idx + 1,
@@ -440,6 +603,11 @@ fn search_file_streaming(
             });
             if context_lines > 0 {
                 pending.push_back((matches.len() - 1, context_lines));
+            }
+        } else if is_match {
+            overflowed = true;
+            if pending.is_empty() {
+                break;
             }
         }
 
@@ -455,6 +623,9 @@ fn search_file_streaming(
     Ok(FileScan::Scanned {
         matches,
         overflowed,
+        source: source
+            .filter(|_| complete)
+            .and_then(|bytes| String::from_utf8(bytes).ok()),
     })
 }
 
@@ -463,6 +634,7 @@ enum FileScan {
     Scanned {
         matches: Vec<GrepMatch>,
         overflowed: bool,
+        source: Option<String>,
     },
     /// Binary or not valid UTF-8: skipped on purpose.
     NotText,

@@ -313,6 +313,7 @@ impl Engine {
                 McpAccess::PassiveSnapshot,
                 route_context.clone(),
                 "",
+                prompt_context.goal_objective.as_deref(),
             )
             .await;
 

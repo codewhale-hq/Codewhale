@@ -104,17 +104,14 @@
       "write",
       "edit",
       "file_search",
+      "grep_files",
       "bash",
-      "agent",
-      "workflow",
       "todo_write",
-      "create_goal",
-      "get_goal",
-      "update_goal",
       "task_shell_wait",
       "load_skill",
       "context_archive_get",
-      "context_archive_search"
+      "context_archive_search",
+      "create_goal"
     ],
     "schemas": {
       "read": [

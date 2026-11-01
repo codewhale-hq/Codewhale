@@ -7,6 +7,244 @@ fn tool() -> FileTool {
 }
 
 #[tokio::test]
+async fn native_navigation_footer_follows_displayed_lines() {
+    use crate::tools::echolocation::delivered_navigation_refs;
+
+    let tmp = tempdir().expect("tempdir");
+    let context = ToolContext::new(tmp.path());
+    std::fs::write(
+        tmp.path().join("nav.rs"),
+        "fn early() {\n    let _ = 0;\n}\nfn target() {\n    let _ = \"TARGET_BODY\";\n}\n\nfn later() {\n    let _ = 2;\n}\n",
+    )
+    .unwrap();
+    let whole = ReadTool
+        .execute(json!({"path": "nav.rs"}), &context)
+        .await
+        .unwrap();
+    let navigation = whole.metadata.as_ref().unwrap()["navigation"].clone();
+    assert!(delivered_navigation_refs(&whole.content).is_empty());
+
+    // Body-only reads, both inclusive boundaries, gap/empty reads, and a
+    // second focused read all reuse the same range-independent observations.
+    for (offset, limit, expected) in [
+        (5, 1, Some(4)),
+        (4, 1, Some(4)),
+        (6, 1, Some(4)),
+        (3, 1, Some(1)),
+        (7, 1, None),
+        (9, 1, Some(8)),
+        (5, 0, None),
+        (5, 1, Some(4)),
+    ] {
+        let result = ReadTool
+            .execute(
+                json!({"path": "nav.rs", "offset": offset, "limit": limit}),
+                &context,
+            )
+            .await
+            .unwrap();
+        let references = delivered_navigation_refs(&result.content);
+        assert_eq!(
+            references.first().map(|reference| reference.offset),
+            expected,
+            "read offset={offset} limit={limit} must prioritize displayed source: {}",
+            result.content
+        );
+        assert_eq!(result.metadata.as_ref().unwrap()["navigation"], navigation);
+        if limit == 0 {
+            assert!(!result.content.contains("Use offset="));
+        }
+        if offset == 7 {
+            assert!(result.content.contains(&format!(
+                "Use offset=8 expected_revision={}",
+                navigation["source_revision"].as_str().unwrap()
+            )));
+        }
+        let footer = result.content.rfind("\n\n[Code navigation: ").unwrap();
+        assert!(result.content.len() - footer <= 600);
+        if offset == 5 && limit == 1 {
+            let followed = ReadTool
+                .execute(serde_json::to_value(&references[0]).unwrap(), &context)
+                .await
+                .unwrap();
+            assert!(followed.content.starts_with("fn target() {\n"));
+            assert!(followed.content.contains("TARGET_BODY"));
+        }
+    }
+
+    // Requested-but-undisplayed functions must not win after byte truncation
+    // or when the first selected line is too large to display at all.
+    std::fs::write(
+        tmp.path().join("budget.rs"),
+        format!(
+            "fn early() {{}}\n// gap\n//{}\nfn withheld() {{}}\n",
+            "x".repeat(100_000)
+        ),
+    )
+    .unwrap();
+    for offset in [2, 3] {
+        let result = ReadTool
+            .execute(json!({"path": "budget.rs", "offset": offset}), &context)
+            .await
+            .unwrap();
+        assert_eq!(result.metadata.as_ref().unwrap()["truncated"], true);
+        assert!(delivered_navigation_refs(&result.content).is_empty());
+    }
+
+    // A long reference must not suppress a later displayed function whose
+    // complete reference fits within the same inline budget.
+    let path = format!("{}.rs", "p".repeat(90));
+    std::fs::write(
+        tmp.path().join(&path),
+        format!(
+            "fn {}() {{\n    let _ = 0;\n}}\nfn fits() {{\n    let _ = 1;\n}}\n",
+            "a".repeat(64)
+        ),
+    )
+    .unwrap();
+    let result = ReadTool
+        .execute(json!({"path": path, "offset": 2, "limit": 4}), &context)
+        .await
+        .unwrap();
+    assert_eq!(
+        delivered_navigation_refs(&result.content)
+            .iter()
+            .map(|reference| reference.offset)
+            .collect::<Vec<_>>(),
+        vec![4],
+        "a non-fitting candidate must not hide a reference that fits: {}",
+        result.content
+    );
+    let footer = result.content.rfind("\n\n[Code navigation: ").unwrap();
+    assert!(result.content.len() - footer <= 600);
+    let rendered: Value = serde_json::from_str(
+        result.content[footer..]
+            .strip_prefix("\n\n[Code navigation: ")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rendered["symbols_omitted"], 1);
+    assert_eq!(
+        result.metadata.as_ref().unwrap()["navigation"]["symbols"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn native_navigation_paging_preserves_snapshot_guard() {
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
+    let tmp = tempdir().expect("tempdir");
+    let source = format!(
+        "fn paged() {{\n    let _ = \"{}\";\n}}\nfn sibling() {{}}\n",
+        "x".repeat(120_000)
+    );
+    std::fs::write(tmp.path().join("paged.rs"), &source).unwrap();
+    let context = ToolContext::new(tmp.path());
+    let observed = ReadTool
+        .execute(json!({"path": "paged.rs", "limit": 1}), &context)
+        .await
+        .unwrap();
+    let reference = &observed.metadata.as_ref().unwrap()["navigation"]["symbols"][0]["read"];
+    let mut continuations = Vec::new();
+
+    // Follow the reader's own instructions from unguarded or guarded reads
+    // after byte truncation, a line limit, and an oversized first line.
+    for (offset, limit, guarded) in [
+        (1, 3, false),
+        (1, 1, false),
+        (2, 2, false),
+        (1, 3, true),
+        (1, 1, true),
+        (2, 2, true),
+    ] {
+        let mut request = json!({"path": "paged.rs", "offset": offset, "limit": limit});
+        if guarded {
+            request["expected_revision"] = reference["expected_revision"].clone();
+        }
+        let page = ReadTool.execute(request, &context).await.unwrap();
+        assert_eq!(page.content.matches("Use offset=").count(), 1);
+        let hint = page
+            .content
+            .split_once("Use ")
+            .expect("actionable continuation")
+            .1
+            .split_once(" to ")
+            .expect("native read parameters")
+            .0;
+        let mut next = json!({"path": "paged.rs"});
+        for parameter in hint.split_whitespace() {
+            let (key, value) = parameter.split_once('=').expect("read parameter");
+            next[key] = if key == "expected_revision" {
+                json!(value)
+            } else {
+                json!(value.parse::<u64>().expect("numeric read parameter"))
+            };
+        }
+        assert_eq!(
+            next["expected_revision"], reference["expected_revision"],
+            "a continuation must not silently drop snapshot protection"
+        );
+        assert_eq!(next["offset"], 2);
+        if limit != 1 {
+            assert_eq!(next["limit"], 2, "stay inside the captured function");
+        }
+        let followed = ReadTool.execute(next.clone(), &context).await.unwrap();
+        if offset == 2 {
+            assert!(followed.content.starts_with("    let _ = \"xxx"));
+            assert!(
+                !followed
+                    .content
+                    .split("\n\n[")
+                    .next()
+                    .unwrap()
+                    .contains("fn sibling")
+            );
+        }
+        continuations.push(next);
+    }
+
+    std::fs::write(tmp.path().join("paged.rs"), source.replacen('x', "y", 1)).unwrap();
+    for next in continuations {
+        let error = ReadTool
+            .execute(next, &context)
+            .await
+            .expect_err("following an old continuation must refuse a same-size edit");
+        assert!(error.to_string().contains("stale"), "{error}");
+    }
+
+    // A guard also applies to ordinary non-navigable files; if even the
+    // existing maximum cannot fit a line, do not suggest an unguarded shell.
+    std::fs::write(
+        tmp.path().join("wide.rs"),
+        format!("{}\nfn following() {{}}\n", "x".repeat(500_001)),
+    )
+    .unwrap();
+    let wide = ReadTool
+        .execute(json!({"path": "wide.rs", "limit": 1}), &context)
+        .await
+        .unwrap();
+    let revision = &wide.metadata.as_ref().unwrap()["navigation"]["source_revision"];
+    assert!(!wide.content.contains("Use bash:"));
+    assert!(!wide.content.contains("Use offset="));
+    assert!(wide.content.contains("revision guard"));
+    let blocked = ReadTool
+        .execute(
+            json!({"path": "wide.rs", "limit": 1, "expected_revision": revision, "max_bytes": 500_000}),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(!blocked.content.contains("Use bash:"));
+    assert!(!blocked.content.contains("Use offset="));
+    assert!(blocked.content.contains("revision guard"));
+}
+
+#[tokio::test]
 async fn lowercase_read_returns_a_typed_image_block() {
     let tmp = tempdir().expect("tempdir");
     let path = tmp.path().join("shot.png");
@@ -555,7 +793,7 @@ fn primitive_schemas_are_separate_and_small_contract_shaped() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
         // `max_bytes` is the model-requested per-call output budget (C05).
-        ["limit", "max_bytes", "offset", "path"]
+        ["expected_revision", "limit", "max_bytes", "offset", "path"]
             .into_iter()
             .map(str::to_string)
             .collect()

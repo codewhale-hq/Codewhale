@@ -662,7 +662,7 @@ pub fn tool_result_context_view_with_window(
     tool_name: &str,
     output: &ToolResult,
 ) -> ToolResultContextView {
-    let raw = output.content.trim();
+    let raw = output.content.as_str();
     if raw.is_empty() {
         return ToolResultContextView::whole(String::new());
     }
@@ -720,7 +720,7 @@ pub fn tool_result_context_view_with_window(
             retrieval_ref,
         )
     {
-        return ToolResultContextView::whole(text.trim().to_string());
+        return ToolResultContextView::whole(text);
     }
 
     if raw.chars().count() <= budget {

@@ -20,7 +20,14 @@ impl Engine {
         } = prepared;
         let child_job = self.child_job();
         if let Some(job) = child_job.as_ref() {
-            if let Err(error) = job.project(&self.session.messages, job.steps()).await {
+            if let Err(error) = job
+                .project(
+                    &self.session.messages,
+                    job.steps(),
+                    stream_request.system.as_ref(),
+                )
+                .await
+            {
                 return PhaseResult::Return((
                     TurnOutcomeStatus::Failed,
                     Some(format!(
@@ -227,6 +234,11 @@ impl Engine {
         };
         let stream = match stream_result {
             Ok(s) => {
+                // Physical-cache population, nested execution and result
+                // projection alone do not establish model delivery.
+                self.session
+                    .working_set
+                    .observe_navigation_delivery(&stream_request.messages);
                 if let Some(job) = child_job.as_ref() {
                     job.provider_responded();
                 }
@@ -574,6 +586,37 @@ impl Engine {
             job.response_settled(!response_stream_failed);
         }
         turn.add_parent_usage(&usage);
+        if let Some(child) = self.child_host.as_mut()
+            && child.fork_cache_checked
+            && !child.fork_trial_first_response_logged
+        {
+            child.fork_trial_first_response_logged = true;
+            #[allow(clippy::print_stderr)]
+            if codewhale_runtime::prompt_zones::fork_trial_diag_enabled() {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "codewhale_fork_trial": "first_response",
+                        "agent_id": child.authority.owner_agent_id,
+                        "inherited": child.fork_cache_inherited.is_some(),
+                        "usage_reported": usage_reported,
+                        "stream_failed": response_stream_failed,
+                        "input": usage.input_tokens,
+                        "hit": usage.prompt_cache_hit_tokens,
+                        "miss": usage.prompt_cache_miss_tokens,
+                        "system_bytes": serde_json::to_vec(&stream_request.system).ok().map(|bytes| bytes.len()),
+                        "tools_bytes": serde_json::to_vec(&stream_request.tools).ok().map(|bytes| bytes.len()),
+                        "history_bytes": serde_json::to_vec(&stream_request.messages).ok().map(|bytes| bytes.len()),
+                    })
+                );
+            }
+        }
+        if self.child_host.is_none()
+            && let Ok(mut cell) = self.live_header.lock()
+            && let Some(snapshot) = cell.as_mut()
+        {
+            snapshot.last_hit_tokens = usage.prompt_cache_hit_tokens;
+        }
         turn.note_parent_prompt_len(
             self.session.messages.len(),
             crate::compaction::estimate_request_input_tokens(

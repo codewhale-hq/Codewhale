@@ -1101,6 +1101,14 @@ pub struct Engine {
     /// One captured admitted route. Presentation snapshots derive strings from
     /// it; a changed table cannot be blessed by reinterpreting those strings.
     api_provider_identity: Option<codewhale_runtime::config::ProviderIdentity>,
+    /// Live header cell for fork-prefix inheritance: the turn loop writes
+    /// the latest request's exact (system, tools, route, hit-flag) here
+    /// per model call, and fork contexts clone the handle so a
+    /// same-route child can extend the parent's cached prefix. Safe as
+    /// a session-lifetime cell: turns run strictly one at a time, so it
+    /// always holds the latest request of the running turn.
+    live_header:
+        codewhale_runtime::prompt_zones::SharedLiveHeader<crate::route_receipt::TurnRouteReceipt>,
     active_route_limits: Option<codewhale_config::route::RouteLimits>,
     active_context_window: Option<crate::route_runtime::ContextWindowResolution>,
     active_route_capabilities: codewhale_config::route::RouteCapabilities,
@@ -2596,6 +2604,7 @@ impl Engine {
             repeated_upstream_failure: None,
             api_provider,
             api_provider_identity,
+            live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
             active_route_limits,
             active_context_window: None,
             active_route_capabilities: codewhale_config::route::RouteCapabilities::default(),
@@ -4764,7 +4773,13 @@ impl Engine {
 
     async fn emit_session_updated(&self) {
         if let Some(job) = self.child_job()
-            && let Err(error) = job.project(&self.session.messages, job.steps()).await
+            && let Err(error) = job
+                .project(
+                    &self.session.messages,
+                    job.steps(),
+                    self.session.system_prompt.as_ref(),
+                )
+                .await
         {
             self.cancel_token.cancel();
             tracing::error!(%error, "child Session projection failed; turn stopped");
@@ -5930,6 +5945,7 @@ impl Engine {
         mcp_access: McpAccess,
         route: TurnRouteContext,
         turn_id: &str,
+        turn_goal_objective: Option<&str>,
     ) -> TurnToolBuild {
         // Account-owned Chat is a text-only inference boundary. Do not build
         // native/plugin/dynamic registries, connect or snapshot MCP, capture a
@@ -5993,6 +6009,7 @@ impl Engine {
                 tool_context.clone(),
                 self.tx_subagent_completion.clone(),
                 SubAgentForkContext {
+                    live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
                     messages: self.messages_with_turn_metadata(),
                     structured_state_block: None,
                     work_source: Some(self.todo_source()),
@@ -6040,6 +6057,7 @@ impl Engine {
             .await;
             Some(SubAgentForkContext {
                 messages: self.messages_with_turn_metadata(),
+                live_header: Arc::clone(&self.live_header),
                 structured_state_block: state.to_system_block(),
                 // Resolve at spawn time so a todo_write earlier in this turn
                 // reaches the child rather than freezing turn-start state.
@@ -6358,7 +6376,20 @@ impl Engine {
         // The surface budget belongs to the route the request would go to,
         // which is not necessarily the installed one under auto routing.
         let capability = route.capability_profile();
-        let always_load = self.config.tools_always_load.clone();
+        let mut always_load = self.config.tools_always_load.clone();
+        // Token diet: get/update_goal cannot succeed without an active goal,
+        // so they stay deferred until one exists. Keyed off the TURN's
+        // resolved goal (the same `NextTurnPromptContext.goal_objective`
+        // the turn fragment renders), never ambient engine config:
+        // production installs the turn goal before this build while
+        // preview builds without installing, so ambient state would
+        // diverge preview from the wire body on detached-goal turns.
+        // Same-field gating also means no new cache break — the tools
+        // flip exactly when the fragment flips.
+        if turn_goal_objective.is_some() {
+            always_load.insert("get_goal".to_string());
+            always_load.insert("update_goal".to_string());
+        }
         self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
         if self.child_host.is_some() {
             tool_registry.remove_tool("create_goal");
@@ -6408,6 +6439,18 @@ impl Engine {
         );
         if let Some(child) = self.child_host.as_ref() {
             Self::narrow_child_surface(&child.authority, &mut surface);
+            let prefix = &child.fork_cache_prefix;
+            surface.catalog.sort_by_key(|tool| {
+                prefix
+                    .iter()
+                    .position(|name| name == &tool.name)
+                    .unwrap_or(prefix.len())
+            });
+            surface.active = tool_catalog::active_tools_for_request(
+                &surface.catalog,
+                &surface.active_names,
+                surface.strict_tool_mode,
+            );
         }
         TurnToolBuild {
             surface,
@@ -7291,6 +7334,7 @@ impl Engine {
                         reasoning_effort_auto: self.session.reasoning_effort_auto,
                     },
                     &turn_id_for_mailbox,
+                    prompt_context.goal_objective.as_deref(),
                 )
                 .await;
             let tool_catalog_for_event = Some(surface.catalog.clone());

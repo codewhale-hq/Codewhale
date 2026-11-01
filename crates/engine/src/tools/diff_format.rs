@@ -1,13 +1,12 @@
-//! Build unified-diff strings for tool results.
+//! Build unified-diff strings for tool-result metadata.
 //!
 //! `edit_file` and `write_file` capture the file contents before and after
-//! the mutation and emit a unified diff at the head of their `ToolResult`
-//! output. The TUI's `output_looks_like_diff` detector then routes the
-//! payload through `diff_render::render_diff`, which renders it with line
-//! numbers and coloured `+`/`-` gutters (#505).
-//!
-//! The diff is also a strict UX upgrade for the model — it sees exactly
-//! which lines changed instead of a one-line summary.
+//! the mutation and stash a unified diff in the result `metadata` (under
+//! `mutation.diff`) for the TUI, which routes it through
+//! `diff_render::render_diff` with line numbers and coloured `+`/`-`
+//! gutters (#505). The model-facing `content` stays a one-line receipt —
+//! the model learns what changed from the edit echo (touched symbols and
+//! impacted callers), not from the diff.
 
 use similar::TextDiff;
 

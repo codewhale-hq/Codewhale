@@ -44,10 +44,10 @@ const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 #[rustfmt::skip]
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "bash", "agent", "workflow", "todo_write",
+    "read", "write", "edit", "file_search", "grep_files", "bash", "todo_write",
     // Continuation instructions require these controls. Hiding them behind
     // discovery leaves a model unable to stop the work it was asked to run.
-    "create_goal", "get_goal", "update_goal", "task_shell_wait",
+    "task_shell_wait",
     // The pinned `## Skills` index tells the model to call `load_skill`, so
     // the tool has to be on the wire for that instruction to be true. Behind
     // `tool_search` it cost a discovery hop plus a `change:tool_surface`
@@ -58,6 +58,15 @@ pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // a tool it has never seen a schema for, and `tool_search` is not
     // guaranteed to be the next thing it reaches for mid-task.
     "context_archive_get", "context_archive_search",
+    // create_goal is eager: it is the entry point. Token diet: agent and
+    // workflow stay deferred despite being core-adjacent — their schemas
+    // cost ~21KB/turn and BM25 discovery (`tool_search`) finds them
+    // reliably when delegation is actually wanted (cued-delegation probe:
+    // discovered and executed; uncued sessions behave identically).
+    // get/update_goal cannot succeed without an active goal, so they ride
+    // `always_load` only while one exists (see the catalog build in
+    // `engine.rs`) instead of taxing every goalless turn.
+    "create_goal",
 ];
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
@@ -904,7 +913,12 @@ fn discover_tools_with_regex(
     let regex = compile_user_regex(query)
         .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
 
-    let mut matches = Vec::new();
+    // Name matches outrank haystack matches: a regex that hits the tool's
+    // own name is the strongest possible signal, and catalog (alphabetical)
+    // order otherwise lets an incidental mention evict the literal target
+    // from the bounded activation cache.
+    let mut name_matches = Vec::new();
+    let mut hay_matches = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
         // tool_search loads definitions omitted from the current request. An
@@ -914,15 +928,19 @@ fn discover_tools_with_regex(
         if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
             continue;
         }
+        // Lowercased, like the haystack path below: `Agent` must hit `agent`.
+        if regex.is_match(&tool.name.to_lowercase()) {
+            name_matches.push(tool.name.clone());
+            continue;
+        }
         scratch.load(tool);
         if regex.is_match(&scratch.hay) {
-            matches.push(tool.name.clone());
-        }
-        if matches.len() >= max_results {
-            break;
+            hay_matches.push(tool.name.clone());
         }
     }
-    Ok(matches)
+    name_matches.extend(hay_matches);
+    name_matches.truncate(max_results);
+    Ok(name_matches)
 }
 
 fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {

@@ -1,7 +1,7 @@
 # 工具表面（tool surface）
 
 > 英文原文：[TOOL_SURFACE.md](../TOOL_SURFACE.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-10-17。
+> 默认激活清单于 2026-10-31 核对；其余章节最近完整同步英文日期：2026-10-17。
 > 2026-10-06 补齐本地解释器权限与后端限制；现有 MCP 有界发现段落已核对。
 
 本文描述当前面向模型的工具（tool）契约。产生它的 v0.9.1 切换记录在
@@ -20,31 +20,30 @@
 
 ## 默认激活契约
 
-新回合开始时带有十五个预加载（eager）的原生名称，外加合成的 `tool_search`：
+新回合开始时带有十二个预加载（eager）的原生名称，外加合成的 `tool_search`：
 
 1. `read`
 2. `write`
 3. `edit`
 4. `file_search`
-5. `bash`
-6. `agent`
-7. `workflow`
-8. `todo_write`
-9. `create_goal`
-10. `get_goal`
-11. `update_goal`
-12. `task_shell_wait`
-13. `load_skill`
-14. `context_archive_get`
-15. `context_archive_search`
-16. `tool_search`（合成，始终激活）
+5. `grep_files`
+6. `bash`
+7. `todo_write`
+8. `task_shell_wait`
+9. `load_skill`
+10. `context_archive_get`
+11. `context_archive_search`
+12. `create_goal`
+13. `tool_search`（合成，始终激活）
 
-这十五个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
+这十二个原生名称就是 `crates/engine/src/core/engine/tool_catalog.rs` 里的
 `DEFAULT_ACTIVE_NATIVE_TOOLS`，由
 `default_active_contract_keeps_discovery_and_core_tools_eager` 固定住。
-权限边界（authority boundary）可以在子智能体达到最大深度时移除 `agent`，
-Plan 只注册前台 shell 表面（因此没有 `task_shell_wait`），但仅凭路由大小不得改变
-这套核心词汇。
+`agent`、`workflow`、`get_goal` 和 `update_goal` 默认延迟加载，通过
+`tool_search` 发现；有活动目标时，`get_goal` 和 `update_goal` 会预加载。
+权限边界可以在子智能体达到最大深度时移除 `agent`；Plan 只注册前台 shell
+表面，因此没有 `task_shell_wait`。仅凭路由大小不得改变这套核心词汇。
+`file_search` 搜索名称和路径，`grep_files` 搜索内容；两者仍遵守读取守卫和权限。
 
 直接 schema 刻意保持精简：
 
@@ -335,3 +334,8 @@ cargo test --locked -p codewhale-tui --lib core::engine::tests::print_mode_tool_
 不依赖提供商的回执必须报告上面列出的十五个默认激活名称。另一份仓库范围的
 工具计数可能包含延迟、动态、受特性开关控制以及仅为兼容而存在的注册；
 它不是放进首回合模型目录的工具数量。
+
+
+## 源码导航回声
+
+文件和搜索工具可在工具结果历史中附带同目录伙伴、符号、导入和修改归因，不加入会话固定前缀。调用者扫描最多选择 32 个可见、排序后的候选文件，每个正文最多接受 256 KiB，超额候选明确标为未扫描。关键文件正文最多接受 8 MiB。受保护路径或拒绝结果不会作为“读取不存在”继续探测；读取通过已验证的常规文件句柄完成。删除按旧侧、替换按两侧归因。完整目录名称枚举和内核 I/O 延迟不受正文上限约束。见英文 [ECHOLOCATION.md](../ECHOLOCATION.md) 及 [TOOL_SURFACE.md](../TOOL_SURFACE.md)。

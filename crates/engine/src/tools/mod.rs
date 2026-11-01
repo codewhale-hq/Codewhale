@@ -30,6 +30,7 @@ pub mod file;
 pub mod file_search;
 pub mod finance;
 
+pub mod echolocation;
 pub mod fetch_url;
 pub mod file_tool;
 pub mod fim;

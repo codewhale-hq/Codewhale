@@ -9446,7 +9446,7 @@ fn tool_result_api_content_is_the_engine_model_view() {
     let within = line.repeat((budget - 1) / line.len());
     let output = codewhale_engine::tools::spec::ToolResult::success(within.clone());
     let content = tool_result_content_for_api_message(&app, "exec_shell", &output);
-    assert_eq!(content, within.trim());
+    assert_eq!(content, within);
     assert!(!content.contains("[TOOL_OUTPUT_RECEIPT]"));
 
     let over = line.repeat(budget / line.len() + 100);
@@ -34971,6 +34971,7 @@ fn collapsing_session_history(turns: usize) -> Vec<HistoryCell> {
 #[ignore = "timing benchmark, not a correctness gate"]
 #[allow(clippy::print_stderr)]
 fn bench_full_frame_scroll_cost_by_history_length() {
+    let retained_details = std::env::var_os("CODEWHALE_RENDER_DETAILS").is_some();
     for collapsed in [false, true] {
         let shape = if collapsed { "collapsed" } else { "plain" };
         for turns in [100usize, 1_000, 5_000] {
@@ -34981,6 +34982,21 @@ fn bench_full_frame_scroll_cost_by_history_length() {
                 app.history = collapsing_session_history(turns);
             } else {
                 app.history = long_session_history(turns);
+            }
+            if retained_details {
+                for (index, cell) in app.history.iter().enumerate() {
+                    if let HistoryCell::Tool(ToolCell::Generic(cell)) = cell {
+                        app.tool_details_by_cell.insert(
+                            index,
+                            ToolDetailRecord {
+                                tool_id: format!("bench-{index}"),
+                                tool_name: cell.name.clone(),
+                                input: serde_json::json!({"path": format!("{}.txt", cell.name)}),
+                                output: cell.output.clone(),
+                            },
+                        );
+                    }
+                }
             }
             app.resync_history_revisions();
             let config = Config::default();
@@ -35026,8 +35042,58 @@ fn bench_full_frame_scroll_cost_by_history_length() {
                 app.history.len(),
                 started.elapsed() / frames
             );
+            eprintln!(
+                "FRAME_PARITY {shape} {turns} details={retained_details} {}",
+                codewhale_runtime::hashing::sha256_hex(format!(
+                    "{:?}",
+                    terminal.backend().buffer()
+                ))
+            );
         }
     }
+}
+
+/// The keyed steady-state short-circuit must not survive a projection change
+/// that never bumps `history_version`: the random-replay harness (and any
+/// future raw writer) can toggle `collapsed_cells` directly, and the frame
+/// must still reflect it (#6652).
+#[test]
+fn keyed_steady_frames_rerender_after_a_raw_projection_toggle() {
+    use crate::tui::app::ToolCollapseMode;
+
+    let mut app = create_test_app();
+    app.tool_collapse_mode = ToolCollapseMode::Compact;
+    app.tool_collapse_threshold = 3;
+    app.history = collapsing_session_history(40);
+    app.resync_history_revisions();
+    let config = Config::default();
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let render = |app: &mut crate::tui::app::App, terminal: &mut Terminal<TestBackend>| {
+        terminal
+            .draw(|frame| {
+                let _ = super::frame::render(frame, app, &config);
+            })
+            .unwrap();
+        codewhale_runtime::hashing::sha256_hex(format!("{:?}", terminal.backend().buffer()))
+    };
+    let first = render(&mut app, &mut terminal);
+    let steady = render(&mut app, &mut terminal);
+    assert_eq!(first, steady, "keyed steady frame must be byte-identical");
+    let hidden = app
+        .tool_run_cache
+        .filtered
+        .original
+        .iter()
+        .rev()
+        .nth(1)
+        .copied()
+        .expect("collapsed projection has rendered rows");
+    app.collapsed_cells.insert(hidden);
+    let toggled = render(&mut app, &mut terminal);
+    assert_ne!(
+        steady, toggled,
+        "raw collapsed_cells toggle must change the rendered frame"
+    );
 }
 
 #[test]

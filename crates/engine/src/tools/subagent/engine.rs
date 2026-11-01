@@ -1051,7 +1051,7 @@ impl ChildJob {
             messages[message_index].role == codewhale_models::Role::User,
             "child initial input is not a user message"
         );
-        self.project(messages, self.steps()).await?;
+        self.project(messages, self.steps(), None).await?;
         let message_index = self
             .artifact
             .lock()
@@ -1156,12 +1156,32 @@ impl ChildJob {
                 .map_err(|error| anyhow!("child receipt writer failed: {error}"))?,
         }
     }
-
-    pub async fn project(&self, messages: &[Message], steps: u32) -> Result<()> {
+    pub async fn project(
+        &self,
+        messages: &[Message],
+        steps: u32,
+        system_prompt: Option<&SystemPrompt>,
+    ) -> Result<()> {
         let mut artifact = self.artifact.try_lock().map_err(|_| {
             anyhow!("child transcript writer is still busy; checkpoint not advanced")
         })?;
         if let Some(writer) = artifact.as_mut() {
+            if let Some(system) =
+                system_prompt.filter(|system| writer.last_system_prompt.as_ref() != Some(*system))
+            {
+                let encoded = json_line(&json!({
+                    "kind": "system_prompt", "at_message_index": writer.persisted_messages,
+                    "system_prompt": system,
+                }))?;
+                let state_root = writer.state_root.clone();
+                let path = writer.path.clone();
+                tokio::task::spawn_blocking(move || {
+                    append_private_subagent_transcript(&state_root, &path, &encoded, true)
+                })
+                .await
+                .map_err(|error| anyhow!("child prompt receipt worker: {error}"))??;
+                writer.last_system_prompt = Some(system.clone());
+            }
             writer.sync_messages(messages, true)?;
         }
         let checkpoint = checkpoint_subagent_progress(
@@ -1383,7 +1403,7 @@ impl ChildJob {
         text: Option<String>,
         reason: Option<&str>,
     ) -> Result<SubAgentResult> {
-        self.project(messages, steps).await?;
+        self.project(messages, steps, None).await?;
         let mut artifact = self.artifact.lock().await;
         if self.authority.runtime.cancel_token.is_cancelled() {
             // `project` has durably synced this exact Core Session and updated
@@ -1743,7 +1763,7 @@ pub(super) async fn run_child_agent(
         &assignment,
         &agent_type,
         &system,
-        fork.as_ref(),
+        fork,
     );
     let initial = seed
         .pop()
@@ -1770,7 +1790,7 @@ pub(super) async fn run_child_agent(
         // No tool/model is admitted. Preserve the same full seed and the
         // existing Park-vs-Cancel projection, including a step-zero checkpoint.
         seed.push(initial);
-        job.project(&seed, 0).await?;
+        job.project(&seed, 0, None).await?;
         let checkpoint = runtime
             .manager
             .read()

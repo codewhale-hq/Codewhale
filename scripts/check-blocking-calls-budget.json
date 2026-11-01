@@ -190,7 +190,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/search.rs": {
-    "path_canonicalize": 3
+    "path_canonicalize": 5
   },
   "crates/engine/src/tools/shell.rs": {
     "path_canonicalize": 2,
@@ -557,5 +557,8 @@
   },
   "crates/workflow/src/reasoning_router.rs": {
     "std_fs": 1
+  },
+  "crates/engine/src/tools/echolocation.rs": {
+    "path_canonicalize": 10
   }
 }

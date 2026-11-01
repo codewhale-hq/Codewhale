@@ -167,6 +167,12 @@ pub fn summarize_project(root: &Path) -> String {
         }
     }
 
+    summarize_key_files(key_files)
+}
+
+/// Classify admitted key files without another filesystem walk.
+#[must_use]
+pub fn summarize_key_files(mut key_files: Vec<String>) -> String {
     key_files.sort();
 
     if key_files.is_empty() {

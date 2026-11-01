@@ -296,8 +296,13 @@ impl ActionParams {
             .filter(|key| !self.allowed.contains(key))
             .collect();
         if !unexpected.is_empty() {
+            let hint = if action == "search_content" && unexpected.contains(&"extensions") {
+                " Use `include` filename globs for content search (`\"include\": [\"*.rs\"]` filters Rust files). `extensions` belongs to `file_search`."
+            } else {
+                ""
+            };
             return Err(ToolError::invalid_input(format!(
-                "unexpected File {action} parameter(s): {}. Allowed parameters are {}. Required: {required}. The {action} was not performed.",
+                "unexpected File {action} parameter(s): {}. Allowed parameters are {}. Required: {required}. The {action} was not performed.{hint}",
                 unexpected.join(", "),
                 quoted_list(self.allowed, "and"),
             )));
@@ -471,8 +476,9 @@ pub fn working_set_read_allowed(path: &Path) -> bool {
 pub fn is_codewhale_credential_path(path: &Path) -> bool {
     let candidate = canonical_path_for_credential_guard(path);
 
-    if let Ok(active_config) = codewhale_config::resolve_config_path(None)
-        && is_config_or_backup(&candidate, &active_config)
+    let active_config = codewhale_config::resolve_config_path(None).ok();
+    if let Some(active_config) = &active_config
+        && is_config_or_backup(&candidate, active_config)
     {
         return true;
     }
@@ -488,11 +494,24 @@ pub fn is_codewhale_credential_path(path: &Path) -> bool {
     let mut roots: Vec<PathBuf> = Vec::with_capacity(3);
     roots.extend(codewhale_config::codewhale_home().ok());
     roots.extend(codewhale_config::legacy_deepseek_home().ok());
-    roots.extend(
-        codewhale_paths::user_home().map(|home| home.join(codewhale_config::CODEWHALE_APP_DIR)),
-    );
+    // Without `CODEWHALE_HOME`, `codewhale_home()` already returned this exact
+    // ambient root, so pushing it again only re-canonicalizes identical
+    // config/backup/secrets paths. Keep it only when it adds a distinct root.
+    if let Some(ambient) =
+        codewhale_paths::user_home().map(|home| home.join(codewhale_config::CODEWHALE_APP_DIR))
+        && !roots.contains(&ambient)
+    {
+        roots.push(ambient);
+    }
     for root in roots {
-        if is_config_or_backup(&candidate, &root.join(codewhale_config::CONFIG_FILE_NAME)) {
+        let config_path = root.join(codewhale_config::CONFIG_FILE_NAME);
+        // Only skip the exact config/backup pair already checked above.
+        // Distinct spellings still canonicalize; every secrets root is checked.
+        if active_config
+            .as_ref()
+            .is_none_or(|active| active.as_os_str() != config_path.as_os_str())
+            && is_config_or_backup(&candidate, &config_path)
+        {
             return true;
         }
 
@@ -727,6 +746,32 @@ async fn contract_mutation_result(
 ) -> ToolResult {
     let paths = [file_path.to_path_buf()];
     let diagnostics = lsp_diagnostics_for_paths(context, &paths).await;
+    // Echolocation: the model-facing receipt is one line while the diff
+    // rides metadata for the TUI, so the echo tells the model what its
+    // edit hit (touched symbols) and what hears it (impacted callers).
+    // Deterministic, hard-budgeted, None when there is nothing to say.
+    let mut summary = summary;
+    let workspace = context.workspace.clone();
+    let echo_path = file_path.to_path_buf();
+    let echo_before = before.to_string();
+    let echo_after = after.to_string();
+    match tokio::task::spawn_blocking(move || {
+        crate::tools::echolocation::sound_edit_echo(
+            &workspace,
+            &echo_path,
+            &echo_before,
+            &echo_after,
+        )
+    })
+    .await
+    {
+        Ok(Some(echo)) => {
+            summary.push_str("\n\n");
+            summary.push_str(&echo);
+        }
+        Ok(None) => {}
+        Err(error) => summary.push_str(&format!("\n\nEdit echo unavailable: {error}")),
+    }
     ToolResult::success(summary).with_metadata(json!({
         "event": "file.mutation",
         "lsp_diagnostics": diagnostics,
@@ -846,8 +891,20 @@ impl ReadFileTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<RichToolResult, ToolError> {
-        reject_primitive_unknown(&input, "read", &["path", "offset", "limit", "max_bytes"])?;
+        reject_primitive_unknown(
+            &input,
+            "read",
+            &["path", "offset", "limit", "max_bytes", "expected_revision"],
+        )?;
         let path_str = required_str(&input, "path")?;
+        let expected_revision = optional_str(&input, "expected_revision")?;
+        if let Some(revision) = expected_revision
+            && !crate::tools::echolocation::valid_source_revision(revision)
+        {
+            return Err(ToolError::invalid_input(
+                "expected_revision must be sha256: followed by 64 lowercase hexadecimal digits",
+            ));
+        }
         let offset = contract_nonnegative_int(&input, "offset")?;
         let limit = contract_nonnegative_int(&input, "limit")?;
         let max_bytes = effective_read_max_bytes(contract_nonnegative_int(&input, "max_bytes")?);
@@ -870,20 +927,33 @@ impl ReadFileTool {
             Err(error) => return Err(error),
         };
         check_file_operation_cancelled(context)?;
-        let bytes = load_contract_source(&file_path, false, context)
-            .await?
-            .ok_or_else(|| {
-                ToolError::execution_failed(format!(
-                    "Failed to read {}: file not found",
-                    file_path.display()
-                ))
-            })?;
+        let bytes = match load_contract_source(&file_path, false, context).await? {
+            Some(bytes) => bytes,
+            None => {
+                let echo_path = file_path.clone();
+                let echo = tokio::task::spawn_blocking(move || {
+                    super::echolocation::sound_miss_echo(&echo_path)
+                })
+                .await
+                .map_err(|error| ToolError::execution_failed(format!("Miss echo task: {error}")))?;
+                return Err(ToolError::execution_failed(format!(
+                    "Failed to read {}: file not found{}",
+                    file_path.display(),
+                    echo.unwrap_or_default()
+                )));
+            }
+        };
         // #6283: every read response carries the file's byte size, line
         // count, and truncation flag so the caller can page deliberately
         // instead of discovering a huge file one window at a time.
         let size_bytes = bytes.len();
         check_file_operation_cancelled(context)?;
         if let Some(mime_type) = primitive_image_mime(&bytes) {
+            if expected_revision.is_some() {
+                return Err(ToolError::execution_failed(
+                    "Navigation reference is stale: the target is now an image. Read the path again without the old range/reference.",
+                ));
+            }
             // Decoding and any downscale are CPU-bound; keep them off the
             // runtime worker (#6149).
             let prepared = tokio::task::spawn_blocking(move || {
@@ -904,7 +974,37 @@ impl ReadFileTool {
 
         // The small-contract reader decodes non-image buffers as UTF-8 text with replacement
         // characters instead of refusing the whole read on one invalid byte.
-        let text = String::from_utf8_lossy(&bytes);
+        let workspace = context.workspace.clone();
+        let observation_path = file_path.clone();
+        let guarded = expected_revision.is_some();
+        let (text, source_revision, utf8_valid, cache_identity) =
+            tokio::task::spawn_blocking(move || {
+                let cache_identity = crate::tools::echolocation::navigation_cache_identity(
+                    &workspace,
+                    &observation_path,
+                );
+                let revision = (cache_identity.is_some() || guarded).then(|| content_hash(&bytes));
+                let (text, utf8_valid) = match String::from_utf8(bytes) {
+                    Ok(text) => (text, true),
+                    Err(error) => (
+                        String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                        false,
+                    ),
+                };
+                (text, revision, utf8_valid, cache_identity)
+            })
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!("Failed to decode source: {error}"))
+            })?;
+        check_file_operation_cancelled(context)?;
+        if let Some(expected) = expected_revision
+            && source_revision.as_deref() != Some(expected)
+        {
+            return Err(ToolError::execution_failed(format!(
+                "Navigation reference for {path_str} is stale. Read the path without the old range/expected_revision to obtain a new reference; do not reuse its offsets."
+            )));
+        }
         // Count and select with byte boundaries, without a pointer per newline.
         let line_count = text.bytes().filter(|byte| *byte == b'\n').count() + 1;
         let requested_offset = offset.unwrap_or(1);
@@ -914,7 +1014,10 @@ impl ReadFileTool {
                 "Offset {requested_offset} is beyond end of file ({line_count} lines total)"
             )));
         }
-        let start_byte = if start == 0 {
+        let selected_lines = limit.unwrap_or(usize::MAX).min(line_count - start);
+        // An empty selection slices `""` whatever the range start is, so it
+        // needs a valid boundary, not the walked one: skip the prefix scan.
+        let start_byte = if start == 0 || selected_lines == 0 {
             0
         } else {
             text.match_indices('\n')
@@ -923,7 +1026,6 @@ impl ReadFileTool {
                 .0
                 + 1
         };
-        let selected_lines = limit.unwrap_or(usize::MAX).min(line_count - start);
         let end_byte = if selected_lines == 0 {
             start_byte
         } else {
@@ -939,10 +1041,29 @@ impl ReadFileTool {
         // before EOF. A whole file that fits is never truncated.
         let truncated = window.truncated || limit.is_some() && start + selected_lines < line_count;
         let first_display = start + 1;
+        let revision_hint = expected_revision
+            .or(source_revision.as_deref())
+            .map(|revision| format!(" expected_revision={revision}"))
+            .unwrap_or_default();
+        let shown_bytes = window.content.len();
         let mut output = if window.first_line_too_large {
             let size = selected_content.split('\n').next().map_or(0, str::len);
+            let hint = if source_revision.is_some() {
+                if size <= READ_REQUEST_MAX_BYTES && max_bytes < READ_REQUEST_MAX_BYTES {
+                    let limit_hint = limit
+                        .map(|limit| format!(" limit={limit}"))
+                        .unwrap_or_default();
+                    format!(
+                        "Use offset={first_display}{limit_hint}{revision_hint} max_bytes={READ_REQUEST_MAX_BYTES} to retry"
+                    )
+                } else {
+                    "No complete line fits the maximum read budget; a shell byte slice would not preserve the revision guard".to_string()
+                }
+            } else {
+                format!("Use bash: sed -n '{first_display}p' {path_str} | head -c {max_bytes}")
+            };
             format!(
-                "[Line {first_display} is {}, exceeds the {max_bytes}-byte output budget for this call. Use bash: sed -n '{first_display}p' {path_str} | head -c {max_bytes}]",
+                "[Line {first_display} is {}, exceeds the {max_bytes}-byte output budget for this call. {hint}]",
                 contract_format_size(size)
             )
         } else {
@@ -962,6 +1083,7 @@ impl ReadFileTool {
                     hint.push_str(&format!(" limit={remaining}"));
                 }
             }
+            hint.push_str(&revision_hint);
             let raise = if max_bytes < READ_REQUEST_MAX_BYTES {
                 format!(", or max_bytes up to {READ_REQUEST_MAX_BYTES} to read more per call")
             } else {
@@ -972,36 +1094,110 @@ impl ReadFileTool {
                 line_count,
                 contract_format_size(size_bytes)
             ));
-        } else if limit.is_some() {
+        } else if limit.is_some() && selected_lines > 0 && !window.first_line_too_large {
             let consumed = selected_lines;
             if start + consumed < line_count {
                 let remaining = line_count - (start + consumed);
                 let next_offset = start + consumed + 1;
                 output.push_str(&format!(
-                    "\n\n[{remaining} more lines in file ({} total). Use offset={next_offset} to continue.]",
+                    "\n\n[{remaining} more lines in file ({} total). Use offset={next_offset}{revision_hint} to continue.]",
                     contract_format_size(size_bytes)
                 ));
             }
         }
 
-        // This internal observation keeps hidden legacy edit replay working,
-        // but no hash or read-before-edit ceremony reaches the lowercase
-        // schema or result.
+        // Echolocation: stateless kin footer sounded fresh from source
+        // (no index, no new deps). Deterministic and hard-budgeted, so a
+        // repeated read is byte-identical. Two distinct files read in
+        // this pod put the next read there into the terminal buzz
+        // (callers included).
+        let buzz = file_path.parent().is_some_and(|parent| {
+            context.pod_visit_count(parent) >= crate::tools::echolocation::BUZZ_VISIT_THRESHOLD
+        });
+        let cached_navigation = if let Some((namespace, path)) = &cache_identity {
+            context
+                .runtime
+                .code_observations
+                .lock()
+                .await
+                .get_json_named(namespace, path)
+                .cloned()
+                .and_then(|value| {
+                    serde_json::from_value::<crate::tools::echolocation::SourceNavigation>(value)
+                        .ok()
+                })
+                .filter(|navigation| {
+                    navigation.matches(path, source_revision.as_deref().unwrap_or_default())
+                })
+        } else {
+            None
+        };
+        let workspace = context.workspace.clone();
+        let echo_path = file_path.clone();
+        let navigation_path = cache_identity.as_ref().map(|(_, path)| path.clone());
+        let (echo, navigation) = tokio::task::spawn_blocking(move || {
+            let navigation = cached_navigation.or_else(|| {
+                navigation_path
+                    .zip(source_revision)
+                    .map(|(path, revision)| {
+                        crate::tools::echolocation::SourceNavigation::from_source(
+                            path, revision, &text, utf8_valid,
+                        )
+                    })
+            });
+            let echo = crate::tools::echolocation::sound_echolocation(
+                &workspace,
+                &echo_path,
+                &text,
+                buzz,
+                navigation.as_ref(),
+            )
+            .render_with_navigation(
+                navigation.as_ref(),
+                &text,
+                first_display,
+                window.shown_lines,
+            );
+            (echo, navigation)
+        })
+        .await
+        .map_err(|error| {
+            ToolError::execution_failed(format!("read echo worker failed: {error}"))
+        })?;
+        check_file_operation_cancelled(context)?;
+        output.push_str(&echo);
+        if let (Some((namespace, path)), Some(navigation)) = (&cache_identity, &navigation) {
+            let _ = context.runtime.code_observations.lock().await.insert_json(
+                namespace,
+                path,
+                serde_json::to_value(navigation)
+                    .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            );
+        }
+
+        // Keep hidden legacy edit replay working. Ordinary reads remain
+        // unguarded; the optional navigation revision pins a selected range,
+        // not a read-before-edit permission ceremony.
         context.note_file_read(&file_path);
+        let mut metadata = json!({
+            "evidence_routing": "inline",
+            // The source budget plus bounded presentation bytes. The context
+            // compactor honors it so an already-bounded read is never
+            // truncated a second time on its way into the conversation.
+            "read_budget_bytes": max_bytes.saturating_add(output.len().saturating_sub(shown_bytes)),
+            // #6283: paging contract. `size` is the whole file in bytes,
+            // `line_count` its total lines, `truncated` whether the file
+            // holds more than this response shows.
+            "size": size_bytes,
+            "truncated": truncated,
+            "line_count": line_count
+        });
+        if let Some(navigation) = navigation {
+            metadata["navigation"] = serde_json::to_value(navigation)
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        }
         Ok(RichToolResult::plain(
-            ToolResult::success(output).with_metadata(json!({
-                "evidence_routing": "inline",
-                // The budget this call actually enforced. The context
-                // compactor honors it so an already-bounded read is never
-                // truncated a second time on its way into the conversation.
-                "read_budget_bytes": max_bytes,
-                // #6283: paging contract. `size` is the whole file in bytes,
-                // `line_count` its total lines, `truncated` whether the file
-                // holds more than this response shows.
-                "size": size_bytes,
-                "truncated": truncated,
-                "line_count": line_count
-            })),
+            ToolResult::success(output).with_metadata(metadata),
         ))
     }
 }
@@ -1909,6 +2105,9 @@ fn write_line_endings(
 }
 
 fn normalize_contract_line_endings(text: &str) -> String {
+    if !text.as_bytes().contains(&b'\r') {
+        return text.to_owned();
+    }
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 

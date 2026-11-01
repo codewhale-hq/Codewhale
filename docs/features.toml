@@ -88,6 +88,16 @@ docs = "docs/TOOL_SURFACE.md"
 owner = "crates/engine/src/tools/shell.rs"
 
 [[feature]]
+id = "workspace-search"
+name = "Workspace search"
+summary = "Eager file and content search, with explicit search schemas and unchanged read guards."
+status = "stable"
+surfaces = { tui = "stable", api = "stable" }
+since = "unreleased"
+docs = "docs/TOOL_SURFACE.md#default-active-contract"
+owner = "crates/engine/src/core/engine/tool_catalog.rs"
+
+[[feature]]
 id = "local-code-execution"
 name = "Local code execution"
 summary = "Runs Python and Node with the shared execution policy and explicitly approved per-call elevation."
@@ -867,6 +877,36 @@ surfaces = { tui = "preview" }
 since = "0.10.2"
 docs = "docs/PLUGINS.md"
 owner = "crates/plugins/src/mutation.rs"
+
+[[feature]]
+id = "fork-prefix-inheritance"
+name = "Fork prefix inheritance"
+summary = "Allows matching first-level Chat Completions forks to reuse a parent request header."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/CACHE.md#fork-prefix-inheritance"
+owner = "crates/engine/src/core/engine/turn_loop/preparation.rs"
+
+[[feature]]
+id = "fork-trial-diagnostics"
+name = "Fork trial diagnostics"
+summary = "Opt-in JSON stderr observations of classified fork decisions and actual first-response cache usage."
+status = "flagged"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/CACHE.md#fork-trial-diagnostics"
+owner = "crates/runtime/src/prompt_zones.rs"
+
+[[feature]]
+id = "source-navigation-echoes"
+name = "Source navigation echoes"
+summary = "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/ECHOLOCATION.md"
+owner = "crates/engine/src/tools/echolocation.rs"
 
 [[feature]]
 id = "herdr-agent-state"

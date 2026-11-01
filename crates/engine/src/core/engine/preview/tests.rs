@@ -649,6 +649,7 @@ async fn planned_route_builds_subagent_catalog_without_installed_client() {
                 reasoning_effort_auto: planned.auto_controls_reasoning,
             },
             "",
+            None,
         )
         .await;
     assert!(
@@ -2223,6 +2224,7 @@ async fn preview_tool_snapshot_has_no_mcp_or_event_side_effects() {
                 reasoning_effort_auto: false,
             },
             "",
+            None,
         )
         .await;
 

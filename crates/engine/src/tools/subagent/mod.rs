@@ -2660,13 +2660,16 @@ fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -
     }
 }
 
-/// Parent transcript snapshot available to sub-agents that opt into context
-/// forking. Leading messages may be inherited as context, but every child
-/// keeps its own resolved system prompt so parent-specific model identity or
-/// role text cannot override the worker's actual route and instructions.
+/// Parent transcript snapshot for opted-in context forks. Cold forks keep
+/// their resolved top-level prompt; guarded same-route inheritance may reuse
+/// the parent header. Resolved role, task and skill instructions remain in
+/// the later system-role fork context. Client routing and child authority are
+/// enforced independently of prompt text.
 #[derive(Clone, Debug)]
 pub struct SubAgentForkContext {
     pub messages: Vec<Message>,
+    pub live_header:
+        codewhale_runtime::prompt_zones::SharedLiveHeader<crate::route_receipt::TurnRouteReceipt>,
     /// Stable, To-do-free parent state captured once at turn start. History
     /// semantics stay exactly as they were: this text is not re-derived per
     /// spawn.
@@ -2706,6 +2709,7 @@ impl SubAgentForkContext {
 
         Self {
             messages: self.messages.clone(),
+            live_header: Arc::clone(&self.live_header),
             structured_state_block,
             work_source: self.work_source.clone(),
         }
@@ -3524,7 +3528,16 @@ impl SubAgentRuntime {
             runtime_usage_lease: self.runtime_usage_lease.clone(),
             accounting_origin: self.accounting_origin.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
-            fork_context: self.fork_context.clone(),
+            fork_context: self.fork_context.as_ref().map(|context| {
+                let mut context = context.clone();
+                let snapshot = context
+                    .live_header
+                    .lock()
+                    .ok()
+                    .and_then(|cell| cell.clone());
+                context.live_header = Arc::new(std::sync::Mutex::new(snapshot));
+                context
+            }),
             workflow_response_schema: None,
             mcp_pool: self.mcp_pool.clone(),
             step_api_timeout: self.step_api_timeout,
@@ -11363,6 +11376,7 @@ struct SubAgentTranscriptArtifactWriter {
     persisted_request_receipts: usize,
     /// Prefix of the current live history already in the artifact.
     synced_live_messages: usize,
+    last_system_prompt: Option<SystemPrompt>,
 }
 
 impl SubAgentTranscriptArtifactWriter {
@@ -11388,6 +11402,7 @@ impl SubAgentTranscriptArtifactWriter {
             persisted_messages: 0,
             persisted_request_receipts: 0,
             synced_live_messages: 0,
+            last_system_prompt: None,
         })
     }
 
@@ -11558,6 +11573,24 @@ fn load_subagent_transcript_projection(
     let mut receipt_count = 0;
     for line in lines.filter(|line| !line.trim().is_empty()) {
         let record: Value = serde_json::from_str(line)?;
+        if record.get("kind").and_then(Value::as_str) == Some("system_prompt") {
+            anyhow::ensure!(
+                header.get("schema_version").and_then(Value::as_u64) == Some(2),
+                "system prompt record requires transcript schema 2"
+            );
+            anyhow::ensure!(
+                record.get("at_message_index").and_then(Value::as_u64)
+                    == Some(messages.len() as u64),
+                "system prompt record has an invalid message boundary"
+            );
+            let _: SystemPrompt = serde_json::from_value(
+                record
+                    .get("system_prompt")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("system prompt record has no prompt"))?,
+            )?;
+            continue;
+        }
         match record.get("kind").and_then(Value::as_str) {
             Some("request_nudge") if schema_version >= 2 => {
                 let text = record
@@ -13906,6 +13939,9 @@ async fn spawn_subagent_from_input(
         .unwrap_or(checkpoint_messages);
         let resume_ctx = SubAgentForkContext {
             messages,
+            // Resume forks a settled agent: nothing is live in the
+            // provider cache, so inheritance stays off by construction.
+            live_header: codewhale_runtime::prompt_zones::new_live_header_cell(),
             structured_state_block: None,
             work_source: None,
         };
@@ -14495,9 +14531,9 @@ fn subagent_skill_catalog(context: &ToolContext) -> String {
 }
 
 fn subagent_request_system_prompt(subagent_system_prompt: &str) -> SystemPrompt {
-    // Forking inherits conversation context, not the parent's identity. A
-    // child can have a different provider/model/profile, so its own resolved
-    // role prompt must stay at system precedence.
+    // Cold or different-route forks keep their own resolved role prompt.
+    // Exact-route cache inheritance is admitted later by the common Engine;
+    // the role/task framing remains recorded in the fork history.
     SystemPrompt::Text(subagent_system_prompt.to_string())
 }
 
@@ -14514,7 +14550,7 @@ fn build_initial_subagent_messages(
         assignment,
         agent_type,
         &system_prompt,
-        fork_context,
+        fork_context.cloned(),
     )
 }
 
@@ -14525,13 +14561,13 @@ fn build_initial_subagent_messages_with_system(
     assignment: &SubAgentAssignment,
     agent_type: &FleetRole,
     subagent_system_prompt: &str,
-    fork_context: Option<&SubAgentForkContext>,
+    fork_context: Option<SubAgentForkContext>,
 ) -> Vec<Message> {
-    let mut messages = fork_context
-        .map(|context| context.messages.clone())
-        .unwrap_or_default();
+    let mut messages = Vec::new();
 
     if let Some(context) = fork_context {
+        // Resolution already made this child's isolated copy of the parent.
+        messages = context.messages;
         if let Some(state) = context
             .structured_state_block
             .as_deref()

@@ -178,8 +178,9 @@
   },
   {
     "name": "file_search",
-    "description": "Find workspace files by name, path, or glob (e.g. src/**/*.rs). Space-separated terms must all match. Literal matches rank above fuzzy matches; results are capped. Respects ignore files and skips build/dependency directories by default. Use extensions to filter suffixes.",
+    "description": "Find workspace files by name, path, or glob (e.g. src/**/*.rs), not by contents; use grep_files for symbols or text. Space-separated terms must all match. Literal matches rank above fuzzy matches; results are capped. Respects ignore files and skips build/dependency directories by default. Use extensions to filter suffixes.",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "exclude": {
           "description": "Optional replacement exclusion globs (e.g. [\"**/target/**\", \"*.lock\"]); [] disables default exclusions.",
@@ -219,11 +220,49 @@
     "defer_loading": false
   },
   {
-    "name": "get_goal",
-    "description": "Inspect the current runtime goal state, including objective, status, token budget, elapsed time, evidence, and blocker.",
+    "name": "grep_files",
+    "description": "Search file contents for a regex pattern or symbol; use file_search for filenames. Filter file types with include globs, not extensions. The search skips common non-code directories by default and returns matching lines with context.",
     "input_schema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "case_insensitive": {
+          "description": "Whether to perform case-insensitive matching (default: false)",
+          "type": "boolean"
+        },
+        "context_lines": {
+          "description": "Number of context lines before and after each match (default: 2)",
+          "type": "integer"
+        },
+        "exclude": {
+          "description": "Glob patterns for files to exclude (e.g., ['*.min.js', 'node_modules/*'])",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Glob patterns for files to include (e.g., ['*.rs', '*.ts'])",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_results": {
+          "description": "Maximum number of results to return (default: 100, max: 1000)",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Directory or file to search (relative to workspace, default: .)",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regular expression pattern to search for",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
       "type": "object"
     },
     "allowed_callers": [
@@ -259,6 +298,10 @@
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "expected_revision": {
+          "description": "Optional snapshot guard from a code navigation reference. Pass the reference's path, offset, limit and expected_revision together; changed source is refused instead of silently reading stale offsets. Omit for an ordinary read.",
+          "type": "string"
+        },
         "limit": {
           "description": "Maximum number of lines to read.",
           "type": "number"
@@ -321,114 +364,6 @@
       },
       "required": [
         "todos"
-      ],
-      "type": "object"
-    },
-    "allowed_callers": [
-      "direct"
-    ],
-    "defer_loading": false
-  },
-  {
-    "name": "update_goal",
-    "description": "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it.",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "advisory": {
-          "description": "Required when status is advisory. Appended separately from the judged completion contract.",
-          "type": "string"
-        },
-        "blocker": {
-          "description": "Required when status is blocked. Explain the condition preventing progress.",
-          "type": "string"
-        },
-        "evidence": {
-          "description": "Required when status is complete. Briefly cite the proof that the goal is done.",
-          "type": "string"
-        },
-        "progress": {
-          "additionalProperties": false,
-          "description": "Optional with not_achieved, advisory or yield: your current best estimate of overall completion, shown to the user as reported progress. Keep percent honest — it is an estimate, never a verified fraction.",
-          "properties": {
-            "next": {
-              "description": "One short line: what comes next.",
-              "type": "string"
-            },
-            "now": {
-              "description": "One short line: what is being worked on right now.",
-              "type": "string"
-            },
-            "percent": {
-              "description": "Estimated percent complete, 0-100.",
-              "maximum": 100,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "percent"
-          ],
-          "type": "object"
-        },
-        "status": {
-          "description": "Use complete only when a critical verifier proves the goal; not_achieved to record verifier gaps; blocked when progress cannot continue at all; a needed user answer is a yield, not a block; yield when a stage is finished and the next step is the user's call, or when you need the user's answer before the next pass can do anything useful; advisory to append best-effort context without changing lifecycle state.",
-          "enum": [
-            "complete",
-            "blocked",
-            "not_achieved",
-            "advisory",
-            "yield"
-          ],
-          "type": "string"
-        },
-        "verification": {
-          "additionalProperties": false,
-          "description": "Required when status is complete or not_achieved. A verifier-as-judge receipt from a concrete check, such as Run action=\"verifiers\" or an equivalent project-specific gate.",
-          "properties": {
-            "check": {
-              "description": "The verifier/check that passed.",
-              "type": "string"
-            },
-            "gaps": {
-              "description": "Concrete remaining gaps. Required for critical not_achieved reviews; order and duplicate wording do not affect the stall fingerprint.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "role": {
-              "description": "Critical reviews may satisfy the judged completion contract. Advisory reviews are fail-open and cannot complete it. Defaults to critical for compatibility.",
-              "enum": [
-                "critical",
-                "advisory"
-              ],
-              "type": "string"
-            },
-            "status": {
-              "description": "Use passed when a concrete verifier/check succeeded; not_applicable when no automated verifier applies; not_achieved when the verifier found concrete remaining gaps.",
-              "enum": [
-                "passed",
-                "not_applicable",
-                "not_achieved"
-              ],
-              "type": "string"
-            },
-            "summary": {
-              "description": "Brief result summary from the verifier/check.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "check",
-            "status",
-            "summary"
-          ],
-          "type": "object"
-        }
-      },
-      "required": [
-        "status"
       ],
       "type": "object"
     },

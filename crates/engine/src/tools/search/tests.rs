@@ -8,6 +8,161 @@ use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 
 use super::{GrepFilesTool, matches_glob};
 
+#[tokio::test]
+async fn grep_match_scope_can_be_read_without_guessing_ranges_and_refuses_stale_source() {
+    let tmp = tempdir().expect("tempdir");
+    // A late definition must not be displaced by the cached file-prefix cap;
+    // a matching comment must not manufacture a function.
+    let mut source = String::from("// fn target_symbol() { marker 源 }\r\n");
+    for index in 0..30 {
+        source.push_str(&format!("fn prefix_{index}() {{}}\r\n"));
+    }
+    source.push_str("pub fn target_symbol() -> u32 {\r\n    // marker 源\r\n    7\r\n}\r\n");
+    let path = tmp.path().join("scope.rs");
+    fs::write(&path, &source).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["total_matches"], 3);
+    assert_eq!(
+        payload["matches"][0]["line"],
+        "// fn target_symbol() { marker 源 }"
+    );
+    let navigation = payload["navigation"].as_array().expect("search scopes");
+    assert_eq!(navigation.len(), 1);
+    assert_eq!(navigation[0]["status"], "ready");
+    let symbols = navigation[0]["symbols"]
+        .as_array()
+        .expect("function scopes");
+    assert_eq!(symbols.len(), 1, "no fake or unrelated prefix functions");
+    assert_eq!(symbols[0]["name"], "target_symbol");
+    assert_eq!(
+        symbols[0]["source"],
+        "pub fn target_symbol() -> u32 {\r\n    // marker 源\r\n    7\r\n}\r\n"
+    );
+    let reference = symbols[0]["read"].clone();
+    assert_eq!(reference["path"], "scope.rs");
+    assert_eq!(reference["offset"], 32);
+    assert_eq!(reference["limit"], 4);
+    assert_eq!(
+        reference["expected_revision"],
+        crate::tools::file::content_hash(source.as_bytes())
+    );
+    assert_eq!(
+        crate::tools::echolocation::delivered_navigation_refs(&result.content).len(),
+        1
+    );
+
+    let read = crate::tools::file_tool::ReadTool
+        .execute(reference.clone(), &ctx)
+        .await
+        .expect("follow exact search reference through the real reader");
+    assert!(read.content.contains("pub fn target_symbol() -> u32 {"));
+    assert!(read.content.contains("    7"));
+    // The ordinary symbol footer may name prefix functions; their source
+    // declarations must not leak into the requested four-line window.
+    for index in 0..30 {
+        assert!(!read.content.contains(&format!("fn prefix_{index}() {{}}")));
+    }
+
+    fs::write(&path, source.replace("    7", "    8")).expect("same-size mutation");
+    let error = crate::tools::file_tool::ReadTool
+        .execute(reference, &ctx)
+        .await
+        .expect_err("search references never authorize stale coordinates");
+    assert!(error.to_string().contains("stale"), "{error}");
+
+    // A partial scan cannot mint a whole-file revision, and broad searches
+    // must not turn into a function-body dump.
+    for (body, input) in [
+        (
+            source.clone(),
+            json!({"pattern": "target_symbol|marker", "path": "scope.rs", "max_results": 1}),
+        ),
+        (
+            "fn target_symbol() {}\n".repeat(17),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+        (
+            format!("{}fn target_symbol() {{}}\n", "// padding\n".repeat(30_000)),
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+        ),
+    ] {
+        fs::write(&path, body).expect("boundary fixture");
+        let result = GrepFilesTool.execute(input, &ctx).await.expect("grep");
+        let payload: Value = serde_json::from_str(&result.content).expect("json");
+        assert!(payload.get("navigation").is_none(), "{payload}");
+        assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+    }
+
+    fs::write(&path, "fn target_symbol() {\n").expect("invalid syntax");
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "target_symbol", "path": "scope.rs"}),
+            &ctx,
+        )
+        .await
+        .expect("grep still works for incomplete Rust");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["navigation"][0]["reason"], "syntax_error");
+    assert!(crate::tools::echolocation::delivered_navigation_refs(&result.content).is_empty());
+}
+
+#[tokio::test]
+async fn grep_max_results_is_clamped_not_trusted() {
+    let tmp = tempdir().expect("tempdir");
+    let body = "needle here\n".repeat(1_200);
+    fs::write(tmp.path().join("hay.txt"), &body).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "needle", "max_results": 1_000_000}), &ctx)
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1000);
+    assert_eq!(payload["truncated"], true);
+    assert_eq!(payload["total_matches"], 1000);
+}
+
+#[tokio::test]
+async fn grep_truncated_fires_only_on_a_proven_cut() {
+    let tmp = tempdir().expect("tempdir");
+    // Exactly max: the walk completes, nothing cut, flag stays false.
+    fs::write(tmp.path().join("exact.txt"), "needle\n".repeat(3)).expect("write");
+    // Over max across files: the second file proves the cut.
+    fs::write(tmp.path().join("a.txt"), "needle\n".repeat(2)).expect("write");
+    fs::write(tmp.path().join("b.txt"), "needle\n".repeat(5)).expect("write");
+    let ctx = ToolContext::new(tmp.path());
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "exact.txt", "max_results": 3}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 3);
+    assert_eq!(payload["truncated"], false);
+
+    let result = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "path": "a.txt", "max_results": 1}),
+            &ctx,
+        )
+        .await
+        .expect("grep runs");
+    let payload: Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(payload["matches"].as_array().expect("matches").len(), 1);
+    assert_eq!(payload["truncated"], true);
+}
+
 #[test]
 fn grep_description_matches_default_exclusion_behavior() {
     let description = GrepFilesTool.description();
@@ -112,6 +267,35 @@ fn test_matches_glob_unicode_filename() {
     assert!(matches_glob(filename, "*冰糖*"));
     // Non-matching pattern must not panic either.
     assert!(!matches_glob(filename, "nonexistent*"));
+}
+
+#[tokio::test]
+async fn grep_pods_chart_matched_dirs_with_marks() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::create_dir(tmp.path().join("net")).expect("subdir");
+    fs::write(tmp.path().join("net/server.rs"), "fn serve() {}\n").expect("write");
+    fs::write(tmp.path().join("net/client.rs"), "fn connect() {}\n").expect("write");
+
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "serve"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(result.success);
+    let body: Value = serde_json::from_str(&result.content).expect("json result");
+    assert_eq!(body["total_matches"], 1);
+    let pods = body["pods"].as_array().expect("pods array");
+    assert_eq!(pods.len(), 1);
+    assert_eq!(pods[0]["dir"], "net");
+    let mates: Vec<&str> = pods[0]["mates"]
+        .as_array()
+        .expect("mates")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(mates.contains(&"client.rs"), "{mates:?}");
+    assert!(mates.contains(&"server.rs (match)"), "{mates:?}");
+    assert_eq!(body["pods_omitted"], 0);
 }
 
 #[tokio::test]
@@ -415,12 +599,13 @@ async fn test_grep_files_ring_buffer_context_matches_full_read() {
     let parsed: Value = serde_json::from_str(&result.content).unwrap();
     let matches = parsed["matches"].as_array().unwrap();
     assert_eq!(matches.len(), 3);
-    assert_eq!(matches[0]["context_before"], json!([]));
+    // Token diet: empty context arrays are omitted on the wire.
+    assert!(matches[0].get("context_before").is_none());
     assert_eq!(matches[0]["context_after"], json!(["b1", "b2"]));
     assert_eq!(matches[1]["context_before"], json!(["b2", "b3"]));
     assert_eq!(matches[1]["context_after"], json!(["a1", "a2"]));
     assert_eq!(matches[2]["context_before"], json!(["a2", "a3"]));
-    assert_eq!(matches[2]["context_after"], json!([]));
+    assert!(matches[2].get("context_after").is_none());
     assert_eq!(matches[2]["line_number"].as_u64().unwrap(), 9);
 }
 
