@@ -89,8 +89,10 @@ Docs: <https://docs.standardcompute.com/quickstart>.
 Runcrate is an OpenAI-compatible gateway with one key for models from several
 labs. Model ids are case-sensitive `org/Name` ids such as
 `deepseek-ai/DeepSeek-V4.1-Flash`. The authority is
-`GET https://api.runcrate.ai/v1/models`, which is public and needs no key.
-Docs: <https://www.runcrate.ai/docs/getting-started/quickstart>.
+`GET https://api.runcrate.ai/v1/models`. On a configured Runcrate route,
+`codewhale models --update --provider runcrate` refreshes this catalog
+anonymously. Inference requires `RUNCRATE_API_KEY`. A successful public listing
+leaves the key unverified. [Runcrate quickstart](https://www.runcrate.ai/docs/getting-started/quickstart).
 
 Opper is an EU-hosted, OpenAI-compatible gateway with 700+ models from 50+
 providers behind one key. Bare pool names such as `claude-sonnet-4-6` let Opper
@@ -192,8 +194,9 @@ codewhale models --provider openai --json
 ```
 
 `models --update` (also `--refresh`) updates the shared Models.dev metadata
-and calls the existing `/models` endpoint for each configured provider with
-its own credentials. `--provider ID` restricts the refresh to that exact
+and calls each configured provider’s `/models` endpoint. Authenticated
+endpoints use that provider’s credentials. Bundled public catalog endpoints
+can be refreshed anonymously. `--provider ID` restricts the refresh to that exact
 provider, including named custom endpoints. It makes no inference requests
 and never changes the saved provider or model. A command-line API key is
 confined to the active provider; other routes are reported as skipped for

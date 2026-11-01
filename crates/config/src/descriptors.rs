@@ -2,7 +2,7 @@
 //!
 //! One committed data file owns built-in/legacy defaults and compatible hosts.
 //! Model rosters are **not** compiled here. A descriptor names the wire, URL, env
-//! var, and whether authenticated `GET /v1/models` is the catalog authority
+//! var, and whether `GET /v1/models` is the catalog authority
 //! for that host. Offerings come from the Codewhale catalog layers and live
 //! provider `/models` refreshes.
 
@@ -143,6 +143,7 @@ include!(concat!(env!("OUT_DIR"), "/provider_descriptors.rs"));
 pub enum DescriptorDiscovery {
     /// Authenticated `GET {base_url}/models` is authoritative for this credential.
     ModelsEndpoint,
+    PublicModelsEndpoint,
     /// No live discovery; only catalog/config rows.
     None,
 }
@@ -231,7 +232,10 @@ mod tests {
             assert!(row.base_url.starts_with("https://"), "{}", row.id);
             assert!(!row.api_key_env.is_empty(), "{}", row.id);
             assert!(!row.default_model.is_empty(), "{}", row.id);
-            assert_eq!(row.discovery, DescriptorDiscovery::ModelsEndpoint);
+            assert!(matches!(
+                row.discovery,
+                DescriptorDiscovery::ModelsEndpoint | DescriptorDiscovery::PublicModelsEndpoint
+            ));
             assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
         }
         let cmd = provider_descriptor("command-code").expect("command-code");

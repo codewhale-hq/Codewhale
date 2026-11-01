@@ -2220,7 +2220,7 @@
       "base_url": "https://api.runcrate.ai/v1",
       "api_key_env": "RUNCRATE_API_KEY",
       "default_model": "deepseek-ai/DeepSeek-V4.1-Flash",
-      "discovery": "models_endpoint",
+      "discovery": "public_models_endpoint",
       "docs_url": "https://www.runcrate.ai/docs/getting-started/quickstart",
       "credential_url": "https://www.runcrate.ai/dashboard",
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key."

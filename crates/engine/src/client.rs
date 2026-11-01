@@ -1509,6 +1509,18 @@ impl CodewhaleClient {
         let identity = config
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
+        let public_config;
+        let config = if Self::public_catalog_for_route(config, &identity) {
+            let mut anonymous = config.clone();
+            anonymous.http_headers = None;
+            let entry = anonymous.provider_config_for_mut(&identity)?;
+            entry.auth_mode = Some("none".into());
+            entry.http_headers = None;
+            public_config = anonymous;
+            &public_config
+        } else {
+            config
+        };
         Self::from_parts(
             config.active_route_base_url(),
             config.default_model(),
@@ -1516,6 +1528,19 @@ impl CodewhaleClient {
             None,
             config,
         )
+    }
+
+    pub(crate) fn public_catalog_for_route(
+        config: &Config,
+        identity: &codewhale_runtime::config::ProviderIdentity,
+    ) -> bool {
+        identity.provider == ProviderKind::Custom
+            && !config.session_provider_keys_only
+            && config.required_account_model_owner.is_none()
+            && config
+                .provider_config_for(identity)
+                .is_some_and(|entry| entry.plugin_authority.is_none() && entry.oauth.is_none())
+            && model_listing_is_public(&config.base_url_for_route(identity))
     }
 
     /// Create a DeepSeek client whose transport is bound to a runtime-resolved
@@ -2717,6 +2742,16 @@ fn wire_config_prefers_responses(wire: Option<&str>) -> bool {
     codewhale_config::provider::wire_dialect_prefers_responses(wire)
 }
 
+fn model_listing_is_public(base_url: &str) -> bool {
+    codewhale_config::descriptors::bundled_provider_descriptors()
+        .iter()
+        .any(|row| {
+            row.discovery
+                == codewhale_config::descriptors::DescriptorDiscovery::PublicModelsEndpoint
+                && row.base_url == base_url.trim_end_matches('/')
+        })
+}
+
 fn api_provider_skips_models_probe(api_provider: ProviderKind) -> bool {
     // Concentrate's `GET /v1/models` is explicitly unauthenticated
     // (docs/PROVIDERS.md): a 2xx proves nothing about the key, so guided
@@ -2731,6 +2766,14 @@ fn api_provider_skips_models_probe(api_provider: ProviderKind) -> bool {
 #[must_use]
 pub fn provider_api_key_verification_is_observed(api_provider: ProviderKind) -> bool {
     !api_provider_skips_models_probe(api_provider)
+}
+
+#[must_use]
+pub fn provider_api_key_verification_is_observed_for_route(
+    api_provider: ProviderKind,
+    base_url: &str,
+) -> bool {
+    provider_api_key_verification_is_observed(api_provider) && !model_listing_is_public(base_url)
 }
 
 /// Verify a provider API key by hitting the `/models` endpoint
@@ -2753,7 +2796,7 @@ pub async fn verify_provider_api_key(
     api_key: &str,
     base_url: &str,
 ) -> Result<Option<ProviderCatalogDelta>, String> {
-    if api_provider_skips_models_probe(provider) {
+    if !provider_api_key_verification_is_observed_for_route(provider, base_url) {
         // Providers without a /models endpoint can't be verified this
         // way; accept the key optimistically (same as health_check).
         return Ok(None);
@@ -4342,7 +4385,7 @@ impl CodewhaleClient {
         if !should_probe {
             return;
         }
-        if api_provider_skips_models_probe(self.api_provider) {
+        if !provider_api_key_verification_is_observed_for_route(self.api_provider, &self.base_url) {
             self.mark_request_success().await;
             logging::info("Skipping /models recovery probe for provider without a models endpoint");
             return;
@@ -4953,7 +4996,7 @@ impl LlmClient for CodewhaleClient {
     }
 
     async fn health_check(&self) -> Result<bool> {
-        if api_provider_skips_models_probe(self.api_provider) {
+        if !provider_api_key_verification_is_observed_for_route(self.api_provider, &self.base_url) {
             self.mark_request_success().await;
             return Ok(true);
         }

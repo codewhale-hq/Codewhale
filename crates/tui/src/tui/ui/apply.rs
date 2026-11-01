@@ -3814,7 +3814,10 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
         return;
     }
     let selected_id = Some(identity.key.to_string());
-    if !codewhale_engine::client::provider_api_key_verification_is_observed(provider) {
+    let base_url = scoped_config.active_route_base_url();
+    if !codewhale_engine::client::provider_api_key_verification_is_observed_for_route(
+        provider, &base_url,
+    ) {
         app.push_status_toast(
             app.tr(MessageId::ProviderTestConnectionNoEndpoint)
                 .replace("{provider}", identity.key.as_str()),
@@ -3838,7 +3841,6 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
             return;
         }
     };
-    let base_url = scoped_config.active_route_base_url();
     let model = scoped_config.default_model();
     let outcome = verifier.verify(provider, &api_key, &base_url).await;
     if let Err(reason) = config.verify_provider_identity(&identity) {
@@ -3959,7 +3961,9 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
             // so record a distinct connection-checked state rather than
             // claiming the model is ready. Providers without a real `/models`
             // probe remain unchecked.
-            if codewhale_engine::client::provider_api_key_verification_is_observed(provider) {
+            if codewhale_engine::client::provider_api_key_verification_is_observed_for_route(
+                provider, &base_url,
+            ) {
                 let verified_model = scoped_config.default_model();
                 app.provider_health.record_models_probe_success(
                     &scoped_config,
