@@ -88,7 +88,7 @@ export async function GET(req: Request) {
         result = await runDigest(agentEnv);
         break;
       case "facts-drift":
-        result = await runFactsDrift(agentEnv) as unknown as Record<string, unknown>;
+        result = await runFactsDrift({ ...agentEnv, DRAFT_CLAIM_LOCK: env.DRAFT_CLAIM_LOCK }) as unknown as Record<string, unknown>;
         break;
       case "linkcheck":
         result = await runLinkCheck(agentEnv) as unknown as Record<string, unknown>;

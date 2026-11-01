@@ -107,3 +107,28 @@ export interface DraftClaimLockNamespace {
 export interface DraftClaimLockId {
   toString(): string;
 }
+
+export async function withGenerationLease<T extends { ok?: unknown }>(
+  namespace: DraftClaimLockNamespace,
+  task: string,
+  generate: () => Promise<T>,
+): Promise<T | "busy" | "unavailable"> {
+  let lock: DraftClaimLockStub;
+  const token = `generate:${crypto.randomUUID()}`;
+  try {
+    lock = namespace.get(namespace.idFromName(`draft-generation:${task}`));
+    const held = await lock.act({ op: "claim", token, action: "generate", leaseMs: 45 * 60 * 1000 });
+    if (!held.ok) return "busy";
+  } catch {
+    return "unavailable";
+  }
+  let completed = false;
+  try {
+    const result = await generate();
+    completed = result.ok === true;
+    return result;
+  } finally {
+    // A release failure leaves the durable lease in place until its expiry.
+    await lock.act({ op: "release", token, holdMs: completed ? 120_000 : 0 }).catch(() => undefined);
+  }
+}

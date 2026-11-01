@@ -2,6 +2,7 @@
  * Cloudflare KV access via the OpenNext binding helper.
  * Falls back to in-memory cache for `next dev` outside of `wrangler dev`.
  */
+import type { DraftClaimLockNamespace } from "./draft-claim-lock";
 import type { CuratedDispatch } from "./types";
 import type { MerchEnv } from "./merch/types";
 
@@ -21,6 +22,7 @@ export interface KVStreamNamespace {
 }
 
 interface CloudflareEnv extends MerchEnv {
+  DRAFT_CLAIM_LOCK?: DraftClaimLockNamespace;
   CURATED_KV?: KVNamespace & KVStreamNamespace;
   MERCH_INTEREST_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   MERCH_INTEREST_SITE_ORIGIN?: string;

@@ -1,4 +1,4 @@
-import type { DraftClaimLockNamespace, DraftClaimLockStub } from "./draft-claim-lock";
+import { withGenerationLease, type DraftClaimLockNamespace } from "./draft-claim-lock";
 import { OUTBOUND_TIMEOUT_MS } from "@/lib/bounded-body";
 import { fetchFeed, fetchRepoStats } from "@/lib/github";
 import { curate } from "@/lib/deepseek";
@@ -484,24 +484,10 @@ async function generateDigest(env: AgentEnv): Promise<Record<string, unknown>> {
 async function withGenerationClaim(env: AgentEnv, task: string, generate: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
   if (!env.DEEPSEEK_API_KEY) return { skipped: true, reason: "DEEPSEEK_API_KEY not set" };
   if (!env.DRAFT_CLAIM_LOCK || !env.CURATED_KV) return { skipped: true, reason: "durable generation claim unavailable; no provider call started" };
-  let lock: DraftClaimLockStub;
-  const token = `generate:${crypto.randomUUID()}`;
-  try {
-    lock = env.DRAFT_CLAIM_LOCK.get(env.DRAFT_CLAIM_LOCK.idFromName(`draft-generation:${task}`));
-    const held = await lock.act({ op: "claim", token, action: "generate", leaseMs: 45 * 60 * 1000 });
-    if (!held.ok) return { ok: true, processed: 0, skipped: 1, reason: "generation already in progress or recently completed" };
-  } catch {
-    return { skipped: true, reason: "durable generation claim unavailable; no provider call started" };
-  }
-  let completed = false;
-  try {
-    const result = await generate();
-    completed = result.ok === true;
-    return result;
-  } finally {
-    // A release failure leaves the durable lease in place until its expiry.
-    await lock.act({ op: "release", token, holdMs: completed ? 120_000 : 0 }).catch(() => undefined);
-  }
+  const result = await withGenerationLease(env.DRAFT_CLAIM_LOCK, task, generate);
+  if (result === "busy") return { ok: true, processed: 0, skipped: 1, reason: "generation already in progress or recently completed" };
+  if (result === "unavailable") return { skipped: true, reason: "durable generation claim unavailable; no provider call started" };
+  return result;
 }
 
 export const runCurate = (env: AgentEnv) => withGenerationClaim(env, "curate", () => generateCurate(env));
