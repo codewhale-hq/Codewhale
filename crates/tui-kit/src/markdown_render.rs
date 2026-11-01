@@ -1837,10 +1837,25 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             }
         }
         // `inline code`
-        if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
-            let inner = &rest[1..1 + end];
+        let ticks = rest.bytes().take_while(|byte| *byte == b'`').count();
+        if ticks > 0 {
+            let body = &rest[ticks..];
+            let Some(end) = closing_backtick_run(body, ticks) else {
+                out.push(InlineToken::new(
+                    rest[..ticks].to_string(),
+                    base_style,
+                    None,
+                ));
+                rest = body;
+                continue;
+            };
+            let inner = &body[..end];
+            let inner = match inner.strip_prefix(' ').and_then(|s| s.strip_suffix(' ')) {
+                Some(padded) if !inner.trim_matches(' ').is_empty() => padded,
+                _ => inner,
+            };
             out.push(InlineToken::new(inner.to_string(), code_style, None));
-            rest = &rest[1 + end + 1..];
+            rest = &body[end + ticks..];
             continue;
         }
         // ~~strikethrough~~
@@ -2006,6 +2021,22 @@ fn has_unmatched_closing_delimiter(candidate: &str, closing: char) -> bool {
     };
     candidate.chars().filter(|ch| *ch == closing).count()
         > candidate.chars().filter(|ch| *ch == opening).count()
+}
+
+fn closing_backtick_run(body: &str, ticks: usize) -> Option<usize> {
+    let mut start = 0;
+    while let Some(offset) = body[start..].find('`') {
+        let run_start = start + offset;
+        let run = body[run_start..]
+            .bytes()
+            .take_while(|byte| *byte == b'`')
+            .count();
+        if run == ticks {
+            return Some(run_start);
+        }
+        start = run_start + run;
+    }
+    None
 }
 
 /// Find the index of the next inline marker (`**`, `__`, `*`, `_`, `http`)
