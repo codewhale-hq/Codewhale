@@ -154,16 +154,16 @@ test("action tokens remain distinct when clock and legacy randomness repeat", as
 });
 
 test("readJsonSafe tolerates empty and non-JSON bodies", async () => {
-  assert.deepEqual(await readJsonSafe({ text: async () => "" }), {});
-  assert.deepEqual(await readJsonSafe({ text: async () => '{"ok":true}' }), { ok: true });
-  assert.equal(await readJsonSafe({ text: async () => "plain text" }), "plain text");
+  assert.deepEqual(await readJsonSafe(new Response("")), {});
+  assert.deepEqual(await readJsonSafe(new Response('{"ok":true}')), { ok: true });
+  assert.equal(await readJsonSafe(new Response("plain text")), "plain text");
 });
 
 test("readSse reassembles events split across chunks and strips CR", async () => {
   const response = {
     body: (async function* () {
-      yield Buffer.from('event: item.delta\ndata: {"seq":1}\n\nevent:');
-      yield Buffer.from(' turn.completed\r\ndata: {"seq":2}\n\n');
+      yield Buffer.from('event: item.delta\r\ndata: {"seq":1}\r\n\r');
+      yield Buffer.from('\nevent: turn.completed\r\ndata: {"seq":2}\n\n');
     })()
   };
   const events = [];
@@ -180,13 +180,9 @@ test("createRuntimeClient sends bearer auth and surfaces runtime errors", async 
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), options });
     if (String(url).endsWith("/fail")) {
-      return {
-        ok: false,
-        status: 503,
-        text: async () => JSON.stringify({ error: { message: "down" } })
-      };
+      return new Response(JSON.stringify({ error: { message: "down" } }), { status: 503 });
     }
-    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    return new Response(JSON.stringify({ ok: true }));
   };
   try {
     const { runtimeJson, authHeaders } = createRuntimeClient({
