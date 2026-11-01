@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(unix, test))]
+use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::OnceLock;
 #[cfg(all(unix, test))]
