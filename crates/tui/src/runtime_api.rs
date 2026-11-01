@@ -4408,7 +4408,7 @@ fn managed_fleet_token(field: &str, value: &str) -> Result<String, ApiError> {
 }
 
 fn reject_parallel_write_collisions(tasks: &[FleetTaskSpec]) -> Result<(), ApiError> {
-    let mut claims: Vec<(String, String)> = Vec::new();
+    let mut claims = Vec::new();
     for task in tasks {
         let write_roots = fleet_write_roots(task).map_err(|error| {
             ApiError::bad_request(format!(
@@ -4417,15 +4417,26 @@ fn reject_parallel_write_collisions(tasks: &[FleetTaskSpec]) -> Result<(), ApiEr
             ))
         })?;
         for normalized in write_roots {
-            for (owner, existing) in &claims {
-                if owner != &task.id && managed_paths_overlap(existing.as_str(), &normalized) {
-                    return Err(ApiError::bad_request(format!(
-                        "Parallel Workflow write scope collision: tasks '{owner}' and '{}' both claim overlapping paths",
-                        task.id
-                    )));
-                }
+            claims.push((task.id.as_str(), normalized));
+        }
+    }
+    claims.sort_unstable_by(|(_, left), (_, right)| {
+        (left.as_str() != ".")
+            .cmp(&(right.as_str() != "."))
+            .then_with(|| left.split('/').cmp(right.split('/')))
+    });
+    let mut covering: Option<(&str, &str)> = None;
+    for (owner, path) in &claims {
+        if let Some((existing_owner, existing)) = covering
+            && managed_paths_overlap(existing, path)
+        {
+            if existing_owner != *owner {
+                return Err(ApiError::bad_request(format!(
+                    "Parallel Workflow write scope collision: tasks '{existing_owner}' and '{owner}' both claim overlapping paths"
+                )));
             }
-            claims.push((task.id.clone(), normalized));
+        } else {
+            covering = Some((*owner, path.as_str()));
         }
     }
     Ok(())
