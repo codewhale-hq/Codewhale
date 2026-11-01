@@ -42,5 +42,8 @@ rquickjs = { workspace = true, features = ["bindgen"] }
 [target.'cfg(target_env = "ohos")'.dependencies]
 rquickjs = { workspace = true, features = ["bindgen"] }
 
+[target.'cfg(all(target_os = "windows", target_env = "gnu", target_abi = "llvm"))'.dependencies]
+rquickjs = { workspace = true, features = ["bindgen"] }
+
 [dev-dependencies]
 serde_json.workspace = true
