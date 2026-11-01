@@ -4901,20 +4901,31 @@ fn test_add_message() {
 
 #[test]
 fn test_compaction_config() {
+    let _home = crate::test_support::SealedHome::new();
     let mut app = App::new(test_options(false), &Config::default());
-    let config = app.compaction_config();
-    // Config should be valid (just checking it returns something)
-    let _ = config.enabled;
+    app.set_model_selection("auto".to_string());
+    assert_eq!(app.compaction_config().model, DEFAULT_TEXT_MODEL);
 
-    app.auto_model = true;
-    app.model = "auto".to_string();
-    app.last_effective_model = None;
-    let config = app.compaction_config();
-    assert_eq!(config.model, DEFAULT_TEXT_MODEL);
+    let budget = AutoRouteBudget {
+        provider: ProviderKind::Deepseek,
+        provider_identity: "deepseek".into(),
+        model: "deepseek-v4-flash".into(),
+        limits: None,
+        window: codewhale_engine::route_runtime::ContextWindowResolution {
+            tokens: 1_000_000,
+            source: codewhale_engine::route_runtime::ContextWindowSource::Catalog,
+        },
+        restored: false,
+    };
+    app.last_effective_model = Some(budget.model.clone());
+    assert_eq!(app.compaction_config().model, DEFAULT_TEXT_MODEL);
 
-    app.last_effective_model = Some("deepseek-v4-flash".to_string());
+    app.last_effective_provider = Some(budget.provider);
+    app.last_effective_provider_identity = Some(budget.provider_identity.clone());
+    app.last_effective_budget = Some(budget);
     let config = app.compaction_config();
     assert_eq!(config.model, "deepseek-v4-flash");
+    assert_eq!(config.effective_context_window, Some(1_000_000));
 }
 
 #[test]
