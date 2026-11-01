@@ -720,17 +720,11 @@ pub fn render_parsed_tagged_with_palette(
             {
                 i += 1;
             }
-            out.extend(
-                render_table_group(&parsed.blocks[start..i], width, base_style)
-                    .into_iter()
-                    .map(|line| RenderedMarkdownLine {
-                        line,
-                        links: Vec::new(),
-                        is_code: false,
-                        copy_prefix_width: 0,
-                        copy_separator_after: CopyLineSeparator::Newline,
-                    }),
-            );
+            out.extend(render_table_group(
+                &parsed.blocks[start..i],
+                width,
+                base_style,
+            ));
             continue;
         }
 
@@ -2098,97 +2092,56 @@ fn split_table_cells(inner: &str) -> Vec<String> {
     cells
 }
 
-/// Word-wrap a single cell's text into one or more visual lines, each
-/// constrained to `col_width` display columns. Whitespace is the preferred
-/// break point; words wider than `col_width` are hard-broken at grapheme
-/// boundaries so wrapping always makes progress (no infinite loop on URLs
-/// or paths). Returns at least one segment.
-fn wrap_cell_text(cell: &str, col_width: usize) -> Vec<String> {
-    if cell.is_empty() || cell.width() <= col_width {
-        return vec![cell.to_string()];
-    }
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_w = 0usize;
-
-    for word in cell.split_whitespace() {
-        let word_w = word.width();
-        if current_w == 0 {
-            if word_w > col_width {
-                push_word_breaking_graphemes(
-                    word,
-                    col_width,
-                    &mut current,
-                    &mut current_w,
-                    &mut lines,
-                );
-            } else {
-                current.push_str(word);
-                current_w = word_w;
-            }
-        } else if current_w + 1 + word_w <= col_width {
-            current.push(' ');
-            current.push_str(word);
-            current_w += 1 + word_w;
-        } else {
-            lines.push(std::mem::take(&mut current));
-            current_w = 0;
-            if word_w > col_width {
-                push_word_breaking_graphemes(
-                    word,
-                    col_width,
-                    &mut current,
-                    &mut current_w,
-                    &mut lines,
-                );
-            } else {
-                current.push_str(word);
-                current_w = word_w;
-            }
-        }
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
 fn render_table_row(
     cells: &[String],
     num_cols: usize,
     width: usize,
     base_style: Style,
-) -> Vec<Line<'static>> {
+) -> Vec<RenderedMarkdownLine> {
     let col_width = table_col_width(num_cols, width);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
 
     // Wrap each cell into one or more visual segments. The row's visual
     // height equals the tallest column. Cells that wrap to fewer segments
     // get blank-padded continuation lines so column separators stay aligned.
-    let wrapped: Vec<Vec<String>> = (0..num_cols)
-        .map(|i| wrap_cell_text(cells.get(i).map_or("", String::as_str), col_width))
+    let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
+        .map(|i| {
+            render_line_with_links_tagged(
+                cells.get(i).map_or("", String::as_str),
+                col_width,
+                base_style,
+                link_style(),
+            )
+        })
         .collect();
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_height);
+    let mut lines = Vec::with_capacity(row_height);
     for row in 0..row_height {
-        let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
-        for (i, cell_segments) in wrapped.iter().enumerate() {
-            let segment = cell_segments.get(row).map(String::as_str).unwrap_or("");
-            let cell_spans = parse_inline_spans(segment, base_style, link_style());
-            let cell_width: usize = cell_spans.iter().map(|token| token.text.width()).sum();
+        let border = "│ ";
+        let mut spans = vec![Span::styled(border, sep_style)];
+        let mut column = border.width();
+        let mut links = Vec::new();
+        for (i, cell_segments) in wrapped.iter_mut().enumerate() {
+            let mut cell_width = 0;
+            if let Some(segment) = cell_segments.get_mut(row) {
+                cell_width = segment.line.width();
+                links.extend(segment.links.iter().map(|link| link.shifted(column)));
+                spans.append(&mut segment.line.spans);
+            }
             let pad = col_width.saturating_sub(cell_width);
-            for token in cell_spans {
-                spans.push(token.into_span());
-            }
             spans.push(Span::raw(" ".repeat(pad)));
-            if i + 1 < num_cols {
-                spans.push(Span::styled(" │ ".to_string(), sep_style));
-            } else {
-                spans.push(Span::styled(" │".to_string(), sep_style));
-            }
+            let separator = if i + 1 < num_cols { " │ " } else { " │" };
+            column += cell_width + pad + separator.width();
+            spans.push(Span::styled(separator, sep_style));
         }
-        lines.push(Line::from(spans));
+        lines.push(RenderedMarkdownLine {
+            line: Line::from(spans),
+            links,
+            is_code: false,
+            copy_prefix_width: 0,
+            copy_separator_after: CopyLineSeparator::Newline,
+        });
     }
     lines
 }
@@ -2205,7 +2158,7 @@ fn render_table_border(
     left: &str,
     mid: &str,
     right: &str,
-) -> Line<'static> {
+) -> RenderedMarkdownLine {
     let fill = "\u{2500}".repeat(col_width);
     let mut s = String::new();
     s.push_str(left);
@@ -2217,10 +2170,20 @@ fn render_table_border(
             s.push_str(right);
         }
     }
-    Line::from(Span::styled(s, sep_style))
+    RenderedMarkdownLine {
+        line: Line::from(Span::styled(s, sep_style)),
+        links: Vec::new(),
+        is_code: false,
+        copy_prefix_width: 0,
+        copy_separator_after: CopyLineSeparator::Newline,
+    }
 }
 
-fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<Line<'static>> {
+fn render_table_group(
+    blocks: &[Block],
+    width: usize,
+    base_style: Style,
+) -> Vec<RenderedMarkdownLine> {
     let sep_style = Style::default().fg(palette::TEXT_DIM);
 
     let num_cols = blocks
@@ -2327,29 +2290,6 @@ fn markdown_grapheme_width(grapheme: &str, col: usize) -> usize {
         return 2;
     }
     grapheme.width()
-}
-
-/// Push graphemes from `word` into `current`, flushing to `lines` when the
-/// running display width would exceed `width`. String-level Unicode width
-/// matches Ratatui for emoji and combining sequences.
-/// Used by `wrap_cell_text` so a word longer than the allotted width never
-/// silently overflows the right edge.
-fn push_word_breaking_graphemes(
-    word: &str,
-    width: usize,
-    current: &mut String,
-    current_width: &mut usize,
-    lines: &mut Vec<String>,
-) {
-    for grapheme in word.graphemes(true) {
-        let grapheme_width = grapheme.width();
-        if *current_width + grapheme_width > width && *current_width > 0 {
-            lines.push(std::mem::take(current));
-            *current_width = 0;
-        }
-        current.push_str(grapheme);
-        *current_width += grapheme_width;
-    }
 }
 
 #[cfg(test)]
@@ -3832,6 +3772,24 @@ mod tests {
                 "fragment {fragment:?} missing from wrapped output:\n{combined}"
             );
         }
+        let target = "https://example.com/guide";
+        let label = "y".repeat(120);
+        let table = format!("| A | B |\n|---|---|\n| 界 | [{label}]({target}) |");
+        let rows = render_markdown_tagged(&table, 36, Style::default());
+        let mut linked_width = 0;
+        for row in rows.iter().filter(|row| !row.links.is_empty()) {
+            let visible = row.line.to_string();
+            let start = visible.find('y').unwrap();
+            assert_eq!(row.links.len(), 1);
+            let link = &row.links[0];
+            assert_eq!(link.target, target);
+            assert_eq!(link.col_start, visible[..start].width());
+            let width = link.col_end - link.col_start + 1;
+            assert_eq!(width, visible.matches('y').count());
+            assert!(link.col_end < row.line.width());
+            linked_width += width;
+        }
+        assert_eq!(linked_width, label.len());
     }
 
     // ─── Paragraph wrap regression suite (#1344, #1351) ────────────────────
@@ -3956,21 +3914,6 @@ mod tests {
             );
         }
         assert_eq!(combined.matches('x').count(), 150);
-    }
-
-    #[test]
-    fn wrap_cell_text_already_handled_long_words_remains_correct() {
-        // Regression guard for the v0.8.25 table-cell fix. After consolidating
-        // the char-break helper, wrap_cell_text must continue to handle
-        // overlong cells. Pin the property: every wrapped segment fits
-        // within the column width, and content is preserved.
-        let long = "y".repeat(120);
-        let segments = wrap_cell_text(&long, 30);
-        for seg in &segments {
-            assert!(seg.width() <= 30, "segment {seg:?} exceeds col 30");
-        }
-        let combined: String = segments.join("");
-        assert_eq!(combined.matches('y').count(), 120);
     }
 
     #[test]
