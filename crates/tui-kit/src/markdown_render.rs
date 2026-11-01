@@ -2125,18 +2125,18 @@ fn split_table_cells(inner: &str) -> Vec<String> {
 
 fn render_table_row(
     cells: &[String],
-    num_cols: usize,
-    width: usize,
+    widths: &[usize],
     base_style: Style,
 ) -> Vec<RenderedMarkdownLine> {
-    let col_width = table_col_width(num_cols, width);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
 
     // Wrap each cell into one or more visual segments. The row's visual
     // height equals the tallest column. Cells that wrap to fewer segments
     // get blank-padded continuation lines so column separators stay aligned.
-    let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
-        .map(|i| {
+    let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &col_width)| {
             let cell = cells.get(i).map_or("", String::as_str);
             let tokens = parse_inline_spans(cell, base_style, link_style());
             if tokens.iter().map(|token| token.text.width()).sum::<usize>() > col_width {
@@ -2175,9 +2175,13 @@ fn render_table_row(
                 links.extend(segment.links.iter().map(|link| link.shifted(column)));
                 spans.append(&mut segment.line.spans);
             }
-            let pad = col_width.saturating_sub(cell_width);
+            let pad = widths[i].saturating_sub(cell_width);
             spans.push(Span::raw(" ".repeat(pad)));
-            let separator = if i + 1 < num_cols { " │ " } else { " │" };
+            let separator = if i + 1 < widths.len() {
+                " │ "
+            } else {
+                " │"
+            };
             column += cell_width + pad + separator.width();
             spans.push(Span::styled(separator, sep_style));
         }
@@ -2192,25 +2196,42 @@ fn render_table_row(
     lines
 }
 
-fn table_col_width(num_cols: usize, term_width: usize) -> usize {
-    let col_width = (term_width.saturating_sub(3 * num_cols + 1)) / num_cols;
-    col_width.max(4)
+fn table_col_widths(blocks: &[Block], num_cols: usize, term_width: usize) -> Vec<usize> {
+    let mut wanted = vec![0; num_cols];
+    for block in blocks {
+        if let Block::TableRow(cells) = block {
+            for (col_wanted, cell) in wanted.iter_mut().zip(cells) {
+                let tokens = parse_inline_spans(cell, Style::default(), Style::default());
+                let cell_width = tokens.iter().map(|token| token.text.width()).sum();
+                *col_wanted = (*col_wanted).max(cell_width);
+            }
+        }
+    }
+
+    let mut narrowest_first: Vec<usize> = (0..num_cols).collect();
+    narrowest_first.sort_by_key(|&col| wanted[col]);
+    let mut room = term_width.saturating_sub(3 * num_cols + 1);
+    let mut widths = vec![0; num_cols];
+    for (placed, &col) in narrowest_first.iter().enumerate() {
+        let share = room / (num_cols - placed);
+        widths[col] = wanted[col].min(share.max(4));
+        room = room.saturating_sub(widths[col]);
+    }
+    widths
 }
 
 fn render_table_border(
-    num_cols: usize,
-    col_width: usize,
+    widths: &[usize],
     sep_style: Style,
     left: &str,
     mid: &str,
     right: &str,
 ) -> RenderedMarkdownLine {
-    let fill = "\u{2500}".repeat(col_width);
     let mut s = String::new();
     s.push_str(left);
-    for i in 0..num_cols {
-        s.push_str(&fill);
-        if i + 1 < num_cols {
+    for (i, &col_width) in widths.iter().enumerate() {
+        s.push_str(&"\u{2500}".repeat(col_width));
+        if i + 1 < widths.len() {
             s.push_str(mid);
         } else {
             s.push_str(right);
@@ -2241,14 +2262,13 @@ fn render_table_group(
         .max()
         .unwrap_or(1);
 
-    let col_width = table_col_width(num_cols, width);
+    let widths = table_col_widths(blocks, num_cols, width);
 
     let mut lines = Vec::new();
 
     // Top border
     lines.push(render_table_border(
-        num_cols,
-        col_width,
+        &widths,
         sep_style,
         "\u{250C}\u{2500}",
         "\u{2500}\u{252C}\u{2500}",
@@ -2257,8 +2277,7 @@ fn render_table_group(
 
     let mid_border = || {
         render_table_border(
-            num_cols,
-            col_width,
+            &widths,
             sep_style,
             "\u{251C}\u{2500}",
             "\u{2500}\u{253C}\u{2500}",
@@ -2279,7 +2298,7 @@ fn render_table_group(
                 } else {
                     base_style
                 };
-                lines.extend(render_table_row(cells, num_cols, width, style));
+                lines.extend(render_table_row(cells, &widths, style));
             }
             Block::TableSeparator => {
                 lines.push(mid_border());
@@ -2290,8 +2309,7 @@ fn render_table_group(
 
     // Bottom border
     lines.push(render_table_border(
-        num_cols,
-        col_width,
+        &widths,
         sep_style,
         "\u{2514}\u{2500}",
         "\u{2500}\u{2534}\u{2500}",
