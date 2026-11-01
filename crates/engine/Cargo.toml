@@ -80,7 +80,6 @@ codewhale-memory = { path = "../memory", version = "0.10.2" }
 anyhow.workspace = true
 codewhale-agent = { path = "../agent", version = "0.10.2" }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2" }
-codewhale-app-server = { path = "../app-server", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
 codewhale-commands = { path = "../commands", version = "0.10.2" }

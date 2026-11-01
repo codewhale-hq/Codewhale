@@ -476,7 +476,7 @@ impl ChildAuthority {
             }
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
-            codewhale_app_server::daemon_socket::owner_work(move || {
+            codewhale_runtime::runtime_control::owner_work(move || {
                 held.validate_write_scope(&owner, &paths)
                     .map_err(anyhow::Error::msg)
             })
@@ -513,7 +513,7 @@ impl ChildAuthority {
         {
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
-            let blocking_peers = codewhale_app_server::daemon_socket::owner_work(move || {
+            let blocking_peers = codewhale_runtime::runtime_control::owner_work(move || {
                 // A peer-free checkout still requires the exact held origin.
                 // The file/root checks stay on the bounded owner worker.
                 if let Some(claim) = held.shared_write_claim(&owner) {

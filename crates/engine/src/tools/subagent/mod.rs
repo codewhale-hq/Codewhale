@@ -13733,7 +13733,7 @@ async fn spawn_subagent_from_input(
     let origin_workspace = runtime.context.workspace.clone();
     let origin_session = runtime.context.state_namespace.clone();
     let origin_parent = runtime.parent_agent_id.clone();
-    let captured_origin = codewhale_app_server::daemon_socket::owner_work(move || {
+    let captured_origin = codewhale_runtime::runtime_control::owner_work(move || {
         origin_guard
             .capture_direct_worker_origin_for_runtime(
                 &origin_workspace,
@@ -14871,7 +14871,7 @@ async fn ensure_worker_delivery_verified(
     let held = manager.clone().read_owned().await;
     let worker = worker_id.to_string();
     let result = result.clone();
-    let snapshot = codewhale_app_server::daemon_socket::owner_work(move || {
+    let snapshot = codewhale_runtime::runtime_control::owner_work(move || {
         let Some(inputs) = held.delivery_verification_inputs(&worker, &result) else {
             return Ok(None);
         };

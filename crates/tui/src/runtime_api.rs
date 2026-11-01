@@ -273,7 +273,7 @@ impl RuntimeWorkspaceScope {
     }
     async fn validate(self: &Arc<Self>) -> Result<()> {
         let scope = self.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || scope.validate_sync()).await
+        codewhale_runtime::runtime_control::owner_work(move || scope.validate_sync()).await
     }
 }
 
@@ -371,7 +371,7 @@ impl RuntimeWorkspaceScopes {
 
     async fn admit(self: &Arc<Self>, lexical: PathBuf) -> Result<Arc<RuntimeWorkspaceScope>> {
         let owner = self.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || {
+        codewhale_runtime::runtime_control::owner_work(move || {
             let (canonical, directory) =
                 codewhale_util::workspace_dir::open_workspace_directory(&lexical)?;
             let directory = Arc::new(directory);
@@ -794,7 +794,7 @@ impl CapturedRuntimeFrontend {
             .loaded_config_path
             .clone()
             .or_else(|| state.config_path.clone());
-        let config_source = codewhale_app_server::daemon_socket::owner_work(move || {
+        let config_source = codewhale_runtime::runtime_control::owner_work(move || {
             canonical_runtime_config_source(source)
         })
         .await?;
@@ -820,7 +820,7 @@ impl CapturedRuntimeFrontend {
             "selected config profile differs from the captured owner scope"
         );
         if let Some(source) = scope.config_source.clone() {
-            let source = codewhale_app_server::daemon_socket::owner_work(move || {
+            let source = codewhale_runtime::runtime_control::owner_work(move || {
                 canonical_runtime_config_source(Some(source))
             })
             .await?;
@@ -879,7 +879,7 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                         mobile: selection.mobile,
                         web: selection.web,
                         control_frontend: Some(
-                            codewhale_app_server::RuntimeControlFrontend::LegacyHttp,
+                            codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
                         ),
                         ..Default::default()
                     })?;
@@ -957,7 +957,9 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 insecure_no_auth: selection.insecure_no_auth,
                 mobile: selection.mobile,
                 web: selection.web,
-                control_frontend: Some(codewhale_app_server::RuntimeControlFrontend::LegacyHttp),
+                control_frontend: Some(
+                    codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
+                ),
                 ..Default::default()
             };
             validate_runtime_listener_security(&options)?;
@@ -1200,7 +1202,7 @@ pub struct RuntimeApiOptions {
     pub config_path: Option<PathBuf>,
     /// Effective profile used to load the server's initial Config.
     pub config_profile: Option<String>,
-    pub control_frontend: Option<codewhale_app_server::RuntimeControlFrontend>,
+    pub control_frontend: Option<codewhale_runtime::runtime_control::RuntimeControlFrontend>,
     pub runtime_event_tap: Option<
         fn(tokio::sync::broadcast::Receiver<codewhale_engine::runtime_threads::RuntimeEventRecord>),
     >,
@@ -1985,7 +1987,7 @@ async fn admit_runtime_host(
     selected_store: PathBuf,
 ) -> Result<RuntimeHostAdmission> {
     use codewhale_app_server::daemon_client::{HostOwnerProbe, PublicationChangedBeforeAttach};
-    use codewhale_app_server::daemon_socket::owner_work;
+    use codewhale_runtime::runtime_control::owner_work;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let probe = match codewhale_app_server::daemon_client::probe_owner_for_host_startup(
@@ -2055,7 +2057,7 @@ pub async fn run_http_server(
     validate_runtime_listener_security(&options)?;
     let acp_selected = matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Acp { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. })
     );
 
     let task_default_model = runtime_request_model(&config, None).unwrap_or_else(|_| "auto".into());
@@ -2107,7 +2109,7 @@ pub async fn run_http_server(
         validate_selected_owner(&control, selected_store.clone()).await?;
         let observed_owner = control.receipt().clone();
         let client = match options.control_frontend.as_ref() {
-            Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }) => {
+            Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model }) => {
                 drop(control);
                 let client =
                     codewhale_app_server::daemon_client::connect_selected_acp_if_published(
@@ -2134,8 +2136,8 @@ pub async fn run_http_server(
                 client
             }
             Some(
-                codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Socket { .. },
+                codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. },
             ) => {
                 drop(control);
                 codewhale_app_server::daemon_client::connect_scoped_control_if_published(
@@ -2322,7 +2324,9 @@ pub async fn run_http_server(
         &state,
         control_socket.clone(),
         match options.control_frontend.as_ref() {
-            Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }) => model.clone(),
+            Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model }) => {
+                model.clone()
+            }
             _ => task_default_model.clone(),
         },
         options.workers,
@@ -2343,8 +2347,8 @@ pub async fn run_http_server(
     let owned_stdio = matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     );
 
@@ -2450,7 +2454,9 @@ pub async fn run_http_server(
 
 fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
     match options.control_frontend.as_ref() {
-        Some(codewhale_app_server::RuntimeControlFrontend::Socket { path }) => path.clone(),
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { path }) => {
+            path.clone()
+        }
         _ => None,
     }
 }
@@ -2478,7 +2484,7 @@ async fn store_selected_control_socket(
     selected_store: &FsPath,
 ) -> Result<PathBuf> {
     let selected_store = selected_store.to_path_buf();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let store_override = codewhale_engine::runtime_threads::canonical_runtime_dir_override()?;
         let inputs = codewhale_app_server::daemon_socket::SocketPathInputs::from_environment(None)?;
         store_selected_control_socket_with(
@@ -2533,7 +2539,7 @@ async fn validate_selected_owner_receipt(
     receipt: codewhale_protocol::RuntimeOwnerReceipt,
     selected_store: PathBuf,
 ) -> Result<codewhale_engine::runtime_threads::RuntimeStoreBinding> {
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let selected =
             codewhale_engine::runtime_threads::RuntimeStoreBinding::for_store_dir(&selected_store)?;
         selected.validate_existing_store()?;
@@ -2561,13 +2567,13 @@ async fn bind_captured_runtime_frontends(
     codewhale_app_server::AppState,
 )> {
     let captured_manager = state.runtime_threads.clone();
-    let (binding, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
+    let (binding, generation) = codewhale_runtime::runtime_control::owner_work(move || {
         captured_manager.capture_control_owner()
     })
     .await?;
     let config_path = state.config_path.clone();
     let socket_path =
-        codewhale_app_server::daemon_socket::owner_work(move || match selected_socket {
+        codewhale_runtime::runtime_control::owner_work(move || match selected_socket {
             Some(path) => Ok(path),
             None => codewhale_app_server::daemon_socket::default_socket_path().map_err(Into::into),
         })
@@ -2578,7 +2584,7 @@ async fn bind_captured_runtime_frontends(
     let principal =
         codewhale_config::private_directory::PrivateDirectory::current_user_id().to_string();
     #[cfg(windows)]
-    let principal = codewhale_app_server::daemon_socket::owner_work(|| {
+    let principal = codewhale_runtime::runtime_control::owner_work(|| {
         codewhale_config::windows_identity::CurrentWindowsUser::open()?.sid_string()
     })
     .await?;
@@ -2625,7 +2631,7 @@ async fn run_attached_frontend(
         .context("authenticated owner has no selected frontend facts")?;
     let acp_selected = matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Acp { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. })
     );
     anyhow::ensure!(
         (!acp_selected || routing.acp) && (acp_selected || !routing.acp_only),
@@ -2634,8 +2640,8 @@ async fn run_attached_frontend(
     if matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     ) {
         let forwarded = client
@@ -2652,7 +2658,7 @@ async fn run_attached_frontend(
     }
     if matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Socket { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. })
     ) {
         println!(
             "Attached to the authenticated Runtime control owner at {}.",
@@ -2696,7 +2702,7 @@ async fn run_attached_frontend(
 fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()> {
     if matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::LegacyHttp)
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp)
     ) && !is_loopback_bind_host(&options.host)
         && options
             .auth_token
@@ -2708,9 +2714,9 @@ fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()>
     if matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Socket { .. }
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. }
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     ) && !is_loopback_bind_host(&options.host)
     {
@@ -3944,7 +3950,7 @@ fn fleet_worker_has_selected_lease(
 async fn workspace_agent_runs(state: &RuntimeApiState) -> Result<Vec<AgentWorkerRecord>, ApiError> {
     let manager = state.sub_agent_manager.clone().read_owned().await;
     let selected_state = state.clone();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let projected = manager
             .worker_records_for_workspace(&selected_state.workspace)
             .map_err(anyhow::Error::msg)?;
@@ -4054,7 +4060,7 @@ async fn cancel_agent_run(
         let manager = state.sub_agent_manager.clone().read_owned().await;
         let selected_workspace = state.workspace.clone();
         let expected = selected_record.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || {
+        codewhale_runtime::runtime_control::owner_work(move || {
             Ok(manager
                 .worker_records_for_workspace(&selected_workspace)
                 .map_err(anyhow::Error::msg)?
@@ -4083,7 +4089,7 @@ async fn cancel_agent_run(
         let selected_workspace = state.workspace.clone();
         let selected_state = state.clone();
         let expected_record = record.clone();
-        let cancelled = codewhale_app_server::daemon_socket::owner_work(move || {
+        let cancelled = codewhale_runtime::runtime_control::owner_work(move || {
             let (current, needs_lease) = manager
                 .worker_records_for_workspace(&selected_workspace)
                 .map_err(anyhow::Error::msg)?
@@ -6885,7 +6891,7 @@ async fn mcp_pool_handle(
             let env_ticket = crate::test_support::env_scope_ticket();
             if policy_changed {
                 let (rebuilt, admitted_policy) =
-                    codewhale_app_server::daemon_socket::owner_work(move || {
+                    codewhale_runtime::runtime_control::owner_work(move || {
                         #[cfg(test)]
                         let _membership = crate::test_support::join_env_scope(env_ticket);
                         load_mcp_management_pool(&current)
@@ -6898,7 +6904,7 @@ async fn mcp_pool_handle(
                 *held = rebuilt;
                 *state.workspace_scope.mcp_policy.lock() = admitted_policy;
             } else {
-                codewhale_app_server::daemon_socket::owner_work(move || {
+                codewhale_runtime::runtime_control::owner_work(move || {
                     #[cfg(test)]
                     let _membership = crate::test_support::join_env_scope(env_ticket);
                     // Keep the exact scope/owner alive through synchronous disk
@@ -6919,7 +6925,7 @@ async fn mcp_pool_handle(
             #[cfg(test)]
             let env_ticket = crate::test_support::env_scope_ticket();
             let (pool, admitted_policy) =
-                codewhale_app_server::daemon_socket::owner_work(move || {
+                codewhale_runtime::runtime_control::owner_work(move || {
                     #[cfg(test)]
                     let _membership = crate::test_support::join_env_scope(env_ticket);
                     load_mcp_management_pool(&current)

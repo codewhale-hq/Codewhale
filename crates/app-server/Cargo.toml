@@ -23,6 +23,7 @@ codewhale-hooks = { path = "../hooks", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
 codewhale-state = { path = "../state", version = "0.10.2" }
 serde.workspace = true
 serde_json.workspace = true

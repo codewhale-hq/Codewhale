@@ -264,7 +264,7 @@ async fn evidence_owner_work<T: Send + 'static>(
     let worker_cancel = cancel.clone();
     #[cfg(any(test, feature = "test-support"))]
     let ticket = crate::test_support::env_scope_ticket();
-    let worker = codewhale_app_server::daemon_socket::owner_work(move || {
+    let worker = codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = crate::test_support::join_env_scope(ticket);
         let result = (|| {
