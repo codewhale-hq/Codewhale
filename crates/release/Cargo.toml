@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 base64 = "0.23.1"
+codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
 reqwest = { workspace = true, features = ["blocking"] }
 ring = "0.17.14"
 rustls.workspace = true

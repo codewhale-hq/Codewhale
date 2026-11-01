@@ -1436,6 +1436,7 @@ version = "0.10.2"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "codewhale-sanitize",
  "reqwest",
  "ring",
  "rustls",
