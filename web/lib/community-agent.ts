@@ -12,19 +12,8 @@
 
 import type { DraftClaimLockNamespace, DraftClaimLockStub, DraftLockAction } from "./draft-claim-lock";
 
-const MAX_OUTPUT_TOKENS = 2_000;
-const FALLBACK_BASE = "https://api.deepseek.com";
-const FALLBACK_MODEL = "deepseek-flash";
-
-interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-interface ChatResponse {
-  choices: { message: { content: string } }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-}
+import { requestChat, type ChatMessage, type DeepSeekEnv } from "./deepseek";
+export type { DeepSeekEnv } from "./deepseek";
 
 export const AGENT_DRAFT_TYPES = [
   "triage",
@@ -53,11 +42,6 @@ export interface UsageLog {
   calls: number;
   inputTokens: number;
   outputTokens: number;
-}
-
-export interface DeepSeekEnv {
-  baseUrl?: string;
-  model?: string;
 }
 
 const AGENT_DRAFT_TYPE_SET = new Set<string>(AGENT_DRAFT_TYPES);
@@ -99,41 +83,13 @@ export function isAgentDraft(value: unknown): value is AgentDraft {
   );
 }
 
-const MODEL_TIMEOUT_MS = 180_000;
-
 export async function agentChat(
   messages: ChatMessage[],
   apiKey: string,
   jsonMode = false,
   dsEnv?: DeepSeekEnv
 ): Promise<{ content: string; usage: { input: number; output: number } }> {
-  const base = dsEnv?.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
-  const model = dsEnv?.model ?? process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
-  const res = await fetch(`${base}/v1/chat/completions`, {
-    method: "POST",
-    // Bounded so a stalled provider cannot hold a cron run until the
-    // platform kills it; generous because high-effort reasoning is slow.
-    signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.3,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      reasoning_effort: "high",
-      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`DeepSeek ${res.status}: ${text}`);
-  }
-
-  const data = (await res.json()) as ChatResponse;
+  const data = await requestChat(messages, apiKey, jsonMode, dsEnv, { temperature: 0.3, maxTokens: 2000 });
   const content = data.choices[0]?.message?.content ?? "";
   const usage = {
     input: data.usage?.prompt_tokens ?? 0,
