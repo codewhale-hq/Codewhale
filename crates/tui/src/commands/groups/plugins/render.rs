@@ -342,6 +342,7 @@ pub(crate) fn escape_review_text(value: &str) -> String {
                 | '.'
                 | '!'
                 | '|'
+                | '&'
         ) {
             escaped.push('\\');
             escaped.push(ch);
