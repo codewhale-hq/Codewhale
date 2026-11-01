@@ -944,9 +944,16 @@ mod tests {
 
     #[test]
     fn deepseek_v4_output_caps_require_exact_catalog_metadata() {
+        // `deepseek-v4.1-flash` used to sit in this list: it had no model-only
+        // row, so its output ceiling came only from a provider offering, and a
+        // custom endpoint that names the model without a vendor prefix fell
+        // through to the 128K window. It now carries an exact row of its own
+        // (see `bundled_catalog_resolves_the_bare_deepseek_v41_flash_spelling`
+        // in `codewhale-config`), so it moved to the resolved list below. The
+        // near-miss spellings stay unresolved — an exact row documents one
+        // identifier, never a family.
         for model in [
             "deepseek-v4.1-flash-expires-on-0910",
-            "deepseek-v4.1-flash",
             "deepseek-v4.1-pro",
             "vendor/deepseek-v4.1-flash",
             "deepseek-v4-flash-vendor",
@@ -962,6 +969,7 @@ mod tests {
             "deepseek-v4-flash",
             "deepseek-v4-pro",
             "deepseek-v4-flash-vision-exp",
+            "deepseek-v4.1-flash",
             "DEEPSEEK-V4-FLASH",
         ] {
             assert_eq!(max_output_tokens_for_model(model), Some(384_000), "{model}");
