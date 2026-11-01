@@ -42,6 +42,7 @@ export const RELEASE_CONTRIBUTORS: string[] = [
  * cut moves them into RELEASE_CONTRIBUTORS with that release's changelog block.
  */
 export const UNRELEASED_CONTRIBUTORS: string[] = [
+  "@Gabriel-Degret",
   "@7jrxt42BxFZo4iAnN4CX",
   "@Lstarsky0",
   "@gaord",

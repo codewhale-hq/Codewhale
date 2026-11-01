@@ -83,6 +83,7 @@ export class ThreadStore {
     this.data = { chats: {} };
     this.saveDirty = false;
     this.savePending = null;
+    this.handlingMessages = new Map();
     this.ensureShape();
   }
 
@@ -117,33 +118,46 @@ export class ThreadStore {
    * Claim one inbound message before acting on it. "new": handle it now (it
    * is recorded as in flight first, durably). "done": a finished duplicate.
    * "interrupted": an earlier process claimed it and stopped before
-   * completeMessage, so its effect is unknown; the caller reports that
-   * instead of running it again. Callers handle messages sequentially — a
-   * key still in flight in this process is not a restart.
+   * completeMessage. The caller reports the unknown outcome and completes
+   * the claim after the report succeeds.
    */
   async claimMessage(messageKey) {
     if (!messageKey || this.options.messageLimit <= 0) return "new";
     this.ensureShape();
     const inflight = this.data.inflight;
-    if (this.data.messages.includes(messageKey)) {
-      if (!Object.hasOwn(inflight, messageKey)) return "done";
-      delete inflight[messageKey];
-      await this.save();
-      return "interrupted";
+    if (Object.hasOwn(inflight, messageKey)) return "interrupted";
+    if (this.data.messages.includes(messageKey)) return "done";
+    if (Object.keys(inflight).length >= this.options.messageLimit) {
+      throw new Error("Too many unfinished bridge messages. Reconcile their outcomes before accepting more.");
     }
-    this.data.messages.push(messageKey);
-    this.data.messages = this.data.messages.slice(-this.options.messageLimit);
-    for (const key of Object.keys(inflight)) if (!this.data.messages.includes(key)) delete inflight[key];
-    inflight[messageKey] = new Date().toISOString();
+    this.data.inflight = { ...inflight, [messageKey]: new Date().toISOString() };
     await this.save();
     return "new";
   }
 
-  /** Mark a claimed message handled (whether it succeeded or failed in-process). */
+  /** Mark a claimed message handled after its action or interruption report finishes. */
   async completeMessage(messageKey) {
     if (!messageKey || !this.data.inflight || !Object.hasOwn(this.data.inflight, messageKey)) return;
     delete this.data.inflight[messageKey];
+    if (!this.data.messages.includes(messageKey)) {
+      this.data.messages.push(messageKey);
+      this.data.messages = this.data.messages.slice(-this.options.messageLimit);
+    }
     await this.save();
+  }
+
+  async handleMessageOnce(messageKey, handle, reportInterrupted) {
+    if (!messageKey || this.options.messageLimit <= 0) return handle();
+    if (this.handlingMessages.has(messageKey)) return this.handlingMessages.get(messageKey);
+    const pending = Promise.resolve().then(async () => {
+      const claim = await this.claimMessage(messageKey);
+      if (claim === "done") return;
+      if (claim === "interrupted") await reportInterrupted();
+      else await handle();
+      await this.completeMessage(messageKey);
+    }).finally(() => this.handlingMessages.delete(messageKey));
+    this.handlingMessages.set(messageKey, pending);
+    return pending;
   }
 
   async recordMessage(messageKey, chatId = null, patch = null) {

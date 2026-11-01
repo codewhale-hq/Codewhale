@@ -333,6 +333,8 @@ test("ThreadStore claims survive a restart: finished messages skip, an in-flight
     const restarted = await ThreadStore.open(statePath, { messageLimit: 10 });
     assert.equal(await restarted.claimMessage("u:1"), "done");
     assert.equal(await restarted.claimMessage("u:2"), "interrupted");
+    assert.equal(await restarted.claimMessage("u:2"), "interrupted", "keep the claim until the report succeeds");
+    await restarted.completeMessage("u:2");
     assert.equal(await restarted.claimMessage("u:2"), "done", "reported once, then an ordinary duplicate");
     assert.equal(await restarted.claimMessage("u:3"), "new");
   } finally {

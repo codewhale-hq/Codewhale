@@ -42,7 +42,7 @@ codewhale-util = { path = "../util", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 dirs.workspace = true
-jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 parking_lot = "0.12"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
 ring = { version = "0.17", optional = true }
