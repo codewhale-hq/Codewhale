@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Inline code in terminal replies preserves embedded backticks. Text after an unmatched delimiter keeps its normal styling. Thanks [@Lstarsky0](https://github.com/Lstarsky0). [#7185](https://github.com/codewhale-hq/Codewhale/pull/7185)
 - Windows Ctrl+Break and terminal-close events now request the same bounded session checkpoint and persistence flush as Ctrl+C (CW-7553).
 - When a keyless local Ollama route has no resolved chat model, retrying `/provider ollama` refreshes the catalog in the background. You can keep typing while the daemon responds. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)
 - Auto checks the served context window on an active keyless Ollama route when its default model still has an unverified limit. A later turn can use the running model’s window once Ollama has loaded it. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)
