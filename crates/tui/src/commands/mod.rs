@@ -68,6 +68,9 @@ mod session_lifecycle_regression_tests;
 use std::sync::OnceLock;
 
 pub(crate) use config_main_host::{set_workspace_trust, trust_change_note};
+pub(crate) use contract::debug_operations::{
+    plan_undo_range, restore_undo_range, undo_range_input,
+};
 pub(crate) use groups::core::open_constitution_manager;
 
 /// Stage a rollback of the last exchange for the UI to apply, or `None` when

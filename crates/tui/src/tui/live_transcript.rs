@@ -111,6 +111,7 @@ pub struct LiveTranscriptOverlay {
     /// How many `HistoryCell` deep clones `refresh_from_app` has performed.
     /// Diagnostics + the #3904 regression tests.
     cell_clones: Cell<u64>,
+    undo_selection: bool,
     /// How many times `flatten` actually rebuilt the flat line vector.
     flattens: Cell<u64>,
 }
@@ -146,6 +147,7 @@ impl LiveTranscriptOverlay {
             snapshots_generation: Cell::new(0),
             flat_cache: RefCell::new(None),
             cell_clones: Cell::new(0),
+            undo_selection: false,
             flattens: Cell::new(0),
         }
     }
@@ -159,6 +161,10 @@ impl LiveTranscriptOverlay {
         self.mode = Mode::BacktrackPreview { selected_idx };
         self.sticky_to_bottom.set(false);
         self.preview_pin_pending.set(true);
+    }
+
+    pub fn set_undo_selection(&mut self) {
+        self.undo_selection = true;
     }
 
     /// Return the overlay to live-tail mode (used when backtrack is
@@ -636,6 +642,10 @@ impl ModalView for LiveTranscriptOverlay {
         Clear.render(popup_area, buf);
 
         let title: String = match self.mode {
+            Mode::BacktrackPreview { selected_idx } if self.undo_selection => format!(
+                " Undo {} request(s) and their file changes (←/→ select, Enter undo, Esc cancel) ",
+                selected_idx + 1
+            ),
             Mode::BacktrackPreview { selected_idx } => format!(
                 " Backtrack preview — turn {} (\u{2190}/\u{2192} step, Enter rewind, Esc cancel) ",
                 selected_idx + 1

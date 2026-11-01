@@ -1316,6 +1316,16 @@ impl RemoteControlController {
             })
     }
 
+    pub(crate) async fn workspace_restore_guard(
+        &self,
+        workspace: &Path,
+    ) -> Result<Option<tokio::sync::OwnedRwLockWriteGuard<()>>, String> {
+        match self.runtime_chat.as_ref() {
+            Some(host) => host.workspace_restore_guard(workspace).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn block_runtime_chat_dispatch_for_tests(&mut self) {
         self.pending_runtime_chat_configuration = Some(PendingRuntimeChatConfiguration {

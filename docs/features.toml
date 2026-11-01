@@ -37,6 +37,16 @@
 # --- Flag-backed tools (crates/runtime/src/features.rs) ---
 
 [[feature]]
+id = "undo-range"
+name = "Request range undo"
+summary = "Select a request with /undo select to restore its file changes and later requests with visible progress."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/GUIDE.md"
+owner = "crates/tui/src/tui/ui/apply.rs"
+
+[[feature]]
 id = "unix-uninstall"
 name = "Receipt-owned uninstall"
 summary = "Remove a receipt-owned release install or print its package manager's command; data kept unless --purge-data."

@@ -3306,7 +3306,21 @@ pub(crate) async fn handle_view_events(
                 app.needs_redraw = true;
             }
             ViewEvent::BacktrackConfirm => {
+                let undo = std::mem::take(&mut app.undo_selection);
                 if let Some(depth) = app.backtrack.confirm() {
+                    if undo {
+                        if let Err(error) =
+                            apply_range_undo(terminal, app, engine_handle, config, depth).await
+                        {
+                            let message = format!("Undo failed: {error:#}");
+                            app.add_message(HistoryCell::System {
+                                content: message.clone(),
+                            });
+                            app.push_status_toast(message, StatusToastLevel::Error, None);
+                        }
+                        app.needs_redraw = true;
+                        continue;
+                    }
                     match apply_conversation_undo(app, engine_handle, ConversationRewind::Backtrack(depth)).await {
                         Ok(None) => {}
                         Ok(Some(error)) => app.push_status_toast(
@@ -3324,6 +3338,7 @@ pub(crate) async fn handle_view_events(
                 }
             }
             ViewEvent::BacktrackCancel => {
+                app.undo_selection = false;
                 app.backtrack.reset();
                 app.status_message = Some("Backtrack canceled".to_string());
                 app.needs_redraw = true;

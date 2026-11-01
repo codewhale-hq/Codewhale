@@ -1064,9 +1064,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .snapshots_config()
             .max_workspace_gb
             .saturating_mul(1024 * 1024 * 1024),
-        // The TUI records no snapshot receipts; its post-turn snapshot stays
-        // off the input path (#234).
-        record_restore_points: false,
+        record_restore_points: true,
         lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),

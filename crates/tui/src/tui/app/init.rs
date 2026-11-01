@@ -1053,6 +1053,7 @@ impl App {
             pending_child_requests: std::collections::BTreeMap::new(),
             child_agent_sessions: std::collections::HashMap::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
+            undo_selection: false,
             current_session_id: None,
             offline_queue_lease: None,
             last_known_work_state: None,

@@ -8499,12 +8499,12 @@ async fn fork_thread_at_turn(
 /// Result of the snapshot-based file rollback step of patch-undo, reported
 /// alongside the new forked thread.
 #[derive(Debug, Serialize)]
-struct PatchUndoResult {
+pub(crate) struct PatchUndoResult {
     /// Whether files were restored from a snapshot.
     files_restored: bool,
     /// Human-readable summary: one `<action> <path>` line per restored file,
     /// or why nothing needed restoring.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// Label of the pre-turn snapshot the files went back to (e.g.
     /// "pre-turn:3: fix the parser").
     snapshot_label: Option<String>,
@@ -8806,12 +8806,12 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 ///
 /// # Ownership
 ///
-/// The restore points are the `pre_turn`/`post_turn` receipts recorded on the
-/// dropped turns themselves (`TurnRecord::workspace_snapshots`), resolved by
-/// tree and session tag against the snapshot store. Nothing is selected by
-/// scanning the shared store, so another thread's (or the TUI's) snapshots in
-/// the same workspace are never candidates, and a fork restores the turns it
-/// inherited because it carries their records.
+/// The Runtime handler passes receipts recorded on the dropped turns themselves
+/// (`TurnRecord::workspace_snapshots`), including the turns a fork inherited.
+/// The TUI caller binds owned request windows to persisted host execution IDs
+/// and checks their prompt text, refusing missing or ambiguous tool spans.
+/// Both callers resolve those receipts by tree and session tag against the
+/// snapshot store before any restoration.
 ///
 /// # What is restored
 ///
@@ -8845,7 +8845,7 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 ///
 /// `trusted` mirrors the gate the TUI's `patch_undo()` applies
 /// (`yolo || trust_mode`), evaluated once a real change is known.
-fn patch_undo_workspace_files(
+pub(crate) fn patch_undo_workspace_files(
     workspace: &FsPath,
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,

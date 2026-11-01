@@ -375,12 +375,27 @@ pub(crate) fn refresh_context_inspector_overlay(app: &mut App) {
 /// `ViewEvent::Backtrack*` so the main key dispatcher can advance the
 /// `BacktrackState` and apply the rewind on confirm.
 pub(crate) fn open_backtrack_overlay(app: &mut App) {
+    open_history_rewind_overlay(app, false);
+}
+
+pub(crate) fn open_undo_overlay(app: &mut App) {
+    open_history_rewind_overlay(app, true);
+}
+
+fn open_history_rewind_overlay(app: &mut App, undo: bool) {
+    app.undo_selection = undo;
     let mut overlay = LiveTranscriptOverlay::new();
     overlay.refresh_from_app(app);
     overlay.set_backtrack_preview(0);
+    if undo {
+        overlay.set_undo_selection();
+    }
     app.view_stack.push(overlay);
-    app.status_message =
-        Some("Backtrack: \u{2190}/\u{2192} step  Enter rewind  Esc cancel".to_string());
+    app.status_message = Some(if undo {
+        "Undo selection: ←/→ choose first request to undo  Enter restore files and conversation  Esc cancel".to_string()
+    } else {
+        "Backtrack: ←/→ step  Enter rewind  Esc cancel".to_string()
+    });
     app.needs_redraw = true;
 }
 

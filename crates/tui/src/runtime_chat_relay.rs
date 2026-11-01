@@ -256,6 +256,16 @@ impl RelayState {
 }
 
 impl RuntimeChatRelayHost {
+    pub(crate) async fn workspace_restore_guard(
+        &self,
+        workspace: &Path,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, String> {
+        self.manager
+            .workspace_restore_guard(workspace)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn open(
         config: Config,
         _plugin_registry: Arc<PluginRegistry>,

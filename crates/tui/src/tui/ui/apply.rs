@@ -1391,6 +1391,7 @@ pub(crate) fn apply_notification_update(
 pub(super) enum ConversationRewind {
     Command(codewhale_command_contract::facets::SessionSyncPayload),
     Backtrack(usize),
+    FileRange(usize),
 }
 
 /// Roll back only this idle Engine conversation, then require a durability
@@ -1407,7 +1408,7 @@ pub(super) async fn apply_conversation_undo(
             && !app.remote_control.runtime_chat_blocks_local_dispatch(),
         "wait for the active turn to finish before undoing its conversation"
     );
-    let backtrack = matches!(target, ConversationRewind::Backtrack(_));
+    let backtrack = !matches!(target, ConversationRewind::Command(_));
     let before = if backtrack {
         let (tx, receive) = tokio::sync::oneshot::channel();
         engine.try_send(Op::GetSessionSnapshot {
@@ -1450,7 +1451,7 @@ pub(super) async fn apply_conversation_undo(
             );
             (sync.messages, None)
         }
-        ConversationRewind::Backtrack(depth) => {
+        ConversationRewind::Backtrack(depth) | ConversationRewind::FileRange(depth) => {
             let cut =
                 backtrack_api_cut_index(app, depth).ok_or_else(|| anyhow::anyhow!(changed()))?;
             (app.api_messages[..cut].to_vec(), Some(depth))
@@ -1535,6 +1536,126 @@ pub(super) async fn apply_conversation_undo(
     }
     .await;
     Ok(persistence.err())
+}
+
+pub(super) async fn apply_range_undo(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    engine: &EngineHandle,
+    config: &Config,
+    depth: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        !app.is_loading
+            && !app.is_compacting
+            && !app.dispatch_in_flight
+            && !app.remote_control.runtime_chat_blocks_local_dispatch(),
+        "Wait for all active work in this workspace to finish; nothing was undone."
+    );
+    let restore_guard = app
+        .remote_control
+        .workspace_restore_guard(&app.workspace)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        engine.get_subagent_settlement().await?.is_settled(),
+        "Wait for delegated work to settle; nothing was undone."
+    );
+    anyhow::ensure!(
+        app.goal.objective.is_none()
+            || app.goal.status != codewhale_engine::tools::goal::GoalStatus::Active,
+        "Pause the active goal before undoing workspace files; nothing was undone."
+    );
+    if let Some(shells) = app.runtime_services.shell_manager.clone() {
+        let session_id = app.current_session_id.clone().unwrap_or_default();
+        let running = tokio::task::spawn_blocking(move || {
+            shells
+                .lock()
+                .map(|mut manager| {
+                    let running = manager.list_jobs().iter().any(|job| {
+                        job.status == codewhale_engine::tools::shell::ShellStatus::Running
+                    });
+                    running || manager.may_have_undelivered_completion_for_session(&session_id)
+                })
+                .map_err(|_| anyhow::anyhow!("Shell tracking is unavailable; nothing was undone."))
+        })
+        .await??;
+        anyhow::ensure!(
+            !running,
+            "Wait for background shell work and pending completion receipts to settle before undoing files; nothing was undone."
+        );
+    }
+    let cut = backtrack_api_cut_index(app, depth).ok_or_else(|| {
+        anyhow::anyhow!(
+            "The selected request no longer matches the conversation; nothing was undone."
+        )
+    })?;
+    let before = engine.get_session_snapshot().await?;
+    anyhow::ensure!(
+        before.messages == *app.api_messages
+            && before.workspace == app.workspace
+            && before.model == app.model
+            && before.mode == app.mode.as_setting()
+            && codewhale_engine::compaction::strip_compaction_summaries(
+                before.system_prompt.as_ref()
+            ) == codewhale_engine::compaction::strip_compaction_summaries(
+                app.system_prompt.as_ref()
+            )
+            && app.current_session_id.as_deref() == Some(before.session_id.as_str()),
+        "The conversation changed before undo; nothing was undone."
+    );
+    if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
+        app.view_stack.pop();
+    }
+    let progress = format!("Checking restore points for {} requests…", depth + 1);
+    app.status_message = Some(progress.clone());
+    app.push_status_toast_record(
+        StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
+    );
+    draw_app_frame_inner(terminal, app, config, false)?;
+    let input = commands::undo_range_input(app, cut)?;
+    let plan = tokio::task::spawn_blocking(move || commands::plan_undo_range(input)).await??;
+    anyhow::ensure!(
+        engine.get_session_snapshot().await? == before,
+        "The conversation changed during undo preparation; nothing was undone."
+    );
+    let progress = format!("Restoring workspace files for {} requests…", depth + 1);
+    app.status_message = Some(progress.clone());
+    app.push_status_toast_record(
+        StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
+    );
+    draw_app_frame_inner(terminal, app, config, false)?;
+    let (restored, _restore_guard) =
+        tokio::task::spawn_blocking(move || (commands::restore_undo_range(plan), restore_guard))
+            .await?;
+    let summary = restored?;
+    let progress = format!("Saving conversation rewind for {} requests…", depth + 1);
+    app.status_message = Some(progress.clone());
+    app.push_status_toast_record(
+        StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
+    );
+    let _ = draw_app_frame_inner(terminal, app, config, false);
+    match apply_conversation_undo(app, engine, ConversationRewind::FileRange(depth)).await {
+        Ok(None) => {
+            let message = format!("Undid {} request(s). {summary}", depth + 1);
+            app.add_message(HistoryCell::System {
+                content: message.clone(),
+            });
+            app.status_message = Some(message.clone());
+            app.push_status_toast_record(
+                StatusToast::new(message, StatusToastLevel::Success, Some(4_000))
+                    .for_command_receipt(),
+            );
+            app.needs_redraw = true;
+            Ok(())
+        }
+        Ok(Some(error)) => anyhow::bail!(
+            "{summary} Conversation rewound, but could not be saved: {error:#}. The pre-restore safety snapshot retains the former workspace files."
+        ),
+        Err(error) => anyhow::bail!(
+            "{summary} Conversation rewind failed: {error:#}. The original conversation and pre-restore safety snapshot retain recovery evidence."
+        ),
+    }
 }
 
 // The event loop awaits this dispatcher at several call sites. In debug
@@ -2560,6 +2681,65 @@ async fn apply_command_result_inner(
                         .push(crate::tui::worktree_manager::WorktreeManagerView::new(
                             app.workspace.clone(),
                         ));
+                }
+            }
+            AppAction::UndoLatestRequest { force } => {
+                if !app
+                    .history
+                    .iter()
+                    .any(|cell| matches!(cell, HistoryCell::User { .. }))
+                {
+                    app.status_message = Some("Nothing to undo".to_string());
+                    app.push_status_toast_record(
+                        StatusToast::new("Nothing to undo", StatusToastLevel::Info, Some(4_000))
+                            .for_command_receipt(),
+                    );
+                } else {
+                    match apply_range_undo(terminal, app, engine_handle, config, 0).await {
+                        Ok(()) => app.clear_input(),
+                        Err(error) => {
+                            let force_note = if force {
+                                " Force cannot replace missing request identity or restore receipts; use /restore for an explicit file restore."
+                            } else {
+                                ""
+                            };
+                            let message = format!("Undo failed: {error:#}{force_note}");
+                            app.add_message(HistoryCell::System {
+                                content: message.clone(),
+                            });
+                            app.push_status_toast(message, StatusToastLevel::Error, None);
+                        }
+                    }
+                }
+            }
+            AppAction::OpenUndoSelector => {
+                let total = app
+                    .history
+                    .iter()
+                    .filter(|cell| matches!(cell, HistoryCell::User { .. }))
+                    .count();
+                if total == 0 {
+                    app.status_message = Some("Nothing to undo".to_string());
+                    app.push_status_toast_record(
+                        StatusToast::new("Nothing to undo", StatusToastLevel::Info, Some(4_000))
+                            .for_command_receipt(),
+                    );
+                } else if app.is_loading
+                    || app.is_compacting
+                    || app.dispatch_in_flight
+                    || app.remote_control.runtime_chat_blocks_local_dispatch()
+                {
+                    app.push_status_toast(
+                        "Wait for the active turn to finish before undoing files.",
+                        StatusToastLevel::Error,
+                        None,
+                    );
+                } else {
+                    app.backtrack.phase = crate::tui::backtrack::BacktrackPhase::Selecting {
+                        selected_idx: 0,
+                        total,
+                    };
+                    open_undo_overlay(app);
                 }
             }
             AppAction::OpenModelPicker => {

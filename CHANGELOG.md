@@ -160,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web build dependencies cap glob preprocessing and stop cancelled directory traversals through compatible, verified upstream backports. Raw dependency findings remain visible. Thanks [@isaacs](https://github.com/isaacs) for the [minimatch](https://github.com/isaacs/minimatch/commit/77a0f5c4b80bdc641c3c930a1d9edf5ad2db57f8) and [glob](https://github.com/isaacs/node-glob/commit/4682e8c9babee1b385202ede36389634e12076d7) fixes (#6560).
+- Repeated requests no longer make `/undo` restore files from an older invocation. `/undo select` chooses a request range and shows checking, restoring and saving progress. Missing, ambiguous or stale restore points refuse before changing files. Esc–Esc continues to rewind only the conversation. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
 - `web.run` refuses more than 64 operations across its command arrays before starting network work or changing its session cache (#6554).
 - Skill discovery and audit marker reads stop at 512 KiB. Approved linked global skills still load; oversized, invalid and non-regular files produce visible refusals instead of unbounded reads (#6554).
 - OpenSandbox caps successful responses at 8 MiB before parsing and limits remote error details to 4 KiB with terminal controls removed. Oversized responses fail explicitly. Remote execution cancellation remains a separate requirement (#6554).

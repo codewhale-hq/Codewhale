@@ -2257,6 +2257,7 @@ pub struct App {
     /// Esc primes, second Esc opens the live-transcript overlay scoped to
     /// previous user messages so the user can rewind a turn.
     pub backtrack: crate::tui::backtrack::BacktrackState,
+    pub undo_selection: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
     /// Exclusive editor ownership, shared with outstanding queue writes.

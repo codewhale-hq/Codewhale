@@ -526,6 +526,10 @@ impl ScreenMode {
 /// Actions emitted by the UI event loop.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
+    OpenUndoSelector,
+    UndoLatestRequest {
+        force: bool,
+    },
     SetWorkspaceTrust {
         trusted: bool,
         save: bool,
