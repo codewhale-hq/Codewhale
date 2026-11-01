@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations. (CW-7649)
 - **The model can read what compaction replaced (#7173):** two read-only tools,
   `context_archive_search` and `context_archive_get`, search the session's
   saved pre-compaction snapshots and read one archived message by id, with
@@ -28,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runcrate is a bundled provider:** `runcrate` reaches the OpenAI-compatible host at `https://api.runcrate.ai/v1` with `RUNCRATE_API_KEY`, and model ids come from its public `GET /v1/models` listing. Thanks @heydryft for the request and the vendor details. (#7085)
 - **MCP connection status reaches the model:** one existing history snapshot now records permitted configured, connecting, failed, authorization-required, unknown and connected servers, with bounded inert names and no raw errors. Stale status and server guidance are withdrawn on contention, configuration/scope changes and restore; observation does not connect servers or promise callable tools. (#6866)
 - **Bundled-skill policy:** `[skills.bundled]` separates automatic, authoritative and disabled installation from discovery, with per-name selection, disable and explicit-only controls. Aliases share policy; disabled shipped copies reveal user alternatives. Modified and managed files remain intact, and doctor plus `/skills inspect` show the effective policy. (#7066)
-- **Configurable skill routing index:** `[skills] listing_max_description_chars` and `listing_budget_fraction` control the shared parent/child catalogue. Defaults stay 400 characters and 5% of the route window, within the existing total bounds. Load warnings, localized inspect notes and `/context` explain shortening; full skill loading stays available. (#7073)
+- **Configurable skill routing index:** `[skills] listing_max_description_chars` and `listing_budget_fraction` control the shared parent/child catalogue. Defaults use 120 characters and 0.2% of the route window, within the existing total bounds. Load warnings, localized inspect notes and `/context` explain shortening; full skill loading stays available. (#7073)
 
 - **Compact approvals keep their authority visible:** cards show three choices and default to Deny. An exact saved rule requires its scope preview on screen. Shortcuts for additional actions require opening Details; a hidden saved-rule choice never falls back to granting the session.
 - **Quicker everyday navigation:** top-level help separates everyday and advanced commands, `doctor --all` expands path/backend details, and the launch screen labels how to resume recent work. Up selects the newest recent session. Whale cameos stay out of transcript text.

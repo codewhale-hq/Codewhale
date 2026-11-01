@@ -808,7 +808,11 @@ pub(super) fn replace_runtime_mcp_tools(
         }
         tool_catalog.push(tool);
     }
-    *tool_catalog != catalog_before || *active_tool_names != active_before
+    let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
+    if changed {
+        super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+    }
+    changed
 }
 
 /// Whether model-written Python may run on this turn at all: `code_execution`
@@ -1493,6 +1497,7 @@ impl Engine {
         // registry-derived field as unknown rather than guessing.
         inspection_surface: Option<crate::tool_inspection::ToolSurfaceContext>,
     ) -> (TurnOutcomeStatus, Option<String>) {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("turn_loop");
         // R1: restart the cumulative per-turn wall-clock budget. This is the
         // only place it is started, so exactly one turn owns it at a time.
         self.turn_wall_clock =
@@ -1812,6 +1817,7 @@ impl Engine {
         fleet_denial_guard: Option<&FleetDenialGuard>,
         source: ToolCallSource,
     ) -> PlannedToolCalls {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("tool_planning");
         // Definitions and services remain captured, while preparation reads
         // the same current Engine posture as dispatch. A retained registry's
         // spawn-time approval bit cannot override a later permission change.
@@ -3738,6 +3744,22 @@ impl Engine {
         mode: AppMode,
         extension: Option<crate::tools::codemode::ExtensionCaller>,
     ) -> (Result<RichToolResult, ToolError>, bool) {
+        let named_batch = tool_name == EXECUTE_TOOLS_TOOL_NAME
+            && tool_input.get("batch").is_some_and(|v| !v.is_null());
+        if named_batch {
+            let batch = &tool_input["batch"];
+            let offered = super::tool_catalog::offered_batch(tool_catalog)
+                .and_then(|s| s.pointer("/tool/enum/0"))
+                .and_then(Value::as_str);
+            if offered.is_none() || batch.get("tool").and_then(Value::as_str) != offered {
+                return (
+                    Err(ToolError::not_available(
+                        "This named batch is not offered in this turn.",
+                    )),
+                    false,
+                );
+            }
+        }
         let (gate, mut requests) = crate::tools::codemode::NestedCallGate::new(
             mcp_pool.clone(),
             self.tx_event.clone(),
@@ -3905,6 +3927,7 @@ impl Engine {
                             extension.as_ref(),
                             request.withdraw.as_ref(),
                             request.child_activation,
+                            named_batch,
                         )
                         .await
                     };
@@ -4021,6 +4044,7 @@ impl Engine {
         extension: Option<&crate::tools::codemode::ExtensionCaller>,
         withdraw: Option<&tokio_util::sync::CancellationToken>,
         child_activation: bool,
+        named_batch: bool,
     ) -> crate::tools::codemode::NestedCallVerdict {
         use crate::tools::codemode::{NestedCallVerdict, NestedDecision};
         let typed_child = |name: &str, input: &serde_json::Value| {
@@ -4133,6 +4157,8 @@ impl Engine {
             .then(|| "a child activation may only start an independent agent".to_string())
             .or_else(|| {
                 crate::tools::codemode::refusal_before_gate(&plan.name, &plan.input, true)
+                    .or_else(|| (named_batch && !super::tool_catalog::offered_batch_allows(tool_catalog, &plan.name, &plan.input))
+                        .then(|| "A batch step is not offered or the step count is outside the current batch bounds. Use its declared members and limits.".to_string()))
                     .or_else(|| refuse_early(tool_registry, &plan.name, &plan.input))
                     .filter(|_| !resolved_child)
             })

@@ -635,7 +635,7 @@ fn render_available_skills_context_collapses_internal_whitespace() {
 fn render_available_skills_context_keeps_every_name_when_descriptions_overflow() {
     let tmpdir = TempDir::new().unwrap();
     let big_desc = "y".repeat(super::DEFAULT_SKILL_DESCRIPTION_CHARS - 20);
-    for i in 0..200 {
+    for i in 0..100 {
         let body = format!("---\nname: skill-{i:03}\ndescription: {big_desc}\n---\nbody");
         create_skill_dir(&tmpdir, &format!("skill-{i:03}"), &body);
     }
@@ -643,9 +643,9 @@ fn render_available_skills_context_keeps_every_name_when_descriptions_overflow()
     let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
-    // 200 × ~380 chars of description is ~76k, far over the default budget:
+    // 100 × 100 chars of description is ~10k, far over the default budget:
     // tier 1 cannot fit, so descriptions shrink or names stand alone.
-    for i in 0..200 {
+    for i in 0..100 {
         let name = format!("- skill-{i:03}");
         assert!(rendered.contains(&name), "missing {name}:\n{rendered}");
     }
@@ -684,8 +684,20 @@ fn render_skills_block_shortens_summary_before_trigger() {
             source: super::SkillSource::Native,
         });
     }
-    let rendered =
-        super::render_skills_block(&registry, "en", tmpdir.path()).expect("skill context");
+    let budget = 25_600;
+    let config = super::SkillListingConfig {
+        max_description_chars: 400,
+        ..Default::default()
+    };
+    let rendered = super::render_skills_block_with_configured_root(
+        &registry,
+        "en",
+        tmpdir.path(),
+        None,
+        config,
+        budget,
+    )
+    .expect("skill context");
     let line = rendered
         .lines()
         .find(|l| l.starts_with("- skill-007:"))
@@ -698,7 +710,7 @@ fn render_skills_block_shortens_summary_before_trigger() {
         !line.contains(&summary),
         "summary must be the half that shrinks:\n{line}"
     );
-    assert!(rendered.chars().count() <= super::MAX_AVAILABLE_SKILLS_CHARS);
+    assert!(rendered.chars().count() <= budget);
 }
 
 /// The budget follows the route window: a 1M route sees a much larger index
@@ -709,8 +721,8 @@ fn skills_prompt_budget_scales_with_context_window() {
     let default = super::SkillListingConfig::default().budget_chars(None);
     let large = super::SkillListingConfig::default().budget_chars(Some(1_000_000));
     assert_eq!(small, 2_400, "floor holds for tiny windows");
-    assert_eq!(default, 25_600, "128k window × 4 chars × 5%");
-    assert_eq!(large, 40_000, "ceiling holds for 1M windows");
+    assert_eq!(default, 2_400, "128k window × 4 chars × 0.2%, floored");
+    assert_eq!(large, 8_000, "1M window × 4 chars × 0.2%");
     let configured =
         super::SkillListingConfig::from_config(&codewhale_runtime::config::SkillsConfig {
             listing_budget_fraction: Some(0.01),

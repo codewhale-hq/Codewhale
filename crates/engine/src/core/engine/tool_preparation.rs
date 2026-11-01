@@ -753,7 +753,7 @@ mod tests {
                 false,
             ),
             (
-                json!({"tool": "consent", "arguments": {"action": "allow", "scope": "foreground"}}),
+                json!({"tool": "consent", "args": {"action": "allow", "scope": "foreground"}}),
                 false,
             ),
             (

@@ -67,7 +67,7 @@ fn rendered_catalogue(registry: &SkillRegistry, locale: &str, workspace: &Path) 
     render_skills_block(registry, locale, workspace).expect("non-empty registry renders a block")
 }
 
-/// Canonical names that appear as `- <name>: …` entries under
+/// Canonical names with or without descriptions that appear under
 /// `### Available skills` (and only there — the warnings section also uses
 /// `- ` bullets).
 fn catalogue_entry_names(block: &str) -> Vec<String> {
@@ -82,9 +82,12 @@ fn catalogue_entry_names(block: &str) -> Vec<String> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("- ")
-            && let Some((name, _)) = rest.split_once(':')
+            && !rest.starts_with("...")
         {
-            names.push(name.trim().to_string());
+            let name = rest.split_once(':').map_or(rest, |(name, _)| name);
+            if !name.contains(char::is_whitespace) {
+                names.push(name.to_string());
+            }
         }
     }
     names
@@ -227,7 +230,7 @@ fn explicit_only_skills_are_absent_from_the_ambient_catalogue() {
         .filter(|e| !e.in_model_catalogue)
     {
         assert!(
-            !block.contains(&format!("- {}: ", entry.name)),
+            !catalogue_entry_names(&block).contains(&entry.name),
             "{} is explicit-only and must not become ambient context",
             entry.name
         );
