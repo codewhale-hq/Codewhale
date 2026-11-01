@@ -43,13 +43,19 @@ pub enum SessionEntryKind {
         content: String,
     },
 }
-pub fn same_content_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
+/// `a` and `b` carry the same content. Engine-owned `<turn_meta>` metadata is
+/// masked, so a transcript that gained or dropped the envelope still matches
+/// the turn it already stored, and a role change never does.
+pub fn same_message_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
     a.role == b.role && normalized_blocks(a) == normalized_blocks(b)
 }
 
+/// A block that is nothing but one `<turn_meta>…</turn_meta>` envelope.
+/// [`strip_leading_turn_metadata`] decides it, so a block that merely starts
+/// and ends with the tags — `<turn_meta>x</turn_meta>real text</turn_meta>` —
+/// keeps its trailing text and is not treated as metadata-only.
 fn is_complete_turn_metadata_block(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.starts_with("<turn_meta>") && trimmed.ends_with("</turn_meta>")
+    text.trim_start().starts_with("<turn_meta>") && strip_leading_turn_metadata(text).is_empty()
 }
 
 fn strip_leading_turn_metadata(text: &str) -> &str {
@@ -63,30 +69,38 @@ fn strip_leading_turn_metadata(text: &str) -> &str {
     rest[end + "</turn_meta>".len()..].trim_start()
 }
 
-fn normalized_blocks(message: &Message) -> Vec<ContentBlock> {
-    let mut blocks = message.content.clone();
-    if blocks.len() >= 2 {
-        if matches!(blocks.first(), Some(ContentBlock::Text { text, .. }) if is_complete_turn_metadata_block(text))
-        {
-            blocks.remove(0);
-        }
-        if blocks.len() >= 2
-            && matches!(blocks.last(), Some(ContentBlock::Text { text, .. }) if is_complete_turn_metadata_block(text))
-        {
-            blocks.pop();
-        }
+/// Borrowed comparison form: text blocks compare as their stripped slice, so
+/// the relaxed comparison allocates nothing and cannot drop a payload. Only
+/// `Text` carries `cache_control`, so every other variant compares verbatim.
+#[derive(PartialEq)]
+enum NormalizedBlock<'a> {
+    Text(&'a str),
+    Other(&'a ContentBlock),
+}
+
+fn normalized_blocks(message: &Message) -> Vec<NormalizedBlock<'_>> {
+    let blocks = &message.content;
+    let mut start = 0;
+    let mut end = blocks.len();
+    if end - start >= 2
+        && matches!(&blocks[start], ContentBlock::Text { text, .. } if is_complete_turn_metadata_block(text))
+    {
+        start += 1;
     }
-    for block in &mut blocks {
-        if let ContentBlock::Text {
-            text,
-            cache_control,
-        } = block
-        {
-            *text = strip_leading_turn_metadata(text).to_string();
-            *cache_control = None;
-        }
+    if end - start >= 2
+        && matches!(&blocks[end - 1], ContentBlock::Text { text, .. } if is_complete_turn_metadata_block(text))
+    {
+        end -= 1;
     }
-    blocks
+    blocks[start..end]
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text, .. } => {
+                NormalizedBlock::Text(strip_leading_turn_metadata(text))
+            }
+            other => NormalizedBlock::Other(other),
+        })
+        .collect()
 }
 impl SessionEntryKind {
     pub fn is_contextual(&self) -> bool {
@@ -103,19 +117,6 @@ impl SessionEntryKind {
         }
     }
 
-    /// Rewrite this entry to carry `message`. Legacy `User`/`Assistant` text
-    /// variants are upgraded to the full `Message` shape; checkpoint entries
-    /// hold their own payload and are left untouched.
-    pub fn replace_message(&mut self, message: Message) -> bool {
-        match self {
-            Self::Message { .. } | Self::User { .. } | Self::Assistant { .. } => {
-                *self = Self::Message { message };
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// `self.as_message()` equals `message`, byte-for-byte or after removing
     /// engine-owned `<turn_meta>` metadata from both sides. Every autosave
     /// compares the whole active branch with the live transcript, so the
@@ -123,10 +124,10 @@ impl SessionEntryKind {
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
             Self::Message { message: own } => {
-                own == message || same_content_ignoring_turn_metadata(own, message)
+                own == message || same_message_ignoring_turn_metadata(own, message)
             }
             other => other.as_message().is_some_and(|own| {
-                own == *message || same_content_ignoring_turn_metadata(&own, message)
+                own == *message || same_message_ignoring_turn_metadata(&own, message)
             }),
         }
     }
@@ -441,7 +442,12 @@ impl SessionJournal {
                 .take_while(|(entry, message)| entry.kind.projects_to(message))
                 .count();
             let refreshed: Vec<(EntryId, Message)> = (0..shared_prefix)
-                .filter(|&index| active_path[index].kind.exact_message() != Some(&messages[index]))
+                .filter(|&index| {
+                    matches!(
+                        active_path[index].kind.exact_message(),
+                        Some(stored) if stored != &messages[index]
+                    )
+                })
                 .map(|index| (active_path[index].id.clone(), messages[index].clone()))
                 .collect();
             let leaf_id = shared_prefix
@@ -451,8 +457,11 @@ impl SessionJournal {
         };
         self.leaf_id = leaf_id;
         for (id, message) in refreshed {
-            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
-                Arc::make_mut(&mut entry.kind).replace_message(message);
+            let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
+                continue;
+            };
+            if let SessionEntryKind::Message { message: stored } = Arc::make_mut(&mut entry.kind) {
+                *stored = message;
             }
         }
         for (index, message) in messages.iter().enumerate().skip(shared_prefix) {
@@ -1243,5 +1252,81 @@ mod tests {
             .collect();
         assert!(j.remove_entries(&active).is_err());
         assert_eq!(j, before);
+    }
+
+    #[test]
+    fn rebranch_refreshes_a_metadata_only_prefix_in_place() {
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: msg("user", "hi"),
+        });
+        j.append(SessionEntryKind::Message {
+            message: msg("assistant", "there"),
+        });
+        let before = j.entries.len();
+
+        let mut stamped = msg("user", "hi");
+        if let ContentBlock::Text { text, .. } = &mut stamped.content[0] {
+            *text = format!("<turn_meta>{{\"turn\":1}}</turn_meta>\n{text}");
+        }
+        let live = vec![stamped, msg("assistant", "there")];
+
+        let report = j.rebranch_active_messages(&live);
+        assert_eq!(report.shared_prefix, 2);
+        assert_eq!(j.entries.len(), before);
+        assert_eq!(j.to_messages(), live);
+
+        let again = j.rebranch_active_messages(&live);
+        assert_eq!(again.shared_prefix, 2);
+        assert_eq!(j.entries.len(), before);
+    }
+
+    #[test]
+    fn rebranch_forks_when_the_content_actually_changed() {
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: msg("user", "hi"),
+        });
+        j.append(SessionEntryKind::Message {
+            message: msg("assistant", "there"),
+        });
+        let before = j.entries.len();
+
+        let report =
+            j.rebranch_active_messages(&[msg("user", "changed"), msg("assistant", "there")]);
+        assert_eq!(report.shared_prefix, 0);
+        assert_eq!(j.entries.len(), before + 2);
+    }
+
+    #[test]
+    fn a_metadata_shaped_payload_never_matches_a_shorter_turn() {
+        let stored = Message {
+            role: Role::from("user"),
+            content: vec![
+                ContentBlock::Text {
+                    text: "<turn_meta>{}</turn_meta>REAL CONTENT</turn_meta>".into(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "tail".into(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let mut j = SessionJournal::new();
+        j.append(SessionEntryKind::Message {
+            message: stored.clone(),
+        });
+        let before = j.entries.len();
+
+        let report = j.rebranch_active_messages(&[msg("user", "tail")]);
+        assert_eq!(report.shared_prefix, 0);
+        assert_eq!(j.entries.len(), before + 1);
+        assert!(
+            j.entries
+                .iter()
+                .any(|entry| entry.kind.exact_message() == Some(&stored)),
+            "the stored payload stays in the journal as its own branch"
+        );
     }
 }
