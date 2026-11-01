@@ -70,7 +70,7 @@ ids to customers.
 Subagent state lives in the workspace, under `.codewhale/state/`, in
 `subagents.v1.json` (the manager's `SUBAGENT_STATE_FILE`; the lock is
 `subagents.v1.lock`), loaded by `load_state` and written by
-`persist_state*` in `crates/tui/src/tools/subagent/mod.rs`. A legacy
+`persist_state*` in `crates/engine/src/tools/subagent/mod.rs`. A legacy
 `.deepseek/state/` copy is still read for migration.
 
 Findings that drive the policy:

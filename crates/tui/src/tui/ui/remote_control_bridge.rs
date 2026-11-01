@@ -440,7 +440,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
         .filter(|value| !value.is_empty())
         .unwrap_or("Codewhale session")
         .to_string();
-    let git_remote = crate::git_status::observed_git_repo(&app.workspace);
+    let git_remote = codewhale_engine::git_status::observed_git_repo(&app.workspace);
     let runtime_commit = option_env!("CODEWHALE_BUILD_COMMIT")
         .unwrap_or("")
         .to_string();

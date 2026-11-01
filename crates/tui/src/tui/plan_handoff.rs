@@ -18,8 +18,8 @@ use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_localization::{Locale, MessageId, tr};
 
-use crate::core::events::TurnOutcomeStatus;
-use crate::tools::user_input::{
+use codewhale_engine::core::events::TurnOutcomeStatus;
+use codewhale_engine::tools::user_input::{
     UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 
@@ -121,7 +121,7 @@ pub(crate) fn choice(locale: Locale, response: &UserInputResponse) -> PlanHandof
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::user_input::UserInputAnswer;
+    use codewhale_engine::tools::user_input::UserInputAnswer;
 
     fn answer(label: &str, value: &str) -> UserInputResponse {
         UserInputResponse {

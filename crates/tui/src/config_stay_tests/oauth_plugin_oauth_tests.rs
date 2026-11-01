@@ -7,8 +7,8 @@ use codewhale_runtime::oauth::*;
 
 #[test]
 fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocation() {
-    use crate::client::CodewhaleClient;
-    use crate::llm_client::LlmClient;
+    use codewhale_engine::client::CodewhaleClient;
+    use codewhale_engine::llm_client::LlmClient;
     use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
     use futures_util::StreamExt;
     use wiremock::matchers::{body_string_contains, header, method, path};
@@ -96,8 +96,8 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                 let secrets = codewhale_secrets::Secrets::auto_detect();
                 let expired = serde_json::json!({"access_token":"private-expired-token", "refresh_token":"old-refresh", "expires_at":1});
                 secrets.set(&slot, &serde_json::to_string(&expired).unwrap()).unwrap();
-                assert!(crate::provider_readiness::has_api_key(&live));
-                assert!(crate::provider_readiness::has_api_key_for(&live, &live.active_provider_identity().unwrap()));
+                assert!(codewhale_engine::provider_readiness::has_api_key(&live));
+                assert!(codewhale_engine::provider_readiness::has_api_key_for(&live, &live.active_provider_identity().unwrap()));
                 (live, discovery, slot)
             }).await.unwrap();
             // Exercise the real async constructor with an already-expired
@@ -165,7 +165,7 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                 tokio::task::spawn_blocking(move || {
                 let mut registry = discover_with_config(&discovery);
                 registry.disable("provider-fixture").unwrap();
-                assert!(!crate::provider_readiness::has_api_key_for(&revoked_config, &revoked_config.active_provider_identity().unwrap()));
+                assert!(!codewhale_engine::provider_readiness::has_api_key_for(&revoked_config, &revoked_config.active_provider_identity().unwrap()));
                 // Private material can remain in secure storage; receipt revocation
                 // must still prevent reuse by an already constructed client.
                 assert!(codewhale_secrets::Secrets::auto_detect().get(&slot).unwrap().is_some());

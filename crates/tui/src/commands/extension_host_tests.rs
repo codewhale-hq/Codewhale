@@ -13,13 +13,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::CommandTable;
-use crate::command_catalog::CatalogGuard;
-use crate::extension_host::protocol::{RegisterKind, RegisterParams, RegisterSpecWire};
-use crate::extension_host::registry::{OwnerRegistry, OwnerState};
-use crate::extension_host::tests::{
+use codewhale_engine::command_catalog::CatalogGuard;
+use codewhale_engine::extension_host::protocol::{RegisterKind, RegisterParams, RegisterSpecWire};
+use codewhale_engine::extension_host::registry::{OwnerRegistry, OwnerState};
+use codewhale_engine::extension_host::test_support::{
     FixturePlugins, fake_authority, installed, node_for_tests, plugin_id,
 };
-use crate::extension_host::tier::HostTier;
+use codewhale_engine::extension_host::tier::HostTier;
 use codewhale_plugins::activation::TestPolicyGuard;
 
 /// The real catalog answers to every built-in name, every alias and the fixed
@@ -27,7 +27,7 @@ use codewhale_plugins::activation::TestPolicyGuard;
 /// command cannot take any of them.
 #[test]
 fn the_real_built_in_catalog_refuses_every_name_alias_and_mode_alias() {
-    use crate::command_catalog::CommandCatalog;
+    use codewhale_engine::command_catalog::CommandCatalog;
     let catalog = CommandTable;
     let rows = catalog.builtins();
     let row = |name: &str| {
@@ -124,8 +124,8 @@ fn the_real_built_in_catalog_refuses_every_name_alias_and_mode_alias() {
 /// registry loads, what dispatch returns, and what running each one gives.
 #[tokio::test]
 async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
-    use crate::extension_host::command::CommandOutcome;
     use crate::tui::app::{App, AppAction, TuiOptions};
+    use codewhale_engine::extension_host::command::CommandOutcome;
 
     let Some(node) = node_for_tests("extension_commands_run_end_to_end") else {
         return;
@@ -134,7 +134,8 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     let fixture = FixturePlugins::new(&["ext-commands"]).await;
     let _catalog = CatalogGuard::install(Arc::new(CommandTable));
     let manager = fixture.manager(node);
-    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+    let _manager =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&manager));
     let engine = manager.attach(fixture.registry());
     // Nothing is visible before the host has registered anything.
     assert!(manager.live_command_names().is_empty());
@@ -222,14 +223,14 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     );
     assert_eq!(echo.origin, "extension:ext-commands");
     assert_eq!(
-        crate::extension_host::run_command(&echo, &args, None).await,
+        codewhale_engine::extension_host::run_command(&echo, &args, None).await,
         Ok(CommandOutcome::Show {
             text: "echo: hello   there".to_string()
         })
     );
     let (ask, _, args) = dispatched(&mut app, "/EXT-ASK tokens");
     assert_eq!(
-        crate::extension_host::run_command(&ask, &args, None).await,
+        codewhale_engine::extension_host::run_command(&ask, &args, None).await,
         Ok(CommandOutcome::Submit {
             prompt: "Summarize: tokens".to_string(),
             note: Some("Asking the model.".to_string())
@@ -237,11 +238,11 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     );
     let (fail, _, args) = dispatched(&mut app, "/ext-fail");
     assert_eq!(
-        crate::extension_host::run_command(&fail, &args, None).await,
+        codewhale_engine::extension_host::run_command(&fail, &args, None).await,
         Err("unknown topic".to_string())
     );
     let (thrown, _, args) = dispatched(&mut app, "/ext-throw");
-    let error = crate::extension_host::run_command(&thrown, &args, None)
+    let error = codewhale_engine::extension_host::run_command(&thrown, &args, None)
         .await
         .unwrap_err();
     assert!(
@@ -251,7 +252,7 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     // Escape sequences never reach the transcript.
     let (ansi, _, args) = dispatched(&mut app, "/ext-ansi");
     assert_eq!(
-        crate::extension_host::run_command(&ansi, &args, None).await,
+        codewhale_engine::extension_host::run_command(&ansi, &args, None).await,
         Ok(CommandOutcome::Show {
             text: "plain red end".to_string()
         })
@@ -259,7 +260,7 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     // The DSH-shaped `rawInput` keeps its leading separator.
     let (dsh, _, args) = dispatched(&mut app, "/ext-dsh a b");
     assert_eq!(
-        crate::extension_host::run_command(&dsh, &args, None).await,
+        codewhale_engine::extension_host::run_command(&dsh, &args, None).await,
         Ok(CommandOutcome::Show {
             text: "\" a b\"".to_string()
         })
@@ -272,7 +273,7 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     engine.sync().await.unwrap();
     assert!(manager.live_command_names().is_empty());
     assert_eq!(hint("ext-echo"), None);
-    let error = crate::extension_host::run_command(&echo, "x", None)
+    let error = codewhale_engine::extension_host::run_command(&echo, "x", None)
         .await
         .unwrap_err();
     assert!(
@@ -298,7 +299,8 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
     .await;
     let _catalog = CatalogGuard::install(Arc::new(CommandTable));
     let manager = fixture.manager(node);
-    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+    let _manager =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&manager));
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
     let state = |name: &str| manager.owner_state(&plugin_id(&fixture, name)).unwrap();
@@ -326,10 +328,12 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
         .find(|entry| entry.registration.name == "plugin-commands-clash-builtin-help")
         .unwrap();
     assert_eq!(
-        crate::extension_host::run_command(&alias.reference(), "", None).await,
-        Ok(crate::extension_host::command::CommandOutcome::Show {
-            text: "shadowed".into()
-        })
+        codewhale_engine::extension_host::run_command(&alias.reference(), "", None).await,
+        Ok(
+            codewhale_engine::extension_host::command::CommandOutcome::Show {
+                text: "shadowed".into()
+            }
+        )
     );
     assert!(
         !selected
@@ -351,9 +355,9 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
         "ext-echo".to_string(),
         "markdown wins".to_string(),
     )]);
-    let entry = |name: &str| crate::extension_host::command::ExtensionCommandEntry {
+    let entry = |name: &str| codewhale_engine::extension_host::command::ExtensionCommandEntry {
         selection: None,
-        registration: crate::extension_host::registry::CommandRegistration {
+        registration: codewhale_engine::extension_host::registry::CommandRegistration {
             scope: None,
             handle: 1,
             owner: codewhale_config::OwnerRef {

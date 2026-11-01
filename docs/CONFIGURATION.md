@@ -158,7 +158,7 @@ Each repo can carry two distinct, complementary files:
   This is the **repo-local law** layer. When guidance conflicts, the
   **Whose word wins** section of the effective base constitution owns the
   ordering; the bundled source is
-  [`BASE_PROMPT`](../crates/tui/src/prompts/text.rs). Use `/constitution base`
+  [`BASE_PROMPT`](../crates/engine/src/prompts/text.rs). Use `/constitution base`
   to inspect the effective base, including any opted-in expert override.
   The order in which these files are described or assembled is not an
   authority ranking. Runtime policy (permissions, sandbox and cost limits
@@ -241,7 +241,7 @@ and shell-write gates, not by this mechanism.
 ### Expert full base-prompt override (#3638)
 
 The global Constitution (the base system prompt, normally compiled in from
-`crates/tui/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
+`crates/engine/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
 without rebuilding. This is
 an expert escape hatch, not the normal `/constitution` guided setup output.
 Because this is a prompt trust boundary, it takes **two deliberate steps** — a
@@ -733,7 +733,7 @@ auto-select MiMo endpoints. Use
 With `model = "auto"`, each turn runs on your **declared default model** unless
 you have opted into something else. Auto never guesses a cheaper or stronger
 model from how a request is worded; the old keyword-and-length heuristic was
-removed (`auto_route_declared_fallback` in `crates/tui/src/model_routing.rs`).
+removed (`auto_route_declared_fallback` in `crates/engine/src/model_routing.rs`).
 Two optional layers change that:
 
 - an `[auto.router]` classifier, which you write down, that picks a model per
@@ -763,7 +763,7 @@ timeout_secs = 4        # optional; default 4, 0 = default, capped at 300
 A classifier call happens only when `[auto.router]` names both `provider` and
 `model` *and* that provider has a key:
 `router_available = router_configured && has_api_key_for(...)` in
-`ModelInventory::from_config` (`crates/tui/src/model_inventory.rs`). If either
+`ModelInventory::from_config` (`crates/engine/src/model_inventory.rs`). If either
 condition fails, or the classifier call errors or times out, the local
 fallback decides: the default model, or the fast sibling under `cost_saving`.
 The turn's route receipt (Turn Inspector, Ctrl+Alt+O or `/turn inspect`, "Model
@@ -3797,7 +3797,7 @@ configure reasoning effort.
 
 codewhale sends and receives tool calls only over the API tool channel
 (structured `tool_use` / `tool_call` items). The streaming loop in
-`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
+`crates/engine/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
 markers — `[TOOL_CALL]`, `<codewhale:tool_call`, `<tool_call`, `<invoke `,
 `<function_calls>` — and scrubs them from visible assistant text without ever
 turning them into structured tool calls. When a wrapper is stripped, the loop

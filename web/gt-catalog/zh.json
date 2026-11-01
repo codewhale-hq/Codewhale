@@ -1069,7 +1069,7 @@
         "note": "通过 HTTP 从你自己的应用或脚本驱动 Codewhale。"
       }
     ],
-    "sourceNote": "来源文档：docs/MCP.md、crates/tui/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。"
+    "sourceNote": "来源文档：docs/MCP.md、crates/engine/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。"
   },
   "docs-modes": {
     "metaTitle": "设置模式与审批 · Codewhale 文档",

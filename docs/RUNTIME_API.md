@@ -1101,7 +1101,7 @@ Sessions and threads answer the same `include_archived` / `archived_only` pair
 with the same meaning, and `search` is the same fuzzy match (title, id,
 workspace — substring, then subsequence) the TUI session picker and the workbar
 Sessions list use. All three surfaces run one projection
-(`crates/tui/src/session_projection.rs`), so a listing cannot differ between
+(`crates/engine/src/session_projection.rs`), so a listing cannot differ between
 the terminal and the dashboard.
 
 `GET /v1/sessions/summary` returns rows that are field-compatible with

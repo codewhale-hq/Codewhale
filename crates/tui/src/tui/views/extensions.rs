@@ -7,7 +7,7 @@
 //! The skills mutation manager remains at `/skills manage`; MCP setup is a
 //! read-only suggestions handoff, not an inline installer or credential editor.
 
-use crate::mcp::McpServerConfigExt;
+use codewhale_engine::mcp::McpServerConfigExt;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -334,7 +334,7 @@ impl ExtensionsSnapshot {
     }
 
     fn with_recommended_actions(mut self, app: &App) -> Self {
-        let configured = crate::mcp::load_config_with_workspace_and_plugins(
+        let configured = codewhale_engine::mcp::load_config_with_workspace_and_plugins(
             &app.mcp_config_path,
             &app.workspace,
             app.plugin_registry.as_ref(),
@@ -564,7 +564,7 @@ fn hooks_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                 tr(locale, MessageId::ExtensionsStateWarning)
             }
             .into_owned(),
-            detail: crate::hooks::config::problem_summary(problem),
+            detail: codewhale_engine::hooks::config::problem_summary(problem),
             action: Some(ExtensionAction::Command {
                 label: tr(locale, MessageId::ExtensionsActionEdit).into_owned(),
                 command: "/hooks edit".into(),
@@ -1208,7 +1208,7 @@ fn mcp_row_is_mutable(owned: Option<&BTreeSet<String>>, name: &str) -> bool {
 }
 
 fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
-    let configured = crate::mcp::load_config_with_workspace_and_plugins(
+    let configured = codewhale_engine::mcp::load_config_with_workspace_and_plugins(
         &app.mcp_config_path,
         &app.workspace,
         app.plugin_registry.as_ref(),
@@ -1222,13 +1222,14 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
     // loading the same config without plugin contributions and taking the
     // difference, rather than parsing the shape of the synthesized name.
     let user_owned: Option<BTreeSet<String>> =
-        crate::mcp::load_config_with_workspace(&app.mcp_config_path, &app.workspace)
+        codewhale_engine::mcp::load_config_with_workspace(&app.mcp_config_path, &app.workspace)
             .ok()
             .map(|config| config.servers.keys().cloned().collect());
     // Where each row lives. A person asked to "say if they should be global
     // or in a certain project"; the panel could not answer because nothing
     // on the row carried its origin. Resolved once here, not per row.
-    let project_owned = crate::mcp::project_server_names(&app.mcp_config_path, &app.workspace);
+    let project_owned =
+        codewhale_engine::mcp::project_server_names(&app.mcp_config_path, &app.workspace);
     let snapshot = app.mcp_snapshot.as_ref();
     // Configured names are the count authority used by the surrounding shell.
     // Snapshot data enriches those exact rows; it must never independently
@@ -1320,10 +1321,16 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                 && !initializing
                 && !stale
                 && observed.is_some_and(|server| !server.started());
-            let oauth_capable = config.is_some_and(crate::mcp::mcp_server_oauth_capable);
+            let oauth_capable = config.is_some_and(codewhale_engine::mcp::mcp_server_oauth_capable);
             let recovery = match observed {
                 Some(server) => server.recovery_kind(oauth_capable),
-                None => crate::mcp::mcp_recovery_kind(enabled, false, false, None, oauth_capable),
+                None => codewhale_engine::mcp::mcp_recovery_kind(
+                    enabled,
+                    false,
+                    false,
+                    None,
+                    oauth_capable,
+                ),
             };
             let action = match (initializing, recovery) {
                 // Still connecting: the state is the whole story.
@@ -1344,13 +1351,13 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                     label: state.clone(),
                 },
                 (false, Some(recovery))
-                    if crate::mcp::mcp_name_is_command_safe(&name)
+                    if codewhale_engine::mcp::mcp_name_is_command_safe(&name)
                         || matches!(
                             recovery,
-                            crate::mcp::McpRecoveryKind::Connect
-                                | crate::mcp::McpRecoveryKind::Reconnect
-                                | crate::mcp::McpRecoveryKind::Diagnose
-                                | crate::mcp::McpRecoveryKind::AwsLogin
+                            codewhale_engine::mcp::McpRecoveryKind::Connect
+                                | codewhale_engine::mcp::McpRecoveryKind::Reconnect
+                                | codewhale_engine::mcp::McpRecoveryKind::Diagnose
+                                | codewhale_engine::mcp::McpRecoveryKind::AwsLogin
                         ) =>
                 {
                     ExtensionAction::Command {
@@ -1360,7 +1367,9 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                         // other recovery runs against live state the panel
                         // re-reads when it lands.
                         disposition: match recovery {
-                            crate::mcp::McpRecoveryKind::Reauth => RowActionDisposition::LeavePanel,
+                            codewhale_engine::mcp::McpRecoveryKind::Reauth => {
+                                RowActionDisposition::LeavePanel
+                            }
                             _ => RowActionDisposition::InPlace,
                         },
                     }
@@ -1391,7 +1400,7 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                     )
                     .into_owned()
                 });
-            let command_safe = crate::mcp::mcp_name_is_command_safe(&name);
+            let command_safe = codewhale_engine::mcp::mcp_name_is_command_safe(&name);
             let mutable = command_safe && mcp_row_is_mutable(user_owned.as_ref(), &name);
             let toggle = mutable.then(|| {
                 if enabled {
@@ -1423,7 +1432,7 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                     (true, false, None) => ExtensionTone::Ready,
                     // A server that reports an error is broken; one that only
                     // wants a login or a reconnect is waiting on a person.
-                    (true, false, Some(crate::mcp::McpRecoveryKind::Diagnose)) => {
+                    (true, false, Some(codewhale_engine::mcp::McpRecoveryKind::Diagnose)) => {
                         ExtensionTone::Failure
                     }
                     (true, false, Some(_)) => ExtensionTone::Attention,
@@ -1432,10 +1441,11 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
                 // wire key `plugin-25-<plugin>-<server>`. The length-prefixed
                 // form is how the config layer keeps the name unambiguous; it
                 // was never meant to be read by a person.
-                label: crate::mcp::split_qualified_plugin_server_name(&name).map_or_else(
-                    || name.clone(),
-                    |(plugin, server)| format!("{plugin}/{server}"),
-                ),
+                label: codewhale_engine::mcp::split_qualified_plugin_server_name(&name)
+                    .map_or_else(
+                        || name.clone(),
+                        |(plugin, server)| format!("{plugin}/{server}"),
+                    ),
                 description: observed.map_or_else(String::new, |server| {
                     if waiting_for_first_use {
                         return server.transport.clone();
@@ -2545,7 +2555,7 @@ fn sentence_case(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::McpRecoveryKind;
+    use codewhale_engine::mcp::McpRecoveryKind;
 
     #[test]
     fn passive_rows_open_details_without_recovery_or_mutation() {
@@ -2568,8 +2578,8 @@ mod tests {
         connected: bool,
         error: Option<&str>,
         auth_required: bool,
-    ) -> crate::mcp::McpServerSnapshot {
-        crate::mcp::McpServerSnapshot {
+    ) -> codewhale_engine::mcp::McpServerSnapshot {
+        codewhale_engine::mcp::McpServerSnapshot {
             name: name.into(),
             enabled,
             required: false,
@@ -2582,9 +2592,9 @@ mod tests {
             error: error.map(str::to_string),
             auth_required,
             capability_metadata: if connected {
-                crate::mcp::McpServerCapabilityMetadata::LegacyFallback
+                codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback
             } else {
-                crate::mcp::McpServerCapabilityMetadata::NotObserved
+                codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved
             },
             tools: Vec::new(),
             resources: Vec::new(),
@@ -2621,7 +2631,7 @@ mod tests {
             }}"#,
         )
         .unwrap();
-        app.mcp_snapshot = Some(crate::mcp::McpManagerSnapshot {
+        app.mcp_snapshot = Some(codewhale_engine::mcp::McpManagerSnapshot {
             config_path: app.mcp_config_path.clone(),
             config_exists: true,
             reload_required: false,
@@ -3035,9 +3045,14 @@ mod tests {
 
     #[test]
     fn mcp_item_action_for_stale_oauth_is_login() {
-        let recovery =
-            crate::mcp::mcp_recovery_kind(true, true, false, Some("401 Unauthorized"), true)
-                .expect("stale oauth needs recovery");
+        let recovery = codewhale_engine::mcp::mcp_recovery_kind(
+            true,
+            true,
+            false,
+            Some("401 Unauthorized"),
+            true,
+        )
+        .expect("stale oauth needs recovery");
         assert_eq!(recovery, McpRecoveryKind::Reauth);
         assert_eq!(recovery.slash_command("github"), "/mcp login github");
         assert_eq!(tr(Locale::En, recovery.label_key()).as_ref(), "re-auth");
@@ -3049,14 +3064,14 @@ mod tests {
         // lol". Enabled, inspected, connected and erroring on nothing is not
         // a state anything repairs.
         assert_eq!(
-            crate::mcp::mcp_recovery_kind(true, true, true, None, false),
+            codewhale_engine::mcp::mcp_recovery_kind(true, true, true, None, false),
             None
         );
     }
 
     #[test]
     fn mcp_item_action_for_disconnected_server_is_reconnect() {
-        let recovery = crate::mcp::mcp_recovery_kind(true, true, false, None, false)
+        let recovery = codewhale_engine::mcp::mcp_recovery_kind(true, true, false, None, false)
             .expect("a disconnected server needs recovery");
         assert_eq!(recovery, McpRecoveryKind::Reconnect);
         // The row names one server, so the command it runs must name it too:

@@ -6,51 +6,54 @@
   "_codex_20261006_contributor_remeasure": "2026-10-06: provider-free composed release measurement. Existing bounded agent-wait timeout disclosure adds 172 schema bytes to active surfaces; contributor locale descriptions add 189 Plan full / 259 Act and Operate full bytes beyond that shared disclosure. Accept exactly measured tool schema ceilings: Plan full 54697 B / 13675 estimated tokens, active 34882 / 8721; Act and Operate full 85790 / 21448, active 36412 / 9103. All tool identities/counts, prompt identities and skill-discovery contracts remain unchanged. Other measured decreases are locked. Receipt CW/artifacts/takeover-0101-20261005/runtime-contract-final-receipt.json. bytes/4 estimates are not provider usage or billing.",
   "_codex_20261011_goal_yield_remeasure": "2026-10-11: update_goal's progress description names yield, which update_goal now accepts with a progress estimate (407cb8ebb3). Hosted Linux measurement, CI run 38144890574 Lint job 114486327862: +7 B on every Plan/Act/Operate full and active surface (+1 to +2 estimated tokens). No tool enters or leaves a surface; identities unchanged.",
   "_codex_20261012_bash_description": "2026-10-12: the optional display-only bash description property adds exactly 112 serialized bytes and 28 estimated tokens to each active/full Plan/Act/Operate tool catalog. Catalog names and counts are unchanged; only new sessions pin this schema. Description values remain append-only ToolUse history. Canonical macOS provider-free measurement: CW/artifacts/0102-handoff-20261012/bash-contract-receipt.json.",
+  "_codex_20261031_engine_move_prompt_measurement": "2026-10-31: four existing provider-free metric tests on macOS aarch64 after the Engine relocation reproduce the pre-b984e31290 prompt bytes and every representative-stage identity exactly. b984e31290 had absorbed a 3-byte raw / 5-byte normalized host-dependent decrease without a prompt source change. Restore only those measured fields; tool catalogs remain byte-for-byte at the archive-tool budget. Receipt: CW/artifacts/engine-move-takeover-20261031/runtime-metrics-move.json. This is a local measurement; the following DSH batch pins linux and /bin/bash through the existing recorded-environment guard, independent of host shell detection; all representative identities and byte counts remain exact. No provider usage or billing is measured.",
+  "_codex_20261031_goal_schema_7177": "PR #7177 changes exactly two update_goal description strings: +134 and +122 serialized bytes, +256 total on every full/active Plan, Act and Operate catalog. Counts and name identities are unchanged. Four existing metric tests on Engine binary SHA-256 648735f5b55dadcc8dd113ca462f07b83d01846c940c161d89ce7434ad889f04 confirm all 55 ceilings exactly. Existing prompt/event golden checks pass after re-recording the derived hashes, byte counts and bounded descriptions. Receipts: CW/artifacts/dsh-upgrade-takeover-20261031/runtime-contract.json and *-verify.log. No provider behavior or usage is claimed.",
   "_comment": "One-way numeric ceilings and exact structural identities for the provider-free runtime contract. Decreases pass; increases or identity changes fail. Lock in decreases with: python3 scripts/check-runtime-contract-budget.py --update The v0.9.8 child-receipt restore grew every production tool surface by 1496 schema bytes / 374 estimated tokens (agent tool). The v0.9.8 workshop read/tool-result byte fields then grew every production tool surface by 371 schema bytes / 93 estimated tokens. Both raises are explicit maintainer decisions; identities stay on the pre-raise digests only if the name set is unchanged \u2014 re-measure on Linux CI if Lint reports identity drift. The v0.9.8 pinned session prefix added the <context_update> sentence to the base prompt (5848 -> 6084 bytes, every representative stage re-hashed), and the host-side Workflow/Goal verbs plus honest child posture grew the tool catalog (active 16531 -> 16602 bytes, full 71473 -> 72371); both are explicit v0.9.8 maintainer decisions measured from the release train. The v0.9.9 configured-skills change hides only custom configured-root paths, preserves discoverable default-root paths, normalizes Windows prompt separators, and trims 50 redundant skills-prompt bytes. The skill/memory/goal/handoff identities were re-measured without raising any ceiling. Explicit maintainer decision for #5473/#5492. The v0.9.10 full surfaces intentionally add the safe read_media tool; their measured schemas remain below the prior byte/token ceilings. Representative prompt byte metrics now use the same host-independent normalized text as their identities; the normalized base is 6089 bytes. The v0.9.11 model-visible sub-agent surface intentionally retires six legacy agents/* tools in favor of the canonical agent tool; all affected schema and prompt metrics decrease. The v0.9.12 plugin prompt-match slice intentionally adds the request_plugin_install tool to the full tool surfaces (plan full: +518 schema bytes / +130 estimated tokens / 29 -> 30 tools) so a strong prompt match can surface the human review CTA; explicit maintainer decision for #5663/#5579. The v0.9.13 profile pins a non-executed bare bash shell so interpreter guidance is reproducible across hosts. The duplicate tts catalog entry is intentionally hidden; speech remains canonical and the alias remains available for saved-transcript dispatch. Explicit v0.9.13 maintainer decision (2026-09-08): after removing 1426 repeated guidance bytes and pinning the bash-v2 fixture, accept only the measured tool byte/token ceilings from all-features macOS source e27735bb63c897f88061c71567701fd971f5d396, verified libtest SHA-256 5e8cbe213f32c4ecdec63494c4de5e31857b4a40134edf7b21a55bca926b1b38: active 13274/3319 in every mode, Plan full 39885/9972, Act/Operate full 67603/16901, with no margin. Against the prior budget, active +390 bytes is agent -41 plus retained bash command syntax +431. Plan full also retains Git commit_plan +253, update_goal progress +583, github bounded local-report guidance +127, review complete-input refusal +35, and send_later dispatching status +14. Act/Operate full instead has github +2151 and additionally speech +230, hidden tts -2120, and tasks/automation exact model-route fields +274 each. The older budget predates v0.9.12: that tag had already removed 361 agent bytes and added the two 274-byte route fields; the retained initial increase versus the tag is 751 source-attributed bytes (agent +320, bash +431), not the +390 budget delta. Only the seven active definitions form the initial request; full catalogs include deferred tools. Estimated tokens use the existing bytes/4 heuristic, not provider usage or billing. Prompt, representative-context, skill-discovery and tool-name identities/ceilings are unchanged. Explicit v0.9.13 maintainer decision (2026-09-09): source ccc5dadfa2279545bf084d37cff3617e41ceaae2 intentionally exposes create_goal, get_goal and update_goal before continuation, so all three initial surfaces now contain ten tools. Measure exact source 4648d148eea64782be857eda6952af2c539cbfcc with the hosted macOS all-features libtest SHA-256 4485c88c7a8b66b8bb9a135807321e417a1e266457ecb74cffc7dfb92f850fc4: four exact provider-free metric tests pass. Active schemas are exactly 17847 bytes / 4462 estimated tokens (+4573 / +1143 for the three eager goal definitions); Plan full is 40597 / 10150 and Act/Operate full is 68315 / 17079, with no margin. The +712 full-catalog bytes are request_user_input guidance +358, update_goal state-change guidance +98, list_dir home-relative path guidance +56, explicit review max_passes schema +197, and three defer_loading true-to-false values +3. The three active name sets/digests, their counts, and measured active/full byte/token ceilings change; full name identities and all prompt, representative-context and skill-discovery measurements remain unchanged. This updates the earlier seven-tool initial-request receipt; bytes/4 remains an estimate, not measured provider usage or billing. 2026-10-05: the shell handoff grew every surface by 564 schema bytes / 141 estimated tokens. The bash and action=run descriptions now say a command still running after the foreground wait moves to the background and is not killed, and name task_shell_wait. No tool entered or left a surface. Measured on macOS aarch64; the Linux Lint run reported the same deltas. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.13 maintainer decision (2026-09-10): the +765 active/full tool-schema bytes since source 4648d148ee are exactly source-attributed \u2014 the agent tool's followup/parked-child continuation guidance (b6fad79373: +144 action description, +43 message parameter, +169 resume_from parameter) and the read tool's real output budget (e7f7c71e2c: +164 description, +245 for the new max_bytes parameter). No tool enters or leaves any surface: every name-set identity, count, and all prompt, representative-context and skill-discovery measurements are unchanged; only the measured byte/token ceilings move, to active 18612/4653 in every mode, Plan full 41362/10341, and Act/Operate full 69080/17270, with no margin. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.13 maintainer decision (2026-09-13): source 5bfe88c8e8f45266ea1f9abce87c76b2eed894af intentionally keeps the native workflow tool eager on Plan/Act/Operate first-turn surfaces (DEFAULT_ACTIVE_NATIVE_TOOLS; commit 9e49d0918). Active name sets gain `workflow` (10\u219211 tools); active schema ceilings move to 29402/7351 with margin pending exact Linux --update lock-in. Full catalogs already advertised workflow; only a small defer_loading true\u2192false spelling bump is reserved (+32 bytes / +8 tokens). Prompt, representative-context, and skill-discovery measurements are unchanged. Do not remove workflow from Plan. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.13 maintainer decision (2026-09-13, CI lock-in after b4d48e9a4): Linux Lint run 34766373771 measured the intentional eager `workflow` surface at active 31438/7860 in every mode, Plan full 50801/12701, and Act/Operate full 78513/19629. Prior ceilings (29402/7351 active, Plan full 41394/10349, Act/Operate full 69112/17278) under-counted the workflow schema body plus defer_loading true\u2192false on full catalogs; name-set identities are unchanged and `workflow` stays on Plan. Lock ceilings to those measured values with no margin. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.14 maintainer decision (2026-09-16): #5715 intentionally adds the two bounded read-only recall tools `session_get` and `session_search` to the Act/Operate full catalogs (50 -> 52 tools), so both full name-set identities and their digests move to 1203d192385fd2b02227ef9e4212e5379bc5cbb813a373f12539406b5958aef1. Plan full is unchanged: the session tools are not offered there. Measured on macOS aarch64 all-features from source 55a9e1b778fa; per the 2026-09-13 precedent the exact byte/token ceilings must be re-locked from a Linux Lint run if CI reports drift. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.14 maintainer decision (2026-09-17, #6319): re-measure from source b0866943b4 on macOS aarch64 all-features; per the 2026-09-13 precedent the exact byte/token ceilings must be re-locked from a Linux Lint run if CI reports drift. No tool enters or leaves any surface (52 tools; every name-set identity unchanged). Representative stages and system prompt grow exactly +742 bytes per stage/mode (base 6089 -> 6831, prompt 6084 -> 6826) for the deliberate dc32272f15 Bearing article plus mandate-first scope law; every stage re-hashed. Tool growth is exactly source-attributed per tool (measured per-tool at 55a9e1b778fa vs HEAD): agent +670 (2ca54ea8da #6282 output-token-cap parameter, 3c9c62571a spawn-requirement docs, 85d8dc7501 #6278 exact_files sentence, less 3dcb41f5d2 #6272 release-clause trim and the a7a8bdb338 token-allowance description removal), workflow +424 (a035914336 #6232 plan-child cwd property, serialized twice via phases/items and top-level children/items), Git +867 (b89349286f #6298 merge_tree verify surface), Run +158 (233da9fb76 #6296 bounded cwd), read +91 (f6fb5f42d1 #6283 size/truncated/line_count response fields), create_goal +76 (4de9e9e281 model-decides-goals description rewrite). Active 31453 -> 32714 (+1261 = agent +670, workflow +424, read +91, create_goal +76); Plan full 50816 -> 52944 (+2128 = active +1261 plus Git +867); Act/Operate full 79531 -> 81817 (+2286 = Plan full +2128 plus Run +158). bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.9.14 maintainer decision (2026-09-19 overnight): Code Mode Phase-1 advertises `execute_tools` on Act/Operate full catalogs (52 -> 53 tools; Plan full unchanged). Default Direct mode keeps it deferred (`defer_loading: true`), so active surfaces are unchanged. Name-set identity digests move with the sorted name list; measured tool JSON is 884 bytes (+885 including the catalog comma) so Act/Operate full ceilings lock to 82702/20676. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit v0.10.0 source reconciliation (2026-09-19): retain the existing agent cwd parameter (+256 serialized bytes in every surface) and tasks create name parameter (+121 bytes in Act/Operate full only), both already present before the preceding execute_tools lock-in. Linux CI run 35490467762 measured active 32970/8243, Plan full 53200/13300, and Act/Operate full 83079/20770. Each increase is attributed to exactly one schema property; no margin, tool identity, prompt or representative-context change. These are schema byte/4 estimates, not billed tokens. Explicit v0.10.0 maintainer decision (2026-09-22): 91b5898a2 intentionally makes `load_skill` eager so the `## Skills` instruction in the base prompt is actually callable \u2014 it was deferred behind tool_search, so the prompt told the model to call a tool that was not in the array it was printed beside. load_skill is read-only, so it joins the active sets of Plan, Act and Operate (11 -> 12 tools; +816 schema bytes / +204 estimated tokens in every mode, active ceilings lock to 33786/8447). Full catalogs move only by the defer_loading true->false spelling plus that schema body (+245 bytes / +61-62 tokens). Representative stages re-hash and each move +149 bytes with the total +37 tokens: dc32272f15 landed the Bearing article and mandate-first scope law, and 91b5898a2 rewrote the Skills paragraph every stage renders. No other name-set identity, count, prompt or skill-discovery measurement changes. Measured from 6bafe6e72 on macOS aarch64 all-features; per the 2026-09-13 precedent the exact byte/token ceilings must be re-locked from a Linux Lint run if CI reports drift. bytes/4 remains an estimate, not measured provider usage or billing. The one-way numeric and exact identity gates remain enforced. Explicit maintainer decision (#6562, PR #6583, 2026-09-25): code mode for MCP is on by default ([features] code_mode = true), so `execute_tools` is eager on the Act/Operate first-turn surfaces (12 -> 13 tools; active 33876/8469 -> 35406/8852, +1530 bytes / +383 estimated tokens) and its definition text now documents nested MCP/plugin calls through the direct-call gate (Act/Operate full 83384/20846 -> 84029/21008, +645 bytes). Plan is unchanged: execute_tools is not offered there. `code_mode = false` restores the prior deferred surface. Measured on macOS aarch64 all-features; re-lock from a Linux Lint run if CI reports drift. Re-measured after merging main 2026-09-25: active 35392/8848 (-14, main's 4b0f54edb fork_context trim), Act/Operate full 83737/20935 (-292: the same -14 plus -278 not attributed per tool in this merge); decreases locked with --update, identities unchanged. bytes/4 remains an estimate, not measured provider usage or billing. Explicit maintainer decision (PR #6589, 2026-09-25): the agent tool declares `runtime` (local|cloud; cloud only proposes a /dispatch job the person confirms) and `remote` (github|cnb|gitee) as schema properties so the model can request a cloud proposal without an undeclared field. Both descriptions were trimmed (-303 bytes) before locking, which also keeps the parent prompt+catalog surface under PARENT_SURFACE_BYTE_CEILING; the remaining +284 bytes / +71 estimated tokens land on every surface that carries agent (Plan/Act/Operate active and full: active 35676/8919 Act/Operate, 34146/8537 Plan; full 84021/21006 Act/Operate, 53785/13447 Plan). No tool enters or leaves any surface; identities unchanged. Measured on macOS aarch64 all-features; re-lock from a Linux Lint run if CI reports drift. bytes/4 remains an estimate, not measured provider usage or billing.",
   "_compaction_archive_recall_20261031": "2026-10-31: the compaction-archive recall slice adds context_archive_get and context_archive_search to every production surface that already carries the other read tools - Plan active 13 -> 15, Plan full 30 -> 32, Act/Operate active 15 -> 17, Act/Operate full 51 -> 53, measured provider-free on Windows x86_64 as +875 active bytes and +1923 full bytes per Act/Operate surface. No tool left a surface. --update also absorbed pre-existing drift from the prompt and tool commits merged after the 2026-10-26 budget lock (4cf2d2cff ran with [skip ci]): the representative base stage and the system-prompt byte counts move by 3-5 bytes with no matching source change in this slice. 55 metrics, 21 identities. bytes/4 remains an estimate, not provider usage or billing.",
   "_pr7046_jsonpath_description": "2026-10-22: grew by the merged contributor PR #7046 (b961994290), which documented the JSONPath subset the web tool actually accepts. That is one model-visible description string on web_tool's `fields` argument: active catalog +132 bytes, full catalog +295 bytes, the same in act, operate and plan. No tool was added and no identity changed; the growth is the text the model needs to stop sending recursive descent and filters that the parser rejects. Remeasured on afeb9cea31's tree, 55 metrics, 21 identities.",
   "document_kind": "codewhale.runtime_contract_budget",
   "representative_context": {
     "fixture_id": "representative-v1",
+    "prompts_byte_identical": true,
     "stages": {
       "base": {
-        "bytes": 7226,
-        "identity_sha256": "cfc361306901a3cc9ff158aa81d458f8ad0ccefeb9ac1a2f7b10cb7a1aac4d1d"
+        "bytes": 7231,
+        "identity_sha256": "5130806e324482a4b5ec28ae6fc408846b894844db9b7c38f3cfcf48e2ac63d8"
       },
       "goal": {
-        "bytes": 9482,
+        "bytes": 9487,
         "delta_bytes": 81,
-        "identity_sha256": "9190a9b64d21768bbf4c2eabc17d84e702fcbf1175f2d4bc317d3b0cabf610f5"
+        "identity_sha256": "9815c41c0acea40708388324c8dd306c34a61377ab1b66357e4556e082cac694"
       },
       "handoff": {
-        "bytes": 9870,
+        "bytes": 9875,
         "delta_bytes": 388,
-        "identity_sha256": "e2733061234060b5dd9356db6fa52a2982e3e188bbdd96d5816155d2d04bb37a"
+        "identity_sha256": "ff712ad5f95d2ead15445d5b493e5c6917ed337d0ed2f3a2e75fc04bc098f6bb"
       },
       "instructions": {
-        "bytes": 7672,
+        "bytes": 7677,
         "delta_bytes": 203,
-        "identity_sha256": "5998a39e94bad106d80777b1edb7dc2aafa46c2aec16d10e3f2f13f522b329ef"
+        "identity_sha256": "4de57cb6dd78ddf515bb0c391b404033ccc5bc15b41da8e0f2daa71f37e632ae"
       },
       "memory": {
-        "bytes": 9401,
+        "bytes": 9406,
         "delta_bytes": 963,
-        "identity_sha256": "2f5ec005539b6f5494063007784f3de4679780dcdc65360fbbdbebb8bb0fa23d"
+        "identity_sha256": "2c751505d43f54ea6962313293e8a34c74e8d75c4dab163134abee4b678c4502"
       },
       "project": {
-        "bytes": 7469,
+        "bytes": 7474,
         "delta_bytes": 243,
-        "identity_sha256": "8dba9170c82d3c9cbb2c27d74616738b5be0055c6cb204204e1153970116fd44"
+        "identity_sha256": "918a55fd0c6da2a1334cdad93b2da61bcee660723ebc0443cd0a7b045979a0f8"
       },
       "skill": {
-        "bytes": 8438,
+        "bytes": 8443,
         "delta_bytes": 766,
-        "identity_sha256": "4feec18c174f55d9127bb23f9cea92d04cce7a3a5e617ee5c46f7fe35525b970"
+        "identity_sha256": "1645ac6802e2221c8545eeaaa2c1a297d080b92aa7cc9c30e2db78c2575de6c4"
       }
     },
     "system_prompt_blocks": 5,
-    "total_bytes": 9870,
-    "total_tokens_est": 2468
+    "total_bytes": 9875,
+    "total_tokens_est": 2469
   },
   "schema_version": 1,
   "skill_discovery": {
@@ -71,22 +74,22 @@
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 7223,
-        "system_prompt_tokens_est": 1806
+        "system_prompt_bytes": 7226,
+        "system_prompt_tokens_est": 1807
       },
       "operate": {
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 7223,
-        "system_prompt_tokens_est": 1806
+        "system_prompt_bytes": 7226,
+        "system_prompt_tokens_est": 1807
       },
       "plan": {
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 7223,
-        "system_prompt_tokens_est": 1806
+        "system_prompt_bytes": 7226,
+        "system_prompt_tokens_est": 1807
       }
     }
   },
@@ -95,9 +98,9 @@
     "modes": {
       "act": {
         "active": {
-          "bytes": 39877,
+          "bytes": 40133,
           "identity_sha256": "cec6ec925c301f6a69bea0e6aacdd4c3d7f0b9845ec55bcb5680b80143309ede",
-          "tokens_est": 9970,
+          "tokens_est": 10034,
           "tool_names": [
             "agent",
             "bash",
@@ -120,9 +123,9 @@
           "tools": 17
         },
         "full": {
-          "bytes": 86800,
+          "bytes": 87056,
           "identity_sha256": "d9b10a33ed89341c5f21d4ea211ce22cd7db57a5f0097f2f82559d61911bcad8",
-          "tokens_est": 21700,
+          "tokens_est": 21764,
           "tool_names": [
             "Git",
             "Run",
@@ -183,9 +186,9 @@
       },
       "operate": {
         "active": {
-          "bytes": 39877,
+          "bytes": 40133,
           "identity_sha256": "cec6ec925c301f6a69bea0e6aacdd4c3d7f0b9845ec55bcb5680b80143309ede",
-          "tokens_est": 9970,
+          "tokens_est": 10034,
           "tool_names": [
             "agent",
             "bash",
@@ -208,9 +211,9 @@
           "tools": 17
         },
         "full": {
-          "bytes": 86800,
+          "bytes": 87056,
           "identity_sha256": "d9b10a33ed89341c5f21d4ea211ce22cd7db57a5f0097f2f82559d61911bcad8",
-          "tokens_est": 21700,
+          "tokens_est": 21764,
           "tool_names": [
             "Git",
             "Run",
@@ -271,9 +274,9 @@
       },
       "plan": {
         "active": {
-          "bytes": 37377,
+          "bytes": 37633,
           "identity_sha256": "bf3b0d167ab75fe74093a00f73463d792ffd94b753d3c1eb538af726058fea47",
-          "tokens_est": 9345,
+          "tokens_est": 9409,
           "tool_names": [
             "agent",
             "bash",
@@ -294,9 +297,9 @@
           "tools": 15
         },
         "full": {
-          "bytes": 56842,
+          "bytes": 57098,
           "identity_sha256": "79c54c03cbeed6242c79feedb48d07fa84578c5950ace5235ee8adf5f8209dc5",
-          "tokens_est": 14211,
+          "tokens_est": 14275,
           "tool_names": [
             "Git",
             "Web",

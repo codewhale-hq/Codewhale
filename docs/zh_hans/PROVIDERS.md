@@ -894,5 +894,5 @@ python3 scripts/check-provider-registry.py
 
 这些项目属于 v0.8.48+ 提供商抽象里程碑或相关的提供商文档工作，但它们不是本 checkout 中原生随附的行为：
 
-- `codewhale-agent` 中一个统一的 `Provider` trait，拥有环境变量优先级、密钥解析、base URL 规范化、认证头构造和提供商元数据。这些职责目前仍然分散在 `crates/config`、`crates/secrets` 和 `crates/tui/src/client.rs` 中。
+- `codewhale-agent` 中一个统一的 `Provider` trait，拥有环境变量优先级、密钥解析、base URL 规范化、认证头构造和提供商元数据。这些职责目前仍然分散在 `crates/config`、`crates/secrets` 和 `crates/engine/src/client.rs` 中。
 - 选择器中的 Hugging Face 模型护照元数据，包括许可证、基础模型、上下文长度、聊天模板、工具调用支持、推理支持以及 gated/private 状态。

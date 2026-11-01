@@ -22,9 +22,9 @@ use serde_json::{Value, json};
 use codewhale_config::AppMode;
 
 use super::golden::{self, Failures, Sandbox};
-use crate::hooks::{HookContext, HookExecutor};
-use crate::tools::spec::{ToolError, ToolResult};
 use codewhale_config::hooks::{HookEvent, HooksConfig};
+use codewhale_engine::hooks::{HookContext, HookExecutor};
+use codewhale_engine::tools::spec::{ToolError, ToolResult};
 
 const FAMILY: &str = "hooks";
 
@@ -151,8 +151,8 @@ fn run_case(name: &str, case: &Value, failures: &mut Failures) {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            let verdict =
-                runtime.block_on(crate::core::engine::turn_loop::run_tool_call_before_hooks(
+            let verdict = runtime.block_on(
+                codewhale_engine::core::engine::turn_loop::run_tool_call_before_hooks(
                     Some(&executor),
                     None, // This surface has no TypeScript host attachment.
                     tool_name,
@@ -161,7 +161,8 @@ fn run_case(name: &str, case: &Value, failures: &mut Failures) {
                     AppMode::Agent,
                     &sandbox.workspace,
                     case["model"].as_str().unwrap_or("deepseek-v4-pro"),
-                ));
+                ),
+            );
             drop(runtime);
             match verdict {
                 Ok(admitted) => json!({ "admit": {

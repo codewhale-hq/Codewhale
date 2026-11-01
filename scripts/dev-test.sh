@@ -49,6 +49,7 @@ command-contract  cargo test -p codewhale-command-contract --lib --locked
 commands          cargo test -p codewhale-commands --lib --locked
 config            cargo test -p codewhale-config --lib --locked
 core              cargo test -p codewhale-core --lib --locked
+engine            cargo test -p codewhale-engine --lib --locked
 error-taxonomy    cargo test -p codewhale-error-taxonomy --lib --locked
 execpolicy        cargo test -p codewhale-execpolicy --lib --locked
 hooks             cargo test -p codewhale-hooks --lib --locked
@@ -87,8 +88,8 @@ path prefix                         area / extra filter
 -----------                         -------------------
 crates/<crate>/                     <crate>
 crates/tui/src/tui/                 tui  tui::
-crates/tui/src/tools/               tui  tools::
-crates/tui/src/core/                tui  core::
+crates/engine/src/tools/           engine  tools::
+crates/engine/src/core/            engine  core::
 crates/tui/src/commands/            tui  commands::
 crates/tui/src/<file>.rs            tui  <file>::
 crates/runtime/src/<file>.rs        runtime  <file>::
@@ -152,12 +153,12 @@ if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
       area=tui
       extra=tui::
       ;;
-    crates/tui/src/tools/*)
-      area=tui
+    crates/engine/src/tools/*)
+      area=engine
       extra=tools::
       ;;
-    crates/tui/src/core/*)
-      area=tui
+    crates/engine/src/core/*)
+      area=engine
       extra=core::
       ;;
     crates/tui/src/commands/*)
@@ -171,7 +172,7 @@ if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
     crates/tui/*|crates/tui)
       area=tui
       ;;
-    crates/runtime/src/*|crates/commands/src/*|crates/command-contract/src/*)
+    crates/engine/src/*|crates/runtime/src/*|crates/commands/src/*|crates/command-contract/src/*)
       area=$(printf '%s' "$rel" | awk -F/ '{print $2}')
       extra=$(printf '%s' "${rel#crates/*/src/}" | awk -F/ '{print $1}')
       extra=${extra%.rs}::
@@ -206,6 +207,7 @@ case $area in
   commands) pkg=codewhale-commands ;;
   config) pkg=codewhale-config ;;
   core) pkg=codewhale-core ;;
+  engine) pkg=codewhale-engine ;;
   error-taxonomy) pkg=codewhale-error-taxonomy ;;
   execpolicy) pkg=codewhale-execpolicy ;;
   hooks) pkg=codewhale-hooks ;;

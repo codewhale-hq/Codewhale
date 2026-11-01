@@ -907,9 +907,9 @@ pub(super) struct WorkspaceInstructionsResponse {
 }
 
 fn instruction_source_kind_name(
-    kind: crate::project_context::InstructionSourceKind,
+    kind: codewhale_engine::project_context::InstructionSourceKind,
 ) -> &'static str {
-    use crate::project_context::InstructionSourceKind as Kind;
+    use codewhale_engine::project_context::InstructionSourceKind as Kind;
     match kind {
         Kind::Project => "project",
         Kind::Rule => "rule",
@@ -922,9 +922,9 @@ fn instruction_source_kind_name(
 }
 
 fn instruction_source_status_name(
-    status: crate::project_context::InstructionSourceStatus,
+    status: codewhale_engine::project_context::InstructionSourceStatus,
 ) -> &'static str {
-    use crate::project_context::InstructionSourceStatus as Status;
+    use codewhale_engine::project_context::InstructionSourceStatus as Status;
     match status {
         Status::Loaded => "loaded",
         Status::Shadowed => "shadowed",
@@ -944,29 +944,34 @@ pub(super) async fn workspace_instructions(
     let workspace = state.workspace.clone();
     let config = state.config.read().clone();
     let configured = config.instructions_paths();
-    let settings = crate::project_context::InstructionSettings::from_config(&config);
+    let settings = codewhale_engine::project_context::InstructionSettings::from_config(&config);
     let foreign_imports = settings
         .imports
         .keys()
         .into_iter()
         .map(str::to_string)
         .collect();
-    let budgets =
-        crate::project_context::InstructionBudgets::resolve(Some(&settings.budget), None, None)
-            .map_err(ApiError::internal)?;
+    let budgets = codewhale_engine::project_context::InstructionBudgets::resolve(
+        Some(&settings.budget),
+        None,
+        None,
+    )
+    .map_err(ApiError::internal)?;
 
     let (sources, generated_fallback, warnings, workspace_root) =
         tokio::task::spawn_blocking(move || {
-            let sources = crate::project_context::project_instruction_sources_with_settings(
-                &workspace,
-                &settings,
-                &configured,
-            );
+            let sources =
+                codewhale_engine::project_context::project_instruction_sources_with_settings(
+                    &workspace,
+                    &settings,
+                    &configured,
+                );
             // The real load pass supplies assembly-level warnings and tells us
             // whether the ephemeral generated context is what the prompt
             // carries. Cached — this is the same call the engine makes.
-            let ctx =
-                crate::project_context::load_project_context_with_settings(&workspace, &settings);
+            let ctx = codewhale_engine::project_context::load_project_context_with_settings(
+                &workspace, &settings,
+            );
             let generated_fallback = ctx.instructions.is_some() && ctx.source_path.is_none();
             // `project_instruction_sources` canonicalizes the workspace (the
             // `/var` → `/private/var` class of alias), so relative paths must

@@ -12,14 +12,14 @@ use codewhale_command_contract::facets::*;
 use codewhale_models::{MessageRequest, SystemPrompt, Usage};
 
 use super::SharedCommandHost;
-use crate::client::{
-    CacheWarmupKey, PromptInspection, PromptLayerStability, inspect_prompt_for_request,
-};
 use crate::context_report::project_source_map as source_map;
-use crate::pricing::token_usage_for_pricing;
-use crate::tool_inspection::project_snapshot as tool_snapshot;
 use crate::tui::app::App;
 use codewhale_config::pricing::CostCurrency;
+use codewhale_engine::client::{
+    CacheWarmupKey, PromptInspection, PromptLayerStability, inspect_prompt_for_request,
+};
+use codewhale_engine::pricing::token_usage_for_pricing;
+use codewhale_engine::tool_inspection::project_snapshot as tool_snapshot;
 use codewhale_runtime::config::provider_has_balance_api;
 
 pub(super) struct DebugDiagnosticsAdapter<'a> {
@@ -60,7 +60,7 @@ impl CommandDebugDiagnosticsContext for DebugDiagnosticsAdapter<'_> {
     fn token_projection(&self) -> DebugTokenProjection {
         let app = self.host.app.borrow();
         let window = app.effective_context_window();
-        let estimated = crate::compaction::estimate_input_tokens_conservative(
+        let estimated = codewhale_engine::compaction::estimate_input_tokens_conservative(
             &app.api_messages,
             app.system_prompt.as_ref(),
         );
@@ -469,7 +469,9 @@ fn prompt_inspection(inspection: PromptInspection) -> DebugPromptInspection {
 }
 
 fn host_inspection(inspection: DebugPromptInspection) -> PromptInspection {
-    use crate::client::{PromptLayerInspection, ToolResultInspection, TurnMetaInspection};
+    use codewhale_engine::client::{
+        PromptLayerInspection, ToolResultInspection, TurnMetaInspection,
+    };
     PromptInspection {
         base_static_prefix_hash: inspection.base_static_prefix_hash,
         full_request_prefix_hash: inspection.full_request_prefix_hash,

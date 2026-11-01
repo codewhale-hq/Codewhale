@@ -29,15 +29,15 @@ use codewhale_config::notifications::CompletionSound;
 use codewhale_config::notifications::NotificationCondition;
 use codewhale_runtime::config::*;
 
-use crate::provider_readiness::has_api_key;
+use codewhale_engine::provider_readiness::has_api_key;
 
-use crate::provider_readiness::has_api_key_for;
+use codewhale_engine::provider_readiness::has_api_key_for;
 
-use crate::provider_lake::ProviderCapability;
+use codewhale_engine::provider_lake::ProviderCapability;
 
-use crate::provider_lake::RequestPayloadMode;
+use codewhale_engine::provider_lake::RequestPayloadMode;
 
-use crate::provider_lake::provider_capability;
+use codewhale_engine::provider_lake::provider_capability;
 
 use crate::test_support::EnvVarGuard;
 
@@ -95,9 +95,13 @@ fn remembered_deepseek_cn_and_layered_root_models_keep_their_precedence() {
     let profile = codewhale_plugins::providers::load_config(None, Some("pro")).unwrap();
     assert_eq!(profile.default_model(), "deepseek-v4-pro");
     assert_eq!(
-        crate::route_runtime::resolve_runtime_route(&profile, ProviderKind::Deepseek, None)
-            .unwrap()
-            .model,
+        codewhale_engine::route_runtime::resolve_runtime_route(
+            &profile,
+            ProviderKind::Deepseek,
+            None
+        )
+        .unwrap()
+        .model,
         "deepseek-v4-pro"
     );
 
@@ -141,21 +145,25 @@ fn loaded_startup_selection_is_shared_and_does_not_rewrite_saved_files() {
     let mut config = codewhale_plugins::providers::load_config(None, None).unwrap();
     assert_eq!(config.default_model(), "GLM-5.3");
     assert_eq!(
-        crate::model_inventory::provider_default_model(
+        codewhale_engine::model_inventory::provider_default_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Zai)
         ),
         "GLM-5.3"
     );
     let route =
-        crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Zai, None).unwrap();
+        codewhale_engine::route_runtime::resolve_runtime_route(&config, ProviderKind::Zai, None)
+            .unwrap();
     assert_eq!(
         route.model, "GLM-5.3",
         "an omitted new-thread model uses the same selection"
     );
-    let explicit =
-        crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Zai, Some("GLM-5.2"))
-            .unwrap();
+    let explicit = codewhale_engine::route_runtime::resolve_runtime_route(
+        &config,
+        ProviderKind::Zai,
+        Some("GLM-5.2"),
+    )
+    .unwrap();
     assert_eq!(explicit.model, "GLM-5.2");
     let other = {
         let __cw_config_init_0_0 = Some(HashMap::from([("zai".into(), "GLM-5.1".into())]));
@@ -205,9 +213,13 @@ fn startup_memory_yields_to_explicit_launch_scoped_config_and_profile() {
         let config = codewhale_plugins::providers::load_config(None, None).unwrap();
         assert_eq!(config.default_model(), "GLM-5.2");
         assert_eq!(
-            crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Zai, None)
-                .unwrap()
-                .model,
+            codewhale_engine::route_runtime::resolve_runtime_route(
+                &config,
+                ProviderKind::Zai,
+                None
+            )
+            .unwrap()
+            .model,
             "GLM-5.2"
         );
     }
@@ -245,8 +257,10 @@ fn startup_memory_preserves_named_and_custom_endpoint_wire_ids() {
     assert!(config.apply_saved_selection(&settings));
     assert_eq!(config.provider.as_deref(), Some("TeamA"));
     let identity = config.active_provider_identity().unwrap();
-    let route =
-        crate::route_runtime::resolve_runtime_route_for_identity(&config, &identity, None).unwrap();
+    let route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+        &config, &identity, None,
+    )
+    .unwrap();
     assert_eq!(route.model, "memory-upper");
     assert_eq!(
         route.candidate.endpoint().base_url,
@@ -254,7 +268,7 @@ fn startup_memory_preserves_named_and_custom_endpoint_wire_ids() {
     );
     let lower = config.resolve_provider_identity("teama").unwrap();
     assert_eq!(
-        crate::route_runtime::resolve_runtime_route_for_identity(&config, &lower, None)
+        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(&config, &lower, None)
             .unwrap()
             .model,
         "memory-lower"
@@ -279,8 +293,10 @@ fn named_custom_table_wire_responses_reaches_the_runtime_route() {
     )
     .unwrap();
     let identity = config.active_provider_identity().unwrap();
-    let route = crate::route_runtime::resolve_runtime_route_for_identity(&config, &identity, None)
-        .expect("custom table runtime route");
+    let route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+        &config, &identity, None,
+    )
+    .expect("custom table runtime route");
     assert_eq!(route.identity.provider, ProviderKind::Custom);
     assert_eq!(
         route.candidate.protocol(),
@@ -300,8 +316,10 @@ fn named_custom_table_wire_responses_reaches_the_runtime_route() {
     )
     .unwrap();
     let identity = config.active_provider_identity().unwrap();
-    let route = crate::route_runtime::resolve_runtime_route_for_identity(&config, &identity, None)
-        .expect("typo'd table still resolves");
+    let route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+        &config, &identity, None,
+    )
+    .expect("typo'd table still resolves");
     assert_eq!(
         route.candidate.protocol(),
         codewhale_config::provider::WireFormat::ChatCompletions,
@@ -339,7 +357,7 @@ fn provider_environment_model_outranks_startup_memory() {
     let config = codewhale_plugins::providers::load_config(None, None).unwrap();
     assert_eq!(config.default_model(), "gpt-5.6-luna");
     assert_eq!(
-        crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Openai, None)
+        codewhale_engine::route_runtime::resolve_runtime_route(&config, ProviderKind::Openai, None)
             .unwrap()
             .model,
         "gpt-5.6-luna"
@@ -381,11 +399,11 @@ fn retired_antigravity_credentials_are_never_read_and_no_client_is_built() {
 
     let captured = config.active_provider_identity().unwrap();
     assert_eq!(
-        crate::provider_readiness::credential_state_for_provider(&config, &captured),
-        crate::provider_readiness::CredentialState::Legacy
+        codewhale_engine::provider_readiness::credential_state_for_provider(&config, &captured),
+        codewhale_engine::provider_readiness::CredentialState::Legacy
     );
     assert!(
-        crate::model_inventory::ModelInventory::from_config(&config)
+        codewhale_engine::model_inventory::ModelInventory::from_config(&config)
             .unwrap()
             .candidates
             .iter()
@@ -394,7 +412,7 @@ fn retired_antigravity_credentials_are_never_read_and_no_client_is_built() {
 
     // No transport can be constructed for the tombstone; the refusal happens
     // before any network or credential I/O.
-    let error = crate::client::CodewhaleClient::new(&config)
+    let error = codewhale_engine::client::CodewhaleClient::new(&config)
         .err()
         .expect("constructing a client for the tombstone must fail")
         .to_string();
@@ -422,34 +440,37 @@ reason = "read_file is allowed"
     )?;
     config.validate()?;
 
-    let policy = crate::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
-    let shell_context = crate::core::authority::auto_review::AutoReviewContext::from_tool_call(
-        "exec_shell",
-        &serde_json::json!({"command": "cargo test"}),
-        crate::core::authority::auto_review::RunOrigin::Interactive,
-        codewhale_execpolicy::ApprovalMode::Auto,
-        true,
-        None,
-    );
+    let policy =
+        codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
+    let shell_context =
+        codewhale_engine::core::authority::auto_review::AutoReviewContext::from_tool_call(
+            "exec_shell",
+            &serde_json::json!({"command": "cargo test"}),
+            codewhale_engine::core::authority::auto_review::RunOrigin::Interactive,
+            codewhale_execpolicy::ApprovalMode::Auto,
+            true,
+            None,
+        );
     let shell_decision = policy.evaluate(&shell_context);
     assert_eq!(
         shell_decision.action,
-        crate::core::authority::auto_review::AutoReviewAction::Block
+        codewhale_engine::core::authority::auto_review::AutoReviewAction::Block
     );
     assert_eq!(shell_decision.rule_id.as_deref(), Some("block-shell"));
 
-    let read_context = crate::core::authority::auto_review::AutoReviewContext::from_tool_call(
-        "read_file",
-        &serde_json::json!({"path": "README.md"}),
-        crate::core::authority::auto_review::RunOrigin::Interactive,
-        codewhale_execpolicy::ApprovalMode::Auto,
-        true,
-        None,
-    );
+    let read_context =
+        codewhale_engine::core::authority::auto_review::AutoReviewContext::from_tool_call(
+            "read_file",
+            &serde_json::json!({"path": "README.md"}),
+            codewhale_engine::core::authority::auto_review::RunOrigin::Interactive,
+            codewhale_execpolicy::ApprovalMode::Auto,
+            true,
+            None,
+        );
     let read_decision = policy.evaluate(&read_context);
     assert_eq!(
         read_decision.action,
-        crate::core::authority::auto_review::AutoReviewAction::Allow
+        codewhale_engine::core::authority::auto_review::AutoReviewAction::Allow
     );
     assert_eq!(read_decision.rule_id.as_deref(), Some("allow-read-file"));
 
@@ -471,12 +492,13 @@ fn auto_review_scenario() -> Result<()> {
     "#,
             Some("strict"),
         )?;
-        let policy = crate::core::authority::auto_review::AutoReviewPolicy::from_config(&merged);
+        let policy =
+            codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(&merged);
 
         assert_eq!(policy.block_rules.len(), 1);
         assert_eq!(
             policy.block_rules[0].action_kind,
-            Some(crate::core::authority::auto_review::ToolActionKind::External)
+            Some(codewhale_engine::core::authority::auto_review::ToolActionKind::External)
         );
     }
     // from auto_review_text_contains_fails_closed_instead_of_broadening_a_rule
@@ -562,7 +584,7 @@ fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
 #[test]
 fn user_input_limits_default_when_tools_table_is_absent() {
     let parsed = Config::from_saved_document("", None).expect("empty config");
-    let limits = crate::tools::user_input::UserInputLimits::from_config(&parsed);
+    let limits = codewhale_engine::tools::user_input::UserInputLimits::from_config(&parsed);
     assert_eq!(limits.max_questions, 6);
     assert_eq!(limits.max_options, 4);
 }
@@ -578,7 +600,7 @@ fn user_input_limits_read_from_tools_table_and_clamp() {
         None,
     )
     .expect("tools config");
-    let limits = crate::tools::user_input::UserInputLimits::from_config(&parsed);
+    let limits = codewhale_engine::tools::user_input::UserInputLimits::from_config(&parsed);
     assert_eq!(limits.max_questions, 9);
     assert_eq!(limits.max_options, 6);
 
@@ -591,7 +613,7 @@ fn user_input_limits_read_from_tools_table_and_clamp() {
         None,
     )
     .expect("tools config");
-    let clamped = crate::tools::user_input::UserInputLimits::from_config(&clamped);
+    let clamped = codewhale_engine::tools::user_input::UserInputLimits::from_config(&clamped);
     assert_eq!(clamped.max_questions, 10);
     assert_eq!(clamped.max_options, 2);
 }
@@ -605,9 +627,9 @@ fn goal_max_steps_default_and_zero_are_uncapped() {
 
         // Hosts pass this resolved value directly to the goal turn. It must
         // remain uncapped beyond the old 1,000-step ceiling and at saturation.
-        let mut turn = crate::core::turn::TurnContext::with_budget_source(
+        let mut turn = codewhale_engine::core::turn::TurnContext::with_budget_source(
             resolved,
-            crate::core::turn::StepBudgetSource::Goal,
+            codewhale_engine::core::turn::StepBudgetSource::Goal,
         );
         assert_eq!(turn.step_limit(), None);
         turn.step = 1_000;
@@ -627,9 +649,9 @@ fn goal_max_steps_preserves_positive_limits() {
         let resolved = parsed.goal_max_steps();
         assert_eq!(resolved, expected, "{source:?}");
 
-        let mut turn = crate::core::turn::TurnContext::with_budget_source(
+        let mut turn = codewhale_engine::core::turn::TurnContext::with_budget_source(
             resolved,
-            crate::core::turn::StepBudgetSource::Goal,
+            codewhale_engine::core::turn::StepBudgetSource::Goal,
         );
         assert_eq!(turn.step_limit(), Some(expected));
         turn.step = expected;
@@ -1268,8 +1290,9 @@ fn generic_base_url_override_never_reaches_pinned_child_routes() -> Result<()> {
                 "{env_name}: {provider:?} is on its canonical host, not a custom one"
             );
 
-            let route = crate::route_runtime::resolve_runtime_route(&config, provider, None)
-                .unwrap_or_else(|err| panic!("{env_name}: {provider:?} child route: {err}"));
+            let route =
+                codewhale_engine::route_runtime::resolve_runtime_route(&config, provider, None)
+                    .unwrap_or_else(|err| panic!("{env_name}: {provider:?} child route: {err}"));
             // The scoped config and the executable candidate must agree, and
             // neither may name the session host.
             assert_eq!(route.config.active_route_base_url(), expected);
@@ -1310,8 +1333,12 @@ fn provider_scoped_base_url_env_applies_only_to_its_own_route() -> Result<()> {
         config.base_url_for_route(&config.test_identity_for_kind(ProviderKind::Moonshot)),
         moonshot_host
     );
-    let route = crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Moonshot, None)
-        .expect("Moonshot child route");
+    let route = codewhale_engine::route_runtime::resolve_runtime_route(
+        &config,
+        ProviderKind::Moonshot,
+        None,
+    )
+    .expect("Moonshot child route");
     assert_eq!(route.candidate.endpoint().base_url, moonshot_host);
 
     // With both set, each override stays on its own route.
@@ -1327,8 +1354,12 @@ fn provider_scoped_base_url_env_applies_only_to_its_own_route() -> Result<()> {
         config.base_url_for_route(&config.test_identity_for_kind(ProviderKind::Zai)),
         DEFAULT_ZAI_BASE_URL
     );
-    let route = crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Moonshot, None)
-        .expect("Moonshot child route");
+    let route = codewhale_engine::route_runtime::resolve_runtime_route(
+        &config,
+        ProviderKind::Moonshot,
+        None,
+    )
+    .expect("Moonshot child route");
     assert_eq!(route.config.active_route_base_url(), moonshot_host);
     assert_eq!(route.candidate.endpoint().base_url, moonshot_host);
     assert_ne!(route.candidate.endpoint().base_url, session_host);
@@ -3707,7 +3738,7 @@ fn literal_custom_table_round_trips_as_exact_historical_route() {
         .resolve_provider_identity("custom")
         .expect("exact [providers.custom] identity");
     assert_eq!(identity.key.as_str(), "custom");
-    let route = crate::route_runtime::resolve_runtime_route(
+    let route = codewhale_engine::route_runtime::resolve_runtime_route(
         &config,
         identity.provider,
         Some("local-model"),
@@ -3743,7 +3774,7 @@ fn case_colliding_custom_table_preserves_exact_spelling_across_receipts() {
         .resolve_provider_identity("CUSTOM")
         .expect("exact case-colliding custom identity");
     assert_eq!(identity.key.as_str(), "CUSTOM");
-    let route = crate::route_runtime::resolve_runtime_route(
+    let route = codewhale_engine::route_runtime::resolve_runtime_route(
         &config,
         identity.provider,
         Some("local-model"),
@@ -3773,10 +3804,13 @@ fn dispatch_endpoint_and_billing_receipts_agree_for_every_resolved_route() -> Re
     let provider = config.active_provider_identity().unwrap().provider;
     let resolved = config.active_route_base_url();
     assert_eq!(
-        crate::route_billing::for_route(&config, &(config).test_identity_for_kind(provider)),
-        crate::route_billing::for_dispatched_route(
+        codewhale_engine::route_billing::for_route(
             &config,
-            crate::route_billing::DispatchedRoute {
+            &(config).test_identity_for_kind(provider)
+        ),
+        codewhale_engine::route_billing::for_dispatched_route(
+            &config,
+            codewhale_engine::route_billing::DispatchedRoute {
                 provider,
                 base_url: &resolved,
             },
@@ -3789,14 +3823,17 @@ fn dispatch_endpoint_and_billing_receipts_agree_for_every_resolved_route() -> Re
         let child_base = config.base_url_for_route(&config.test_identity_for_kind(child));
         assert_eq!(child_base, child.provider().default_base_url(), "{child:?}");
         assert_eq!(
-            crate::route_billing::for_dispatched_route(
+            codewhale_engine::route_billing::for_dispatched_route(
                 &config,
-                crate::route_billing::DispatchedRoute {
+                codewhale_engine::route_billing::DispatchedRoute {
                     provider: child,
                     base_url: &child_base,
                 },
             ),
-            crate::route_billing::for_route(&config, &(config).test_identity_for_kind(child)),
+            codewhale_engine::route_billing::for_route(
+                &config,
+                &(config).test_identity_for_kind(child)
+            ),
             "{child:?} ambient and dispatch billing receipts must agree"
         );
     }
@@ -3819,26 +3856,26 @@ fn readiness_and_inventory_classify_the_resolved_route_not_the_session_host() ->
     // keyless-local; the sibling identity is still the canonical hosted
     // endpoint and must not inherit that classification.
     assert_eq!(
-        crate::provider_readiness::credential_state_for_provider(
+        codewhale_engine::provider_readiness::credential_state_for_provider(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek)
         ),
-        crate::provider_readiness::CredentialState::Local
+        codewhale_engine::provider_readiness::CredentialState::Local
     );
     assert_ne!(
-        crate::provider_readiness::credential_state_for_provider(
+        codewhale_engine::provider_readiness::credential_state_for_provider(
             &config,
             &(config)
                 .resolve_provider_selection_identity("deepseek-cn")
                 .unwrap()
         ),
-        crate::provider_readiness::CredentialState::Local
+        codewhale_engine::provider_readiness::CredentialState::Local
     );
 
     // Inventory: the runtime route the picker/inventory reads is built by
     // re-pointing a clone of this config, so it must resolve the sibling's own
     // canonical endpoint.
-    let route = crate::route_runtime::resolve_runtime_route_for_identity(
+    let route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         &config,
         &config
             .resolve_provider_selection_identity("deepseek-cn")
@@ -4011,8 +4048,12 @@ default_text_model = "DeepSeek-V4-Flash"
             "{label}: the wire id must match the configured id byte-for-byte"
         );
 
-        let route = crate::route_runtime::resolve_runtime_route(&config, provider, Some(&resolved))
-            .unwrap_or_else(|err| panic!("{label}: route resolution failed: {err}"));
+        let route = codewhale_engine::route_runtime::resolve_runtime_route(
+            &config,
+            provider,
+            Some(&resolved),
+        )
+        .unwrap_or_else(|err| panic!("{label}: route resolution failed: {err}"));
         assert_eq!(
             route.model, MODEL,
             "{label}: the resolved route rewrote the id"
@@ -4151,7 +4192,7 @@ fn retry_policy_reads_jitter_and_retry_after_keys() {
     assert!(!tuned.jitter);
     assert!((tuned.jitter_factor - 0.3).abs() < f64::EPSILON);
     assert!(!tuned.respect_retry_after);
-    let client: crate::llm_client::RetryConfig = tuned.into();
+    let client: codewhale_engine::llm_client::RetryConfig = tuned.into();
     assert!(!client.jitter);
     assert!((client.jitter_factor - 0.3).abs() < f64::EPSILON);
     assert!(!client.respect_retry_after);
@@ -4254,7 +4295,7 @@ mod released_provider_serde {
         provider: ApiProvider,
         provider_identity: String,
         model: String,
-        receipt: crate::model_routing::AutoRouteReceipt,
+        receipt: codewhale_engine::model_routing::AutoRouteReceipt,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effective_reasoning_effort:
             Option<codewhale_models::reasoning_effort_tier::ReasoningEffortTier>,
@@ -4274,7 +4315,7 @@ mod released_provider_serde {
             model: Option<String>,
             ts: i64,
             #[serde(default, skip_serializing_if = "Option::is_none")]
-            operation: Option<crate::work_graph::WorkNodeId>,
+            operation: Option<codewhale_engine::work_graph::WorkNodeId>,
         },
     }
     #[derive(Serialize)]
@@ -4288,7 +4329,7 @@ mod released_provider_serde {
         currency: codewhale_config::pricing::Currency,
         provenance: codewhale_config::pricing::PricingProvenance,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cloud_facts: Option<crate::provider_catalog_live::CloudFactsPricingSource>,
+        cloud_facts: Option<codewhale_engine::provider_catalog_live::CloudFactsPricingSource>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input_per_million: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4453,12 +4494,12 @@ mod released_provider_serde {
     }
     #[test]
     fn released_all_53_provider_wrappers_keep_actual_serde_and_revision_bytes() {
-        use crate::model_routing::{
+        use codewhale_config::pricing::{Currency, PricingProvenance};
+        use codewhale_engine::model_routing::{
             AutoRouteDataPath, AutoRouteHeuristicReason, AutoRoutePair, AutoRouteReason,
             AutoRouteReceipt, AutoRouteScope, AutoRouteTier,
         };
-        use crate::work_graph::WorkActivityEvent;
-        use codewhale_config::pricing::{Currency, PricingProvenance};
+        use codewhale_engine::work_graph::WorkActivityEvent;
         use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
         let receipt = AutoRouteReceipt {
             tier: AutoRouteTier::Selected,
@@ -4480,7 +4521,7 @@ mod released_provider_serde {
                 receipt: receipt.clone(),
                 effective_reasoning_effort: Some(ReasoningEffortTier::High),
             };
-            let saved = crate::session_manager::SavedAutoRouteReceipt {
+            let saved = codewhale_engine::session_manager::SavedAutoRouteReceipt {
                 provider,
                 provider_identity: id.into(),
                 model: "model-A".into(),
@@ -4489,7 +4530,7 @@ mod released_provider_serde {
             };
             let expected = serde_json::to_vec(&old_saved).unwrap();
             assert_eq!(serde_json::to_vec(&saved).unwrap(), expected, "saved {id}");
-            let restored: crate::session_manager::SavedAutoRouteReceipt =
+            let restored: codewhale_engine::session_manager::SavedAutoRouteReceipt =
                 serde_json::from_slice(&expected).unwrap();
             assert_eq!(restored, saved, "saved decode {id}");
             assert_eq!(serde_json::to_vec(&restored).unwrap(), expected);
@@ -4559,7 +4600,7 @@ mod released_provider_serde {
                 cache_read_per_million: None,
                 cache_write_per_million: None,
             };
-            let quote = crate::provider_catalog_live::ProviderLivePricingQuote {
+            let quote = codewhale_engine::provider_catalog_live::ProviderLivePricingQuote {
                 provider,
                 provider_identity: id.into(),
                 wire_model: "model-A".into(),
@@ -4582,7 +4623,7 @@ mod released_provider_serde {
                 expected,
                 "pricing {id}"
             );
-            let restored: crate::provider_catalog_live::ProviderLivePricingQuote =
+            let restored: codewhale_engine::provider_catalog_live::ProviderLivePricingQuote =
                 serde_json::from_slice(&expected).unwrap();
             assert_eq!(restored, quote, "pricing decode {id}");
         }
@@ -4602,14 +4643,14 @@ mod released_provider_serde {
                 provider: legacy,
                 model: "router-model".into(),
             };
-            let current = crate::model_routing::AutoRouteDataPath::Classifier {
+            let current = codewhale_engine::model_routing::AutoRouteDataPath::Classifier {
                 provider: id.into(),
                 provider_kind: kind,
                 model: "router-model".into(),
             };
             let expected = serde_json::to_vec(&old).unwrap();
             assert_eq!(serde_json::to_vec(&current).unwrap(), expected, "{id}");
-            let decoded: crate::model_routing::AutoRouteDataPath =
+            let decoded: codewhale_engine::model_routing::AutoRouteDataPath =
                 serde_json::from_slice(&expected).unwrap();
             assert_eq!(decoded, current, "{id}");
         }
@@ -4617,7 +4658,7 @@ mod released_provider_serde {
 
     #[test]
     fn released_provider_wrappers_do_not_infer_brand_authority_from_custom_names() {
-        use crate::work_graph::WorkActivityEvent;
+        use codewhale_engine::work_graph::WorkActivityEvent;
         use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
         for id in ["openai", "CustomA", "customa"] {
             let event = WorkActivityEvent::ReasoningEffortChanged {
@@ -4670,8 +4711,9 @@ mod released_provider_serde {
             openrouter_vendor: Option<String>,
             billing_surface: Option<String>,
             endpoint_fingerprint: Option<String>,
-            provider_live_pricing: Option<crate::provider_catalog_live::ProviderLivePricingQuote>,
-            billing_mode: crate::cost_status::RouteBillingMode,
+            provider_live_pricing:
+                Option<codewhale_engine::provider_catalog_live::ProviderLivePricingQuote>,
+            billing_mode: codewhale_engine::cost_status::RouteBillingMode,
             dispatched_at: chrono::DateTime<chrono::Utc>,
         }
         let at = chrono::DateTime::from_timestamp(73, 0).unwrap();
@@ -4685,10 +4727,10 @@ mod released_provider_serde {
                     billing_surface: None,
                     endpoint_fingerprint: None,
                     provider_live_pricing: None,
-                    billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                    billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                     dispatched_at: at,
                 };
-                let current = crate::cost_status::EffectiveRouteEnvelope {
+                let current = codewhale_engine::cost_status::EffectiveRouteEnvelope {
                     provider: kind,
                     provider_identity: id.into(),
                     model: "model-A".into(),
@@ -4696,12 +4738,12 @@ mod released_provider_serde {
                     billing_surface: None,
                     endpoint_fingerprint: None,
                     provider_live_pricing: None,
-                    billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                    billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                     dispatched_at: at,
                 };
                 let expected = serde_json::to_vec(&old).unwrap();
                 assert_eq!(serde_json::to_vec(&current).unwrap(), expected, "{id}");
-                let decoded: crate::cost_status::EffectiveRouteEnvelope =
+                let decoded: codewhale_engine::cost_status::EffectiveRouteEnvelope =
                     serde_json::from_slice(&expected).unwrap();
                 assert_eq!(decoded, current, "decode {id}");
                 assert_eq!(
@@ -4743,7 +4785,7 @@ mod released_provider_serde {
 
     #[test]
     fn classifier_exact_custom_receipts_keep_case_and_refuse_contradictions() {
-        use crate::model_routing::AutoRouteDataPath;
+        use codewhale_engine::model_routing::AutoRouteDataPath;
         for id in ["openai", "CustomA", "customa"] {
             let source = AutoRouteDataPath::Classifier {
                 provider: id.into(),

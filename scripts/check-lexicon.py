@@ -197,10 +197,10 @@ RUST_CODE_TOKEN = re.compile(
 # Model-facing text: tool descriptions and prompts are read by the model, not
 # the person. Their vocabulary follows the tool contract, not §19.
 RUST_MODEL_FACING = (
-    "crates/tui/src/tools/",
-    "crates/tui/src/prompts/",
+    "crates/engine/src/tools/",
+    "crates/engine/src/prompts/",
     # Runtime-event envelopes and their restore projection for the model.
-    "crates/tui/src/runtime_handoff.rs",
+    "crates/engine/src/runtime_handoff.rs",
 )
 # A literal carrying a runtime-event envelope is model-facing wherever it lives.
 RUST_MODEL_MARKER = "<codewhale:"
@@ -214,7 +214,7 @@ RUST_ALLOW: dict[str, dict[str, set[str]]] = {
     "crates/tui/src/lib.rs": {"pinned id `{model}` is absent from": {"roster"}},
     "crates/tui/src/tui/model_picker.rs": {"custom · OAuth roster": {"roster"}},
     # A tool name in an error, not the retired Bash label.
-    "crates/tui/src/core/engine.rs": {"tool 'Bash' is not registered": {"Bash"}},
+    "crates/engine/src/core/engine.rs": {"tool 'Bash' is not registered": {"Bash"}},
     # A network error, not the user stopping a turn.
     "crates/tui/src/commands/contract.rs": {"connection aborted": {"abort"}},
     # Background threads, not agents.
@@ -225,14 +225,14 @@ RUST_ALLOW: dict[str, dict[str, set[str]]] = {
     "crates/tui/src/tui/setup/model_draft.rs": {"": {"approval policy"}},
     "crates/tui/src/commands/groups/core/agent.rs": {"Launch one sub-agent": {"sub-agent"}},
     "crates/tui/src/commands/groups/core/workflow.rs": {"{WORKFLOW_DRAFT_INSTRUCTION_PREFIX}": {"worker"}},
-    "crates/tui/src/operate.rs": {"Keep Operate alive": {"worker"}},
-    "crates/tui/src/fleet/worker_runtime.rs": {"- Use the policy-gated tools": {"worker"}},
-    "crates/tui/src/fleet/roster.rs": {"Give the operator a direct second opinion": {"operator"}},
-    "crates/tui/src/core/engine/context.rs": {
+    "crates/engine/src/operate.rs": {"Keep Operate alive": {"worker"}},
+    "crates/engine/src/fleet/worker_runtime.rs": {"- Use the policy-gated tools": {"worker"}},
+    "crates/engine/src/fleet/roster.rs": {"Give the operator a direct second opinion": {"operator"}},
+    "crates/engine/src/core/engine/context.rs": {
         "[sub-agent result summarized for parent context]": {"sub-agent"},
         "- ... {} more sub-agent result(s)": {"sub-agent"},
     },
-    "crates/tui/src/compaction.rs": {
+    "crates/engine/src/compaction.rs": {
         "--- Additional instructions from the operator": {"operator"},
     },
 }

@@ -116,7 +116,7 @@ fn backlog_session(workspace: &std::path::Path, index: usize) -> SavedSession {
             cache_control: None,
         }],
     }];
-    let mut session = crate::session_manager::create_saved_session_with_mode(
+    let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
         &messages,
         "measurement-model",
         workspace,

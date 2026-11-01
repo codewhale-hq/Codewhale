@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 
-use crate::automation_manager::{
+use codewhale_engine::automation_manager::{
     AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
 };
 use codewhale_localization::{Locale, MessageId, tr};
@@ -314,7 +314,7 @@ mod tests {
         AutomationRecord {
             destination_thread_id: None,
             schema_version: 1,
-            execution_scope: Some(crate::task_manager::test_execution_scope("test")),
+            execution_scope: Some(codewhale_engine::task_manager::test_execution_scope("test")),
             id: id.to_string(),
             name: id.to_string(),
             prompt: "prompt".to_string(),

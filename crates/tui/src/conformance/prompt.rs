@@ -101,7 +101,7 @@ fn capture_prefix(name: &str, case: &Value) -> Result<Prefix, String> {
     let system_flat = first
         .system
         .as_ref()
-        .map(crate::prompts::system_prompt_flat_text)
+        .map(codewhale_engine::prompts::system_prompt_flat_text)
         .unwrap_or_default();
     let system_flat = mask_host_lines(&masker.text(&system_flat));
     let system_blocks = match &first.system {

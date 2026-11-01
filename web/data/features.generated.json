@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "1fc75ea95af50fdd7db8555c0144f18e05388826715e911a6e6856f96805b6e6"
+    "sha256": "5f0bcaad963c6b03183029c81dd99495ecff9ee40e4de730c392860b84494564"
   },
   "features": [
     {

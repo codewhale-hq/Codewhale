@@ -19,15 +19,15 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 
-use crate::prompts::{
-    BASE_PROMPT_OVERRIDE_OPT_IN_ENV, CONSTITUTION_OVERRIDE_FILE, base_prompt_override_opt_in,
-};
-use crate::provider_readiness::has_api_key;
 use crate::tui::app::{App, AppModeUi};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
+use codewhale_engine::prompts::{
+    BASE_PROMPT_OVERRIDE_OPT_IN_ENV, CONSTITUTION_OVERRIDE_FILE, base_prompt_override_opt_in,
+};
+use codewhale_engine::provider_readiness::has_api_key;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
@@ -53,7 +53,7 @@ use persistence::SetupPersistenceFacts;
 pub(crate) use provider::record_configured_route;
 use remote::SetupRemoteFacts;
 
-use crate::prompts::CONSTITUTION_CHECKPOINT_VERSION;
+use codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupCommitKind {
@@ -325,9 +325,9 @@ impl SetupRuntimeFacts {
             .ok()
             .filter(|identity| config.verify_provider_identity(identity).is_ok())
             .map_or(
-                crate::provider_readiness::ResolvedProviderReadiness::InvalidRoute,
+                codewhale_engine::provider_readiness::ResolvedProviderReadiness::InvalidRoute,
                 |identity| {
-                    crate::provider_readiness::resolve_for_model(
+                    codewhale_engine::provider_readiness::resolve_for_model(
                         config,
                         identity,
                         if app.auto_model { "auto" } else { &app.model },
@@ -362,7 +362,7 @@ impl SetupRuntimeFacts {
             format!("{}; route can be attempted", readiness.label())
         } else if matches!(
             &readiness,
-            crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         ) {
             format!("{}; retry or open /provider", readiness.label())
         } else if app.api_provider == codewhale_config::ProviderKind::OpenaiCodex {

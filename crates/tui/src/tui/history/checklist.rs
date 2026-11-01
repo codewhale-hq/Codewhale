@@ -210,8 +210,8 @@ pub(super) fn render_checklist_change_card(
 }
 
 fn checklist_status_label(status: &str, locale: Locale) -> String {
-    use crate::tools::todo::TodoStatus;
-    let id = match TodoStatus::from_str(status) {
+    use codewhale_engine::tools::todo::TodoStatus;
+    let id = match TodoStatus::parse(status) {
         Some(TodoStatus::Pending) => MessageId::TodoStatusPending,
         Some(TodoStatus::InProgress) => MessageId::TodoStatusInProgress,
         Some(TodoStatus::Completed) => MessageId::TodoStatusCompleted,

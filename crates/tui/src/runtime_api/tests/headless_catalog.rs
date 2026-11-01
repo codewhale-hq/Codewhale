@@ -20,16 +20,18 @@ impl Drop for CatalogReset {
 }
 
 fn cold_process() {
-    crate::provider_catalog_live::reset_cache_for_test();
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_catalog_live::reset_cache_for_test();
+    codewhale_engine::provider_lake::clear_live_snapshot();
 }
 
 fn persist_catalog(kind: ProviderKind, identity: &str, endpoint: &str, images: bool) {
     let fingerprint = base_url_fingerprint(endpoint);
     let fetched_at = now_unix();
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(kind, identity, endpoint);
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        kind, identity, endpoint,
+    );
     assert_eq!(
-        crate::provider_catalog_live::record_success_if_current(
+        codewhale_engine::provider_catalog_live::record_success_if_current(
             &ticket,
             ProviderCatalogDelta {
                 provider: identity.into(),
@@ -116,7 +118,7 @@ fn headless_startup_publishes_cold_endpoint_catalog_capabilities() -> Result<()>
     // it already owns; the ordering that #6049 hand-rolled now lives in the guard.
     let _workshop = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let _offline = EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;
@@ -149,7 +151,7 @@ async fn headless_reload_publishes_only_the_accepted_identity_and_endpoint() -> 
     // headless_startup twin.
     let _workshop = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let _offline = EnvVarGuard::set("CODEWHALE_DISABLE_CLOUD_FACTS", "1");
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;

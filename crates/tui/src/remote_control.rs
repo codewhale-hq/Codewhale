@@ -21,12 +21,12 @@ use tokio::sync::mpsc;
 
 use codewhale_models::{ContentBlock, Message};
 
-use crate::{
+use crate::runtime_chat_relay::{
+    RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
+};
+use codewhale_engine::{
     core::events::{Event as EngineEvent, TurnOutcomeStatus},
     git_status::normalize_observed_git_repo,
-    runtime_chat_relay::{
-        RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
-    },
 };
 
 const PRODUCTION_CONTROL_PLANE: &str = "https://api.codewhale.net/";
@@ -5584,7 +5584,7 @@ mod tests {
             .unwrap();
 
         let mut participant = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut participant)
@@ -5643,7 +5643,8 @@ mod tests {
         let host = reopened.runtime_chat.as_ref().unwrap().clone();
         assert!(host.has_any_unsettled_turns());
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened
             .recover_runtime_chat_ownership_before_worker()
             .unwrap_err();
@@ -5655,7 +5656,7 @@ mod tests {
             .recover_runtime_chat_ownership_before_worker()
             .unwrap();
         let mut blocked = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut blocked)
@@ -5742,7 +5743,8 @@ mod tests {
             ..fixture_start()
         };
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened.start(start.clone()).unwrap_err();
         assert!(error.contains("active local turn"), "{error}");
         assert!(reopened.worker.is_none());
@@ -8962,7 +8964,7 @@ mod tests {
     }
     #[test]
     fn runtime_image_legacy_work_never_downgrades_to_text() {
-        let image = crate::image_attach::tests::runtime_image_fixture(1);
+        let image = codewhale_engine::image_attach::test_support::runtime_image_fixture(1);
         let command = json!({"type":"prompt.request","runId":"run_fixture","turnId":"turn_fixture","prompt":"look","images":[image]});
         assert!(
             parse_remote_command(&command, "run_fixture")

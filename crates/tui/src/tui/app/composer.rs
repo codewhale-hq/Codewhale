@@ -773,7 +773,7 @@ impl App {
         if self.input.trim_start().starts_with(['/', '!']) {
             return false;
         }
-        let Some(paths) = crate::image_attach::pasted_image_paths(text) else {
+        let Some(paths) = codewhale_engine::image_attach::pasted_image_paths(text) else {
             return false;
         };
         for path in &paths {
@@ -1764,7 +1764,8 @@ impl App {
         // keys, or the question written on the same line) still attaches.
         if !claimed_command
             && !self.input.trim_start().starts_with('!')
-            && let Some((path, rest)) = crate::image_attach::leading_dropped_image(&self.input)
+            && let Some((path, rest)) =
+                codewhale_engine::image_attach::leading_dropped_image(&self.input)
         {
             let reference = media_attachment_reference("image", &path, None);
             self.input = if rest.is_empty() {

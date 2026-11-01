@@ -2,7 +2,7 @@
 //! core/protocol extraction spec).
 //!
 //! The TUI engine already had an internal channel (`Op` in
-//! `crates/tui/src/core/ops.rs` with `tx_op` / `rx_op` and `tx_steer`).
+//! `crates/engine/src/core/ops.rs` with `tx_op` / `rx_op` and `tx_steer`).
 //! This protocol file formalizes that channel so TUI, CLI, app-server, and
 //! tests share one serializable API. The wire is `OpEnvelope` + `Op`;
 //! transports that already speak JSON (app-server, tests) can send the
@@ -10,7 +10,7 @@
 //! enum.
 //!
 //! Parity is compile-enforced from the engine side:
-//! `crates/tui/src/core/protocol_parity.rs` matches every engine `Op`
+//! `crates/engine/src/core/protocol_parity.rs` matches every engine `Op`
 //! variant exhaustively into a protocol `Op` (`protocol_covers_engine_ops`).
 //!
 //! What is deliberately stripped at this boundary:
@@ -103,7 +103,7 @@ fn default_capability_state() -> String {
 }
 
 /// Per-turn authority payload carried by [`Op::SendMessage`]. Serializable
-/// twin of `crates/tui/src/core/ops::TurnSpec`; extracted from the enum arm so
+/// twin of `crates/engine/src/core/ops::TurnSpec`; extracted from the enum arm so
 /// new per-turn fields accrete here instead of widening the variant. The
 /// `SendMessage(TurnSpec)` newtype keeps the internally-tagged wire shape
 /// byte-identical: `{"kind":"send_message", ...fields}`.
@@ -228,7 +228,7 @@ pub struct ReviewOperation {
 }
 
 /// Operations that can be submitted to the core engine. This is the
-/// protocol view of `crates/tui/src/core/ops::Op` — same lifecycle,
+/// protocol view of `crates/engine/src/core/ops::Op` — same lifecycle,
 /// same provenance gate — but serializable and free of `mpsc` / `oneshot`
 /// fields. In-process callers convert at the boundary; out-of-process
 /// callers send the JSON directly.

@@ -9,7 +9,7 @@
 **Also**: `session_index.jsonl` — append-only JSONL for thread-name lookups.  
 **Schema versioning**: none — table shape is versioned implicitly by the binary.
 
-### 1.2 `crates/tui/src/session_manager.rs` — JSON sessions
+### 1.2 `crates/engine/src/session_manager.rs` — JSON sessions
 
 **Backend**: individual JSON files + atomic writes via `write_atomic`.  
 **Paths**:
@@ -23,7 +23,7 @@
 
 **Policy**: reject-newer — older binary will refuse to load data written by a newer version.
 
-### 1.3 `crates/tui/src/runtime_threads.rs` — JSON runtime store
+### 1.3 `crates/engine/src/runtime_threads.rs` — JSON runtime store
 
 **Backend**: per-record JSON files + append-only JSONL for events.  
 **Paths** (under `~/.deepseek/tasks/runtime/` or `DEEPSEEK_RUNTIME_DIR`):
@@ -38,7 +38,7 @@
 
 **Policy**: reject-newer.
 
-### 1.4 `crates/tui/src/task_manager.rs` — JSON task store
+### 1.4 `crates/engine/src/task_manager.rs` — JSON task store
 
 **Backend**: per-record JSON files + atomic writes.  
 **Paths** (under `~/.deepseek/tasks/` or `DEEPSEEK_TASKS_DIR`):
@@ -50,7 +50,7 @@
 
 **Policy**: reject-newer.
 
-### 1.5 `crates/tui/src/automation_manager.rs` — JSON automation store
+### 1.5 `crates/engine/src/automation_manager.rs` — JSON automation store
 
 **Backend**: per-record JSON files.  
 **Paths** (under `~/.deepseek/automations/` or `DEEPSEEK_AUTOMATIONS_DIR`):

@@ -11,17 +11,21 @@ A lower `crates/tui` line count alone does not establish the split. A crate
 boundary counts when it lets an agent build, test and land work without the
 rest of the workspace.
 
-This document defines the decomposition target. [CW-6129](https://linear.app/shannonlabs/issue/CW-6129)
-and its existing children own current source status, claims and acceptance;
-[the roadmap](DECONSTRUCTION_ROADMAP.md) orders structural dependencies. The
-complete program remains in 0.10.3. Dated audits below are rationale, not current
-assignments or permission to create another checkout or build cache.
+The founder's 2026-10-31 [coarse split](COARSE_SPLIT.md) sets the current
+sequence and crate sizes. [CW-7701](https://linear.app/shannonlabs/issue/CW-7701)
+owns its Engine extraction; CW-6129 was canceled during replanning and its
+receipts remain historical evidence. This document and
+[the roadmap](DECONSTRUCTION_ROADMAP.md) describe later internal boundaries.
+Dated audits below are rationale, not current assignments or permission to
+create another checkout or build cache.
 
 The terminal UI becomes a presentation adapter over the existing headless
 runtime. A boundary counts when it moves real ownership, migrates every
 consumer and reduces dependency/rebuild closure. Moving a monolith or adding a
-facade does not establish that result. Aim around 10,000 production lines per
-crate and complete the existing 50,000 ceiling across the resulting workspace.
+facade does not establish that result. The earlier 10,000-production-line
+target and 50,000 ceiling are superseded by the coarse plan's approximately
+400–500k-line top-level crates; further splits follow measured ownership and
+build needs inside those crates.
 Production lines, physical lines, SCCs and build timings measure different things.
 
 ## Audited baseline (2026-10-09, `bd2a7b49c`)
@@ -35,15 +39,15 @@ LOC. Regenerate before relying on them.
 | `crates/tui` | 1,280,430 in 1,077 files (~87%) |
 | of which test code in test files / test dirs | ~331k |
 | `crates/tui/src/tui` (terminal UI proper) | 314,291 |
-| `crates/tui/src/tools` | 204,115 |
-| `crates/tui/src/core` (engine, turn loop) | 89,384 |
+| `crates/engine/src/tools` | 204,115 |
+| `crates/engine/src/core` (engine, turn loop) | 89,384 |
 | `crates/tui/src/commands` | 71,629 |
 | `crates/tui/src/lib.rs` + `lib/` | 24,827 |
 | Every other crate | under 54k each; most under 10k |
 
 Crates named for a subsystem whose implementation still lives in the TUI:
-`tools` (1.6k; the implementations are `tui/src/tools`, 204k), `mcp` (109
-lines; `tui/src/mcp*` is 26k), `core` (5.8k; the engine is `tui/src/core`),
+`tools` (1.6k; the implementations are `engine/src/tools`, 204k), `mcp` (109
+lines; `tui/src/mcp*` is 26k), `core` (5.8k; the engine is `engine/src/core`),
 `agent` (1.6k model registry with one TUI consumer, beside the TUI's own
 catalog). `cli` depends on `tui` for `run`, `route_preferences`, `config_keys`;
 `tui` depends on `app-server` while the Runtime API
@@ -63,10 +67,10 @@ Commits touching `crates/` from 2026-08-10 to 2026-10-09: 3,380.
 | Area | Commits | Why it collides |
 | --- | ---: | --- |
 | `tui/src/tui/ui` (event loop, dispatch, handlers) | 621 | one controller for every surface |
-| `tui/src/core/engine` | 462 | features wire themselves into the turn loop |
+| `engine/src/core/engine` | 462 | features wire themselves into the turn loop |
 | `tui/src/commands/groups` | 321 | every slash command in one tree |
 | `tui/src/runtime_api` | 289 | routes, DTOs and logic in one module |
-| `tui/src/tools/subagent` | 284 | |
+| `engine/src/tools/subagent` | 284 | |
 | `crates/config` + `tui/src/config` | 283 + 199 | each feature adds fields to one schema |
 | `tui/src/tui/app` | 275 | |
 | `tui/src/lib.rs` | 270 | `mod` list plus composition root |
@@ -250,7 +254,7 @@ to that loop; it does not own another one.
 | `skills` | `skills` | 14k |
 | `plugins` | `plugins` | 28k |
 | `extension-host` | `extension_host` | 31k |
-| `hooks` | exists; absorbs `tui/src/hooks` | 9k |
+| `hooks` | exists; absorbs `engine/src/hooks` | 9k |
 | `lsp` | `lsp` | 4k |
 | `rlm` | `rlm`, `repl` | 5k |
 | `snapshot` | `snapshot` | 6k |
@@ -392,8 +396,8 @@ part of the slice.
 | Slice | Claim unit (paths) | Size | Status of the analysis | Must happen first | Result |
 | --- | --- | --- | --- | --- | --- |
 | **X1 util-fslock** | `crates/fslock/` (new), `runtime_threads.rs`, `session_manager.rs`, `session_reconcile.rs`, `operate.rs` | S, ~190 lines | **Held.** Five call-site clusters in `runtime_threads.rs` (incl. `has_live_holder`), `session_manager.rs:1954` is production | none | removes the `session_manager <-> runtime_threads` lock edge; first leaf for `session-store` |
-| **X2 command catalog port** | `crates/tui/src/command_catalog.rs`, `commands/mod.rs`, `runtime_api.rs` list handler, `tools/tui_help.rs`, `extension_host/command.rs` | M | **Landed in 0.10.2.** One host port supplies all three consumers; the Runtime API test server captures its thread-local guard | none | ratchet `prod` 11 -> 0, `test` 32 -> 30, largest cycle 98 -> 82 |
-| **X3 tool contract, part 1** | `crates/execpolicy/src/canonical_action.rs`, `crates/tools/src/lib.rs`, `crates/tools/src/param_alias.rs`, `crates/tools/src/patch_preflight.rs`, `crates/tui/src/tools/mod.rs` | M, no `pub use` shim (callers rewired) | Direction right; **not rename-only** (visibility widening, split test module) | none | first tool-contract move; unblocks TUI views depending on a crate, not the runtime |
+| **X2 command catalog port** | `crates/engine/src/command_catalog.rs`, `commands/mod.rs`, `runtime_api.rs` list handler, `tools/tui_help.rs`, `extension_host/command.rs` | M | **Landed in 0.10.2.** One host port supplies all three consumers; the Runtime API test server captures its thread-local guard | none | ratchet `prod` 11 -> 0, `test` 32 -> 30, largest cycle 98 -> 82 |
+| **X3 tool contract, part 1** | `crates/execpolicy/src/canonical_action.rs`, `crates/tools/src/lib.rs`, `crates/tools/src/param_alias.rs`, `crates/tools/src/patch_preflight.rs`, `crates/engine/src/tools/mod.rs` | M, no `pub use` shim (callers rewired) | Direction right; **not rename-only** (visibility widening, split test module) | none | first tool-contract move; unblocks TUI views depending on a crate, not the runtime |
 | **X4 util-schema** | `crates/util-schema/` (new), `tools/schema_sanitize.rs`, `schema_canonicalize.rs` | M | Needs `prepare_tools_for_strict_mode` moved next to its caller first (it is the only use of `codewhale_models::Tool`) | X3 not required | removes `client -> tools` schema refs |
 | **X5 config-types, part 1** | `crates/config-types/` (new), `features.rs`, `route_receipt.rs`, `plugins/types.rs` | S-M, ~400 lines | **Corrected:** move `impl Display for PluginId` with `PluginId` (orphan rule); leave out `CustomLspDef` (already in `crates/config`); the `lsp` and `plugins` edges stay | none | removes the type-only up-edges from `config`/`settings` |
 | **X6 app-server-protocol (was runtime-wire), part 1** | `crates/app-server-protocol/` (new), `core/events.rs`, `core/ops.rs`, `rlm/bridge.rs` | S, ~300 lines | **Corrected:** `ModelToolCall` stays in `core` (moving it makes a Cargo cycle `models -> config -> execpolicy`); widen `is_bidi_format_control` and `NESTED_RLM_STATUS_PREFIX` | none | first DTOs a TUI sandbox can depend on without `core` |
@@ -428,14 +432,14 @@ replaced by this table pending the founder's decision.
 
 ## Execution and current ownership
 
-Canonical source and the dated receipts on CW-6129 establish what has landed.
+Canonical source, CW-7701 and the historical receipts on CW-6129 establish what has landed.
 S35 thread ownership, S52 terminal helpers, N13 error taxonomy, pure model
 pricing and native skill ownership have moved with their consumers. Runtime
 configuration now lives in `crates/runtime/src/config.rs`; do not recreate the
 removed TUI config owner. Skill listing and bundled policy share the existing
 registry/configuration rather than separate prompt or activation stores.
-These moves do not complete the target: the TUI remains far above 50,000
-production lines and the remaining runtime/UI ownership cycle must be cut.
+These moves do not complete the target: the remaining runtime/UI ownership
+cycle must be cut through the current coarse split before finer extraction.
 
 Continue from the current dependency graph and owning children, in this order:
 
@@ -447,8 +451,10 @@ Continue from the current dependency graph and owning children, in this order:
    ceilings, credentials, typed human decisions and model-visible receipts.
    The remaining MCP/DSH, durable Tasks, isolated UI and gix work stays in 0.10.3.
 3. Complete Engine, agents, sessions, runtime API and tool ownership without a
-   second turn loop, event authority or session store. Keep the runtime API
-   separate from transport-only app-server routing; avoid another large hub.
+   second turn loop, event authority or session store. Runtime HTTP routing,
+   ACP and MCP hosts move into app-server; Engine retains the thread manager,
+   store and event authority. Handler-owned business logic moves to its existing
+   Engine owner so each transport calls the same implementation.
 4. Finish the terminal reducer/render boundary and make the CLI the composition
    root. Remove superseded shims only after the last consumer migrates.
 5. Measure every resulting crate, dependency closure and affected edit/build

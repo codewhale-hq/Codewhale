@@ -725,7 +725,8 @@ mod tests {
                             ),
                             codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT
                         );
-                        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::Max;
+                        app.reasoning_effort =
+                            codewhale_engine::reasoning_preference::ReasoningEffort::Max;
                         app.reasoning_effort_preference = None;
                         app.apply_provider_switch_reasoning_effort(
                             intrinsic,
@@ -735,9 +736,9 @@ mod tests {
                         assert_eq!(
                             app.reasoning_effort,
                             if alias == "deepseek-chat" {
-                                crate::reasoning_preference::ReasoningEffort::Off
+                                codewhale_engine::reasoning_preference::ReasoningEffort::Off
                             } else {
-                                crate::reasoning_preference::ReasoningEffort::High
+                                codewhale_engine::reasoning_preference::ReasoningEffort::High
                             },
                             "{provider:?} {alias}"
                         );
@@ -778,7 +779,7 @@ mod tests {
             ),
             "deepseek-reasoner"
         );
-        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::Max;
+        app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::Max;
         app.reasoning_effort_preference = None;
         app.apply_provider_switch_reasoning_effort(
             ProviderKind::Deepseek,
@@ -787,11 +788,12 @@ mod tests {
         );
         assert_eq!(
             app.reasoning_effort,
-            crate::reasoning_preference::ReasoningEffort::Max,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Max,
             "custom endpoint owns alias semantics"
         );
 
-        app.reasoning_effort_preference = Some(crate::reasoning_preference::ReasoningEffort::Max);
+        app.reasoning_effort_preference =
+            Some(codewhale_engine::reasoning_preference::ReasoningEffort::Max);
         app.apply_provider_switch_reasoning_effort(
             ProviderKind::Deepseek,
             codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
@@ -799,7 +801,7 @@ mod tests {
         );
         assert_eq!(
             app.reasoning_effort,
-            crate::reasoning_preference::ReasoningEffort::Max,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Max,
             "explicit effort must beat compatibility inference"
         );
     }

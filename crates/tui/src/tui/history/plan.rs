@@ -3,7 +3,7 @@
 use codewhale_localization::Locale;
 use ratatui::text::Line;
 
-use crate::tools::plan::{PlanSnapshot, StepStatus};
+use codewhale_engine::tools::plan::{PlanSnapshot, StepStatus};
 
 use super::{ToolStatus, render_compact_kv, render_tool_header, tool_value_style};
 

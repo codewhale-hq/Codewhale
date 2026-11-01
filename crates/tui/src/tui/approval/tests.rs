@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::authority::get_tool_category;
+use codewhale_engine::core::authority::get_tool_category;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;

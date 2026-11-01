@@ -942,7 +942,7 @@ pub(crate) fn codewhale_route_identity(
     let identity = config.active_provider_identity()?;
     let provider = identity.provider;
     let configured_model = config.default_model();
-    let route = crate::route_runtime::resolve_runtime_route_for_identity(
+    let route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         config,
         &identity,
         Some(&configured_model),

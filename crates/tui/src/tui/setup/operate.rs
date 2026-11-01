@@ -79,7 +79,7 @@ impl SetupOperateFacts {
             )
         };
 
-        let roster = crate::fleet::identity::load_effective_roster(
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
             &config.fleet_config(),
             &app.workspace,
             Some(app.plugin_registry.as_ref()),
@@ -92,9 +92,11 @@ impl SetupOperateFacts {
                 .filter(|member| member.origin == origin)
                 .count()
         };
-        let config_members = origin_count(crate::fleet::roster::ProfileOrigin::Config);
-        let personal_members = origin_count(crate::fleet::roster::ProfileOrigin::Personal);
-        let project_members = origin_count(crate::fleet::roster::ProfileOrigin::Workspace);
+        let config_members = origin_count(codewhale_engine::fleet::roster::ProfileOrigin::Config);
+        let personal_members =
+            origin_count(codewhale_engine::fleet::roster::ProfileOrigin::Personal);
+        let project_members =
+            origin_count(codewhale_engine::fleet::roster::ProfileOrigin::Workspace);
         let custom_roster_members = config_members + personal_members + project_members;
         let roster_ready = roster.load_error().is_none() && roster_members > 0;
         let roster_result = if let Some(error) = roster.load_error() {

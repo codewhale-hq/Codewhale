@@ -892,7 +892,7 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 给出含义相同的响应，并且 `search` 与 TUI 会话选择器及任务面板（workbar）
 中的 Sessions 列表使用的是同一个模糊匹配（标题、id、
 工作区——先子串，再子序列）。三个表面运行同一套投影
-（`crates/tui/src/session_projection.rs`），因此列表在
+（`crates/engine/src/session_projection.rs`），因此列表在
 终端与仪表盘之间不可能有差异。
 
 `GET /v1/sessions/summary` 返回的行与

@@ -324,9 +324,9 @@ fn explicit_codewhale_home_owns_every_default_user_path() {
     let _legacy_runtime = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
 
     let report = DoctorPathReport::resolve(None).expect("resolve doctor paths");
-    let task_manager_root = crate::task_manager::default_tasks_dir();
+    let task_manager_root = codewhale_engine::task_manager::default_tasks_dir();
     let runtime_config =
-        crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+        codewhale_engine::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
             task_manager_root.clone(),
         );
     let (secrets, legacy_secrets) =
@@ -351,11 +351,11 @@ fn explicit_codewhale_home_owns_every_default_user_path() {
     );
     assert_eq!(
         report.personal_fleet_definitions,
-        crate::fleet::exact::personal_fleet_definitions_dir().expect("personal fleets")
+        codewhale_engine::fleet::exact::personal_fleet_definitions_dir().expect("personal fleets")
     );
     assert_eq!(
         report.personal_fleet_agents,
-        crate::fleet::profile::personal_agent_profile_dir().expect("personal agents")
+        codewhale_engine::fleet::profile::personal_agent_profile_dir().expect("personal agents")
     );
     assert_eq!(report.secrets, secrets);
     assert_eq!(legacy_secrets, None);

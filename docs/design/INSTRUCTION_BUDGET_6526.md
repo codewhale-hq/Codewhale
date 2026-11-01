@@ -23,7 +23,7 @@ directions — none of them visible to the operator.
 ### 1.1 Global layer
 
 `load_global_agents_context` tries six candidates in order, first existing wins, and falls
-through to the next candidate on a read error (`crates/tui/src/project_context.rs:1000-1033`):
+through to the next candidate on a read error (`crates/engine/src/project_context.rs:1000-1033`):
 
 1. `~/.codewhale/AGENTS.md`
 2. `~/.agents/AGENTS.md`
@@ -56,7 +56,7 @@ directories when imports are enabled (`:254-265`). `MAX_RULES_FILES = 50` per di
 
 The top-level `instructions = [...]` array (`crates/tui/src/config.rs:2327`, user config only;
 the project overlay ignores it). Each entry is capped at 100 KiB and trimmed with
-`[…truncated: N of M bytes omitted — …]` (`crates/tui/src/prompts.rs:113`, `:154-164`,
+`[…truncated: N of M bytes omitted — …]` (`crates/engine/src/prompts.rs:113`, `:154-164`,
 `:464-540`). This is not a `[context]` key: `ContextConfig` only has `project_pack`
 (`config.rs:1675`) and deliberately ignores unknown fields (#6516).
 
@@ -94,7 +94,7 @@ is skipped by the per-file ceiling and the global is still cut to 49,152 B.
 `enforce_project_instruction_budget` sees one flattened `String` (`ctx.instructions`) plus
 `ctx.rules_block`; the per-file segments (`ancestor_docs: Vec<(PathBuf, String)>`) are local to
 the loader and gone by trim time. The project-context cache
-(`crates/tui/src/project_context_cache.rs`, wrapper
+(`crates/engine/src/project_context_cache.rs`, wrapper
 `load_project_context_with_parents_cached_and_home`) is keyed on files, not on the context
 window. Both facts constrain the design: segment-level trimming needs segments kept on
 `ProjectContext`, and window-derived budgets must not be baked into a file-keyed cache.
@@ -346,7 +346,7 @@ This is the contributor's original work breakdown, retained for provenance. The 
 contract is §3 and the reconciled implementation is §10. Proposed test names and mechanisms
 below are not evidence that a test exists, passed, or shipped.
 
-1. **New assembly order** in `crates/tui/src/project_context.rs`:
+1. **New assembly order** in `crates/engine/src/project_context.rs`:
    `assemble_instruction_scopes(raw: &ProjectContext, configured: &[PathBuf], budgets:
    &InstructionBudgets)` reads configured entries fresh (they are user config and are not in
    the cache key), joins them to the global scope, applies per-scope trims, then merges with
@@ -360,7 +360,7 @@ below are not evidence that a test exists, passed, or shipped.
    `instructions` entries are read after cache lookup, so a change there is picked up without
    cache invalidation; `InstructionSource::Inline` stays outside the cache. A window change
    must not invalidate the content cache, and a content change must not reuse trimmed text.
-3. **`crates/tui/src/project_context.rs`**
+3. **`crates/engine/src/project_context.rs`**
    - `ProjectContext` gains `instruction_segments: Vec<InstructionSegment>` (scope, path,
      text); the joined string is rebuilt after trimming.
    - Delete both `enforce_project_instruction_budget` call sites (`:552`, `:749`) and replace
@@ -374,7 +374,7 @@ below are not evidence that a test exists, passed, or shipped.
      instructions.
    - `MAX_RULES_FILES` overflow → structured warning, not only `tracing::warn!`.
    - Module-level known-limitations note (repo rule) describing the estimator and trim order.
-4. **`crates/tui/src/prompts.rs`**
+4. **`crates/engine/src/prompts.rs`**
    - `INSTRUCTIONS_FILE_MAX_BYTES` from `file_max_bytes`; split the relay-artifact cap from
      the instruction cap so `policy = refuse` does not change relay behaviour.
      `render_instructions_block` renders only the assembled instruction block (no configured
@@ -501,14 +501,14 @@ mechanism did not exist; none of them changes the behaviour contract in §3.
 
 - **Where the code lives.** Per-scope budgets, segments, notices, trim
   markers, and the static-guard decision are in
-  `crates/tui/src/project_context/budget.rs`. Loader selection and the
-  assembly are in `crates/tui/src/project_context.rs`; `types.rs` carries the
+  `crates/engine/src/project_context/budget.rs`. Loader selection and the
+  assembly are in `crates/engine/src/project_context.rs`; `types.rs` carries the
   segments and notices on `ProjectContext`. Existing tests live in `project_context/instruction_budget_tests.rs` (selection, skips,
   trims, rules, configured entries, `refuse`), `budget.rs` (budget math and the
   guard decision), `prompts.rs` (stable-prefix measurement, configured-entry
   rendering), `lib.rs` (project overlay) and `config.rs`.
 - **The "first-turn synthetic message" mechanism** named in §3.6 does not exist
-  in this tree (`crates/tui/src/core/agent.rs` and `announce_active_skill` are
+  in this tree (`crates/engine/src/core/agent.rs` and `announce_active_skill` are
   gone). The equivalent is the runtime-provenance synthetic message the LSP
   diagnostics path already uses
   (`runtime_text_message_with_turn_metadata(..., UserInputProvenance::Runtime)`),

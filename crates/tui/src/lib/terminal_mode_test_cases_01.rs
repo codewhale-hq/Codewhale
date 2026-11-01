@@ -4,7 +4,7 @@ fn parse_cli(args: &[&str]) -> Cli {
 
 #[test]
 fn worker_command_policy_prompt_that_looks_like_a_flag_parses() {
-    use crate::fleet::executor::build_worker_exec_command;
+    use codewhale_engine::fleet::executor::build_worker_exec_command;
     use codewhale_config::FleetExecConfig;
     use codewhale_protocol::fleet::FleetTaskSpec;
 
@@ -83,13 +83,13 @@ fn headless_consultant_authority_overrides_network_allow_and_disables_web_search
         __cw_config_init_0_value.network = __cw_config_init_0_0;
         __cw_config_init_0_value
     };
-    let authority = crate::tools::spec::ToolAuthorityEnvelope {
+    let authority = codewhale_engine::tools::spec::ToolAuthorityEnvelope {
         schema_version: 1,
         owner: "consultant-1".to_string(),
-        authority: crate::tools::spec::ToolMutationAuthority::ReadOnly,
+        authority: codewhale_engine::tools::spec::ToolMutationAuthority::ReadOnly,
         network_access: Some(false),
-        shell: crate::tools::spec::ToolShellAuthority::None,
-        verification: crate::tools::spec::ToolVerificationAuthority::None,
+        shell: codewhale_engine::tools::spec::ToolShellAuthority::None,
+        verification: codewhale_engine::tools::spec::ToolVerificationAuthority::None,
         writable_roots: Vec::new(),
         writable_files: Vec::new(),
         coordination_contracts: Vec::new(),
@@ -289,7 +289,7 @@ fn doctor_fleet_report_flags_pins_absent_from_fresh_live_roster() {
     // #6035: a pin that vanished from the provider's current live roster
     // is drift the report must name — warning only, never a rewrite.
     let _env_lock = crate::test_support::lock_test_env();
-    let _live = crate::provider_lake::lock_live_snapshot();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let home = tmp.path().join("home");
     let workspace = tmp.path().join("workspace");
@@ -328,7 +328,7 @@ fn doctor_fleet_report_flags_pins_absent_from_fresh_live_roster() {
         .as_secs();
     let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
     assert_eq!(
-        crate::provider_catalog_live::record_success(
+        codewhale_engine::provider_catalog_live::record_success(
             codewhale_config::catalog::ProviderCatalogDelta {
                 provider: "deepseek".to_string(),
                 base_url_fingerprint: fingerprint.clone(),
@@ -474,7 +474,7 @@ fn workflow_tool_internal_subcommand_parses_exact_json() {
 
 #[tokio::test]
 async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
-    use crate::tools::spec::ToolSpec;
+    use codewhale_engine::tools::spec::ToolSpec;
 
     let workspace = tempfile::tempdir().expect("workspace");
     let config = {
@@ -546,7 +546,7 @@ async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
     ));
     let mut event_types = Vec::new();
     while let Ok(event) = event_rx.try_recv() {
-        if let crate::core::events::Event::WorkflowUi { event, .. } = event
+        if let codewhale_engine::core::events::Event::WorkflowUi { event, .. } = event
             && let Some(kind) = event["type"].as_str()
         {
             event_types.push(kind.to_string());
@@ -876,7 +876,7 @@ async fn cli_auto_model_honors_a_fixed_reasoning_preference() {
     assert!(route.auto_model);
     assert_eq!(
         route.reasoning_effort,
-        Some(crate::reasoning_preference::ReasoningEffort::Low)
+        Some(codewhale_engine::reasoning_preference::ReasoningEffort::Low)
     );
     assert!(
         !route.auto_controls_reasoning,
@@ -963,7 +963,7 @@ fn cli_route_execution_config_preserves_the_legacy_literal_custom_route() {
             .expect("legacy identity remains repeatedly resolvable");
         assert_eq!(identity.key.as_str(), "custom");
     }
-    let client = crate::client::CodewhaleClient::new(&execution).expect("legacy execution client");
+    let client = codewhale_engine::client::CodewhaleClient::new(&execution).expect("legacy execution client");
     assert_eq!(client.base_url(), "http://127.0.0.1:18183/v1");
 }
 
@@ -1270,7 +1270,7 @@ fn exec_provider_override_prefers_exact_case_colliding_custom_key() {
         config.active_provider_identity().unwrap().key.as_str(),
         "CUSTOM"
     );
-    let route = crate::route_runtime::resolve_runtime_route(
+    let route = codewhale_engine::route_runtime::resolve_runtime_route(
         &config,
         codewhale_config::ProviderKind::Custom,
         Some("case-model"),
@@ -1627,8 +1627,8 @@ async fn configured_review_default_keeps_named_custom_route_and_exact_receipt() 
         execution.active_route_base_url(),
         "http://127.0.0.1:18181/v1"
     );
-    let output = crate::tools::review::ReviewOutput::from_str("{}");
-    let receipt = crate::tools::review::build_review_receipt(
+    let output = codewhale_engine::tools::review::ReviewOutput::parse("{}");
+    let receipt = codewhale_engine::tools::review::build_review_receipt(
         "working tree",
         "diff --git a/a b/a",
         provider,

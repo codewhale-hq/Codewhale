@@ -4,14 +4,14 @@
 //! cards (AUTOMATION-VISIBILITY-SPEC §2.2). Deletion uses the shared pager
 //! review control; query responses (list/show) retain their text receipts.
 
-use crate::automation_manager::{
-    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
-    SharedAutomationManager, run_now_shared,
-};
-use crate::task_manager::SharedTaskManager;
 use crate::tui::app::{App, AutomationAction};
 use crate::tui::automation_panel::{SettledOutcome, SettledRun};
 use crate::tui::history::{AutomationCell, AutomationCellKind, HistoryCell};
+use codewhale_engine::automation_manager::{
+    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
+    SharedAutomationManager, run_now_shared,
+};
+use codewhale_engine::task_manager::SharedTaskManager;
 use codewhale_localization::{Locale, MessageId, tr};
 
 pub(super) async fn handle_action(
@@ -585,10 +585,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::automation_manager::{
+    use chrono::Utc;
+    use codewhale_engine::automation_manager::{
         AutomationDeliveryMode, AutomationManager, CreateAutomationRequest,
     };
-    use chrono::Utc;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
@@ -597,7 +597,7 @@ mod tests {
         AutomationRecord {
             destination_thread_id: None,
             schema_version: 1,
-            execution_scope: Some(crate::task_manager::test_execution_scope("test")),
+            execution_scope: Some(codewhale_engine::task_manager::test_execution_scope("test")),
             id: "auto_1".to_string(),
             name: "Nightly checks".to_string(),
             prompt: "Run checks".to_string(),

@@ -33,10 +33,10 @@ use std::borrow::Cow;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use crate::tui::motion::mode::MotionMode;
 use crate::tui::underwater::ShellPhase;
 use codewhale_agent_contract::role::FleetRole;
+use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::{self as palette, UiTheme};
 use codewhale_tui_kit::glyphs;
@@ -587,7 +587,7 @@ mod tests {
             workspace: None,
             git_branch: None,
             agent_type: FleetRole::Builder,
-            assignment: crate::tools::subagent::SubAgentAssignment {
+            assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
                 native_preset: None,
                 objective: "objective".into(),
                 role: None,
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(WhaleState::for_subagent(&agent), WhaleState::Waiting);
         // A pending question for the parent wins over everything.
         agent.worker_status = Some(AgentWorkerStatus::Running);
-        agent.needs_input = Some(crate::tools::subagent::SubAgentNeedsInput {
+        agent.needs_input = Some(codewhale_engine::tools::subagent::SubAgentNeedsInput {
             question: "which branch?".into(),
         });
         assert_eq!(WhaleState::for_subagent(&agent), WhaleState::Waiting);

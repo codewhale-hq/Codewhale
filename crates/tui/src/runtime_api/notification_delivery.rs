@@ -2,7 +2,7 @@
 //! policy owners. This endpoint prepares an attempt; it never submits a banner.
 
 use super::*;
-use crate::runtime_threads::{RuntimeEventRecord, RuntimeTurnStatus};
+use codewhale_engine::runtime_threads::{RuntimeEventRecord, RuntimeTurnStatus};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_notify::payload::NotificationPayload;
 use codewhale_notify::{

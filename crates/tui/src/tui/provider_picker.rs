@@ -35,17 +35,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::core::ops::ProviderRuntimeStatus;
-use crate::model_profile::{
-    SupportState, resolved_capability_profile, resolved_capability_profile_for_route,
-};
-use crate::models_dev_live::{self, ModelsDevFreshness};
-use crate::provider_lake::{catalog_model_count_for_provider, catalog_offering_for_model};
-use crate::provider_readiness::{
-    CredentialState, ProviderReadinessSnapshot, ProviderRouteIdentity, ResolvedProviderReadiness,
-    credential_state_for_provider, route_identity_for_model,
-};
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::views::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface, render_underwater_surface,
@@ -57,6 +46,19 @@ use codewhale_config::descriptors::{
 };
 use codewhale_config::provider::{CredentialAcquisition, WireFormat};
 use codewhale_config::route::{PricingSku, RequestProtocol};
+use codewhale_engine::core::ops::ProviderRuntimeStatus;
+use codewhale_engine::model_profile::{
+    SupportState, resolved_capability_profile, resolved_capability_profile_for_route,
+};
+use codewhale_engine::models_dev_live::{self, ModelsDevFreshness};
+use codewhale_engine::provider_lake::{
+    catalog_model_count_for_provider, catalog_offering_for_model,
+};
+use codewhale_engine::provider_readiness::{
+    CredentialState, ProviderReadinessSnapshot, ProviderRouteIdentity, ResolvedProviderReadiness,
+    credential_state_for_provider, route_identity_for_model,
+};
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::{
@@ -237,9 +239,9 @@ impl StepfunBillingRoute {
 fn stepfun_route_is_selectable(provider: ProviderKind, base_url: &str) -> bool {
     provider == ProviderKind::Stepfun
         && matches!(
-            crate::pricing::billing_surface_for_route(provider, Some(base_url)),
-            Some(crate::pricing::STEPFUN_PAYG_BILLING_SURFACE)
-                | Some(crate::pricing::STEPFUN_PLAN_BILLING_SURFACE)
+            codewhale_engine::pricing::billing_surface_for_route(provider, Some(base_url)),
+            Some(codewhale_engine::pricing::STEPFUN_PAYG_BILLING_SURFACE)
+                | Some(codewhale_engine::pricing::STEPFUN_PLAN_BILLING_SURFACE)
         )
 }
 
@@ -359,7 +361,7 @@ pub struct ProviderDashboardRow {
     pub capabilities: ProviderCapabilityBadges,
     pub model_origin: ProviderModelOrigin,
     pub(crate) readiness: ResolvedProviderReadiness,
-    billing_presentation: crate::route_billing::BillingPresentation,
+    billing_presentation: codewhale_engine::route_billing::BillingPresentation,
     pub maturity: ProviderMaturity,
     pub messages: Vec<String>,
     external_credential_status: Option<codewhale_config::ExternalCredentialConsentStatus>,
@@ -733,7 +735,8 @@ impl ProviderDashboardRow {
                         configured.is_some_and(|entry| entry.model.is_some()),
                     ),
                     readiness: ResolvedProviderReadiness::Legacy,
-                    billing_presentation: crate::route_billing::BillingPresentation::Unknown,
+                    billing_presentation:
+                        codewhale_engine::route_billing::BillingPresentation::Unknown,
                     maturity: ProviderMaturity::for_provider(provider),
                     messages: vec![format!("provider admission failed: {error}")],
                     external_credential_status: None,
@@ -753,7 +756,7 @@ impl ProviderDashboardRow {
             .map(|row| row.label.to_string())
             .unwrap_or_else(|| format!("{provider_id} (custom)"));
         // Capture product presentation without activating an inactive row.
-        let billing_presentation = crate::route_billing::for_route(config, &identity);
+        let billing_presentation = codewhale_engine::route_billing::for_route(config, &identity);
         let configured = config.provider_config_for(&identity);
         let configured_base_url = configured
             .and_then(|entry| entry.base_url.as_deref())
@@ -895,7 +898,7 @@ impl ProviderDashboardRow {
             })
             .flatten();
         let route = if let Some(model) = declared_default {
-            crate::route_runtime::resolve_declared_model_candidate_with_wire_override(
+            codewhale_engine::route_runtime::resolve_declared_model_candidate_with_wire_override(
                 provider,
                 &provider_id,
                 model,
@@ -909,7 +912,7 @@ impl ProviderDashboardRow {
             // Browsing a provider is a snapshot projection, not execution
             // admission. Actual local requests still require an explicit tag
             // or a fresh endpoint-owned roster in resolve_runtime_route.
-            crate::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
+            codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
                 provider,
                 configured_model
                     .as_deref()
@@ -1027,13 +1030,14 @@ impl ProviderDashboardRow {
             capabilities.context_window_source = Some("user declared (unverified)".into());
             messages.push("Model metadata is user declared; availability and capabilities have not been verified.".into());
         }
-        let available_model_count = crate::provider_lake::configured_catalog_models_for_route(
-            config,
-            provider,
-            &provider_id,
-            &base_url,
-        )
-        .len();
+        let available_model_count =
+            codewhale_engine::provider_lake::configured_catalog_models_for_route(
+                config,
+                provider,
+                &provider_id,
+                &base_url,
+            )
+            .len();
         // "Snapshot missing" means the row has nothing but its default model.
         // A provider-level snapshot OR this route's own roster is enough to
         // show more, so judge the two sources together: reading only the
@@ -1736,7 +1740,9 @@ fn readiness_for(
     route_ok: bool,
     health: &ProviderReadinessSnapshot,
 ) -> ResolvedProviderReadiness {
-    crate::provider_readiness::resolve_with_identity(identity, credential, route_ok, health)
+    codewhale_engine::provider_readiness::resolve_with_identity(
+        identity, credential, route_ok, health,
+    )
 }
 
 /// Slice D: cost lives at the model level. Per-model $/mtok in/out projected
@@ -1748,8 +1754,10 @@ fn readiness_for(
 /// everything else is honestly unknown.
 fn configured_model_cost_label(config: &Config, row: &ProviderDashboardRow, model: &str) -> String {
     match row.billing_presentation {
-        crate::route_billing::BillingPresentation::Subscription(label) => return label.to_string(),
-        crate::route_billing::BillingPresentation::Local => return "local".to_string(),
+        codewhale_engine::route_billing::BillingPresentation::Subscription(label) => {
+            return label.to_string();
+        }
+        codewhale_engine::route_billing::BillingPresentation::Local => return "local".to_string(),
         _ => {}
     }
     if let Some(declared) = codewhale_runtime::config::configured_model_for_route(
@@ -1783,7 +1791,7 @@ fn model_cost_label(provider: ProviderKind, model: &str) -> String {
     // DeepSeek bills by time of day (`pricing_withheld` in
     // catalog_corrections.json), and live roster rows carry no price at all.
     // Ask pricing.rs before calling the price unknown, as `/model` does.
-    crate::pricing::model_rate_label(
+    codewhale_engine::pricing::model_rate_label(
         provider,
         model,
         codewhale_config::pricing::CostCurrency::Usd,
@@ -1801,7 +1809,7 @@ fn provider_pane_models(
     row: &ProviderDashboardRow,
     limit: usize,
 ) -> Vec<(String, String, bool)> {
-    let mut models = crate::provider_lake::configured_catalog_models_for_route(
+    let mut models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
         config,
         row.provider,
         &row.provider_id,
@@ -2577,11 +2585,12 @@ impl ProviderPickerView {
     fn enter_stepfun_billing_route(&mut self) {
         // Preselect whatever the row already resolves to so re-running setup
         // on a configured Step Plan route does not default back to PAYG.
-        self.stepfun_billing_route = if crate::pricing::billing_surface_for_route(
+        self.stepfun_billing_route = if codewhale_engine::pricing::billing_surface_for_route(
             ProviderKind::Stepfun,
             Some(&self.rows[self.selected_idx].base_url),
-        ) == Some(crate::pricing::STEPFUN_PLAN_BILLING_SURFACE)
-        {
+        ) == Some(
+            codewhale_engine::pricing::STEPFUN_PLAN_BILLING_SURFACE,
+        ) {
             StepfunBillingRoute::StepPlan
         } else {
             StepfunBillingRoute::PayAsYouGo
@@ -2716,7 +2725,7 @@ impl ProviderPickerView {
             route.logical_model.clone()
         };
         let row = &self.rows[self.selected_idx];
-        let mut models = crate::provider_lake::configured_catalog_models_for_route(
+        let mut models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
             &self.route_config,
             provider,
             &row.provider_id,
@@ -3603,7 +3612,7 @@ impl ProviderPickerView {
             }
             lines.push(Line::from(spans));
         }
-        let total_models = crate::provider_lake::configured_catalog_models_for_route(
+        let total_models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
             &self.route_config,
             row.provider,
             &row.provider_id,
@@ -5705,8 +5714,8 @@ fn descriptor_dashboard_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_readiness::has_api_key_for;
     use crate::test_support::EnvVarGuard;
+    use codewhale_engine::provider_readiness::has_api_key_for;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     // Environment-mutating tests in this module hold the process-wide
@@ -6352,7 +6361,7 @@ mod tests {
             __cw_config_init_3_value
         };
         assert!(
-            !crate::provider_readiness::provider_is_configured_for_active(
+            !codewhale_engine::provider_readiness::provider_is_configured_for_active(
                 &config,
                 &(config).test_identity_for_kind(ProviderKind::Anthropic),
                 &(config).test_identity_for_kind(ProviderKind::Deepseek),
@@ -6992,7 +7001,7 @@ mod tests {
         let mut health = ProviderReadinessSnapshot::default();
         health.record_success(
             &config,
-            &crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+            &codewhale_engine::route_receipt::TurnRouteReceipt::for_test_fixture(
                 &config,
                 ProviderKind::Deepseek,
                 &row_model,
@@ -7054,7 +7063,7 @@ mod tests {
         let mut health = ProviderReadinessSnapshot::default();
         health.record_failure(
             &config,
-            &crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+            &codewhale_engine::route_receipt::TurnRouteReceipt::for_test_fixture(
                 &config,
                 ProviderKind::Deepseek,
                 "model-the-turn-ran",
@@ -10548,7 +10557,8 @@ mod tests {
             })
         ));
 
-        let inventory = crate::model_inventory::ModelInventory::from_config(&config).unwrap();
+        let inventory =
+            codewhale_engine::model_inventory::ModelInventory::from_config(&config).unwrap();
         assert!(
             inventory.candidates.iter().all(|candidate| !matches!(
                 candidate.provider,
@@ -10557,11 +10567,11 @@ mod tests {
             "dormant external-only routes must not reach auto-routing inventory"
         );
         assert_eq!(
-            crate::route_billing::for_route(
+            codewhale_engine::route_billing::for_route(
                 &config,
                 &(config).test_identity_for_kind(ProviderKind::Xai)
             ),
-            crate::route_billing::BillingPresentation::Metered
+            codewhale_engine::route_billing::BillingPresentation::Metered
         );
         assert_eq!(
             codewhale_runtime::external_credentials::side_effect_trap_counts(),

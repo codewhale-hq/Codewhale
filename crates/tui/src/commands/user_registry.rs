@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
-use crate::tools::goal::GoalStatus;
 use crate::tui::app::{App, AppAction};
+use codewhale_engine::tools::goal::GoalStatus;
 
 use super::CommandResult;
 use super::user_commands;
@@ -82,7 +82,7 @@ pub struct UserCommandMetadata {
     pub plugin_authority: Option<codewhale_config::PluginAuthority>,
     /// Set for a command contributed by an extension-host plugin: it runs in
     /// the host (`command/run`) instead of expanding `body`.
-    pub extension: Option<crate::extension_host::command::ExtensionCommandRef>,
+    pub extension: Option<codewhale_engine::extension_host::command::ExtensionCommandRef>,
 }
 
 impl UserCommandMetadata {
@@ -355,7 +355,7 @@ impl UserCommandRegistry {
     /// the one it loses to is named in a load error.
     pub(crate) fn load_extension_commands(
         &mut self,
-        commands: Vec<crate::extension_host::command::ExtensionCommandEntry>,
+        commands: Vec<codewhale_engine::extension_host::command::ExtensionCommandEntry>,
     ) {
         for entry in commands {
             let registration = &entry.registration;
@@ -816,7 +816,7 @@ pub fn with_registry_for_workspace<R>(
         let guard = lock.read().expect("user command registry lock poisoned");
         if guard.initialized
             && guard.workspace == workspace
-            && guard.extension_epoch == crate::extension_host::command::epoch()
+            && guard.extension_epoch == codewhale_engine::extension_host::command::epoch()
             && guard.checked_recently()
         {
             return f(&guard.registry);
@@ -834,7 +834,7 @@ pub fn with_registry_for_workspace<R>(
     // Read before the extension commands themselves: a change that lands
     // while the registry is being built leaves the epoch behind, so the next
     // read reloads.
-    let extension_epoch = crate::extension_host::command::epoch();
+    let extension_epoch = codewhale_engine::extension_host::command::epoch();
     {
         let guard = lock.read().expect("user command registry lock poisoned");
         if !registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch) {
@@ -850,7 +850,9 @@ pub fn with_registry_for_workspace<R>(
         &plugin_errors,
     );
     if let Some(workspace) = workspace.as_deref() {
-        replacement.load_extension_commands(crate::extension_host::live_commands_for(workspace));
+        replacement.load_extension_commands(codewhale_engine::extension_host::live_commands_for(
+            workspace,
+        ));
     }
     let mut guard = lock.write().expect("user command registry lock poisoned");
     if registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch) {
@@ -895,7 +897,9 @@ pub fn with_registry_for_plugins<R>(
         selected
             .commands
             .retain(|_, metadata| metadata.extension.is_none());
-        selected.load_extension_commands(crate::extension_host::live_commands_for_plugins(plugins));
+        selected.load_extension_commands(
+            codewhale_engine::extension_host::live_commands_for_plugins(plugins),
+        );
         f(&selected)
     })
 }
@@ -976,7 +980,7 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     let mut plan_cleared = false;
     for _ in 0..10 {
         if let Ok(mut plan) = app.plan_state.try_lock() {
-            *plan = crate::tools::plan::PlanState::default();
+            *plan = codewhale_engine::tools::plan::PlanState::default();
             plan_cleared = true;
             break;
         }
@@ -1432,7 +1436,7 @@ mod tests {
 
         app.goal.objective = Some("old objective".to_string());
         app.goal.started_at = Some(std::time::Instant::now());
-        app.goal.status = crate::tools::goal::GoalStatus::Blocked;
+        app.goal.status = codewhale_engine::tools::goal::GoalStatus::Blocked;
         app.goal.token_budget = Some(42);
         app.goal.tokens_used = 100;
         app.goal.time_used_seconds = 5;
@@ -1445,12 +1449,12 @@ mod tests {
             let mut todos = app.todos.try_lock().expect("todos lock");
             todos.add(
                 "leftover task".to_string(),
-                crate::tools::todo::TodoStatus::Pending,
+                codewhale_engine::tools::todo::TodoStatus::Pending,
             );
         }
         {
             let mut plan = app.plan_state.try_lock().expect("plan_state lock");
-            plan.update(crate::tools::plan::UpdatePlanArgs {
+            plan.update(codewhale_engine::tools::plan::UpdatePlanArgs {
                 title: Some("leftover plan".to_string()),
                 objective: Some("old goal".to_string()),
                 ..Default::default()
@@ -1462,7 +1466,10 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(app.goal.objective, None);
         assert_eq!(app.goal.started_at, None);
-        assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+        assert_eq!(
+            app.goal.status,
+            codewhale_engine::tools::goal::GoalStatus::Active
+        );
         assert_eq!(app.goal.token_budget, None);
         assert_eq!(app.goal.tokens_used, 0);
         assert_eq!(app.goal.time_used_seconds, 0);

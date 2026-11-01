@@ -7,8 +7,8 @@
 //! (per user request to keep it as Thinking and fix for everything).
 
 use crate::commands::{CommandResult, traits::CommandInfo};
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::App;
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{MessageId, tr};
 
 pub const EFFORT_INFO: CommandInfo = CommandInfo {

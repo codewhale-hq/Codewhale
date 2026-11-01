@@ -11,7 +11,7 @@ fn model_guidance(document: &ProfileConstitution) -> Result<String, ApiError> {
 pub(super) async fn get_constitution(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
-    let snapshot = crate::profile_constitution::load(state.config_profile.as_deref())
+    let snapshot = codewhale_engine::profile_constitution::load(state.config_profile.as_deref())
         .await
         .map_err(|error| ApiError::conflict(error.to_string()))?;
     match snapshot {
@@ -29,7 +29,7 @@ pub(super) async fn get_constitution(
             let rendered = tokio::task::spawn_blocking(move || {
                 #[cfg(test)]
                 let _membership = crate::test_support::join_env_scope(env_ticket);
-                crate::prompts::load_active_user_constitution()
+                codewhale_engine::prompts::load_active_user_constitution()
                     .map(|document| document.render_body())
             })
             .await

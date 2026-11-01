@@ -1048,7 +1048,7 @@ fn command_clipboard_export_preserves_structure_and_redacts_secrets() {
         let mut todos = app.todos.try_lock().expect("todos lock");
         todos.add(
             "export projection".to_string(),
-            crate::tools::todo::TodoStatus::InProgress,
+            codewhale_engine::tools::todo::TodoStatus::InProgress,
         );
     }
     app.cycle_effort();

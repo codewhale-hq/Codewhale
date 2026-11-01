@@ -43,7 +43,7 @@ references drawn from a prior `grep_files` result.
 
 ```
 # Bad:  "Update the retry logic in the client module"
-# Good: "Update retry loop at crates/tui/src/client.rs:187"
+# Good: "Update retry loop at crates/engine/src/client.rs:187"
 ```
 
 Failure avoided: agent-mode execution cannot locate the intended edit

@@ -216,4 +216,4 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 - `crates/sandbox/src/bwrap.rs` — Linux 主动启用式包装器
 - `crates/sandbox/src/process_hardening.rs` — Linux 父进程加固
 - `crates/sandbox/src/backend.rs` — 外部后端选择
-- `crates/tui/src/tools/diagnostics.rs` — 机器可读的诊断信息
+- `crates/engine/src/tools/diagnostics.rs` — 机器可读的诊断信息
