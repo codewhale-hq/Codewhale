@@ -28,7 +28,7 @@
     "predeploy": "node scripts/check-kv-id.mjs",
     "deploy": "npm run build:cloudflare && opennextjs-cloudflare populateCache remote --config .cloudflare/opennext.json && cf deploy --prebuilt",
     "cf-typegen": "cf workers types",
-    "postinstall": "node scripts/patch-braces.mjs",
+    "postinstall": "node scripts/patch-braces.mjs && node scripts/patch-minimatch.mjs && node scripts/patch-glob.mjs && node scripts/patch-bundled-globs.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs"
   },
   "dependencies": {

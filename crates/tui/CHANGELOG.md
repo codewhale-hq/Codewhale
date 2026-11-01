@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web build dependencies cap glob preprocessing and stop cancelled directory traversals through compatible, verified upstream backports. Raw dependency findings remain visible. Thanks [@isaacs](https://github.com/isaacs) for the [minimatch](https://github.com/isaacs/minimatch/commit/77a0f5c4b80bdc641c3c930a1d9edf5ad2db57f8) and [glob](https://github.com/isaacs/node-glob/commit/4682e8c9babee1b385202ede36389634e12076d7) fixes (#6560).
 - `web.run` refuses more than 64 operations across its command arrays before starting network work or changing its session cache (#6554).
 - Skill discovery and audit marker reads stop at 512 KiB. Approved linked global skills still load; oversized, invalid and non-regular files produce visible refusals instead of unbounded reads (#6554).
 - OpenSandbox caps successful responses at 8 MiB before parsing and limits remote error details to 4 KiB with terminal controls removed. Oversized responses fail explicitly. Remote execution cancellation remains a separate requirement (#6554).
@@ -357,6 +358,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Contributors
 
+- **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
 - **[@Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[@Felixkw12](https://github.com/Felixkw12)** — added Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — per-scope instruction budgets with visible truncation ([#7086](https://github.com/codewhale-hq/Codewhale/pull/7086), [#6526](https://github.com/codewhale-hq/Codewhale/issues/6526)).
