@@ -552,8 +552,10 @@ mod tests {
             .expect("bare spelling resolves in the bundled catalogue");
         assert_eq!(found.context_window, Some(1_000_000));
         assert_eq!(found.max_output, Some(384_000));
-        // The namespaced spelling keeps resolving to the same facts, so a
-        // caller cannot get two different windows from two spellings.
+        // The `deepseek/`-namespaced spelling resolves to the same window and
+        // ceiling. This does not make every spelling agree: the `deepseek-ai/`
+        // twin is curated at 1048576 with no output ceiling, and reconciling
+        // those two rows is a separate data question.
         let namespaced = intrinsic_model_in(data, "deepseek/deepseek-v4.1-flash")
             .expect("namespaced spelling resolves");
         assert_eq!(namespaced.context_window, found.context_window);

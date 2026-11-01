@@ -556,7 +556,7 @@
           "reasoning"
         ],
         "reasoning": true,
-        "source": "Models.dev canonical row deepseek/deepseek-v4.1-flash (context 1000000, output 384000); bare spelling added so an endpoint that names the model without the vendor prefix resolves to the same facts",
+        "source": "Models.dev canonical row deepseek/deepseek-v4.1-flash: context 1000000, output 384000, reasoning, text+image input. Bare spelling added so an endpoint that names the model without the vendor prefix gets the same window and ceiling instead of the static 128K fallback",
         "family": "DeepSeek"
       },
       "fugu-ultra": {
