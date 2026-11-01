@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Goal continuations send the objective once per live conversation window. Later passes show the current goal state, estimated conversation input and the applicable compaction setting. Full notes stay available through `get_goal`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for measuring the repeated text and identifying the misleading token figure ([#7172](https://github.com/codewhale-hq/Codewhale/issues/7172)).
 - **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations. (CW-7649)
 - **The model can read what compaction replaced (#7173):** two read-only tools,
   `context_archive_search` and `context_archive_get`, search the session's

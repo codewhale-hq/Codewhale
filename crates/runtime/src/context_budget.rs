@@ -276,7 +276,7 @@ fn clamp_output_cap(window_tokens: u64, configured_output_cap: u64) -> u64 {
 }
 
 /// Window usage as a percentage in `0.0..=100.0`. Zero window -> `0.0`.
-fn usage_percent(window_tokens: u64, input_tokens: u64) -> f64 {
+pub fn usage_percent(window_tokens: u64, input_tokens: u64) -> f64 {
     if window_tokens == 0 {
         return 0.0;
     }

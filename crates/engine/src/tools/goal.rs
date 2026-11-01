@@ -818,14 +818,65 @@ pub fn thread_goal_status_projection(
 /// implementation detail rather than encouraging the model to spend the cap.
 #[must_use]
 pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
-    let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
+    let reference = json!([snapshot.goal_id, snapshot.objective]);
+    let mut state = json!({"status": snapshot.status});
+    for (key, value) in [
+        ("blocker", json!(snapshot.blocker)),
+        ("evidence", json!(snapshot.evidence)),
+        ("pause_reason", json!(snapshot.pause_reason)),
+        ("progress", json!(snapshot.progress)),
+        ("verification", json!(snapshot.completion_verification)),
+        ("last_gap_fingerprint", json!(snapshot.last_gap_fingerprint)),
+        ("last_gap_pass", json!(snapshot.last_gap_pass)),
+        ("token_budget", json!(snapshot.token_budget)),
+    ] {
+        if !value.is_null() {
+            state[key] = value;
+        }
+    }
+    if let Some(budget) = snapshot.token_budget {
+        state["goal_budget_remaining_tokens"] =
+            json!(u64::from(budget).saturating_sub(snapshot.tokens_used));
+    }
+    if snapshot.repeated_gap_count != 0 {
+        state["repeated_gap_count"] = json!(snapshot.repeated_gap_count);
+    }
     format!(
-        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\nIf a critical verifier finds remaining work, call `update_goal` with `status: \"not_achieved\"` and its concrete `verification.gaps`; {} equivalent gap sets in a row pause this goal (`no progress`) for inspection instead of spending indefinitely, so report what actually still fails rather than restating the previous pass. If the goal is complete, first run or cite a concrete verifier/check when one applies, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. For non-verifiable work (docs, research, writing), use `verification: {{\"status\":\"not_applicable\",\"check\":\"...\",\"summary\":\"...\"}}` with a clear rationale instead of fabricating a verifier receipt. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. If the next pass cannot make useful progress without an answer or decision only the user can give, call `update_goal` with `status: \"yield\"`, ask for it, and stop; do not invent the answer and continue. Otherwise continue making progress toward the objective.",
+        "{}\n\nGoal objective {reference}\nActive goal state {state}\nContinuation pass #{}. The full goal and advisory history are available through `get_goal`.\nIf a critical verifier finds remaining work, call `update_goal` with `status: \"not_achieved\"` and its concrete `verification.gaps`; {} equivalent gap sets in a row pause this goal (`no progress`) for inspection instead of spending indefinitely, so report what actually still fails rather than restating the previous pass. If the goal is complete, first run or cite a concrete verifier/check when one applies, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. For non-verifiable work (docs, research, writing), use `verification: {{\"status\":\"not_applicable\",\"check\":\"...\",\"summary\":\"...\"}}` with a clear rationale instead of fabricating a verifier receipt. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. If the next pass cannot make useful progress without an answer or decision only the user can give, call `update_goal` with `status: \"yield\"`, ask for it, and stop; do not invent the answer and continue. Otherwise continue making progress toward the objective.",
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
-        goal_json,
         continuation_index,
         codewhale_runtime::goal_loop::MAX_REPEATED_GAP_PASSES,
     )
+}
+
+pub(crate) fn omit_repeated_goal_objective(
+    prompt: &mut String,
+    messages: &[codewhale_models::Message],
+) {
+    const START: &str = "\n\nGoal objective ";
+    let Some((instructions, reference_and_state)) = prompt.split_once(START) else {
+        return;
+    };
+    let Some((reference, _)) = reference_and_state.split_once('\n') else {
+        return;
+    };
+    let present = messages.iter().rev().take_while(|message| {
+        !codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message)
+    }).any(|message| {
+        message.role == codewhale_models::Role::User
+            && codewhale_models::turn_classify::turn_metadata_text(message).is_some_and(|(_, meta)| {
+                crate::runtime_handoff::is_handoff_turn_meta(meta, "goal_continuation")
+            })
+            && message.content.iter().any(|block| matches!(block,
+                codewhale_models::ContentBlock::Text { text, .. }
+                    if text.split_once(START).and_then(|(_, tail)| tail.lines().next()) == Some(reference)
+            ))
+    });
+    if present {
+        let start = instructions.len() + 2;
+        let end = start + "Goal objective ".len() + reference.len() + 1;
+        prompt.replace_range(start..end, "");
+    }
 }
 
 /// Render the reported-progress bar used by the transcript receipt and the
@@ -1596,7 +1647,7 @@ mod tests {
         assert_eq!(resumed.blocker, None);
         assert_eq!(resumed.completion_verification, None);
         let prompt = render_continuation_prompt(&resumed, resumed.continuation_count);
-        assert!(prompt.contains("\"blocker\": null"), "{prompt}");
+        assert!(!prompt.contains("\"blocker\":"), "{prompt}");
 
         let mut completed = GoalState::default();
         completed

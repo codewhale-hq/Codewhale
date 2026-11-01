@@ -636,6 +636,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
         !first_meta.contains("Context pressure:"),
         "automatic continuity must not ask the user to manage context: {first_meta}"
     );
+    assert!(first_meta.contains("Estimated conversation input:"));
     assert!(!first_meta.contains("/compact"));
     engine.config.compaction.enabled = false;
     let first = message_for(&engine);
@@ -659,7 +660,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
         without_pressure(&first_meta),
         without_pressure(&second_meta)
     );
-    assert!(second_meta.contains("Estimated input:"));
+    assert!(second_meta.contains("Estimated conversation input:"));
     assert!(second_meta.contains("Making room automatically is off"));
 }
 

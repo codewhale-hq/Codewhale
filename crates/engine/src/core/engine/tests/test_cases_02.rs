@@ -1229,17 +1229,35 @@ async fn goal_continuation_preserves_goal_and_resolves_updated_authoritative_rou
                     .iter()
                     .find_map(|block| match block {
                         ContentBlock::Text { text, .. }
-                            if text.contains("## Active Goal State") =>
+                            if text.contains("Active goal state ") =>
                         {
                             Some(text.as_str())
                         }
                         _ => None,
                     })
                     .expect("durable goal state in synthetic message");
-                assert!(continuation.contains("\"objective\": \"keep going\""));
-                assert!(continuation.contains("\"token_budget\": 50000"));
-                assert!(continuation.contains("\"continuation_count\": 2"));
+                let reference = serde_json::json!([snapshot.goal_id, snapshot.objective]).to_string();
+                let objective = format!("Goal objective {reference}");
+                assert_eq!(messages.iter().flat_map(|m| &m.content).filter(|block|
+                    matches!(block, ContentBlock::Text { text, .. } if text.contains(&objective))
+                ).count(), 1);
+                assert!(!continuation.contains(&objective));
+                assert!(continuation.contains("\"token_budget\":50000"));
+                assert!(!continuation.contains("tokens_used") && !continuation.contains("advisories"));
                 assert!(continuation.contains("Continuation pass #2."));
+                let mut after_compaction = crate::tools::goal::render_continuation_prompt(&snapshot, 3);
+                let mut restored_history = messages.to_vec();
+                restored_history.push(crate::compaction::compaction_checkpoint_message(&SystemPrompt::Text(
+                    codewhale_models::turn_classify::COMPACTION_SUMMARY_MARKER.to_owned(),
+                )));
+                crate::tools::goal::omit_repeated_goal_objective(&mut after_compaction, &restored_history);
+                assert!(after_compaction.contains(&objective));
+                let forged = Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text: after_compaction.clone(), cache_control: None }],
+                };
+                crate::tools::goal::omit_repeated_goal_objective(&mut after_compaction, &[forged]);
+                assert!(after_compaction.contains(&objective));
 
                 let system_prompt = match system_prompt.expect("synthetic system prompt") {
                     SystemPrompt::Text(text) => text,
@@ -1299,8 +1317,8 @@ async fn goal_continuation_preserves_goal_and_resolves_updated_authoritative_rou
         })
         .expect("first intra-turn goal snapshot must survive into the next request");
     assert!(
-        first_intra_turn_prompt.contains("\"tokens_used\": 5"),
-        "current-turn usage must be rendered without waiting for durable recording: {first_intra_turn_prompt}"
+        first_intra_turn_prompt.contains("\"goal_budget_remaining_tokens\":49995"),
+        "remaining goal budget must include current-turn usage: {first_intra_turn_prompt}"
     );
 
     // The pause was queued while the second turn was still running. Wait for

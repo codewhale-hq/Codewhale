@@ -1103,7 +1103,7 @@ fn is_subagent_handoff_turn_meta(text: &str) -> bool {
 }
 
 /// Recognize a runtime-owned `<turn_meta>` envelope by its provenance kind.
-fn is_handoff_turn_meta(text: &str, provenance: &str) -> bool {
+pub(crate) fn is_handoff_turn_meta(text: &str, provenance: &str) -> bool {
     let Some(body) = text
         .strip_prefix("<turn_meta>\n")
         .and_then(|body| body.strip_suffix("\n</turn_meta>"))

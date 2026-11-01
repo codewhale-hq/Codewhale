@@ -3961,7 +3961,7 @@ impl Engine {
                                     dynamic_tools,
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
-                                    provenance: UserInputProvenance::Runtime,
+                                    provenance: UserInputProvenance::GoalContinuation,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     // Engine-scheduled goal continuation: no host
@@ -4937,36 +4937,6 @@ impl Engine {
         self.add_session_message(message).await;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn turn_metadata_block(
-        &self,
-        routed_model: &str,
-        auto_model: bool,
-        reasoning_effort: Option<&str>,
-        reasoning_effort_auto: bool,
-        provenance: UserInputProvenance,
-        current_text: &str,
-        policy_narrowing: Option<&PolicyNarrowingEvent>,
-    ) -> ContentBlock {
-        let prompt_context = self.installed_next_turn_prompt_context();
-        self.turn_metadata_block_from_snapshot(
-            routed_model,
-            auto_model,
-            reasoning_effort,
-            reasoning_effort_auto,
-            provenance,
-            current_text,
-            TurnMetadataSnapshot {
-                prompt_context: &prompt_context,
-                system_prompt: self.session.system_prompt.as_ref(),
-                approval_mode: self.session.approval_mode,
-                working_set: &self.session.working_set,
-                messages: &self.session.messages,
-                policy_narrowing,
-            },
-        )
-    }
-
     /// Build `<turn_meta>` from an explicit snapshot of the session state a
     /// turn installs *before* it writes the block.
     ///
@@ -5108,7 +5078,7 @@ impl Engine {
     ///
     /// The text comes first and the turn metadata last — both positions are
     /// load-bearing for prompt caching (see
-    /// [`Self::turn_metadata_block`]), so resolved images are inserted between
+    /// [`Self::turn_metadata_block_from_snapshot`]), so resolved images are inserted between
     /// them rather than at either end.
     ///
     /// The composer stores an attachment as a `[Attached image: …]` text line
@@ -5151,7 +5121,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn user_text_message_from_snapshot(
         &self,
-        text: String,
+        mut text: String,
         routed_model: &str,
         auto_model: bool,
         reasoning_effort: Option<&str>,
@@ -5159,6 +5129,11 @@ impl Engine {
         provenance: UserInputProvenance,
         snapshot: TurnMetadataSnapshot<'_>,
     ) -> Message {
+        if provenance == UserInputProvenance::GoalContinuation
+            && !self.api_config.runtime_chat_isolated
+        {
+            crate::tools::goal::omit_repeated_goal_objective(&mut text, snapshot.messages);
+        }
         let turn_metadata = (!self.api_config.runtime_chat_isolated).then(|| {
             self.turn_metadata_block_from_snapshot(
                 routed_model,
@@ -5240,25 +5215,29 @@ impl Engine {
         // message prefix is invalidated at every date boundary. Moving it
         // to the tail preserves the user-input prefix and limits cache
         // invalidation to the trailing metadata block.
-        let turn_metadata = (!self.api_config.runtime_chat_isolated).then(|| {
-            self.turn_metadata_block(
-                routed_model,
-                auto_model,
-                reasoning_effort,
-                reasoning_effort_auto,
-                provenance,
-                &text,
-                self.last_policy_narrowing.as_ref(),
-            )
-        });
-        let mut content = self.user_content_blocks(text);
-        if let Some(turn_metadata) = turn_metadata {
-            content.push(turn_metadata);
+        if self.api_config.runtime_chat_isolated {
+            return Message {
+                role: Role::User,
+                content: self.user_content_blocks(text),
+            };
         }
-        Message {
-            role: Role::User,
-            content,
-        }
+        let prompt_context = self.installed_next_turn_prompt_context();
+        self.user_text_message_from_snapshot(
+            text,
+            routed_model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+            provenance,
+            TurnMetadataSnapshot {
+                prompt_context: &prompt_context,
+                system_prompt: self.session.system_prompt.as_ref(),
+                approval_mode: self.session.approval_mode,
+                working_set: &self.session.working_set,
+                messages: &self.session.messages,
+                policy_narrowing: self.last_policy_narrowing.as_ref(),
+            },
+        )
     }
 
     async fn handle_idle_subagent_completion(&mut self, first: SubAgentCompletion) {

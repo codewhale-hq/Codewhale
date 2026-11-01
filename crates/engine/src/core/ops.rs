@@ -135,8 +135,9 @@ pub type McpBootstrapResult = Result<McpManagerUpdate, String>;
 pub enum UserInputProvenance {
     /// Text typed or submitted through the active UI/API input boundary.
     ExternalUser,
-    /// Runtime-generated continuation, diagnostic, or tool feedback.
+    /// Runtime-generated diagnostic or tool feedback.
     Runtime,
+    GoalContinuation,
     /// Completion/event text from a child worker or sub-agent handoff.
     SubAgentHandoff,
     /// A bounded, typed Agent Mail envelope delivered by the durable runtime.
@@ -156,6 +157,7 @@ impl UserInputProvenance {
         match self {
             Self::ExternalUser => "external_user",
             Self::Runtime => "runtime",
+            Self::GoalContinuation => "goal_continuation",
             Self::SubAgentHandoff => "subagent_handoff",
             Self::AgentMail => "agent_mail",
             Self::ImportedTranscript => "imported_transcript",

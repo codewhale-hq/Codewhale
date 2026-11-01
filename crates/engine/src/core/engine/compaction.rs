@@ -201,14 +201,13 @@ impl Engine {
         system_prompt: Option<&SystemPrompt>,
         messages: &[Message],
     ) -> Option<String> {
-        // The engine owns automatic compaction. Asking the model to warn the
-        // user here created a competing save/compact ceremony before the
-        // automatic request-boundary guard could do its work (#5620).
-        if self.config.compaction.enabled {
-            return None;
-        }
         let input_tokens =
-            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
+            crate::compaction::estimate_input_tokens_for_pressure(messages, system_prompt)
+                .saturating_add(if current_text.trim().is_empty() {
+                    0
+                } else {
+                    current_text.len() / 4 + 12
+                });
         let budget = crate::route_budget::route_context_budget_with_window(
             prompt_context.provider,
             &prompt_context.model,
@@ -216,9 +215,34 @@ impl Engine {
             prompt_context.context_window.map(|window| window.tokens),
             input_tokens,
         )?;
-        context_pressure_message(budget.usage_percent()).map(|warning| format!(
-            "{warning}. Estimated input: {input_tokens} tokens ({:.1}% of route budget). Making room automatically is off for this session. /compact saves the original conversation and its model-written handoff before replacing context.",
+        let estimate = format!(
+            "Estimated conversation input: {input_tokens} / {} context tokens ({:.1}%).",
+            budget.window_tokens,
             budget.usage_percent(),
+        );
+        let compaction = &self.config.compaction;
+        if compaction.enabled {
+            if self.api_provider == prompt_context.provider
+                && self.config.model == prompt_context.model
+                && self.active_route_limits == prompt_context.route_limits
+                && compaction.effective_context_window.map(u64::from) == Some(budget.window_tokens)
+            {
+                return Some(format!(
+                    "{estimate} Automatic compaction threshold: {} tokens.",
+                    compaction.token_threshold
+                ));
+            }
+            return Some(format!("{estimate} Automatic compaction is enabled."));
+        }
+        let conservative =
+            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
+        let pressure = codewhale_runtime::context_budget::usage_percent(
+            budget.window_tokens,
+            conservative as u64,
+        );
+        Some(context_pressure_message(pressure).map_or_else(
+            || format!("{estimate} Automatic compaction is off."),
+            |warning| format!("{warning}. {estimate} Making room automatically is off for this session. /compact saves the original conversation and its model-written handoff before replacing context."),
         ))
     }
 

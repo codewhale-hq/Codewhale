@@ -1568,6 +1568,9 @@ impl RuntimeTurnInputSource {
             }
             Self::ExtensionCommand { .. } => crate::core::ops::UserInputProvenance::Runtime,
             Self::AgentMail { .. } => crate::core::ops::UserInputProvenance::AgentMail,
+            Self::GoalContinuation {
+                continuation_index, ..
+            } if *continuation_index > 0 => crate::core::ops::UserInputProvenance::GoalContinuation,
             Self::GoalContinuation { .. } | Self::Scheduled { .. } => {
                 crate::core::ops::UserInputProvenance::Runtime
             }
