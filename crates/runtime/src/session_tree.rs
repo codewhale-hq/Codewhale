@@ -47,7 +47,7 @@ pub enum SessionEntryKind {
 /// masked, so a transcript that gained or dropped the envelope still matches
 /// the turn it already stored, and a role change never does.
 pub fn same_message_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
-    a.role == b.role && normalized_blocks(a) == normalized_blocks(b)
+    a.role == b.role && normalized_blocks(a).eq(normalized_blocks(b))
 }
 
 /// A block that is nothing but one `<turn_meta>…</turn_meta>` envelope.
@@ -70,15 +70,16 @@ fn strip_leading_turn_metadata(text: &str) -> &str {
 }
 
 /// Borrowed comparison form: text blocks compare as their stripped slice, so
-/// the relaxed comparison allocates nothing and cannot drop a payload. Only
-/// `Text` carries `cache_control`, so every other variant compares verbatim.
+/// the relaxed comparison clones nothing and cannot drop a payload. The view
+/// is an iterator over the message's own blocks, so it allocates nothing
+/// either. Only `Text` is masked, so every other variant compares verbatim.
 #[derive(PartialEq)]
 enum NormalizedBlock<'a> {
     Text(&'a str),
     Other(&'a ContentBlock),
 }
 
-fn normalized_blocks(message: &Message) -> Vec<NormalizedBlock<'_>> {
+fn normalized_blocks(message: &Message) -> impl Iterator<Item = NormalizedBlock<'_>> {
     let blocks = &message.content;
     let mut start = 0;
     let mut end = blocks.len();
@@ -92,15 +93,10 @@ fn normalized_blocks(message: &Message) -> Vec<NormalizedBlock<'_>> {
     {
         end -= 1;
     }
-    blocks[start..end]
-        .iter()
-        .map(|block| match block {
-            ContentBlock::Text { text, .. } => {
-                NormalizedBlock::Text(strip_leading_turn_metadata(text))
-            }
-            other => NormalizedBlock::Other(other),
-        })
-        .collect()
+    blocks[start..end].iter().map(|block| match block {
+        ContentBlock::Text { text, .. } => NormalizedBlock::Text(strip_leading_turn_metadata(text)),
+        other => NormalizedBlock::Other(other),
+    })
 }
 impl SessionEntryKind {
     pub fn is_contextual(&self) -> bool {
@@ -418,11 +414,13 @@ impl SessionJournal {
 
     /// Make `messages` the active projection without rewriting the journal.
     ///
-    /// The existing active branch stays as evidence. A prefix that differs
-    /// only by engine `<turn_meta>` metadata is refreshed in place, so the
-    /// stored shape follows the live transcript instead of forking a second
-    /// copy of the same turn; anything past the prefix is appended as a
-    /// sibling branch.
+    /// A prefix that differs only by engine `<turn_meta>` metadata is refreshed
+    /// in place, so the stored shape follows the live transcript instead of
+    /// forking a second copy of the same turn. That rewrite keeps the entry id,
+    /// `created_at` and parent link — ordering comes from the parent chain — and
+    /// replaces the previously stored payload, so the old shape is not kept as
+    /// a sibling. Anything past the prefix is appended as a sibling branch and
+    /// stays reachable.
     pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
         self.rebranch_active_messages_stamped(messages, &[])
     }
@@ -459,6 +457,11 @@ impl SessionJournal {
         self.leaf_id = leaf_id;
         for (id, message) in refreshed {
             let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
+                tracing::warn!(
+                    entry_id = %id,
+                    "rebranch: refreshed entry vanished before the rewrite; the \
+                     stored prefix keeps its previous shape"
+                );
                 continue;
             };
             if let SessionEntryKind::Message { message: stored } = Arc::make_mut(&mut entry.kind) {
