@@ -1388,13 +1388,18 @@ pub(crate) fn apply_notification_update(
     Ok(())
 }
 
+pub(super) enum ConversationRewind {
+    Command(codewhale_command_contract::facets::SessionSyncPayload),
+    Backtrack(usize),
+}
+
 /// Roll back only this idle Engine conversation, then require a durability
 /// receipt before a retry can reach inference. A save failure leaves the
 /// acknowledged undo visible, reports the error, and sends no replacement turn.
-async fn apply_conversation_undo(
+pub(super) async fn apply_conversation_undo(
     app: &mut App,
     engine: &EngineHandle,
-    sync: codewhale_command_contract::facets::SessionSyncPayload,
+    target: ConversationRewind,
 ) -> Result<Option<anyhow::Error>> {
     anyhow::ensure!(
         !app.is_loading
@@ -1402,42 +1407,76 @@ async fn apply_conversation_undo(
             && !app.remote_control.runtime_chat_blocks_local_dispatch(),
         "wait for the active turn to finish before undoing its conversation"
     );
-    let before = engine.get_session_snapshot().await?;
+    let backtrack = matches!(target, ConversationRewind::Backtrack(_));
+    let before = if backtrack {
+        let (tx, receive) = tokio::sync::oneshot::channel();
+        engine.try_send(Op::GetSessionSnapshot {
+            tx: Arc::new(std::sync::Mutex::new(Some(tx))),
+        })?;
+        receive.await?
+    } else {
+        engine.get_session_snapshot().await?
+    };
     let before_prompt =
         codewhale_engine::compaction::strip_compaction_summaries(before.system_prompt.as_ref());
+    let changed = || {
+        app.tr(MessageId::ConversationChangedBeforeUndo)
+            .into_owned()
+    };
     anyhow::ensure!(
         app.current_session_id
             .as_deref()
             .is_none_or(|id| id == before.session_id)
-            && sync.session_id == app.current_session_id
-            && sync.workspace == before.workspace
-            && sync.model == before.model
+            && app.workspace == before.workspace
+            && app.model == before.model
             && before.mode == app.mode.as_setting()
             && codewhale_engine::compaction::strip_compaction_summaries(app.system_prompt.as_ref())
                 == before_prompt
-            && codewhale_engine::compaction::strip_compaction_summaries(
-                sync.system_prompt.as_ref()
-            ) == before_prompt
-            && before.messages.as_slice() == app.api_messages.as_slice()
-            && sync.messages.len() < before.messages.len()
-            && before.messages.starts_with(&sync.messages),
+            && before.messages.as_slice() == app.api_messages.as_slice(),
         "{}",
-        app.tr(MessageId::ConversationChangedBeforeUndo)
+        changed()
+    );
+    let (messages, backtrack_depth) = match target {
+        ConversationRewind::Command(sync) => {
+            anyhow::ensure!(
+                sync.session_id == app.current_session_id
+                    && sync.workspace == before.workspace
+                    && sync.model == before.model
+                    && codewhale_engine::compaction::strip_compaction_summaries(
+                        sync.system_prompt.as_ref()
+                    ) == before_prompt,
+                "{}",
+                changed()
+            );
+            (sync.messages, None)
+        }
+        ConversationRewind::Backtrack(depth) => {
+            let cut =
+                backtrack_api_cut_index(app, depth).ok_or_else(|| anyhow::anyhow!(changed()))?;
+            (app.api_messages[..cut].to_vec(), Some(depth))
+        }
+    };
+    anyhow::ensure!(
+        messages.len() < before.messages.len() && before.messages.starts_with(&messages),
+        "{}",
+        changed()
     );
     let id = before.session_id.clone();
     // A live rewind retains the checkpoint already owned by these messages.
     // The Engine alone restores it and invalidates dependent caches.
-    let expected = codewhale_engine::runtime_handoff::project_owned_messages_for_restore(
-        sync.messages.clone(),
-    );
+    let expected =
+        codewhale_engine::runtime_handoff::project_owned_messages_for_restore(messages.clone());
     let (tx, receive) = tokio::sync::oneshot::channel();
-    engine
-        .send(Op::RewindConversation {
-            expected: Box::new(before),
-            messages: sync.messages,
-            tx,
-        })
-        .await?;
+    let rewind = Op::RewindConversation {
+        expected: Box::new(before),
+        messages,
+        tx,
+    };
+    if backtrack {
+        engine.try_send(rewind)?;
+    } else {
+        engine.send(rewind).await?;
+    }
     // This receipt comes from the same Engine operation that compares and
     // installs history. A queued update between preflight and rewind refuses.
     let installed = receive.await?.ok_or_else(|| {
@@ -1450,11 +1489,15 @@ async fn apply_conversation_undo(
         installed.session_id == id && installed.messages == expected,
         "the Engine did not acknowledge the conversation rollback"
     );
-    while !app.history.is_empty() {
-        let last_is_user = matches!(app.history.last(), Some(HistoryCell::User { .. }));
-        app.pop_history();
-        if last_is_user {
-            break;
+    if let Some(depth) = backtrack_depth {
+        apply_backtrack(app, depth);
+    } else {
+        while !app.history.is_empty() {
+            let last_is_user = matches!(app.history.last(), Some(HistoryCell::User { .. }));
+            app.pop_history();
+            if last_is_user {
+                break;
+            }
         }
     }
     app.set_api_messages(Arc::new(installed.messages));
@@ -1883,8 +1926,12 @@ async fn apply_command_result_inner(
                 retry_input,
                 edit_replacement,
             } => {
-                let persistence_error = match apply_conversation_undo(app, engine_handle, sync)
-                    .await
+                let persistence_error = match apply_conversation_undo(
+                    app,
+                    engine_handle,
+                    ConversationRewind::Command(sync),
+                )
+                .await
                 {
                     Ok(error) => error,
                     Err(error) => {
@@ -3620,18 +3667,6 @@ pub(crate) fn apply_backtrack(app: &mut App, depth: usize) {
     // revisions and tool-cell maps are kept consistent through
     // `App::truncate_history_to`.
     app.truncate_history_to(history_idx);
-
-    // Trim the API-message log at the matching user PROMPT. `depth` counts
-    // visible `HistoryCell::User` cells (real prompts), but a naive
-    // `role == "user"` walk over `api_messages` over-counts: tool results are
-    // stored as `role == "user"` messages too, so in any turn with tool calls
-    // the cut would land mid-turn on a tool_result — leaving a dangling
-    // assistant tool_use with no matching result and a transcript the provider
-    // rejects. Count only messages that actually yield a User cell, the same
-    // predicate `apply_loaded_session` uses.
-    if let Some(idx) = backtrack_api_cut_index(&app.api_messages, depth) {
-        app.truncate_api_messages(idx);
-    }
 
     // Hand the dropped text back to the user so they can edit + resend.
     app.input = user_text;

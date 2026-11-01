@@ -159,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- After `/undo` restores files, Codewhale saves the conversation rewind before reporting completion. Reopening the session starts at the restored turn. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
+- After `/undo` restores files, Codewhale saves the conversation rewind before reporting completion. Pressing Esc twice and choosing an earlier request also saves that exact conversation boundary, even when two requests have identical text. The picker keeps workspace files as they are. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
 - Feishu and Weixin persist each incoming message ID before handling it. Concurrent deliveries share one result. After a restart, a message with an uncertain outcome stays pending until the bridge can tell the user to check its status. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for the durability audit (#6555).
 
 - Custom OpenAI-compatible routes now honor explicit output requests within the
