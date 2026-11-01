@@ -1850,30 +1850,19 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             rest = &rest[2 + end + 2..];
             continue;
         }
-        // [text](url)
-        if rest.starts_with('[')
-            && let Some(bracket_end) = rest.find(']')
-        {
-            let text = &rest[1..bracket_end];
-            let after_bracket = &rest[bracket_end + 1..];
-            if after_bracket.starts_with('(')
-                && let Some(paren_end) = after_bracket
-                    .match_indices(')')
-                    .map(|(index, _)| index)
-                    .find(|&index| has_unmatched_closing_delimiter(&after_bracket[1..=index], ')'))
-            {
-                let url = &after_bracket[1..paren_end];
-                // The runtime toggle gates backend emission, not layout.
-                // Keeping the same visible label and metadata in both modes
-                // prevents toggling OSC 8 from reflowing the transcript.
-                out.push(InlineToken::new(
-                    text.to_string(),
-                    link_style,
-                    normalized_link_target(url),
-                ));
-                rest = &after_bracket[paren_end + 1..];
-                continue;
-            }
+        // [text](url), ![alt](src) and [![alt](src)](href)
+        let image = usize::from(rest.starts_with("!["));
+        if let Some((text, url, link_len)) = split_markdown_link(&rest[image..]) {
+            // The runtime toggle gates backend emission, not layout.
+            // Keeping the same visible label and metadata in both modes
+            // prevents toggling OSC 8 from reflowing the transcript.
+            out.push(InlineToken::new(
+                text.to_string(),
+                link_style,
+                normalized_link_target(url),
+            ));
+            rest = &rest[image + link_len..];
+            continue;
         }
         // URL: consume until whitespace, full-width punctuation or a curly
         // quote, then keep trailing punctuation visible but outside the
@@ -1996,6 +1985,33 @@ fn trailing_url_end(candidate: &str) -> usize {
     end
 }
 
+fn split_markdown_link(source: &str) -> Option<(&str, &str, usize)> {
+    let label = source.strip_prefix('[')?;
+    if let Some(image) = label.strip_prefix('!')
+        && let Some(alt_end) = image.strip_prefix('[').and_then(|alt| alt.find(']'))
+        && let Some((_, image_tail)) = split_link_destination(&image[1 + alt_end..])
+        && let Some((href, tail)) = split_link_destination(&image[1 + alt_end + image_tail..])
+    {
+        return Some((
+            &image[1..1 + alt_end],
+            href,
+            3 + alt_end + image_tail + tail,
+        ));
+    }
+    let label_end = label.find(']')?;
+    let (url, tail) = split_link_destination(&label[label_end..])?;
+    Some((&label[..label_end], url, 1 + label_end + tail))
+}
+
+fn split_link_destination(after_label: &str) -> Option<(&str, usize)> {
+    let destination = after_label.strip_prefix("](")?;
+    let end = destination
+        .match_indices(')')
+        .map(|(index, _)| index)
+        .find(|&index| has_unmatched_closing_delimiter(&destination[..=index], ')'))?;
+    Some((&destination[..end], end + 3))
+}
+
 fn has_unmatched_closing_delimiter(candidate: &str, closing: char) -> bool {
     let opening = match closing {
         ')' => '(',
@@ -2022,6 +2038,7 @@ fn find_next_marker(s: &str) -> usize {
             || slice.starts_with("~~")
             || slice.starts_with('`')
             || slice.starts_with('[')
+            || slice.starts_with("![")
             || (slice.starts_with('*') && !slice.starts_with("**"))
             || (slice.starts_with('_') && !slice.starts_with("__"))
             || slice.starts_with("http://")
