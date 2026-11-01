@@ -158,6 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Custom OpenAI-compatible routes now honor explicit output requests within the
+  configured window and serving limits. A hosted model with the same name
+  could previously truncate reasoning at 32,768 tokens. Thanks
+  [@Gabriel-Degret](https://github.com/Gabriel-Degret) for reporting [#7179](https://github.com/codewhale-hq/Codewhale/issues/7179).
 - **Star keycaps stay intact in Markdown (#7176):** plain and escaped text
   preserve the full grapheme, and a keycap cannot open emphasis. The separate
   Windows Terminal font-fallback issue remains unqualified. Thanks
@@ -337,6 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Contributors
 
+- **[@Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[@Felixkw12](https://github.com/Felixkw12)** — added Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — per-scope instruction budgets with visible truncation ([#7086](https://github.com/codewhale-hq/Codewhale/pull/7086), [#6526](https://github.com/codewhale-hq/Codewhale/issues/6526)).
 - **[@Lstarsky0](https://github.com/Lstarsky0)** — kept the `/diff` pager's place across a resize ([#7087](https://github.com/codewhale-hq/Codewhale/pull/7087)), said "Goal cleared." only when there was a goal ([#7089](https://github.com/codewhale-hq/Codewhale/pull/7089)), and stopped printing an unpriced session cost as `$0.0000` in `/status` ([#7090](https://github.com/codewhale-hq/Codewhale/pull/7090)), kept Normal-mode keys out of the draft on terminals without bracketed paste ([#7126](https://github.com/codewhale-hq/Codewhale/pull/7126)) and let shifted keys such as `G` reach Normal mode ([#7130](https://github.com/codewhale-hq/Codewhale/pull/7130)), kept the quote rail on every wrapped row of a blockquote ([#7144](https://github.com/codewhale-hq/Codewhale/pull/7144)), kept a nested list paragraph's indent ([#7146](https://github.com/codewhale-hq/Codewhale/pull/7146)), rendered `~~~` fences as code ([#7156](https://github.com/codewhale-hq/Codewhale/pull/7156)), left asterisks that do not open emphasis literal ([#7157](https://github.com/codewhale-hq/Codewhale/pull/7157)), ended bare URLs at full-width punctuation ([#7158](https://github.com/codewhale-hq/Codewhale/pull/7158)), kept a link target's own parentheses ([#7170](https://github.com/codewhale-hq/Codewhale/pull/7170)), rendered code and links inside emphasis ([#7171](https://github.com/codewhale-hq/Codewhale/pull/7171)) and stopped the engine's fleet-roster and stream-timeout statuses from taking over the footer ([#7152](https://github.com/codewhale-hq/Codewhale/pull/7152), [#7169](https://github.com/codewhale-hq/Codewhale/pull/7169)).
