@@ -43,61 +43,6 @@ pub enum SessionEntryKind {
         content: String,
     },
 }
-/// `a` and `b` carry the same content. Engine-owned `<turn_meta>` metadata is
-/// masked, so a transcript that gained or dropped the envelope still matches
-/// the turn it already stored, and a role change never does.
-pub fn same_message_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
-    a.role == b.role && normalized_blocks(a).eq(normalized_blocks(b))
-}
-
-/// A block that is nothing but one `<turn_meta>…</turn_meta>` envelope.
-/// [`strip_leading_turn_metadata`] decides it, so a block that merely starts
-/// and ends with the tags — `<turn_meta>x</turn_meta>real text</turn_meta>` —
-/// keeps its trailing text and is not treated as metadata-only.
-fn is_complete_turn_metadata_block(text: &str) -> bool {
-    text.trim_start().starts_with("<turn_meta>") && strip_leading_turn_metadata(text).is_empty()
-}
-
-fn strip_leading_turn_metadata(text: &str) -> &str {
-    let trimmed = text.trim_start();
-    let Some(rest) = trimmed.strip_prefix("<turn_meta>") else {
-        return text;
-    };
-    let Some(end) = rest.find("</turn_meta>") else {
-        return text;
-    };
-    rest[end + "</turn_meta>".len()..].trim_start()
-}
-
-/// Borrowed comparison form: text blocks compare as their stripped slice, so
-/// the relaxed comparison clones nothing and cannot drop a payload. The view
-/// is an iterator over the message's own blocks, so it allocates nothing
-/// either. Only `Text` is masked, so every other variant compares verbatim.
-#[derive(PartialEq)]
-enum NormalizedBlock<'a> {
-    Text(&'a str),
-    Other(&'a ContentBlock),
-}
-
-fn normalized_blocks(message: &Message) -> impl Iterator<Item = NormalizedBlock<'_>> {
-    let blocks = &message.content;
-    let mut start = 0;
-    let mut end = blocks.len();
-    if end - start >= 2
-        && matches!(&blocks[start], ContentBlock::Text { text, .. } if is_complete_turn_metadata_block(text))
-    {
-        start += 1;
-    }
-    if end - start >= 2
-        && matches!(&blocks[end - 1], ContentBlock::Text { text, .. } if is_complete_turn_metadata_block(text))
-    {
-        end -= 1;
-    }
-    blocks[start..end].iter().map(|block| match block {
-        ContentBlock::Text { text, .. } => NormalizedBlock::Text(strip_leading_turn_metadata(text)),
-        other => NormalizedBlock::Other(other),
-    })
-}
 impl SessionEntryKind {
     pub fn is_contextual(&self) -> bool {
         matches!(
@@ -105,27 +50,12 @@ impl SessionEntryKind {
             Self::Message { .. } | Self::User { .. } | Self::Assistant { .. }
         )
     }
-    /// Exactly the stored message, without synthesizing legacy variants.
-    pub fn exact_message(&self) -> Option<&Message> {
-        match self {
-            Self::Message { message } => Some(message),
-            _ => None,
-        }
-    }
-
-    /// `self.as_message()` equals `message`, byte-for-byte. Only `Message`
-    /// entries also match after removing engine-owned `<turn_meta>` metadata
-    /// from both sides: that envelope is written by the engine into stored
-    /// messages, while `Compaction` and `BranchSummary` project to text this
-    /// crate synthesizes, so the live transcript must spell it exactly. A
-    /// kind that can only match relaxed would be selected for a rewrite it
-    /// cannot receive.
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
             Self::Message { message: own } => {
-                own == message || same_message_ignoring_turn_metadata(own, message)
+                codewhale_models::turn_classify::same_recorded_turn(own, message)
             }
-            other => other.as_message().is_some_and(|own| &own == message),
+            other => other.as_message().as_ref() == Some(message),
         }
     }
     pub fn as_message(&self) -> Option<Message> {
@@ -199,6 +129,7 @@ impl SessionEntry {
 pub struct Rebranch {
     pub previous_active: usize,
     pub shared_prefix: usize,
+    pub kept_recorded_metadata: bool,
 }
 
 impl Rebranch {
@@ -412,15 +343,8 @@ impl SessionJournal {
         self.active_messages(true)
     }
 
-    /// Make `messages` the active projection without rewriting the journal.
-    ///
-    /// A prefix that differs only by engine `<turn_meta>` metadata is refreshed
-    /// in place, so the stored shape follows the live transcript instead of
-    /// forking a second copy of the same turn. That rewrite keeps the entry id,
-    /// `created_at` and parent link — ordering comes from the parent chain — and
-    /// replaces the previously stored payload, so the old shape is not kept as
-    /// a sibling. Anything past the prefix is appended as a sibling branch and
-    /// stays reachable.
+    /// Keep the shared prefix and its original stamps. A provisional user
+    /// entry can gain its Engine stamp until another branch shares it.
     pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
         self.rebranch_active_messages_stamped(messages, &[])
     }
@@ -432,40 +356,55 @@ impl SessionJournal {
         messages: &[Message],
         stamps: &[DateTime<Utc>],
     ) -> Rebranch {
-        let (previous_active, shared_prefix, refreshed, leaf_id) = {
-            let active_path = self.root_to_leaf();
-            let previous_active = active_path.len();
-            let shared_prefix = active_path
-                .iter()
-                .zip(messages)
-                .take_while(|(entry, message)| entry.kind.projects_to(message))
-                .count();
-            let refreshed: Vec<(EntryId, Message)> = (0..shared_prefix)
-                .filter(|&index| {
-                    matches!(
-                        active_path[index].kind.exact_message(),
-                        Some(stored) if stored != &messages[index]
-                    )
-                })
-                .map(|index| (active_path[index].id.clone(), messages[index].clone()))
-                .collect();
-            let leaf_id = shared_prefix
-                .checked_sub(1)
-                .map(|index| active_path[index].id.clone());
-            (previous_active, shared_prefix, refreshed, leaf_id)
-        };
-        self.leaf_id = leaf_id;
-        for (id, message) in refreshed {
-            let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
-                tracing::warn!(
-                    entry_id = %id,
-                    "rebranch: refreshed entry vanished before the rewrite; the \
-                     stored prefix keeps its previous shape"
-                );
-                continue;
-            };
-            if let SessionEntryKind::Message { message: stored } = Arc::make_mut(&mut entry.kind) {
-                *stored = message;
+        let path = self.root_to_leaf();
+        let previous_active = path.len();
+        let mut shared_prefix: usize = 0;
+        let mut kept_recorded_metadata = false;
+        let mut refresh = HashMap::new();
+        let mut protected_prefix = None;
+        for (index, (entry, incoming)) in path.iter().zip(messages).enumerate() {
+            if !entry.kind.projects_to(incoming) {
+                break;
+            }
+            if let SessionEntryKind::Message { message: stored } = &*entry.kind
+                && stored != incoming
+            {
+                if stored.content.len() > incoming.content.len() {
+                    kept_recorded_metadata = true;
+                } else {
+                    let shared = protected_prefix.get_or_insert_with(|| {
+                        if path.len() == self.entries.len() {
+                            return 0;
+                        }
+                        let mut parents = HashSet::new();
+                        let fork_points: HashSet<_> = self
+                            .entries
+                            .iter()
+                            .filter_map(|entry| entry.parent_id.as_deref())
+                            .filter(|parent| !parents.insert(*parent))
+                            .collect();
+                        path.iter()
+                            .rposition(|entry| fork_points.contains(entry.id.as_str()))
+                            .map_or(0, |index| index + 1)
+                    });
+                    if index < *shared {
+                        break;
+                    }
+                    refresh.insert(entry.id.clone(), incoming);
+                }
+            }
+            shared_prefix += 1;
+        }
+        self.leaf_id = shared_prefix
+            .checked_sub(1)
+            .map(|index| path[index].id.clone());
+        if !refresh.is_empty() {
+            for entry in &mut self.entries {
+                if let Some(&incoming) = refresh.get(&entry.id) {
+                    entry.kind = Arc::new(SessionEntryKind::Message {
+                        message: incoming.clone(),
+                    });
+                }
             }
         }
         for (index, message) in messages.iter().enumerate().skip(shared_prefix) {
@@ -479,6 +418,7 @@ impl SessionJournal {
         Rebranch {
             previous_active,
             shared_prefix,
+            kept_recorded_metadata,
         }
     }
 
@@ -1270,9 +1210,10 @@ mod tests {
         let before = j.entries.len();
 
         let mut stamped = msg("user", "hi");
-        if let ContentBlock::Text { text, .. } = &mut stamped.content[0] {
-            *text = format!("<turn_meta>{{\"turn\":1}}</turn_meta>\n{text}");
-        }
+        stamped.content.push(ContentBlock::Text {
+            text: "<turn_meta>\nCurrent local date: 2026-10-31\nCurrent workspace: /fixture\n</turn_meta>".into(),
+            cache_control: None,
+        });
         let live = vec![stamped, msg("assistant", "there")];
 
         let report = j.rebranch_active_messages(&live);
@@ -1329,7 +1270,7 @@ mod tests {
         assert!(
             j.entries
                 .iter()
-                .any(|entry| entry.kind.exact_message() == Some(&stored)),
+                .any(|entry| matches!(&*entry.kind, SessionEntryKind::Message { message } if message == &stored)),
             "the stored payload stays in the journal as its own branch"
         );
     }

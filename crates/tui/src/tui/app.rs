@@ -5502,12 +5502,20 @@ impl App {
     /// lands within a turn-event of the real append. The shared snapshot is
     /// installed without copying.
     pub fn set_api_messages(&mut self, messages: Arc<Vec<Message>>) -> usize {
-        let unchanged = self
+        let exact = self
             .api_messages
             .iter()
             .zip(messages.iter())
             .take_while(|(old, new)| old == new)
             .count();
+        let unchanged = exact
+            + self.api_messages[exact..]
+                .iter()
+                .zip(&messages[exact..])
+                .take_while(|(old, new)| {
+                    codewhale_models::turn_classify::same_recorded_turn(old, new)
+                })
+                .count();
         self.api_message_stamps
             .truncate(unchanged.min(self.api_message_stamps.len()));
         self.api_message_stamps
@@ -5518,7 +5526,7 @@ impl App {
             self.window_reroot_cause = Some("engine_projection");
         }
         self.api_messages = messages;
-        unchanged
+        exact
     }
 
     /// Install a resumed conversation, reusing the persisted journal's

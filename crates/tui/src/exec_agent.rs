@@ -220,6 +220,8 @@ pub(crate) async fn run_exec_agent(
     use codewhale_engine::tools::todo::new_shared_todo_list;
     use codewhale_execpolicy::ApprovalMode;
 
+    let _timing = codewhale_runtime::logging::PhaseTimer::start("exec_total");
+    let startup_timing = codewhale_runtime::logging::PhaseTimer::start("exec_startup");
     ignore_sigpipe_for_headless_exec();
 
     // Withhold `request_user_input`; a headless run has no responder.
@@ -343,7 +345,8 @@ pub(crate) async fn run_exec_agent(
         "sha256:{}",
         codewhale_runtime::hashing::sha256_hex(prompt.as_bytes())
     );
-    let binary_sha256 = current_binary_sha256();
+    let mut binary_identity =
+        (output_format == ExecOutputFormat::StreamJson).then(start_binary_sha256);
     let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
     // The Full Access posture travels in the op's auto_approve/approval_mode
     // fields; modes no longer carry permission.
@@ -726,6 +729,7 @@ pub(crate) async fn run_exec_agent(
         .unwrap_or_else(codewhale_hooks::LifecycleOutbox::disabled);
     // Wall clock for the outbox `turn_end` duration starts at the same
     // `Op::SendMessage` boundary where `turn_start` is emitted below.
+    drop(startup_timing);
     let exec_turn_started_at = Instant::now();
 
     engine_handle
@@ -1194,6 +1198,7 @@ pub(crate) async fn run_exec_agent(
                 tool_catalog,
                 ..
             } => {
+                let _timing = codewhale_runtime::logging::PhaseTimer::start("exec_postprocessing");
                 let mut terminal_status = status;
                 let terminal_error = error;
                 #[cfg(unix)]
@@ -1421,6 +1426,10 @@ pub(crate) async fn run_exec_agent(
                         !summary.output.trim().is_empty(),
                     )
                     .unwrap_or_default();
+                    let binary_sha256 = match binary_identity.take() {
+                        Some(worker) => worker.await.ok().flatten(),
+                        None => None,
+                    };
                     emit_exec_stream_event(&ExecStreamEvent::Metadata {
                         meta: Box::new(ExecStreamMeta {
                             receipt_kind: "terminal",
@@ -1443,7 +1452,7 @@ pub(crate) async fn run_exec_agent(
                             retry_count: observed_retry_count,
                             approval_posture: approval_posture.clone(),
                             sandbox_posture: sandbox_posture.clone(),
-                            binary_sha256: binary_sha256.clone(),
+                            binary_sha256,
                             config_sha256: None,
                             prompt_sha256: prompt_sha256.clone(),
                             tool_catalog_sha256: tool_catalog.as_ref().and_then(|catalog| {

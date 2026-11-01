@@ -11,6 +11,7 @@ impl Engine {
         client: &SharedModelClient,
         inspection_surface: Option<&crate::tool_inspection::ToolSurfaceContext>,
     ) -> PhaseResult<PreparedModelStep> {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("model_preparation");
         if self.rlm_host.is_some() {
             return self
                 .prepare_rlm_model_step(turn, client, inspection_surface)
@@ -33,7 +34,7 @@ impl Engine {
             &mut progress.active_tool_names,
         )
         .await;
-        self.record_mcp_runtime_context(tool_policy, &progress.tool_catalog)
+        self.record_mcp_runtime_context(tool_policy, &mut progress.tool_catalog)
             .await;
         self.record_current_constitution().await;
         self.record_current_extension_prompt_contributions().await;

@@ -18,11 +18,10 @@ use codewhale_core::ContextReference;
 #[cfg(test)]
 use codewhale_core::{ContextReferenceKind, ContextReferenceSource};
 use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
+use codewhale_models::turn_classify::same_recorded_turn;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
 use codewhale_runtime::artifacts::ArtifactRecord;
-use codewhale_runtime::session_tree::{
-    SessionEntry, SessionImportContainer, SessionJournal, same_message_ignoring_turn_metadata,
-};
+use codewhale_runtime::session_tree::{SessionEntry, SessionImportContainer, SessionJournal};
 use codewhale_util::utils::write_atomic;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1232,7 +1231,7 @@ impl SavedSession {
     /// `metadata.message_count` that disagrees with `messages.len()`. Rewriting
     /// that count here would silently edit live data on every save.
     pub fn make_storage_compatible(&mut self) {
-        let Some(journal) = self.journal.as_ref() else {
+        let Some(journal) = self.journal.as_mut() else {
             return;
         };
         if self.messages.is_empty() {
@@ -1241,14 +1240,11 @@ impl SavedSession {
             if self.messages == journal.to_messages() {
                 return;
             }
-            // Split the `journal` / `messages` borrows; the take is returned
-            // before this function ends, so the session is never left short.
-            let messages = std::mem::take(&mut self.messages);
-            if let Some(journal) = self.journal.as_mut() {
-                journal.rebranch_active_messages(&messages);
-                self.leaf_id = journal.leaf_id.clone();
+            let report = journal.rebranch_active_messages(&self.messages);
+            self.leaf_id.clone_from(&journal.leaf_id);
+            if report.kept_recorded_metadata {
+                self.messages = journal.to_messages();
             }
-            self.messages = messages;
         }
         self.metadata.message_count = self.messages.len();
     }
@@ -1284,7 +1280,7 @@ impl SavedSession {
             .messages
             .iter()
             .zip(&messages)
-            .take_while(|(old, new)| old == new || same_message_ignoring_turn_metadata(old, new))
+            .take_while(|(old, new)| same_recorded_turn(old, new))
             .count();
         self.turn_outcomes
             .retain(|outcome| outcome.after_message_count <= unchanged);
@@ -5167,8 +5163,9 @@ pub fn update_session(
     let common = messages
         .iter()
         .zip(session.messages.iter())
-        .take_while(|(a, b)| a == b || same_message_ignoring_turn_metadata(a, b))
+        .take_while(|(a, b)| same_recorded_turn(a, b))
         .count();
+    let mut kept_recorded_metadata = false;
     if new_len >= old_len && messages[..old_len] == session.messages[..] {
         if let Some(journal) = session.journal.as_mut() {
             for msg in &messages[old_len..] {
@@ -5179,11 +5176,17 @@ pub fn update_session(
     } else if (new_len != old_len || messages != session.messages.as_slice())
         && let Some(journal) = session.journal.as_mut()
     {
-        let _ = journal.rebranch_active_messages(messages);
+        kept_recorded_metadata = journal
+            .rebranch_active_messages(messages)
+            .kept_recorded_metadata;
         session.leaf_id = journal.leaf_id.clone();
     }
-    session.messages.clear();
-    session.messages.extend_from_slice(messages);
+    if kept_recorded_metadata && let Some(journal) = &session.journal {
+        session.messages = journal.to_messages();
+    } else {
+        session.messages.clear();
+        session.messages.extend_from_slice(messages);
+    }
     session
         .turn_outcomes
         .retain(|outcome| outcome.after_message_count <= common);

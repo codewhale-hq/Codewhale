@@ -22704,8 +22704,8 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // restores the legacy Operate contract, less 30B from the background-shell
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
-// ceiling keeps the 13B Linux margin.
-const PARENT_SURFACE_BYTE_CEILING: usize = 91_556;
+// ceiling keeps its existing platform margin after the reviewed schema growth.
+const PARENT_SURFACE_BYTE_CEILING: usize = 91_812;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
