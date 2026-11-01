@@ -1,24 +1,26 @@
 {
-  "commit": "0d1f50007f9bca3f52b06e1c3074fa14d5fb0720",
+  "commit": "b830ec950faba0a46dda564be3e2d854afed94f1",
   "sources": [
     {
       "upstream_path": "packages/preset/persona/src/index.ts",
       "sha256": "16dc065551de44f581868b029ef1883aca8b990aa724283466f26edfb736db76",
-      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/0d1f50007f9bca3f52b06e1c3074fa14d5fb0720/packages/preset/persona/src/index.ts"
+      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/b830ec950faba0a46dda564be3e2d854afed94f1/packages/preset/persona/src/index.ts"
     },
     {
       "upstream_path": "packages/core/system-prompt/src/index.ts",
-      "sha256": "55f2f5ff122991e84c74116a952683923c9edcbec0b4f25b53e087c82d58c043",
-      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/0d1f50007f9bca3f52b06e1c3074fa14d5fb0720/packages/core/system-prompt/src/index.ts"
+      "sha256": "9e254cddc9ef00072f9205950405ba8650bc43c8809fba6162da93253efc7f71",
+      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/b830ec950faba0a46dda564be3e2d854afed94f1/packages/core/system-prompt/src/index.ts"
     },
     {
       "upstream_path": "LICENSE",
       "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/0d1f50007f9bca3f52b06e1c3074fa14d5fb0720/LICENSE"
+      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/b830ec950faba0a46dda564be3e2d854afed94f1/LICENSE"
     }
   ],
   "adapter": "src/dsh/persona.ts",
   "license_file": "src/dsh/upstream/hooks/LICENSE",
   "mode": "Adapted additive persona configuration and strict simple-template semantics; Engine retains prompt authority",
-  "repository": "https://github.com/deepseek-ai/deepseek-harness"
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "version": "0.2.1-rc.5",
+  "review": "Persona source and strict interpolation semantics are unchanged. New system-prompt context refresh and optional-context behavior remain Engine-owned and are not imported."
 }

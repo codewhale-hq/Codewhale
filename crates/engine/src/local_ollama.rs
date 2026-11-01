@@ -107,10 +107,6 @@ pub async fn adopt_live_local_ollama_for_run(
 }
 
 /// Resolve the OpenAI-compat Ollama base URL (`…/v1`) from config defaults.
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub fn ollama_v1_base_url(config: &Config) -> String {
     config
         .resolve_provider_pin_identity("ollama")
@@ -120,10 +116,6 @@ pub fn ollama_v1_base_url(config: &Config) -> String {
         .unwrap_or_default()
 }
 
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 fn record_ollama_tags_into_lake(
     ticket: &crate::provider_catalog_live::ProviderCatalogRefreshTicket,
     endpoint_v1: &str,
@@ -150,10 +142,6 @@ fn record_ollama_tags_into_lake(
 /// Probe local Ollama for a live catalog. Prefers native `/api/tags`, falls
 /// back to OpenAI-compat `/v1/models`. Returns `None` when nothing useful
 /// answered — never invents a tag.
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub async fn probe_live_local_ollama_catalog(config: &Config) -> Option<LiveLocalOllamaCatalog> {
     let endpoint_v1 = ollama_v1_base_url(config);
     let origin = ollama_native_origin(&endpoint_v1);

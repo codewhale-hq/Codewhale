@@ -1,5 +1,5 @@
 /**
- * Matcher shared by both hook dialects. Claude treats alphanumeric/underscore/
+ * Matching and command-group selection shared by both hook dialects. Claude treats alphanumeric/underscore/
  * pipe patterns as literal alternatives and other patterns as regex; Codex
  * treats every non-empty pattern as an unanchored regex. Missing, empty, and
  * `*` match all. Runtime matching contains invalid regexes as non-matches;
@@ -7,7 +7,7 @@
  * @module @deepseek-ai/dsh-hook-protocol/matcher
  */
 
-import type { MatcherMode } from './types.ts'
+import type { MatcherGroup, MatcherMode } from './types.ts'
 
 /** True for an absent / empty / `'*'` pattern — the match-all sentinels. */
 function isMatchAll(matcher: string | undefined): boolean {
@@ -62,4 +62,19 @@ export function matchesMatcher(matcher: string | undefined, query: string, mode:
     return pattern.split('|').includes(query)
   }
   return compileRegex(pattern)?.test(query) ?? false
+}
+
+/**
+ * Select configured groups that have command hooks and match the event subject.
+ * @param groups - groups for one hook point; absent points select no groups.
+ * @param query - the event's matcher subject.
+ * @param mode - dialect controlling literal or regex matching.
+ * @returns Selected groups in config order, retaining their original references.
+ */
+export function selectHookGroups(
+  groups: readonly MatcherGroup[] | undefined,
+  query: string,
+  mode: MatcherMode,
+): MatcherGroup[] {
+  return (groups ?? []).filter(group => group.hooks.length > 0 && matchesMatcher(group.matcher, query, mode))
 }

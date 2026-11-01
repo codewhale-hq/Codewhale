@@ -479,7 +479,7 @@ done
   });
 
   it("states the hosted-provider privacy boundary without a false local-only promise", () => {
-    const faq = text("web/app/[locale]/faq/page.tsx");
+    const faq = text("web/lib/content/faq.tsx");
     const roadmap = text("web/app/[locale]/roadmap/page.tsx");
     const providers = text("docs/PROVIDERS.md");
     const runtime = text("docs/RUNTIME_API.md");

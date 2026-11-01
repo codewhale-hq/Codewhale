@@ -1500,6 +1500,7 @@ For every product-level `CODEWHALE_*` variable below, the matching legacy
 `DEEPSEEK_*` name is still read as a compatibility fallback; when both are set,
 the `CODEWHALE_*` value wins.
 
+- `CODEWHALE_TIMING=1` emits local JSON phase durations on stderr for startup, model preparation, tool planning, approval waits and postprocessing. Nested intervals overlap. The records contain only phase, process ID, end time and elapsed microseconds; stream-json stdout is unchanged.
 - `CODEWHALE_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `CODEWHALE_SKILLS_DIR`
 - `CODEWHALE_MCP_CONFIG`
@@ -2715,8 +2716,8 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   between portable `SKILL.md` bundles and Claude Code plugin runtimes.
 - `[skills.bundled].install` (`"auto"` default, `"all"`, `"none"`): controls bundle writes independently of discovery. `auto` keeps deletion-as-opt-out and disables installation when `skills_dir` is set. `all` repairs enabled missing skills into `$CODEWHALE_HOME/skills` (normally `~/.codewhale/skills`) even with a discovery override. `none` writes nothing and leaves the marker untouched. Modified and managed bodies are preserved in every mode.
 - `[skills.bundled].selected` / `disabled` / `explicit_only` (arrays of names, default `[]`): selection limits installation and discovery; empty selects the whole bundle. Disabled wins and reveals lower-root copies. Explicit-only retains user invocation while removing the shipped copy from the model index and model loading. Aliases share canonical policy. These settings affect recognized global bundle copies only and never delete files. Profile fields merge separately; `[]` clears an inherited list. `doctor` warns about unknown/ignored entries and `/skills inspect` reports per-path reasons. See [bundled skills](SKILLS.md#bundled-skills).
-- `[skills].listing_max_description_chars` (integer, default `400`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
-- `[skills].listing_budget_fraction` (finite number, default `0.05`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
+- `[skills].listing_max_description_chars` (integer, default `120`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
+- `[skills].listing_budget_fraction` (finite number, default `0.002`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
 - `[skills].scan_codewhale_only` (bool, default `false`): when `true`, session
   skill discovery ignores cross-tool roots such as `.claude/skills`,
   `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. Codewhale still

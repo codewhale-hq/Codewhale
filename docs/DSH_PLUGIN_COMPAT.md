@@ -2,7 +2,7 @@
 
 Codewhale runs reviewed DeepSeek Harness (DSH) plugins in its experimental
 Native extension host ([EXTENSIONS.md](EXTENSIONS.md)). The target is DSH
-**0.2.1-rc.2**, pinned in `crates/engine/extension-host/src/dsh/compatibility.json`.
+**0.2.1-rc.5** with Cordis **4.0.5**, pinned in `crates/engine/extension-host/src/dsh/compatibility.json`.
 The Rust Engine keeps turns, sessions, approvals, credentials and receipts; a
 DSH service is offered only where it maps onto one of those existing owners.
 Everything else is refused by name when the plugin activates, never faked.
@@ -27,14 +27,15 @@ For the separate launcher that runs your own installed `dsh`, see
 
 ## What a plugin may inject, and what it may never provide
 
-The compatibility table has two lists and they answer different questions, so a
-name appearing in both is not a contradiction:
+Compatibility table version 3 separates injectable services by their source
+and keeps the authority refusal list separate:
 
-- `provided_services` is what a plugin may **inject** — the host offers it.
-  Enforced at `crates/engine/extension-host/src/root.ts:715`, which fails activation
-  when a plugin injects a name that is not on the list.
+- `provided_services` groups what a plugin may **inject** under `dsh`,
+  `cordis` and `codewhale`. `HostRoot` in
+  `crates/engine/extension-host/src/root.ts` admits the union of those groups
+  and fails activation for any other injected name.
 - `refused_services` is what a plugin may **not provide** — the Codewhale core
-  owns that authority. Enforced at `root.ts:225`, which refuses a plugin that
+  owns that authority. The root reflection wrapper refuses a plugin that
   calls `provide` for one of those names. The single exception is the host's own
   shim of that name, provided once by the root itself.
 
@@ -42,7 +43,18 @@ So `tools` is injectable and unprovidable: a plugin uses the Engine's tool
 registry through the host shim and can never install a second one. `events`,
 `logger`, `reflect` and `registry` are Cordis framework built-ins supplied by
 the host root rather than Codewhale shims. `loader` maps to the reviewed loader
-and is injectable without being advertised as a provided service.
+and is injectable inside reviewed compositions without being advertised as
+a root service. `prompt`, `avatars`, `mcp` and `shellHooks` are Codewhale
+compatibility services, not services declared by DSH. This reclassification
+keeps the same injectable names. Its changed table digest requires fresh
+Native review and trust for previously reviewed plugins.
+
+The rc.5 update reuses loader 1.0.6, include 1.0.10 and group 1.0.5 while
+keeping reviewed module imports and non-writing composition. The legacy
+preset adapter remains explicitly pinned to `0d1f5000`; its replacement
+upstream runtime packages are not adopted. Node support remains
+`^22.19.0 || >=24.0.0`, and Bun remains `>=1.4.0`. rc.5 is a prerelease.
+Local checks of this upgrade do not repeat the live walkthroughs below.
 
 ## Headless services
 
@@ -53,7 +65,10 @@ and is injectable without being advertised as a provided service.
 | `commands.register` | thread-scoped Runtime commands with replay-safe operation keys; a command may submit one text prompt with plugin attribution. A collision with a built-in receives a plugin-specific name and does not replace the built-in. | Existing command path verified; namespaced collision fallback requires the focused current-source check |
 | `sessions.flush(exec.agent.session)` | Engine captures the conversation so far and waits for the Runtime, terminal or `exec` store to confirm the save | Verified on macOS over the Runtime API, including reload after an Engine restart (`17ebeb5f61`); other `sessions` methods refused |
 | `userQuestions.ask` | the Engine's own question flow; answers are typed (choice, your own text, or skipped) | Verified on macOS over the Runtime API (`fff5a476f9`); `wait` and timed asks refused |
-| `prompt`, `storage`, `skills`, `avatars`, `mcp`, `shellHooks`, `logger`, `events`, `reflect`, `registry` | provided | Supported subset; full API inventory not qualified |
+| `storage`, `skills` | DSH-shaped adapters to Engine-owned services | Supported subset; full API inventory not qualified |
+| `prompt`, `avatars`, `mcp`, `shellHooks` | Codewhale compatibility services | Not upstream DSH service declarations |
+| `logger`, `events`, `reflect`, `registry` | Cordis framework built-ins | Supplied by the shared root |
+| Tool definition `deferLoading` | boolean presentation hint accepted without changing Engine loading policy | `when` and execution/authority fields remain refused |
 | `subagents.getProvider('spawn')`, `subagents.startActivation`, caller delivery, `result`, `dispose` | the existing sub-agent manager, through the same approval planning as the model's `agent` tool | Verified on Linux over the Runtime API: the child start raised its own approval card, the child's request carried the persona and lacked the denied tools, and the result came back to the plugin; see the mapping below |
 | `subagents.start` (older DSH form) | refused | Not implemented |
 | `tools.get(name, agent)` | read-only lookup in the calling tool's catalog | Verified with the child-agent probe |

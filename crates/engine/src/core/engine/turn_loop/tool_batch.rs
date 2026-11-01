@@ -11,6 +11,7 @@ impl Engine {
         client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<()> {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("tool_batch");
         let tool_registry = Some(&tool_policy.registry);
         let AcceptedModelStep {
             current_text_visible,
@@ -130,6 +131,7 @@ impl Engine {
             )
             .await;
 
+        let _post_timing = codewhale_runtime::logging::PhaseTimer::start("tool_postprocessing");
         let authority_changed = authority_changed_before_tools || authority_changed_during_tools;
         self.turn_heartbeat.enter(
             super::turn_heartbeat::TurnPhase::Preparing,

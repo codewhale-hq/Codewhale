@@ -17,10 +17,10 @@
     "compile": "node compile-host.mjs"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/cosmokit": "1.8.5",
-    "@deepseek-ai/dsh-util-values": "0.1.7-alpha.2",
-    "@deepseek-ai/schemastery": "3.18.4",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/cosmokit": "1.8.6",
+    "@deepseek-ai/dsh-util-values": "0.2.1-rc.5",
+    "@deepseek-ai/schemastery": "3.18.5",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/js-yaml": "4.0.9",
     "@types/node": "22.20.4",

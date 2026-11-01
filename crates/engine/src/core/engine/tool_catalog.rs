@@ -265,8 +265,7 @@ pub(super) fn surface_budgets_produce_same_catalog(
 /// Mirrors Codex's `ToolMode`: the model's own metadata wins, `[features]`
 /// flags override the default, and anything else is [`ToolMode::Direct`].
 /// There is no user-facing mode to enter — the catalog shape is the whole
-/// mechanism, so `CodeMode` only promotes `execute_tools` from deferred to
-/// eager. (A `CodeModeOnly` restriction needs dispatch enforcement and is a
+/// mechanism. Code mode exposes the VM with at most one named batch shortcut. (A `CodeModeOnly` restriction needs dispatch enforcement and is a
 /// later slice, not a third variant here.)
 ///
 /// KV-cache effect: the inputs are session config (plus future per-model
@@ -404,6 +403,109 @@ pub fn ensure_advanced_tooling(
             cache_control: None,
         });
     }
+}
+
+pub(super) fn unique_named_batch(catalog: &[Tool]) -> Option<usize> {
+    let mut batches = catalog.iter().enumerate().filter(|(_, tool)| {
+        crate::mcp::McpPool::is_mcp_tool(&tool.name)
+            && crate::mcp::named_batch_members(&tool.input_schema).is_some()
+    });
+    let (index, tool) = batches.next()?;
+    (batches.next().is_none()
+        && tool.name.len() <= 128
+        && tool
+            .name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && tool.description.len() <= 2048
+        && tool.input_schema.to_string().len() + tool.description.len() <= 8192)
+        .then_some(index)
+}
+
+pub(super) fn composition_eager(catalog: &[Tool]) -> bool {
+    catalog
+        .iter()
+        .any(|t| t.name == EXECUTE_TOOLS_TOOL_NAME && !t.defer_loading.unwrap_or(false))
+}
+
+pub(super) fn configure_composition_entry(
+    catalog: &mut [Tool],
+    name: Option<&str>,
+    members: &[String],
+) {
+    if !composition_eager(catalog) {
+        return;
+    }
+    let mut definition = crate::tools::codemode::execute_tools_tool_definition();
+    if !members.is_empty()
+        && let Some(batch) = catalog.iter().find(|tool| Some(tool.name.as_str()) == name)
+        && let Some((field, _)) = crate::mcp::named_batch_members(&batch.input_schema)
+    {
+        let mut arguments = batch.input_schema.clone();
+        arguments["properties"][field]["items"]["properties"]["tool"]["enum"] = json!(members);
+        if !batch.defer_loading.unwrap_or(false) {
+            arguments = json!({"type":"object", "description":"Use the named batch schema shown in this request; only these step tools are offered here.",
+                "required":[field], "properties":{(field):{"type":"array","minItems":arguments["properties"][field]["minItems"].as_u64().unwrap_or(1),"maxItems":arguments["properties"][field]["maxItems"],
+                    "items":{"type":"object","required":["tool"],"properties":{"arguments":{"type":"object"},
+                        "tool":{"type":"string","enum":members}}}}}});
+        }
+        definition.description.push_str(" For a known sequence, pass batch instead of code. It runs that server's named steps in one gated call and returns a bounded result. Group known steps, including setup and their verification, in one batch. Use code if later actions depend on reading an intermediate result.");
+        definition.input_schema["properties"]["batch"] = json!({
+            "type":"object", "description":batch.description,
+            "required":["tool","arguments"], "additionalProperties":false,
+            "properties":{
+                "tool":{"type":"string","enum":[batch.name]},
+                "arguments": arguments
+            }
+        });
+        definition
+            .input_schema
+            .as_object_mut()
+            .expect("object schema")
+            .remove("required");
+        definition.input_schema["oneOf"] = json!([{"required":["code"]},{"required":["batch"]}]);
+    }
+    if let Some(tool) = catalog
+        .iter_mut()
+        .find(|t| t.name == EXECUTE_TOOLS_TOOL_NAME)
+    {
+        tool.description = definition.description;
+        tool.input_schema = definition.input_schema;
+    }
+}
+
+pub(super) fn offered_batch(catalog: &[Tool]) -> Option<&Value> {
+    catalog
+        .iter()
+        .find(|tool| tool.name == EXECUTE_TOOLS_TOOL_NAME)?
+        .input_schema
+        .pointer("/properties/batch/properties")
+}
+
+pub(super) fn offered_batch_allows(catalog: &[Tool], name: &str, input: &Value) -> bool {
+    let Some(schema) = offered_batch(catalog)
+        .filter(|s| s.pointer("/tool/enum/0").and_then(Value::as_str) == Some(name))
+    else {
+        return false;
+    };
+    let Some((field, members)) = schema
+        .get("arguments")
+        .and_then(crate::mcp::named_batch_members)
+    else {
+        return false;
+    };
+    let bounds = &schema["arguments"]["properties"][field];
+    let min = bounds["minItems"].as_u64().unwrap_or(1).max(1);
+    let max = bounds["maxItems"].as_u64().unwrap_or(0);
+    input
+        .get(field)
+        .and_then(Value::as_array)
+        .is_some_and(|steps| {
+            (min..=max).contains(&(steps.len() as u64))
+                && steps
+                    .iter()
+                    .all(|step| step.get("tool").is_some_and(|tool| members.contains(tool)))
+        })
 }
 
 pub fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
@@ -845,7 +947,7 @@ fn unavailable_core_action_tools_with_regex(
     Ok(cached_fallbacks()
         .iter()
         .filter(|cf| !catalog_contains_tool(catalog, cf.fallback.name))
-        .filter(|cf| regex.is_match(&cf.haystack))
+        .filter(|cf| regex.is_match(&cf.name_lower) || regex.is_match(&cf.haystack))
         .take(max_results)
         .map(|cf| cf.fallback)
         .collect())
@@ -915,7 +1017,7 @@ fn discover_tools_with_regex(
             continue;
         }
         scratch.load(tool);
-        if regex.is_match(&scratch.hay) {
+        if regex.is_match(&scratch.name_lower) || regex.is_match(&scratch.hay) {
             matches.push(tool.name.clone());
         }
         if matches.len() >= max_results {

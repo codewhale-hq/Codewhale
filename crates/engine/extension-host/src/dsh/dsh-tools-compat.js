@@ -9,7 +9,7 @@
  * *definition-side* subset only.
  *
  * Lines between the VERBATIM markers are copied unchanged from
- * `@deepseek-ai/dsh-tools@0.2.1-rc.2` `lib/index.js` (lines 8-888 and
+ * `@deepseek-ai/dsh-tools@0.2.1-rc.5` `lib/index.js` (lines 8-888 and
  * 2625-2655), MIT License, Copyright (c) 2026 DeepSeek. See
  * ../../LICENSES.txt. Everything outside the markers is Codewhale's.
  *
@@ -28,7 +28,7 @@ export class HarnessError extends Error {
   }
 }
 
-// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.2 lib/index.js:8-888 ----
+// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.5 lib/index.js:8-888 ----
 //#region lib/types/json-schema.js
 /**
 * Enforced JSON Schema subset shared by tool outputs, generated PTC mode
@@ -912,7 +912,7 @@ function defineTool(options) {
 //#endregion
 // ---- END VERBATIM ----
 
-// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.2 lib/index.js:2625-2655 ----
+// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.5 lib/index.js:2625-2655 ----
 const TOOL_ABORTED = "ABORTED";
 /** Canonical error code for cancellation before a tool body was invoked. */
 const TOOL_ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH";

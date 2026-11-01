@@ -1,4 +1,7 @@
+import { CHANGELOG } from "./changelog.generated";
+import { GETTING_STARTED_STEPS } from "./content/getting-started";
 import { DOC_TOPICS, REPO_DOCS_BASE, docTopicHref } from "./docs-map";
+import { BUILD_FACTS, type RepoFacts } from "./facts";
 import { computerUse } from "./i18n/dictionaries/en/computer-use";
 import { DISCORD_URL, REPO_URL } from "./i18n/links";
 import { IDENTITY_PHRASE, SITE_NAME, SITE_URL } from "./page-meta";
@@ -105,11 +108,66 @@ const EXTRA_PAGES: readonly { path: string; title: string; description: string }
   },
 ];
 
+const UNRELEASED_HEADLINE_SECTIONS = new Set(["Added", "Changed", "Fixed", "Security"]);
+
+function unreleasedHeadlines(): string[] {
+  const unreleased = CHANGELOG.find((release) => release.unreleased);
+  if (!unreleased) return [];
+  const headlines: string[] = [];
+  for (const section of unreleased.sections) {
+    if (!UNRELEASED_HEADLINE_SECTIONS.has(section.heading)) continue;
+    for (const item of section.items) {
+      const colon = item.indexOf(": ");
+      if (colon <= 0 || colon > 140) continue;
+      const headline = item.slice(0, colon).trim();
+      if (/\(internal\)/i.test(headline)) continue;
+      headlines.push(`${section.heading}: ${headline}`);
+    }
+  }
+  return headlines;
+}
+
+function factLines(facts: RepoFacts): string[] {
+  const release = facts.latestPublishedRelease;
+  const lines = [
+    release
+      ? `- Latest published release: v${release.version}, published ${release.publishedAt.slice(0, 10)} (${release.url}). The install commands above install this release.`
+      : "- Latest published release: unknown at build time; see https://github.com/codewhale-hq/CodeWhale/releases.",
+  ];
+  if (facts.license) lines.push(`- License: ${facts.license} (${REPO_URL}/blob/main/LICENSE). Free to use; you pay your model provider directly, and local models need no key.`);
+  if (facts.defaultModel) lines.push(`- Default model id: \`${facts.defaultModel}\` (DeepSeek). Every provider and model is selectable with /provider and /model.`);
+  if (facts.providers.length > 0) {
+    lines.push(`- Built-in provider routes (${facts.providers.length}): ${facts.providers.map((provider) => provider.label).join(", ")}. Any OpenAI-compatible endpoint also works.`);
+  }
+  if (facts.sandboxBackends.length > 0) lines.push(`- OS command sandbox backends: ${facts.sandboxBackends.join("; ")}.`);
+  lines.push(`- Facts generated ${facts.generatedAt.slice(0, 10)}${facts.sourceRevision ? ` from source revision ${facts.sourceRevision}` : ""}; feature registry: ${SITE_URL}/features.json.`);
+  return lines;
+}
+
 export function buildLlmsTxt(): string {
+  const facts = BUILD_FACTS;
+  const release = facts.latestPublishedRelease;
+  const headlines = unreleasedHeadlines();
   const lines = [
     `# ${SITE_NAME}`, "", `> ${IDENTITY_PHRASE}`, "",
-    "Read, edit and test a project with a hosted or local model. Modes, approvals and sandbox policy control tool access.",
-    "Install: `npm install -g codewhale`", "",
+    "Read, edit and test a project with a hosted or local model. Modes, approvals and sandbox policy control tool access.", "",
+    "## Install", "",
+    `- macOS and Linux: \`${GETTING_STARTED_STEPS[0].commands[0]}\``,
+    "- npm (wraps the same release binaries): `npm install -g codewhale`",
+    "- Cargo (crates.io; can trail GitHub Releases): `cargo install codewhale-cli --locked`",
+    "- Windows x64: `winget install HunterBown.CodeWhale`",
+    `- Then run \`codewhale\` from the root of a git repository. Full guide: ${SITE_URL}/en/install`, "",
+    "## Facts", "",
+    ...factLines(facts), "",
+  ];
+  if (headlines.length > 0) {
+    lines.push(
+      `## Unreleased on main${release ? ` (after v${release.version})` : ""}`, "",
+      `Merged on main and not in a published release yet; the install commands do not include these. Changelog headlines, not the full list: ${SITE_URL}/en/changelog`, "",
+      ...headlines.map((headline) => `- ${headline}`), "",
+    );
+  }
+  lines.push(
     "## Agent entry points", "",
     `- [Feature catalogue](${SITE_URL}/en/features): Source capabilities, status, surfaces and documentation.`,
     `- [Feature JSON](${SITE_URL}/features.json): The generated feature registry, including its source hash.`,
@@ -117,7 +175,7 @@ export function buildLlmsTxt(): string {
     `- [Runtime API](${SITE_URL}/docs-markdown/runtime-api.md): HTTP/SSE API and ACP integration.`,
     `- [MCP](${SITE_URL}/docs-markdown/mcp.md): Connect tools or run codewhale mcp-server / codewhale serve --mcp. Default server tools are read-only file_read and search.`,
     "", "## Documentation", "",
-  ];
+  );
   for (const topic of DOC_TOPICS) {
     lines.push(`- [${topic.label.en}](${SITE_URL}/docs-markdown/${topic.slug}.md): ${topic.description.en}`);
   }

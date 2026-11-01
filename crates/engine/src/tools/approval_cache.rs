@@ -439,8 +439,11 @@ pub fn computer_use_batch_hidden_gate(tool_name: &str, input: &Value) -> Option<
         .iter()
         .find_map(|step| {
             let inner = step.get("tool").and_then(Value::as_str)?;
-            let arguments = step.get("arguments").cloned().unwrap_or(Value::Null);
-            computer_use_user_gate(&format!("mcp_{inner}"), &arguments).map(|_| inner.to_string())
+            let arguments = step
+                .get("arguments")
+                .or_else(|| step.get("args"))
+                .unwrap_or(&Value::Null);
+            computer_use_user_gate(&format!("mcp_{inner}"), arguments).map(|_| inner.to_string())
         })
 }
 
