@@ -14,14 +14,7 @@
  * `draft:semantic-drift:<...>`, picked up by the existing /admin listing.
  */
 import { fetchBoundedText } from "./bounded-body";
-import { agentChat, draftStorageKey, getDraft, saveDraft, type AgentDraft, type DeepSeekEnv, VOICE_CONSTRAINTS } from "./community-agent";
-
-interface KVNamespace {
-  get(k: string): Promise<string | null>;
-  put(k: string, v: string, o?: { expirationTtl?: number }): Promise<void>;
-  list(o?: { prefix?: string; limit?: number }): Promise<{ keys: { name: string }[] }>;
-  delete(k: string): Promise<void>;
-}
+import { agentChat, draftStorageKey, getDraft, saveDraft, type AgentDraft, type DeepSeekEnv, type DraftClaimStores, VOICE_CONSTRAINTS } from "./community-agent";
 
 // --- Canonical draft identities ---
 //
@@ -49,8 +42,7 @@ export async function watchDraftId(slugSource: string, identity: string): Promis
   return `${slug}-${hash}`;
 }
 
-interface WatchEnv {
-  CURATED_KV?: KVNamespace;
+interface WatchEnv extends DraftClaimStores {
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_BASE_URL?: string;
   DEEPSEEK_MODEL?: string;
@@ -118,7 +110,7 @@ async function probe(target: { url: string; label: string }): Promise<LinkCheckR
 }
 
 export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checked: number; broken: number; results?: LinkCheckResult[] }> {
-  if (!env.CURATED_KV) return { ok: false, checked: 0, broken: 0 };
+  if (!env.CURATED_KV || !env.DRAFT_CLAIM_LOCK) return { ok: false, checked: 0, broken: 0 };
 
   const results = await Promise.all(LINK_TARGETS.map(probe));
   const broken = results.filter((r) => !r.ok);
@@ -147,7 +139,7 @@ export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checke
     const existing = await getDraft(env.CURATED_KV, draftStorageKey(draft));
     if (existing) continue; // already flagged; don't churn
 
-    await saveDraft(env.CURATED_KV, draft);
+    await saveDraft(env, draft);
   }
 
   return { ok: true, checked: results.length, broken: broken.length, results: broken };
@@ -285,8 +277,8 @@ function validateDriftFindings(raw: unknown): DriftFinding[] {
 }
 
 export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; drafted: number; reason?: string }> {
-  if (!env.CURATED_KV || !env.DEEPSEEK_API_KEY) {
-    return { ok: false, drafted: 0, reason: "missing CURATED_KV or DEEPSEEK_API_KEY" };
+  if (!env.CURATED_KV || !env.DRAFT_CLAIM_LOCK || !env.DEEPSEEK_API_KEY) {
+    return { ok: false, drafted: 0, reason: "missing CURATED_KV, DRAFT_CLAIM_LOCK or DEEPSEEK_API_KEY" };
   }
 
   const ghHeaders: Record<string, string> = {
@@ -370,7 +362,7 @@ ${docsText}`;
     if (existing) continue;
 
     // saveDraft refuses findings the maintainer already discarded.
-    if (await saveDraft(env.CURATED_KV, draft)) drafted++;
+    if (await saveDraft(env, draft)) drafted++;
   }
 
   return { ok: true, drafted };

@@ -66,6 +66,8 @@ export async function GET(req: Request) {
     MAINTAINER_GITHUB_PAT: undefined,
   };
 
+  const watchEnv = { ...agentEnv, DRAFT_CLAIM_LOCK: env.DRAFT_CLAIM_LOCK };
+
   try {
     let result: Record<string, unknown>;
     switch (task) {
@@ -88,13 +90,13 @@ export async function GET(req: Request) {
         result = await runDigest(agentEnv);
         break;
       case "facts-drift":
-        result = await runFactsDrift({ ...agentEnv, DRAFT_CLAIM_LOCK: env.DRAFT_CLAIM_LOCK }) as unknown as Record<string, unknown>;
+        result = await runFactsDrift(watchEnv) as unknown as Record<string, unknown>;
         break;
       case "linkcheck":
-        result = await runLinkCheck(agentEnv) as unknown as Record<string, unknown>;
+        result = await runLinkCheck(watchEnv) as unknown as Record<string, unknown>;
         break;
       case "semantic-drift":
-        result = await runSemanticDrift(agentEnv) as unknown as Record<string, unknown>;
+        result = await runSemanticDrift(watchEnv) as unknown as Record<string, unknown>;
         break;
       default:
         // unreachable — guarded by TASKS check above

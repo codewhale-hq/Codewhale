@@ -13,7 +13,6 @@ import {
   saveDraft,
   hasFreshDraft,
   getDraftResolution,
-  digestRecordKey,
   renderDigestBody,
   logUsage,
   type WeeklyDigestRecord,
@@ -138,7 +137,7 @@ async function generateTriage(env: AgentEnv): Promise<Record<string, unknown>> {
           posted: false,
         };
         await logUsage(env.CURATED_KV, usage.input, usage.output);
-        if (await saveDraft(env.CURATED_KV, draft, issue.updated_at)) processed++;
+        if (await saveDraft(env, draft, { sourceUpdatedAt: issue.updated_at })) processed++;
         else skipped++;
       } catch {
         skipped++;
@@ -223,7 +222,7 @@ async function generatePrReview(env: AgentEnv): Promise<Record<string, unknown>>
           posted: false,
         };
         await logUsage(env.CURATED_KV, usage.input, usage.output);
-        if (await saveDraft(env.CURATED_KV, draft, pr.updated_at)) processed++;
+        if (await saveDraft(env, draft, { sourceUpdatedAt: pr.updated_at })) processed++;
         else skipped++;
       } catch {
         skipped++;
@@ -291,7 +290,7 @@ async function generateStale(env: AgentEnv): Promise<Record<string, unknown>> {
           posted: false,
         };
         await logUsage(env.CURATED_KV, usage.input, usage.output);
-        if (await saveDraft(env.CURATED_KV, draft, issue.updated_at)) processed++;
+        if (await saveDraft(env, draft, { sourceUpdatedAt: issue.updated_at })) processed++;
         else skipped++;
       } catch {
         skipped++;
@@ -355,7 +354,7 @@ async function generateDupes(env: AgentEnv): Promise<Record<string, unknown>> {
         posted: false,
       };
       // saveDraft refuses identities the maintainer already posted or discarded.
-      if (await saveDraft(env.CURATED_KV, draft)) processed++;
+      if (await saveDraft(env, draft)) processed++;
     }
 
     await logUsage(env.CURATED_KV, usage.input, usage.output);
@@ -447,10 +446,6 @@ async function generateDigest(env: AgentEnv): Promise<Record<string, unknown>> {
       posted: false,
     };
 
-    if (!(await saveDraft(env.CURATED_KV, draft))) {
-      return { ok: true, skipped: true, weekId, reason: "digest already reviewed" };
-    }
-
     // Stage the structured digest for the weekly page, unapproved. The page
     // renders it only after the maintainer posts the draft from /admin.
     // Pick fields explicitly: model output must never be able to set
@@ -465,9 +460,9 @@ async function generateDigest(env: AgentEnv): Promise<Record<string, unknown>> {
       generatedAt: draft.generatedAt,
       approved: false,
     };
-    await env.CURATED_KV?.put(digestRecordKey(weekId), JSON.stringify(record), {
-      expirationTtl: 60 * 60 * 24 * 90,
-    });
+    if (!(await saveDraft(env, draft, { digest: record }))) {
+      return { ok: true, skipped: true, weekId, reason: "digest already under review or resolved" };
+    }
 
     await logUsage(env.CURATED_KV, usage.input, usage.output);
     return { ok: true, weekId };
