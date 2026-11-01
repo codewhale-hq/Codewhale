@@ -15701,6 +15701,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
             )),
         ))),
         mcp_pool: None,
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
         api_timeout_retry_base_backoff: SUBAGENT_API_TIMEOUT_INITIAL_BACKOFF,
         tool_timeout: DEFAULT_TOOL_TIMEOUT,

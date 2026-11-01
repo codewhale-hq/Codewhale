@@ -514,6 +514,7 @@ pub(crate) async fn run_exec_agent(
         trust_mode,
         notes_path: execution_config.notes_path(),
         mcp_config_path: execution_config.mcp_config_path(),
+        mcp_auth_context: Default::default(),
         // Non-interactive exec has no user-level MCP OAuth callback
         // overrides; the loopback default applies.
         mcp_oauth_callback_port: None,

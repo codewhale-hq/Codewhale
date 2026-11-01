@@ -871,6 +871,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // Construct a minimal EngineHandle with the tiny channel.
     let cancel_token = CancellationToken::new();
     let handle = EngineHandle {
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,

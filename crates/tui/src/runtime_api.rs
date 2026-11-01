@@ -6944,8 +6944,12 @@ fn load_mcp_management_pool(state: &RuntimeApiState) -> Result<(McpPool, Value)>
     let plugins = state
         .plugin_discovery
         .registry_for_workspace(&state.workspace);
-    let mut pool =
-        McpPool::from_config_path_with_workspace_and_plugins(&path, &state.workspace, plugins)?;
+    let mut pool = McpPool::from_config_path_with_workspace_and_plugins_and_auth_context(
+        &path,
+        &state.workspace,
+        plugins,
+        state.runtime_threads.mcp_auth_context(),
+    )?;
     let config = state.config.read();
     pool = pool.with_backend(config.mcp_backend()).with_oauth_callback(
         config.mcp_oauth_callback_port,

@@ -1000,6 +1000,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         trust_mode: app.trust_mode,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
+        mcp_auth_context: Default::default(),
         mcp_oauth_callback_port: config.mcp_oauth_callback_port,
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),

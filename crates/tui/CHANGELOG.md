@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP transports, connection pools and child Engines retain the owning host credential context for placeholders, headers, bearer tokens and OAuth setup. Missing injected values never fall back to process secrets. Reviewed plugins keep their captured environment authority, whose Debug output now masks values. Durable OAuth token custody and full subprocess isolation remain separate work (#5637).
 - Python REPL drains stderr while code runs, retains at most 64 KiB of diagnostics and reports omitted bytes, so noisy code cannot block request completion (#6554).
 - Saved tool results use bounded streaming inspection while preserving session ownership, digest and generation checks. Text refuses oversized lines or selections with byte-recovery guidance; verification also has explicit scan and cancellation limits (#6554).
 - Telemetry bounds its pending event queue and disk-tail reads, keeps final flush admission available, and skips invalid UTF-8 records without discarding intact neighboring records. Existing opt-out and privacy ordering remain in force (#6554).

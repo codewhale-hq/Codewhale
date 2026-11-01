@@ -1,6 +1,7 @@
 use super::http_client::McpHttpClient;
 use crate::mcp::McpServerConfigExt;
 use codewhale_net::network_policy::NetworkPolicyDecider;
+use codewhale_runtime::credentials::AuthContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1074,6 +1075,21 @@ pub async fn auth_status_for_server(
     server: &McpServerConfig,
     network_policy: Option<&NetworkPolicyDecider>,
 ) -> McpAuthStatus {
+    auth_status_for_server_with_auth_context(
+        name,
+        server,
+        network_policy,
+        super::process_mcp_auth_context(),
+    )
+    .await
+}
+
+pub async fn auth_status_for_server_with_auth_context(
+    name: &str,
+    server: &McpServerConfig,
+    network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
+) -> McpAuthStatus {
     if server.reviewed_plugin.is_some() || !server.is_enabled() || server.url.is_none() {
         return McpAuthStatus::Unsupported;
     }
@@ -1092,7 +1108,7 @@ pub async fn auth_status_for_server(
         }
     }
 
-    let headers = match build_default_headers(server) {
+    let headers = match build_default_headers_with_auth_context(server, auth_context.as_ref()) {
         Ok(headers) => headers,
         Err(err) => {
             tracing::warn!(target: "mcp", server = %name, error = %err, "failed to build MCP OAuth discovery headers");
@@ -1113,6 +1129,15 @@ pub async fn oauth_login_support(
     server: &McpServerConfig,
     network_policy: Option<&NetworkPolicyDecider>,
 ) -> Result<Option<McpOAuthDiscovery>> {
+    oauth_login_support_with_auth_context(server, network_policy, super::process_mcp_auth_context())
+        .await
+}
+
+pub async fn oauth_login_support_with_auth_context(
+    server: &McpServerConfig,
+    network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
+) -> Result<Option<McpOAuthDiscovery>> {
     if server.reviewed_plugin.is_some() {
         return Ok(None);
     }
@@ -1122,7 +1147,7 @@ pub async fn oauth_login_support(
     if server_has_manual_authorization(server) {
         return Ok(None);
     }
-    let headers = build_default_headers(server)?;
+    let headers = build_default_headers_with_auth_context(server, auth_context.as_ref())?;
     discover_streamable_http_oauth_for_server(server, url, headers, network_policy).await
 }
 
@@ -1148,8 +1173,9 @@ fn oauth_login_client(
     server: &McpServerConfig,
     url: &str,
     network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: &dyn AuthContext,
 ) -> Result<McpHttpClient> {
-    let headers = build_default_headers(server)?;
+    let headers = build_default_headers_with_auth_context(server, auth_context)?;
     Ok(oauth_http_client(server, url, network_policy)?.with_default_headers(headers))
 }
 
@@ -1218,14 +1244,40 @@ pub async fn perform_oauth_login_for_server(
     callback_url: Option<&str>,
     network_policy: Option<&NetworkPolicyDecider>,
 ) -> Result<()> {
-    perform_oauth_login_for_server_with_cancel(
+    perform_oauth_login_for_server_with_auth_context(
         name,
         server,
         explicit_scopes,
         callback_port,
         callback_url,
-        CancellationToken::new(),
         network_policy,
+        super::process_mcp_auth_context(),
+    )
+    .await
+}
+
+pub async fn perform_oauth_login_for_server_with_auth_context(
+    name: &str,
+    server: &McpServerConfig,
+    explicit_scopes: Option<Vec<String>>,
+    callback_port: Option<u16>,
+    callback_url: Option<&str>,
+    network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
+) -> Result<()> {
+    if server.reviewed_plugin.is_some() {
+        bail!(
+            "OAuth is disabled for plugin-contributed MCP servers; use a reviewed environment-backed header or bearer token"
+        );
+    }
+    perform_oauth_login_for_server_inner(
+        name,
+        server,
+        explicit_scopes,
+        callback_port,
+        callback_url,
+        network_policy,
+        auth_context,
     )
     .await
 }
@@ -1251,13 +1303,14 @@ pub async fn perform_oauth_login_for_server_with_cancel(
     }
     run_cancellable_oauth(
         &cancellation_token,
-        perform_oauth_login_for_server_inner(
+        perform_oauth_login_for_server_with_auth_context(
             name,
             server,
             explicit_scopes,
             callback_port,
             callback_url,
             network_policy,
+            super::process_mcp_auth_context(),
         ),
     )
     .await
@@ -1282,6 +1335,7 @@ async fn resolve_oauth_login(
     server: &McpServerConfig,
     explicit_scopes: Option<Vec<String>>,
     network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
 ) -> Result<(String, ResolvedMcpOAuthScopes)> {
     let Some(url) = server.url.as_deref() else {
         bail!("OAuth login is only supported for URL-based MCP servers");
@@ -1291,7 +1345,8 @@ async fn resolve_oauth_login(
     }
 
     let discovery = if explicit_scopes.is_none() && server.scopes.is_empty() {
-        oauth_login_support(server, network_policy).await?
+        oauth_login_support_with_auth_context(server, network_policy, Arc::clone(&auth_context))
+            .await?
     } else {
         None
     };
@@ -1310,14 +1365,21 @@ async fn perform_oauth_login_for_server_inner(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
 ) -> Result<()> {
-    let (url, resolved_scopes) =
-        resolve_oauth_login(name, server, explicit_scopes, network_policy).await?;
+    let (url, resolved_scopes) = resolve_oauth_login(
+        name,
+        server,
+        explicit_scopes,
+        network_policy,
+        Arc::clone(&auth_context),
+    )
+    .await?;
 
     match perform_oauth_login(
         name,
         &url,
-        oauth_login_client(server, &url, network_policy)?,
+        oauth_login_client(server, &url, network_policy, auth_context.as_ref())?,
         &resolved_scopes.scopes,
         server.oauth.as_ref(),
         server.oauth_resource.as_deref(),
@@ -1337,7 +1399,7 @@ async fn perform_oauth_login_for_server_inner(
             perform_oauth_login(
                 name,
                 &url,
-                oauth_login_client(server, &url, network_policy)?,
+                oauth_login_client(server, &url, network_policy, auth_context.as_ref())?,
                 &[],
                 server.oauth.as_ref(),
                 server.oauth_resource.as_deref(),
@@ -1397,6 +1459,7 @@ pub struct McpOAuthToolLogin {
     server_name: String,
     server: McpServerConfig,
     scopes_source: McpOAuthScopesSource,
+    auth_context: Arc<dyn AuthContext>,
     network_policy: Option<NetworkPolicyDecider>,
     flow: OauthLoginFlow,
     open_browser: bool,
@@ -1435,7 +1498,12 @@ impl McpOAuthToolLogin {
                 OauthLoginFlow::new(
                     &self.server_name,
                     url,
-                    oauth_login_client(server, url, self.network_policy.as_ref())?,
+                    oauth_login_client(
+                        server,
+                        url,
+                        self.network_policy.as_ref(),
+                        self.auth_context.as_ref(),
+                    )?,
                     &[],
                     server.oauth.as_ref(),
                     server.oauth_resource.as_deref(),
@@ -1464,17 +1532,44 @@ pub async fn begin_oauth_login_for_server_tool(
     callback_url: Option<&str>,
     network_policy: Option<&NetworkPolicyDecider>,
 ) -> Result<McpOAuthToolLogin> {
+    begin_oauth_login_for_server_tool_with_auth_context(
+        name,
+        server,
+        explicit_scopes,
+        callback_port,
+        callback_url,
+        network_policy,
+        super::process_mcp_auth_context(),
+    )
+    .await
+}
+
+pub async fn begin_oauth_login_for_server_tool_with_auth_context(
+    name: &str,
+    server: &McpServerConfig,
+    explicit_scopes: Option<Vec<String>>,
+    callback_port: Option<u16>,
+    callback_url: Option<&str>,
+    network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
+) -> Result<McpOAuthToolLogin> {
     if server.reviewed_plugin.is_some() {
         bail!(
             "OAuth is disabled for plugin-contributed MCP servers; use a reviewed environment-backed header or bearer token"
         );
     }
-    let (url, resolved_scopes) =
-        resolve_oauth_login(name, server, explicit_scopes, network_policy).await?;
+    let (url, resolved_scopes) = resolve_oauth_login(
+        name,
+        server,
+        explicit_scopes,
+        network_policy,
+        Arc::clone(&auth_context),
+    )
+    .await?;
     let flow = OauthLoginFlow::new(
         name,
         &url,
-        oauth_login_client(server, &url, network_policy)?,
+        oauth_login_client(server, &url, network_policy, auth_context.as_ref())?,
         &resolved_scopes.scopes,
         server.oauth.as_ref(),
         server.oauth_resource.as_deref(),
@@ -1486,6 +1581,7 @@ pub async fn begin_oauth_login_for_server_tool(
         server_name: name.to_string(),
         server: server.clone(),
         scopes_source: resolved_scopes.source,
+        auth_context,
         network_policy: network_policy.cloned(),
         flow,
         // The test build drives the loopback callback itself; a real browser
@@ -1513,6 +1609,21 @@ pub async fn has_usable_stored_tokens(
     server: &McpServerConfig,
     network_policy: Option<&NetworkPolicyDecider>,
 ) -> Result<bool> {
+    has_usable_stored_tokens_with_auth_context(
+        name,
+        server,
+        network_policy,
+        super::process_mcp_auth_context(),
+    )
+    .await
+}
+
+pub async fn has_usable_stored_tokens_with_auth_context(
+    name: &str,
+    server: &McpServerConfig,
+    network_policy: Option<&NetworkPolicyDecider>,
+    auth_context: Arc<dyn AuthContext>,
+) -> Result<bool> {
     let Some(url) = server.url.as_deref() else {
         return Ok(false);
     };
@@ -1524,8 +1635,8 @@ pub async fn has_usable_stored_tokens(
     match McpOAuthRuntime::from_server_config_with_client(
         name,
         server,
-        build_default_headers(server)?,
-        oauth_login_client(server, url, network_policy)?,
+        build_default_headers_with_auth_context(server, auth_context.as_ref())?,
+        oauth_login_client(server, url, network_policy, auth_context.as_ref())?,
     )
     .await
     {
@@ -1578,13 +1689,17 @@ pub fn server_has_manual_authorization(server: &McpServerConfig) -> bool {
         || contains_authorization_header(&server.env_headers)
 }
 
-pub(super) fn build_default_headers(server: &McpServerConfig) -> Result<HeaderMap> {
+pub(super) fn build_default_headers_with_auth_context(
+    server: &McpServerConfig,
+    auth_context: &dyn AuthContext,
+) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     for (name, value) in &server.headers {
         insert_header(&mut headers, name, value)?;
     }
     for (name, env_var) in &server.env_headers {
-        if let Ok(value) = super::mcp_secret_var(server.reviewed_plugin_source(), env_var)
+        if let Some(value) =
+            super::mcp_secret_var(server.reviewed_plugin_source(), env_var, auth_context)
             && !value.trim().is_empty()
         {
             insert_header(&mut headers, name, &value)?;

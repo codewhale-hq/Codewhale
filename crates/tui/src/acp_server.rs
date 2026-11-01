@@ -1361,6 +1361,7 @@ mod tests {
             std::fs::create_dir(&workspace)?;
             let runtime_dir = dir.path().join("runtime");
             let manager_config = RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
                 data_dir: runtime_dir.clone(),
                 task_data_dir: runtime_dir,
                 sessions_dir: None,

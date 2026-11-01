@@ -316,6 +316,7 @@ pub struct EngineConfig {
     pub notes_path: PathBuf,
     /// Path to the MCP configuration file.
     pub mcp_config_path: PathBuf,
+    pub mcp_auth_context: crate::mcp::McpAuthContext,
     /// OAuth callback overrides (`mcp_oauth_callback_port` / `_url`) so the
     /// self-serve MCP login tool honors a pre-registered redirect URI the
     /// same way `/mcp login` does.
@@ -598,6 +599,7 @@ impl Default for EngineConfig {
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
+            mcp_auth_context: Default::default(),
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
             skills_dir: codewhale_skills::default_skills_dir(),
@@ -727,6 +729,7 @@ impl CancelReason {
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
+    mcp_auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
     goal_state: SharedGoalState,
     pub sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement,
     /// Send operations to the engine
@@ -827,6 +830,10 @@ impl CompactionCancellationState {
 }
 
 impl EngineHandle {
+    pub fn mcp_auth_context(&self) -> Arc<dyn codewhale_runtime::credentials::AuthContext> {
+        Arc::clone(&self.mcp_auth_context)
+    }
+
     #[must_use]
     pub fn subagent_manager(&self) -> SharedSubAgentManager {
         self.subagent_manager.clone()
@@ -2642,6 +2649,7 @@ impl Engine {
             child_host,
         };
         let handle = EngineHandle {
+            mcp_auth_context: Arc::clone(&engine.config.mcp_auth_context.0),
             goal_state: engine.config.goal_state.clone(),
             sandbox_enforcement,
             tx_op,
@@ -6116,6 +6124,7 @@ impl Engine {
                 .with_max_spawn_depth(self.config.max_spawn_depth)
                 .with_step_api_timeout(self.config.subagent_api_timeout)
                 .with_speech_output_dir(self.config.speech_output_dir.clone())
+                .with_mcp_auth_context(Arc::clone(&self.config.mcp_auth_context.0))
                 .with_mcp_pool(mcp_pool.clone())
                 .with_todos(self.config.todos.clone())
                 .with_parent_completion_tx(self.tx_subagent_completion.clone())
@@ -7799,6 +7808,7 @@ impl Engine {
         .with_max_spawn_depth(self.config.max_spawn_depth)
         .with_step_api_timeout(self.config.subagent_api_timeout)
         .with_speech_output_dir(self.config.speech_output_dir.clone())
+        .with_mcp_auth_context(Arc::clone(&self.config.mcp_auth_context.0))
         .with_mcp_pool(self.mcp_pool.clone())
         .with_todos(self.config.todos.clone())
         .with_parent_completion_tx(self.tx_subagent_completion.clone())
@@ -8200,10 +8210,15 @@ impl Engine {
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
         if let Some(pool) = self.mcp_pool.clone() {
-            pool.lock()
-                .await
-                .bind_caller_plugins(Arc::clone(&self.plugin_registry))
+            let mut held = pool.lock().await;
+            if !Arc::ptr_eq(&held.auth_context(), &self.config.mcp_auth_context.0) {
+                return Err(ToolError::not_available(
+                    "MCP pool belongs to another credential authority",
+                ));
+            }
+            held.bind_caller_plugins(Arc::clone(&self.plugin_registry))
                 .map_err(|error| ToolError::not_available(error.to_string()))?;
+            drop(held);
             self.ensure_mcp_supervisor();
             return Ok(pool);
         }
@@ -8213,26 +8228,31 @@ impl Engine {
         // file and `/mcp reload` recover in-process — but the person is told
         // that the configured servers are gone, not left to find no tools.
         let mut load_failure = None;
-        let mut pool = McpPool::from_config_path_with_workspace_and_plugins(
+        let mut pool = McpPool::from_config_path_with_workspace_and_plugins_and_auth_context(
             &self.session.mcp_config_path,
             &self.session.workspace,
             Arc::clone(&self.plugin_registry),
+            Arc::clone(&self.config.mcp_auth_context.0),
         )
         .unwrap_or_else(|e| {
             let reason = crate::mcp::format_mcp_error_for_display(&e);
             tracing::warn!("MCP config unavailable: {reason}");
             load_failure = Some(reason);
-            McpPool::empty_with_workspace_config_sources(
+            McpPool::empty_with_workspace_config_sources_and_auth_context(
                 &self.session.mcp_config_path,
                 &self.session.workspace,
                 Arc::clone(&self.plugin_registry),
+                Arc::clone(&self.config.mcp_auth_context.0),
             )
             .unwrap_or_else(|fallback_error| {
                 tracing::warn!(
                     "MCP reload source setup failed: {}",
                     crate::mcp::format_mcp_error_for_display(&fallback_error)
                 );
-                McpPool::new(McpConfig::default())
+                McpPool::new_with_auth_context(
+                    McpConfig::default(),
+                    Arc::clone(&self.config.mcp_auth_context.0),
+                )
             })
         });
         if let Some(reason) = load_failure {
@@ -8748,7 +8768,7 @@ impl Engine {
         let Some(pool) = self.mcp_pool.as_ref() else {
             return state;
         };
-        let (pending, errors, timeouts, network_policy, generation, backend) = {
+        let (pending, errors, timeouts, network_policy, generation, backend, auth_context) = {
             let mut pool = pool.lock().await;
             let (pending, errors) = pool.take_pending_connects_for(names);
             (
@@ -8758,6 +8778,7 @@ impl Engine {
                 pool.cloned_network_policy(),
                 pool.current_catalog_generation(),
                 pool.backend(),
+                pool.auth_context(),
             )
         };
         for (name, error) in errors {
@@ -8766,8 +8787,14 @@ impl Engine {
         }
         state.catalog_generation = generation;
         state.names = pending.iter().map(|(name, _)| name.clone()).collect();
-        state.connects =
-            McpPool::spawn_pending_connects(pending, timeouts, network_policy, generation, backend);
+        state.connects = McpPool::spawn_pending_connects_with_auth_context(
+            pending,
+            timeouts,
+            network_policy,
+            generation,
+            backend,
+            auth_context,
+        );
         state
     }
 
@@ -8858,7 +8885,15 @@ impl Engine {
         // those marked `lazy = true`, which connect on demand — a selected
         // turn, a `/mcp` connect, or a lazy tool-name resolution.
         let requested = self.explicit_mcp_tool_names(self.config.allowed_tools.as_deref());
-        let (pending, auth_errors, timeouts, network_policy, catalog_generation, backend) = {
+        let (
+            pending,
+            auth_errors,
+            timeouts,
+            network_policy,
+            catalog_generation,
+            backend,
+            auth_context,
+        ) = {
             let mut pool = pool.lock().await;
             match refresh {
                 McpConnectRefresh::IfChanged => {
@@ -8891,6 +8926,7 @@ impl Engine {
                 pool.cloned_network_policy(),
                 pool.current_catalog_generation(),
                 pool.backend(),
+                pool.auth_context(),
             )
         };
 
@@ -8925,12 +8961,13 @@ impl Engine {
             async move {
                 let mut remaining: HashSet<String> =
                     pending.iter().map(|(name, _)| name.clone()).collect();
-                let mut connects = McpPool::spawn_pending_connects(
+                let mut connects = McpPool::spawn_pending_connects_with_auth_context(
                     pending,
                     timeouts,
                     network_policy,
                     catalog_generation,
                     backend,
+                    auth_context,
                 );
                 let mut connection_errors = HashMap::new();
                 while let Some(joined) = connects.join_next().await {
@@ -9052,17 +9089,19 @@ impl Engine {
                     pool.cloned_network_policy(),
                     pool.current_catalog_generation(),
                     pool.backend(),
+                    pool.auth_context(),
                 )
             })
         };
         let attempt = match prepared {
-            Ok((pending, timeouts, network_policy, generation, backend)) => {
-                let mut connects = McpPool::spawn_pending_connects(
+            Ok((pending, timeouts, network_policy, generation, backend, auth_context)) => {
+                let mut connects = McpPool::spawn_pending_connects_with_auth_context(
                     vec![pending],
                     timeouts,
                     network_policy,
                     generation,
                     backend,
+                    auth_context,
                 );
                 let connection = match connects.join_next().await {
                     Some(Ok((_, connection))) => connection,
@@ -10552,6 +10591,7 @@ pub fn mock_engine_handle() -> MockEngineHandle {
     )));
     let compaction_cancellation = Arc::new(StdMutex::new(CompactionCancellationState::default()));
     let handle = EngineHandle {
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,

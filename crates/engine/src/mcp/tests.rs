@@ -3047,6 +3047,7 @@ fn test_server_config() -> McpServerConfig {
 
 fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
     McpConnection {
+        auth_context: process_mcp_auth_context(),
         name: "mock".to_string(),
         transport,
         tools: Vec::new(),

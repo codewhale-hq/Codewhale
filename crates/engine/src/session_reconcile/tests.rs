@@ -92,6 +92,7 @@ impl Fixture {
             fixture_config(),
             self.home.path().to_path_buf(),
             RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
                 data_dir: path.clone(),
                 task_data_dir: self.home.path().join("tasks"),
                 sessions_dir: None,

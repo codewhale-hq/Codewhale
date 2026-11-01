@@ -183,6 +183,7 @@ async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_bu
         &config,
         workspace.clone(),
         RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
             data_dir: temp.path().join("runtime"),
             task_data_dir: temp.path().join("tasks"),
             sessions_dir: None,
@@ -1313,6 +1314,7 @@ async fn build_test_server(
     // This fixture owns an explicit root and must never borrow that
     // other test's live store or contend for its process-owner lock.
     let manager_config = RuntimeThreadManagerConfig {
+        mcp_auth_context: Default::default(),
         data_dir: root.join("runtime/runtime"),
         task_data_dir: root.join("runtime"),
         sessions_dir: Some(sessions_dir.clone()),

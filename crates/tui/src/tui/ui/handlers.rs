@@ -532,7 +532,13 @@ fn report_mcp_login(app: &mut App, message: String, level: StatusToastLevel) {
     app.needs_redraw = true;
 }
 
-fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<String>) {
+fn start_mcp_login(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+    name: String,
+    scopes: Vec<String>,
+) {
     use crate::tui::app::{McpLoginProgress, PendingMcpLogin};
 
     if let Some(pending) = &app.mcp_login {
@@ -558,6 +564,7 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
     let callback_port = config.mcp_oauth_callback_port;
     let callback_url = config.mcp_oauth_callback_url.clone();
     let locale = app.ui_locale;
+    let auth_context = engine_handle.mcp_auth_context();
     let pending = PendingMcpLogin {
         server: name.clone(),
         cancel: tokio_util::sync::CancellationToken::new(),
@@ -587,13 +594,14 @@ fn start_mcp_login(app: &mut App, config: &Config, name: String, scopes: Vec<Str
                         .replace("{server}", &name)
                 )
             })?;
-            codewhale_engine::mcp::oauth::begin_oauth_login_for_server_tool(
+            codewhale_engine::mcp::oauth::begin_oauth_login_for_server_tool_with_auth_context(
                 &name,
                 server,
                 (!scopes.is_empty()).then_some(scopes),
                 callback_port,
                 callback_url.as_deref(),
                 network_policy.as_ref(),
+                auth_context,
             )
             .await
         };
@@ -1045,7 +1053,7 @@ pub(crate) async fn handle_mcp_ui_action(
                 .map(|()| message = Some(format!("Removed MCP server '{name}'")))
         }
         crate::tui::app::McpUiAction::Login { name, scopes } => {
-            start_mcp_login(app, config, name, scopes);
+            start_mcp_login(app, config, engine_handle, name, scopes);
             // Login owns its background discovery. Do not start a second
             // discovery here or await network work on the input loop.
             return;

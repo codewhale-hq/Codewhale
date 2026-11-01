@@ -64,6 +64,8 @@ impl Engine {
         config.session_id = Some(authority.runtime.context.state_namespace.clone());
         config.plugin_registry = authority.runtime.context.plugin_registry.clone();
         config.runtime_services = authority.runtime.context.runtime.clone();
+        config.mcp_auth_context =
+            crate::mcp::McpAuthContext(Arc::clone(&authority.runtime.mcp_auth_context));
         config.todos = authority.runtime.todos.clone();
         config.max_spawn_depth = authority.runtime.max_spawn_depth;
         config.allow_shell = authority.runtime.allow_shell;

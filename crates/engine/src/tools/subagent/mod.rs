@@ -3078,6 +3078,7 @@ pub struct SubAgentRuntime {
     pub workflow_response_schema: Option<Value>,
     /// The parent's MCP pool if available.
     pub mcp_pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
+    pub mcp_auth_context: std::sync::Arc<dyn codewhale_runtime::credentials::AuthContext>,
     /// Per-step DeepSeek API timeout for the child's `create_message` call.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=3600) at
     /// engine construction so a slow but legitimate model turn does not
@@ -3195,6 +3196,7 @@ impl SubAgentRuntime {
             fork_context: None,
             workflow_response_schema: None,
             mcp_pool: None,
+            mcp_auth_context: crate::mcp::process_mcp_auth_context(),
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
             api_timeout_retry_base_backoff: SUBAGENT_API_TIMEOUT_INITIAL_BACKOFF,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
@@ -3281,6 +3283,14 @@ impl SubAgentRuntime {
     pub fn with_agent_tool_surface_options(mut self, options: AgentToolSurfaceOptions) -> Self {
         self.speech_output_dir = options.speech_output_dir.clone();
         self.agent_tool_surface_options = options;
+        self
+    }
+
+    pub fn with_mcp_auth_context(
+        mut self,
+        auth_context: std::sync::Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Self {
+        self.mcp_auth_context = auth_context;
         self
     }
 
@@ -3527,6 +3537,7 @@ impl SubAgentRuntime {
             fork_context: self.fork_context.clone(),
             workflow_response_schema: None,
             mcp_pool: self.mcp_pool.clone(),
+            mcp_auth_context: std::sync::Arc::clone(&self.mcp_auth_context),
             step_api_timeout: self.step_api_timeout,
             api_timeout_retry_base_backoff: self.api_timeout_retry_base_backoff,
             tool_timeout: self.tool_timeout,
