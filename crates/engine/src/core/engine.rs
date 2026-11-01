@@ -2108,6 +2108,7 @@ impl Engine {
         mut host: Option<EngineHostSetup>,
         supplied_subagent_manager: Option<SharedSubAgentManager>,
     ) -> (Self, EngineHandle) {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("engine_init");
         codewhale_release::tls::ensure_rustls_crypto_provider();
         let mut instruction_settings =
             crate::project_context::InstructionSettings::from_config(api_config);
@@ -6502,6 +6503,7 @@ impl Engine {
         autonomous: bool,
         review: Option<codewhale_protocol::op::ReviewOperation>,
     ) -> SendMessageOutcome {
+        let setup_timing = codewhale_runtime::logging::PhaseTimer::start("turn_setup");
         let is_review = review.is_some();
         let TurnSpec {
             profile_constitution,
@@ -7004,6 +7006,7 @@ impl Engine {
         // The label carries a truncated first line of the prompt so
         // `/restore` listings are human-readable.
         if !is_review {
+            let _timing = codewhale_runtime::logging::PhaseTimer::start("workspace_snapshot");
             self.take_restore_point(
                 WorkspaceSnapshotKind::PreTurn,
                 format_snapshot_label("pre-turn", self.turn_counter, Some(&content)),
@@ -7265,6 +7268,7 @@ impl Engine {
 
             // Build tool registry and tool list for the current mode
             let turn_id_for_mailbox = turn.id.clone();
+            let catalog_timing = codewhale_runtime::logging::PhaseTimer::start("turn_catalog");
             let TurnToolBuild {
                 surface,
                 mailbox: mailbox_for_runtime,
@@ -7293,6 +7297,7 @@ impl Engine {
                     &turn_id_for_mailbox,
                 )
                 .await;
+            drop(catalog_timing);
             let tool_catalog_for_event = Some(surface.catalog.clone());
 
             // Resolve, once per turn, the out-of-request facts the read-only
@@ -7337,6 +7342,7 @@ impl Engine {
         let foreground_children_for_turn = mailbox_for_runtime
             .as_ref()
             .map(|barrier| Arc::clone(&barrier.foreground_children));
+        drop(setup_timing);
         let turn_result = std::panic::AssertUnwindSafe(async {
             if let Some(request) = review {
                 return self.run_structured_review(&mut turn, request).await;
@@ -7361,6 +7367,7 @@ impl Engine {
         // Every return path (including a caught panic) leaves the phase idle,
         // so the stall watchdog never reports a turn that already ended.
         self.turn_heartbeat.idle();
+        let _post_timing = codewhale_runtime::logging::PhaseTimer::start("turn_postprocessing");
         let (mut status, error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
@@ -9317,56 +9324,83 @@ impl Engine {
     /// Both share one nonblocking pool capture, current turn ceiling and
     /// authority check. Empty captures withdraw previous notes, including
     /// after restore, contention, configuration changes or scope removal.
-    async fn record_mcp_runtime_context(&mut self, policy: &ToolSurfacePolicy, catalog: &[Tool]) {
+    async fn record_mcp_runtime_context(
+        &mut self,
+        policy: &ToolSurfacePolicy,
+        catalog: &mut [Tool],
+    ) {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("mcp_context");
         let eligible = self.child_host.is_none()
             && self.rlm_host.is_none()
             && !self.is_acp_turn()
             && !self.api_config.runtime_chat_isolated
             && self.config.features.enabled(Feature::Mcp);
-        let (servers, instructions) = match self.mcp_pool.as_ref().filter(|_| eligible).cloned() {
-            Some(pool) => {
-                let visible: HashSet<String> = catalog
-                    .iter()
-                    .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
-                    .filter(|tool| {
-                        !policy.denies_tool(&tool.name) && policy.passes_allow_list(&tool.name)
-                    })
-                    .map(|tool| tool.name.clone())
-                    .collect();
-                let discovery_available = catalog.iter().any(|tool| {
-                    is_tool_search_tool(&tool.name)
-                        && !policy.denies_tool(&tool.name)
-                        && policy.passes_allow_list(&tool.name)
-                });
-                let permitted = policy.mcp_discovery_filter();
-                let failed: HashSet<String> = self.mcp_connection_errors.keys().cloned().collect();
-                tokio::task::spawn_blocking(move || {
-                    let Ok(pool) = pool.try_lock() else {
-                        return (Vec::new(), Vec::new());
-                    };
-                    if !pool.config_sources_unchanged() {
-                        return (Vec::new(), Vec::new());
-                    }
-                    let servers = pool.model_server_statuses(
-                        &permitted,
-                        &visible,
-                        discovery_available,
-                        &failed,
-                    );
-                    let mut instructions =
-                        pool.model_server_instructions(|tool| visible.contains(tool));
-                    instructions.retain(|(name, _)| {
-                        servers.iter().any(|(server, status)| {
-                            server == name && *status == codewhale_mcp::ModelServerStatus::Connected
+        let (servers, instructions, batch, members) =
+            match self.mcp_pool.as_ref().filter(|_| eligible).cloned() {
+                Some(pool) => {
+                    let visible: HashSet<String> = catalog
+                        .iter()
+                        .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
+                        .filter(|tool| {
+                            !policy.denies_tool(&tool.name) && policy.passes_allow_list(&tool.name)
                         })
+                        .map(|tool| tool.name.clone())
+                        .collect();
+                    let discovery_available = catalog.iter().any(|tool| {
+                        is_tool_search_tool(&tool.name)
+                            && !policy.denies_tool(&tool.name)
+                            && policy.passes_allow_list(&tool.name)
                     });
-                    (servers, instructions)
-                })
-                .await
-                .unwrap_or_default()
-            }
-            None => (Vec::new(), Vec::new()),
-        };
+                    let composition = (policy.mode != AppMode::Plan
+                        && tool_catalog::composition_eager(catalog))
+                    .then(|| tool_catalog::unique_named_batch(catalog))
+                    .flatten()
+                    .map(|index| catalog[index].name.clone());
+                    let permitted = policy.mcp_discovery_filter();
+                    let failed: HashSet<String> =
+                        self.mcp_connection_errors.keys().cloned().collect();
+                    tokio::task::spawn_blocking(move || {
+                        let Ok(pool) = pool.try_lock() else {
+                            return Default::default();
+                        };
+                        if !pool.config_sources_unchanged() {
+                            return Default::default();
+                        }
+                        let routes = pool.resolved_tool_servers();
+                        let servers = pool.model_server_statuses_for(
+                            &permitted,
+                            &visible,
+                            discovery_available,
+                            &failed,
+                            &routes,
+                        );
+                        let composition = composition.filter(|batch| {
+                            routes.get(batch).is_some_and(|owner| {
+                                servers.iter().any(|(name, status)| {
+                                    name == owner
+                                        && *status == codewhale_mcp::ModelServerStatus::Connected
+                                })
+                            })
+                        });
+                        let (mut instructions, members) = pool.model_server_instructions_for(
+                            |tool| visible.contains(tool),
+                            composition.as_deref(),
+                            &routes,
+                        );
+                        instructions.retain(|(name, _)| {
+                            servers.iter().any(|(server, status)| {
+                                server == name
+                                    && *status == codewhale_mcp::ModelServerStatus::Connected
+                            })
+                        });
+                        (servers, instructions, composition, members)
+                    })
+                    .await
+                    .unwrap_or_default()
+                }
+                None => Default::default(),
+            };
+        tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members);
         let previous =
             self.session.messages.iter().rev().find(|message| {
                 crate::runtime_handoff::is_mcp_server_instructions_message(message)

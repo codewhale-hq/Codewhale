@@ -9,6 +9,40 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static VERBOSE_SNAPSHOT: AtomicBool = AtomicBool::new(false);
 
+pub struct PhaseTimer {
+    phase: &'static str,
+    started: std::time::Instant,
+}
+
+impl PhaseTimer {
+    pub fn start(phase: &'static str) -> Option<Self> {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        ENABLED
+            .get_or_init(|| std::env::var("CODEWHALE_TIMING").is_ok_and(|value| value == "1"))
+            .then(|| Self {
+                phase,
+                started: std::time::Instant::now(),
+            })
+    }
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let receipt = serde_json::json!({
+            "type": "execution_timing",
+            "phase": self.phase,
+            "pid": std::process::id(),
+            "elapsed_us": self.started.elapsed().as_micros(),
+            "ended_unix_us": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|elapsed| elapsed.as_micros()),
+        });
+        let _ = writeln!(std::io::stderr().lock(), "{receipt}");
+    }
+}
+
 /// Enable or disable verbose logging output.
 pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::SeqCst);

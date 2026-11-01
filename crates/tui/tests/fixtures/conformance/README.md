@@ -143,10 +143,10 @@ catalog JSON, and of both (`prefix_sha256`), with sizes and tool names in
 catalog order; `.system.golden.txt` and `.tools.golden.json` are the readable
 bodies. Bytes are hashed as serialized — key order is part of the cached
 prefix. Masks: temp paths, and the environment block's `- platform:` and
-`- shell:` lines. Tools admitted only after probing the host for a binary
-(`code_execution`, `image_ocr`, `js_execution`, `pandoc_convert`) are removed
-from the pinned catalog and pinned individually in
-`host_probed_tools.golden.json`, checked whenever the probe succeeds. The
+`- shell:` lines. The turn driver applies the case's `recorded_platform.host_tools` on
+every host. The golden captures every tool definition the Engine puts on
+the first request in wire order. Deferred tools enter that prefix only if
+the Engine actually advertises them there. The
 runner also fails if two identical sessions produce different prefixes.
 
 ### Hook receipts (`hooks` goldens)
@@ -210,9 +210,6 @@ The Plan prefix records its advertised catalog and frozen prompt bytes; it
 does not prove read-only admission. At this baseline it still advertises
 `bash`, `edit` and `write`; full-turn Plan refusal needs separate evidence.
 
-The prefix runner names unavailable host-probed tools explicitly. A skipped
-definition (`code_execution`, `image_ocr`, `js_execution`, `pandoc_convert`) is
-unchecked, even when the family passes; a host offering it needs a reviewed
-`host_probed_tools.golden.json` entry. Windows turn/hook/prefix fixtures, Linux
+Windows turn/hook/prefix fixtures, Linux
 replay, hosted CI, native app behavior, and real-provider acceptance are separate
 evidence. This corpus supplies none of those receipts by itself.

@@ -7,10 +7,6 @@ use codewhale_config::catalog::{
 };
 use serde::Deserialize;
 
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub const TAGS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const SHOW_PROBE_LIMIT: usize = 8;
@@ -211,10 +207,6 @@ pub fn ollama_catalog_delta(
     }
 }
 
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub fn probe_client() -> anyhow::Result<reqwest::Client> {
     // The first-run probe can run before any provider client has installed
     // the rustls crypto provider; the shared builder installs it (the bare
@@ -243,10 +235,6 @@ pub async fn load_model(origin: &str, tag: &str) -> bool {
         .is_ok_and(|response| response.status().is_success())
 }
 
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub async fn fetch_text(url: &str) -> anyhow::Result<String> {
     let response = probe_client()?.get(url).send().await?;
     if !response.status().is_success() {
@@ -257,10 +245,6 @@ pub async fn fetch_text(url: &str) -> anyhow::Result<String> {
         .map_err(|reason| anyhow::anyhow!("Ollama catalog response rejected: {reason:?}"))
 }
 
-#[cfg_attr(
-    all(not(test), feature = "test-thread-scoped-state", debug_assertions),
-    expect(dead_code)
-)]
 pub async fn fetch_tag_profile(origin: &str, tag: &str) -> anyhow::Result<OllamaTagProfile> {
     let response = probe_client()?
         .post(format!("{origin}/api/show"))

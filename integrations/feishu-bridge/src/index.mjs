@@ -95,7 +95,7 @@ void reattachActiveTurns().catch((error) => {
 
 async function handleIncomingMessage(event) {
   const identity = incomingIdentity(event);
-  if (!identity.chatId) return;
+  if (!identity.chatId || !identity.messageId) return;
 
   if (identity.messageType && identity.messageType !== "text") {
     await sendText(identity.chatId, "Only text messages are supported in this first bridge.");
@@ -110,33 +110,31 @@ async function handleIncomingMessage(event) {
   });
   if (!scoped.accepted) return;
 
-  if (identity.messageId && (await threadStore.recordMessage(identity.messageId))) {
-    return;
-  }
+  await threadStore.handleMessageOnce(identity.messageId, async () => {
+    if (identity.chatType !== "p2p" && !config.allowGroups) {
+      await sendText(
+        identity.chatId,
+        "Group chat control is disabled for this bridge. DM the bot, or set FEISHU_ALLOW_GROUPS=true and allowlist this chat."
+      );
+      return;
+    }
 
-  if (identity.chatType !== "p2p" && !config.allowGroups) {
-    await sendText(
-      identity.chatId,
-      "Group chat control is disabled for this bridge. DM the bot, or set FEISHU_ALLOW_GROUPS=true and allowlist this chat."
-    );
-    return;
-  }
+    if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
+      await sendText(identity.chatId, pairingRefusalText(identity));
+      return;
+    }
 
-  if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
-    await sendText(identity.chatId, pairingRefusalText(identity));
-    return;
-  }
+    // Only an admitted sender may change delivery/recovery provenance.
+    const { chatId, chatType, openId, unionId, userId } = identity;
+    await threadStore.patchChat(chatId, {
+      authorizedIdentity: { chatId, chatType, openId, unionId, userId },
+      replyToMessageId: identity.messageId,
+      updatedAt: new Date().toISOString()
+    });
 
-  // Only an admitted sender may change delivery/recovery provenance.
-  const { chatId, chatType, openId, unionId, userId } = identity;
-  await threadStore.patchChat(chatId, {
-    authorizedIdentity: { chatId, chatType, openId, unionId, userId },
-    ...(identity.messageId ? { replyToMessageId: identity.messageId } : {}),
-    updatedAt: new Date().toISOString()
-  });
-
-  const command = parseCommand(scoped.text);
-  await handleCommand(identity.chatId, command, identity);
+    const command = parseCommand(scoped.text);
+    await handleCommand(identity.chatId, command, identity);
+  }, () => sendText(identity.chatId, "The bridge was interrupted while handling this message. Check /status before sending it again."));
 }
 
 async function handleCommand(chatId, command, identity) {

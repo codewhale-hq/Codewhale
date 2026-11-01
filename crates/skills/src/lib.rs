@@ -45,7 +45,8 @@ use codewhale_runtime::{
 /// — survives shortening. When the index shortens any row it ends with a
 /// count footer that `/context report` repeats, and `/skills inspect` notes each
 /// description over this cap.
-pub const DEFAULT_SKILL_DESCRIPTION_CHARS: usize = 400;
+pub const DEFAULT_SKILL_DESCRIPTION_CHARS: usize = 120;
+const MAX_SKILL_WARNING_CHARS: usize = 400;
 /// Floor for the model-facing skill index budget, in chars. The real budget
 /// scales with the route's context window ([`SkillListingConfig::budget_chars`]);
 /// this floor keeps tiny local windows from erasing the index altogether.
@@ -55,7 +56,7 @@ const MIN_AVAILABLE_SKILLS_CHARS: usize = 2_400;
 const MAX_AVAILABLE_SKILLS_CHARS_CEILING: usize = 40_000;
 /// Share of the context window the ambient index may take. Conservative on
 /// purpose — the index is routing metadata, not the work.
-const SKILL_BUDGET_CONTEXT_PERCENT: u64 = 5;
+const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.2;
 /// Chars-per-token estimate for the budget; matches the conservative
 /// estimator used by the context report.
 const SKILL_BUDGET_CHARS_PER_TOKEN: u64 = 4;
@@ -90,7 +91,7 @@ impl Default for SkillListingConfig {
 impl SkillListingConfig {
     const DEFAULT: Self = Self {
         max_description_chars: DEFAULT_SKILL_DESCRIPTION_CHARS,
-        budget_fraction: SKILL_BUDGET_CONTEXT_PERCENT as f64 / 100.0,
+        budget_fraction: SKILL_BUDGET_CONTEXT_PERCENT / 100.0,
     };
 
     pub fn from_config(config: &codewhale_runtime::config::SkillsConfig) -> Self {
@@ -1992,7 +1993,7 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
     let warning_slice = if warnings.is_empty() {
         0
     } else {
-        (budget_chars / 5).min(8 * (DEFAULT_SKILL_DESCRIPTION_CHARS + 4))
+        (budget_chars / 5).min(8 * (MAX_SKILL_WARNING_CHARS + 4))
     };
     let index_budget = budget_chars.saturating_sub(fixed + warning_slice);
     let shortened_budget = index_budget.saturating_sub(shortened_reserve);
@@ -2112,7 +2113,7 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 "- {}\n",
                 truncate_for_prompt(
                     &sanitize_prompt_path_text(warning, workspace, configured_skills_root),
-                    DEFAULT_SKILL_DESCRIPTION_CHARS,
+                    MAX_SKILL_WARNING_CHARS,
                 )
             );
             let len = line.chars().count();

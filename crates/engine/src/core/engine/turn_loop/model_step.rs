@@ -11,6 +11,7 @@ impl Engine {
         client: &SharedModelClient,
         prepared: PreparedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("model_step");
         let PreparedModelStep {
             request_nudge,
             prefix_check,

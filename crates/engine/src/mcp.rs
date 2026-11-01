@@ -1047,6 +1047,86 @@ pub struct McpTool {
     pub annotations: Option<McpToolAnnotations>,
 }
 
+pub(crate) fn named_batch_members(
+    schema: &serde_json::Value,
+) -> Option<(&str, &[serde_json::Value])> {
+    let required = schema.get("required")?.as_array()?;
+    let fields = schema.get("properties")?.as_object()?;
+    required
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find_map(|name| {
+            let steps = fields.get(name)?;
+            if steps.get("type")?.as_str()? != "array"
+                || !(1..=50).contains(&steps.get("maxItems")?.as_u64()?)
+            {
+                return None;
+            }
+            let step = steps.get("items")?;
+            if !step
+                .get("required")?
+                .as_array()?
+                .iter()
+                .any(|key| key == "tool")
+                || step.pointer("/properties/arguments/type")?.as_str()? != "object"
+                || step.pointer("/properties/tool/type")?.as_str()? != "string"
+            {
+                return None;
+            }
+            let names = step.pointer("/properties/tool/enum")?.as_array()?;
+            (!names.is_empty() && names.len() <= 128 && names.iter().all(|v| v.is_string()))
+                .then_some((name, names.as_slice()))
+        })
+}
+
+fn batch_member_signature(tool: &McpTool) -> Option<String> {
+    fn identifier(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+    if !identifier(&tool.name) {
+        return None;
+    }
+    let fields = tool.input_schema.get("properties")?.as_object()?;
+    if fields.len() > 24 || !fields.keys().all(|key| identifier(key)) {
+        return None;
+    }
+    let required = tool.input_schema.get("required").and_then(|v| v.as_array());
+    let keys = fields
+        .iter()
+        .map(|(key, value)| {
+            let mut field = key.clone();
+            if required.is_none_or(|names| !names.iter().any(|name| name == key)) {
+                field.push('?');
+            }
+            if let Some(values) = value.get("enum").and_then(|v| v.as_array())
+                && (1..=6).contains(&values.len())
+                && values.iter().all(|v| v.as_str().is_some_and(identifier))
+            {
+                field.push('=');
+                field.push_str(
+                    &values
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join("|"),
+                );
+            }
+            if let (Some(min), Some(max)) = (
+                value.get("minimum").filter(|v| v.is_number()),
+                value.get("maximum").filter(|v| v.is_number()),
+            ) {
+                field.push_str(&format!("={min}..{max}"));
+            }
+            field
+        })
+        .collect::<Vec<_>>();
+    Some(format!("{}({})", tool.name, keys.join(",")))
+}
+
 /// The subset of MCP `ToolAnnotations` the approval path reads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct McpToolAnnotations {
@@ -4616,6 +4696,23 @@ impl McpPool {
         discovery_available: bool,
         failed: &HashSet<String>,
     ) -> Vec<(String, codewhale_mcp::ModelServerStatus)> {
+        self.model_server_statuses_for(
+            permitted,
+            visible_tools,
+            discovery_available,
+            failed,
+            &self.resolved_tool_servers(),
+        )
+    }
+
+    pub(crate) fn model_server_statuses_for(
+        &self,
+        permitted: impl Fn(&str) -> bool,
+        visible_tools: &HashSet<String>,
+        discovery_available: bool,
+        failed: &HashSet<String>,
+        routes: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<(String, codewhale_mcp::ModelServerStatus)> {
         use codewhale_mcp::ModelServerStatus;
 
         let mut names: BTreeSet<String> = if discovery_available {
@@ -4626,16 +4723,16 @@ impl McpPool {
             BTreeSet::new()
         };
         names.extend(
-            self.resolved_tool_servers()
-                .into_iter()
+            routes
+                .iter()
                 .filter(|(tool, server)| {
-                    visible_tools.contains(tool)
+                    visible_tools.contains(*tool)
                         && permitted(server)
                         && self
                             .server_config(server)
                             .is_some_and(|config| config.is_enabled())
                 })
-                .map(|(_, server)| server),
+                .map(|(_, server)| server.clone()),
         );
         let generation = self.current_catalog_generation();
         let mut rows: Vec<_> = names
@@ -5208,13 +5305,23 @@ impl McpPool {
         &self,
         model_visible: impl Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
-        let servers: BTreeSet<String> = self
-            .resolved_tool_servers()
-            .into_iter()
+        self.model_server_instructions_for(model_visible, None, &self.resolved_tool_servers())
+            .0
+    }
+
+    pub(crate) fn model_server_instructions_for(
+        &self,
+        model_visible: impl Fn(&str) -> bool,
+        composition: Option<&str>,
+        routes: &std::collections::BTreeMap<String, String>,
+    ) -> (Vec<(String, String)>, Vec<String>) {
+        let mut allowed_members = Vec::new();
+        let servers: BTreeSet<String> = routes
+            .iter()
             .filter(|(tool, _)| model_visible(tool))
-            .map(|(_, server)| server)
+            .map(|(_, server)| server.clone())
             .collect();
-        servers
+        let instructions = servers
             .into_iter()
             .filter_map(|server| {
                 let conn = self.connections.get(&server)?;
@@ -5222,10 +5329,50 @@ impl McpPool {
                 {
                     return None;
                 }
-                let text = conn.instructions()?.to_string();
-                Some((server, text))
+                let guidance = conn.instructions().unwrap_or_default();
+                let batch = composition.filter(|name| {
+                    routes.get(*name) == Some(&server) && model_visible(name)
+                });
+                let mut text = String::new();
+                if let Some((name, members)) = batch.and_then(|name| {
+                    conn.tools().iter()
+                        .find(|t| Self::mcp_model_tool_name(&server, &t.name) == name)
+                        .and_then(|t| named_batch_members(&t.input_schema))
+                        .map(|(_, members)| (name, members))
+                }) {
+                    let available: Vec<_> = members.iter().filter_map(|member| {
+                        let member = member.as_str()?;
+                        let qualified = Self::mcp_model_tool_name(&server, member);
+                        (routes.get(&qualified) == Some(&server) && model_visible(&qualified)
+                            && !crate::tools::approval_cache::computer_use_human_decision_tool(&qualified))
+                            .then(|| conn.tools().iter().find(|t| t.name == member))?
+                    }).collect();
+                    if available.is_empty() {
+                        return (!guidance.is_empty()).then(|| (server, guidance.to_string()));
+                    }
+                    text.push_str(&format!("Use execute_tools with batch={{tool:\"{name}\",arguments:{{...}}}} for known steps. Put the requested sequence and its postconditions together in one call when no new decision is needed. Use code to branch on intermediate results. Stop on refusal or uncertain delivery. "));
+                    if conn.config().reviewed_plugin_source().is_some_and(|source| source.plugin_name() == "computer-use")
+                        && available.iter().any(|member| member.name == "open_application")
+                    {
+                        text.push_str("For a named Mac app, bind it first with open_application using the requested pid (or name/bundle_id) and activate:false. An app_ref read does not bind input. Named find selectors resolve a fresh target during the action, so known labels do not need a separate discovery turn. Use a selector per target field; any app_ref belongs inside each selector. Verify the requested effects in the same app; scope the final observe to its app_ref. ");
+                    }
+                    text.push_str("Member arguments (? optional):");
+                    for tool in available {
+                        allowed_members.push(tool.name.clone());
+                        if let Some(signature) = batch_member_signature(tool)
+                            && text.len() + signature.len() < 2304
+                        {
+                            text.push(' ');
+                            text.push_str(&signature);
+                        }
+                    }
+                    text.push('\n');
+                }
+                text.push_str(guidance);
+                (!text.is_empty()).then_some((server, text))
             })
-            .collect()
+            .collect();
+        (instructions, allowed_members)
     }
 
     /// Insert a ready, idle connection with the given tools and guidance, for

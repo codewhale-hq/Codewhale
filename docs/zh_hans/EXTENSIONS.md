@@ -128,9 +128,10 @@ Rust 在审批前以及发送给宿主前检查 JSON Schema，包括类型、必
 DSH 定义若声明 `output`，必须同时提供 `output.schema` 和 `output.render`。
 宿主先验证返回的 JSON，再执行渲染。目前只支持普通文本块；富媒体及额外字段会明确
 报错，不会被静默丢弃。非空注册选项、`projectContent`、`finalizeContent`、
-`timeoutMs` 和延迟加载尚不支持。共享
+`timeoutMs` 和 `when` 仍不支持。布尔值 `deferLoading` 仅作为展示提示接受，
+不会改变 Engine 的工具加载策略；非布尔值会被拒绝。共享
 [`compatibility.json`](../../crates/engine/extension-host/src/dsh/compatibility.json)
-记录 DSH 0.2.1-rc.2 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
+记录 DSH 0.2.1-rc.5 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
 契约改变后必须重新审查。成功及软失败结果中的 `extension` 元数据由 Rust 写入，
 记录插件、已审查内容、入口、代际、调用方选择、句柄与进程启动身份。
 

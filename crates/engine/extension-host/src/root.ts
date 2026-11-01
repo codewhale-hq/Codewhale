@@ -67,7 +67,7 @@ export const OWNER = Symbol.for('codewhale.extension-host.owner')
 export const REFUSED_SERVICES = new Set(compatibility.refused_services)
 
 /** Services the root provides; `inject` of anything else fails activation. */
-const PROVIDED_SERVICES = new Set(compatibility.provided_services)
+const PROVIDED_SERVICES = new Set(Object.values(compatibility.provided_services).flat())
 
 const ACTIVATE_DEADLINE_MS = 5_000
 const DISPOSE_DEADLINE_MS = 2_000
@@ -261,7 +261,7 @@ export class HostRoot {
         const owner: OwnerRecord | undefined = ctx[OWNER]
         if (!owner) throw new Error('tools.register called outside an extension owner')
         if (options !== undefined && (!options || typeof options !== 'object' || Array.isArray(options) || Reflect.ownKeys(options).length !== 0)) {
-          throw new TypeError('tools.register options are unsupported by the Codewhale DSH 0.2.1-rc.2 definition adapter')
+          throw new TypeError(`tools.register options are unsupported by the Codewhale DSH ${compatibility.target_dsh_version} definition adapter`)
         }
         validateDefinition(definition)
         return ctx.effect(() => host.addTool(owner, definition), `tools.register(${JSON.stringify(definition.name)})`)
@@ -1016,10 +1016,10 @@ function validateDefinition(definition: any) {
     }
     assertSupportedJsonSchema(definition.output.schema)
   }
-  for (const field of ['projectContent', 'finalizeContent', 'timeoutMs']) {
+  for (const field of ['when', 'projectContent', 'finalizeContent', 'timeoutMs']) {
     if (definition[field] !== undefined) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH execution field \`${field}\``)
   }
-  if (definition.deferLoading === true) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH deferred loading`)
+  if (definition.deferLoading !== undefined && typeof definition.deferLoading !== 'boolean') throw new TypeError(`tool \`${definition.name}\` deferLoading must be boolean`)
 }
 
 function pickPlugin(module: any): any {

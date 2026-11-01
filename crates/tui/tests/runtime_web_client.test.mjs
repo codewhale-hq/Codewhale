@@ -589,7 +589,7 @@ test("uses the stream predecessor cursor to detect real gaps without assuming gl
 test("registers the full emitted Runtime vocabulary and advances continuity for every event", async () => {
   const runtimeSource = (
     await Promise.all(
-      ["../src/runtime_threads.rs", "../src/runtime_threads/manager.rs"].map((path) =>
+      ["../../engine/src/runtime_threads.rs", "../../engine/src/runtime_threads/manager.rs"].map((path) =>
         readFile(new URL(path, import.meta.url), "utf8"),
       ),
     )

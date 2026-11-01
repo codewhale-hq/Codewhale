@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/deepseek-ai/deepseek-harness",
-  "commit": "0d1f50007f9bca3f52b06e1c3074fa14d5fb0720",
+  "commit": "b830ec950faba0a46dda564be3e2d854afed94f1",
   "license": "MIT; Shigma 2021-present",
   "files": [
     {
@@ -13,18 +13,20 @@
     {
       "path": "loader/package.json",
       "upstream_path": "vendor/loader/package.json",
-      "upstream_sha256": "33832706b6846c2b57d8006f42ae9a7406c4a93951ed6efa1443f28b39d7f049",
-      "sha256": "33832706b6846c2b57d8006f42ae9a7406c4a93951ed6efa1443f28b39d7f049",
+      "upstream_sha256": "e5a2092daa45b264072465788c5b0a750b5d88c4801333070ba90063af65491c",
+      "sha256": "e5a2092daa45b264072465788c5b0a750b5d88c4801333070ba90063af65491c",
       "verbatim": true
     },
     {
       "path": "loader/src/config/entry.ts",
       "upstream_path": "vendor/loader/src/config/entry.ts",
-      "upstream_sha256": "23c2ece35dd03d5837ff3512525272b4699a997e06f0e0f5862c9594333ec0fb",
-      "sha256": "fee8e5ce9f03a4c7aeb36e7822fd7986ab181c31078c4bd7f8f67eb1df5213f2",
+      "upstream_sha256": "6a061f1d3c2cdaac19409bf8ec6956ec5a0a457c4f1689be658d50af7c9ee294",
+      "sha256": "28829a932e7e57aba6f363601137fad91b411603ed91477f8b5f6d8f7c31efc8",
       "verbatim": false,
       "deltas": [
-        "Explicit types and context casts for the host strict TypeScript configuration; no suppression or algorithm replacement."
+        "Explicit types and context casts for the host strict TypeScript configuration; no suppression or algorithm replacement.",
+        "Use the six exact Cordis 4.0.5 const-enum values from ../../../../fiber-state.ts because published JavaScript erases the enum.",
+        "Set the framework filter symbol via Reflect.set because the published Context declarations do not expose its symbol index; runtime assignment is unchanged."
       ]
     },
     {
@@ -64,12 +66,12 @@
     {
       "path": "loader/src/index.ts",
       "upstream_path": "vendor/loader/src/index.ts",
-      "upstream_sha256": "fce293502da04b3ca88b351bb9ad314bd0ffabdedb2da67ba2612e6869de379f",
-      "sha256": "d81c250985ec2028f363f2d701e6c28479fa162b6e4b5f1e166b012bd0afe6bd",
+      "upstream_sha256": "a135e2189a0feb0af08ff79de761698fb8ce7b41c96fefda1d4a299e5982fef3",
+      "sha256": "14e1a6382bb0f7eb7f46391d8bd419f8804fe752568f988a76cdd3ea7d892d67",
       "verbatim": false,
       "deltas": [
         "Disable optional native-internals/addon probe; retain the upstream ESM fallback.",
-        "Use the six exact Cordis 4.0.4 const-enum values from ../fiber-state.ts because published JavaScript erases the enum.",
+        "Use the six exact Cordis 4.0.5 const-enum values from ../../../fiber-state.ts because published JavaScript erases the enum.",
         "Explicit types and context casts for the host strict TypeScript configuration; no suppression or algorithm replacement."
       ]
     },
@@ -83,7 +85,7 @@
     {
       "path": "loader/tsconfig.json",
       "upstream_path": "vendor/loader/tsconfig.json",
-      "upstream_sha256": "b6a35a6c4599241e61e04b2d16ddf88b7aa04c3f286cea942aae4ba717b16d95",
+      "upstream_sha256": "3f2c18a1ce52d335d7151317ecc9b7984692e79f15a5336dfdafe80f03a5d6d0",
       "sha256": "628aca261b00622def7df904b885472bf86a7098b9dd47d73730511ad3e407af",
       "verbatim": false,
       "deltas": [
@@ -107,8 +109,8 @@
     {
       "path": "include/package.json",
       "upstream_path": "vendor/include/package.json",
-      "upstream_sha256": "71b49b0ad53ac5a9a5e94b593c389a9249be5da952ea5cd211d5c8ecc5965864",
-      "sha256": "71b49b0ad53ac5a9a5e94b593c389a9249be5da952ea5cd211d5c8ecc5965864",
+      "upstream_sha256": "d6d6047472127599a6f7cf59a4a569530e8a1f518d151e69e7f6d5c67599ab75",
+      "sha256": "d6d6047472127599a6f7cf59a4a569530e8a1f518d151e69e7f6d5c67599ab75",
       "verbatim": true
     },
     {
@@ -141,8 +143,8 @@
     {
       "path": "group/package.json",
       "upstream_path": "vendor/group/package.json",
-      "upstream_sha256": "a10a3a2054d7614d9d3d28ca0391c9021f6f347c72090da66ad866f3be809d2b",
-      "sha256": "a10a3a2054d7614d9d3d28ca0391c9021f6f347c72090da66ad866f3be809d2b",
+      "upstream_sha256": "5fd58be1a7e3705815cbcba9fd573ff367edb8508ace1b09ea5e98a5649f8066",
+      "sha256": "5fd58be1a7e3705815cbcba9fd573ff367edb8508ace1b09ea5e98a5649f8066",
       "verbatim": true
     },
     {
@@ -151,12 +153,21 @@
       "upstream_sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7",
       "sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7",
       "verbatim": true
+    },
+    {
+      "path": "loader/src/config/diff.ts",
+      "upstream_path": "vendor/loader/src/config/diff.ts",
+      "upstream_sha256": "6025a6b9798a0a16af017bb7d8d6394bbe345685b2ace56b15975add5843edb3",
+      "sha256": "6025a6b9798a0a16af017bb7d8d6394bbe345685b2ace56b15975add5843edb3",
+      "verbatim": true
     }
   ],
   "adapted_audit": {
     "source": "packages/preset/agent-presets/src/mount.ts",
     "sha256": "7f0b3245de4a22501d39072bc239e4230f498d92a757f1ff56ea710bcfaf1eb8",
-    "usage": "fiber identity/root-realm leakage and row activation checks adapted; no preset/session service imported"
+    "usage": "fiber identity/root-realm leakage and row activation checks adapted; no preset/session service imported",
+    "commit": "0d1f50007f9bca3f52b06e1c3074fa14d5fb0720"
   },
-  "integration": "The existing host uses this loader for reviewed native composition; the offline reviewer shares its parser without executing plugin code."
+  "integration": "The existing host uses this loader for reviewed native composition; the offline reviewer shares its parser without executing plugin code.",
+  "tag": "dsh-v0.2.1-rc.5"
 }

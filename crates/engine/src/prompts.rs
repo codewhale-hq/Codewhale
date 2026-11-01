@@ -391,9 +391,9 @@ thread_local! {
 }
 
 /// Replay a recorded host's OS and shell in this thread's environment block
-/// until the guard drops. The only caller, the scripted conformance families,
-/// is Unix-only and runs its engine on this thread's runtime.
-#[cfg(all(any(test, feature = "test-support"), unix))]
+/// until the guard drops. Scripted conformance and runtime measurements pin
+/// their fixture facts on the thread that renders the prompt.
+#[cfg(any(test, feature = "test-support"))]
 pub fn pin_recorded_environment(os: &str, shell: &str) -> RecordedEnvironmentGuard {
     RECORDED_ENVIRONMENT
         .with(|cell| *cell.borrow_mut() = Some((os.to_string(), shell.to_string())));
@@ -408,10 +408,10 @@ pub fn recorded_shell() -> Option<String> {
     RECORDED_ENVIRONMENT.with(|cell| cell.borrow().as_ref().map(|(_, shell)| shell.clone()))
 }
 
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 pub struct RecordedEnvironmentGuard;
 
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for RecordedEnvironmentGuard {
     fn drop(&mut self) {
         RECORDED_ENVIRONMENT.with(|cell| *cell.borrow_mut() = None);
@@ -776,7 +776,7 @@ impl BasePromptOrigin {
     /// Short, user-facing provenance label. Contains no filesystem paths.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Bundled => "bundled in this codewhale-tui build (BASE_PROMPT, compiled in)",
+            Self::Bundled => "bundled in this codewhale-engine build (BASE_PROMPT, compiled in)",
             Self::ConfigOverride => concat!(
                 "config-directory override installed at startup ",
                 "(prompts/constitution.md, opt-in enabled)"

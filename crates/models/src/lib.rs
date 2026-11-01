@@ -216,27 +216,31 @@ pub struct Usage {
 /// Unrecognized DeepSeek family names remain unknown.
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.context_window)
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.context_window)
-            })
-        })
+    reviewed_model_limit(model, |row| row.context_window)
         .or_else(|| explicit_context_window_hint(&model.to_ascii_lowercase()))
+}
+
+fn reviewed_model_limit(
+    model: &str,
+    limit: impl Fn(codewhale_config::catalog::reviewed::IntrinsicModel) -> Option<u32>,
+) -> Option<u32> {
+    codewhale_config::catalog::reviewed::intrinsic_model(model)
+        .and_then(&limit)
+        .or_else(|| {
+            reviewed_snapshot_model(model)
+                .and_then(codewhale_config::catalog::reviewed::intrinsic_model)
+                .and_then(limit)
+        })
+}
+
+#[must_use]
+pub fn generation_default_for_model(model: &str) -> Option<u32> {
+    reviewed_model_limit(model, |row| row.generation_default)
 }
 
 #[must_use]
 pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.generation_default.or(row.max_output))
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.generation_default.or(row.max_output))
-            })
-        })
+    reviewed_model_limit(model, |row| row.generation_default.or(row.max_output))
 }
 
 /// Catalog-first reasoning capability. `None` means no catalog row and no

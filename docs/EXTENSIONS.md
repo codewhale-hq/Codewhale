@@ -354,10 +354,12 @@ For DSH definitions with `output`, declare both `output.schema` and
 `output.render`. The host validates the canonical JSON result before rendering
 it. This adapter currently accepts plain text blocks only; unsupported rich
 content or extra block fields produce an explicit error instead of disappearing.
-Nonempty registration options, `projectContent`, `finalizeContent`, `timeoutMs`
-and deferred loading are not implemented and are refused. The shared
+A boolean `deferLoading` is accepted as a presentation hint; the Engine
+keeps its existing tool-loading policy. Non-boolean values are refused.
+Nonempty registration options, `when`, `projectContent`, `finalizeContent`
+and `timeoutMs` remain unsupported and are refused. The shared
 [`compatibility.json`](../crates/engine/extension-host/src/dsh/compatibility.json)
-pins the definition API to DSH 0.2.1-rc.2 and records service, row-bridge and
+pins the definition API to DSH 0.2.1-rc.5 and records service, row-bridge and
 module mappings. Its bytes participate in Native content and capability review,
 so changing the compatibility contract invalidates prior trust.
 
