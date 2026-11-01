@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Goal tool guidance while awaiting an answer (#7177):** the tool schema now
+  tells the model to yield when it needs the user’s answer and reserves blocked
+  for stalled progress. Existing runtime semantics are unchanged; no live-model
+  qualification is claimed. Thanks [@SparkofSpike](https://github.com/SparkofSpike).
 - **A goal pauses to ask instead of inventing the answer (#7175):** the goal
   continuation prompts now tell the model to call `update_goal` with
   `status: "yield"` when the next pass needs an answer only the user can give,
