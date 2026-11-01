@@ -5187,25 +5187,7 @@ pub fn update_session(
     } else if (new_len != old_len || messages != session.messages.as_slice())
         && let Some(journal) = session.journal.as_mut()
     {
-        if common > 0 && common <= journal.entries.len() {
-            let target_id = journal
-                .root_to_leaf()
-                .get(common - 1)
-                .map(|entry| entry.id.clone());
-            if let Some(target_id) = target_id {
-                let _ = journal.branch_to(&target_id);
-            } else {
-                journal.leaf_id = None;
-            }
-        } else if common == 0 {
-            journal.leaf_id = journal.entries.first().and_then(|e| e.parent_id.clone());
-            if journal.leaf_id.is_none() && !journal.entries.is_empty() {
-                journal.leaf_id = None;
-            }
-        }
-        for msg in messages.iter().skip(common) {
-            journal.append_message(msg.clone());
-        }
+        let _ = journal.rebranch_active_messages(messages);
         session.leaf_id = journal.leaf_id.clone();
     }
     session.messages.clear();

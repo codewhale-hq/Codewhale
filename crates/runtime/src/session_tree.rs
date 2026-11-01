@@ -44,18 +44,49 @@ pub enum SessionEntryKind {
     },
 }
 pub fn same_content_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
-    fn stripped(message: &Message) -> Vec<&ContentBlock> {
-        let skip =
-            codewhale_models::turn_classify::turn_metadata_text(message).map(|(index, _)| index);
-        message
-            .content
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| Some(*index) != skip)
-            .map(|(_, block)| block)
-            .collect()
+    a.role == b.role && normalized_blocks(a) == normalized_blocks(b)
+}
+
+fn is_complete_turn_metadata_block(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("<turn_meta>") && trimmed.ends_with("</turn_meta>")
+}
+
+fn strip_leading_turn_metadata(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix("<turn_meta>") else {
+        return text;
+    };
+    let Some(end) = rest.find("</turn_meta>") else {
+        return text;
+    };
+    rest[end + "</turn_meta>".len()..].trim_start()
+}
+
+fn normalized_blocks(message: &Message) -> Vec<ContentBlock> {
+    let mut blocks = message.content.clone();
+    if blocks.len() >= 2 {
+        if matches!(blocks.first(), Some(ContentBlock::Text { text, .. }) if is_complete_turn_metadata_block(text))
+        {
+            blocks.remove(0);
+        }
+        if blocks.len() >= 2
+            && matches!(blocks.last(), Some(ContentBlock::Text { text, .. }) if is_complete_turn_metadata_block(text))
+        {
+            blocks.pop();
+        }
     }
-    a.role == b.role && stripped(a) == stripped(b)
+    for block in &mut blocks {
+        if let ContentBlock::Text {
+            text,
+            cache_control,
+        } = block
+        {
+            *text = strip_leading_turn_metadata(text).to_string();
+            *cache_control = None;
+        }
+    }
+    blocks
 }
 impl SessionEntryKind {
     pub fn is_contextual(&self) -> bool {
@@ -64,10 +95,31 @@ impl SessionEntryKind {
             Self::Message { .. } | Self::User { .. } | Self::Assistant { .. }
         )
     }
-    /// `self.as_message() == Some(message)` without materializing the
-    /// projection. Every autosave compares the whole active branch with the
-    /// live transcript, so the common `Message` entry must not be deep-cloned
-    /// just to be compared.
+    /// Exactly the stored message, without synthesizing legacy variants.
+    pub fn exact_message(&self) -> Option<&Message> {
+        match self {
+            Self::Message { message } => Some(message),
+            _ => None,
+        }
+    }
+
+    /// Rewrite this entry to carry `message`. Legacy `User`/`Assistant` text
+    /// variants are upgraded to the full `Message` shape; checkpoint entries
+    /// hold their own payload and are left untouched.
+    pub fn replace_message(&mut self, message: Message) -> bool {
+        match self {
+            Self::Message { .. } | Self::User { .. } | Self::Assistant { .. } => {
+                *self = Self::Message { message };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `self.as_message()` equals `message`, byte-for-byte or after removing
+    /// engine-owned `<turn_meta>` metadata from both sides. Every autosave
+    /// compares the whole active branch with the live transcript, so the
+    /// projection is materialized only once the strict comparison fails.
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
             Self::Message { message: own } => {
@@ -364,8 +416,11 @@ impl SessionJournal {
 
     /// Make `messages` the active projection without rewriting the journal.
     ///
-    /// The existing active branch remains as evidence. We reuse its longest
-    /// unchanged prefix, then append the repaired suffix as a sibling branch.
+    /// The existing active branch stays as evidence. A prefix that differs
+    /// only by engine `<turn_meta>` metadata is refreshed in place, so the
+    /// stored shape follows the live transcript instead of forking a second
+    /// copy of the same turn; anything past the prefix is appended as a
+    /// sibling branch.
     pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
         self.rebranch_active_messages_stamped(messages, &[])
     }
@@ -377,16 +432,29 @@ impl SessionJournal {
         messages: &[Message],
         stamps: &[DateTime<Utc>],
     ) -> Rebranch {
-        let active_path = self.root_to_leaf();
-        let previous_active = active_path.len();
-        let shared_prefix = active_path
-            .iter()
-            .zip(messages)
-            .take_while(|(entry, message)| entry.kind.projects_to(message))
-            .count();
-        self.leaf_id = shared_prefix
-            .checked_sub(1)
-            .map(|index| active_path[index].id.clone());
+        let (previous_active, shared_prefix, refreshed, leaf_id) = {
+            let active_path = self.root_to_leaf();
+            let previous_active = active_path.len();
+            let shared_prefix = active_path
+                .iter()
+                .zip(messages)
+                .take_while(|(entry, message)| entry.kind.projects_to(message))
+                .count();
+            let refreshed: Vec<(EntryId, Message)> = (0..shared_prefix)
+                .filter(|&index| active_path[index].kind.exact_message() != Some(&messages[index]))
+                .map(|index| (active_path[index].id.clone(), messages[index].clone()))
+                .collect();
+            let leaf_id = shared_prefix
+                .checked_sub(1)
+                .map(|index| active_path[index].id.clone());
+            (previous_active, shared_prefix, refreshed, leaf_id)
+        };
+        self.leaf_id = leaf_id;
+        for (id, message) in refreshed {
+            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+                Arc::make_mut(&mut entry.kind).replace_message(message);
+            }
+        }
         for (index, message) in messages.iter().enumerate().skip(shared_prefix) {
             self.append_stamped(
                 SessionEntryKind::Message {
