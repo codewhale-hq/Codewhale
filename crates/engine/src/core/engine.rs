@@ -4852,24 +4852,6 @@ impl Engine {
         base.saturating_add(inflated_delta).saturating_add(12)
     }
 
-    fn append_resource_metadata_lines(
-        &self,
-        lines: &mut Vec<String>,
-        current_text: &str,
-        prompt_context: &NextTurnPromptContext,
-        system_prompt: Option<&SystemPrompt>,
-        messages: &[Message],
-    ) {
-        if let Some(line) =
-            self.context_pressure_line(current_text, prompt_context, system_prompt, messages)
-        {
-            lines.push(line);
-        }
-        if let Some(line) = self.active_goal_token_budget_line(prompt_context) {
-            lines.push(line);
-        }
-    }
-
     /// Goal pacing for the model: the budget figure only, and only while a
     /// goal is actually active. Usage/time deltas, rates, and continuation
     /// counts are UI telemetry — they changed every turn and invalidated the
@@ -4951,6 +4933,7 @@ impl Engine {
         snapshot: TurnMetadataSnapshot<'_>,
     ) -> ContentBlock {
         let TurnMetadataSnapshot {
+            planned_compaction,
             prompt_context,
             system_prompt,
             approval_mode,
@@ -5032,13 +5015,18 @@ impl Engine {
             lines.push(format!("Authority transition: {}", event.transition()));
             lines.push(format!("Authority narrowing status: {}", event.message()));
         }
-        self.append_resource_metadata_lines(
-            &mut lines,
+        if let Some(line) = self.context_pressure_line(
             current_text,
             prompt_context,
             system_prompt,
             messages,
-        );
+            planned_compaction,
+        ) {
+            lines.push(line);
+        }
+        if let Some(line) = self.active_goal_token_budget_line(prompt_context) {
+            lines.push(line);
+        }
         if let Some(working_set_summary) = working_set_summary {
             lines.push(working_set_summary);
         }
@@ -5222,6 +5210,7 @@ impl Engine {
             reasoning_effort_auto,
             provenance,
             TurnMetadataSnapshot {
+                planned_compaction: None,
                 prompt_context: &prompt_context,
                 system_prompt: self.session.system_prompt.as_ref(),
                 approval_mode: self.session.approval_mode,
@@ -7201,6 +7190,7 @@ impl Engine {
                 self.session.reasoning_effort_auto,
                 provenance,
                 TurnMetadataSnapshot {
+                    planned_compaction: None,
                     prompt_context: &prompt_context,
                     system_prompt: self.session.system_prompt.as_ref(),
                     approval_mode: self.session.approval_mode,
@@ -10602,6 +10592,7 @@ pub fn mock_engine_handle() -> MockEngineHandle {
 /// supplies the values it *would* install, so an inspection can reproduce the
 /// block exactly without writing any of them.
 pub struct TurnMetadataSnapshot<'a> {
+    pub planned_compaction: Option<&'a CompactionConfig>,
     pub prompt_context: &'a NextTurnPromptContext,
     pub system_prompt: Option<&'a SystemPrompt>,
     pub approval_mode: ApprovalMode,

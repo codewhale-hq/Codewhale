@@ -200,6 +200,7 @@ impl Engine {
         prompt_context: &NextTurnPromptContext,
         system_prompt: Option<&SystemPrompt>,
         messages: &[Message],
+        planned_compaction: Option<&CompactionConfig>,
     ) -> Option<String> {
         let input_tokens =
             crate::compaction::estimate_input_tokens_for_pressure(messages, system_prompt)
@@ -220,11 +221,13 @@ impl Engine {
             budget.window_tokens,
             budget.usage_percent(),
         );
-        let compaction = &self.config.compaction;
+        let compaction = planned_compaction.unwrap_or(&self.config.compaction);
         if compaction.enabled {
-            if self.api_provider == prompt_context.provider
-                && self.config.model == prompt_context.model
-                && self.active_route_limits == prompt_context.route_limits
+            let matches_route = planned_compaction.is_some()
+                || (self.api_provider == prompt_context.provider
+                    && self.config.model == prompt_context.model
+                    && self.active_route_limits == prompt_context.route_limits);
+            if matches_route
                 && compaction.effective_context_window.map(u64::from) == Some(budget.window_tokens)
             {
                 return Some(format!(

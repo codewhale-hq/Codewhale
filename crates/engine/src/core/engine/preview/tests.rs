@@ -284,6 +284,7 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
             &prompt_context,
             system_prompt.as_ref(),
             &engine.session.messages,
+            None,
         )
         .unwrap();
     assert!(planned_pressure.contains("/ 123456 context tokens"));
@@ -305,6 +306,7 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
             &installed_context,
             None,
             &engine.session.messages,
+            None,
         )
         .unwrap();
     assert!(pressure.contains("Context pressure: critical"));
@@ -318,6 +320,7 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         false,
         UserInputProvenance::ExternalUser,
         TurnMetadataSnapshot {
+            planned_compaction: None,
             prompt_context: &prompt_context,
             system_prompt: system_prompt.as_ref(),
             approval_mode: ApprovalMode::Suggest,

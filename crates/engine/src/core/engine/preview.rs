@@ -293,11 +293,6 @@ impl Engine {
             inputs.auto_approve,
             inputs.approval_mode,
         );
-        let prompt_context = NextTurnPromptContext {
-            mode: input_policy.mode,
-            ..planned_prompt_context
-        };
-
         // The command-scoped allow gate is *passed*, never installed. The
         // earlier shape wrote `self.config.allowed_tools`, awaited the whole
         // catalog build, and wrote it back: for the duration of that await the
@@ -389,6 +384,12 @@ impl Engine {
                 None,
                 effective_reasoning_effort.as_deref(),
             );
+        let prompt_context = NextTurnPromptContext {
+            mode: input_policy.mode,
+            context_window: Some(route.context_window),
+            planned_output_tokens: Some(planned_output_tokens),
+            ..planned_prompt_context
+        };
         let (system_prompt, preview_raw, preview_assembly) = if self.session.system_prompt_override
             || self.session.pinned_prompt_context.as_ref() == Some(&prompt_context)
         {
@@ -512,6 +513,7 @@ impl Engine {
             reasoning_effort_auto,
             inputs.provenance,
             TurnMetadataSnapshot {
+                planned_compaction: Some(&planned_compaction),
                 prompt_context: &prompt_context,
                 system_prompt: pre_guard_system_prompt.as_ref(),
                 approval_mode: input_policy.approval_mode_for_session(),
@@ -532,6 +534,7 @@ impl Engine {
                 reasoning_effort_auto,
                 crate::core::ops::UserInputProvenance::Runtime,
                 TurnMetadataSnapshot {
+                    planned_compaction: Some(&planned_compaction),
                     prompt_context: &prompt_context,
                     system_prompt: system_prompt.as_ref(),
                     approval_mode: input_policy.approval_mode_for_session(),

@@ -620,6 +620,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
             false,
             UserInputProvenance::ExternalUser,
             TurnMetadataSnapshot {
+                planned_compaction: None,
                 prompt_context: &prompt_context,
                 system_prompt: None,
                 approval_mode: engine.session.approval_mode,
@@ -774,6 +775,7 @@ fn turn_meta_block_stays_within_measured_ceiling() {
         false,
         UserInputProvenance::ExternalUser,
         TurnMetadataSnapshot {
+            planned_compaction: None,
             prompt_context: &prompt_context,
             system_prompt: None,
             approval_mode: engine.session.approval_mode,
@@ -826,6 +828,7 @@ fn turn_metadata_names_the_effective_sandbox_posture() {
             false,
             UserInputProvenance::ExternalUser,
             TurnMetadataSnapshot {
+                planned_compaction: None,
                 prompt_context: &prompt_context,
                 system_prompt: None,
                 approval_mode: engine.session.approval_mode,

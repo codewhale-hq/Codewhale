@@ -940,7 +940,7 @@ pub(crate) async fn build_preview_request_inputs(
 
     match planned {
         Ok(planned) => {
-            let mut prompt_context =
+            let prompt_context =
                 codewhale_engine::core::engine::NextTurnPromptContext::for_planned_turn(
                     planned.route.identity.provider,
                     planned.route.model.clone(),
@@ -954,20 +954,6 @@ pub(crate) async fn build_preview_request_inputs(
                     app.translation_enabled,
                     app.verbosity.clone(),
                 );
-            prompt_context.context_window = Some(planned.route.context_window);
-            let effort = planned.effective_reasoning_effort.as_deref();
-            prompt_context.planned_output_tokens = Some(
-                codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
-                    planned.route.identity.provider,
-                    &planned.route.model,
-                    codewhale_engine::route_budget::known_route_limits(
-                        planned.route.candidate.limits(),
-                    ),
-                    Some(planned.route.context_window.tokens),
-                    None,
-                    effort,
-                ),
-            );
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
