@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows setup uninstaller preserves a trailing separator in the current-user PATH and retains other settings stored in the CodeWhale registry key.
 - Inline code in terminal replies preserves embedded backticks. Text after an unmatched delimiter keeps its normal styling. Thanks [@Lstarsky0](https://github.com/Lstarsky0). [#7185](https://github.com/codewhale-hq/Codewhale/pull/7185)
 - Windows Ctrl+Break and terminal-close events now request the same bounded session checkpoint and persistence flush as Ctrl+C (CW-7553).
 - When a keyless local Ollama route has no resolved chat model, retrying `/provider ollama` refreshes the catalog in the background. You can keep typing while the daemon responds. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)

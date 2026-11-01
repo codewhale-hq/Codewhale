@@ -163,7 +163,9 @@ Section "Uninstall"
   RMDir "$INSTDIR"
 
   ; Remove registry keys
-  DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
+  DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "InstallDir"
+  DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "CompiledHostInstalled"
+  DeleteRegKey /ifempty HKCU "Software\${PRODUCT_NAME}"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 SectionEnd
 

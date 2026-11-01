@@ -64,7 +64,7 @@ $trailingAdded = Get-UpdatedUserPath `
     -Current $trailingDelimiter `
     -RequestedOperation Add `
     -RequestedEntry $entry
-Assert-Equal "$trailingDelimiter$entry" $trailingAdded 'Adding after a trailing delimiter must not create a blank entry.'
+Assert-Equal "$trailingDelimiter$entry;" $trailingAdded 'Adding must preserve the existing trailing delimiter.'
 
 $removalSource = "C:\Before;$entry;C:\After"
 $removed = Get-UpdatedUserPath `
