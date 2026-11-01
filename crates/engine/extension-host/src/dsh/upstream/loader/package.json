@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/cordis-plugin-loader",
   "description": "Plugin loader for cordis",
-  "version": "1.0.3",
+  "version": "1.0.6",
   "publishConfig": {
     "access": "public"
   },
@@ -30,8 +30,8 @@
   "author": "Shigma <shigma10826@gmail.com>",
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/cordis": "workspace:^",
-    "node-addon-require-builtin": "^0.1.6"
+    "@deepseek-ai/cordis": "workspace:~",
+    "node-addon-require-builtin": "^0.1.9"
   },
   "peerDependenciesMeta": {
     "node-addon-require-builtin": {
@@ -39,6 +39,7 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/cosmokit": "workspace:^"
+    "@deepseek-ai/cosmokit": "workspace:~",
+    "@deepseek-ai/schemastery": "workspace:~"
   }
 }

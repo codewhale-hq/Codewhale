@@ -14570,12 +14570,13 @@ fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_j
     (!artifact.is_empty()).then_some(serde_json::Value::Object(artifact))
 }
 
-fn current_binary_sha256() -> Option<String> {
-    let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
-    Some(format!(
-        "sha256:{}",
-        codewhale_runtime::hashing::sha256_hex(&bytes)
-    ))
+fn start_binary_sha256() -> tokio::task::JoinHandle<Option<String>> {
+    let file = std::env::current_exe().and_then(std::fs::File::open);
+    tokio::task::spawn_blocking(move || {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("binary_identity");
+        let hash = codewhale_release::installs::reader_sha256(file.ok()?).ok()?;
+        Some(format!("sha256:{hash}"))
+    })
 }
 
 async fn run_workflow_tool_command(
@@ -14752,7 +14753,7 @@ async fn run_workflow_tool_command_inner(
             retry_count: None,
             approval_posture: "explicit_workflow_command".to_string(),
             sandbox_posture: "configured".to_string(),
-            binary_sha256: current_binary_sha256(),
+            binary_sha256: start_binary_sha256().await.ok().flatten(),
             config_sha256: None,
             prompt_sha256: workflow_input_sha256,
             tool_catalog_sha256: None,

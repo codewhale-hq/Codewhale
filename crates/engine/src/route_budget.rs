@@ -270,10 +270,8 @@ pub enum OutputCeilingSource {
     Uncatalogued(u32),
     /// The route publishes no ceiling we can stand behind, but a defensible
     /// floor is still applied: an Anthropic-family model the catalogue does
-    /// not describe (64K Messages floor), the Codex OAuth route (4K
-    /// policy), and a model-only catalogue row reached through a custom
-    /// endpoint, whose shared wire spelling does not establish the catalogued
-    /// model. Clamping trades late provider failure for early truncation;
+    /// not describe (64K Messages floor) or the Codex OAuth route (4K
+    /// policy). Clamping trades late provider failure for early truncation;
     /// lying about why is not part of that trade, so receipts and pickers
     /// must render this as an assumption, never as "documented" (#5440).
     Unverified(u32),
@@ -328,6 +326,9 @@ pub fn output_ceiling_source(provider: ProviderKind, model: &str) -> OutputCeili
     // #5440: two routes clamp to a number the route itself never documented.
     // The clamps stay (see `OutputCeilingSource::Unverified`); the labels must
     // not borrow the documented rung's authority.
+    if provider == ProviderKind::Custom {
+        return OutputCeilingSource::RouteDeclaredUnknown;
+    }
     if provider == ProviderKind::OpenaiCodex {
         return OutputCeilingSource::Unverified(CODEX_OAUTH_MAX_OUTPUT_TOKENS);
     }
@@ -346,13 +347,7 @@ pub fn output_ceiling_source(provider: ProviderKind, model: &str) -> OutputCeili
                 OutputCeilingSource::Uncatalogued(UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS)
             }
         },
-        |tokens| {
-            if provider == ProviderKind::Custom {
-                OutputCeilingSource::Unverified(tokens)
-            } else {
-                OutputCeilingSource::Documented(tokens)
-            }
-        },
+        OutputCeilingSource::Documented,
     )
 }
 
@@ -395,7 +390,15 @@ fn effective_max_output_tokens_for_route_with_cap(
     // model-only request larger than half of whatever window is in force also
     // yields to the window-relative reservation.
     // Explicit requests and documented ceilings retain their existing rules.
-    let model_only_cap = effective_max_output_tokens_with_cap(model, automatic_cap);
+    let model_only_cap = if provider == ProviderKind::Custom {
+        explicit_max_output_tokens_override().unwrap_or_else(|| {
+            codewhale_models::generation_default_for_model(model)
+                .unwrap_or(window / 2)
+                .min(automatic_cap)
+        })
+    } else {
+        effective_max_output_tokens_with_cap(model, automatic_cap)
+    };
     let window_known = route_limits
         .and_then(|limits| limits.context_tokens)
         .is_some_and(|tokens| (1..=u64::from(u32::MAX)).contains(&tokens));
@@ -419,13 +422,11 @@ fn effective_max_output_tokens_for_route_with_cap(
     // fact — absence keeps a labeled automatic allowance
     // (see `output_ceiling_source`). A concrete route/offering maximum is the
     // missing evidence for that exact route and may replace only the generic
-    // uncatalogued guess or a custom endpoint's model-only assumption. An
+    // uncatalogued guess on a routed offering. An
     // explicit request may also rise past a compatibility cap to a maximum
     // the operator declared for this exact model and endpoint. Otherwise known
     // compatibility caps stay authoritative and are still intersected with
     // any route maximum.
-    let custom_endpoint_assumption = provider == ProviderKind::Custom
-        && matches!(compatibility_source, OutputCeilingSource::Unverified(_));
     let declared_route_override = explicit_max_output_tokens_override().is_some()
         && route_limits.is_some_and(|limits| limits.output_declared);
     let cap = match (compatibility_source, route_cap) {
@@ -435,9 +436,7 @@ fn effective_max_output_tokens_for_route_with_cap(
         // route fact the conservative guess still applies, and the route fact
         // can never raise the caller's requested cap.
         (OutputCeilingSource::Uncatalogued(_), Some(route_cap)) => requested_cap.min(route_cap),
-        (_, Some(route_cap)) if custom_endpoint_assumption || declared_route_override => {
-            requested_cap.min(route_cap)
-        }
+        (_, Some(route_cap)) if declared_route_override => requested_cap.min(route_cap),
         (OutputCeilingSource::Uncatalogued(_), None)
             if explicit_max_output_tokens_override().is_some() =>
         {
@@ -852,7 +851,11 @@ mod tests {
         for provider in [ProviderKind::Openai, ProviderKind::Custom] {
             assert_eq!(
                 output_ceiling_source(provider, model),
-                OutputCeilingSource::Uncatalogued(UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS)
+                if provider == ProviderKind::Custom {
+                    OutputCeilingSource::RouteDeclaredUnknown
+                } else {
+                    OutputCeilingSource::Uncatalogued(UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS)
+                }
             );
             assert_eq!(
                 effective_max_output_tokens_for_route(provider, model, None),
@@ -908,6 +911,7 @@ mod tests {
             (ProviderKind::Moonshot, "kimi-for-coding"),
             (ProviderKind::Moonshot, "kimi-for-coding-highspeed"),
             (ProviderKind::Ollama, "some-local-build"),
+            (ProviderKind::Custom, "alibaba/qwen3.8-27b"),
         ] {
             assert_eq!(
                 output_ceiling_source(provider, model),
@@ -1245,8 +1249,13 @@ mod tests {
             ] {
                 assert_eq!(provider_capability(provider, model).max_output, None);
                 let source = output_ceiling_source(provider, model);
-                assert_eq!(source, OutputCeilingSource::Uncatalogued(65_536));
-                assert_eq!(source.as_str(), "uncatalogued");
+                if provider == ProviderKind::Custom {
+                    assert_eq!(source, OutputCeilingSource::RouteDeclaredUnknown);
+                    assert_eq!(source.as_str(), "route-declared");
+                } else {
+                    assert_eq!(source, OutputCeilingSource::Uncatalogued(65_536));
+                    assert_eq!(source.as_str(), "uncatalogued");
+                }
                 assert_eq!(
                     effective_max_output_tokens_for_route(provider, model, None),
                     64_000,

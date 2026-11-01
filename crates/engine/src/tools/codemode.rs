@@ -1468,7 +1468,29 @@ pub async fn execute_tools_tool(
     registry: &ToolRegistry,
     context: &ToolContext,
 ) -> Result<ToolResult, ToolError> {
-    let code = required_str(input, "code")?;
+    let (code, args) = match input.get("batch").filter(|value| !value.is_null()) {
+        Some(batch) => {
+            if input.get("code").is_some_and(|v| !v.is_null())
+                || !batch.get("tool").is_some_and(Value::is_string)
+                || !batch.get("arguments").is_some_and(Value::is_object)
+                || batch.to_string().len() > MAX_CODE_BYTES
+            {
+                return Err(ToolError::invalid_input(
+                    "Supply either code or a bounded batch with tool and arguments.",
+                ));
+            }
+            if context.execution.nested_call_gate.is_none() {
+                return Err(ToolError::permission_denied(
+                    "A named batch requires the session tool gate.",
+                ));
+            }
+            (
+                "return await tools.call(args.tool, args.arguments);",
+                batch.clone(),
+            )
+        }
+        None => (required_str(input, "code")?, Value::Null),
+    };
     if code.trim().is_empty() {
         return Err(ToolError::missing_field("code"));
     }
@@ -1482,13 +1504,8 @@ pub async fn execute_tools_tool(
     let deadline = invoker.deadline();
     let cancel = WorkflowRunCancel::new();
     let vm = WorkflowVm::new();
-    let mut run = Box::pin(vm.run_tools_script(
-        code,
-        Value::Null,
-        driver.clone(),
-        invoker.clone(),
-        cancel.clone(),
-    ));
+    let mut run =
+        Box::pin(vm.run_tools_script(code, args, driver.clone(), invoker.clone(), cancel.clone()));
     let watchdog = async {
         loop {
             let Some(remaining) = invoker.remaining(deadline) else {

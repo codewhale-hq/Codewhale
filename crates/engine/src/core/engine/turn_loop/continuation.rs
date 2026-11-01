@@ -11,6 +11,7 @@ impl Engine {
         client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("model_continuation");
         if self.rlm_host.is_some() {
             return self
                 .continue_rlm_model_step(turn, tool_policy, progress, client, response)
