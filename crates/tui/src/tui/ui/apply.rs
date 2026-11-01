@@ -1879,6 +1879,7 @@ async fn apply_command_result_inner(
             }
             AppAction::ConversationUndo {
                 sync,
+                restored_files,
                 retry_input,
                 edit_replacement,
             } => {
@@ -1895,11 +1896,14 @@ async fn apply_command_result_inner(
                             restore_failed_immediate_submit(app, restored, &error);
                             app.edit_in_progress = true;
                         }
-                        app.push_status_toast(
-                            format!("Conversation rollback failed; retry was not sent: {error:#}"),
-                            StatusToastLevel::Error,
-                            None,
-                        );
+                        let message = if restored_files > 0 {
+                            format!(
+                                "Restored {restored_files} file changes. Conversation rollback failed: {error:#}"
+                            )
+                        } else {
+                            format!("Conversation rollback failed; retry was not sent: {error:#}")
+                        };
+                        app.push_status_toast(message, StatusToastLevel::Error, None);
                         return Ok(false);
                     }
                 };

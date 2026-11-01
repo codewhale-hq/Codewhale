@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After `/undo` restores files, Codewhale saves the conversation rewind before reporting completion. Reopening the session starts at the restored turn. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
 - Feishu and Weixin persist each incoming message ID before handling it. Concurrent deliveries share one result. After a restart, a message with an uncertain outcome stays pending until the bridge can tell the user to check its status. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for the durability audit (#6555).
 
 - Custom OpenAI-compatible routes now honor explicit output requests within the
@@ -362,7 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **[@asto18089](https://github.com/asto18089)** — diagnosed the NoNewPrivs child-matrix failure on hardened containers ([#7021](https://github.com/codewhale-hq/Codewhale/issues/7021)).
 - **[@Statter](https://github.com/Statter)** — reported black-on-black text on terminals that do not report their background ([#7043](https://github.com/codewhale-hq/Codewhale/issues/7043)).
 - **[@eugenicum](https://github.com/eugenicum)** — asked for a visible Full Access flag for `serve --acp` ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992)).
-- **[@luestr](https://github.com/luestr)** — reported the Linux multiline send key ([#7093](https://github.com/codewhale-hq/Codewhale/issues/7093)) and session export guidance ([#6996](https://github.com/codewhale-hq/Codewhale/issues/6996)).
+- **[@luestr](https://github.com/luestr)** — reported file and conversation rollback diverging ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)), the Linux multiline send key ([#7093](https://github.com/codewhale-hq/Codewhale/issues/7093)) and session export guidance ([#6996](https://github.com/codewhale-hq/Codewhale/issues/6996)).
 
 ## [0.10.2] - 2026-10-22
 

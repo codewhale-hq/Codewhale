@@ -14,6 +14,25 @@ fn undo_conversation(app: &mut App) -> CommandResult {
         &UndoPresentation,
     ))
 }
+fn acknowledge_file_undo(app: &mut App, result: &CommandResult) {
+    let Some(AppAction::ConversationUndo {
+        sync,
+        restored_files,
+        ..
+    }) = &result.action
+    else {
+        panic!("file undo did not request a durable conversation rewind");
+    };
+    assert!(*restored_files > 0 && app.api_messages.len() > sync.messages.len());
+    if let Some(index) = app
+        .history
+        .iter()
+        .rposition(|cell| matches!(cell, HistoryCell::User { .. }))
+    {
+        app.truncate_history_to(index);
+    }
+    app.set_api_messages(std::sync::Arc::new(sync.messages.clone()));
+}
 fn retry(app: &mut App) -> CommandResult {
     super::execute("/retry", app)
 }
@@ -346,7 +365,7 @@ fn test_retry_truncates_long_input() {
 }
 
 #[test]
-fn test_patch_undo_requests_session_resync_after_restore() {
+fn test_patch_undo_requests_durable_rewind_after_restore() {
     use codewhale_snapshot::SnapshotRepo;
     use tempfile::tempdir;
 
@@ -397,14 +416,17 @@ fn test_patch_undo_requests_session_resync_after_restore() {
     assert_eq!(std::fs::read(workspace.join("a.txt")).unwrap(), b"original");
 
     assert!(!result.is_error);
+    assert_eq!(app.api_messages.len(), 1);
     assert!(matches!(
         result.action,
-        Some(AppAction::SyncSession {
-            ref messages,
-            ref workspace,
-            ..
-        }) if messages.as_slice() == app.api_messages.as_slice()
-            && workspace == &app.workspace
+        Some(AppAction::ConversationUndo {
+            ref sync,
+            restored_files: 1,
+            retry_input: None,
+            edit_replacement: false,
+        }) if sync.messages.is_empty()
+            && sync.workspace == app.workspace
+            && sync.session_id == app.current_session_id
     ));
 }
 
@@ -498,8 +520,8 @@ fn test_patch_undo_prunes_pre_turn_context() {
 
     assert!(!result.is_error);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
-    // The request and its reply leave with the files; the command's own
-    // message is the only receipt (no second transcript line).
+    assert_eq!(app.history.len(), 2);
+    acknowledge_file_undo(&mut app, &result);
     assert!(app.history.is_empty());
     assert!(app.api_messages.is_empty());
     assert!(
@@ -834,6 +856,8 @@ fn undo_takes_back_a_whole_request_in_one_step_without_trust() {
             "Undid your request \"Whole hours should read 2h\". 3 files are back as they were before it:\n  restored duration.mjs\n  restored duration.test.mjs\n  removed notes.md\nThe request and its reply were removed from the conversation."
         )
     );
+    assert!(!app.history.is_empty());
+    acknowledge_file_undo(&mut app, &result);
     assert!(app.history.is_empty() && app.api_messages.is_empty());
     assert!(
         !app.trust_mode && !app.yolo,
@@ -877,11 +901,11 @@ fn undo_cuts_the_conversation_at_the_prompt_not_at_a_tool_result() {
 
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a0");
-    assert_eq!(app.api_messages.as_slice(), &messages[..2]);
+    assert_eq!(app.api_messages.as_slice(), &messages);
     assert!(matches!(
         result.action,
-        Some(AppAction::SyncSession { ref messages, .. })
-            if messages.as_slice() == app.api_messages.as_slice()
+        Some(AppAction::ConversationUndo { ref sync, restored_files: 1, .. })
+            if sync.messages == messages[..2]
     ));
 }
 
@@ -919,6 +943,7 @@ fn undo_never_reverts_files_of_a_request_the_conversation_still_holds() {
 
     let second = super::execute("/undo", &mut app);
     assert_eq!(fx.read("a.txt"), "a0", "{:?}", second.message);
+    acknowledge_file_undo(&mut app, &second);
     assert!(app.api_messages.is_empty());
 }
 
@@ -1053,6 +1078,7 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
         let result = super::execute("/undo", &mut app);
         assert!(!result.is_error, "{:?}", result.message);
         assert_eq!(fx.read("a.txt"), "a1");
+        acknowledge_file_undo(&mut app, &result);
         assert_eq!(app.history.len(), 2);
         assert_eq!(app.api_messages.len(), 2);
         assert_eq!(app.session_turn_outcomes.len(), 1);
@@ -1066,6 +1092,7 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
         let result = super::execute("/undo", &mut app);
         assert!(!result.is_error, "{:?}", result.message);
         assert_eq!(fx.read("a.txt"), "a0");
+        acknowledge_file_undo(&mut app, &result);
         assert!(app.history.is_empty() && app.api_messages.is_empty());
         assert!(app.session_turn_outcomes.is_empty());
     }
@@ -1157,6 +1184,7 @@ fn undo_keeps_lossless_hundred_character_unicode_prompts_available() {
     let result = super::execute("/undo", &mut app);
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a0");
+    acknowledge_file_undo(&mut app, &result);
     assert!(app.history.is_empty() && app.api_messages.is_empty());
 }
 
@@ -1308,6 +1336,8 @@ fn undo_of_a_request_without_a_recorded_end_is_refused_until_forced() {
             "Undid your request \"edit a.txt\". 1 file is back as it was before it:\n  restored a.txt\nThe end of this request was not recorded, so edits made to these files since it started were also put back.\nThe request and its reply were removed from the conversation."
         )
     );
+    assert_eq!(app.api_messages.len(), 2);
+    acknowledge_file_undo(&mut app, &forced);
     assert!(app.api_messages.is_empty());
     assert!(
         fx.repo
@@ -1343,6 +1373,7 @@ fn undo_keeps_an_edit_the_user_made_after_an_unfinished_request() {
     let first = super::execute("/undo", &mut app);
     assert!(!first.is_error, "{:?}", first.message);
     assert!(!fx.workspace.join("c.txt").exists());
+    acknowledge_file_undo(&mut app, &first);
     assert_eq!(app.api_messages.len(), 2, "{:?}", first.message);
 
     let second = super::execute("/undo", &mut app);

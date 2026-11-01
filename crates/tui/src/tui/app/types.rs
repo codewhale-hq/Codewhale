@@ -681,6 +681,7 @@ pub enum AppAction {
     /// acknowledges this history and its persisted snapshot is durable.
     ConversationUndo {
         sync: codewhale_command_contract::facets::SessionSyncPayload,
+        restored_files: usize,
         retry_input: Option<String>,
         /// `retry_input` is the text of a pending `/edit`, already taken from
         /// the composer. If the rollback is refused it must go back there, with

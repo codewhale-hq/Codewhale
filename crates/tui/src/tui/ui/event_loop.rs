@@ -1971,6 +1971,7 @@ pub(super) fn edit_replacement_result(
         message: None,
         action: Some(AppAction::ConversationUndo {
             sync,
+            restored_files: 0,
             retry_input: Some(input.to_string()),
             edit_replacement: true,
         }),

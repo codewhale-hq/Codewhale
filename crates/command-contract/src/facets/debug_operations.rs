@@ -84,9 +84,8 @@ pub struct DebugUndoRestored {
     /// First line of the undone request's prompt, when its restore point
     /// recorded one.
     pub request: Option<String>,
-    /// Whether the request and its reply were also removed from the
-    /// conversation. `false` when the conversation no longer held it.
-    pub conversation_removed: bool,
+    /// Whether the host must rewind the matching request and its reply.
+    pub rewind_conversation: bool,
     /// The request had no recorded end and `/undo force` ran it, so edits
     /// made to these files since it started went back too.
     pub forced: bool,

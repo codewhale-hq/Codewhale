@@ -76,6 +76,7 @@ pub enum DebugAction {
     /// input only after both succeed, replacing the removed exchange (#6788).
     ConversationUndo {
         sync: SessionSyncPayload,
+        restored_files: usize,
         retry_input: Option<String>,
     },
 }
