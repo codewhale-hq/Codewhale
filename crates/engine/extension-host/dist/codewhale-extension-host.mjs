@@ -1853,7 +1853,7 @@ var init_lib2 = __esm({
         });
       }
     };
-    (function(Inject2) {
+    (function(Inject3) {
       function resolve6(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
@@ -1863,7 +1863,7 @@ var init_lib2 = __esm({
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject2.resolve = resolve6;
+      Inject3.resolve = resolve6;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -2175,6 +2175,7 @@ var init_lib2 = __esm({
 // node_modules/@deepseek-ai/dsh-util-values/lib/index.js
 var lib_exports4 = {};
 __export(lib_exports4, {
+  PartialArguments: () => PartialArguments,
   WeakMapWithValues: () => WeakMapWithValues,
   assertNever: () => assertNever,
   deepEqualJson: () => deepEqualJson,
@@ -2182,6 +2183,12 @@ __export(lib_exports4, {
   isJsonValue: () => isJsonValue,
   snapshotJsonValue: () => snapshotJsonValue
 });
+function isWhitespace(c) {
+  return c === " " || c === "\n" || c === "\r" || c === "	";
+}
+function isHex(c) {
+  return c >= "0" && c <= "9" || c >= "a" && c <= "f" || c >= "A" && c <= "F";
+}
 function assertNever(value, context) {
   const rendered = JSON.stringify(value) ?? String(value);
   throw new Error(`unreachable variant${context ? ` in ${context}` : ""}: ${rendered}`);
@@ -2190,7 +2197,7 @@ function hasIntrinsicConstructor(prototype, name) {
   const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
   if (typeof constructor !== "function") return false;
   try {
-    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === `function ${name}() { [native code] }`;
+    return constructor.name === name && constructor.prototype === prototype && Function.prototype.toString.call(constructor) === Function.prototype.toString.call(name === "Array" ? Array : Object);
   } catch {
     return false;
   }
@@ -2374,10 +2381,620 @@ function deepFreeze(value) {
   }
   return value;
 }
-var WeakMapWithValues;
+var SIMPLE_ESCAPES, CONTENT_ESCAPE, PartialArguments, WeakMapWithValues;
 var init_lib3 = __esm({
   "node_modules/@deepseek-ai/dsh-util-values/lib/index.js"() {
     init_define_BUILTIN_MODULE_DIGESTS();
+    SIMPLE_ESCAPES = {
+      '"': '"',
+      "\\": "\\",
+      "/": "/",
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "	"
+    };
+    CONTENT_ESCAPE = /[\\\u0000-\u001f]/u;
+    PartialArguments = class PartialArguments2 {
+      /** The view of a call with no arguments available. */
+      static EMPTY = PartialArguments2.fromObject({});
+      /**
+      * View finished argument text without scanning it until a reader asks.
+      * @param text - the complete argument JSON text.
+      * @returns a sealed view.
+      */
+      static fromText(text) {
+        const view = new PartialArguments2();
+        view.append(text);
+        view.sealed = true;
+        return view;
+      }
+      /**
+      * View an already parsed argument payload, such as a PTC dispatch object.
+      * @param value - the parsed argument value.
+      * @returns a sealed view; a non-object payload has no fields.
+      */
+      static fromObject(value) {
+        const view = new PartialArguments2();
+        view.object = typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+        view.sealed = true;
+        return view;
+      }
+      /**
+      * The source: text so far or a parsed object, plus whether it can still grow.
+      * These are the only enumerable fields, so two views over the same source
+      * compare equal structurally however far each has been read.
+      */
+      chunks = [];
+      object;
+      sealed = false;
+      #ends = [];
+      #size = 0;
+      #consumed = 0;
+      #mode = "root";
+      #escape = false;
+      #keyStart = 0;
+      #keyEscaped = false;
+      #key = "";
+      #current = null;
+      #nestedEnds = [];
+      #nestedInString = false;
+      #invalidAt;
+      #invalidValue = false;
+      #entries = /* @__PURE__ */ new Map();
+      #order = [];
+      #reads = /* @__PURE__ */ new Map();
+      /** Whether this view rejects further appends; does not scan text or register reads. */
+      get isSealed() {
+        return this.sealed;
+      }
+      /** Whether indexing or a content read found invalid JSON; unread value contents are not validated. */
+      get invalid() {
+        this.scan();
+        return this.#mode === "invalid" || this.#invalidValue;
+      }
+      /**
+      * Retain streamed argument text without scanning or comparing observed answers.
+      * @param fragment - the text following every fragment appended before.
+      */
+      append(fragment) {
+        if (this.sealed) throw new Error("PartialArguments: cannot append to a sealed view");
+        if (fragment.length === 0) return;
+        this.chunks.push(fragment);
+        this.#size += fragment.length;
+        this.#ends.push(this.#size);
+      }
+      /**
+      * Reconcile a streamed prefix with authoritative complete text without joining the fragments.
+      * @param text - the final argument text, which replaces missing or conflicting deltas.
+      * @returns this view sealed with its caches retained when every character matches; otherwise a new sealed view.
+      */
+      settle(text) {
+        if (this.object !== void 0 || text.length !== this.#size) return PartialArguments2.fromText(text);
+        let offset2 = 0;
+        for (const chunk of this.chunks) {
+          if (!text.startsWith(chunk, offset2)) return PartialArguments2.fromText(text);
+          offset2 += chunk.length;
+        }
+        this.chunks = text.length === 0 ? [] : [text];
+        this.#ends = text.length === 0 ? [] : [text.length];
+        this.sealed = true;
+        return this;
+      }
+      /**
+      * Compare observed answers and advance their publication baseline. Unread views remain unscanned.
+      * @returns whether any observed answer changed since its first read or the preceding refresh.
+      */
+      refresh() {
+        if (this.#reads.size === 0) return false;
+        this.scan();
+        let changed = false;
+        let completions = false;
+        for (const read of this.#reads.values()) {
+          if (read.completion) {
+            completions = true;
+            continue;
+          }
+          changed = this.refreshRead(read) || changed;
+        }
+        if (completions) {
+          for (const read of this.#reads.values()) if (read.completion) changed = this.refreshRead(read) || changed;
+        }
+        if (this.sealed) this.#reads.clear();
+        return changed;
+      }
+      refreshRead(read) {
+        const now = read.answer();
+        if (Object.is(now, read.last)) return false;
+        read.last = now;
+        return true;
+      }
+      /**
+      * Check whether no further fields can arrive.
+      * @returns whether the outer object closed, indexing failed, or the view is sealed; unread values are not validated.
+      */
+      closed() {
+        return this.remember("closed", "", () => this.closedNow());
+      }
+      /**
+      * List discovered fields in first-appearance order.
+      * @returns top-level keys seen so far, in first-appearance order.
+      */
+      keys() {
+        return this.remember("keys", "", () => this.keysNow(), (keys) => keys.length);
+      }
+      /**
+      * Check whether a top-level field has appeared.
+      * @param key - argument name.
+      * @returns whether the field has appeared (a string opened or another value began).
+      */
+      has(key) {
+        return this.remember("has", key, () => this.hasNow(key));
+      }
+      /**
+      * Check whether a field's closing delimiter has arrived, without validating its contents.
+      * @param key - argument name.
+      * @returns whether its delimiter arrived and no content reader has reported an error for this value.
+      */
+      complete(key) {
+        return this.remember("complete", key, () => this.completeNow(key));
+      }
+      /**
+      * Read string length without materializing its text.
+      * @param key - argument name.
+      * @param options - change granularity for a streaming string.
+      * @returns decoded UTF-16 length of the string field so far; undefined when absent or not a string.
+      */
+      stringLength(key, options) {
+        const step = Math.max(1, Math.floor(options?.step ?? 1));
+        const offset2 = options?.offset ?? 0;
+        return this.remember(`length:${step}:${offset2}`, key, () => this.lengthNow(key), (length) => length === void 0 ? void 0 : Math.ceil((length + offset2) / step));
+      }
+      /**
+      * Check a string against a decoded UTF-16 length limit without materializing it.
+      * @param key - argument name.
+      * @param maxLength - decoded UTF-16 limit, floored to at least zero.
+      * @returns whether the string is longer than the limit; false when absent or not a string.
+      */
+      stringExceeds(key, maxLength) {
+        const limit = Math.max(0, Math.floor(maxLength));
+        return this.remember(`exceeds:${limit}`, key, () => (this.lengthNow(key, limit + 1) ?? 0) > limit);
+      }
+      /**
+      * Read a decoded string, including a streaming prefix.
+      * @param key - argument name.
+      * @returns the string field's decoded text so far; undefined when absent or not a string.
+      */
+      text(key) {
+        return this.remember("text", key, () => this.textNow(key));
+      }
+      /**
+      * Read at most the first decoded UTF-16 units of a string.
+      * @param key - argument name.
+      * @param maxLength - maximum decoded UTF-16 length, floored to at least one.
+      * @returns the bounded string prefix; undefined when absent or not a string.
+      */
+      textPrefix(key, maxLength) {
+        const limit = Math.max(1, Math.floor(maxLength));
+        return this.remember(`prefix:${limit}`, key, () => this.textPrefixNow(key, limit));
+      }
+      /**
+      * Read a completed non-string argument.
+      * @param key - argument name.
+      * @returns the parsed non-string value once it closed; undefined while open, absent, or a string.
+      */
+      value(key) {
+        return this.remember("value", key, () => this.valueNow(key));
+      }
+      /** Answer a question and, on a streaming view, remember it for change detection. */
+      remember(kind, key, read, comparison) {
+        this.scan();
+        const result = read();
+        if (!this.sealed) {
+          const id = `${kind}/${key}`;
+          if (!this.#reads.has(id)) this.#reads.set(id, {
+            completion: kind === "complete",
+            answer: comparison === void 0 ? read : () => comparison(read()),
+            last: comparison === void 0 ? result : comparison(result)
+          });
+        }
+        return result;
+      }
+      closedNow() {
+        return this.sealed || this.#mode === "closed" || this.#mode === "invalid";
+      }
+      keysNow() {
+        return this.object === void 0 ? this.#order : Object.keys(this.object);
+      }
+      hasNow(key) {
+        return this.object === void 0 ? this.#entries.has(key) : Object.hasOwn(this.object, key);
+      }
+      completeNow(key) {
+        if (this.object !== void 0) return Object.hasOwn(this.object, key);
+        const entry = this.#entries.get(key);
+        return entry !== void 0 && entry.end >= 0 && (entry.kind === "string" ? entry.invalidAt === void 0 : !entry.invalid);
+      }
+      lengthNow(key, limit = Number.POSITIVE_INFINITY) {
+        if (this.object !== void 0) {
+          const field = Object.hasOwn(this.object, key) ? this.object[key] : void 0;
+          return typeof field === "string" ? field.length : void 0;
+        }
+        const entry = this.#entries.get(key);
+        if (entry?.kind !== "string") return void 0;
+        if (entry.text !== void 0 && entry.text.at === entry.end) return entry.text.length;
+        const read = entry.length ??= {
+          at: entry.start,
+          length: 0,
+          text: ""
+        };
+        this.readString(entry, read, limit, false);
+        return read.length;
+      }
+      textNow(key) {
+        if (this.object !== void 0) {
+          const field = Object.hasOwn(this.object, key) ? this.object[key] : void 0;
+          return typeof field === "string" ? field : void 0;
+        }
+        const entry = this.#entries.get(key);
+        if (entry?.kind !== "string") return void 0;
+        if (entry.text === void 0 && entry.end >= 0 && entry.needsDecoding && entry.invalidAt === void 0) {
+          let text;
+          try {
+            text = JSON.parse(`"${this.slice(entry.start, entry.end)}"`);
+          } catch (_error) {
+          }
+          if (text !== void 0) entry.text = {
+            at: entry.end,
+            length: text.length,
+            text
+          };
+        }
+        const read = entry.text ??= {
+          at: entry.start,
+          length: 0,
+          text: ""
+        };
+        this.readString(entry, read, Number.POSITIVE_INFINITY, true);
+        return read.text;
+      }
+      textPrefixNow(key, maxLength) {
+        if (this.object !== void 0) {
+          const field = Object.hasOwn(this.object, key) ? this.object[key] : void 0;
+          return typeof field === "string" ? field.slice(0, maxLength) : void 0;
+        }
+        const entry = this.#entries.get(key);
+        if (entry?.kind !== "string") return void 0;
+        const prefixes = entry.prefixes ??= /* @__PURE__ */ new Map();
+        let read = prefixes.get(maxLength);
+        if (read === void 0) {
+          read = {
+            at: entry.start,
+            length: 0,
+            text: ""
+          };
+          prefixes.set(maxLength, read);
+        }
+        this.readString(entry, read, maxLength, true);
+        return read.text;
+      }
+      valueNow(key) {
+        if (this.object !== void 0) {
+          if (!Object.hasOwn(this.object, key)) return void 0;
+          const field = this.object[key];
+          return typeof field === "string" ? void 0 : field;
+        }
+        const entry = this.#entries.get(key);
+        if (entry?.kind !== "value" || entry.end < 0 || entry.invalid) return void 0;
+        if (entry.parsed === void 0) try {
+          entry.parsed = JSON.parse(this.slice(entry.start, entry.end));
+        } catch (_error) {
+          entry.invalid = true;
+          this.#invalidValue = true;
+        }
+        return entry.parsed;
+      }
+      chunkAt(at2) {
+        let low = 0;
+        let high = this.#ends.length;
+        while (low < high) {
+          const mid = low + high >>> 1;
+          if (this.#ends[mid] <= at2) low = mid + 1;
+          else high = mid;
+        }
+        return low;
+      }
+      /** Materialize only a requested range, never the cumulative source. */
+      slice(start, end) {
+        if (start >= end) return "";
+        const first = this.chunkAt(start);
+        const last = this.chunkAt(end - 1);
+        const base = first === 0 ? 0 : this.#ends[first - 1];
+        if (first === last) return this.chunks[first].slice(start - base, end - base);
+        const parts = [this.chunks[first].slice(start - base)];
+        for (let i2 = first + 1; i2 < last; i2++) parts.push(this.chunks[i2]);
+        parts.push(this.chunks[last].slice(0, end - this.#ends[last - 1]));
+        return parts.join("");
+      }
+      readString(entry, read, limit, materialize) {
+        const end = Math.min(entry.end < 0 ? this.#consumed : entry.end, entry.invalidAt ?? Number.POSITIVE_INFINITY, this.#invalidAt ?? Number.POSITIVE_INFINITY);
+        if (!entry.needsDecoding) {
+          const length = Math.min(end - read.at, limit - read.length);
+          if (length <= 0) return;
+          if (materialize) read.text += this.slice(read.at, read.at + length);
+          read.at += length;
+          read.length += length;
+          return;
+        }
+        let chunkIndex = this.chunkAt(read.at);
+        while (read.at < end && read.length < limit) {
+          const base = chunkIndex === 0 ? 0 : this.#ends[chunkIndex - 1];
+          const chunk = this.chunks[chunkIndex];
+          const remaining = chunk.slice(read.at - base, Math.min(chunk.length, end - base));
+          const boundary = remaining.search(CONTENT_ESCAPE);
+          const length = Math.min(boundary < 0 ? remaining.length : boundary, limit - read.length);
+          if (length > 0) {
+            if (materialize) read.text += remaining.slice(0, length);
+            read.at += length;
+            read.length += length;
+            if (read.at === base + chunk.length) chunkIndex++;
+            continue;
+          }
+          const type2 = remaining.length > 1 ? remaining[1] : read.at + 1 < end ? this.chunks[chunkIndex + 1][0] : void 0;
+          let decoded;
+          let width = 2;
+          if (remaining[0] === "\\" && type2 === void 0 && entry.end < 0) return;
+          if (remaining[0] === "\\" && type2 === "u") {
+            const hex = this.slice(read.at + 2, Math.min(end, read.at + 6));
+            let valid = true;
+            for (let i2 = 0; i2 < hex.length; i2++) if (!isHex(hex[i2])) valid = false;
+            if (valid) {
+              if (hex.length < 4 && entry.end < 0) return;
+              if (hex.length === 4) decoded = String.fromCharCode(Number.parseInt(hex, 16));
+            }
+            width = 6;
+          } else if (remaining[0] === "\\" && type2 !== void 0) decoded = SIMPLE_ESCAPES[type2];
+          if (decoded === void 0) {
+            entry.invalidAt = read.at;
+            this.#invalidValue = true;
+            return;
+          }
+          if (materialize) read.text += decoded;
+          read.length++;
+          read.at += width;
+          while (chunkIndex < this.chunks.length && read.at >= this.#ends[chunkIndex]) chunkIndex++;
+        }
+      }
+      /** Locate new field ranges without decoding or parsing their contents. */
+      scan() {
+        if (this.object !== void 0 || this.#consumed === this.#size) return;
+        for (let i2 = this.chunkAt(this.#consumed); i2 < this.chunks.length && this.#invalidAt === void 0; i2++) {
+          const pending = this.chunks[i2];
+          const base = i2 === 0 ? 0 : this.#ends[i2 - 1];
+          for (let index = this.#consumed - base; index < pending.length && this.#mode !== "invalid"; index++) {
+            if (this.#mode === "string" || this.#mode === "nested" && this.#nestedInString) {
+              const end = this.stringBoundary(pending, index);
+              this.#consumed += end - index;
+              index = end;
+              if (index === pending.length) break;
+            }
+            this.step(pending[index], this.#consumed);
+            this.#consumed++;
+          }
+        }
+      }
+      /** Only raw quotes and their preceding backslash runs can terminate a string. */
+      stringBoundary(fragment, start) {
+        let at2 = start;
+        while (true) {
+          const quote = fragment.indexOf('"', at2);
+          const end = quote < 0 ? fragment.length : quote;
+          if (this.#mode === "string") {
+            const entry = this.#current;
+            if (!entry.needsDecoding && CONTENT_ESCAPE.test(fragment.slice(at2, end))) entry.needsDecoding = true;
+          }
+          let slashStart = end;
+          while (slashStart > at2 && fragment[slashStart - 1] === "\\") slashStart--;
+          const escaped = (end - slashStart) % 2 === 1 !== (slashStart === at2 && this.#escape);
+          this.#escape = quote < 0 && escaped;
+          if (quote < 0 || !escaped) return end;
+          at2 = quote + 1;
+        }
+      }
+      step(c, at2) {
+        switch (this.#mode) {
+          case "root":
+            if (isWhitespace(c)) return;
+            if (c === "{") {
+              this.#mode = "key-or-end";
+              return;
+            }
+            this.fail();
+            return;
+          case "key-or-end":
+            if (isWhitespace(c)) return;
+            if (c === "}") {
+              this.#mode = "closed";
+              return;
+            }
+            if (c === '"') {
+              this.beginKey(at2);
+              return;
+            }
+            this.fail();
+            return;
+          case "key-only":
+            if (isWhitespace(c)) return;
+            if (c === '"') {
+              this.beginKey(at2);
+              return;
+            }
+            this.fail();
+            return;
+          case "key":
+            this.stepKey(c, at2);
+            return;
+          case "colon":
+            if (isWhitespace(c)) return;
+            if (c === ":") {
+              this.#mode = "value";
+              return;
+            }
+            this.fail();
+            return;
+          case "value":
+            this.beginValue(c, at2);
+            return;
+          case "string": {
+            const entry = this.#current;
+            entry.end = at2;
+            this.#current = null;
+            this.#mode = "comma-or-end";
+            return;
+          }
+          case "scalar":
+            this.stepScalar(c, at2);
+            return;
+          case "nested":
+            this.stepNested(c, at2);
+            return;
+          case "comma-or-end":
+            if (isWhitespace(c)) return;
+            if (c === ",") {
+              this.#mode = "key-only";
+              return;
+            }
+            if (c === "}") {
+              this.#mode = "closed";
+              return;
+            }
+            this.fail();
+            return;
+          case "closed":
+            if (isWhitespace(c)) return;
+            this.fail();
+            return;
+          /* v8 ignore next 2 -- scan() stops stepping once the view is invalid. */
+          case "invalid":
+            return;
+          /* v8 ignore next 2 -- Every scanner mode has a handler above. */
+          default:
+            assertNever(this.#mode);
+        }
+      }
+      fail() {
+        this.#invalidAt = this.#consumed;
+        this.#mode = "invalid";
+        this.#current = null;
+      }
+      beginKey(at2) {
+        this.#mode = "key";
+        this.#keyStart = at2 + 1;
+        this.#keyEscaped = false;
+        this.#escape = false;
+      }
+      stepKey(c, at2) {
+        if (c < " ") {
+          this.fail();
+          return;
+        }
+        if (this.#escape) {
+          this.#escape = false;
+          return;
+        }
+        if (c === "\\") {
+          this.#escape = true;
+          this.#keyEscaped = true;
+          return;
+        }
+        if (c !== '"') return;
+        const raw = this.slice(this.#keyStart, at2);
+        if (this.#keyEscaped) try {
+          this.#key = JSON.parse(`"${raw}"`);
+        } catch (_error) {
+          this.fail();
+          return;
+        }
+        else this.#key = raw;
+        this.#mode = "colon";
+      }
+      open(entry) {
+        if (!this.#entries.has(this.#key)) this.#order.push(this.#key);
+        this.#entries.set(this.#key, entry);
+        this.#current = entry;
+      }
+      beginValue(c, at2) {
+        if (isWhitespace(c)) return;
+        if (c === '"') {
+          this.open({
+            kind: "string",
+            start: at2 + 1,
+            end: -1,
+            needsDecoding: false,
+            invalidAt: void 0,
+            length: void 0,
+            text: void 0,
+            prefixes: void 0
+          });
+          this.#escape = false;
+          this.#mode = "string";
+          return;
+        }
+        if (c === "}" || c === "," || c === ":" || c === "]") {
+          this.fail();
+          return;
+        }
+        this.open({
+          kind: "value",
+          start: at2,
+          end: -1,
+          parsed: void 0,
+          invalid: false
+        });
+        if (c === "{" || c === "[") {
+          this.#mode = "nested";
+          this.#nestedEnds = [c === "{" ? "}" : "]"];
+          this.#nestedInString = false;
+          this.#escape = false;
+          return;
+        }
+        this.#mode = "scalar";
+      }
+      stepScalar(c, at2) {
+        if (c !== "," && c !== "}" && !isWhitespace(c)) return;
+        this.closeValue(at2);
+        this.#mode = c === "," ? "key-only" : c === "}" ? "closed" : "comma-or-end";
+      }
+      stepNested(c, at2) {
+        if (this.#nestedInString) {
+          this.#nestedInString = false;
+          return;
+        }
+        if (c === '"') {
+          this.#nestedInString = true;
+          return;
+        }
+        if (c === "{" || c === "[") {
+          this.#nestedEnds.push(c === "{" ? "}" : "]");
+          return;
+        }
+        if (c === "}" || c === "]") {
+          if (this.#nestedEnds.pop() !== c) {
+            this.fail();
+            return;
+          }
+          if (this.#nestedEnds.length === 0) {
+            this.closeValue(at2 + 1);
+            this.#mode = "comma-or-end";
+          }
+        }
+      }
+      closeValue(end) {
+        const entry = this.#current;
+        entry.end = end;
+        this.#current = null;
+      }
+    };
     WeakMapWithValues = class {
       keys = /* @__PURE__ */ new WeakMap();
       valueSet = /* @__PURE__ */ new Set();
@@ -3578,6 +4195,43 @@ var init_utils = __esm({
   }
 });
 
+// src/dsh/upstream/loader/src/config/diff.ts
+function isSchemastery(schema3) {
+  return schema3?.["~standard"].vendor === "schemastery";
+}
+function isRecord(value) {
+  if (!value || typeof value !== "object" || isJsExpr(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function equal(a, b, schema3, ancestors) {
+  if (schema3?.meta?.volatile) return true;
+  if (schema3?.type !== "object" || !schema3.dict || ancestors.has(schema3)) return deepEqual(a, b, true);
+  const left = a ?? schema3.meta?.default;
+  const right = b ?? schema3.meta?.default;
+  if (!isRecord(left) || !isRecord(right)) return deepEqual(left, right, true);
+  const { dict } = schema3;
+  ancestors.add(schema3);
+  try {
+    return Object.keys({ ...left, ...right }).every(
+      (key) => equal(left[key], right[key], Object.hasOwn(dict, key) ? dict[key] : void 0, ancestors)
+    );
+  } finally {
+    ancestors.delete(schema3);
+  }
+}
+function equalExceptVolatile(previous, next, schema3) {
+  return isSchemastery(schema3) ? equal(previous, next, schema3, /* @__PURE__ */ new Set()) : deepEqual(previous, next, true);
+}
+var init_diff = __esm({
+  "src/dsh/upstream/loader/src/config/diff.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib();
+    init_utils();
+  }
+});
+
 // src/dsh/upstream/loader/src/config/entry.ts
 function takeEntries(object, keys) {
   const indexed = object;
@@ -3600,9 +4254,12 @@ var init_entry = __esm({
   "src/dsh/upstream/loader/src/config/entry.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
     init_lib();
     init_tree();
     init_utils();
+    init_diff();
+    init_fiber_state();
     Entry = class _Entry {
       constructor(loader2) {
         this.loader = loader2;
@@ -3613,6 +4270,8 @@ var init_entry = __esm({
       static key = /* @__PURE__ */ Symbol.for("cordis.entry");
       ctx;
       fiber;
+      /** Raw import result before export normalization; HMR updates it after a successful reload. */
+      moduleNamespace;
       parent;
       // safety: call `entry.update()` immediately after creating an entry
       options = {};
@@ -3682,16 +4341,58 @@ var init_entry = __esm({
           return;
         }
         if (this.fiber?.uid) {
-          const diff = Object.keys({ ...this.options, ...legacy }).filter((key) => !deepEqual(
+          const changes = Object.keys({ ...this.options, ...legacy }).filter((key) => !deepEqual(
             this.options[key],
-            legacy[key]
+            legacy[key],
+            key === "config"
           ));
-          if (!diff.length && !force) return;
+          const volatileOnly = changes.length === 1 && changes[0] === "config" && this.fiber.state === FiberState.ACTIVE && Object.getPrototypeOf(this.ctx) === this.parent.ctx && equalExceptVolatile(legacy.config, this.options.config, this.fiber.runtime?.Config);
+          if (volatileOnly) this.fiber._config = this.options.config;
+          const pending = volatileOnly && this._commitVolatile() ? [] : changes;
+          if (!pending.length && !force) return;
           this.context.emit("loader/partial-dispose", this, legacy, true);
-          this._patchContext(diff);
+          this._patchContext(pending);
         } else {
           await this.init();
         }
+      }
+      /**
+       * Parse a volatile-only raw config change and commit its values into the running fiber's references.
+       * An invalid candidate is logged and leaves the running references unchanged; the raw config stays retained for the next activation.
+       * @returns `false` when an ordinary effective value changed, so the caller applies the ordinary update lifecycle.
+       */
+      _commitVolatile() {
+        const fiber = this.fiber;
+        const refs = volatileEntries(fiber.config);
+        if (!refs.length) return true;
+        const raw = this.options.config;
+        let candidate;
+        try {
+          candidate = resolveConfig(fiber.runtime, fiber.ctx.waterfall(fiber, "internal/config", raw, () => raw));
+        } catch (error) {
+          this.ctx.logger.warn("volatile config update failed for %C", this.options.id);
+          this.ctx.logger.warn(error);
+          return true;
+        }
+        if (!deepEqual(fiber.config, candidate, true)) {
+          this.ctx.logger.debug("ordinary config values of %C changed with its volatile values; applying the ordinary update", this.options.id);
+          return false;
+        }
+        const paths = refs.flatMap(({ path, ref: ref2 }) => {
+          const source = path.reduce((value, key) => Reflect.get(value, key), candidate);
+          if (deepEqual(ref2.get(), source.get(), true)) return [];
+          updateVolatile(ref2, source);
+          return [path];
+        });
+        if (!paths.length) return true;
+        const self = Object.create(fiber.ctx);
+        Reflect.set(self, Context.filter, (owner) => owner.fiber === fiber);
+        try {
+          fiber.ctx.emit(self, "loader/volatile-update", paths);
+        } catch (error) {
+          this.ctx.logger.warn(error);
+        }
+        return true;
       }
       getOuterStack = () => {
         let entry = this;
@@ -3716,19 +4417,20 @@ var init_entry = __esm({
         this.fiber?.await().then(notify, notify);
       }
       async _init() {
-        let exports;
+        let moduleNamespace;
         try {
-          exports = await this.parent.tree.import(this.options.name, this.getOuterStack);
+          moduleNamespace = await this.parent.tree.import(this.options.name, this.getOuterStack);
         } catch (error) {
           this.ctx.logger.error(error);
           return;
         } finally {
           this._initTask = void 0;
         }
-        const plugin = this.loader.unwrapExports(exports);
+        const plugin = this.loader.unwrapExports(moduleNamespace);
         this._patchContext([]);
         this.loader.showLog(this, "apply");
-        this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuterStack);
+        this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuterStack).ctx.fiber;
+        this.moduleNamespace = moduleNamespace;
       }
     };
   }
@@ -3972,7 +4674,7 @@ var init_src = __esm({
         ctx.on("internal/update", function(config2, noSave, next) {
           if (!this.entry || noSave || this.parent.fiber?.entry === this.entry) return next();
           const unparse = this.runtime?.Config?.simplify;
-          this.entry.options.config = unparse ? unparse(config2) : config2;
+          this.entry.options.config = unparse ? unparse.call(this.runtime.Config, config2) : config2;
           this.entry.parent.tree.write();
           return next();
         }, { global: true, prepend: true });
@@ -6507,7 +7209,7 @@ function requireDumper() {
     }
     return false;
   }
-  function isWhitespace(c) {
+  function isWhitespace2(c) {
     return c === CHAR_SPACE || c === CHAR_TAB;
   }
   function isPrintable(c) {
@@ -6519,19 +7221,19 @@ function requireDumper() {
   }
   function isPlainSafe(c, prev, inblock) {
     const cIsNsCharOrWhitespace = isNsCharOrWhitespace(c);
-    const cIsNsChar = cIsNsCharOrWhitespace && !isWhitespace(c);
+    const cIsNsChar = cIsNsCharOrWhitespace && !isWhitespace2(c);
     return (
       // ns-plain-safe
       (inblock ? cIsNsCharOrWhitespace : cIsNsCharOrWhitespace && // - c-flow-indicator
       c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET) && // ns-plain-char
       c !== CHAR_SHARP && // false on '#'
       !(prev === CHAR_COLON && !cIsNsChar) || // false on ': '
-      isNsCharOrWhitespace(prev) && !isWhitespace(prev) && c === CHAR_SHARP || // change to true on '[^ ]#'
+      isNsCharOrWhitespace(prev) && !isWhitespace2(prev) && c === CHAR_SHARP || // change to true on '[^ ]#'
       prev === CHAR_COLON && cIsNsChar
     );
   }
   function isPlainSafeFirst(c) {
-    return isPrintable(c) && c !== CHAR_BOM && !isWhitespace(c) && // - s-white
+    return isPrintable(c) && c !== CHAR_BOM && !isWhitespace2(c) && // - s-white
     // - (c-indicator ::=
     // “-” | “?” | “:” | “,” | “[” | “]” | “{” | “}”
     c !== CHAR_MINUS && c !== CHAR_QUESTION && c !== CHAR_COLON && c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET && // | “#” | “&” | “*” | “!” | “|” | “=” | “>” | “'” | “"”
@@ -6539,7 +7241,7 @@ function requireDumper() {
     c !== CHAR_PERCENT && c !== CHAR_COMMERCIAL_AT && c !== CHAR_GRAVE_ACCENT;
   }
   function isPlainSafeLast(c) {
-    return !isWhitespace(c) && c !== CHAR_COLON;
+    return !isWhitespace2(c) && c !== CHAR_COLON;
   }
   function codePointAt(string, pos) {
     const first = string.charCodeAt(pos);
@@ -13839,27 +14541,33 @@ var compatibility_default;
 var init_compatibility = __esm({
   "src/dsh/compatibility.json"() {
     compatibility_default = {
-      version: 2,
-      target_dsh_version: "0.2.1-rc.2",
-      provided_services: [
-        "tools",
-        "commands",
-        "prompt",
-        "storage",
-        "skills",
-        "avatars",
-        "mcp",
-        "shellHooks",
-        "logger",
-        "events",
-        "reflect",
-        "registry",
-        "sessions",
-        "userQuestions",
-        "subagents",
-        "agents",
-        "systemPrompt"
-      ],
+      version: 3,
+      target_dsh_version: "0.2.1-rc.5",
+      provided_services: {
+        dsh: [
+          "tools",
+          "commands",
+          "storage",
+          "skills",
+          "sessions",
+          "userQuestions",
+          "subagents",
+          "agents",
+          "systemPrompt"
+        ],
+        cordis: [
+          "logger",
+          "events",
+          "reflect",
+          "registry"
+        ],
+        codewhale: [
+          "prompt",
+          "avatars",
+          "mcp",
+          "shellHooks"
+        ]
+      },
       refused_services: [
         "shellHooks",
         "loader",
@@ -13910,10 +14618,10 @@ var init_compatibility = __esm({
       },
       definition_api: {
         package: "@deepseek-ai/dsh-tools",
-        version: "0.2.1-rc.2",
+        version: "0.2.1-rc.5",
         license: "MIT",
-        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.1-rc.2.tgz",
-        integrity: "sha512-K3gET3VPbtxM66pkeRsEGrZ+bQKiBqrTbNXiIreBKu0hP+qPvlSwhiSI5MTnFp2tMFK5rpuYMZosRIdbfrbJ/g==",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.1-rc.5.tgz",
+        integrity: "sha512-tOEMsbG1jH4EV80xcGucfeWsKHLjnETjRLtSnyFrVl2oma95tzTHBjti5MK60IvT2ijcCWhx8CrUKcqRksfDPA==",
         source_file: "lib/index.js",
         source_sha256: "1e53932e7c4213ea24a7d87f06960b7a7702cb21f8a5741c97242b4a470a442a",
         source_lines: [
@@ -13926,7 +14634,8 @@ var init_compatibility = __esm({
             2655
           ]
         ],
-        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be"
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+        tarball_sha256: "9614366d61214a304f937d0f3b8481d5827d2aef4529f3bff9eb49ef8ac65283"
       },
       command_followup: "one-text-message-submit-on-success",
       pure_api: {
@@ -13950,11 +14659,11 @@ var init_compatibility = __esm({
         packages: [
           {
             package: "@deepseek-ai/dsh-brand",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.1-rc.2.tgz",
-            integrity: "sha512-T2kcygikRS8rv8cKjgho2x381EgGprv5yQmvHl4/iYbuHE19OW+SLGtHWbV27PGdSHz5U8CJxasYzFosKW4e2A==",
-            tarball_sha256: "abc43c2daa0c476881cd3441d57e662e386f6e07bf60fbde8c9e41e126f70716",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.1-rc.5.tgz",
+            integrity: "sha512-7lUfWjWWAkrb/CFtMbXgjXLYQnL3KJwv+GLMTgY5EZ/4sOH0ufZUX8xlBWyMpdV2LqdvJ1yPKQ+mopH71/wbMQ==",
+            tarball_sha256: "9a0d30b3466783f7b0e52a636602630ab62f39598df9568600ddfaad97b389ca",
             source_file: "lib/index.js",
             source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
             excerpts: [
@@ -13973,11 +14682,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-util-crypto",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.1-rc.2.tgz",
-            integrity: "sha512-V4SxvXL4ZbY5RYJckVtmo3qz4YsA52pYKvDF13+8hsDCEmQIv9YfmLRMA61pjK/i05pGMe3p1pPhAB6L+NOIEA==",
-            tarball_sha256: "333710abf757d423118d9d48f8376d5731eea802bbefeb9f1182db6d58360195",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.1-rc.5.tgz",
+            integrity: "sha512-7mGcnCH0BzIUzbnnC2Vx17Q/O3/+EfMHNt9iC2VaGr9SK010HYUpei/+6wrZsuGy77rqAUNhU6VB35wQTLM/VA==",
+            tarball_sha256: "3d99b1120718249a52fe854b84f4bacae21464345073d560019974268e19a089",
             source_file: "lib/index.js",
             source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
             excerpts: [
@@ -13996,11 +14705,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-llm",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.1-rc.2.tgz",
-            integrity: "sha512-3xfoMDHEpUJGcH2Lu+lNXUJYRBclYfBkdCG9Au02VzIjYAm9BrFmc/MNuaVTg0vwgvPpTsd6Fx1IeGtfmQFvlg==",
-            tarball_sha256: "00e45b51cf850817c7a27c00203a1715853f9e476ff44256e895f8aafda2b8ba",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.1-rc.5.tgz",
+            integrity: "sha512-g9mSILkqY7wByl0tpLBhXxWxQ3MoNzXokuJq86R/snPL3v1OonXv1b46wtvldEgyr88aK1gBBlifMsRnXjMWTA==",
+            tarball_sha256: "6b422d70aee363dcce81be0481dda9d801c2ae03a4f314497e407d184df2313c",
             source_file: "lib/index.js",
             source_sha256: "d18d8ae4c8d961e628708c1e4698e09716a0ebb80e55a672e0bde1029bec1155",
             excerpts: [
@@ -14043,11 +14752,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-session",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.1-rc.2.tgz",
-            integrity: "sha512-WDA4lIrXtG5nf1dn2wrA4UzEr7D6e8T3AdPpVSZ7eY4N4ICMDZ0RYuD4GkM+iSb7WkLojdO8ljr0etiIMEbqJg==",
-            tarball_sha256: "72b538e5e120e1f79c923ad527742640fe56cba50db0a7bacdc12ad73e0225e7",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.1-rc.5.tgz",
+            integrity: "sha512-A5NdQFgeY4qi29+lBzgZiOloiFe+E1iBbIRjJTplee79rswYGUUmUZYmOvAcdmk4tERkY2S9htuc+V+jNifqRw==",
+            tarball_sha256: "8571710817dbf5172079168861bfaef581efc26a4b83a4c003f2d1ef632ae7b4",
             source_file: "lib/index.js",
             source_sha256: "2f5dd07cb5c744a29abbb8003a8a4cefd9e582c6e2538074ca299a0ddd02a3bf",
             excerpts: [
@@ -14066,11 +14775,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-system-prompt",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.1-rc.2.tgz",
-            integrity: "sha512-X1WG2FMyfZapAkcCYyTl0UO5vVqDcCsA9wECJY7eeDTLHJDsqrilQJg2DRgHQzM+2/7T01QyzFZhKd7hfALJxg==",
-            tarball_sha256: "d186153582b801c3f16a84d1a0651910957be7498929381a48ae6fe49666206d",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.1-rc.5.tgz",
+            integrity: "sha512-HWW0k4Ug4XjRbCghLZYFMpLh8Ywcuh/bS7DAnjWfq4HbwwB+hV0XXJRF3iCf5600uYArfbuv4Ttz+4PHKu7k9w==",
+            tarball_sha256: "f223700954221de8cce2feaf6d6fbf526aa2ea5fd261fc0791edf1f858c31a02",
             source_file: "lib/index.js",
             source_sha256: "7be9f7aafbf345d01ddcc12fd297b16e9a1d41283a6a04073b867becca0bf020",
             excerpts: [
@@ -14089,11 +14798,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-util-values",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.1-rc.2.tgz",
-            integrity: "sha512-mgnByPadOgZtoBxbwMI184li494O6sNn66/NvdqN0RIrzAJmFGpFxpjFkQtQN/yetwWhlx7Ic17+6p7eKl8DNg==",
-            tarball_sha256: "2b273a4eae9cd3a40a57f82a28489b763cd66bddc5c91953e5473e2e45e740cb",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.1-rc.5.tgz",
+            integrity: "sha512-PL8TerJM/4jpZ2ArwgTpFbeDiAVnqkSh8Xinw2iEu8B6a+axmshzL4dCpwpf+uB8GHdXAhGz1cT+SBQwX/2TLQ==",
+            tarball_sha256: "2472d81f0dc4597bc5c4eeff493686a2b59a6b27cb6eb6654394192066d6ec05",
             source_file: "lib/index.js",
             source_sha256: "4322a2aacdfe38476d2bbc62338120beea1e1660346d7db5b6c1e1f927a26b7c",
             excerpts: [
@@ -14112,11 +14821,11 @@ var init_compatibility = __esm({
           },
           {
             package: "@deepseek-ai/dsh-user-questions",
-            version: "0.2.1-rc.2",
+            version: "0.2.1-rc.5",
             license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.1-rc.2.tgz",
-            integrity: "sha512-XVsvMCjxHuDX4YxhwWqRi1IExp7evWVyQ1Gis+90ZBmRNRH/MujjboE+QVc79sdg+p79tzJmqPUDxPj1JOyjzQ==",
-            tarball_sha256: "f5194abbe1b3412ad56487b5e6f1aae455cce8bbf29899f824218b2ddd02ab69",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.1-rc.5.tgz",
+            integrity: "sha512-Yz4c6YO804nvJ6DVJGPZSAF3DCJ7HJgpylBL6KfbI7Au3a6MV49mLLEv5cWs67qL/tyQMsJO9DI2N/xPlczEXA==",
+            tarball_sha256: "5a2cb8c9451b4288c26a3c132b60aac15229a33bae34ce3c7bb0050906d6a8bc",
             source_file: "lib/index.js",
             source_sha256: "e1c51afac2e31be8593c6426976e5f31dbe2a709b85ae1ea43ed406146f54265",
             excerpts: [
@@ -14136,12 +14845,12 @@ var init_compatibility = __esm({
         ],
         reuse: {
           package: "@deepseek-ai/dsh-util-values",
-          version: "0.1.7-alpha.2",
+          version: "0.2.1-rc.5",
           file: "lib/index.js",
           symbol: "deepFreeze",
           lines: [
-            194,
-            230
+            824,
+            860
           ],
           sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
         },
@@ -14166,6 +14875,9 @@ var init_compatibility = __esm({
       agents_methods: {},
       system_prompt_methods: {
         section: "child-persona-slot-in-agent-created-only"
+      },
+      tool_definition_fields: {
+        deferLoading: "boolean-presentation-noop-engine-controls-loading"
       }
     };
   }
@@ -15938,10 +16650,10 @@ function validateDefinition(definition) {
     }
     assertSupportedJsonSchema(definition.output.schema);
   }
-  for (const field of ["projectContent", "finalizeContent", "timeoutMs"]) {
+  for (const field of ["when", "projectContent", "finalizeContent", "timeoutMs"]) {
     if (definition[field] !== void 0) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH execution field \`${field}\``);
   }
-  if (definition.deferLoading === true) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH deferred loading`);
+  if (definition.deferLoading !== void 0 && typeof definition.deferLoading !== "boolean") throw new TypeError(`tool \`${definition.name}\` deferLoading must be boolean`);
 }
 function pickPlugin(module) {
   const candidate = module?.default ?? module;
@@ -15997,7 +16709,7 @@ var init_root = __esm({
     init_commands();
     OWNER = /* @__PURE__ */ Symbol.for("codewhale.extension-host.owner");
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(compatibility_default.provided_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     ACTIVATE_DEADLINE_MS = 5e3;
     DISPOSE_DEADLINE_MS = 2e3;
     ownerStorage = new AsyncLocalStorage2();
@@ -16098,7 +16810,7 @@ var init_root = __esm({
             const owner = ctx[OWNER];
             if (!owner) throw new Error("tools.register called outside an extension owner");
             if (options !== void 0 && (!options || typeof options !== "object" || Array.isArray(options) || Reflect.ownKeys(options).length !== 0)) {
-              throw new TypeError("tools.register options are unsupported by the Codewhale DSH 0.2.1-rc.2 definition adapter");
+              throw new TypeError(`tools.register options are unsupported by the Codewhale DSH ${compatibility_default.target_dsh_version} definition adapter`);
             }
             validateDefinition(definition);
             return ctx.effect(() => host2.addTool(owner, definition), `tools.register(${JSON.stringify(definition.name)})`);

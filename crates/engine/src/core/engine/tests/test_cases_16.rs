@@ -519,7 +519,7 @@ fn tool_search_scenario() {
 
         let result = execute_tool_search(
             TOOL_SEARCH_NAME,
-            &json!({"query":"ask user question"}),
+            &json!({"query":format!("^{REQUEST_USER_INPUT_NAME}$"),"match":"regex"}),
             &catalog,
             &mut active,
         )

@@ -56,7 +56,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
-      - uses: codewhale-hq/Codewhale@c2a48723285c48978279f6c10672bbade49cc0cb
+      - uses: codewhale-hq/Codewhale@b92540d882b8e7c66389aa35e5fa0c3c178fe4ce
         id: review
         with:
           version: 'v0.10.2'
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: codewhale-findings-${{ github.run_id }}-${{ github.run_attempt }}
           path: findings
@@ -107,7 +107,7 @@ jobs:
           private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
           permission-contents: read
           permission-pull-requests: write
-      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@c2a48723285c48978279f6c10672bbade49cc0cb
+      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@b92540d882b8e7c66389aa35e5fa0c3c178fe4ce
         id: publish
         with:
           findings: findings/findings.json

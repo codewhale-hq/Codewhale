@@ -238,6 +238,7 @@ impl Engine {
         event: Event,
         withdraw: Option<&CancellationToken>,
     ) -> Result<ApprovalResult, ToolError> {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("approval_wait");
         let ask = match &event {
             Event::ApprovalRequired {
                 input, description, ..

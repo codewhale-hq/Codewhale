@@ -184,7 +184,37 @@ pub fn turn_metadata_text(message: &Message) -> Option<(usize, &str)> {
 }
 
 fn is_complete_turn_metadata(text: &str) -> bool {
-    text.starts_with("<turn_meta>") && text.ends_with("</turn_meta>")
+    text.strip_prefix("<turn_meta>")
+        .and_then(|body| body.split_once("</turn_meta>"))
+        .is_some_and(|(_, tail)| tail.is_empty())
+}
+
+pub fn same_recorded_turn(left: &Message, right: &Message) -> bool {
+    if left == right {
+        return true;
+    }
+    if left.role != Role::User || right.role != Role::User {
+        return false;
+    }
+    let (bare, stamped) = if left.content.len() < right.content.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    if stamped.content.len().checked_sub(1) != Some(bare.content.len()) {
+        return false;
+    }
+    let Some((index, metadata)) = turn_metadata_text(stamped) else {
+        return false;
+    };
+    if !metadata.starts_with("<turn_meta>\nCurrent local date: ")
+        || classify_user_turn_prompt(stamped) == UserTurnPromptKind::NotPrompt
+        || turn_metadata_text(bare).is_some()
+    {
+        return false;
+    }
+    stamped.content[..index] == bare.content[..index]
+        && stamped.content[index + 1..] == bare.content[index..]
 }
 
 /// Recognize both the current condensed provenance line and the legacy

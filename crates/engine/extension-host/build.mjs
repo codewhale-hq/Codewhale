@@ -294,32 +294,36 @@ for (const excerpt of EXCERPTED) {
     note: `Verbatim excerpts of this package are in ${excerpt.file}, under the same licence text as ${excerpt.licenseOf} above.`,
   })
 }
-for (const [folder, version] of [['loader', '1.0.3'], ['include', '1.0.7'], ['group', '1.0.2']]) {
+const vendoredPin = JSON.parse(readFileSync(join(here, 'src/dsh/upstream/UPSTREAM.json'), 'utf8'))
+const hooksPin = JSON.parse(readFileSync(join(here, 'src/dsh/upstream/hooks/UPSTREAM.json'), 'utf8'))
+const personaPin = JSON.parse(readFileSync(join(here, 'src/dsh/persona.UPSTREAM.json'), 'utf8'))
+for (const folder of ['loader', 'include', 'group']) {
+  const { version } = JSON.parse(readFileSync(join(here, 'src/dsh/upstream', folder, 'package.json'), 'utf8'))
   entries.push({
     name: `@deepseek-ai/cordis-plugin-${folder}`,
     version,
     license: 'MIT',
     text: readLicense(join(here, 'src/dsh/upstream', folder), `vendored ${folder}`),
-    note: 'Pinned deepseek-harness 0d1f50007f9bca3f52b06e1c3074fa14d5fb0720. Loader native-internals probe disabled; other runtime semantics reused.',
+    note: `Pinned deepseek-harness ${vendoredPin.commit}. Loader native-internals probe disabled; reviewed imports and non-writing composition retain Codewhale's authority boundary.`,
   })
 }
 entries.push({name:'@deepseek-ai/dsh-agent-presets',version:'0.1.6-alpha.1',license:'MIT',text:readLicense(join(here,'src/dsh/upstream/agent-presets'),'vendored agent-presets'),note:'Pinned deepseek-harness 0d1f50007f9bca3f52b06e1c3074fa14d5fb0720. Discovery/metadata/specifier/inventory algorithms use mandatory receipt-backed IO; Core owns selection, sessions and writable roots.'})
 for (const name of ['dsh-hook-protocol', 'dsh-hooks-claude-code', 'dsh-hooks-codex']) {
   entries.push({
     name: `@deepseek-ai/${name}`,
-    version: '0.1.6-alpha.1',
+    version: hooksPin.version,
     license: 'MIT',
     text: readLicense(join(here, 'src/dsh/upstream/hooks'), `vendored ${name}`),
-    note: 'Pinned deepseek-harness 0d1f50007f9bca3f52b06e1c3074fa14d5fb0720. Pure matcher/codec/merge and configuration parsers reused; local imports and session-writer type declarations adapted. Core retains scheduling and steering.',
+    note: `Pinned deepseek-harness ${hooksPin.ref}. Pure matcher/codec/merge and configuration parsers reused; local imports and session-writer type declarations adapted. Core retains scheduling and steering.`,
   })
 }
 for (const name of ['dsh-persona', 'dsh-system-prompt']) {
   entries.push({
     name: `@deepseek-ai/${name}`,
-    version: '0.1.6-alpha.1',
+    version: personaPin.version,
     license: 'MIT',
     text: readLicense(join(here, 'src/dsh/upstream/hooks'), `adapted ${name}`),
-    note: 'Pinned deepseek-harness 0d1f50007f9bca3f52b06e1c3074fa14d5fb0720. Additive persona configuration and strict simple template mapping adapted in src/dsh/persona.ts and the Rust prompt renderer; source and license receipts: src/dsh/persona.UPSTREAM.json. Core retains prompt assembly and accepted model/workspace values.',
+    note: `Pinned deepseek-harness ${personaPin.commit}. Additive persona configuration and strict simple template mapping adapted in src/dsh/persona.ts and the Rust prompt renderer; source and license receipts: src/dsh/persona.UPSTREAM.json. Core retains prompt assembly and accepted model/workspace values.`,
   })
 }
 entries.sort((a, b) => (a.name < b.name ? -1 : 1))

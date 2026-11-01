@@ -694,8 +694,9 @@ fn print_mode_runtime_contract_metrics() {
     let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
     let codewhale_home = home.join(".codewhale");
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
-    // Keep the model-visible shell fact stable across developer and CI hosts
-    // while exercising the exact-path contract used at runtime.
+    // Pin host facts independently of platform-specific shell detection and
+    // process-wide dispatcher initialization in other tests.
+    let _environment = crate::prompts::pin_recorded_environment("linux", "/bin/bash");
     let _shell = EnvVarGuard::set("SHELL", "/bin/bash");
     let mut mode_metrics = serde_json::Map::new();
     for (mode_name, mode) in [
@@ -799,10 +800,7 @@ fn normalize_representative_prompt(text: &str, workspace: &Path, home: &Path) ->
             });
     // Platform remains an actionable host fact in the stable environment
     // block. Pin it so this fixture measures prompt structure across hosts.
-    normalized.replace(
-        &format!("- platform: {}", std::env::consts::OS),
-        "- platform: <PLATFORM>",
-    )
+    normalized.replace("- platform: linux", "- platform: <PLATFORM>")
 }
 
 fn representative_stage(
@@ -834,8 +832,9 @@ fn measure_representative_runtime_context()
     let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
     let codewhale_home = home.join(".codewhale");
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
-    // Keep the model-visible shell fact stable across developer and CI hosts
-    // while exercising the exact-path contract used at runtime.
+    // Pin host facts independently of platform-specific shell detection and
+    // process-wide dispatcher initialization in other tests.
+    let _environment = crate::prompts::pin_recorded_environment("linux", "/bin/bash");
     let _shell = EnvVarGuard::set("SHELL", "/bin/bash");
     // The fixture measures a trusted repository: project skills load only in
     // a trusted workspace, and the skill stage exists to measure one.

@@ -1704,9 +1704,9 @@ impl RawDacl {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 struct LocalAllocation(*mut core::ffi::c_void);
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Drop for LocalAllocation {
     fn drop(&mut self) {
         unsafe {

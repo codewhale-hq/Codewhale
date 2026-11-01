@@ -125,8 +125,7 @@ dependencies are available.
 
 MCP tools are dynamic. Successfully connected servers register names such as
 `mcp_<server>_<tool>` from `~/.codewhale/mcp.json`; a failed or disabled server
-must not be presented as available. MCP and plugin tools are deferred unless a
-user explicitly names them in `[tools].always_load`.
+must not be presented as available. MCP and plugin tools are normally deferred. When the composition VM is eager and the turn admits exactly one compact named batch schema, `execute_tools` also accepts `{batch:{tool,arguments}}` instead of JavaScript. The VM forwards the data through the same nested gate, bounds and receipts; the server tool stays deferred unless explicitly requested. The current server routes and turn permissions narrow the shortcut’s member names; its nested dispatch checks the offered members after hooks. The server supplies a bounded guide to their arguments. Other tools stay searchable; `[tools].always_load` still makes individual schemas eager.
 
 For an unstarted configured server, an MCP-focused `tool_search` first
 performs bounded discovery under the current turn's server/tool ceiling.
@@ -137,6 +136,8 @@ bounded activation cache. Ordinary unrelated searches leave optional servers
 unstarted. The CLI's standalone MCP inspection commands own a separate pool.
 
 ### Code mode (`execute_tools`)
+
+For a known sequence, prefer a tool’s own batch operation. Use `execute_tools` when the next call depends on an intermediate result, and return the verified outcome. Search unknown names and schemas before acting. An unexpected state, refusal, uncertain delivery or direct-only decision ends that sequence.
 
 `execute_tools` is engine-injected, alongside the synthetic interpreter tools.
 It runs a JavaScript program whose only host surface is
