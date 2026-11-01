@@ -4918,19 +4918,11 @@ impl Engine {
         if text.is_empty() {
             return;
         }
-        let message = Message {
-            role: Role::InterruptedAssistant,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-                cache_control: None,
-            }],
-        };
-        let already_committed = self.session.messages.last().is_some_and(|last| {
-            matches!(
-                last.role.as_str(),
-                "assistant" | codewhale_models::INTERRUPTED_ASSISTANT_ROLE
-            ) && last.content == message.content
-        });
+        let message = Message::interrupted_assistant(text);
+        let already_committed =
+            self.session.messages.last().is_some_and(|last| {
+                last.role.is_assistant_like() && last.content == message.content
+            });
         if already_committed {
             return;
         }
