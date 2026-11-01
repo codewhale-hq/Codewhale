@@ -20,7 +20,9 @@ use codewhale_core::{ContextReferenceKind, ContextReferenceSource};
 use codewhale_models::reasoning_effort_tier::ReasoningEffortTier;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
 use codewhale_runtime::artifacts::ArtifactRecord;
-use codewhale_runtime::session_tree::{SessionEntry, SessionImportContainer, SessionJournal};
+use codewhale_runtime::session_tree::{
+    SessionEntry, SessionImportContainer, SessionJournal, same_content_ignoring_turn_metadata,
+};
 use codewhale_util::utils::write_atomic;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -5173,7 +5175,7 @@ pub fn update_session(
     let common = messages
         .iter()
         .zip(session.messages.iter())
-        .take_while(|(a, b)| a == b)
+        .take_while(|(a, b)| a == b || same_content_ignoring_turn_metadata(a, b))
         .count();
     if new_len >= old_len && messages[..old_len] == session.messages[..] {
         if let Some(journal) = session.journal.as_mut() {

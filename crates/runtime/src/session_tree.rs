@@ -43,6 +43,20 @@ pub enum SessionEntryKind {
         content: String,
     },
 }
+pub fn same_content_ignoring_turn_metadata(a: &Message, b: &Message) -> bool {
+    fn stripped(message: &Message) -> Vec<&ContentBlock> {
+        let skip =
+            codewhale_models::turn_classify::turn_metadata_text(message).map(|(index, _)| index);
+        message
+            .content
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != skip)
+            .map(|(_, block)| block)
+            .collect()
+    }
+    a.role == b.role && stripped(a) == stripped(b)
+}
 impl SessionEntryKind {
     pub fn is_contextual(&self) -> bool {
         matches!(
@@ -56,8 +70,12 @@ impl SessionEntryKind {
     /// just to be compared.
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
-            Self::Message { message: own } => own == message,
-            other => other.as_message().as_ref() == Some(message),
+            Self::Message { message: own } => {
+                own == message || same_content_ignoring_turn_metadata(own, message)
+            }
+            other => other.as_message().is_some_and(|own| {
+                own == *message || same_content_ignoring_turn_metadata(&own, message)
+            }),
         }
     }
     pub fn as_message(&self) -> Option<Message> {
