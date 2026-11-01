@@ -26,7 +26,7 @@ use crate::tui::motion::MotionPolicy;
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::shell_key_routing::Focus;
 use crate::tui::transcript::TranscriptViewCache;
-use crate::tui::views::ViewStack;
+use crate::tui::views::{ModalKind, ViewStack};
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_config::hooks::HookEvent;
@@ -2909,10 +2909,18 @@ impl App {
     }
 
     pub(crate) fn should_adopt_live_local_ollama(&mut self) -> bool {
+        let picker_interacted = self.view_stack.provider_picker_interacted();
+        if self.api_provider == ProviderKind::Ollama {
+            return self.provider_identity_for_persistence() == "ollama"
+                && codewhale_runtime::config::is_unresolved_local_ollama_model(&self.model)
+                && !self.is_loading
+                && !picker_interacted
+                && self.view_stack.top_kind() != Some(ModalKind::ModelPicker);
+        }
         codewhale_engine::local_ollama::should_adopt_live_local_ollama(
             self.startup_route_configured,
             self.api_provider,
-            self.view_stack.provider_picker_interacted(),
+            picker_interacted,
             self.onboarding_needs_api_key || self.onboarding_missing_key_recovery,
         )
     }
