@@ -117,18 +117,19 @@ impl SessionEntryKind {
         }
     }
 
-    /// `self.as_message()` equals `message`, byte-for-byte or after removing
-    /// engine-owned `<turn_meta>` metadata from both sides. Every autosave
-    /// compares the whole active branch with the live transcript, so the
-    /// projection is materialized only once the strict comparison fails.
+    /// `self.as_message()` equals `message`, byte-for-byte. Only `Message`
+    /// entries also match after removing engine-owned `<turn_meta>` metadata
+    /// from both sides: that envelope is written by the engine into stored
+    /// messages, while `Compaction` and `BranchSummary` project to text this
+    /// crate synthesizes, so the live transcript must spell it exactly. A
+    /// kind that can only match relaxed would be selected for a rewrite it
+    /// cannot receive.
     pub fn projects_to(&self, message: &Message) -> bool {
         match self {
             Self::Message { message: own } => {
                 own == message || same_message_ignoring_turn_metadata(own, message)
             }
-            other => other.as_message().is_some_and(|own| {
-                own == *message || same_message_ignoring_turn_metadata(&own, message)
-            }),
+            other => other.as_message().is_some_and(|own| &own == message),
         }
     }
     pub fn as_message(&self) -> Option<Message> {
