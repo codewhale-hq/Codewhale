@@ -1,11 +1,11 @@
 //! Views of one durable local pet. Engine events are projected here once;
 //! the companion owns simulation, persistence and the sole audio output.
-use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::tui::{
     app::{App, StatusToastLevel},
     underwater::ShellPhase,
     views::ModalKind,
 };
+use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
 use codewhale_localization::{MessageId, tr};
 use codewhale_palette::{ChromeInk, chrome_style};
 use ratatui::{
@@ -345,27 +345,27 @@ fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
         // `waiting` flag on every tick.
         Event::ToolCallComplete {
             id,
-            result: Err(crate::tools::spec::ToolError::PermissionDenied { .. }),
+            result: Err(codewhale_engine::tools::spec::ToolError::PermissionDenied { .. }),
             ..
         } => json!({
             "event":"approval_resolved","id":id,"outcome":"denied"
         }),
         Event::ToolCallComplete {
             id,
-            result: Err(crate::tools::spec::ToolError::Cancelled { .. }),
+            result: Err(codewhale_engine::tools::spec::ToolError::Cancelled { .. }),
             ..
         } => json!({
             "event":"approval_resolved","id":id,"outcome":"cancelled"
         }),
         Event::UserInputClosed { id, outcome } => json!({
             "event":"approval_resolved", "id":id,
-            "outcome":if matches!(outcome, crate::core::events::UserInputClosedOutcome::Answered) { "approved" } else { "cancelled" }
+            "outcome":if matches!(outcome, codewhale_engine::core::events::UserInputClosedOutcome::Answered) { "approved" } else { "cancelled" }
         }),
         Event::AgentSpawned { id, .. } => json!({"event":"agent_spawned","id":id}),
         Event::AgentProgress { id, activity, .. } => json!({
             "event":"agent_progress",
             "id":id,
-            "worker_status":crate::core::protocol_parity::worker_status_str(activity.worker_status)
+            "worker_status":codewhale_engine::core::protocol_parity::worker_status_str(activity.worker_status)
         }),
         Event::AgentComplete { id, .. } => json!({"event":"agent_complete","id":id}),
         Event::ApprovalRequired { id, .. } | Event::UserInputRequired { id, .. } => json!({
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn work_completion_reveals_existing_answer_without_sending_text_to_owner() {
-        use crate::core::events::TurnOutcomeStatus;
+        use codewhale_engine::core::events::TurnOutcomeStatus;
         let mut app = crate::tui::test_support::test_app_with_options(
             crate::tui::test_support::test_tui_options("."),
         );
@@ -1225,8 +1225,8 @@ mod tests {
     /// Pin the wire shape the JS dispatches on, and keep child text off it.
     #[test]
     fn agent_events_forward_span_identity_without_child_text() {
-        use crate::core::events::AgentProgressEventMeta;
-        use crate::tools::subagent::{AgentWorkerStatus, SubAgentStatus};
+        use codewhale_engine::core::events::AgentProgressEventMeta;
+        use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentStatus};
 
         let spawned = metadata(
             &Event::AgentSpawned {

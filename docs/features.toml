@@ -85,7 +85,7 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "shell_tool"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/shell.rs"
+owner = "crates/engine/src/tools/shell.rs"
 
 [[feature]]
 id = "local-code-execution"
@@ -94,7 +94,7 @@ summary = "Runs Python and Node with the shared execution policy and explicitly 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/TOOL_SURFACE.md#local-code-execution"
-owner = "crates/tui/src/core/engine/tool_catalog.rs"
+owner = "crates/engine/src/core/engine/tool_catalog.rs"
 
 [[feature]]
 id = "subagents"
@@ -105,7 +105,7 @@ surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
 flag = "subagents"
 docs = "docs/SUBAGENTS.md"
-owner = "crates/tui/src/tools/subagent"
+owner = "crates/engine/src/tools/subagent"
 
 [[feature]]
 id = "web-search"
@@ -116,7 +116,7 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "web_search"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web_search.rs"
+owner = "crates/engine/src/tools/web_search.rs"
 
 [[feature]]
 id = "apply-patch"
@@ -127,7 +127,7 @@ surfaces = { tui = "stable" }
 since = "0.1.0"
 flag = "apply_patch"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/apply_patch.rs"
+owner = "crates/engine/src/tools/apply_patch.rs"
 
 [[feature]]
 id = "mcp-client"
@@ -160,7 +160,7 @@ surfaces = { tui = "stable" }
 since = "0.8.32"
 flag = "vision_model"
 docs = "docs/CONFIGURATION.md"
-owner = "crates/tui/src/vision"
+owner = "crates/engine/src/vision"
 
 [[feature]]
 id = "verify-tool"
@@ -171,7 +171,7 @@ surfaces = { tui = "stable" }
 since = "0.9.2"
 flag = "verify_tool"
 docs = "docs/CONFIGURATION.md#feature-flags"
-owner = "crates/tui/src/tools/verify.rs"
+owner = "crates/engine/src/tools/verify.rs"
 
 [[feature]]
 id = "code-mode"
@@ -182,7 +182,7 @@ surfaces = { tui = "stable" }
 since = "0.10.0"
 flag = "code_mode"
 docs = "docs/TOOL_SURFACE.md#code-mode-execute_tools"
-owner = "crates/tui/src/tools/codemode.rs"
+owner = "crates/engine/src/tools/codemode.rs"
 
 [[feature]]
 id = "extension-host"
@@ -193,7 +193,7 @@ surfaces = { tui = "preview", web = "none", api = "preview" }
 since = "0.10.1"
 flag = "extension_host"
 docs = "docs/EXTENSIONS.md"
-owner = "crates/tui/src/extension_host"
+owner = "crates/engine/src/extension_host"
 
 [[feature]]
 id = "finance-host"
@@ -204,7 +204,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "finance_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/finance.rs"
+owner = "crates/engine/src/tools/finance.rs"
 
 [[feature]]
 id = "data-host"
@@ -215,7 +215,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "data_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/validate_data.rs"
+owner = "crates/engine/src/tools/validate_data.rs"
 
 [[feature]]
 id = "speech-host"
@@ -226,7 +226,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "speech_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/speech.rs"
+owner = "crates/engine/src/tools/speech.rs"
 
 [[feature]]
 id = "pdf-host"
@@ -237,7 +237,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "pdf_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/pdf.rs"
+owner = "crates/engine/src/tools/pdf.rs"
 
 [[feature]]
 id = "ocr-host"
@@ -248,7 +248,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "ocr_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/image_ocr.rs"
+owner = "crates/engine/src/tools/image_ocr.rs"
 
 [[feature]]
 id = "github-host"
@@ -259,7 +259,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "github_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/github"
+owner = "crates/engine/src/tools/github"
 
 [[feature]]
 id = "web-search-host"
@@ -270,7 +270,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "web_search_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web/adapter.rs"
+owner = "crates/engine/src/tools/web/adapter.rs"
 
 [[feature]]
 id = "web-extract-host"
@@ -281,7 +281,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "web_extract_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/web/extract.rs"
+owner = "crates/engine/src/tools/web/extract.rs"
 
 [[feature]]
 id = "review-host"
@@ -292,7 +292,7 @@ surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 flag = "review_host"
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/review_host.rs"
+owner = "crates/engine/src/tools/review_host.rs"
 
 # --- Working with the agent ---
 
@@ -339,7 +339,7 @@ summary = "Picks a model per turn under Auto; /router sets up the router."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
-owner = "crates/tui/src/model_routing.rs"
+owner = "crates/engine/src/model_routing.rs"
 
 [[feature]]
 id = "output-limit-answer-recovery"
@@ -349,7 +349,7 @@ status = "flagged"
 surfaces = { tui = "preview", api = "preview" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only"
-owner = "crates/tui/src/core/engine/turn_loop/continuation.rs"
+owner = "crates/engine/src/core/engine/turn_loop/continuation.rs"
 
 [[feature]]
 id = "fleet"
@@ -358,7 +358,7 @@ summary = "Runs and supervises groups of worker agents with receipts and a pre-s
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/FLEET.md"
-owner = "crates/tui/src/fleet"
+owner = "crates/engine/src/fleet"
 
 [[feature]]
 id = "environment-placement"
@@ -367,7 +367,7 @@ summary = "Places Fleet tasks by environment requirements and connects explicitl
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 docs = "docs/ENVIRONMENTS.md#environment-aware-fleet-placement-preview"
-owner = "crates/tui/src/fleet/placement.rs"
+owner = "crates/engine/src/fleet/placement.rs"
 
 [[feature]]
 id = "workflows"
@@ -385,7 +385,7 @@ summary = "Turns a broad request into a compact Workflow plan without writing a 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/AUTOMATIC_WORKFLOWS.md"
-owner = "crates/tui/src/tools/workflow"
+owner = "crates/engine/src/tools/workflow"
 
 [[feature]]
 id = "goals"
@@ -394,7 +394,7 @@ summary = "/goal keeps the agent working toward one objective across turns."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/CONFIGURATION.md#goal-loop-goal"
-owner = "crates/tui/src/tools/goal.rs"
+owner = "crates/engine/src/tools/goal.rs"
 
 [[feature]]
 id = "thread-scheduled-turns"
@@ -404,7 +404,7 @@ status = "experimental"
 surfaces = { api = "preview" }
 since = "unreleased"
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/automation_manager.rs"
+owner = "crates/engine/src/automation_manager.rs"
 
 [[feature]]
 id = "task-suggestions"
@@ -413,7 +413,7 @@ summary = "The tasks tool's suggest action offers the person a task as a Start/H
 status = "experimental"
 surfaces = { desktop = "preview" }
 since = "unreleased"
-owner = "crates/tui/src/tools/tasks.rs"
+owner = "crates/engine/src/tools/tasks.rs"
 
 [[feature]]
 id = "todos"
@@ -422,7 +422,7 @@ summary = "The agent keeps a visible todo list for multi-step work."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/TOOL_SURFACE.md"
-owner = "crates/tui/src/tools/todo.rs"
+owner = "crates/engine/src/tools/todo.rs"
 
 [[feature]]
 id = "composer-queue-steer"
@@ -441,7 +441,7 @@ status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.1"
 docs = "docs/RECEIPTS.md"
-owner = "crates/tui/src/receipts.rs"
+owner = "crates/engine/src/receipts.rs"
 
 [[feature]]
 id = "preview-request"
@@ -450,7 +450,7 @@ summary = "/preview-request shows the redacted outbound request without sending 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/PREVIEW_REQUEST.md"
-owner = "crates/tui/src/request_manifest.rs"
+owner = "crates/engine/src/request_manifest.rs"
 
 [[feature]]
 id = "read-media"
@@ -459,7 +459,7 @@ summary = "Reads and preprocesses images for vision-capable models with size and
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/READ_MEDIA.md"
-owner = "crates/tui/src/tools/read_media.rs"
+owner = "crates/engine/src/tools/read_media.rs"
 
 [[feature]]
 id = "memory"
@@ -506,7 +506,7 @@ summary = "Scripts in ~/.codewhale/tools become approval-gated tools; [tools.ove
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#script-tools-and-overrides"
-owner = "crates/tui/src/tools/plugin.rs"
+owner = "crates/engine/src/tools/plugin.rs"
 
 [[feature]]
 id = "claude-plugin-compat"
@@ -588,7 +588,7 @@ summary = "codewhale review --pr N writes an advisory review; posting to GitHub 
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/GITHUB_APP.md"
-owner = "crates/tui/src/tools/github"
+owner = "crates/engine/src/tools/github"
 
 # --- Interface ---
 
@@ -608,7 +608,7 @@ summary = "Terminal key bindings, documented from the keybinding catalog."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/KEYBINDINGS.md"
-owner = "crates/tui/src/keybinding_table.rs"
+owner = "crates/engine/src/keybinding_table.rs"
 
 [[feature]]
 id = "settings"
@@ -663,7 +663,7 @@ name = "Voice input"
 summary = "/voice, /voicecontrol and /voicesend use the selected ASR backend without switching providers."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
-owner = "crates/tui/src/voice.rs"
+owner = "crates/engine/src/voice.rs"
 
 [[feature]]
 id = "pet"
@@ -856,7 +856,7 @@ status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 since = "0.10.1"
 docs = "docs/RUNTIME_API.md#profile-constitution"
-owner = "crates/tui/src/profile_constitution.rs"
+owner = "crates/engine/src/profile_constitution.rs"
 
 [[feature]]
 id = "plugin-shell-install"
@@ -885,7 +885,7 @@ status = "stable"
 since = "unreleased"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526"
-owner = "crates/tui/src/project_context/budget.rs"
+owner = "crates/engine/src/project_context/budget.rs"
 
 [[feature]]
 id = "github-action-review"
@@ -916,3 +916,12 @@ since = "unreleased"
 surfaces = { api = "preview" }
 docs = "integrations/dingtalk-bridge/README.md"
 owner = "integrations/dingtalk-bridge/src/index.mjs"
+
+[[feature]]
+id = "compaction-archive-recall"
+name = "Compaction archive recall"
+summary = "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced."
+status = "experimental"
+since = "unreleased"
+surfaces = { tui = "preview" }
+owner = "crates/engine/src/tools/context_archive.rs"

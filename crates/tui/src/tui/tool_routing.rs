@@ -3,9 +3,6 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::tools::ReviewOutput;
-use crate::tools::plan::PlanSnapshot;
-use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
 use crate::tui::history::{
@@ -16,6 +13,9 @@ use crate::tui::history::{
 };
 use crate::tui::workspace_context;
 use codewhale_config::hooks::HookEvent;
+use codewhale_engine::tools::ReviewOutput;
+use codewhale_engine::tools::plan::PlanSnapshot;
+use codewhale_engine::tools::spec::{ToolError, ToolResult};
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_tools::patch_preflight::{NormalizedApplyPatchInput, normalize_apply_patch_input};
 
@@ -319,7 +319,7 @@ fn push_active_tool_cell(
 }
 
 pub(crate) fn hold_exec_cards_for_approval(app: &mut App, tool_id: &str) {
-    if !crate::tools::subagent::SubAgentManager::is_child_approval_id(tool_id) {
+    if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(tool_id) {
         let queued: Vec<usize> = app
             .tool_cells
             .iter()
@@ -500,12 +500,13 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
     let Some(metadata) = tool_result.metadata.as_ref() else {
         return;
     };
-    if let Some(batch) = crate::cost_status::child_usage_records_from_metadata(metadata) {
+    if let Some(batch) = codewhale_engine::cost_status::child_usage_records_from_metadata(metadata)
+    {
         for record in &batch.records {
             accrue_child_route_usage(app, &record.usage);
         }
         for record in &batch.drop_records {
-            let pending = crate::cost_status::background_cost_for_runtime_drop(record);
+            let pending = codewhale_engine::cost_status::background_cost_for_runtime_drop(record);
             app.absorb_pending_background_cost(&pending);
         }
         let residual_dropped_records = batch
@@ -526,23 +527,27 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
         }
         return;
     }
-    let Some(route) = crate::cost_status::child_route_envelope_from_metadata(metadata) else {
+    let Some(route) = codewhale_engine::cost_status::child_route_envelope_from_metadata(metadata)
+    else {
         return;
     };
     // Use the same parser as the runtime host. It deliberately returns a
     // zero-valued usage record when the producer emitted the canonical child
     // fields: a model-backed call is still an auditable/priced-zero call, and
     // replay/server-tool telemetry must not disappear in the TUI projection.
-    let Some(usage) = crate::cost_status::child_usage_from_metadata(metadata) else {
+    let Some(usage) = codewhale_engine::cost_status::child_usage_from_metadata(metadata) else {
         return;
     };
     accrue_child_route_usage(
         app,
-        &crate::cost_status::EffectiveRouteUsage { route, usage },
+        &codewhale_engine::cost_status::EffectiveRouteUsage { route, usage },
     );
 }
 
-fn accrue_child_route_usage(app: &mut App, routed: &crate::cost_status::EffectiveRouteUsage) {
+fn accrue_child_route_usage(
+    app: &mut App,
+    routed: &codewhale_engine::cost_status::EffectiveRouteUsage,
+) {
     // `route` is the child's own dispatch receipt, rehydrated from the
     // complete `child_*` metadata `attach_child_usage_metadata` emits at the
     // child's wire boundary (review/verify/rlm are the three producers). An
@@ -795,7 +800,8 @@ pub(super) fn handle_tool_call_complete(
     let displayed;
     let result = match result {
         Ok(tool_result) => {
-            let shown_content = crate::core::engine::content_without_approval_note(tool_result);
+            let shown_content =
+                codewhale_engine::core::engine::content_without_approval_note(tool_result);
             if shown_content.len() == tool_result.content.len() {
                 result
             } else {
@@ -974,7 +980,7 @@ pub(super) fn handle_tool_call_complete(
                 match result.as_ref() {
                     Ok(tool_result) => {
                         if tool_result.success {
-                            review.output = Some(ReviewOutput::from_str(&tool_result.content));
+                            review.output = Some(ReviewOutput::parse(&tool_result.content));
                         } else {
                             review.error = Some(tool_result.content.clone());
                         }
@@ -1284,7 +1290,7 @@ fn apply_workflow_run_record(app: &mut App, value: &serde_json::Value, may_creat
         panel.merge_dispatch_failures_from_run_json(value);
         if let Some(summary) = value
             .get("result")
-            .and_then(crate::tools::workflow::workflow_result_preview)
+            .and_then(codewhale_engine::tools::workflow::workflow_result_preview)
         {
             panel.result_summary = Some(summary);
         }
@@ -1994,7 +2000,7 @@ fn exec_is_background(input: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::plan::StepStatus;
+    use codewhale_engine::tools::plan::StepStatus;
     use serde_json::json;
 
     #[test]
@@ -2506,8 +2512,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ignored_tool_calls_still_fire_after_and_error_hooks_once() {
-        use crate::hooks::HookExecutor;
         use codewhale_config::hooks::{Hook, HookEvent, HooksConfig};
+        use codewhale_engine::hooks::HookExecutor;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let after_log = dir.path().join("after.log");
@@ -2571,9 +2577,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bash_completion_hooks_get_exit_code_and_status_for_failures() {
-        use crate::hooks::HookExecutor;
-        use crate::tools::spec::{ToolContext, ToolSpec};
         use codewhale_config::hooks::{Hook, HookEvent, HooksConfig};
+        use codewhale_engine::hooks::HookExecutor;
+        use codewhale_engine::tools::spec::{ToolContext, ToolSpec};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let after_log = dir.path().join("after.log");
@@ -2615,8 +2621,9 @@ mod tests {
             ),
         ];
         for (id, input) in cases {
-            let result =
-                runtime.block_on(crate::tools::shell::LowercaseBashTool.execute(input, &context));
+            let result = runtime.block_on(
+                codewhale_engine::tools::shell::LowercaseBashTool.execute(input, &context),
+            );
             handle_tool_call_complete(&mut app, id, "bash", &result);
         }
 
@@ -2741,7 +2748,7 @@ mod tests {
             "objective": "Make Plan mode reviewable",
             "context_summary": "Grounded in issue #2691",
             "sources_used": [" gh issue view 2691 ", ""],
-            "critical_files": ["crates/tui/src/tools/plan.rs"],
+            "critical_files": ["crates/engine/src/tools/plan.rs"],
             "constraints": ["No secrets"],
             "recommended_approach": "Enrich update_plan",
             "verification_plan": "Run focused tests",
@@ -2757,7 +2764,7 @@ mod tests {
         assert_eq!(snapshot.sources_used, vec!["gh issue view 2691"]);
         assert_eq!(
             snapshot.critical_files,
-            vec!["crates/tui/src/tools/plan.rs"]
+            vec!["crates/engine/src/tools/plan.rs"]
         );
         assert_eq!(snapshot.constraints, vec!["No secrets"]);
         assert_eq!(

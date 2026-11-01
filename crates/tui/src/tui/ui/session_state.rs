@@ -6,7 +6,7 @@
 use super::*;
 
 pub(crate) struct OfflineQueueTransition {
-    lease: Arc<crate::session_manager::OfflineQueueLease>,
+    lease: Arc<codewhale_engine::session_manager::OfflineQueueLease>,
     restored: Option<OfflineQueueState>,
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn offline_queue_projection(
 #[derive(Clone)]
 pub(crate) struct SavedWorkProjection {
     pub(super) owner: Option<String>,
-    pub(super) state: Option<crate::session_manager::SessionWorkState>,
+    pub(super) state: Option<codewhale_engine::session_manager::SessionWorkState>,
 }
 
 pub(crate) fn saved_work_projection(app: &App, session: &SavedSession) -> SavedWorkProjection {
@@ -286,7 +286,7 @@ fn record_ui_stall(app: &App, phase: &str, since_progress: Duration, bound: Dura
 pub(crate) fn reconcile_turn_liveness_supervised(
     app: &mut App,
     now: Instant,
-    heartbeat: &crate::core::engine::turn_heartbeat::HeartbeatSnapshot,
+    heartbeat: &codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot,
     engine: &EngineHandle,
 ) -> bool {
     let turn_in_progress = matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
@@ -300,7 +300,7 @@ pub(crate) fn reconcile_turn_liveness_supervised(
     let has_live_agents = live_running_agent_count(app, now) > 0;
     let recovered = reconcile_turn_liveness_with(app, now, has_live_agents, Some(heartbeat));
     if recovered && turn_in_progress && app.runtime_turn_status.is_none() {
-        engine.cancel_with_reason(crate::core::engine::CancelReason::Stalled);
+        engine.cancel_with_reason(codewhale_engine::core::engine::CancelReason::Stalled);
         app.suppress_stream_events_until_turn_complete = true;
     }
     recovered
@@ -320,7 +320,7 @@ pub(crate) fn reconcile_turn_liveness_with(
     app: &mut App,
     now: Instant,
     has_running_agents: bool,
-    heartbeat: Option<&crate::core::engine::turn_heartbeat::HeartbeatSnapshot>,
+    heartbeat: Option<&codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot>,
 ) -> bool {
     // The engine is inside a wait it bounds itself and has not reported as
     // overdue (a quiet model, a live stream). Its watchdog owns that bound;
@@ -488,7 +488,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
             let id = app
                 .current_session_id
                 .as_deref()
-                .map(crate::session_manager::truncate_id)
+                .map(codewhale_engine::session_manager::truncate_id)
                 .unwrap_or("—");
             let message = app
                 .tr(MessageId::SessionSaveFailed)
@@ -912,7 +912,7 @@ pub(crate) fn resume_launch_session(app: &mut App, session_id: &str) -> commands
         );
         commands::CommandResult::ok()
     };
-    let manager = match crate::session_manager::SessionManager::default_location() {
+    let manager = match codewhale_engine::session_manager::SessionManager::default_location() {
         Ok(manager) => manager,
         Err(err) => return failed(app, &err.to_string()),
     };
@@ -1320,7 +1320,7 @@ pub(crate) fn restore_loaded_session_provider(
     let provider = identity.provider;
     config.scope_to_provider_identity(&identity)?;
     app.set_provider_identity_record(identity.clone());
-    app.billing_presentation = crate::route_billing::for_route(config, &identity);
+    app.billing_presentation = codewhale_engine::route_billing::for_route(config, &identity);
     app.max_subagents = config
         .max_subagents_for_provider(&identity)
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
@@ -1348,7 +1348,7 @@ pub(crate) fn restore_loaded_session_provider(
     app.active_context_window_source = app
         .configured_context_window_for(&app.model)
         .map(|resolution| resolution.source)
-        .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+        .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
     Ok(())
 }
 
@@ -1374,11 +1374,11 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
         app.active_context_window_source = app
             .configured_context_window_for(&app.model)
             .map(|resolution| resolution.source)
-            .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+            .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         return;
     }
 
-    match crate::route_runtime::resolve_runtime_route_for_identity(
+    match codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         config,
         &identity,
         Some(&app.model),
@@ -1397,7 +1397,7 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)
-                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         }
     }
 }
@@ -1413,10 +1413,11 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
 ///
 /// Never leaks raw prompt text — the result is always a concise label.
 pub(crate) fn derive_session_title(messages: &[Message]) -> Option<String> {
-    let text = crate::session_manager::conversation_title_prompt(messages)?;
+    let text = codewhale_engine::session_manager::conversation_title_prompt(messages)?;
 
-    let first_line =
-        crate::session_manager::sanitize_session_title(text.lines().next().unwrap_or("").trim());
+    let first_line = codewhale_engine::session_manager::sanitize_session_title(
+        text.lines().next().unwrap_or("").trim(),
+    );
     let first_line = first_line.trim();
     if first_line.is_empty() {
         return None;
@@ -1468,7 +1469,7 @@ mod derived_title_tests {
 
     #[test]
     fn live_title_uses_the_same_user_prompt_after_runtime_handoffs() {
-        let handoff = crate::runtime_handoff::operate_contract_runtime_message();
+        let handoff = codewhale_engine::runtime_handoff::operate_contract_runtime_message();
         assert_eq!(derive_session_title(std::slice::from_ref(&handoff)), None);
         let messages = [handoff, user("/goal Fix the diagnostic display")];
         assert_eq!(
@@ -1476,7 +1477,7 @@ mod derived_title_tests {
             Some("/goal Fix")
         );
         assert_eq!(
-            crate::session_manager::conversation_title_prompt(&messages),
+            codewhale_engine::session_manager::conversation_title_prompt(&messages),
             Some("/goal Fix the diagnostic display")
         );
     }

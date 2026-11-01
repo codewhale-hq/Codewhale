@@ -89,7 +89,7 @@ fn parse_provider_identifier(value: &str) -> std::result::Result<String, String>
 )]
 struct Cli {
     #[command(flatten)]
-    runtime_options: codewhale_tui::RuntimeOptions,
+    runtime_options: codewhale_engine::runtime_options::RuntimeOptions,
     #[arg(
         long,
         value_name = "PROVIDER",
@@ -176,7 +176,7 @@ struct Cli {
 }
 
 impl std::ops::Deref for Cli {
-    type Target = codewhale_tui::RuntimeOptions;
+    type Target = codewhale_engine::runtime_options::RuntimeOptions;
     fn deref(&self) -> &Self::Target {
         &self.runtime_options
     }
@@ -2636,7 +2636,10 @@ fn run() -> Result<()> {
             // process or argument owner. Keep its narrow command contract.
             let mut argv = vec!["pet".to_string()];
             argv.extend(args.args);
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4955,7 +4958,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::XaiDevice => {
             let argv = vec!["auth".to_string(), "xai-device".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4969,7 +4975,7 @@ fn run_auth_command_with_secrets_and_runtime(
                 "claude-revoke"
             };
             let code = codewhale_tui::run(
-                codewhale_tui::RuntimeOptions::default(),
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
                 vec!["auth".to_string(), route.to_string()],
             );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
@@ -4980,7 +4986,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::Chatgpt => {
             let argv = vec!["auth".to_string(), "chatgpt".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4989,7 +4998,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::ChatgptRevoke => {
             let argv = vec!["auth".to_string(), "chatgpt-revoke".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -4998,7 +5010,10 @@ fn run_auth_command_with_secrets_and_runtime(
         }
         AuthCommand::Orcarouter => {
             let argv = vec!["auth".to_string(), "orcarouter".to_string()];
-            let code = codewhale_tui::run(codewhale_tui::RuntimeOptions::default(), argv);
+            let code = codewhale_tui::run(
+                codewhale_engine::runtime_options::RuntimeOptions::default(),
+                argv,
+            );
             std::process::exit(if code == std::process::ExitCode::SUCCESS {
                 0
             } else {
@@ -5495,9 +5510,10 @@ fn run_config_command(
     }
     match command {
         ConfigCommand::Get { key } => {
-            if per_run_overrides.is_empty() && codewhale_tui::route_preferences::is_route_key(&key)
+            if per_run_overrides.is_empty()
+                && codewhale_engine::route_preferences::is_route_key(&key)
             {
-                if let Some(value) = codewhale_tui::route_preferences::get(store.path(), &key)? {
+                if let Some(value) = codewhale_engine::route_preferences::get(store.path(), &key)? {
                     println!("{value}");
                     return Ok(());
                 }
@@ -5560,8 +5576,8 @@ fn run_config_command(
             bail!("key not found: {key}");
         }
         ConfigCommand::Set { key, value } => {
-            if codewhale_tui::route_preferences::is_route_key(&key) {
-                codewhale_tui::route_preferences::set(store.path(), &key, &value)?;
+            if codewhale_engine::route_preferences::is_route_key(&key) {
+                codewhale_engine::route_preferences::set(store.path(), &key, &value)?;
                 store.reload()?;
                 println!("set {key}");
                 return Ok(());
@@ -5640,8 +5656,8 @@ fn run_config_command(
             Ok(())
         }
         ConfigCommand::Unset { key } => {
-            if codewhale_tui::route_preferences::is_route_key(&key) {
-                codewhale_tui::route_preferences::unset(store.path(), &key)?;
+            if codewhale_engine::route_preferences::is_route_key(&key) {
+                codewhale_engine::route_preferences::unset(store.path(), &key)?;
                 store.reload()?;
                 println!("unset {key}");
                 return Ok(());
@@ -5952,7 +5968,7 @@ fn model_set_route(
             resolved_runtime.base_url.clone(),
         )));
     }
-    let (route, _, _) = codewhale_tui::route_preferences::selected_route(store.path())?;
+    let (route, _, _) = codewhale_engine::route_preferences::selected_route(store.path())?;
     Ok(ProviderKind::parse_config_identity(&route).map(|provider| {
         let base_url = store
             .config
@@ -5979,7 +5995,8 @@ fn run_model_command(
     match command {
         ModelCommand::List { provider } => {
             let filter = model_command_provider_hint(provider, top_level_provider);
-            for (provider, models) in codewhale_tui::route_preferences::list_models(store, filter)?
+            for (provider, models) in
+                codewhale_engine::route_preferences::list_models(store, filter)?
             {
                 for model in models {
                     println!("{model} ({})", provider.as_str());
@@ -6008,7 +6025,7 @@ fn run_model_command(
                         resolved_runtime.model_source,
                         codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
                     ) {
-                    Some(codewhale_tui::route_preferences::selected_route(
+                    Some(codewhale_engine::route_preferences::selected_route(
                         store.path(),
                     )?)
                 } else {
@@ -6048,7 +6065,7 @@ fn run_model_command(
                         .clone()
                         .unwrap_or_else(|| kind.provider().default_base_url().into())
                 };
-                let candidate = codewhale_tui::route_preferences::resolve_model(
+                let candidate = codewhale_engine::route_preferences::resolve_model(
                     store.path(),
                     identity,
                     &base,
@@ -6120,7 +6137,7 @@ fn run_model_command(
                     .clone()
                     .unwrap_or_else(|| provider.provider().default_base_url().into())
             };
-            let candidate = codewhale_tui::route_preferences::resolve_model(
+            let candidate = codewhale_engine::route_preferences::resolve_model(
                 store.path(),
                 identity,
                 &base,
@@ -6189,7 +6206,7 @@ fn run_model_command(
             } else {
                 expanded
             };
-            codewhale_tui::route_preferences::set(store.path(), "model", canonical)?;
+            codewhale_engine::route_preferences::set(store.path(), "model", canonical)?;
             store.reload()?;
             println!("Default model set to '{canonical}'");
             Ok(())
@@ -7997,7 +8014,7 @@ verbosity = "concise"
         .unwrap();
         assert_eq!(store.config.providers.zai.model.as_deref(), Some("GLM-5.1"));
         assert_eq!(
-            codewhale_tui::route_preferences::get(&path, "model")
+            codewhale_engine::route_preferences::get(&path, "model")
                 .unwrap()
                 .as_deref(),
             Some("GLM-5.1")
@@ -13180,7 +13197,7 @@ verbosity = "concise"
         ]);
         assert_eq!(
             cli.runtime_options,
-            codewhale_tui::RuntimeOptions::default()
+            codewhale_engine::runtime_options::RuntimeOptions::default()
         );
         assert_eq!(
             root_tui_passthrough(&cli).unwrap(),

@@ -36,7 +36,7 @@ if grep -En \
   crates/runtime/src/config.rs \
   crates/tui/src/commands/groups/config/config.rs \
   crates/tui/src/commands/groups/skills/restore.rs \
-  crates/tui/src/prompts/text.rs; then
+  crates/engine/src/prompts/text.rs; then
   printf '%s\n' 'retired TUI vocabulary remains in current product messages' >&2
   exit 1
 fi
@@ -53,7 +53,7 @@ if grep -En 'mode-derived-yolo-bypass|YOLO derives bypass|settings\.default_mode
 fi
 
 if grep -En 'Agent or Yolo|Plan/Agent/Yolo' \
-  crates/tui/src/core/engine/tool_catalog.rs crates/tui/src/commands/groups/core/hooks.rs; then
+  crates/engine/src/core/engine/tool_catalog.rs crates/tui/src/commands/groups/core/hooks.rs; then
   printf '%s\n' 'retired mode wording remains in tool or hooks help' >&2
   exit 1
 fi

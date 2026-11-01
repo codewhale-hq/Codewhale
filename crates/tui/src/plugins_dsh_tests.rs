@@ -15,16 +15,16 @@ const MCP: &str = "@deepseek-ai/dsh-mcp-client";
 const SKILLS: &str = "@deepseek-ai/dsh-skill-filesystem";
 
 struct Fixture {
-    _host: crate::extension_host::TestManagerGuard,
+    _host: codewhale_engine::extension_host::TestManagerGuard,
     _root: tempfile::TempDir,
     bundle: PathBuf,
     output: PathBuf,
 }
 
-fn isolated_host(root: &Path) -> crate::extension_host::TestManagerGuard {
-    crate::extension_host::TestManagerGuard::install(std::sync::Arc::new(
-        crate::extension_host::ExtensionHostManager::new(
-            crate::extension_host::ExtensionHostOptions {
+fn isolated_host(root: &Path) -> codewhale_engine::extension_host::TestManagerGuard {
+    codewhale_engine::extension_host::TestManagerGuard::install(std::sync::Arc::new(
+        codewhale_engine::extension_host::ExtensionHostManager::new(
+            codewhale_engine::extension_host::ExtensionHostOptions {
                 root: Some(root.join("host")),
                 ..Default::default()
             },
@@ -398,7 +398,7 @@ fn patch_layer_list_is_bounded_and_contained() {
 
 #[test]
 fn pinned_upstream_multifile_package_parses_without_promoting_rows() {
-    crate::extension_host::install_ports();
+    codewhale_engine::extension_host::install_ports();
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/dsh-web-app");
     let upstream: Json =
         serde_json::from_str(&fs::read_to_string(bundle.join("UPSTREAM.json")).unwrap()).unwrap();
@@ -765,8 +765,8 @@ fn derived_names_are_native_plugin_names() {
 
 #[test]
 fn raw_agent_presets_import_emits_exact_native_entries_and_catalog() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/extension_host/raw-agent-presets/source");
+    let source = codewhale_engine::extension_host::test_support::fixtures_dir()
+        .join("raw-agent-presets/source");
     let root = tempfile::tempdir().unwrap();
     let _host = isolated_host(root.path());
     let output = root.path().join("raw-preset-output");
@@ -873,8 +873,8 @@ fn contained_bare_native_row_imports_but_an_unresolved_sibling_never_installs_a_
 
 #[test]
 fn raw_catalog_broken_rows_remain_structured_manual_ports_beside_healthy_entries() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/extension_host/raw-agent-presets/source");
+    let source = codewhale_engine::extension_host::test_support::fixtures_dir()
+        .join("raw-agent-presets/source");
     let root = tempfile::tempdir().unwrap();
     let _host = isolated_host(root.path());
     let bundle = root.path().join("source");
@@ -941,7 +941,7 @@ mod shell_hook_import_tests {
     use super::*;
     #[test]
     fn raw_mixed_preset_import_keeps_mcp_and_skills_selected_without_global_duplicates() {
-        crate::extension_host::install_ports();
+        codewhale_engine::extension_host::install_ports();
         let _home = codewhale_runtime::test_support::SealedHome::new();
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1006,7 +1006,7 @@ mod shell_hook_import_tests {
 
     #[test]
     fn native_shell_bridge_import_seals_assets_without_executing_commands() {
-        crate::extension_host::install_ports();
+        codewhale_engine::extension_host::install_ports();
         let _home = codewhale_runtime::test_support::SealedHome::new();
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("bundle");

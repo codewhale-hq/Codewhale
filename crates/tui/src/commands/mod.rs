@@ -218,17 +218,17 @@ pub fn registry() -> &'static traits::CommandRegistry {
 /// never depends on this module.
 pub(crate) struct CommandTable;
 
-impl crate::command_catalog::CommandCatalog for CommandTable {
+impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
     fn answers_to(&self, name: &str) -> bool {
         // `jihua` and `zidong` are mode aliases the dispatcher answers ahead
         // of the registry.
         matches!(name, "jihua" | "zidong") || registry().get(name).is_some()
     }
 
-    fn builtins(&self) -> Vec<crate::command_catalog::BuiltinCommand> {
+    fn builtins(&self) -> Vec<codewhale_engine::command_catalog::BuiltinCommand> {
         command_infos()
             .into_iter()
-            .map(|info| crate::command_catalog::BuiltinCommand {
+            .map(|info| codewhale_engine::command_catalog::BuiltinCommand {
                 name: info.name.to_string(),
                 aliases: info
                     .aliases
@@ -253,7 +253,7 @@ impl crate::command_catalog::CommandCatalog for CommandTable {
     fn user_commands(
         &self,
         workspace: &std::path::Path,
-    ) -> Vec<crate::command_catalog::UserCommand> {
+    ) -> Vec<codewhale_engine::command_catalog::UserCommand> {
         user_registry::with_registry_for_workspace(Some(workspace), |registry| {
             let mut bindings = std::collections::HashMap::<String, Vec<String>>::new();
             for info in command_infos() {
@@ -268,7 +268,7 @@ impl crate::command_catalog::CommandCatalog for CommandTable {
             }
             registry
                 .iter()
-                .map(|metadata| crate::command_catalog::UserCommand {
+                .map(|metadata| codewhale_engine::command_catalog::UserCommand {
                     name: metadata.name.clone(),
                     aliases: metadata.aliases.clone(),
                     description: metadata.description.clone(),
@@ -525,11 +525,11 @@ fn suggest_command_names(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-    use crate::tools::todo::TodoStatus;
     use crate::tui::app::{App, AppAction, TuiOptions};
     use crate::tui::work_surface::{RailPanel, WorkSurfacePlacement};
     use codewhale_config::ProviderKind;
+    use codewhale_engine::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
+    use codewhale_engine::tools::todo::TodoStatus;
     use codewhale_localization::{Locale, MessageId};
     use codewhale_runtime::config::Config;
     use std::path::{Path, PathBuf};
@@ -883,7 +883,7 @@ mod tests {
                 .message
                 .as_deref()
                 .unwrap_or_default()
-                .contains(crate::prompts::HANDOFF_RELATIVE_PATH)
+                .contains(codewhale_engine::prompts::HANDOFF_RELATIVE_PATH)
         );
         let Some(AppAction::SendMessage(message)) = result.action else {
             panic!("expected SendMessage action");
@@ -893,7 +893,7 @@ mod tests {
         // The relay is written where the next session reads it first.
         assert!(message.contains(&format!(
             "Write or update `{}`",
-            crate::prompts::HANDOFF_RELATIVE_PATH
+            codewhale_engine::prompts::HANDOFF_RELATIVE_PATH
         )));
         assert!(message.contains("# Session relay"));
         assert!(message.contains("Requested relay focus: verify install"));
@@ -901,7 +901,7 @@ mod tests {
         assert!(message.contains("Goal token budget: 12000"));
         // #3983: the relay artifact shows the same bounded To-do snapshot body
         // a forked agent is handed — byte for byte.
-        let expected_body = crate::todo_snapshot::todo_snapshot_body(
+        let expected_body = codewhale_engine::todo_snapshot::todo_snapshot_body(
             &app.todos.try_lock().expect("todo lock").snapshot(),
         )
         .expect("canonical body");
@@ -966,16 +966,18 @@ mod tests {
     /// the compatibility To-do projection is published to the UI.
     #[tokio::test]
     async fn relay_reads_same_turn_graph_backed_work_update() {
-        use crate::tools::spec::ToolSpec as _;
+        use codewhale_engine::tools::spec::ToolSpec as _;
 
         let mut app = create_test_app();
-        let work =
-            crate::work_graph::new_shared_work_runtime(app.todos.clone(), app.plan_state.clone());
+        let work = codewhale_engine::work_graph::new_shared_work_runtime(
+            app.todos.clone(),
+            app.plan_state.clone(),
+        );
         app.runtime_services.work = Some(work.clone());
 
-        let mut context = crate::tools::spec::ToolContext::new(app.workspace.clone());
+        let mut context = codewhale_engine::tools::spec::ToolContext::new(app.workspace.clone());
         context.runtime.work = Some(work);
-        crate::tools::todo::TodoWriteTool::new(app.todos.clone())
+        codewhale_engine::tools::todo::TodoWriteTool::new(app.todos.clone())
             .execute(
                 serde_json::json!({
                     "todos": [{"content": "relay the staged graph", "status": "in_progress"}]

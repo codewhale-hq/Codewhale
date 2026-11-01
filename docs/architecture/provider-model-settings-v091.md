@@ -12,7 +12,7 @@ setup and adding a model are deliberately separate operations.
    (`provider_is_configured` in `crates/tui/src/config.rs`; grep the symbol
    rather than trusting a line number). A used model is a
    `(provider identity, model id)` route in the recent-use index
-   (`crates/tui/src/model_relevance.rs`, #6533); the
+   (`crates/engine/src/model_relevance.rs`, #6533); the
    current model is `App::{api_provider,model,auto_model}`; a saved
    provider-specific preference is `Settings::provider_models`; and the startup
    default is `Settings::default_provider` plus the provider-scoped preference

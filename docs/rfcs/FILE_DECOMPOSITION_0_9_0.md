@@ -25,7 +25,7 @@ provider additions touch 15+ files and makes code review fragile.
 | `crates/tui/src/tui/ui/tests.rs` | 8,360 | Tests for ui.rs |
 | `crates/tui/src/main.rs` | 7,998 | CLI arg parsing, mode selection, startup |
 | `crates/tui/src/tui/app.rs` | 7,256 | Application state struct and lifecycle |
-| `crates/tui/src/runtime_threads.rs` | 5,454 | Async runtime orchestration |
+| `crates/engine/src/runtime_threads.rs` | 5,454 | Async runtime orchestration |
 
 ## Proposed decomposition
 

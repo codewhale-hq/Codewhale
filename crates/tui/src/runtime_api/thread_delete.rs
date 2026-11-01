@@ -2,9 +2,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use serde_json::{Value, json};
 
-use crate::automation_manager::{AutomationStatus, DelayedTriggerStatus};
-use crate::runtime_threads::manager::ThreadListFilter;
-use crate::session_manager::SessionManager;
+use codewhale_engine::automation_manager::{AutomationStatus, DelayedTriggerStatus};
+use codewhale_engine::runtime_threads::manager::ThreadListFilter;
+use codewhale_engine::session_manager::SessionManager;
 
 use super::sessions::map_session_err;
 use super::{ApiError, RuntimeApiState, map_thread_err};

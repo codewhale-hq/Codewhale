@@ -324,7 +324,7 @@ mod tests {
         };
         assert_ne!(policy_digest(current), policy_digest(changed));
         let table: serde_json::Value = serde_json::from_slice(DSH_COMPATIBILITY).unwrap();
-        assert_eq!(table["version"], 2);
+        assert_eq!(table["version"], 3);
         assert!(dsh_row_bridge("@deepseek-ai/dsh-persona"));
         assert!(!dsh_row_bridge("@deepseek-ai/dsh-agent-loop"));
         for capability in PluginActivationCapability::ALL {

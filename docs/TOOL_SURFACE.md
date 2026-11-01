@@ -11,15 +11,15 @@ The model should learn one canonical name for each common operation.
 
 Implementation sources:
 
-- `crates/tui/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
-- `crates/tui/src/tools/registry.rs` registers canonical tools and hidden aliases.
-- `crates/tui/src/tools/{file,file_tool,shell}.rs` own the small foreground
+- `crates/engine/src/core/engine/tool_catalog.rs` owns the eager/deferred catalog.
+- `crates/engine/src/tools/registry.rs` registers canonical tools and hidden aliases.
+- `crates/engine/src/tools/{file,file_tool,shell}.rs` own the small foreground
   primitive behavior and schemas; the other native tools remain searchable.
 - `docs/RUNTIME_SIMPLIFICATION_DESIGN.md` records the v0.9.1 cutover and receipt.
 
 ## Default-active contract
 
-New turns start with thirteen eager native names plus synthetic `tool_search`:
+New turns start with fifteen eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
@@ -34,10 +34,12 @@ New turns start with thirteen eager native names plus synthetic `tool_search`:
 11. `update_goal`
 12. `task_shell_wait`
 13. `load_skill`
-14. `tool_search` (synthetic, always active)
+14. `context_archive_get`
+15. `context_archive_search`
+16. `tool_search` (synthetic, always active)
 
-The thirteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
-`crates/tui/src/core/engine/tool_catalog.rs`, pinned by
+The fifteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+`crates/engine/src/core/engine/tool_catalog.rs`, pinned by
 `default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
 boundary may remove `agent` at the maximum child depth, and Plan registers only
 the foreground shell surface (so no `task_shell_wait`), but route size alone
@@ -123,8 +125,7 @@ dependencies are available.
 
 MCP tools are dynamic. Successfully connected servers register names such as
 `mcp_<server>_<tool>` from `~/.codewhale/mcp.json`; a failed or disabled server
-must not be presented as available. MCP and plugin tools are deferred unless a
-user explicitly names them in `[tools].always_load`.
+must not be presented as available. MCP and plugin tools are normally deferred. When the composition VM is eager and the turn admits exactly one compact named batch schema, `execute_tools` also accepts `{batch:{tool,arguments}}` instead of JavaScript. The VM forwards the data through the same nested gate, bounds and receipts; the server tool stays deferred unless explicitly requested. The current server routes and turn permissions narrow the shortcut’s member names; its nested dispatch checks the offered members after hooks. The server supplies a bounded guide to their arguments. Other tools stay searchable; `[tools].always_load` still makes individual schemas eager.
 
 For an unstarted configured server, an MCP-focused `tool_search` first
 performs bounded discovery under the current turn's server/tool ceiling.
@@ -135,6 +136,8 @@ bounded activation cache. Ordinary unrelated searches leave optional servers
 unstarted. The CLI's standalone MCP inspection commands own a separate pool.
 
 ### Code mode (`execute_tools`)
+
+For a known sequence, prefer a tool’s own batch operation. Use `execute_tools` when the next call depends on an intermediate result, and return the verified outcome. Search unknown names and schemas before acting. An unexpected state, refusal, uncertain delivery or direct-only decision ends that sequence.
 
 `execute_tools` is engine-injected, alongside the synthetic interpreter tools.
 It runs a JavaScript program whose only host surface is
@@ -323,7 +326,7 @@ session; it is not a substitute for tool-carrying `agent` workers.
 the request that was prepared for one `(turn, step)`. It is not a second
 registry and not an execution surface.
 
-**The seam.** The snapshot is built in `crates/tui/src/core/engine/turn_loop.rs`
+**The seam.** The snapshot is built in `crates/engine/src/core/engine/turn_loop.rs`
 immediately after `MessageRequest` is constructed, from `request.tools` — the
 same value the model client is handed. The engine resolves the surrounding
 per-turn data once in `engine.rs` (`ToolSurfaceContext`: flattened registry
@@ -349,7 +352,7 @@ Two kinds of fact are kept apart:
 Contract:
 
 - **One digest.** `active_tool_catalog_sha256`
-  (`crates/tui/src/core/engine/preview.rs`) is the single definition of the
+  (`crates/engine/src/core/engine/preview.rs`) is the single definition of the
   active-tool-catalog hash. The request manifest publishes it as
   `ToolSurfaceFacts::active_tool_catalog_sha256` and `/tools` reports the same
   value for the same prepared request; neither surface keeps a hash of its own.

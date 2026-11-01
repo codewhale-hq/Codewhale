@@ -15,14 +15,14 @@ use codewhale_protocol::{
 };
 
 use super::{ApiError, RuntimeApiState};
-use crate::runtime_threads::manager::history::{
+use codewhale_engine::runtime_threads::manager::history::{
     HistorySizeBound, history_owner_work, saved_document_digest,
 };
-use crate::runtime_threads::{
+use codewhale_engine::runtime_threads::{
     RuntimeHistoryOperation, RuntimeHistoryWitness, manager::CreateThreadRequest,
     manager::RuntimeThreadManager, manager::ThreadListFilter,
 };
-use crate::session_manager::{SavedSession, SessionManager};
+use codewhale_engine::session_manager::{SavedSession, SessionManager};
 use codewhale_runtime::session_tree::{
     SessionEntry, SessionEntryKind, SessionImportContainer, SessionJournal,
 };
@@ -142,7 +142,7 @@ fn legacy_journal(history: &LegacyThreadHistory) -> Result<SessionJournal> {
             }
         };
         if message.role == Role::User {
-            crate::image_attach::runtime_images_from_blocks(&message.content)
+            codewhale_engine::image_attach::runtime_images_from_blocks(&message.content)
                 .map_err(|error| anyhow!("invalid imported image: {error}"))?;
         }
         entries.push(SessionEntry {
@@ -476,8 +476,8 @@ async fn import_into_owner(
 
 fn verify_import_checkpoint(
     manager: &SessionManager,
-    thread: &crate::runtime_threads::ThreadRecord,
-    binding: &crate::runtime_threads::RuntimeStoreBinding,
+    thread: &codewhale_engine::runtime_threads::ThreadRecord,
+    binding: &codewhale_engine::runtime_threads::RuntimeStoreBinding,
     expected: &SessionJournal,
 ) -> Result<()> {
     let id = thread
@@ -490,8 +490,8 @@ fn verify_import_checkpoint(
 
 fn verify_import_checkpoint_under_lease(
     manager: &SessionManager,
-    thread: &crate::runtime_threads::ThreadRecord,
-    binding: &crate::runtime_threads::RuntimeStoreBinding,
+    thread: &codewhale_engine::runtime_threads::ThreadRecord,
+    binding: &codewhale_engine::runtime_threads::RuntimeStoreBinding,
     expected: &SessionJournal,
 ) -> Result<()> {
     let id = thread
@@ -509,7 +509,8 @@ fn verify_import_checkpoint_under_lease(
         .as_ref()
         .ok_or_else(|| anyhow!("committed history has no verifiable checkpoint"))?;
     ensure!(
-        crate::runtime_threads::checkpoint_prefix_len(checkpoint, &observed.messages)?.is_some(),
+        codewhale_engine::runtime_threads::checkpoint_prefix_len(checkpoint, &observed.messages)?
+            .is_some(),
         "committed history checkpoint differs from its document; recovery required"
     );
     let journal = observed
@@ -584,8 +585,11 @@ async fn snapshot_in_runtime(
                 let checkpoint = checkpoint
                     .ok_or_else(|| anyhow!("bound history has no verifiable checkpoint"))?;
                 ensure!(
-                    crate::runtime_threads::checkpoint_prefix_len(&checkpoint, &document.messages)?
-                        .is_some(),
+                    codewhale_engine::runtime_threads::checkpoint_prefix_len(
+                        &checkpoint,
+                        &document.messages
+                    )?
+                    .is_some(),
                     "bound full history checkpoint changed; recovery required"
                 );
                 let digest = saved_document_digest(&document)?;
@@ -623,13 +627,13 @@ async fn snapshot_in_runtime(
             session_goal_digest(&document.as_ref().and_then(|(_, _, goal)| goal.clone()))?;
         let persisted_document_digest = document.as_ref().map(|(_, digest, _)| digest.clone());
         let mut session = match document {
-            Some((existing, _, _)) => crate::session_manager::update_session(
+            Some((existing, _, _)) => codewhale_engine::session_manager::update_session(
                 existing,
                 &snapshot.messages,
                 snapshot.total_tokens,
                 snapshot.system_prompt.as_ref(),
             ),
-            None => crate::session_manager::create_saved_session_with_id_and_mode(
+            None => codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
                 snapshot.session_id.clone(),
                 &snapshot.messages,
                 &snapshot.model,
@@ -692,7 +696,7 @@ async fn snapshot_in_runtime(
 fn stable_projection_entries(
     session: &mut SavedSession,
     retained_count: usize,
-    thread: &crate::runtime_threads::ThreadRecord,
+    thread: &codewhale_engine::runtime_threads::ThreadRecord,
 ) -> Result<()> {
     let journal = session
         .journal
@@ -793,7 +797,7 @@ fn journal_digest(journal: &SessionJournal) -> Result<String> {
 }
 
 pub(crate) fn session_goal_digest(
-    goal: &Option<crate::session_manager::SessionGoalState>,
+    goal: &Option<codewhale_engine::session_manager::SessionGoalState>,
 ) -> Result<String> {
     Ok(codewhale_runtime::hashing::sha256_hex(
         codewhale_runtime::hashing::canonical_json(&serde_json::to_value(goal)?).as_bytes(),
@@ -811,12 +815,12 @@ fn history_source_digest(session: &SavedSession, goal_digest: &str) -> Result<St
 }
 
 fn forked_session_goal(
-    mut goal: Option<crate::session_manager::SessionGoalState>,
-) -> Option<crate::session_manager::SessionGoalState> {
+    mut goal: Option<codewhale_engine::session_manager::SessionGoalState>,
+) -> Option<codewhale_engine::session_manager::SessionGoalState> {
     if let Some(goal) = goal.as_mut()
-        && goal.status == crate::session_manager::SessionGoalStatus::Active
+        && goal.status == codewhale_engine::session_manager::SessionGoalStatus::Active
     {
-        goal.status = crate::session_manager::SessionGoalStatus::Paused;
+        goal.status = codewhale_engine::session_manager::SessionGoalStatus::Paused;
         goal.pause_reason = None;
     }
     goal
@@ -835,8 +839,8 @@ fn operation_witness(journal: &SessionJournal, workspace: &Path) -> RuntimeHisto
 
 fn verify_operation_checkpoint(
     manager: &SessionManager,
-    thread: &crate::runtime_threads::ThreadRecord,
-    binding: &crate::runtime_threads::RuntimeStoreBinding,
+    thread: &codewhale_engine::runtime_threads::ThreadRecord,
+    binding: &codewhale_engine::runtime_threads::RuntimeStoreBinding,
     operation: &RuntimeHistoryOperation,
 ) -> Result<()> {
     let id = thread
@@ -859,7 +863,8 @@ fn verify_operation_checkpoint(
         .as_ref()
         .ok_or_else(|| anyhow!("canonical operation checkpoint is absent"))?;
     ensure!(
-        crate::runtime_threads::checkpoint_prefix_len(checkpoint, &observed.messages)?.is_some(),
+        codewhale_engine::runtime_threads::checkpoint_prefix_len(checkpoint, &observed.messages)?
+            .is_some(),
         "canonical operation checkpoint differs from its document"
     );
     verify_operation_journal(&observed, operation)
@@ -987,7 +992,10 @@ async fn settle_prepared_history_operation(
             .saved_session_checkpoint
             .as_ref()
             .map(|checkpoint| {
-                crate::runtime_threads::checkpoint_prefix_len(checkpoint, &saved.messages)
+                codewhale_engine::runtime_threads::checkpoint_prefix_len(
+                    checkpoint,
+                    &saved.messages,
+                )
             })
             .transpose()?
             .flatten();
@@ -1228,59 +1236,63 @@ async fn mutate_in_owner(
                         .saved_session_checkpoint
                         .as_ref()
                         .ok_or_else(|| anyhow!("saved holder checkpoint is missing"))?;
-                    let covered = crate::runtime_threads::checkpoint_prefix_len(
+                    let covered = codewhale_engine::runtime_threads::checkpoint_prefix_len(
                         checkpoint,
                         &observed.messages,
                     )?;
-                    let released = if crate::runtime_threads::checkpoint_covers_every_turn(
-                        checkpoint,
-                        &detail.turns,
-                    ) {
-                        match covered {
-                            Some(len) if len == observed.messages.len() => {
+                    let released =
+                        if codewhale_engine::runtime_threads::checkpoint_covers_every_turn(
+                            checkpoint,
+                            &detail.turns,
+                        ) {
+                            match covered {
+                                Some(len) if len == observed.messages.len() => {
+                                    source_thread = Some(thread);
+                                    None
+                                }
+                                Some(_) => Some((
+                                    thread,
+                                    "the saved document advanced past this thread after a resume",
+                                )),
+                                None => Some((
+                                    thread,
+                                    "the saved document's head was rewritten after this thread's checkpoint",
+                                )),
+                            }
+                        } else {
+                            ensure!(
+                                covered.is_some(),
+                                "saved holder checkpoint differs from the saved history; refresh history"
+                            );
+                            let full =
+                                snapshot_in_runtime(&runtime, &sessions_dir, thread.id.clone())
+                                    .await
+                                    .map_err(|error| anyhow!(error.message))?;
+                            let live: SavedSession = serde_json::from_value(full.session)?;
+                            if live.messages == observed.messages
+                                && live.journal == observed.journal
+                            {
                                 source_thread = Some(thread);
                                 None
+                            } else if live.messages.len() < observed.messages.len()
+                                && observed.messages.starts_with(&live.messages)
+                            {
+                                let fresh = runtime.get_thread(&thread.id).await?;
+                                ensure!(
+                                    fresh.session_id == thread.session_id
+                                        && fresh.latest_turn_id == thread.latest_turn_id,
+                                    "saved holder changed during admission; retry"
+                                );
+                                Some((
+                                    fresh,
+                                    "the saved document advanced past this thread after a resume",
+                                ))
+                            } else {
+                                bail!(
+                                    "saved holder has a successor outside the selected document; refresh history"
+                                );
                             }
-                            Some(_) => Some((
-                                thread,
-                                "the saved document advanced past this thread after a resume",
-                            )),
-                            None => Some((
-                                thread,
-                                "the saved document's head was rewritten after this thread's checkpoint",
-                            )),
-                        }
-                    } else {
-                        ensure!(
-                            covered.is_some(),
-                            "saved holder checkpoint differs from the saved history; refresh history"
-                        );
-                        let full = snapshot_in_runtime(&runtime, &sessions_dir, thread.id.clone())
-                            .await
-                            .map_err(|error| anyhow!(error.message))?;
-                        let live: SavedSession = serde_json::from_value(full.session)?;
-                        if live.messages == observed.messages && live.journal == observed.journal {
-                            source_thread = Some(thread);
-                            None
-                        } else if live.messages.len() < observed.messages.len()
-                            && observed.messages.starts_with(&live.messages)
-                        {
-                            let fresh = runtime.get_thread(&thread.id).await?;
-                            ensure!(
-                                fresh.session_id == thread.session_id
-                                    && fresh.latest_turn_id == thread.latest_turn_id,
-                                "saved holder changed during admission; retry"
-                            );
-                            Some((
-                                fresh,
-                                "the saved document advanced past this thread after a resume",
-                            ))
-                        } else {
-                            bail!(
-                                "saved holder has a successor outside the selected document; refresh history"
-                            );
-                        }
-                    };
+                        };
                     if let Some((holder, reason)) = released {
                         let release_runtime = Arc::clone(&runtime);
                         history_owner_work(move || {
@@ -1369,9 +1381,11 @@ async fn mutate_in_owner(
                         let Some(entry) = entry else {
                             return Ok(false);
                         };
-                        Ok(crate::session_manager::load_journal_archive(&dir, &id)?
-                            .iter()
-                            .any(|archived| archived.id == entry))
+                        Ok(
+                            codewhale_engine::session_manager::load_journal_archive(&dir, &id)?
+                                .iter()
+                                .any(|archived| archived.id == entry),
+                        )
                     })
                     .await
                     .unwrap_or(false);
@@ -1522,7 +1536,7 @@ async fn mutate_in_owner(
     }
     let source_id = source.as_ref().map(|session| session.metadata.id.clone());
     let mut session = source.unwrap_or_else(|| {
-        crate::session_manager::create_saved_session_with_id_and_mode(
+        codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
             operation.receipt.session_id.clone(),
             &[],
             &thread.model,
@@ -1863,7 +1877,7 @@ fn append_offered_history(
                 "offered message has unsupported fields"
             );
             if message.role == Role::User {
-                crate::image_attach::runtime_images_from_blocks(&message.content)
+                codewhale_engine::image_attach::runtime_images_from_blocks(&message.content)
                     .map_err(anyhow::Error::msg)?;
             }
             Ok(message)
@@ -1908,7 +1922,7 @@ fn decode_history_overrides(
     value: &serde_json::Value,
     config: &codewhale_runtime::config::Config,
     workspace: &Path,
-) -> Result<Option<crate::runtime_threads::manager::UpdateThreadRequest>> {
+) -> Result<Option<codewhale_engine::runtime_threads::manager::UpdateThreadRequest>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -2016,7 +2030,7 @@ fn decode_history_overrides(
 
 fn apply_history_create_overrides(
     create: &mut CreateThreadRequest,
-    update: &crate::runtime_threads::manager::UpdateThreadRequest,
+    update: &codewhale_engine::runtime_threads::manager::UpdateThreadRequest,
 ) {
     if update.model.is_some() {
         create.model.clone_from(&update.model);

@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::shell::{
+use codewhale_engine::tools::shell::{
     PtyDimensions, ShellJobSnapshot, ShellManager, ShellOutputChunk, ShellOutputStream,
     ShellResult, ShellStatus,
 };
@@ -119,7 +119,7 @@ async fn thread_manager(
     state: &RuntimeApiState,
     thread_id: &str,
     create: bool,
-) -> Result<crate::tools::shell::SharedShellManager, ApiError> {
+) -> Result<codewhale_engine::tools::shell::SharedShellManager, ApiError> {
     state
         .runtime_threads
         .thread_shell_manager(thread_id, create)

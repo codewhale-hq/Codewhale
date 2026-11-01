@@ -20,21 +20,24 @@ pub(in crate::commands) fn build_plan(app: &mut App) -> Option<CommandClaudePlan
     // MCP candidates come from the same discovery the `/mcp import` consent
     // flow uses, filtered to the Claude sources: provenance stays single-sourced.
     let markets = Vec::new();
-    let mcp_candidates =
-        crate::mcp::external_import::discover_external_sources(&home, &app.workspace, &markets)
-            .into_iter()
-            .filter(|candidate| {
-                matches!(
-                    candidate.source_kind,
-                    crate::mcp::external_import::ExternalMcpSourceKind::ClaudeJson
-                )
-            })
-            .map(|candidate| CommandMcpCandidate {
-                summary: candidate.summary,
-                hard_blocked: candidate.hard_blocked,
-                name: candidate.name,
-            })
-            .collect::<Vec<_>>();
+    let mcp_candidates = codewhale_engine::mcp::external_import::discover_external_sources(
+        &home,
+        &app.workspace,
+        &markets,
+    )
+    .into_iter()
+    .filter(|candidate| {
+        matches!(
+            candidate.source_kind,
+            codewhale_engine::mcp::external_import::ExternalMcpSourceKind::ClaudeJson
+        )
+    })
+    .map(|candidate| CommandMcpCandidate {
+        summary: candidate.summary,
+        hard_blocked: candidate.hard_blocked,
+        name: candidate.name,
+    })
+    .collect::<Vec<_>>();
 
     let plan =
         codewhale_net::import_claude::build_plan(sources, claude, settings, &home, mcp_candidates);
@@ -110,7 +113,7 @@ pub(in crate::commands) fn apply_plan(
                                     #[cfg(test)]
                                     let _membership = crate::test_support::join_env_scope(ticket);
                                     std::fs::read(&copy_source).is_ok_and(|bytes| {
-                                        codewhale_config::private_directory::PrivateDirectory::open(
+                                        codewhale_config::private_directory::PrivateDirectory::open_trusting_mount(
                                             &copy_home,
                                         )
                                         .and_then(|directory| {
@@ -131,7 +134,7 @@ pub(in crate::commands) fn apply_plan(
                             #[cfg(test)]
                             let _membership = crate::test_support::join_env_scope(ticket);
                             std::fs::read(&copy_source).is_ok_and(|bytes| {
-                                codewhale_config::private_directory::PrivateDirectory::open(
+                                codewhale_config::private_directory::PrivateDirectory::open_trusting_mount(
                                     &copy_home,
                                 )
                                 .and_then(|directory| {

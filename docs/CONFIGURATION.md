@@ -158,7 +158,7 @@ Each repo can carry two distinct, complementary files:
   This is the **repo-local law** layer. When guidance conflicts, the
   **Whose word wins** section of the effective base constitution owns the
   ordering; the bundled source is
-  [`BASE_PROMPT`](../crates/tui/src/prompts/text.rs). Use `/constitution base`
+  [`BASE_PROMPT`](../crates/engine/src/prompts/text.rs). Use `/constitution base`
   to inspect the effective base, including any opted-in expert override.
   The order in which these files are described or assembled is not an
   authority ranking. Runtime policy (permissions, sandbox and cost limits
@@ -241,7 +241,7 @@ and shell-write gates, not by this mechanism.
 ### Expert full base-prompt override (#3638)
 
 The global Constitution (the base system prompt, normally compiled in from
-`crates/tui/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
+`crates/engine/src/prompts/text.rs` as `BASE_PROMPT`) can be replaced per-user
 without rebuilding. This is
 an expert escape hatch, not the normal `/constitution` guided setup output.
 Because this is a prompt trust boundary, it takes **two deliberate steps** — a
@@ -733,7 +733,7 @@ auto-select MiMo endpoints. Use
 With `model = "auto"`, each turn runs on your **declared default model** unless
 you have opted into something else. Auto never guesses a cheaper or stronger
 model from how a request is worded; the old keyword-and-length heuristic was
-removed (`auto_route_declared_fallback` in `crates/tui/src/model_routing.rs`).
+removed (`auto_route_declared_fallback` in `crates/engine/src/model_routing.rs`).
 Two optional layers change that:
 
 - an `[auto.router]` classifier, which you write down, that picks a model per
@@ -763,7 +763,7 @@ timeout_secs = 4        # optional; default 4, 0 = default, capped at 300
 A classifier call happens only when `[auto.router]` names both `provider` and
 `model` *and* that provider has a key:
 `router_available = router_configured && has_api_key_for(...)` in
-`ModelInventory::from_config` (`crates/tui/src/model_inventory.rs`). If either
+`ModelInventory::from_config` (`crates/engine/src/model_inventory.rs`). If either
 condition fails, or the classifier call errors or times out, the local
 fallback decides: the default model, or the fast sibling under `cost_saving`.
 The turn's route receipt (Turn Inspector, Ctrl+Alt+O or `/turn inspect`, "Model
@@ -1214,7 +1214,11 @@ original messages to the session's `artifacts/context-transfer-<id>.json` and,
 when a model summary is produced, its handoff to the matching `.md` file.
 These use the existing session artifact store and persistence redaction.
 A failed write aborts compaction without replacing context. Pruning-only passes
-save the original messages without making an extra model call. Pressure metadata
+save the original messages without making an extra model call. The model can
+read them back through `context_archive_search` (ASCII case-insensitive
+substring search returning short snippets and an archive id) and
+`context_archive_get` (paged read of one message by id); the handoff note names
+both so the model knows the archive exists. Pressure metadata
 shows estimated input tokens and the configured trigger; it is an estimate, not
 an exact promise about a provider's remaining context.
 
@@ -1496,6 +1500,7 @@ For every product-level `CODEWHALE_*` variable below, the matching legacy
 `DEEPSEEK_*` name is still read as a compatibility fallback; when both are set,
 the `CODEWHALE_*` value wins.
 
+- `CODEWHALE_TIMING=1` emits local JSON phase durations on stderr for startup, model preparation, tool planning, approval waits and postprocessing. Nested intervals overlap. The records contain only phase, process ID, end time and elapsed microseconds; stream-json stdout is unchanged.
 - `CODEWHALE_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `CODEWHALE_SKILLS_DIR`
 - `CODEWHALE_MCP_CONFIG`
@@ -2711,8 +2716,8 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   between portable `SKILL.md` bundles and Claude Code plugin runtimes.
 - `[skills.bundled].install` (`"auto"` default, `"all"`, `"none"`): controls bundle writes independently of discovery. `auto` keeps deletion-as-opt-out and disables installation when `skills_dir` is set. `all` repairs enabled missing skills into `$CODEWHALE_HOME/skills` (normally `~/.codewhale/skills`) even with a discovery override. `none` writes nothing and leaves the marker untouched. Modified and managed bodies are preserved in every mode.
 - `[skills.bundled].selected` / `disabled` / `explicit_only` (arrays of names, default `[]`): selection limits installation and discovery; empty selects the whole bundle. Disabled wins and reveals lower-root copies. Explicit-only retains user invocation while removing the shipped copy from the model index and model loading. Aliases share canonical policy. These settings affect recognized global bundle copies only and never delete files. Profile fields merge separately; `[]` clears an inherited list. `doctor` warns about unknown/ignored entries and `/skills inspect` reports per-path reasons. See [bundled skills](SKILLS.md#bundled-skills).
-- `[skills].listing_max_description_chars` (integer, default `400`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
-- `[skills].listing_budget_fraction` (finite number, default `0.05`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
+- `[skills].listing_max_description_chars` (integer, default `120`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
+- `[skills].listing_budget_fraction` (finite number, default `0.002`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
 - `[skills].scan_codewhale_only` (bool, default `false`): when `true`, session
   skill discovery ignores cross-tool roots such as `.claude/skills`,
   `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. Codewhale still
@@ -3793,7 +3798,7 @@ configure reasoning effort.
 
 codewhale sends and receives tool calls only over the API tool channel
 (structured `tool_use` / `tool_call` items). The streaming loop in
-`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
+`crates/engine/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
 markers — `[TOOL_CALL]`, `<codewhale:tool_call`, `<tool_call`, `<invoke `,
 `<function_calls>` — and scrubs them from visible assistant text without ever
 turning them into structured tool calls. When a wrapper is stripped, the loop

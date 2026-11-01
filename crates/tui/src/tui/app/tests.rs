@@ -1,11 +1,11 @@
 use super::*;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-use crate::tools::todo::TodoStatus;
 use crate::tui::clipboard::{ClipboardHandler, PastedImage};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 use crate::tui::motion::MotionMode;
 use codewhale_config::ProviderKind;
+use codewhale_engine::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
+use codewhale_engine::tools::todo::TodoStatus;
 use codewhale_models::Usage;
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 use codewhale_runtime::settings::Settings;
@@ -66,8 +66,8 @@ fn set_api_messages_installs_the_shared_snapshot_without_copying() {
     assert_eq!(snapshot.len(), 1);
     assert_eq!(app.api_messages.len(), 2);
     app.session_turn_outcomes = vec![
-        crate::session_manager::SavedTurnOutcome::failed("shared failure", 1),
-        crate::session_manager::SavedTurnOutcome::failed("replaced failure", 2),
+        codewhale_engine::session_manager::SavedTurnOutcome::failed("shared failure", 1),
+        codewhale_engine::session_manager::SavedTurnOutcome::failed("replaced failure", 2),
     ];
     let replacement = Arc::new(vec![snapshot[0].clone(), snapshot[0].clone()]);
     app.set_api_messages(Arc::clone(&replacement));
@@ -586,16 +586,16 @@ fn auto_reasoning_change_invalidates_the_previous_route_and_receipt() {
     app.last_effective_provider_identity = Some(ProviderKind::OpenaiCodex.as_str().to_string());
     app.last_effective_model =
         Some(codewhale_config::descriptors::defaults::DEFAULT_OPENAI_CODEX_MODEL.to_string());
-    app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-        tier: crate::model_routing::AutoRouteTier::Strong,
-        pair: crate::model_routing::AutoRoutePair {
+    app.last_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+        tier: codewhale_engine::model_routing::AutoRouteTier::Strong,
+        pair: codewhale_engine::model_routing::AutoRoutePair {
             strong: codewhale_config::descriptors::defaults::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
             fast: None,
         },
-        scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
-        data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
-        reason: crate::model_routing::AutoRouteReason::LocalFallback(
-            crate::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
+        scope: codewhale_engine::model_routing::AutoRouteScope::ResolvedProvider,
+        data_path: codewhale_engine::model_routing::AutoRouteDataPath::LocalHeuristic,
+        reason: codewhale_engine::model_routing::AutoRouteReason::LocalFallback(
+            codewhale_engine::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
         ),
         decision: None,
         router_failure: None,
@@ -630,7 +630,9 @@ fn auto_reasoning_change_invalidates_the_previous_route_and_receipt() {
         .work_state_snapshot()
         .expect("Work snapshot")
         .expect("effort activity creates graph state");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged { effective, .. } = work
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        effective, ..
+    } = work
         .graph
         .expect("Work Graph")
         .activities
@@ -704,7 +706,7 @@ fn cycle_effort_updates_effort_status_and_compaction() {
     let graph = work.graph.expect("Work Graph");
     let activity = graph.activities.last().expect("effort activity");
     match activity {
-        crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
             requested,
             effective,
             provider_kind,
@@ -769,7 +771,7 @@ fn glm_5_turbo_records_enabled_with_granularity_unavailable() {
         .last()
         .cloned()
         .expect("effort activity");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
         requested,
         effective,
         provider,
@@ -814,7 +816,9 @@ fn glm_5_1_records_enabled_with_granularity_unavailable() {
         .work_state_snapshot()
         .expect("Work snapshot")
         .expect("effort activity creates graph state");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged { effective, .. } = work
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        effective, ..
+    } = work
         .graph
         .expect("Work Graph")
         .activities
@@ -851,7 +855,9 @@ fn unknown_model_on_exact_zai_endpoint_records_effective_unavailable() {
         .work_state_snapshot()
         .expect("Work snapshot")
         .expect("effort activity creates graph state");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged { effective, .. } = work
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        effective, ..
+    } = work
         .graph
         .expect("Work Graph")
         .activities
@@ -899,7 +905,7 @@ fn compatible_zai_gateway_records_effective_unavailable() {
         .last()
         .cloned()
         .expect("effort activity");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
         requested,
         effective,
         provider,
@@ -953,7 +959,7 @@ fn minimax_m3_high_and_max_receipts_do_not_claim_tier_granularity() {
             .last()
             .cloned()
             .expect("effort activity");
-        let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
             effective,
             endpoint_identity,
             model,
@@ -1011,7 +1017,7 @@ fn minimax_anthropic_m3_high_and_max_receipts_match_adaptive_wire_truth() {
             .last()
             .cloned()
             .expect("effort activity");
-        let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
             effective,
             provider_kind,
             provider,
@@ -1067,7 +1073,7 @@ fn named_custom_route_displays_and_persists_effective_unavailable() {
         .last()
         .cloned()
         .expect("effort activity");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
         effective,
         provider_kind,
         provider,
@@ -1114,7 +1120,7 @@ fn custom_routes_named_with_builtin_slugs_retain_custom_kind_and_fail_closed() {
             .last()
             .cloned()
             .expect("effort activity");
-        let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
             effective,
             provider_kind,
             provider,
@@ -1187,7 +1193,7 @@ fn kimi_code_high_and_max_work_receipts_preserve_exact_tiers() {
             .last()
             .cloned()
             .unwrap();
-        let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+        let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
             effective,
             endpoint_identity,
             model,
@@ -1216,28 +1222,28 @@ fn active_turn_zai_receipt_overrides_all_mutable_parallel_route_metadata() {
     app.active_turn = Some(ActiveTurnMetadata {
         turn_id: "turn-zai-receipt".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Zai,
             provider_identity: "openai".to_string(),
             model: "mutable-wrong-model".to_string(),
             auto_model: false,
-            receipt: Some(crate::route_receipt::TurnRouteReceipt::new(
+            receipt: Some(codewhale_engine::route_receipt::TurnRouteReceipt::new(
                 ProviderKind::Zai,
                 "zai",
                 codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL,
                 codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
                 "test-secret-never-persisted",
             )),
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
                 billing_surface: None,
                 endpoint_fingerprint: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL.to_string(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
@@ -1260,7 +1266,7 @@ fn active_turn_zai_receipt_overrides_all_mutable_parallel_route_metadata() {
         .last()
         .cloned()
         .expect("effort activity");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged {
+    let codewhale_engine::work_graph::WorkActivityEvent::ReasoningEffortChanged {
         provider_kind,
         provider,
         endpoint_identity,
@@ -2005,7 +2011,7 @@ fn codex_startup_threads_fresh_roster_context_into_active_route_limits() {
         Some(128_000)
     );
     assert_eq!(
-        crate::route_budget::route_context_window_tokens(
+        codewhale_engine::route_budget::route_context_window_tokens(
             app.api_provider,
             &app.model,
             app.active_route_limits,
@@ -2339,17 +2345,19 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
     let mut app = App::new(test_options(false), &Config::default());
     app.accrue_session_cost_estimate(CostEstimate::usd_only(12.34));
     app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
     // Stale unaudited dollars must never render on a plan route; the usage
     // chip carries the plan-aware line instead of money or silence.
     let chip = app.cumulative_usage_chip();
     assert!(
-        !matches!(chip, crate::route_billing::UsageChip::Money(_)),
+        !matches!(chip, codewhale_engine::route_billing::UsageChip::Money(_)),
         "{chip:?}"
     );
-    let rendered =
-        crate::route_billing::format_usage_chip(&chip, codewhale_localization::Locale::En)
-            .unwrap_or_default();
+    let rendered = codewhale_engine::route_billing::format_usage_chip(
+        &chip,
+        codewhale_localization::Locale::En,
+    )
+    .unwrap_or_default();
     assert!(!rendered.contains('$'), "{rendered}");
     assert!(rendered.contains("Codex OAuth quota"), "{rendered}");
 }
@@ -2362,7 +2370,7 @@ fn provider_switch_keeps_audited_cumulative_spend_visible() {
         output_tokens: 1_000,
         ..Default::default()
     };
-    let priced = crate::pricing::audit_turn_cost_for_provider_at(
+    let priced = codewhale_engine::pricing::audit_turn_cost_for_provider_at(
         ProviderKind::Deepseek,
         "deepseek-v4-flash",
         &usage,
@@ -2374,27 +2382,30 @@ fn provider_switch_keeps_audited_cumulative_spend_visible() {
     app.api_provider = ProviderKind::OpenaiCodex;
     app.model = "gpt-5.5".to_string();
     app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
     assert!(matches!(
         app.cumulative_usage_chip(),
-        crate::route_billing::UsageChip::Money(_)
+        codewhale_engine::route_billing::UsageChip::Money(_)
     ));
     assert!(
-        crate::route_billing::format_usage_chip(&app.cumulative_usage_chip(), app.ui_locale)
-            .is_some_and(|label| !label.is_empty())
+        codewhale_engine::route_billing::format_usage_chip(
+            &app.cumulative_usage_chip(),
+            app.ui_locale
+        )
+        .is_some_and(|label| !label.is_empty())
     );
 
-    let unknown = crate::pricing::audit_turn_cost_for_route_at(
+    let unknown = codewhale_engine::pricing::audit_turn_cost_for_route_at(
         ProviderKind::Openai,
         "gpt-5.5",
-        Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE),
+        Some(codewhale_engine::pricing::UNCLASSIFIED_BILLING_SURFACE),
         &usage,
         chrono::Utc::now(),
     );
     app.record_turn_cost_audit(&unknown);
     assert!(matches!(
         app.cumulative_usage_chip(),
-        crate::route_billing::UsageChip::PricedSubtotal { legacy: false, .. }
+        codewhale_engine::route_billing::UsageChip::PricedSubtotal { legacy: false, .. }
     ));
 }
 
@@ -3598,7 +3609,7 @@ fn work_state_snapshot_round_trips_todos_and_plan() {
 #[test]
 fn work_restore_reconciles_fleet_from_the_restored_workspace() {
     let restored_workspace = tempfile::tempdir().expect("restored workspace");
-    let ledger = crate::fleet::ledger::FleetLedger::open(restored_workspace.path())
+    let ledger = codewhale_engine::fleet::ledger::FleetLedger::open(restored_workspace.path())
         .expect("open restored Fleet ledger");
     ledger
         .enqueue(codewhale_protocol::fleet::FleetInboxEntry {
@@ -3611,14 +3622,14 @@ fn work_restore_reconciles_fleet_from_the_restored_workspace() {
         })
         .expect("enqueue restored Fleet task");
 
-    let source = crate::work_graph::new_shared_work_runtime(
-        crate::tools::todo::new_shared_todo_list(),
-        crate::tools::plan::new_shared_plan_state(),
+    let source = codewhale_engine::work_graph::new_shared_work_runtime(
+        codewhale_engine::tools::todo::new_shared_todo_list(),
+        codewhale_engine::tools::plan::new_shared_plan_state(),
     );
     source
         .register_operation(
             "restored-session",
-            crate::work_graph::OperationIntent::new(
+            codewhale_engine::work_graph::OperationIntent::new(
                 "fleet:run-restore/task-restore",
                 "restored Fleet task",
                 true,
@@ -3631,7 +3642,7 @@ fn work_restore_reconciles_fleet_from_the_restored_workspace() {
         .capture(Some("restored-session"))
         .expect("capture source Work state")
         .expect("non-empty source Work state");
-    let state = crate::session_manager::SessionWorkState {
+    let state = codewhale_engine::session_manager::SessionWorkState {
         graph: Some(captured.graph),
         todos: captured.todos,
         plan: captured.plan,
@@ -3661,7 +3672,7 @@ fn work_restore_reconciles_fleet_from_the_restored_workspace() {
         .expect("restored Fleet operation");
     assert_eq!(
         operation.state,
-        crate::work_graph::NodeState::Initializing,
+        codewhale_engine::work_graph::NodeState::Initializing,
         "the target workspace ledger must outrank the app's previous workspace"
     );
 }
@@ -3669,7 +3680,7 @@ fn work_restore_reconciles_fleet_from_the_restored_workspace() {
 #[test]
 fn failed_workspace_owner_reconcile_leaves_previous_work_state_intact() {
     let restored_workspace = tempfile::tempdir().expect("restored workspace");
-    let ledger = crate::fleet::ledger::FleetLedger::open(restored_workspace.path())
+    let ledger = codewhale_engine::fleet::ledger::FleetLedger::open(restored_workspace.path())
         .expect("open restored Fleet ledger");
     ledger
         .enqueue(codewhale_protocol::fleet::FleetInboxEntry {
@@ -3682,14 +3693,14 @@ fn failed_workspace_owner_reconcile_leaves_previous_work_state_intact() {
         })
         .expect("enqueue older Fleet owner state");
 
-    let incoming = crate::work_graph::new_shared_work_runtime(
-        crate::tools::todo::new_shared_todo_list(),
-        crate::tools::plan::new_shared_plan_state(),
+    let incoming = codewhale_engine::work_graph::new_shared_work_runtime(
+        codewhale_engine::tools::todo::new_shared_todo_list(),
+        codewhale_engine::tools::plan::new_shared_plan_state(),
     );
     incoming
         .register_operation(
             "incoming-session",
-            crate::work_graph::OperationIntent::new(
+            codewhale_engine::work_graph::OperationIntent::new(
                 "fleet:run-regress/task-regress",
                 "newer saved Fleet task",
                 true,
@@ -3701,9 +3712,9 @@ fn failed_workspace_owner_reconcile_leaves_previous_work_state_intact() {
     incoming
         .reconcile_operation(
             "incoming-session",
-            crate::work_graph::OperationOwnerSnapshot::new(
+            codewhale_engine::work_graph::OperationOwnerSnapshot::new(
                 "fleet:run-regress/task-regress",
-                crate::work_graph::OwnerState::Running,
+                codewhale_engine::work_graph::OwnerState::Running,
                 2,
                 2,
             ),
@@ -3713,7 +3724,7 @@ fn failed_workspace_owner_reconcile_leaves_previous_work_state_intact() {
         .capture(Some("incoming-session"))
         .expect("capture incoming state")
         .expect("incoming graph");
-    let incoming = crate::session_manager::SessionWorkState {
+    let incoming = codewhale_engine::session_manager::SessionWorkState {
         graph: Some(incoming.graph),
         todos: incoming.todos,
         plan: incoming.plan,
@@ -3728,7 +3739,7 @@ fn failed_workspace_owner_reconcile_leaves_previous_work_state_intact() {
         .clone();
     work.register_operation(
         "previous-session",
-        crate::work_graph::OperationIntent::new(
+        codewhale_engine::work_graph::OperationIntent::new(
             "shell:shell_previous",
             "previous operation",
             false,
@@ -4416,12 +4427,12 @@ fn sandbox_requirements_prevent_full_access_overrides() {
         assert!(!app.cycle_approval_posture());
         assert_eq!(app.select_yolo_compat(), SettingSelection::Refused);
         assert!(matches!(
-            crate::core::authority::sandbox_policy_for_turn(
+            codewhale_engine::core::authority::sandbox_policy_for_turn(
                 app.mode,
                 app.approval_mode,
                 config.sandbox_mode.as_deref(),
                 &app.workspace,
-                crate::core::authority::SandboxNetworkAccess::Restricted,
+                codewhale_engine::core::authority::SandboxNetworkAccess::Restricted,
             ),
             codewhale_sandbox::SandboxPolicy::WorkspaceWrite { .. }
         ));
@@ -7885,7 +7896,7 @@ fn owned_restore_moves_the_journal_and_matches_the_borrowing_restore() {
     let messages = vec![message("first"), message("second")];
     let t0 = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
     let t1 = t0 + chrono::Duration::seconds(12);
-    let saved = crate::session_manager::create_saved_session_with_id_mode_and_stamps(
+    let saved = codewhale_engine::session_manager::create_saved_session_with_id_mode_and_stamps(
         "owned-restore".to_string(),
         &messages,
         &[t0, t1],
@@ -7898,7 +7909,9 @@ fn owned_restore_moves_the_journal_and_matches_the_borrowing_restore() {
 
     let mut borrowed = App::new(test_options(false), &Config::default());
     borrowed.restore_api_messages(
-        crate::runtime_handoff::project_owned_messages_for_restore(saved.messages.clone()),
+        codewhale_engine::runtime_handoff::project_owned_messages_for_restore(
+            saved.messages.clone(),
+        ),
         &saved,
     );
 
@@ -7933,7 +7946,9 @@ fn owned_restore_moves_the_journal_and_matches_the_borrowing_restore() {
     legacy.journal = None;
     let mut legacy_borrowed = App::new(test_options(false), &Config::default());
     legacy_borrowed.restore_api_messages(
-        crate::runtime_handoff::project_owned_messages_for_restore(legacy.messages.clone()),
+        codewhale_engine::runtime_handoff::project_owned_messages_for_restore(
+            legacy.messages.clone(),
+        ),
         &legacy,
     );
     let mut legacy_owned = App::new(test_options(false), &Config::default());
@@ -7991,8 +8006,8 @@ fn assert_every_ctrl_t_press_changes_the_effective_tier(
 fn every_ctrl_t_press_changes_the_effective_thinking_tier() {
     // #6650: Ctrl+T walked rungs that resolved to the tier already in effect,
     // so presses looked dead.
-    let _catalog = crate::provider_lake::lock_live_snapshot();
-    crate::provider_lake::clear_live_snapshot();
+    let _catalog = codewhale_engine::provider_lake::lock_live_snapshot();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     for (provider, base_url, model) in [
         (
             ProviderKind::Deepseek,
@@ -8025,8 +8040,8 @@ fn ctrl_t_skips_catalog_rungs_that_resolve_to_an_offered_tier() {
     // sends `medium`/`xhigh` as `high`, and Z.ai GLM-5.2 sends `low`/`medium`
     // as `high`. Each Ctrl+T press must still reach a new effective tier.
     use ReasoningEffort::{Auto, High, Low, Max, Off};
-    let _catalog = crate::provider_lake::lock_live_snapshot();
-    crate::provider_lake::clear_live_snapshot();
+    let _catalog = codewhale_engine::provider_lake::lock_live_snapshot();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     let fetched_at = u64::try_from(chrono::Utc::now().timestamp()).expect("timestamp");
     let offering = |provider: ProviderKind, model: &str, values: &[&str]| {
         codewhale_config::catalog::CatalogOffering {
@@ -8038,7 +8053,7 @@ fn ctrl_t_skips_catalog_rungs_that_resolve_to_an_offered_tier() {
             ..Default::default()
         }
     };
-    crate::provider_lake::set_live_snapshot(
+    codewhale_engine::provider_lake::set_live_snapshot(
         codewhale_config::catalog::CatalogSnapshot {
             offerings: vec![
                 offering(
@@ -8053,7 +8068,7 @@ fn ctrl_t_skips_catalog_rungs_that_resolve_to_an_offered_tier() {
                 ),
             ],
         },
-        crate::provider_lake::LiveSource::ModelsDev,
+        codewhale_engine::provider_lake::LiveSource::ModelsDev,
     );
 
     let deepseek = assert_every_ctrl_t_press_changes_the_effective_tier(
@@ -8066,7 +8081,7 @@ fn ctrl_t_skips_catalog_rungs_that_resolve_to_an_offered_tier() {
         codewhale_config::descriptors::defaults::DEFAULT_ZAI_BASE_URL,
         codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
     );
-    crate::provider_lake::clear_live_snapshot();
+    codewhale_engine::provider_lake::clear_live_snapshot();
 
     assert_eq!(deepseek, vec![Auto, Low, High, Max]);
     assert_eq!(zai, vec![Auto, Off, High, Max]);
@@ -8076,7 +8091,7 @@ fn ctrl_t_skips_catalog_rungs_that_resolve_to_an_offered_tier() {
 fn ctrl_t_moves_past_a_persisted_alias_the_ladder_dropped() {
     // DeepSeek has no `medium`; it resolves to `high`, so the next press must
     // reach `max` rather than re-select `high`.
-    let _catalog = crate::provider_lake::lock_live_snapshot();
+    let _catalog = codewhale_engine::provider_lake::lock_live_snapshot();
     let mut app = App::new(test_options(false), &Config::default());
     app.api_provider = ProviderKind::Deepseek;
     app.auto_model = false;
@@ -8155,7 +8170,7 @@ fn oversized_paste_is_not_written_through_a_linked_pastes_directory() {
 fn dropped_screenshot_path_becomes_an_image_attachment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let shot = dir.path().join("Screenshot 2026-10-04 at 22.25.47.png");
-    std::fs::write(&shot, crate::image_attach::tests::PNG_1X1).expect("fixture");
+    std::fs::write(&shot, codewhale_engine::image_attach::test_support::PNG_1X1).expect("fixture");
     // Terminal.app / iTerm2 deliver a drop as a shell-escaped paste.
     let dropped = shot.display().to_string().replace(' ', "\\ ");
     let mut app = App::new(test_options(false), &Config::default());
@@ -8172,7 +8187,7 @@ fn dropped_screenshot_path_becomes_an_image_attachment() {
         app.status_message.as_deref(),
         Some(format!("Attached image: {}", shot.display()).as_str())
     );
-    let expanded = crate::image_attach::expand_attachment_blocks(&app.input);
+    let expanded = codewhale_engine::image_attach::expand_attachment_blocks(&app.input);
     assert!(expanded.notices.is_empty(), "{expanded:?}");
     assert!(
         expanded
@@ -8186,7 +8201,7 @@ fn dropped_screenshot_path_becomes_an_image_attachment() {
 fn image_path_pasted_on_a_command_line_stays_literal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let shot = dir.path().join("shot.png");
-    std::fs::write(&shot, crate::image_attach::tests::PNG_1X1).expect("fixture");
+    std::fs::write(&shot, codewhale_engine::image_attach::test_support::PNG_1X1).expect("fixture");
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "/rename ".to_string();
     app.cursor_position = app.input.chars().count();
@@ -8202,7 +8217,7 @@ fn image_path_pasted_on_a_command_line_stays_literal() {
 fn a_typed_drop_with_the_question_on_its_line_still_sends_the_image() {
     let dir = tempfile::tempdir().expect("tempdir");
     let shot = dir.path().join("Screenshot 2026-10-04 at 22.25.47.png");
-    std::fs::write(&shot, crate::image_attach::tests::PNG_1X1).expect("fixture");
+    std::fs::write(&shot, codewhale_engine::image_attach::test_support::PNG_1X1).expect("fixture");
     let mut app = App::new(test_options(false), &Config::default());
     // Arrived as keystrokes, so the paste-time check never saw it.
     app.input = format!(
@@ -8221,7 +8236,7 @@ fn a_typed_drop_with_the_question_on_its_line_still_sends_the_image() {
         submitted.ends_with("why does it show jobs 2?"),
         "{submitted}"
     );
-    let expanded = crate::image_attach::expand_attachment_blocks(&submitted);
+    let expanded = codewhale_engine::image_attach::expand_attachment_blocks(&submitted);
     assert!(expanded.notices.is_empty(), "{expanded:?}");
     assert!(
         expanded

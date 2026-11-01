@@ -45,19 +45,20 @@ impl DoctorPathReport {
             .context("could not resolve the sessions path")?;
         let logs = codewhale_runtime::runtime_log::log_directory()
             .context("could not resolve the runtime log directory")?;
-        let automations = crate::automation_manager::default_automations_dir();
-        let task_manager_root = crate::task_manager::default_tasks_dir();
+        let automations = codewhale_engine::automation_manager::default_automations_dir();
+        let task_manager_root = codewhale_engine::task_manager::default_tasks_dir();
         let task_manager_tasks = task_manager_root.join("tasks");
         let task_manager_artifacts = task_manager_root.join("artifacts");
         let runtime_config =
-            crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+            codewhale_engine::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
                 task_manager_root.clone(),
             );
         let runtime_store = runtime_config.data_dir;
         let runtime_events = runtime_store.join("events");
-        let personal_fleet_definitions = crate::fleet::exact::personal_fleet_definitions_dir()
-            .context("could not resolve the personal Fleet definitions directory")?;
-        let personal_fleet_agents = crate::fleet::profile::personal_agent_profile_dir()
+        let personal_fleet_definitions =
+            codewhale_engine::fleet::exact::personal_fleet_definitions_dir()
+                .context("could not resolve the personal Fleet definitions directory")?;
+        let personal_fleet_agents = codewhale_engine::fleet::profile::personal_agent_profile_dir()
             .context("could not resolve the personal Fleet agent directory")?;
         let (secrets, _) = codewhale_secrets::FileKeyringStore::default_paths_read_only()
             .context("could not resolve the file secret backend path")?;
@@ -276,7 +277,7 @@ const SEARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) enum DoctorSearchProbeReport {
     NotChecked,
     FeatureDisabled,
-    ConfigurationError(crate::tools::web_search::SearchProbeTargetError),
+    ConfigurationError(codewhale_engine::tools::web_search::SearchProbeTargetError),
     PolicyDenied {
         authority: String,
     },
@@ -323,7 +324,8 @@ pub(crate) async fn doctor_search_probe(
         .search
         .as_ref()
         .and_then(|search| search.base_url.as_deref());
-    let target = match crate::tools::web_search::search_probe_target(provider, base_url) {
+    let target = match codewhale_engine::tools::web_search::search_probe_target(provider, base_url)
+    {
         Ok(target) => target,
         Err(error) => return DoctorSearchProbeReport::ConfigurationError(error),
     };
@@ -382,7 +384,7 @@ pub(crate) async fn doctor_search_probe(
 
 /// Plain, bounded doctor copy for a search reachability result.
 pub(crate) fn doctor_search_probe_lines(report: &DoctorSearchProbeReport) -> Vec<String> {
-    use crate::tools::web_search::SearchProbeTargetError;
+    use codewhale_engine::tools::web_search::SearchProbeTargetError;
 
     match report {
         DoctorSearchProbeReport::NotChecked => vec![
@@ -564,8 +566,8 @@ pub(crate) fn is_keyless_ds4_route(config: &codewhale_runtime::config::Config) -
 pub(crate) async fn probe_ds4_models(
     config: &codewhale_runtime::config::Config,
 ) -> anyhow::Result<()> {
-    use crate::client::CodewhaleClient;
-    use crate::core::model_client::ModelClient;
+    use codewhale_engine::client::CodewhaleClient;
+    use codewhale_engine::core::model_client::ModelClient;
 
     let endpoint =
         codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());

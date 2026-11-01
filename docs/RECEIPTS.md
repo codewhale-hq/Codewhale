@@ -33,7 +33,7 @@ the turn's own workspace snapshots:
 
 ## Surfaces
 
-All three share one builder (`crates/tui/src/receipts.rs`), but read different
+All three share one builder (`crates/engine/src/receipts.rs`), but read different
 records and can report different coverage.
 
 | Surface | What it reads |

@@ -1156,11 +1156,11 @@ mod tests {
         let mut app = test_app();
         let mut registry = HotbarActionRegistry::with_builtins();
         registry.register_skills(&[("demo".to_string(), "Demo skill".to_string())]);
-        registry.replace_mcp_tools(Some(&crate::mcp::McpManagerSnapshot {
+        registry.replace_mcp_tools(Some(&codewhale_engine::mcp::McpManagerSnapshot {
             config_path: PathBuf::from("mcp.json"),
             config_exists: true,
             reload_required: false,
-            servers: vec![crate::mcp::McpServerSnapshot {
+            servers: vec![codewhale_engine::mcp::McpServerSnapshot {
                 name: "search".to_string(),
                 enabled: true,
                 required: false,
@@ -1172,8 +1172,9 @@ mod tests {
                 connected: true,
                 error: None,
                 auth_required: false,
-                capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
-                tools: vec![crate::mcp::McpDiscoveredItem {
+                capability_metadata:
+                    codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
+                tools: vec![codewhale_engine::mcp::McpDiscoveredItem {
                     name: "web_search".to_string(),
                     model_name: "mcp_search_web_search".to_string(),
                     description: Some("Search the web".to_string()),

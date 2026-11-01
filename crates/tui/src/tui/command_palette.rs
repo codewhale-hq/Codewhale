@@ -16,13 +16,13 @@ use ratatui::{
 };
 
 use crate::commands;
-use crate::tools::spec::ApprovalRequirement;
-use crate::tools::spec::ToolCapability;
-use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
+use codewhale_engine::tools::spec::ApprovalRequirement;
+use codewhale_engine::tools::spec::ToolCapability;
+use codewhale_engine::tools::{ToolContext, ToolRegistryBuilder};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_skills as skills;
@@ -76,7 +76,7 @@ pub fn build_entries(
     skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
 ) -> Vec<CommandPaletteEntry> {
     build_entries_with_plugins(
         locale,
@@ -95,7 +95,7 @@ pub fn build_entries_with_plugins(
     skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
     plugins: &codewhale_plugins::PluginRegistry,
 ) -> Vec<CommandPaletteEntry> {
     let mut entries = Vec::new();
@@ -193,7 +193,7 @@ pub fn build_entries_with_plugins(
         .with_shell_tools()
         .with_web_tools()
         .with_git_tools()
-        .with_user_input_tool(crate::tools::user_input::UserInputLimits::default())
+        .with_user_input_tool(codewhale_engine::tools::user_input::UserInputLimits::default())
         .with_patch_tools()
         .with_note_tool()
         .with_diagnostics_tool()
@@ -288,11 +288,11 @@ fn palette_description_for_unshadowed_aliases(
 fn build_mcp_entries(
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
     plugins: &codewhale_plugins::PluginRegistry,
 ) -> Vec<CommandPaletteEntry> {
     let owned_snapshot = if mcp_snapshot.is_none() {
-        crate::mcp::manager_snapshot_from_config_with_workspace_and_plugins(
+        codewhale_engine::mcp::manager_snapshot_from_config_with_workspace_and_plugins(
             mcp_config_path,
             workspace,
             false,
@@ -336,7 +336,10 @@ fn build_mcp_entries(
             description: format!(
                 "{} {} [{}] tools={} resources={} prompts={}",
                 server.transport,
-                crate::mcp::mcp_display_target(&server.transport, &server.command_or_url),
+                codewhale_engine::mcp::mcp_display_target(
+                    &server.transport,
+                    &server.command_or_url
+                ),
                 state,
                 server.tools.len(),
                 server.resources.len(),
@@ -444,8 +447,8 @@ fn build_mcp_entries(
 }
 
 fn format_mcp_server_details(
-    snapshot: &crate::mcp::McpManagerSnapshot,
-    server: &crate::mcp::McpServerSnapshot,
+    snapshot: &codewhale_engine::mcp::McpManagerSnapshot,
+    server: &codewhale_engine::mcp::McpServerSnapshot,
 ) -> String {
     let mut lines = vec![
         format!("Config: {}", snapshot.config_path.display()),
@@ -455,7 +458,7 @@ fn format_mcp_server_details(
         format!("Transport: {}", server.transport),
         format!(
             "Target: {}",
-            crate::mcp::mcp_display_target(&server.transport, &server.command_or_url)
+            codewhale_engine::mcp::mcp_display_target(&server.transport, &server.command_or_url)
         ),
         format!(
             "Timeouts: connect={}s execute={}s read={}s",
@@ -2084,12 +2087,12 @@ mod tests {
 
     #[test]
     fn command_palette_includes_mcp_discovery_and_failed_servers() {
-        let snapshot = crate::mcp::McpManagerSnapshot {
+        let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
             config_path: Path::new("mcp.json").to_path_buf(),
             config_exists: true,
             reload_required: false,
             servers: vec![
-                crate::mcp::McpServerSnapshot {
+                codewhale_engine::mcp::McpServerSnapshot {
                     name: "fs".to_string(),
                     enabled: true,
                     required: false,
@@ -2101,8 +2104,9 @@ mod tests {
                     connected: true,
                     error: None,
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
-                    tools: vec![crate::mcp::McpDiscoveredItem {
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
+                    tools: vec![codewhale_engine::mcp::McpDiscoveredItem {
                         name: "read".to_string(),
                         model_name: "mcp_fs_read".to_string(),
                         description: Some("Read files".to_string()),
@@ -2110,7 +2114,7 @@ mod tests {
                     resources: Vec::new(),
                     prompts: Vec::new(),
                 },
-                crate::mcp::McpServerSnapshot {
+                codewhale_engine::mcp::McpServerSnapshot {
                     name: "broken".to_string(),
                     enabled: true,
                     required: false,
@@ -2122,7 +2126,8 @@ mod tests {
                     connected: false,
                     error: Some("connect failed".to_string()),
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
                     tools: Vec::new(),
                     resources: Vec::new(),
                     prompts: Vec::new(),
@@ -2164,11 +2169,11 @@ mod tests {
         // remaining gap from #197's acceptance list. Disabled servers must
         // appear in the palette with a `[disabled]` state tag so users can
         // see them without opening the MCP manager.
-        let snapshot = crate::mcp::McpManagerSnapshot {
+        let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
             config_path: Path::new("mcp.json").to_path_buf(),
             config_exists: true,
             reload_required: false,
-            servers: vec![crate::mcp::McpServerSnapshot {
+            servers: vec![codewhale_engine::mcp::McpServerSnapshot {
                 name: "muted".to_string(),
                 enabled: false,
                 required: false,
@@ -2180,7 +2185,8 @@ mod tests {
                 connected: false,
                 error: None,
                 auth_required: false,
-                capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+                capability_metadata:
+                    codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
                 tools: Vec::new(),
                 resources: Vec::new(),
                 prompts: Vec::new(),

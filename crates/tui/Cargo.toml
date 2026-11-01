@@ -67,8 +67,8 @@ workspace = true
 
 [features]
 default = []
-long-running-tests = []
-test-thread-scoped-state = []
+long-running-tests = ["codewhale-engine/long-running-tests"]
+test-thread-scoped-state = ["codewhale-engine/test-thread-scoped-state"]
 # Accepted compatibility feature names. Allocators belong exclusively to the
 # canonical codewhale-cli executable; these library aliases have no effect.
 mimalloc-allocator = []
@@ -89,6 +89,7 @@ anyhow.workspace = true
 codewhale-agent = { path = "../agent", version = "0.10.2" }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2" }
 codewhale-app-server = { path = "../app-server", version = "0.10.2" }
+codewhale-engine = { path = "../engine", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
@@ -207,6 +208,7 @@ shell-words = "1.1.1"
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]
+codewhale-engine = { path = "../engine", version = "0.10.2", features = ["test-support"] }
 codewhale-skills = { path = "../skills", version = "0.10.2", features = ["test-support"] }
 codewhale-tui-kit = { path = "../tui-kit", version = "0.10.2", features = ["test-support"] }
 codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }

@@ -20,7 +20,7 @@ use crate::tui::shell_key_routing::ShellBindingId;
 use crate::tui::shell_key_routing::{binding, display_chord};
 
 #[cfg(all(unix, not(target_env = "ohos")))]
-use crate::tools::terminal_session::{self, TerminalSessionInfo};
+use codewhale_engine::tools::terminal_session::{self, TerminalSessionInfo};
 #[cfg(all(unix, not(target_env = "ohos")))]
 use std::{
     path::PathBuf,
@@ -38,7 +38,7 @@ pub(super) struct TerminalDock {
     #[cfg(all(unix, not(target_env = "ohos")))]
     sessions: Vec<TerminalSessionInfo>,
     #[cfg(all(unix, not(target_env = "ohos")))]
-    commands: Vec<crate::tools::shell::ShellJobSnapshot>,
+    commands: Vec<codewhale_engine::tools::shell::ShellJobSnapshot>,
     #[cfg(all(unix, not(target_env = "ohos")))]
     selected: Option<String>,
     #[cfg(all(unix, not(target_env = "ohos")))]
@@ -107,7 +107,7 @@ enum Reply {
         requested: Option<String>,
         sessions: Vec<TerminalSessionInfo>,
         output: Option<terminal_session::OutputChunk>,
-        commands: Vec<crate::tools::shell::ShellJobSnapshot>,
+        commands: Vec<codewhale_engine::tools::shell::ShellJobSnapshot>,
     },
     Created(String),
     InputWritten(String),
@@ -118,7 +118,7 @@ enum Reply {
 impl Worker {
     fn start(
         workspace: PathBuf,
-        shell_manager: crate::tools::shell::SharedShellManager,
+        shell_manager: codewhale_engine::tools::shell::SharedShellManager,
     ) -> Result<Self, String> {
         let (requests, incoming) = mpsc::sync_channel(128);
         let (outgoing, replies) = mpsc::sync_channel(32);
@@ -222,15 +222,15 @@ fn command_job_id(tab: &str) -> Option<&str> {
 }
 
 #[cfg(all(unix, not(target_env = "ohos")))]
-fn command_tab_id(job: &crate::tools::shell::ShellJobSnapshot) -> String {
+fn command_tab_id(job: &codewhale_engine::tools::shell::ShellJobSnapshot) -> String {
     format!("{COMMAND_TAB_PREFIX}{}", job.id)
 }
 
 #[cfg(all(unix, not(target_env = "ohos")))]
 fn dock_commands(
-    jobs: Vec<crate::tools::shell::ShellJobSnapshot>,
-) -> Vec<crate::tools::shell::ShellJobSnapshot> {
-    use crate::tools::shell::ShellStatus;
+    jobs: Vec<codewhale_engine::tools::shell::ShellJobSnapshot>,
+) -> Vec<codewhale_engine::tools::shell::ShellJobSnapshot> {
+    use codewhale_engine::tools::shell::ShellStatus;
     let (mut running, mut finished): (Vec<_>, Vec<_>) = jobs
         .into_iter()
         .partition(|job| job.status == ShellStatus::Running);
@@ -241,7 +241,7 @@ fn dock_commands(
 }
 
 #[cfg(all(unix, not(target_env = "ohos")))]
-fn command_output(job: &crate::tools::shell::ShellJobSnapshot) -> Vec<u8> {
+fn command_output(job: &codewhale_engine::tools::shell::ShellJobSnapshot) -> Vec<u8> {
     let mut output = job.stdout_tail.clone();
     if !job.stderr_tail.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
@@ -263,12 +263,14 @@ fn tab_ids(dock: &TerminalDock) -> Vec<String> {
 
 #[cfg(all(unix, not(target_env = "ohos")))]
 fn policy(app: &App) -> codewhale_sandbox::SandboxPolicy {
-    crate::core::authority::sandbox_policy_for_turn(
+    codewhale_engine::core::authority::sandbox_policy_for_turn(
         app.mode,
         app.approval_mode,
         app.configured_sandbox_mode.as_deref(),
         &app.workspace,
-        crate::core::authority::SandboxNetworkAccess::from_config(app.configured_sandbox_network),
+        codewhale_engine::core::authority::SandboxNetworkAccess::from_config(
+            app.configured_sandbox_network,
+        ),
     )
 }
 
@@ -301,7 +303,7 @@ pub(crate) fn poll(app: &mut App) {
                 .shell_manager
                 .clone()
                 .unwrap_or_else(|| {
-                    crate::tools::shell::new_shared_shell_manager(app.workspace.clone())
+                    codewhale_engine::tools::shell::new_shared_shell_manager(app.workspace.clone())
                 });
             match Worker::start(app.workspace.clone(), shell_manager) {
                 Ok(worker) => dock.worker = Some(worker),
@@ -708,9 +710,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 let id = command_tab_id(job);
                 let selected = Some(&id) == dock.selected.as_ref();
                 let status = match job.exit_code {
-                    Some(code) if job.status != crate::tools::shell::ShellStatus::Running => app
-                        .tr(MessageId::TerminalDockExited)
-                        .replace("{code}", &code.to_string()),
+                    Some(code)
+                        if job.status != codewhale_engine::tools::shell::ShellStatus::Running =>
+                    {
+                        app.tr(MessageId::TerminalDockExited)
+                            .replace("{code}", &code.to_string())
+                    }
                     _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
                 };
                 let command: String = job.command.chars().take(32).collect();

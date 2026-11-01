@@ -58,11 +58,11 @@ Codewhale 是从 DeepSeek-TUI 更名而来的。为了避免破坏已有安装�
 |---|---|---|
 | `config::resolve_state_dir` / `ensure_state_dir` | 不适用（解析器本身） | 保留 —— 规范 |
 | `crates/skills/src/roots.rs`（`~/.deepseek/skills`） | 否 —— 兼容根目录枚举 | 保留只读发现；这不是产品自有的写入目标。 |
-| `crates/tui/src/prompts.rs`（`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`） | 否 —— 显式旧版常量 | 保留 —— 显式的旧版交接回退 |
+| `crates/engine/src/prompts.rs`（`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`） | 否 —— 显式旧版常量 | 保留 —— 显式的旧版交接回退 |
 | `crates/tui/src/workspace_trust.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
-| `crates/tui/src/session_manager.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
+| `crates/engine/src/session_manager.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/skill_state.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
-| `crates/tui/src/tools/skill.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
+| `crates/engine/src/tools/skill.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/snapshot/src/lib.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/workspace_discovery.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 

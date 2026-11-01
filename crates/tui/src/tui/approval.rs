@@ -27,10 +27,10 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
-use crate::tools::approval_summary::{
+use codewhale_config::ToolAskRule;
+use codewhale_engine::tools::approval_summary::{
     delegated_authority_fields, param_preview, truncate_string_value,
 };
-use codewhale_config::ToolAskRule;
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_localization::{Locale, MessageId, tr};
 #[cfg(test)]
@@ -74,7 +74,7 @@ pub use view::ApprovalView;
 
 pub use policy::{ApprovalStakes, ToolCategory, classify_stakes, get_tool_category_for_call};
 
-use crate::core::authority::{RiskLevel, classify_risk};
+use codewhale_engine::core::authority::{RiskLevel, classify_risk};
 
 /// User's decision for a pending approval
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +202,8 @@ impl ApprovalRequest {
         let category = get_tool_category_for_call(tool_name, params);
         let risk = classify_risk(tool_name, category, params);
         let approval_grouping_key =
-            crate::tools::approval_cache::build_approval_grouping_key(tool_name, params).0;
+            codewhale_engine::tools::approval_cache::build_approval_grouping_key(tool_name, params)
+                .0;
         let persistent_ask_rules =
             build_persistent_ask_rules(semantic_tool_name, params, workspace);
         let stakes = classify_stakes(tool_name, category, risk, params);
@@ -222,7 +223,7 @@ impl ApprovalRequest {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             description: description.to_string(),
-            summary: crate::tools::approval_summary::approval_summary(
+            summary: codewhale_engine::tools::approval_summary::approval_summary(
                 tool_name,
                 params,
                 Some(workspace),
@@ -264,7 +265,7 @@ impl ApprovalRequest {
         if locale == Locale::En {
             return self.summary.clone();
         }
-        crate::tools::approval_summary::approval_summary_in(
+        codewhale_engine::tools::approval_summary::approval_summary_in(
             locale,
             &self.tool_name,
             &self.params,
@@ -354,7 +355,7 @@ impl ApprovalRequest {
     }
 }
 
-pub use crate::mcp::connected_app_server;
+pub use codewhale_engine::mcp::connected_app_server;
 
 fn description_is_repo_law_prompt(description: &str) -> bool {
     description.starts_with("Repo law holds this write:")
@@ -431,7 +432,7 @@ fn build_impact_summary(
         }
         ToolCategory::Agent if tool_name == "workflow" && locale == Locale::En => {
             // #4126: elevated Workflow plan card — goal, children, capability flags, budget.
-            crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params)
+            codewhale_engine::tools::workflow_plan_approval::analyze_workflow_plan_approval(params)
                 .approval_impacts()
         }
         ToolCategory::Agent => {
@@ -568,7 +569,9 @@ fn build_prominent_details(
         ToolCategory::Agent if tool_name == "workflow" => {
             // #4126: elevated Workflow plan card fields.
             let summary =
-                crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params);
+                codewhale_engine::tools::workflow_plan_approval::analyze_workflow_plan_approval(
+                    params,
+                );
             for (label, value) in summary.card_fields() {
                 details.push(ApprovalDetail {
                     label: label.to_string(),

@@ -21,12 +21,12 @@ use tokio::sync::mpsc;
 
 use codewhale_models::{ContentBlock, Message};
 
-use crate::{
+use crate::runtime_chat_relay::{
+    RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
+};
+use codewhale_engine::{
     core::events::{Event as EngineEvent, TurnOutcomeStatus},
     git_status::normalize_observed_git_repo,
-    runtime_chat_relay::{
-        RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
-    },
 };
 
 const PRODUCTION_CONTROL_PLANE: &str = "https://api.codewhale.net/";
@@ -412,11 +412,13 @@ impl RuntimeEventJournal {
         let legacy_session_tag = runtime_journal_session_tag(session_id);
         std::fs::create_dir_all(dir).map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
-        }
+        // Journal files are written owner-only; the directory narrows to 0o700
+        // where the filesystem stores modes. A mount that assigns modes itself
+        // (HarmonyOS hmdfs) refuses the call, and `tighten_mode` tolerates only
+        // that case — refusing here would disable the recoverable-turn journal
+        // on a platform where no directory can ever satisfy the chmod.
+        codewhale_config::private_directory::tighten_mode(dir, 0o700)
+            .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         let legacy_path = dir.join(format!("journal_{legacy_session_tag}.json"));
         let active_index_path = dir.join(format!("active_classic_{legacy_session_tag}.json"));
         let classic_session_lock =
@@ -5582,7 +5584,7 @@ mod tests {
             .unwrap();
 
         let mut participant = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut participant)
@@ -5641,7 +5643,8 @@ mod tests {
         let host = reopened.runtime_chat.as_ref().unwrap().clone();
         assert!(host.has_any_unsettled_turns());
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened
             .recover_runtime_chat_ownership_before_worker()
             .unwrap_err();
@@ -5653,7 +5656,7 @@ mod tests {
             .recover_runtime_chat_ownership_before_worker()
             .unwrap();
         let mut blocked = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut blocked)
@@ -5740,7 +5743,8 @@ mod tests {
             ..fixture_start()
         };
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened.start(start.clone()).unwrap_err();
         assert!(error.contains("active local turn"), "{error}");
         assert!(reopened.worker.is_none());
@@ -8960,7 +8964,7 @@ mod tests {
     }
     #[test]
     fn runtime_image_legacy_work_never_downgrades_to_text() {
-        let image = crate::image_attach::tests::runtime_image_fixture(1);
+        let image = codewhale_engine::image_attach::test_support::runtime_image_fixture(1);
         let command = json!({"type":"prompt.request","runId":"run_fixture","turnId":"turn_fixture","prompt":"look","images":[image]});
         assert!(
             parse_remote_command(&command, "run_fixture")

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{
+use codewhale_engine::{
     core::engine::ISOLATED_CHAT_SYSTEM_PROMPT,
     runtime_threads::{
         RuntimeEventRecord, RuntimeTurnStatus, manager::CreateThreadRequest,
@@ -140,7 +140,8 @@ pub(crate) struct RuntimeChatRelayHost {
     session_id: Arc<String>,
     _scope_lock: Arc<RelayScopeLock>,
     apply_lock: Arc<tokio::sync::Mutex<()>>,
-    inference_ownership: Arc<Mutex<Option<crate::client::RuntimeChatInferenceOwnership>>>,
+    inference_ownership:
+        Arc<Mutex<Option<codewhale_engine::client::RuntimeChatInferenceOwnership>>>,
     claimed_projections: Arc<Mutex<HashSet<(String, u64)>>>,
     authorized_run_id: Arc<Mutex<Option<String>>>,
 }
@@ -367,10 +368,11 @@ impl RuntimeChatRelayHost {
             );
         }
         if self.has_any_unsettled_turns() && self.inference_ownership.lock().is_none() {
-            let ownership = crate::client::try_acquire_runtime_chat_inference_ownership()
-                .ok_or_else(|| {
-                    "Finish the active local turn before recovering Runtime Chat.".to_string()
-                })?;
+            let ownership =
+                codewhale_engine::client::try_acquire_runtime_chat_inference_ownership()
+                    .ok_or_else(|| {
+                        "Finish the active local turn before recovering Runtime Chat.".to_string()
+                    })?;
             *self.inference_ownership.lock() = Some(ownership);
         }
         *self.authorized_run_id.lock() = Some(run_id.to_string());
@@ -398,7 +400,7 @@ impl RuntimeChatRelayHost {
         if self.inference_ownership.lock().is_some() {
             return;
         }
-        let ownership = crate::client::acquire_runtime_chat_inference_ownership().await;
+        let ownership = codewhale_engine::client::acquire_runtime_chat_inference_ownership().await;
         let mut current = self.inference_ownership.lock();
         if current.is_none() {
             *current = Some(ownership);
@@ -409,8 +411,8 @@ impl RuntimeChatRelayHost {
         if self.inference_ownership.lock().is_some() {
             return Ok(());
         }
-        let ownership =
-            crate::client::try_acquire_runtime_chat_inference_ownership().ok_or_else(|| {
+        let ownership = codewhale_engine::client::try_acquire_runtime_chat_inference_ownership()
+            .ok_or_else(|| {
                 "Finish the active local provider work before starting Runtime Chat.".to_string()
             })?;
         let mut current = self.inference_ownership.lock();
@@ -424,8 +426,8 @@ impl RuntimeChatRelayHost {
         if self.inference_ownership.lock().is_some() {
             return Ok(());
         }
-        let ownership =
-            crate::client::try_acquire_runtime_chat_inference_ownership().ok_or_else(|| {
+        let ownership = codewhale_engine::client::try_acquire_runtime_chat_inference_ownership()
+            .ok_or_else(|| {
                 "Finish the active local turn before recovering Runtime Chat delivery.".to_string()
             })?;
         *self.inference_ownership.lock() = Some(ownership);
@@ -589,7 +591,7 @@ impl RuntimeChatRelayHost {
                     review_request_fingerprint: command
                         .structured_review
                         .as_ref()
-                        .map(crate::core::engine::review::fingerprint)
+                        .map(codewhale_engine::core::engine::review::fingerprint)
                         .transpose()
                         .map_err(|error| error.to_string())?,
                     native_turn_id,
@@ -622,7 +624,7 @@ impl RuntimeChatRelayHost {
         let review_request_fingerprint = command
             .structured_review
             .as_ref()
-            .map(crate::core::engine::review::fingerprint)
+            .map(codewhale_engine::core::engine::review::fingerprint)
             .transpose()
             .map_err(|error| error.to_string())?;
 
@@ -792,7 +794,7 @@ impl RuntimeChatRelayHost {
             self.manager
                 .start_review_turn_with_reserved_id(
                     &binding.native_thread_id,
-                    crate::runtime_api::review::StartReviewRequest {
+                    codewhale_engine::runtime_threads::manager::StartReviewRequest {
                         review: review.clone(),
                         operation_key: command.operation_key.clone(),
                         account_model_owner: command.account_model_owner.clone(),
@@ -1270,7 +1272,8 @@ impl RuntimeChatRelayHost {
 impl RuntimeChatPrompt {
     pub(crate) fn validate_shape(&self) -> Result<(), String> {
         if let Some(review) = &self.structured_review {
-            crate::core::engine::review::validate(review).map_err(|error| error.to_string())?;
+            codewhale_engine::core::engine::review::validate(review)
+                .map_err(|error| error.to_string())?;
             if self.account_model_owner.is_none()
                 || !self.prompt.is_empty()
                 || !self.images.is_empty()
@@ -1297,7 +1300,7 @@ impl RuntimeChatPrompt {
                 );
             }
         }
-        crate::image_attach::prepare_runtime_images(&self.images)
+        codewhale_engine::image_attach::prepare_runtime_images(&self.images)
             .map_err(|error| error.to_string())?;
         if !self.images.is_empty() && self.model.trim().eq_ignore_ascii_case("auto") {
             return Err(
@@ -1352,7 +1355,8 @@ impl RuntimeChatPrompt {
             return Err("Runtime relay turns must use Chat mode.".to_string());
         }
         if let Some(reasoning) = self.reasoning_effort.as_deref()
-            && crate::reasoning_preference::ReasoningEffort::parse_strict(reasoning).is_err()
+            && codewhale_engine::reasoning_preference::ReasoningEffort::parse_strict(reasoning)
+                .is_err()
         {
             return Err("The Runtime Chat reasoning effort is invalid.".to_string());
         }
@@ -1522,11 +1526,9 @@ fn project_native_event(
             {
                 return ProjectionDecision::Skip;
             }
-            let Some(detail) = item
-                .get("detail")
-                .and_then(Value::as_str)
-                .filter(|value| value.len() <= crate::core::engine::review::MAX_RESULT_BYTES)
-            else {
+            let Some(detail) = item.get("detail").and_then(Value::as_str).filter(|value| {
+                value.len() <= codewhale_engine::core::engine::review::MAX_RESULT_BYTES
+            }) else {
                 return ProjectionDecision::Skip;
             };
             let Ok(output) = serde_json::from_str::<Value>(detail) else {
@@ -1673,9 +1675,10 @@ fn isolated_chat_execution_config(
         .map_err(|_| "Runtime Chat could not prepare its isolated Chat context.".to_string())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        // A mount that assigns modes itself refuses every `chmod`; the context
+        // directories are linked only from this session either way.
         for path in [&workspace, &context_dir, &skills_dir] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| {
+            codewhale_config::private_directory::tighten_mode(path, 0o700).map_err(|_| {
                 "Runtime Chat could not protect its isolated Chat context.".to_string()
             })?;
         }
@@ -2139,7 +2142,8 @@ mod tests {
             },
         };
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let direct_error = host.try_ensure_inference_ownership().unwrap_err();
         assert!(
             direct_error.contains("active local provider work"),
@@ -2745,8 +2749,8 @@ mod tests {
         let empty: RuntimeChatPrompt = serde_json::from_value(with_empty).unwrap();
         assert_eq!(runtime_chat_request_fingerprint(&empty).unwrap(), expected);
         command.images = vec![
-            crate::image_attach::tests::runtime_image_fixture(1),
-            crate::image_attach::tests::runtime_image_fixture(2),
+            codewhale_engine::image_attach::test_support::runtime_image_fixture(1),
+            codewhale_engine::image_attach::test_support::runtime_image_fixture(2),
         ];
         command.validate_shape().unwrap();
         let first = runtime_chat_request_fingerprint(&command).unwrap();

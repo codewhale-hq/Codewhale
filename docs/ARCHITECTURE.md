@@ -143,8 +143,8 @@ rather than a traced write path.
 - **`crates/core`** - Provider-neutral request construction (`request.rs`),
   bounded context fragments, the tool-call parser, and thread/session types.
   It does **not** own the agent loop: the live turn loop is
-  `Engine::run_turn` in `crates/tui/src/core/engine/turn_loop.rs`, and
-  `crates/tui/src/core/` is a module inside the TUI crate, not this crate. A
+  `Engine::run_turn` in `crates/engine/src/core/engine/turn_loop.rs`, and
+  `crates/engine/src/core/` is a module inside the TUI crate, not this crate. A
   placeholder `engine/` tree here once suggested otherwise — it had no callers
   and emitted `TurnComplete` without contacting a model — and was removed in
   v0.9.11. The source guard follows resolved local phase calls and still
@@ -163,7 +163,7 @@ rather than a traced write path.
 - **`crates/hooks`** - Event sinks (stdout, JSONL file, webhook, Unix socket)
   for response, tool, job and approval lifecycle events, plus the opt-in
   lifecycle outbox. User-configured shell hooks that run commands around tool
-  calls are a separate system in `crates/tui/src/hooks.rs`.
+  calls are a separate system in `crates/engine/src/hooks.rs`.
 - **`crates/localization`** - Locale registry for user-facing UI chrome strings
   (`crates/localization/locales/*.json`); it never changes prompts or model
   output language.

@@ -749,6 +749,8 @@ pub const TOOL_NAMES: &[&str] = &[
     "authenticate",
     "bash",
     "code_execution",
+    "context_archive_get",
+    "context_archive_search",
     "create_goal",
     "diagnostics",
     "edit",

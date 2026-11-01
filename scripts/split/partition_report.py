@@ -49,18 +49,18 @@ def strict_lines(src_dirs: list[Path]) -> collections.Counter:
 
 
 def analyse(tui_src: Path = mg.TUI_SRC, runtime_src: Path = mg.RUNTIME_SRC, non_test: bool = False) -> dict:
-    tui, runtime, refs = mg.load_graph(tui_src, runtime_src)
-    resident = set(runtime.modules)
-    modules = (tui.modules | runtime.modules) | {ROOT}
+    crates, refs = mg.load_graph(tui_src, runtime_src)
+    resident = set().union(*(crate.modules for crate in crates[1:]))
+    modules = set().union(*(crate.modules for crate in crates)) | {ROOT}
     prod_lines: collections.Counter = collections.Counter()
     test_lines: collections.Counter = collections.Counter()
-    for crate in (tui, runtime):
+    for crate in crates:
         exact, prefixes = mg.test_file_set(crate)
         for rel, (src, _, _) in crate.files.items():
             module = mg.top_module(rel)
             bucket = test_lines if mg.file_is_test(rel, exact, prefixes, crate.production_files) else prod_lines
             bucket[module] += src.count("\n") + 1
-    strict = strict_lines([tui_src, runtime_src]) if non_test else None
+    strict = strict_lines([crate.root for crate in crates]) if non_test else None
     out: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     inbound: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     for ref in refs:

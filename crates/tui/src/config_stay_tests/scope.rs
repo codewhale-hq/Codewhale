@@ -6,9 +6,9 @@ use codewhale_config::ProviderKind;
 
 use codewhale_runtime::config::Config;
 
-use crate::provider_readiness::ResolvedProviderReadiness;
+use codewhale_engine::provider_readiness::ResolvedProviderReadiness;
 
-use crate::provider_readiness::resolve_for_model;
+use codewhale_engine::provider_readiness::resolve_for_model;
 
 struct HomeGuard {
     prev_home: Option<std::ffi::OsString>,
@@ -76,7 +76,7 @@ fn deepseek_readiness(config: &Config) -> ResolvedProviderReadiness {
         config,
         &(config).test_identity_for_kind(ProviderKind::Deepseek),
         "deepseek-v4-pro",
-        &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+        &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
     )
 }
 
@@ -170,7 +170,7 @@ fn explicit_workspace_config_selects_its_route_without_locking_user_global() {
         &config,
         &(config).test_identity_for_kind(ProviderKind::Zai),
         "GLM-5.2",
-        &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+        &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
     );
     assert!(
         !zai.can_attempt(),
@@ -240,7 +240,7 @@ fn unavailable_truly_means_unavailable_with_a_reason() {
         &config,
         &(config).test_identity_for_kind(ProviderKind::Moonshot),
         "kimi-k2.6",
-        &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+        &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
     );
     assert!(!moonshot.can_attempt());
     let reason = moonshot.blocked_reason().map(|r| r.into_owned());
@@ -279,7 +279,9 @@ fn repeated_readers_never_rewrite_configuration() {
 /// Fleet selection files behave the same way as the config path above.
 #[test]
 fn workspace_fleet_selection_affects_only_that_workspace() {
-    use crate::fleet::store::{FleetFile, FleetScope, save_fleet, selected_fleet, set_selected};
+    use codewhale_engine::fleet::store::{
+        FleetFile, FleetScope, save_fleet, selected_fleet, set_selected,
+    };
     let _lock = crate::test_support::lock_test_env();
     // A FRESH personal home per test: the shared sealed home would pick up
     // the parallel personal-selection test's writes.
@@ -330,7 +332,9 @@ fn workspace_fleet_selection_affects_only_that_workspace() {
 /// same sealed home still resolves the selection.
 #[test]
 fn personal_fleet_selection_persists_across_restart() {
-    use crate::fleet::store::{FleetFile, FleetScope, save_fleet, selected_fleet, set_selected};
+    use codewhale_engine::fleet::store::{
+        FleetFile, FleetScope, save_fleet, selected_fleet, set_selected,
+    };
     let _lock = crate::test_support::lock_test_env();
     // Fresh personal home per test (see the workspace-selection test).
     let home = tempfile::TempDir::new().expect("temp home");

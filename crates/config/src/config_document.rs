@@ -356,18 +356,22 @@ pub fn with_config_write_lock<T>(
             crate::quote_os_path(&lock_path)
         )
     })?;
+    // The lock is created at `0600`, so this only narrows a lock that an
+    // older version or a different umask left wider. It is applied to the
+    // handle that was just opened, not re-resolved by path: between the open
+    // and the `chmod` the path could name a different object, and this is the
+    // file the caller is about to lock. A mount that cannot apply modes is
+    // excused by `tighten_mode_of`; a filesystem that stores them keeps the
+    // error.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        lock_file
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .with_context(|| {
-                format!(
-                    "failed to secure config lock at {}",
-                    crate::quote_os_path(&lock_path)
-                )
-            })?;
-    }
+    crate::private_directory::tighten_mode_of(&lock_file, &lock_path, 0o600).with_context(
+        || {
+            format!(
+                "failed to secure config lock at {}",
+                crate::quote_os_path(&lock_path)
+            )
+        },
+    )?;
     #[cfg(windows)]
     validate_windows_lock_handle(&lock_file, &lock_path)?;
     let mut lock = fd_lock::RwLock::new(lock_file);

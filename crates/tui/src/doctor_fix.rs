@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::McpServerDoctorStatus;
-use crate::mcp;
+use codewhale_engine::mcp;
 
 /// One concrete, reversible repair the doctor can apply.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Runtime -> UI boundary ratchet for the runtime/TUI crate split.
 
-Builds the top-level module graph of `crates/tui/src` and `crates/runtime/src`
+Builds the top-level module graph of `crates/tui/src`, `crates/engine/src`
+and `crates/runtime/src`
 with a lexer that masks comments and string literals and expands grouped
 `use crate::{...}` imports, then counts every reference from the *runtime
 closure* upward into UI code.
@@ -60,6 +61,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TUI_SRC = REPO_ROOT / "crates" / "tui" / "src"
 RUNTIME_SRC = REPO_ROOT / "crates" / "runtime" / "src"
+ENGINE_SRC = REPO_ROOT / "crates" / "engine" / "src"
 BASELINE_REPO_PATH = "scripts/runtime-boundary-baseline.json"
 BASELINE = REPO_ROOT / BASELINE_REPO_PATH
 
@@ -318,8 +320,8 @@ class Crate:
     production_files: set[str] = field(default_factory=set)
 
 
-USE_RE = re.compile(r"\buse\s+crate::")
-PATH_RE = re.compile(r"(?<![\$\w])crate::(\w+)")
+USE_RE = re.compile(r"\buse\s+(crate|codewhale_engine|codewhale_runtime)::")
+PATH_RE = re.compile(r"(?<![\$\w])(crate|codewhale_engine|codewhale_runtime)::(\w+)")
 # `super::super::tui::x` reaches the crate root just like `crate::tui::x`.
 SUPER_RE = re.compile(r"(?<![\$\w:])((?:super\s*::\s*)+)(\{|\w+)")
 INLINE_MOD_RE = re.compile(r"\bmod\s+\w+\s*\{")
@@ -373,7 +375,7 @@ def resolve_root_names(crate: Crate, runtime_modules: set[str]) -> None:
                 continue
             elif head in crate.modules:
                 crate.root_names[bound] = head
-            elif head == "codewhale_runtime" and len(path) > 1:
+            elif head in ("codewhale_runtime", "codewhale_engine") and len(path) > 1:
                 crate.root_names[bound] = path[1]
             else:
                 crate.root_names[bound] = "extern"
@@ -452,10 +454,10 @@ def collect_refs(crate: Crate, all_modules: set[str], prefix: str) -> list[Ref]:
         by_module[top_module(rel)].append(file_is_test(rel, exact, prefixes, crate.production_files))
     crate.test_only = {m for m, flags in by_module.items() if all(flags)}
 
-    def target_of(name: str) -> str:
+    def target_of(name: str, external: bool = False) -> str:
         if name in all_modules:
             return name
-        return crate.root_names.get(name, ROOT_ITEMS)
+        return "extern" if external else crate.root_names.get(name, ROOT_ITEMS)
 
     for rel, (src, code, stripped) in crate.files.items():
         mod = top_module(rel)
@@ -479,12 +481,12 @@ def collect_refs(crate: Crate, all_modules: set[str], prefix: str) -> list[Ref]:
                 t = path[0]
                 if t in ("self", "super"):
                     continue
-                refs.append(Ref(kind_at(m.start()), mod, target_of(t), f"{prefix}/{rel}", line, lines[line - 1].strip()[:160]))
+                refs.append(Ref(kind_at(m.start()), mod, target_of(t, m.group(1) != "crate"), f"{prefix}/{rel}", line, lines[line - 1].strip()[:160]))
         for m in PATH_RE.finditer(code):
             if m.start() in covered:
                 continue
             line = code.count("\n", 0, m.start()) + 1
-            refs.append(Ref(kind_at(m.start()), mod, target_of(m.group(1)), f"{prefix}/{rel}", line, lines[line - 1].strip()[:160]))
+            refs.append(Ref(kind_at(m.start()), mod, target_of(m.group(2), m.group(1) != "crate"), f"{prefix}/{rel}", line, lines[line - 1].strip()[:160]))
         for pos, name in super_root_targets(code, rel):
             # `pub(in super::super)` and glob imports name no item; only a
             # known module or crate-root binding is an edge.
@@ -502,20 +504,22 @@ class Report:
     locations: dict[str, dict[str, list[str]]]
 
 
-def load_graph(tui_src: Path = TUI_SRC, runtime_src: Path = RUNTIME_SRC) -> tuple[Crate, Crate, list[Ref]]:
-    tui = load_crate("codewhale-tui", tui_src)
-    runtime = load_crate("codewhale-runtime", runtime_src)
-    all_modules = tui.modules | runtime.modules
-    resolve_root_names(tui, runtime.modules)
-    resolve_root_names(runtime, runtime.modules)
-    tui_refs = collect_refs(tui, all_modules, "crates/tui/src")
-    rt_refs = collect_refs(runtime, runtime.modules, "crates/runtime/src")
-    return tui, runtime, tui_refs + rt_refs
+def load_graph(tui_src: Path = TUI_SRC, runtime_src: Path = RUNTIME_SRC) -> tuple[list[Crate], list[Ref]]:
+    crates = [load_crate("codewhale-tui", tui_src), load_crate("codewhale-runtime", runtime_src)]
+    if tui_src == TUI_SRC and runtime_src == RUNTIME_SRC:
+        crates.append(load_crate("codewhale-engine", ENGINE_SRC))
+    all_modules = set().union(*(crate.modules for crate in crates))
+    refs = []
+    for crate in crates:
+        resolve_root_names(crate, all_modules)
+        prefix = f"crates/{crate.name.removeprefix('codewhale-')}/src"
+        refs.extend(collect_refs(crate, all_modules, prefix))
+    return crates, refs
 
 
 def build_report(tui_src: Path = TUI_SRC, runtime_src: Path = RUNTIME_SRC) -> Report:
-    tui, runtime, refs = load_graph(tui_src, runtime_src)
-    all_modules = tui.modules | runtime.modules
+    crates, refs = load_graph(tui_src, runtime_src)
+    all_modules = set().union(*(crate.modules for crate in crates))
 
     prod_edges: dict[str, set[str]] = collections.defaultdict(set)
     for r in refs:
@@ -525,14 +529,14 @@ def build_report(tui_src: Path = TUI_SRC, runtime_src: Path = RUNTIME_SRC) -> Re
     # A test-only module that closure tests use (`test_support`) compiles in
     # the same crate as those tests, so it belongs to the closure too and its
     # own upward references count as test references.
-    test_only = tui.test_only | runtime.test_only
+    test_only = set().union(*(crate.test_only for crate in crates))
     test_edges: dict[str, set[str]] = collections.defaultdict(set)
     for r in refs:
         if r.src != r.dst and r.dst in test_only:
             test_edges[r.src].add(r.dst)
 
     seen: set[str] = set()
-    stack = [s for s in SEEDS if s in all_modules] + sorted(runtime.modules)
+    stack = [s for s in SEEDS if s in all_modules] + sorted(set().union(*(crate.modules for crate in crates[1:])))
     while stack:
         m = stack.pop()
         if m in seen or is_ui(m) or m == "extern":
@@ -556,7 +560,8 @@ def build_report(tui_src: Path = TUI_SRC, runtime_src: Path = RUNTIME_SRC) -> Re
         counts[cat][key] += 1
         where[cat][key].append(f"{r.file}:{r.line}: {r.text}")
 
-    for crate, prefix in ((tui, "crates/tui/src"), (runtime, "crates/runtime/src")):
+    for crate in crates:
+        prefix = f"crates/{crate.name.removeprefix('codewhale-')}/src"
         for rel, (src, code, _) in crate.files.items():
             mod = top_module(rel)
             if mod not in seen:

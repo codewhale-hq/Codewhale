@@ -13,15 +13,15 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::commands;
-use crate::core::authority::{RiskLevel, ToolCategory};
-#[cfg(test)]
-use crate::provider_lake::all_catalog_models_for_provider;
 use crate::tui::app::{App, ComposerDensity, ViewportState};
 use crate::tui::approval::{ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
 use crate::tui::underwater::ShellPhase;
 #[cfg(test)]
 use codewhale_config::ProviderKind;
+use codewhale_engine::core::authority::{RiskLevel, ToolCategory};
+#[cfg(test)]
+use codewhale_engine::provider_lake::all_catalog_models_for_provider;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_ratatui::{

@@ -2,15 +2,15 @@
 //! History, provider requests, tools, approval and cancellation are Core facts.
 //! This module keeps only connection configuration, canonical bindings and
 //! JSON-RPC correlation. Secure cross-process attachment is not yet qualified.
-use crate::core::authority::{SandboxNetworkAccess, sandbox_policy_for_turn};
-#[cfg(test)]
-use crate::runtime_threads::manager::RuntimeThreadManagerConfig;
-use crate::runtime_threads::{
-    manager::CreateThreadRequest, manager::RuntimeThreadManager, manager::UpdateThreadRequest,
-};
 use anyhow::{Result, anyhow};
 use codewhale_config::AppMode;
 use codewhale_config::ProviderKind;
+use codewhale_engine::core::authority::{SandboxNetworkAccess, sandbox_policy_for_turn};
+#[cfg(test)]
+use codewhale_engine::runtime_threads::manager::RuntimeThreadManagerConfig;
+use codewhale_engine::runtime_threads::{
+    manager::CreateThreadRequest, manager::RuntimeThreadManager, manager::UpdateThreadRequest,
+};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_runtime::config::Config;
 use serde_json::{Value, json};
@@ -250,7 +250,10 @@ impl AcpServer {
                             writer,
                             response_id,
                             -32603,
-                            crate::client::redact_model_bound_text(&error.to_string(), &[]),
+                            codewhale_engine::client::redact_model_bound_text(
+                                &error.to_string(),
+                                &[],
+                            ),
                         )
                         .await?
                     }
@@ -439,15 +442,16 @@ impl AcpServer {
                 ));
             }
         };
-        let sessions = crate::session_manager::SessionManager::new(self.sessions_dir.clone())
-            .ok()
-            .and_then(|manager| manager.list_sessions().ok())
-            .unwrap_or_default();
+        let sessions =
+            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())
+                .ok()
+                .and_then(|manager| manager.list_sessions().ok())
+                .unwrap_or_default();
         let sessions: Vec<Value> = sessions
             .into_iter()
             .filter(|meta| {
                 cwd.as_ref().is_none_or(|cwd| {
-                    crate::session_manager::paths_equivalent(&meta.workspace, cwd)
+                    codewhale_engine::session_manager::paths_equivalent(&meta.workspace, cwd)
                 })
             })
             .map(|meta| {
@@ -473,8 +477,9 @@ impl AcpServer {
         if self.sessions.contains_key(requested) {
             return self.session_configuration(requested).await;
         }
-        let store = crate::session_manager::SessionManager::new(self.sessions_dir.clone())
-            .map_err(|error| AcpError::internal(error.to_string()))?;
+        let store =
+            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())
+                .map_err(|error| AcpError::internal(error.to_string()))?;
         let saved = store
             .resume_session_by_prefix(requested)
             .map_err(|error| {
@@ -528,10 +533,12 @@ impl AcpServer {
         session_id: &str,
     ) -> Result<()> {
         use codewhale_models::ContentBlock;
-        let saved = crate::session_manager::SessionManager::new(self.sessions_dir.clone())?
-            .load_session(session_id)?;
+        let saved =
+            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())?
+                .load_session(session_id)?;
         let secrets =
-            crate::runtime_threads::manager::receipt_secret_values(self.config.clone()).await?;
+            codewhale_engine::runtime_threads::manager::receipt_secret_values(self.config.clone())
+                .await?;
         let mut calls = HashMap::new();
         for message in &saved.messages {
             let kind = match message.role.as_str() {
@@ -540,7 +547,7 @@ impl AcpServer {
                 _ => None,
             };
             if let Some(kind) = kind
-                && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+                && !codewhale_engine::runtime_handoff::is_internal_runtime_handoff(message)
                 && codewhale_models::turn_classify::restored_subagent_checkpoint_display(message)
                     .is_none()
             {
@@ -549,14 +556,17 @@ impl AcpServer {
                 for (index, block) in message.content.iter().enumerate() {
                     match block {
                         ContentBlock::Text { text, .. } => {
-                            if crate::runtime_handoff::is_turn_metadata_block(message, index, text)
-                            {
+                            if codewhale_engine::runtime_handoff::is_turn_metadata_block(
+                                message, index, text,
+                            ) {
                                 continue;
                             }
                             if text.starts_with("[tool_history_repair]")
                                 || (message.role == "assistant"
-                                    && crate::runtime_handoff::archived_context_parts(text)
-                                        .is_some())
+                                    && codewhale_engine::runtime_handoff::archived_context_parts(
+                                        text,
+                                    )
+                                    .is_some())
                             {
                                 coalesce = false;
                                 continue;
@@ -615,9 +625,10 @@ impl AcpServer {
                             } else {
                                 "completed"
                             };
-                            let detail = crate::runtime_threads::manager::tool_receipt_detail(
-                                &call.name, content, &secrets,
-                            );
+                            let detail =
+                                codewhale_engine::runtime_threads::manager::tool_receipt_detail(
+                                    &call.name, content, &secrets,
+                                );
                             write_tool_call_update(
                                 writer,
                                 session_id,
@@ -660,7 +671,8 @@ impl AcpServer {
                 thread.model_provider_id.as_deref(),
             )
             .map_err(AcpError::invalid_params)?;
-        let mut models = crate::provider_lake::models_for_provider(&self.config, &identity);
+        let mut models =
+            codewhale_engine::provider_lake::models_for_provider(&self.config, &identity);
         if !models.contains(&thread.model) {
             models.push(thread.model.clone());
         }
@@ -795,7 +807,7 @@ impl AcpServer {
 
     fn list_providers(&self) -> Value {
         let mut providers = self.config.provider_identities().into_iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| {
-            json!({"id": identity.key, "displayName": identity.compatibility().map(|row| row.label).unwrap_or(identity.key.as_str()), "defaultModel": crate::model_inventory::provider_default_model(&self.config, &identity)})
+            json!({"id": identity.key, "displayName": identity.compatibility().map(|row| row.label).unwrap_or(identity.key.as_str()), "defaultModel": codewhale_engine::model_inventory::provider_default_model(&self.config, &identity)})
         }).collect::<Vec<_>>();
         providers.extend(self.config.unadmitted_provider_keys().into_iter().map(|key| json!({"id": key, "displayName": format!("{key} (unavailable)"), "defaultModel": "", "available": false, "reason": "provider_identity_unavailable"})));
         json!({"providers": providers})
@@ -1283,7 +1295,7 @@ fn is_jsonrpc_response(message: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
     use codewhale_models::{ContentBlock, Role};
     use std::time::Duration;
 
@@ -1334,13 +1346,13 @@ mod tests {
     impl Rig {
         pub(super) fn new(
             config: Config,
-            turns: Vec<crate::llm_client::mock::CannedTurn>,
+            turns: Vec<codewhale_engine::llm_client::mock::CannedTurn>,
         ) -> Result<Self> {
             Self::with_base(config, turns, true)
         }
         fn with_base(
             config: Config,
-            turns: Vec<crate::llm_client::mock::CannedTurn>,
+            turns: Vec<codewhale_engine::llm_client::mock::CannedTurn>,
             acp: bool,
         ) -> Result<Self> {
             let dir = tempfile::tempdir()?;
@@ -1361,7 +1373,7 @@ mod tests {
                     workspace.clone(),
                     manager_config,
                     plugins,
-                    crate::core::engine::EngineHostProfile::Acp,
+                    codewhale_engine::core::engine::EngineHostProfile::Acp,
                     None,
                     None,
                 )?
@@ -1375,7 +1387,7 @@ mod tests {
             });
             let mock = Arc::new(MockLlmClient::new(turns));
             manager.set_test_model_client(mock.clone());
-            let sessions = crate::session_manager::default_sessions_dir()?;
+            let sessions = codewhale_engine::session_manager::default_sessions_dir()?;
             Ok(Self {
                 server: AcpServer::new(
                     config,
@@ -1546,6 +1558,11 @@ mod tests {
             None,
         )
         .await?;
+        // ACP publications are discovered through this socket, so an
+        // unbound one is a failure here rather than a degraded start.
+        let daemon = daemon.ok_or_else(|| {
+            anyhow!("this filesystem cannot hold the private runtime endpoint directory")
+        })?;
         let shutdown = daemon.shutdown_handle();
         let owner = tokio::spawn(daemon.serve());
         let _abort = AbortOnDrop(owner.abort_handle());
@@ -1604,7 +1621,7 @@ mod tests {
         );
         let rows = manager
             .list_threads(
-                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
+                codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None,
             )
             .await?;
@@ -1618,7 +1635,7 @@ mod tests {
             let ordinary = manager
                 .start_turn(
                     &rows[0].id,
-                    crate::runtime_threads::manager::StartTurnRequest {
+                    codewhale_engine::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary successor".into(),
                         ..Default::default()
                     },
@@ -1629,7 +1646,8 @@ mod tests {
                     let detail = manager.get_thread_detail(&rows[0].id).await?;
                     if detail.turns.iter().any(|t| {
                         t.id == ordinary.id
-                            && t.status == crate::runtime_threads::RuntimeTurnStatus::Completed
+                            && t.status
+                                == codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed
                     }) {
                         return Ok::<_, anyhow::Error>(());
                     }
@@ -1898,7 +1916,9 @@ mod tests {
         }
         let id = rig.new_session().await;
         uuid::Uuid::parse_str(&id)?;
-        let store = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?;
+        let store = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?;
         let saved = store.load_session(&id)?;
         assert!(saved.messages.is_empty());
         assert_eq!(
@@ -2014,7 +2034,9 @@ mod tests {
             .list_sessions(json!({"cwd":rig.workspace}))
             .unwrap();
         assert_eq!(listed["sessions"].as_array().unwrap().len(), 2);
-        let store = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?;
+        let store = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?;
         let mut saved = store.load_session(&a)?;
         saved.messages = serde_json::from_value(json!([
             {"role":"user","content":[
@@ -2049,14 +2071,12 @@ mod tests {
         ]))?;
         saved
             .messages
-            .push(crate::runtime_handoff::operate_contract_runtime_message());
-        saved
-            .messages
-            .extend(crate::runtime_handoff::project_owned_messages_for_restore(
-                vec![crate::runtime_handoff::subagent_completion_runtime_message(
-                    "{}",
-                )],
-            ));
+            .push(codewhale_engine::runtime_handoff::operate_contract_runtime_message());
+        saved.messages.extend(
+            codewhale_engine::runtime_handoff::project_owned_messages_for_restore(vec![
+                codewhale_engine::runtime_handoff::subagent_completion_runtime_message("{}"),
+            ]),
+        );
         store.save_session(&saved)?;
         let mut output = Vec::new();
         rig.server.replay_history(&mut output, &a).await?;
@@ -2152,8 +2172,10 @@ mod tests {
             .count();
         assert_eq!(uses, 2);
         assert_eq!(results, 2);
-        let saved = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?
-            .load_session(&id)?;
+        let saved = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?
+        .load_session(&id)?;
         assert_eq!(
             saved.messages, history,
             "checkpoint is the full Engine snapshot, not display chunks"
@@ -2203,8 +2225,10 @@ mod tests {
                 .flat_map(|m| &m.content)
                 .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
         );
-        let saved = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?
-            .load_session(&id)?;
+        let saved = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?
+        .load_session(&id)?;
         assert_eq!(saved.messages, history);
         let detail = rig
             .server
@@ -2213,7 +2237,7 @@ mod tests {
             .await?;
         assert_eq!(
             detail.turns.last().unwrap().status,
-            crate::runtime_threads::RuntimeTurnStatus::Failed
+            codewhale_engine::runtime_threads::RuntimeTurnStatus::Failed
         );
         rig.close().await;
         Ok(())
@@ -2258,8 +2282,10 @@ mod tests {
             serde_json::to_vec(&requests[0].system)?,
             serde_json::to_vec(&requests[2].system)?
         );
-        let prompt = crate::prompts::system_prompt_flat_text(requests[0].system.as_ref().unwrap());
-        assert!(prompt.contains(crate::prompts::text::BASE_PROMPT.trim()));
+        let prompt = codewhale_engine::prompts::system_prompt_flat_text(
+            requests[0].system.as_ref().unwrap(),
+        );
+        assert!(prompt.contains(codewhale_engine::prompts::text::BASE_PROMPT.trim()));
         assert!(prompt.contains("initial-project-law"));
         assert!(!prompt.contains("new-self-authored-law"));
         let chunks: Vec<_> = wire
@@ -2502,8 +2528,10 @@ mod tests {
                 assert!(!target.exists());
             }
         }
-        let saved = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?
-            .load_session(&id)?;
+        let saved = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?
+        .load_session(&id)?;
         assert!(saved.messages.iter().any(|m| m.role == Role::User));
         if !base_acp {
             let thread = rig.server.sessions[&id].thread_id.clone();
@@ -2512,7 +2540,7 @@ mod tests {
                 .runtime
                 .start_turn(
                     &thread,
-                    crate::runtime_threads::manager::StartTurnRequest {
+                    codewhale_engine::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary after cancelled ACP".into(),
                         ..Default::default()
                     },
@@ -2547,7 +2575,7 @@ mod tests {
         manager: &RuntimeThreadManager,
         thread: &str,
         turn: &str,
-    ) -> Result<crate::runtime_threads::TurnRecord> {
+    ) -> Result<codewhale_engine::runtime_threads::TurnRecord> {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let detail = manager.get_thread_detail(thread).await?;
@@ -2555,8 +2583,8 @@ mod tests {
                     record.id == turn
                         && !matches!(
                             record.status,
-                            crate::runtime_threads::RuntimeTurnStatus::InProgress
-                                | crate::runtime_threads::RuntimeTurnStatus::Queued
+                            codewhale_engine::runtime_threads::RuntimeTurnStatus::InProgress
+                                | codewhale_engine::runtime_threads::RuntimeTurnStatus::Queued
                         )
                 }) && manager
                     .events_since_async(thread, None)
@@ -2584,7 +2612,7 @@ mod tests {
         )?;
         let session = rig.new_session().await;
         let thread = rig.server.sessions[&session].thread_id.clone();
-        let request = crate::runtime_threads::manager::StartTurnRequest {
+        let request = codewhale_engine::runtime_threads::manager::StartTurnRequest {
             prompt: "same semantic request".into(),
             operation_key: Some("acp-operation".into()),
             ..Default::default()
@@ -2612,7 +2640,7 @@ mod tests {
             wait_real_turn(&rig.server.runtime, &thread, &first.id)
                 .await?
                 .status,
-            crate::runtime_threads::RuntimeTurnStatus::Completed
+            codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed
         );
         assert_eq!(
             rig.mock.call_count(),
@@ -2621,7 +2649,7 @@ mod tests {
         );
         rig.mock
             .push_turn(canned::simple_text_turn("ordinary initial"));
-        let ordinary_request = crate::runtime_threads::manager::StartTurnRequest {
+        let ordinary_request = codewhale_engine::runtime_threads::manager::StartTurnRequest {
             operation_key: Some("ordinary-operation".into()),
             ..request
         };
@@ -2642,7 +2670,7 @@ mod tests {
             wait_real_turn(&rig.server.runtime, &thread, &ordinary.id)
                 .await?
                 .status,
-            crate::runtime_threads::RuntimeTurnStatus::Completed
+            codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed
         );
         assert_eq!(
             rig.server
@@ -2889,8 +2917,10 @@ mod tests {
                 );
             }
         }
-        let saved = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?
-            .load_session(&session)?;
+        let saved = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?
+        .load_session(&session)?;
         assert_eq!(
             saved.messages, history,
             "ACP persists the full paired Core history"
@@ -2904,7 +2934,7 @@ mod tests {
         assert_eq!(detail.turns.len(), 1);
         assert_eq!(
             detail.turns[0].status,
-            crate::runtime_threads::RuntimeTurnStatus::Completed
+            codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed
         );
         rig.close().await;
         Ok(())
@@ -2913,7 +2943,9 @@ mod tests {
     async fn foreign_canonical_store_refuses_before_allocating_or_copying_history() -> Result<()> {
         let mut rig = Rig::new(fixture_config(), vec![])?;
         let id = rig.new_session().await;
-        let store = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?;
+        let store = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?;
         let mut saved = store.load_session(&id)?;
         let path = store.save_session(&saved)?;
         let original = std::fs::read(&path)?;
@@ -2931,7 +2963,7 @@ mod tests {
             .server
             .runtime
             .list_threads(
-                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
+                codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None,
             )
             .await?
@@ -2946,7 +2978,7 @@ mod tests {
             rig.server
                 .runtime
                 .list_threads(
-                    crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
+                    codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None
                 )
                 .await?
@@ -2972,7 +3004,7 @@ mod tests {
                 canned::simple_text_turn("image read"),
             ],
         )?;
-        let image = crate::image_attach::tests::runtime_image_fixture(21);
+        let image = codewhale_engine::image_attach::test_support::runtime_image_fixture(21);
         std::fs::write(
             rig.workspace.join("shot.png"),
             base64::engine::general_purpose::STANDARD.decode(image.data_base64)?,
@@ -3033,7 +3065,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .stop_reason,
-            Some(crate::runtime_threads::RuntimeTurnStopReason::StepBudgetExhausted)
+            Some(codewhale_engine::runtime_threads::RuntimeTurnStopReason::StepBudgetExhausted)
         );
         assert_eq!(
             rig.mock.call_count(),
@@ -3049,7 +3081,7 @@ mod tests {
                 .runtime
                 .start_turn(
                     &thread,
-                    crate::runtime_threads::manager::StartTurnRequest {
+                    codewhale_engine::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary after step stop".into(),
                         ..Default::default()
                     },
@@ -3059,7 +3091,7 @@ mod tests {
                 wait_real_turn(&rig.server.runtime, &thread, &successor.id)
                     .await?
                     .status,
-                crate::runtime_threads::RuntimeTurnStatus::Completed
+                codewhale_engine::runtime_threads::RuntimeTurnStatus::Completed
             );
             let requests = rig.mock.captured_requests();
             assert_eq!(requests.len(), 3);
@@ -3136,7 +3168,7 @@ mod tests {
             rig.server
                 .runtime
                 .list_threads(
-                    crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
+                    codewhale_engine::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None,
                 )
                 .await?

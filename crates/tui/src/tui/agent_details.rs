@@ -11,12 +11,14 @@ use std::path::{Component, Path};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus, localized_whale_display_names};
 use crate::tui::app::{
     AgentCurrentActivityStatus, AgentProgressMeta, App, bound_agent_activity_text,
 };
 use crate::tui::pager::PagerView;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use codewhale_engine::tools::subagent::{
+    SubAgentResult, SubAgentStatus, localized_whale_display_names,
+};
 
 pub(crate) struct AgentDetailsProjection {
     pub(crate) title: String,
@@ -543,13 +545,13 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use crate::tools::subagent::{
-        AgentWorkerStatus, ChildRouteReceipt, SubAgentAssignment, SubAgentNeedsInput,
-    };
     use crate::tui::app::{
         AgentCurrentActivity, AgentRecentAction, MAX_AGENT_RECENT_ACTIONS, TuiOptions,
     };
     use codewhale_agent_contract::role::FleetRole;
+    use codewhale_engine::tools::subagent::{
+        AgentWorkerStatus, ChildRouteReceipt, SubAgentAssignment, SubAgentNeedsInput,
+    };
     use codewhale_runtime::config::Config;
 
     fn test_app(workspace: PathBuf) -> App {
@@ -580,9 +582,9 @@ mod tests {
                 role: Some("worker".to_string()),
             },
             model: "deepseek-v4-pro".to_string(),
-            nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                agent_id, "en",
-            )),
+            nickname: Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en"),
+            ),
             status,
             worker_status: None,
             runtime_permissions: None,
@@ -784,7 +786,7 @@ mod tests {
         );
         assert_eq!(
             safe_agent_display_name(&app, "agent_plain_lane"),
-            crate::tools::subagent::whale_name_for_id_in_locale(
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
                 "agent_plain_lane",
                 app.ui_locale.tag()
             )
@@ -998,7 +1000,7 @@ mod tests {
                 "Resume this parked child with agent(action=\"start\", resume_from=\"{agent_id}\")."
             ),
         });
-        child.checkpoint = Some(crate::tools::subagent::SubAgentCheckpoint {
+        child.checkpoint = Some(codewhale_engine::tools::subagent::SubAgentCheckpoint {
             checkpoint_id: format!("{agent_id}:step:2"),
             agent_id: agent_id.to_string(),
             continuation_handle: format!("agent:{agent_id}:checkpoint"),

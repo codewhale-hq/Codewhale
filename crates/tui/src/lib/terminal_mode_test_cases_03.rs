@@ -13,11 +13,11 @@
             codewhale_runtime::turn_budget::DEFAULT_MAX_MODEL_STEPS
         );
         assert_eq!(
-            crate::core::turn::TurnContext::new(defaulted).step_limit(),
+            codewhale_engine::core::turn::TurnContext::new(defaulted).step_limit(),
             None
         );
         assert_eq!(exec_max_steps(Some(7)), 7);
-        let mut capped = crate::core::turn::TurnContext::new(exec_max_steps(Some(7)));
+        let mut capped = codewhale_engine::core::turn::TurnContext::new(exec_max_steps(Some(7)));
         for _ in 0..7 {
             capped.next_step();
         }
@@ -765,11 +765,11 @@
             exec_stream_final_answer_excerpt("  short reply \n"),
             "short reply"
         );
-        let long = "x".repeat(crate::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 5);
+        let long = "x".repeat(codewhale_engine::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 5);
         let excerpt = exec_stream_final_answer_excerpt(&long);
         assert_eq!(
             excerpt.chars().count(),
-            crate::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 3
+            codewhale_engine::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 3
         );
         assert!(excerpt.ends_with("..."));
         let leaked = exec_stream_final_answer_excerpt("token: sk-ant-must-not-leak-1234567890");
@@ -967,13 +967,13 @@
 
     #[test]
     fn review_receipt_check_public_json_omits_private_details() {
-        let validation = crate::tools::review::ReviewReceiptValidation {
+        let validation = codewhale_engine::tools::review::ReviewReceiptValidation {
             passed: false,
             reason: "secret reason with /tmp/private/receipt.json".to_string(),
             diff_fingerprint: "sha256:current".to_string(),
             receipt_fingerprint: Some("sha256:current".to_string()),
             receipt_path: Some(PathBuf::from("/tmp/private/receipt.json")),
-            unresolved_risk: Some(crate::tools::review::ReviewReceiptRisk {
+            unresolved_risk: Some(codewhale_engine::tools::review::ReviewReceiptRisk {
                 unresolved: true,
                 level: "error".to_string(),
                 summary: "secret summary".to_string(),
@@ -1376,8 +1376,8 @@
 
     #[test]
     fn default_max_turns_does_not_add_a_hidden_worker_cap() {
-        use crate::fleet::executor::build_worker_exec_command_with_launch_spec;
-        use crate::fleet::worker_runtime::fleet_task_to_worker_spec_with_profiles;
+        use codewhale_engine::fleet::executor::build_worker_exec_command_with_launch_spec;
+        use codewhale_engine::fleet::worker_runtime::fleet_task_to_worker_spec_with_profiles;
         use codewhale_config::FleetExecConfig;
         use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerSpec};
 
@@ -1438,7 +1438,7 @@
             assert_eq!(args.max_tool_calls, None);
             // Follow omission beyond argv through the real CLI resolver. This
             // previously installed 200 despite correct unbounded launch args.
-            let turn = crate::core::turn::TurnContext::new(exec_max_steps(args.max_turns));
+            let turn = codewhale_engine::core::turn::TurnContext::new(exec_max_steps(args.max_turns));
             assert_eq!(turn.step_limit(), expected);
             assert_eq!(turn.stop_diagnostics.effective_max_steps, expected);
         }

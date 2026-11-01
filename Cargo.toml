@@ -11,6 +11,7 @@ members = [
     "crates/commands",
     "crates/config",
     "crates/core",
+    "crates/engine",
     "crates/error-taxonomy",
     "crates/execpolicy",
     "crates/hooks",

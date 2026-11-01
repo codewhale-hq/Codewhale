@@ -26,9 +26,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 /// Restrictive file mode for setup-owned files (owner read/write only).
 #[cfg(unix)]
 const SETUP_FILE_MODE: u32 = 0o600;
@@ -56,13 +53,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.flush()
         .with_context(|| format!("failed to flush temp file for {}", path.display()))?;
 
+    // A filesystem that assigns modes itself (HarmonyOS hmdfs) refuses the
+    // call outright; `tighten_mode` tolerates only that case and reports every
+    // other failure. The temp file sits in `path`'s directory, which is where
+    // the question about the mount is answered.
     #[cfg(unix)]
-    {
-        let perms = fs::Permissions::from_mode(SETUP_FILE_MODE);
-        tmp.as_file()
-            .set_permissions(perms)
-            .with_context(|| format!("failed to set permissions for {}", path.display()))?;
-    }
+    crate::private_directory::tighten_mode_of(tmp.as_file(), tmp.path(), SETUP_FILE_MODE)
+        .with_context(|| format!("failed to set permissions for {}", path.display()))?;
 
     tmp.as_file()
         .sync_all()
@@ -369,6 +366,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("state.json");
         atomic_write(&path, b"x").unwrap();

@@ -101,7 +101,7 @@ test('runtime names and completeness flags alone cannot qualify missing notice t
   const revision = 'c'.repeat(40), version = '1.4.0';
   fs.writeFileSync(bun, `#!/bin/sh\nif [ \"$1\" = \"--revision\" ]; then printf '${version}+${revision.slice(0, 9)}\\n'; else printf '${JSON.stringify({ platform: process.platform, arch: process.arch })}\\n'; fi\n`, { mode: 0o755 });
   fs.writeFileSync(notices, 'MIT alone is not a complete Bun notice set'); fs.writeFileSync(sourceArchive, 'not a source closure');
-  const bundleFile = path.join(root, 'crates/tui/extension-host/dist/codewhale-extension-host.mjs');
+  const bundleFile = path.join(root, 'crates/engine/extension-host/dist/codewhale-extension-host.mjs');
   const receipt = { schema: 1, runtime_version: version, runtime_revision: revision, runtime_sha256: hosts.sha256(fs.readFileSync(bun)), webkit_revision: 'e'.repeat(40), libc: process.platform === 'linux' ? 'glibc' : 'none', bundle_sha256: hosts.sha256(fs.readFileSync(bundleFile)), source_commit: source, notices: 'notices.txt', notices_sha256: hosts.sha256(fs.readFileSync(notices)), relink_source: 'source.tar.gz', source_sha256: hosts.sha256(fs.readFileSync(sourceArchive)), license_closure: 'complete', corresponding_source: 'complete', components: ['bun', 'JavaScriptCore', 'WebCore', 'tinycc', 'boringssl'] };
   fs.writeFileSync(closure, JSON.stringify(receipt));
   const target = Object.keys(hosts.TARGETS).find(name => hosts.TARGETS[name][0] === process.platform && hosts.TARGETS[name][1] === process.arch);
@@ -116,7 +116,7 @@ test('executed Bun architecture cannot inherit an ARM runner label under emulati
   const revision = 'c'.repeat(40), version = '1.4.0';
   const wrongArch = process.arch === 'arm64' ? 'x64' : 'arm64';
   fs.writeFileSync(bun, `#!/bin/sh\nif [ "$1" = "--revision" ]; then printf '${version}+${revision.slice(0, 9)}\\n'; else printf '${JSON.stringify({ platform: process.platform, arch: wrongArch })}\\n'; fi\n`, { mode: 0o755 });
-  const bundleFile = path.join(root, 'crates/tui/extension-host/dist/codewhale-extension-host.mjs');
+  const bundleFile = path.join(root, 'crates/engine/extension-host/dist/codewhale-extension-host.mjs');
   fs.writeFileSync(closure, JSON.stringify({ schema: 1, runtime_version: version, runtime_revision: revision, runtime_sha256: hosts.sha256(fs.readFileSync(bun)), bundle_sha256: hosts.sha256(fs.readFileSync(bundleFile)), source_commit: source }));
   const target = Object.keys(hosts.TARGETS).find(name => hosts.TARGETS[name][0] === process.platform && hosts.TARGETS[name][1] === process.arch);
   assert.ok(target);

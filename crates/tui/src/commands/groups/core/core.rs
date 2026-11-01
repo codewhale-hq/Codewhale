@@ -1,10 +1,10 @@
 //! Remaining legacy core commands: clear, exit, model and related interactions.
 
-#[cfg(test)]
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, AppAction};
 use crate::tui::views::{ModalKind, SubAgentsView, subagent_view_agents};
 use codewhale_config::ProviderKind;
+#[cfg(test)]
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{MessageId, tr};
 use codewhale_runtime::config::{normalize_custom_model_id, normalize_model_name_for_provider};
 
@@ -77,7 +77,7 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     // Atomically retire background accounting before zeroing the session.
     // Late reports retain the old scope token and are discarded instead of
     // appearing in the new conversation.
-    let _settled_old_cost_scope = crate::cost_status::close_current_scope();
+    let _settled_old_cost_scope = codewhale_engine::cost_status::close_current_scope();
     app.clear_history();
     app.mark_history_updated();
     app.clear_api_messages();
@@ -89,7 +89,7 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
         .push_back(crate::tui::app::PendingGoalControl {
             goal_id: None,
             intent: crate::tui::app::GoalControlIntent::SetStatus {
-                status: crate::tools::goal::GoalStatus::Active,
+                status: codewhale_engine::tools::goal::GoalStatus::Active,
                 clear: true,
             },
             dispatched: false,
@@ -181,7 +181,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.active_context_window_source = app
                 .active_context_window
                 .map(|window| window.source)
-                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
             app.update_model_compaction_budget();
             if model_changed {
                 app.clear_model_scoped_telemetry();
@@ -236,7 +236,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         let strict_direct_custom_endpoint = app.accepts_custom_model_ids()
             && matches!(app.api_provider, ProviderKind::Deepseek | ProviderKind::Zai);
         let route_resolution = if declared {
-            match crate::route_runtime::resolve_declared_model_candidate(
+            match codewhale_engine::route_runtime::resolve_declared_model_candidate(
                 app.api_provider,
                 app.provider_identity_for_persistence(),
                 &model_id,
@@ -265,7 +265,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
                 &model_id,
             )
             .then(|| app.active_route_base_url.clone());
-            match crate::route_runtime::resolve_route_candidate_with_context_metadata(
+            match codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata(
                 app.api_provider,
                 Some(&model_id),
                 None,
@@ -293,7 +293,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)
-                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
+                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
         }
         app.update_model_compaction_budget();
         if model_changed {
@@ -365,9 +365,9 @@ pub fn profile_switch(app: &mut App, arg: Option<&str>) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::PromptInspection;
     use crate::tui::app::{App, TuiOptions, TurnCacheRecord};
     use crate::tui::history::HistoryCell;
+    use codewhale_engine::client::PromptInspection;
     use codewhale_localization::Locale;
     use codewhale_models::Message;
     use codewhale_models::Role;
@@ -590,11 +590,9 @@ mod tests {
         app.session.session_cost_cny = 3.05;
         app.session.subagent_cost = 0.11;
         app.session.subagent_cost_cny = 0.80;
-        app.session
-            .subagent_usage_sources
-            .insert(crate::cost_status::usage_source_fingerprint(
-                "response-test",
-            ));
+        app.session.subagent_usage_sources.insert(
+            codewhale_engine::cost_status::usage_source_fingerprint("response-test"),
+        );
         app.session.displayed_cost_high_water = 0.53;
         app.session.displayed_cost_high_water_cny = 3.85;
         app.session.last_prompt_cache_hit_tokens = Some(70);

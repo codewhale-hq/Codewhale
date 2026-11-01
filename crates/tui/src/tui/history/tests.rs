@@ -27,9 +27,9 @@ use super::{
     extract_reasoning_summary, render_spillover_annotation, render_thinking,
     render_thinking_with_analysis, running_status_label_with_elapsed,
 };
-use crate::session_manager::{SessionManager, create_saved_session};
-use crate::tools::plan::{PlanSnapshot, StepStatus};
 use crate::tui::motion::MotionMode;
+use codewhale_engine::session_manager::{SessionManager, create_saved_session};
+use codewhale_engine::tools::plan::{PlanSnapshot, StepStatus};
 use codewhale_models::{ContentBlock, Message, Role};
 use codewhale_tui_kit::ui_text::{
     line_to_plain, slice_visible_columns, text_display_width, text_visible_width,
@@ -42,7 +42,10 @@ use tempfile::tempdir;
 fn extension_prompt_snapshots_and_withdrawal_show_the_complete_model_input() {
     let instructions = format!("{}\nLast instruction.", "x".repeat(12_000));
     for block in [Some(instructions.as_str()), None] {
-        let message = crate::runtime_handoff::extension_prompt_contributions_runtime_message(block);
+        let message =
+            codewhale_engine::runtime_handoff::extension_prompt_contributions_runtime_message(
+                block,
+            );
         let cells = super::history_cells_from_message(&message);
         let [HistoryCell::System { content }] = cells.as_slice() else {
             panic!("runtime instructions must be shown as a system receipt");
@@ -55,7 +58,7 @@ fn extension_prompt_snapshots_and_withdrawal_show_the_complete_model_input() {
             None => assert!(content.contains("withdrawn")),
         }
     }
-    let message = crate::runtime_handoff::mcp_server_instructions_runtime_message(&[(
+    let message = codewhale_engine::runtime_handoff::mcp_server_instructions_runtime_message(&[(
         "guided".into(),
         "Search before fetching.".into(),
     )]);
@@ -177,10 +180,11 @@ fn a_system_note_leaves_a_fenced_block_verbatim() {
 
 #[test]
 fn a_system_note_leaves_inline_markup_and_table_rows_verbatim() {
-    // The renderer copies inline code, bold, strikethrough and table cells
-    // verbatim, so doubling a backslash inside one prints it doubled. These are
-    // the shapes third-party guidance brings into a note (MCP servers,
-    // extension prompts), and they already render a Windows path correctly.
+    // The renderer copies inline code and table cells verbatim, so doubling a
+    // backslash inside one prints it doubled; bold and strikethrough read a
+    // doubled backslash back as one. These are the shapes third-party guidance
+    // brings into a note (MCP servers, extension prompts), and each renders a
+    // Windows path correctly.
     for content in [
         r"see `C:\Users\asus\.codewhale` for the file".to_string(),
         r"**C:\Users\asus** is the home".to_string(),
@@ -760,7 +764,7 @@ fn multi_line_tool_output_keeps_one_row_per_source_line() {
                      crates/cli/Cargo.toml     |  1 +\n\
                      crates/cli/src/main.rs    | 47 ++++++\n\
                      crates/config/src/lib.rs  | 27 ++++\n\
-                     crates/tui/src/mcp.rs     | 384 +++++";
+                     crates/engine/src/mcp.rs     | 384 +++++";
 
     let cell = {
         let mut cell = generic_tool("read_file", ToolStatus::Success);
@@ -775,7 +779,7 @@ fn multi_line_tool_output_keeps_one_row_per_source_line() {
         "crates/cli/Cargo.toml",
         "crates/cli/src/main.rs",
         "crates/config/src/lib.rs",
-        "crates/tui/src/mcp.rs",
+        "crates/engine/src/mcp.rs",
     ] {
         assert!(
             transcript_text.contains(needle),
@@ -2273,7 +2277,7 @@ fn a_plan_card_surfaces_every_populated_artifact_section() {
             objective: Some("Make Plan mode reviewable".to_string()),
             context_summary: Some("Grounded in issue #2691".to_string()),
             sources_used: vec!["gh issue view 2691".to_string()],
-            critical_files: vec!["crates/tui/src/tools/plan.rs".to_string()],
+            critical_files: vec!["crates/engine/src/tools/plan.rs".to_string()],
             constraints: vec!["Keep To-do primary".to_string()],
             recommended_approach: Some(
                 "Enrich update_plan without breaking legacy calls".to_string(),
@@ -2281,7 +2285,7 @@ fn a_plan_card_surfaces_every_populated_artifact_section() {
             verification_plan: Some("Run focused renderer tests".to_string()),
             risks_and_unknowns: Some("Metadata-only plans can disappear".to_string()),
             handoff_packet: Some("Next agent should inspect relay output".to_string()),
-            items: vec![crate::tools::plan::PlanItemArg {
+            items: vec![codewhale_engine::tools::plan::PlanItemArg {
                 step: "Render artifact sections".to_string(),
                 status: StepStatus::InProgress,
             }],
@@ -2463,7 +2467,7 @@ fn replay_routes_repair_receipts_and_plan_calls_to_typed_cells() {
             input: serde_json::json!({
                 "objective": "Make Plan mode reviewable",
                 "sources_used": ["gh issue view 2691"],
-                "critical_files": ["crates/tui/src/tools/plan.rs"],
+                "critical_files": ["crates/engine/src/tools/plan.rs"],
                 "plan": [
                     { "step": "render replay card", "status": "completed" }
                 ]
@@ -3332,10 +3336,8 @@ fn first_file_line_reference_skips_unresolvable_and_malformed_rows() {
 #[test]
 fn workspace_trust_warning_renders_no_transcript_cell() {
     for warning in [Some("untrusted project skills were skipped"), None] {
-        let message = crate::runtime_handoff::workspace_trust_runtime_message(warning);
-        assert!(crate::runtime_handoff::is_internal_runtime_handoff(
-            &message
-        ));
+        let message = codewhale_engine::runtime_handoff::workspace_trust_runtime_message(warning);
+        assert!(codewhale_engine::runtime_handoff::is_internal_runtime_handoff(&message));
         assert!(
             super::history_cells_from_message(&message).is_empty(),
             "{warning:?}"
@@ -3554,7 +3556,7 @@ fn save_and_load_session_preserves_rich_update_plan_tool_payload() {
                 input: serde_json::json!({
                     "objective": "Make Plan mode reviewable",
                     "sources_used": ["gh issue view 2691"],
-                    "critical_files": ["crates/tui/src/tools/plan.rs"],
+                    "critical_files": ["crates/engine/src/tools/plan.rs"],
                     "constraints": ["Preserve legacy update_plan payloads"],
                     "verification_plan": "Run focused plan tests",
                     "handoff_packet": "Next agent should inspect replay",
@@ -3594,7 +3596,7 @@ fn save_and_load_session_preserves_rich_update_plan_tool_payload() {
     );
     assert_eq!(
         cell.snapshot.critical_files,
-        vec!["crates/tui/src/tools/plan.rs"]
+        vec!["crates/engine/src/tools/plan.rs"]
     );
     assert_eq!(cell.snapshot.items[0].status, StepStatus::Completed);
 }

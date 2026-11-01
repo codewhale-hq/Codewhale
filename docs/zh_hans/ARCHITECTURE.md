@@ -124,8 +124,8 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
   原型；仅是形态，还不是生产分发路径。
 - **`crates/core`** - 提供商中立的请求构造（`request.rs`）、有界上下文片段、
   工具调用解析器，以及线程/会话类型。它**不**拥有智能体循环：现行回合循环是
-  `crates/tui/src/core/engine/turn_loop.rs` 里的 `Engine::run_turn`，而
-  `crates/tui/src/core/` 是 TUI crate 内部的模块，不是这个 crate 的。这里曾有一棵
+  `crates/engine/src/core/engine/turn_loop.rs` 里的 `Engine::run_turn`，而
+  `crates/engine/src/core/` 是 TUI crate 内部的模块，不是这个 crate 的。这里曾有一棵
   占位的 `engine/` 目录树让人误解——它没有任何调用方，还会在不接触模型的情况下
   发出 `TurnComplete`——已在 v0.9.11 移除。源码守卫跟踪已解析的本地阶段调用，
   仍拒绝未登记的循环 owner。ACP stdio 投影现有 Runtime manager 与 Engine，
@@ -139,7 +139,7 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
 - **`crates/execpolicy`** - 用于工具执行决策的审批（approval）/沙箱（sandbox）策略引擎。
 - **`crates/hooks`** - 响应、工具、作业和审批生命周期事件的事件接收端（sink：stdout、
   JSONL 文件、webhook、Unix socket），外加可选启用的 lifecycle outbox。
-  用户在工具调用前后运行命令的自定义 shell 钩子（hook）是 `crates/tui/src/hooks.rs`
+  用户在工具调用前后运行命令的自定义 shell 钩子（hook）是 `crates/engine/src/hooks.rs`
   里的另一套系统。
 - **`crates/localization`** - 面向用户的 UI 界面字符串的语言环境注册表
   （`crates/localization/locales/*.json`）；它从不改变提示词（prompt）或模型

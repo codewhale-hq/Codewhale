@@ -1,0 +1,240 @@
+[package]
+name = "codewhale-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale engine: turn loop, tools, agents, context, sessions and model clients"
+# Test sources, extension-host build inputs and dev-only assets are kept for
+# CI and local runs; the published package omits them (crates.io 10 MiB cap).
+exclude = [
+  "tests/**",
+  "src/**/tests.rs",
+  "src/**/tests/**",
+  "src/**/*_tests.rs",
+  "src/**/test_cases_*.rs",
+  "src/**/*_legacy.rs",
+  "src/**/*test_support.rs",
+  "src/**/*acceptance.rs",
+  "src/llm_client/mock.rs",
+  "src/compaction/survival_contract.rs",
+  "src/compaction/SURVIVAL_CONTRACT.md",
+  "src/compaction/fixtures/**",
+  "src/pricing/default_coverage_unpriced.json",
+  "extension-host/test/**",
+  "extension-host/node_modules/**",
+  "extension-host/build.mjs",
+  "extension-host/compile-host.mjs",
+  "extension-host/package-lock.json",
+  "extension-host/scripts/**",
+  "extension-host/src/**/*.ts",
+  "extension-host/src/dsh/dsh-tools-compat.js",
+  "extension-host/dist/agent-presets.mjs",
+  "extension-host/dist/avatars.mjs",
+  "extension-host/dist/builtin-modules.json",
+  "extension-host/dist/protocol.mjs",
+  "extension-host/dist/rpc.mjs",
+  "extension-host/dist/shell-hooks.mjs",
+  "extension-host/dist/skills.mjs",
+  "extension-host/dist/stock-adapters.mjs",
+]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Test-only behavior (sealed homes, mock model client, no keychain) for this
+# crate's own tests and for dependents' tests that drive engine code.
+test-support = [
+    "codewhale-runtime/test-support",
+    "codewhale-runtime/test-thread-scoped-state",
+    "codewhale-config/test-support",
+    "codewhale-agent-contract/test-support",
+    "codewhale-dependencies/test-support",
+    "codewhale-error-taxonomy/test-support",
+    "codewhale-lsp/test-support",
+    "codewhale-models/test-support",
+    "codewhale-plugins/test-support",
+    "codewhale-sandbox/test-support",
+    "codewhale-skill-install/test-support",
+    "codewhale-skills/test-support",
+    "codewhale-snapshot/test-support",
+    "codewhale-util/test-support",
+    "dep:wiremock",
+]
+long-running-tests = []
+test-thread-scoped-state = []
+
+[lib]
+name = "codewhale_engine"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# Independent terminal kit, pinned and vendored for reproducible binary builds.
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.1.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
+codewhale-memory = { path = "../memory", version = "0.10.2" }
+anyhow.workspace = true
+codewhale-agent = { path = "../agent", version = "0.10.2" }
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2" }
+codewhale-app-server = { path = "../app-server", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
+codewhale-commands = { path = "../commands", version = "0.10.2" }
+codewhale-core = { path = "../core", version = "0.10.2" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
+codewhale-lane = { path = "../lane", version = "0.10.2" }
+codewhale-mcp = { path = "../mcp", version = "0.10.2" }
+codewhale-models = { path = "../models", version = "0.10.2" }
+codewhale-net = { path = "../net", version = "0.10.2" }
+codewhale-palette = { path = "../palette", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.2" }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2" }
+codewhale-lsp = { path = "../lsp", version = "0.10.2" }
+codewhale-repl = { path = "../repl", version = "0.10.2" }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2" }
+codewhale-plugins = { path = "../plugins", version = "0.10.2" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
+codewhale-skills = { path = "../skills", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2" }
+codewhale-tools = { path = "../tools", version = "0.10.2" }
+codewhale-workflow = { path = "../workflow", version = "0.10.2" }
+codewhale-workflow-js = { path = "../workflow-js", version = "0.10.2" }
+async-stream = "0.3.6"
+async-trait.workspace = true
+base64 = "0.23.1"
+axum.workspace = true
+clap.workspace = true
+crossterm = "0.29"
+encoding_rs.workspace = true
+fd-lock = "4.0.4"
+dirs.workspace = true
+futures-util = "0.3.31"
+oauth2 = { version = "5", default-features = false }
+# No ratatui-core pin: ColorCompatBackend answers `get_cursor_position()`
+# from tracked state (ratatui#2640's recommended workaround), so the CPR query
+# inside `Terminal::clear()` no longer races the input loop. See
+# `tui/color_compat.rs`.
+ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
+regex = "1.11"
+reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
+rquickjs.workspace = true
+rmcp = { version = "3.7.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
+rustls.workspace = true
+similar = { version = "3", features = ["unicode"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+shellexpand = "3"
+# Grammar-exact Rust parsing for the post-edit syntax gate (#6204). `syn` is
+# already in the lockfile as a proc-macro build dependency; this reuses that
+# same version rather than vendoring a second parser (#6151). `span-locations`
+# is what turns a parse failure into the `line:column` the model needs — the
+# feature is inert without it.
+syn = { version = "3.0.3", default-features = false, features = ["full", "parsing"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+toml.workspace = true
+toml_edit.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.16", features = ["io"] }
+unicode-width = "0.2"
+unicode-normalization = "0.1"
+urlencoding = "2.1"
+# Structcopy uses the URL parser directly so its portable closure needs no HTTP client.
+url = "2.5"
+uuid.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tower-http.workspace = true
+wait-timeout = "0.2"
+webbrowser = "1.0"
+shlex = "2.0.1"
+globset = "0.4"
+ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Already a regular dependency of codewhale-workflow-js (so already linked into
+# this binary); the extension host validates tool input against the schema the
+# plugin registered with it.
+jsonschema.workspace = true
+htmd = "0.5.4"
+# lru >= 0.18.2 fixes RUSTSEC-2026-0253 (panic-unsafe `pop()`).
+lru = "0.18"
+parking_lot = "0.12"
+tar = "0.4"
+# Vendored static liblzma keeps the full-fidelity session archive export
+# (`session_export`) hermetic on every release target; no system xz headers.
+# liblzma is the maintained, API-compatible continuation of xz2.
+liblzma = { version = "0.4", features = ["static"] }
+sha2.workspace = true
+# Reuse the locked cryptographic implementation for exact-call user decisions.
+ring = "0.17"
+semver.workspace = true
+codewhale-localization = { path = "../localization", version = "0.10.2" }
+shell-words = "1.1.1"
+
+wiremock = { version = "0.6", optional = true }
+
+[build-dependencies]
+codewhale-build-support = { path = "../build-support", version = "0.10.2" }
+
+[dev-dependencies]
+codewhale-skills = { path = "../skills", version = "0.10.2", features = ["test-support"] }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2", features = ["test-support"] }
+codewhale-lsp = { path = "../lsp", version = "0.10.2", features = ["test-support"] }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.2", features = ["test-support"] }
+codewhale-config = { path = "../config", version = "0.10.2", features = ["schema", "test-support"] }
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.2", features = [
+    "test-support",
+] }
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = [
+    "test-support",
+    "test-thread-scoped-state",
+] }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.2", features = ["test-support"] }
+codewhale-plugins = { path = "../plugins", version = "0.10.2", features = ["test-support"] }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
+codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }
+codewhale-models = { path = "../models", version = "0.10.2", features = [
+    "test-support",
+] }
+cucumber = "0.23.0"
+wiremock = "0.6"
+tiny_http = "0.12"
+pretty_assertions = "1.4"
+rio-vt = "0.5.1"
+rusqlite.workspace = true
+schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
+tokio-tungstenite = "0.30"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
+
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))'.dependencies]
+arboard = { version = "3.4", features = ["wayland-data-control"] }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+portable-pty = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

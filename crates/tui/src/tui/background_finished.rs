@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use codewhale_localization::{Locale, MessageId, tr};
 
-use crate::tools::subagent::SubAgentStatus;
 use codewhale_config::notifications::SubagentCompletionNotification;
+use codewhale_engine::tools::subagent::SubAgentStatus;
 use codewhale_notify::payload::{NotificationPayload, PREVIEW_MAX_CHARS, sanitize_field};
 
 /// Finished background shells kept listed (muted) in the dock.
@@ -144,7 +144,7 @@ impl FinishedWork {
             return None;
         }
         let result = self.result.as_deref()?;
-        let headline = crate::agent_roster::result_headline(result)?;
+        let headline = codewhale_engine::agent_roster::result_headline(result)?;
         let bounded = crate::tui::notifications::text_summary(&headline)?;
         let whole = result
             .lines()

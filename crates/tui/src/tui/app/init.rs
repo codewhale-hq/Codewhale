@@ -133,7 +133,8 @@ impl App {
         }
         let selected = startup_config.apply_saved_selection(&settings);
         let config = &startup_config;
-        let startup_route_configured = crate::local_ollama::startup_route_configured(config);
+        let startup_route_configured =
+            codewhale_engine::local_ollama::startup_route_configured(config);
         // Provider and model come from the same resolved config, even on the
         // first run. An options default must not replace a configured model.
         let model = if selected || startup_route_configured {
@@ -363,8 +364,8 @@ impl App {
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         // `settings.toml [enabled_models]` is no longer read (#6533): the
         // picker ranks by use, which this index derives from saved sessions.
-        let route_usage = crate::model_relevance::SharedRouteUsage::default();
-        crate::model_relevance::spawn_build(route_usage.clone());
+        let route_usage = codewhale_engine::model_relevance::SharedRouteUsage::default();
+        codewhale_engine::model_relevance::spawn_build(route_usage.clone());
         let active_context_window_override = provider_identity
             .as_ref()
             .and_then(|identity| config.context_window_for_provider_config(identity));
@@ -385,9 +386,9 @@ impl App {
                 }),
                 configured_route_base_url,
                 if active_context_window_override.is_some() {
-                    crate::route_runtime::ContextWindowSource::Configured
+                    codewhale_engine::route_runtime::ContextWindowSource::Configured
                 } else {
-                    crate::route_runtime::ContextWindowSource::Fallback
+                    codewhale_engine::route_runtime::ContextWindowSource::Fallback
                 },
                 None,
             )
@@ -396,7 +397,7 @@ impl App {
                 .as_ref()
                 .ok_or_else(|| "provider identity unavailable".to_string())
                 .and_then(|identity| {
-                    crate::route_runtime::resolve_runtime_route_for_identity(
+                    codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
                         &effective_auth_config,
                         identity,
                         Some(&model),
@@ -404,7 +405,9 @@ impl App {
                 })
                 .map(|resolution| {
                     (
-                        crate::route_budget::known_route_limits(resolution.candidate.limits()),
+                        codewhale_engine::route_budget::known_route_limits(
+                            resolution.candidate.limits(),
+                        ),
                         resolution.candidate.endpoint().base_url.clone(),
                         resolution.context_window.source,
                         Some(resolution.context_window),
@@ -413,7 +416,7 @@ impl App {
                 .unwrap_or((
                     None,
                     configured_route_base_url,
-                    crate::route_runtime::ContextWindowSource::Fallback,
+                    codewhale_engine::route_runtime::ContextWindowSource::Fallback,
                     None,
                 ))
         };
@@ -437,7 +440,7 @@ impl App {
             model.as_str()
         };
         let compact_threshold =
-            crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
+            codewhale_engine::route_budget::compaction_threshold_for_route_at_percent_with_window(
                 provider,
                 threshold_model,
                 active_route_limits,
@@ -447,7 +450,7 @@ impl App {
         let auto_compact = if auto_compact_user_configured {
             settings_auto_compact
         } else {
-            crate::route_budget::auto_compact_default_for_route(
+            codewhale_engine::route_budget::auto_compact_default_for_route(
                 provider,
                 threshold_model,
                 active_route_limits,
@@ -627,7 +630,7 @@ impl App {
 
         // Initialize hooks executor from config, reviewed plugin snapshots,
         // then project-local `.codewhale/hooks.toml` (#3026).
-        let hooks_config = crate::hooks::config::load_with_project_and_plugins(
+        let hooks_config = codewhale_engine::hooks::config::load_with_project_and_plugins(
             config.hooks_config(),
             &workspace,
             Some(plugin_registry.as_ref()),
@@ -651,8 +654,10 @@ impl App {
         // Initialize plan state
         let plan_state = new_shared_plan_state();
         let todos = new_shared_todo_list();
-        let work_runtime =
-            crate::work_graph::new_shared_work_runtime(todos.clone(), plan_state.clone());
+        let work_runtime = codewhale_engine::work_graph::new_shared_work_runtime(
+            todos.clone(),
+            plan_state.clone(),
+        );
 
         let skills_config = std::sync::Arc::new(config.skills_config());
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
@@ -687,7 +692,7 @@ impl App {
                 _ => (String::new(), 0, false),
             };
         let (mcp_configured_count, mcp_connecting) =
-            crate::mcp::load_config_with_workspace_and_plugins(
+            codewhale_engine::mcp::load_config_with_workspace_and_plugins(
                 &mcp_config_path,
                 &workspace,
                 plugin_registry.as_ref(),
@@ -716,7 +721,7 @@ impl App {
                     .filter(|(_, server)| server.is_enabled())
                     .filter(|(name, server)| {
                         server.required
-                            || crate::mcp::tool_selection_covers_server(&requested, name)
+                            || codewhale_engine::mcp::tool_selection_covers_server(&requested, name)
                     })
                     .map(|(name, _)| name.clone())
                     .collect::<Vec<_>>();
@@ -865,7 +870,8 @@ impl App {
             provider_identity: provider_identity.clone(),
             provider_chain,
             provider_readiness,
-            provider_health: crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            provider_health:
+                codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
             last_fallback_reason: None,
             model_ids_passthrough,
             active_route_limits,
@@ -951,8 +957,8 @@ impl App {
             constitution_reviewed_digest: None,
             cost_currency,
             billing_presentation: provider_identity.as_ref().map_or(
-                crate::route_billing::BillingPresentation::Unknown,
-                |identity| crate::route_billing::for_route(config, identity),
+                codewhale_engine::route_billing::BillingPresentation::Unknown,
+                |identity| codewhale_engine::route_billing::for_route(config, identity),
             ),
             composer_density,
             composer_border,
@@ -1221,7 +1227,7 @@ impl App {
             title_default: config
                 .title
                 .as_deref()
-                .map(crate::session_manager::sanitize_session_title)
+                .map(codewhale_engine::session_manager::sanitize_session_title)
                 .map(|title| title.trim().to_string())
                 .filter(|title| !title.is_empty()),
             receipt_text: None,

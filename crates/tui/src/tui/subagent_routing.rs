@@ -2,11 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
-use crate::tools::subagent::{
-    AgentWorkerStatus, MailboxMessage, SubAgentResult, SubAgentStatus,
-    subagent_progress_tool_display_name,
-};
 use crate::tui::app::{
     AgentCurrentActivity, AgentCurrentActivityStatus, AgentProgressMeta, AgentRecentAction, App,
     MAX_AGENT_RECENT_ACTIONS, TaskPanelEntry, TaskPanelEntryKind, bound_agent_activity_text,
@@ -19,6 +14,11 @@ use crate::tui::widgets::agent_card::{
 };
 use crate::tui::workspace_context;
 use codewhale_config::AppMode;
+use codewhale_engine::task_manager::{TaskRecord, TaskStatus, TaskSummary};
+use codewhale_engine::tools::subagent::{
+    AgentWorkerStatus, MailboxMessage, SubAgentResult, SubAgentStatus,
+    subagent_progress_tool_display_name,
+};
 
 /// Keep settled cards visible briefly, then archive them from the compact
 /// live projection. Their transcript card and persisted agent record remain
@@ -485,8 +485,9 @@ pub(super) fn handle_subagent_mailbox_for_turn(
         } else {
             source_id.clone()
         };
-        let source_fingerprint = crate::cost_status::usage_source_fingerprint(&stable_source);
-        if crate::cost_status::usage_source_seen(&stable_source) {
+        let source_fingerprint =
+            codewhale_engine::cost_status::usage_source_fingerprint(&stable_source);
+        if codewhale_engine::cost_status::usage_source_seen(&stable_source) {
             // The runtime sink runs synchronously before mailbox publication.
             // Fold its identity and money into App together, before a following
             // TurnComplete can snapshot either half. A post-seal response has
@@ -495,7 +496,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
                 .session
                 .subagent_usage_sources
                 .contains(&source_fingerprint);
-            let pending_runtime_cost = crate::cost_status::drain();
+            let pending_runtime_cost = codewhale_engine::cost_status::drain();
             if !pending_runtime_cost.is_empty() {
                 app.absorb_pending_background_cost(&pending_runtime_cost);
             }
@@ -684,11 +685,11 @@ fn bounded_mailbox_message(message: &MailboxMessage) -> MailboxMessage {
         // change what the ledger says.
         MailboxMessage::WorkState { agent_id, todo } => MailboxMessage::WorkState {
             agent_id: agent_id.clone(),
-            todo: crate::tools::todo::TodoListSnapshot {
+            todo: codewhale_engine::tools::todo::TodoListSnapshot {
                 items: todo
                     .items
                     .iter()
-                    .map(|item| crate::tools::todo::TodoItem {
+                    .map(|item| codewhale_engine::tools::todo::TodoItem {
                         content: bound_agent_activity_text(&item.content),
                         ..item.clone()
                     })
@@ -1032,10 +1033,10 @@ fn format_task_detail(task: &TaskRecord) -> String {
     } else {
         for tool in &task.tool_calls {
             let status = match tool.status {
-                crate::task_manager::TaskToolStatus::Running => "running",
-                crate::task_manager::TaskToolStatus::Success => "success",
-                crate::task_manager::TaskToolStatus::Failed => "failed",
-                crate::task_manager::TaskToolStatus::Canceled => "canceled",
+                codewhale_engine::task_manager::TaskToolStatus::Running => "running",
+                codewhale_engine::task_manager::TaskToolStatus::Success => "success",
+                codewhale_engine::task_manager::TaskToolStatus::Failed => "failed",
+                codewhale_engine::task_manager::TaskToolStatus::Canceled => "canceled",
             };
             let mut line = format!(
                 "- {} [{}] {}",
@@ -1078,12 +1079,12 @@ fn format_task_detail(task: &TaskRecord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task_manager::{TaskStatus, TaskSummary};
-    use crate::tools::subagent::SubAgentAssignment;
     use crate::tui::app::{InitialInput, TuiOptions};
     use crate::tui::widgets::agent_card::AgentLifecycle;
     use chrono::Utc;
     use codewhale_agent_contract::role::FleetRole;
+    use codewhale_engine::task_manager::{TaskStatus, TaskSummary};
+    use codewhale_engine::tools::subagent::SubAgentAssignment;
     use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
@@ -1102,8 +1103,8 @@ mod tests {
     fn test_route(
         provider: codewhale_config::ProviderKind,
         model: &str,
-    ) -> crate::cost_status::EffectiveRouteEnvelope {
-        crate::cost_status::EffectiveRouteEnvelope::capture(
+    ) -> codewhale_engine::cost_status::EffectiveRouteEnvelope {
+        codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
             None,
             provider,
             provider.as_str(),
@@ -1790,7 +1791,7 @@ mod tests {
     /// parent's, never a sibling's, and never as transcript messages.
     #[test]
     fn sibling_child_cards_render_disjoint_todo_lists() {
-        use crate::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
+        use codewhale_engine::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 
         fn snapshot(id: u32, content: &str) -> TodoListSnapshot {
             TodoListSnapshot {
@@ -1887,7 +1888,7 @@ mod tests {
     /// invent or overwrite what the agent is currently doing.
     #[test]
     fn work_state_updates_todos_remaining_without_rewriting_activity() {
-        use crate::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
+        use codewhale_engine::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 
         let mut app = App::new(test_options(), &Config::default());
         assert!(handle_subagent_mailbox(
@@ -1973,11 +1974,11 @@ mod tests {
             3,
             &MailboxMessage::WorkState {
                 agent_id: "agent_x".to_string(),
-                todo: crate::tools::todo::TodoListSnapshot {
-                    items: vec![crate::tools::todo::TodoItem {
+                todo: codewhale_engine::tools::todo::TodoListSnapshot {
+                    items: vec![codewhale_engine::tools::todo::TodoItem {
                         id: 1,
                         content: "keep reading".to_string(),
-                        status: crate::tools::todo::TodoStatus::InProgress,
+                        status: codewhale_engine::tools::todo::TodoStatus::InProgress,
                     }],
                     completion_pct: 0,
                     in_progress_id: Some(1),
@@ -2009,11 +2010,11 @@ mod tests {
             2,
             &MailboxMessage::WorkState {
                 agent_id: "agent_secret".to_string(),
-                todo: crate::tools::todo::TodoListSnapshot {
-                    items: vec![crate::tools::todo::TodoItem {
+                todo: codewhale_engine::tools::todo::TodoListSnapshot {
+                    items: vec![codewhale_engine::tools::todo::TodoItem {
                         id: 4,
                         content: format!("rotate api_key={secret}"),
-                        status: crate::tools::todo::TodoStatus::InProgress,
+                        status: codewhale_engine::tools::todo::TodoStatus::InProgress,
                     }],
                     completion_pct: 0,
                     in_progress_id: Some(4),

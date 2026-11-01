@@ -35,9 +35,6 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
 };
 
-use crate::client::system_one::DecisionRouterRoute;
-use crate::model_inventory::ModelInventory;
-use crate::model_routing::{AutoRouteSelection, provider_router_candidates};
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::history::HistoryCell;
 use crate::tui::views::{
@@ -45,6 +42,9 @@ use crate::tui::views::{
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
 use codewhale_config::ProviderKind;
+use codewhale_engine::client::system_one::DecisionRouterRoute;
+use codewhale_engine::model_inventory::ModelInventory;
+use codewhale_engine::model_routing::{AutoRouteSelection, provider_router_candidates};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::{AutoConfig, AutoRouterConfig, Config};
@@ -250,7 +250,7 @@ pub(crate) fn persist_auto_router(
 pub(crate) async fn handle_router_request(
     app: &mut App,
     config: &mut Config,
-    task_manager: &crate::task_manager::TaskManager,
+    task_manager: &codewhale_engine::task_manager::TaskManager,
     request: RouterRequest,
 ) {
     match request {
@@ -304,15 +304,15 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
                 .router = Some(router.clone());
             let mut lines = vec![router_summary(router, locale)];
             // Captured before the call, like any background provider request.
-            let cost_scope = crate::cost_status::scope_token();
-            match crate::model_routing::test_auto_router(&candidate).await {
+            let cost_scope = codewhale_engine::cost_status::scope_token();
+            match codewhale_engine::model_routing::test_auto_router(&candidate).await {
                 Ok((selection, latency_ms)) => {
                     // The test call is real spend: settle it into session
                     // cost exactly as a turn's routing call is settled.
-                    crate::cost_status::report_runtime_usage_batch(
+                    codewhale_engine::cost_status::report_runtime_usage_batch(
                         cost_scope,
                         None,
-                        &crate::cost_status::RuntimeUsageBatch {
+                        &codewhale_engine::cost_status::RuntimeUsageBatch {
                             decisions: Vec::new(),
                             records: selection.routed_usage.clone(),
                             drop_records: selection.routed_usage_drop_records.clone(),
@@ -341,7 +341,7 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
 async fn save_preset(
     app: &mut App,
     config: &mut Config,
-    task_manager: &crate::task_manager::TaskManager,
+    task_manager: &codewhale_engine::task_manager::TaskManager,
     preset: RouterPreset,
 ) {
     let locale = app.ui_locale;
@@ -426,7 +426,10 @@ fn describe_test_selection(
     let percent = |bp: u16| format!("{}%", (u32::from(bp) + 50) / 100);
     let mut lines = vec![
         tr(locale, MessageId::RouterTestWouldRoute)
-            .replace("{request}", crate::model_routing::ROUTER_TEST_REQUEST)
+            .replace(
+                "{request}",
+                codewhale_engine::model_routing::ROUTER_TEST_REQUEST,
+            )
             .replace(
                 "{provider}",
                 selection

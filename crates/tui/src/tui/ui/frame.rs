@@ -20,12 +20,12 @@ pub(crate) fn info_context_percent(app: &App) -> u8 {
 /// Incomplete cost includes its receipt's reason, including an unclassified
 /// billing route. A provider switch cannot erase earlier missing coverage.
 pub(crate) fn session_cost_label(app: &App) -> String {
-    use crate::route_billing::UsageChip;
+    use codewhale_engine::route_billing::UsageChip;
     let usage_chip = app.cumulative_usage_chip();
     match &usage_chip {
         UsageChip::Money(amount) => Some(amount.clone()),
         UsageChip::PricedSubtotal { .. } | UsageChip::Unknown(_) => {
-            crate::route_billing::format_usage_chip(&usage_chip, app.ui_locale)
+            codewhale_engine::route_billing::format_usage_chip(&usage_chip, app.ui_locale)
         }
         _ => None,
     }
@@ -42,7 +42,7 @@ pub(crate) fn billing_tier_label(app: &App, now: chrono::DateTime<chrono::Utc>) 
     if app.auto_model || !matches!(app.api_provider, ProviderKind::Deepseek) {
         return None;
     }
-    let peak = crate::pricing::deepseek_time_tier(&app.model, now)?;
+    let peak = codewhale_engine::pricing::deepseek_time_tier(&app.model, now)?;
     let id = if peak {
         MessageId::InfoLinePeak
     } else {
@@ -194,7 +194,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
     // reported progress with its bar. Painted only while a goal is actually
     // active — the percent is the model's own estimate, and the row never
     // invents one for a goal that has not reported.
-    if app.goal.status == crate::tools::goal::GoalStatus::Active
+    if app.goal.status == codewhale_engine::tools::goal::GoalStatus::Active
         && app.goal.objective.is_some()
         && let Some(started) = app.goal.started_at
     {
@@ -208,7 +208,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
             Some(progress) => format!(
                 "({elapsed}) {}% {}",
                 progress.percent,
-                crate::tools::goal::goal_progress_bar(progress.percent)
+                codewhale_engine::tools::goal::goal_progress_bar(progress.percent)
             ),
             None => format!("({elapsed})"),
         };
@@ -252,7 +252,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
         && let Some(balance) = app.balance_cell.lock().ok().and_then(|guard| {
             guard
                 .as_ref()
-                .and_then(crate::pricing::BalanceInfo::chip_label)
+                .and_then(codewhale_engine::pricing::BalanceInfo::chip_label)
         })
     {
         segments.push(InfoSegment::new(
@@ -809,7 +809,7 @@ pub(crate) fn session_shell_area(area: Rect) -> Rect {
 ///   text or block the turn outright. Running them would give a *preview* the
 ///   side effects of a submit. So when any are configured, nothing downstream
 ///   of the text can be claimed exact and the whole manifest reports
-///   [`crate::core::engine::preview::PreviewUnresolved::MessageSubmitHooksConfigured`] —
+///   [`codewhale_engine::core::engine::preview::PreviewUnresolved::MessageSubmitHooksConfigured`] —
 ///   including under a
 ///   fixed model, because the tool policy is derived from the content too.
 /// - **Consuming the active skill.** A real submit *takes* `app.active_skill`.
@@ -826,8 +826,10 @@ pub(crate) async fn build_preview_request_inputs(
     config: &Config,
     engine_handle: &EngineHandle,
     hypothetical_prompt: Option<String>,
-) -> crate::core::engine::preview::PreviewRequestInputs {
-    use crate::core::engine::preview::{PreviewNextTurn, PreviewRequestInputs, PreviewUnresolved};
+) -> codewhale_engine::core::engine::preview::PreviewRequestInputs {
+    use codewhale_engine::core::engine::preview::{
+        PreviewNextTurn, PreviewRequestInputs, PreviewUnresolved,
+    };
 
     let requested_model = if app.auto_model {
         "auto".to_string()
@@ -843,7 +845,7 @@ pub(crate) async fn build_preview_request_inputs(
         approval_mode: app.approval_mode,
         allowed_tools: app.active_allowed_tools.clone(),
         dynamic_tools: Vec::new(),
-        provenance: crate::core::ops::UserInputProvenance::ExternalUser,
+        provenance: codewhale_engine::core::ops::UserInputProvenance::ExternalUser,
         requested_model: requested_model.clone(),
         requested_reasoning: app.reasoning_effort.as_setting().to_string(),
         auto_model: app.auto_model,
@@ -938,24 +940,29 @@ pub(crate) async fn build_preview_request_inputs(
 
     match planned {
         Ok(planned) => {
-            let mut prompt_context = crate::core::engine::NextTurnPromptContext::for_planned_turn(
-                planned.route.identity.provider,
-                planned.route.model.clone(),
-                crate::route_budget::known_route_limits(planned.route.candidate.limits()),
-                app.mode,
-                paused_dispatch.goal_objective(app),
-                app.goal.status,
-                app.goal.token_budget,
-                app.translation_enabled,
-                app.verbosity.clone(),
-            );
+            let mut prompt_context =
+                codewhale_engine::core::engine::NextTurnPromptContext::for_planned_turn(
+                    planned.route.identity.provider,
+                    planned.route.model.clone(),
+                    codewhale_engine::route_budget::known_route_limits(
+                        planned.route.candidate.limits(),
+                    ),
+                    app.mode,
+                    paused_dispatch.goal_objective(app),
+                    app.goal.status,
+                    app.goal.token_budget,
+                    app.translation_enabled,
+                    app.verbosity.clone(),
+                );
             prompt_context.context_window = Some(planned.route.context_window);
             let effort = planned.effective_reasoning_effort.as_deref();
             prompt_context.planned_output_tokens = Some(
-                crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
                     planned.route.identity.provider,
                     &planned.route.model,
-                    crate::route_budget::known_route_limits(planned.route.candidate.limits()),
+                    codewhale_engine::route_budget::known_route_limits(
+                        planned.route.candidate.limits(),
+                    ),
                     Some(planned.route.context_window.tokens),
                     None,
                     effort,
@@ -992,7 +999,9 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
     EngineConfig {
         user_input_responder: true,
-        session_checkpoint_backend: Some(crate::core::events::SessionCheckpointProjection::Exact),
+        session_checkpoint_backend: Some(
+            codewhale_engine::core::events::SessionCheckpointProjection::Exact,
+        ),
         model: app.model.clone(),
         active_route_limits: app.active_route_limits,
         workspace: app.workspace.clone(),
@@ -1032,22 +1041,23 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagents_enabled: identity
             .is_some_and(|identity| config.subagents_enabled_for_provider(identity)),
         features: config.features(),
-        auto_review_policy: crate::core::authority::auto_review::AutoReviewPolicy::from_config(
-            config,
-        ),
+        auto_review_policy:
+            codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(config),
         compaction: app.compaction_config(),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         goal_state: app.last_known_goal_state.as_ref().map_or_else(
             || {
-                crate::tools::goal::new_shared_goal_state_from_host_status(
+                codewhale_engine::tools::goal::new_shared_goal_state_from_host_status(
                     app.goal.objective.clone(),
                     app.goal.token_budget,
                     app.goal.status,
                 )
             },
             |goal| {
-                crate::tools::goal::new_shared_goal_state_from_snapshot(&goal.to_runtime_snapshot())
+                codewhale_engine::tools::goal::new_shared_goal_state_from_snapshot(
+                    &goal.to_runtime_snapshot(),
+                )
             },
         ),
         max_spawn_depth: identity.map_or_else(
@@ -1074,11 +1084,13 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
-        fleet_roster: std::sync::Arc::new(crate::fleet::identity::load_effective_roster(
-            &config.fleet_config(),
-            &app.workspace,
-            Some(app.extension_plugin_view().as_ref()),
-        )),
+        fleet_roster: std::sync::Arc::new(
+            codewhale_engine::fleet::identity::load_effective_roster(
+                &config.fleet_config(),
+                &app.workspace,
+                Some(app.extension_plugin_view().as_ref()),
+            ),
+        ),
         subagent_api_timeout: Duration::from_secs(identity.map_or_else(
             || config.subagent_api_timeout_secs(),
             |identity| config.subagent_api_timeout_secs_for_provider(identity),
@@ -1123,7 +1135,9 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_base_url: config.search.as_ref().and_then(|s| s.base_url.clone()),
         search_native: config.search_native(),
         tools_always_load: config.tools_always_load(),
-        user_input_limits: crate::tools::user_input::UserInputLimits::from_config(config),
+        user_input_limits: codewhale_engine::tools::user_input::UserInputLimits::from_config(
+            config,
+        ),
         user_input_timeout: config.user_input_timeout(),
         goal_max_steps: Some(config.goal_max_steps()),
         tools: config.tools.clone(),
@@ -1133,8 +1147,8 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         advisor_config: config
             .advisor
             .as_ref()
-            .map(crate::tools::subagent::AdvisorConfig::from_toml)
-            .unwrap_or_else(crate::tools::subagent::AdvisorConfig::disabled),
+            .map(codewhale_engine::tools::subagent::AdvisorConfig::from_toml)
+            .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     }
 }
 
@@ -1157,32 +1171,32 @@ pub(crate) fn build_app_system_prompt_with_goal(
     // Keep the previewed/rebuilt prompt identical to the engine's: the
     // recovery hint is part of the prefix when a prior workspace session
     // ended mid-turn (#5715).
-    let recovery_hint = crate::session_manager::session_recovery_hint(
+    let recovery_hint = codewhale_engine::session_manager::session_recovery_hint(
         &app.workspace,
         app.current_session_id.as_deref(),
     );
-    let settings = crate::project_context::InstructionSettings::from_config(config);
-    let raw = crate::project_context::capture_instruction_context(
+    let settings = codewhale_engine::project_context::InstructionSettings::from_config(config);
+    let raw = codewhale_engine::project_context::capture_instruction_context(
         &app.workspace,
         &instructions,
         &settings,
     );
-    let effort = crate::core::engine::turn_loop::resolve_auto_effort(
+    let effort = codewhale_engine::core::engine::turn_loop::resolve_auto_effort(
         Some(app.reasoning_effort.as_setting()),
         app.api_provider,
         &config.active_route_base_url(),
         &app.model,
     );
-    let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
+    let budgets = codewhale_engine::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
-        crate::route_runtime::ContextWindowResolution {
+        codewhale_engine::route_runtime::ContextWindowResolution {
             tokens: app.effective_context_window(),
             source: app.effective_context_window_source(),
         }
         .instruction_budget_tokens(),
         Some({
             let (provider, model, limits, window) = app.effective_budget_route();
-            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+            codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
                 provider,
                 model,
                 limits,
@@ -1259,7 +1273,7 @@ pub(crate) fn build_session_snapshot(
     // Drop what a bounded save already archived (#6842) so the live journal
     // matches the document. No I/O: the ids come from the save path.
     if let Some(session_id) = app.current_session_id.as_deref() {
-        let archived = crate::session_manager::take_archived_journal_ids(session_id);
+        let archived = codewhale_engine::session_manager::take_archived_journal_ids(session_id);
         if let Err(error) = app.session_journal.remove_entries(&archived) {
             tracing::warn!(%error, "kept archived journal entries in memory");
         }
@@ -1288,7 +1302,7 @@ pub(crate) fn build_session_snapshot(
             app.session_journal.entries.len(),
         );
     }
-    let mut session = crate::session_manager::create_saved_session_journal_only(
+    let mut session = codewhale_engine::session_manager::create_saved_session_journal_only(
         app.current_session_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -1361,8 +1375,8 @@ pub(crate) fn build_session_snapshot(
     {
         session.metadata.title.clone_from(&cached.title);
     }
-    if session.metadata.title == crate::session_manager::DEFAULT_SESSION_TITLE
-        && computed_title != crate::session_manager::DEFAULT_SESSION_TITLE
+    if session.metadata.title == codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
+        && computed_title != codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
     {
         // The placeholder survived from an earlier snapshot; the conversation
         // now has a real first user message, so let the computed title win.
@@ -2774,7 +2788,7 @@ mod tests {
 
     #[test]
     fn footer_keeps_reasoning_label_for_every_effort_tier() {
-        use crate::reasoning_preference::ReasoningEffort;
+        use codewhale_engine::reasoning_preference::ReasoningEffort;
 
         let mut app = app_with_context_percent(1);
         app.api_provider = codewhale_config::ProviderKind::Openai;
@@ -2914,7 +2928,7 @@ mod tests {
         app.auto_model = false;
         app.active_route_base_url = "https://gateway.example/v1".to_string();
         app.model = "vendor-model-x".to_string();
-        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::High;
+        app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::High;
         assert_eq!(
             app.reasoning_effort_display_label(),
             "high→effective unavailable",
@@ -3005,14 +3019,14 @@ mod tests {
     /// A provider switch must not hide missing historical coverage.
     #[test]
     fn cost_unknown_preserves_saved_coverage_across_route_changes() {
-        use crate::route_billing::BillingPresentation;
+        use codewhale_engine::route_billing::BillingPresentation;
         let mut app = app_with_context_percent(10);
         app.session.cost_coverage_unknown_legacy = true;
 
         app.billing_presentation = BillingPresentation::Metered;
         assert!(matches!(
             app.cumulative_usage_chip(),
-            crate::route_billing::UsageChip::Unknown(_)
+            codewhale_engine::route_billing::UsageChip::Unknown(_)
         ));
         assert_eq!(
             super::session_cost_label(&app),
@@ -3027,7 +3041,7 @@ mod tests {
         app.billing_presentation = BillingPresentation::Unknown;
         assert!(matches!(
             app.cumulative_usage_chip(),
-            crate::route_billing::UsageChip::Unknown(_)
+            codewhale_engine::route_billing::UsageChip::Unknown(_)
         ));
         assert_eq!(
             super::session_cost_label(&app),
@@ -3055,7 +3069,7 @@ mod tests {
         assert!(
             matches!(
                 app.cumulative_usage_chip(),
-                crate::route_billing::UsageChip::Money(_)
+                codewhale_engine::route_billing::UsageChip::Money(_)
             ),
             "{:?}",
             app.cumulative_usage_chip()
@@ -3158,12 +3172,13 @@ mod tests {
         app.streaming_output_token_estimate = 1_200;
         app.is_loading = true;
         app.turn_started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
-        *app.balance_cell.lock().expect("balance cell") = Some(crate::pricing::BalanceInfo {
-            currency: "USD".to_string(),
-            total_balance: "4.32".to_string(),
-            topped_up_balance: String::new(),
-            granted_balance: String::new(),
-        });
+        *app.balance_cell.lock().expect("balance cell") =
+            Some(codewhale_engine::pricing::BalanceInfo {
+                currency: "USD".to_string(),
+                total_balance: "4.32".to_string(),
+                topped_up_balance: String::new(),
+                granted_balance: String::new(),
+            });
         app.status_items = StatusItem::all().to_vec();
         app.workspace_context = Some("main | clean".to_string());
 

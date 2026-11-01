@@ -65,7 +65,7 @@ fn account_model_access_receipt(config: &codewhale_runtime::config::Config) -> V
         .unwrap_or_default();
     let supported = api_base.trim_end_matches('/')
         == codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL
-        && super::runtime_account_api_base()
+        && codewhale_engine::profile_constitution::runtime_account_api_base()
             == codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE;
     let access = config.account_model_access.read().clone();
     let live = access
@@ -135,7 +135,8 @@ fn install_account_model_access(
     let expected_base = codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL;
     if request.api_base.trim_end_matches('/') != expected_base
         || config.base_url_for_route(&identity).trim_end_matches('/') != expected_base
-        || super::runtime_account_api_base() != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+        || codewhale_engine::profile_constitution::runtime_account_api_base()
+            != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
     {
         return Err(ApiError::conflict(
             "Account model access requires the first-party Codewhale endpoint.",
@@ -196,7 +197,7 @@ fn install_account_model_access(
             .provider_config_for(&identity)
             .is_some_and(|entry| entry.auth.is_some() || entry.api_key_env.is_some())
         || !credential_writeability(&existing, &identity).writable
-        || crate::provider_readiness::has_api_key_for(&existing, &identity)
+        || codewhale_engine::provider_readiness::has_api_key_for(&existing, &identity)
     {
         return Err(ApiError::conflict(
             "This Codewhale route already has its own credential.",
@@ -266,7 +267,7 @@ fn invalidate_account_catalog(config: &codewhale_runtime::config::Config) {
     let Ok(identity) = config.builtin_provider_identity(ProviderKind::Codewhale) else {
         return;
     };
-    crate::provider_catalog_live::begin_refresh_for_identity(
+    codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
         ProviderKind::Codewhale,
         "codewhale",
         &config.base_url_for_route(&identity),
@@ -404,7 +405,7 @@ pub(super) async fn set_provider_key(
         }
 
         let credential_state: ProviderCredentialState =
-            crate::provider_readiness::credential_state_for_provider(
+            codewhale_engine::provider_readiness::credential_state_for_provider(
                 &state.config.read(),
                 &provider_owned,
             )
@@ -990,7 +991,7 @@ pub(super) async fn clear_provider_key(
         }
 
         let credential_state: ProviderCredentialState =
-            crate::provider_readiness::credential_state_for_provider(
+            codewhale_engine::provider_readiness::credential_state_for_provider(
                 &state.config.read(),
                 &identity,
             )
@@ -1086,7 +1087,7 @@ mod tests {
                 .unwrap(),
             "cwc_fixture_device_credential_not_real"
         );
-        assert!(crate::provider_readiness::has_api_key_for(
+        assert!(codewhale_engine::provider_readiness::has_api_key_for(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Codewhale)
         ));
@@ -1112,7 +1113,7 @@ mod tests {
             CatalogStatus, ProviderCatalogDelta, base_url_fingerprint,
         };
         let endpoint = codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL;
-        let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             ProviderKind::Codewhale,
             "codewhale",
             endpoint,
@@ -1124,7 +1125,7 @@ mod tests {
             offerings: vec![],
         };
         assert_eq!(
-            crate::provider_catalog_live::record_success_if_current(&ticket, delta()),
+            codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, delta()),
             Some(CatalogStatus::Fresh)
         );
         assert!(
@@ -1132,7 +1133,7 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            crate::provider_catalog_live::cached_entry_for_route(
+            codewhale_engine::provider_catalog_live::cached_entry_for_route(
                 ProviderKind::Codewhale,
                 "codewhale",
                 endpoint
@@ -1144,7 +1145,7 @@ mod tests {
         extended.expires_at += 60;
         assert!(!install_account_model_access(&config, None, extended).unwrap());
         assert_eq!(
-            crate::provider_catalog_live::record_success_if_current(&ticket, delta()),
+            codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, delta()),
             Some(CatalogStatus::Fresh)
         );
         let mut strict = config.clone();
@@ -1167,7 +1168,7 @@ mod tests {
         assert!(strict.active_route_api_key_read_only().is_err());
         invalidate_stale_account_catalog(&config);
         assert!(
-            crate::provider_catalog_live::cached_entry_for_route(
+            codewhale_engine::provider_catalog_live::cached_entry_for_route(
                 ProviderKind::Codewhale,
                 "codewhale",
                 endpoint
@@ -1176,7 +1177,7 @@ mod tests {
             .is_none()
         );
         assert_eq!(
-            crate::provider_catalog_live::record_success_if_current(&ticket, delta()),
+            codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, delta()),
             None
         );
         assert!(

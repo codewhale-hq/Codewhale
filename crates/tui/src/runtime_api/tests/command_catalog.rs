@@ -1,5 +1,5 @@
 use super::*;
-use crate::command_catalog::{BuiltinCommand, CommandCatalog, UserCommand};
+use codewhale_engine::command_catalog::{BuiltinCommand, CommandCatalog, UserCommand};
 
 fn builtin(name: &str, aliases: Vec<String>) -> BuiltinCommand {
     BuiltinCommand {
@@ -98,8 +98,9 @@ async fn get_v1_commands_serves_the_catalog_over_http() -> Result<()> {
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
-    let _catalog =
-        crate::command_catalog::CatalogGuard::install(Arc::new(Catalog(workspace.clone())));
+    let _catalog = codewhale_engine::command_catalog::CatalogGuard::install(Arc::new(Catalog(
+        workspace.clone(),
+    )));
 
     let Some((addr, runtime_threads, handle)) = spawn_test_server_with_root_token_mobile_workspace(
         root,
@@ -212,11 +213,13 @@ async fn get_v1_commands_serves_the_catalog_over_http() -> Result<()> {
     assert_eq!(cancelled_again["cancelled"], true);
 
     handle.abort();
-    let Some(node) = crate::extension_host::tests::node_for_tests("runtime_command_catalog") else {
+    let Some(node) =
+        codewhale_engine::extension_host::test_support::node_for_tests("runtime_command_catalog")
+    else {
         return Ok(());
     };
     let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
-    let fixture = crate::extension_host::tests::FixturePlugins::new(&[]).await;
+    let fixture = codewhale_engine::extension_host::test_support::FixturePlugins::new(&[]).await;
     let source = temp.path().join("native-command-plugin");
     fs::create_dir_all(&source)?;
     fs::write(
@@ -255,7 +258,7 @@ export function apply(ctx) {
         .map_err(anyhow::Error::msg)?;
     let extension_manager = fixture.manager(node);
     let _extension_manager =
-        crate::extension_host::TestManagerGuard::install(extension_manager.clone());
+        codewhale_engine::extension_host::TestManagerGuard::install(extension_manager.clone());
     let mut config = Config::default().with_legacy_root(
         Some("command-fixture-key".into()),
         Some("http://127.0.0.1:1/v1".into()),
@@ -281,9 +284,9 @@ export function apply(ctx) {
         )
         .await?
         .context("native command acceptance requires a loopback listener")?;
-    let model = Arc::new(crate::llm_client::mock::MockLlmClient::new(vec![
-        crate::llm_client::mock::canned::simple_text_turn("Plugin turn completed"),
-    ]));
+    let model = Arc::new(codewhale_engine::llm_client::mock::MockLlmClient::new(
+        vec![codewhale_engine::llm_client::mock::canned::simple_text_turn("Plugin turn completed")],
+    ));
     runtime_threads.set_test_model_client(model.clone());
     let thread = runtime_threads
         .create_thread(CreateThreadRequest {
@@ -482,9 +485,11 @@ export function apply(ctx) {
             "name":request["name"], "args":request["args"], "extension":original_result["extension"],
         })).await?;
         let admitted = if recover_turn {
-            model.push_turn(crate::llm_client::mock::canned::simple_text_turn(
-                "Recovered admitted turn",
-            ));
+            model.push_turn(
+                codewhale_engine::llm_client::mock::canned::simple_text_turn(
+                    "Recovered admitted turn",
+                ),
+            );
             let turn = runtime_threads
                 .start_turn(
                     &thread.id,
@@ -503,7 +508,7 @@ export function apply(ctx) {
                 Duration::from_secs(20),
             )
             .await?;
-            let store = crate::runtime_threads::RuntimeThreadStore::open(
+            let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
             )?;
             let mut input =
@@ -568,9 +573,11 @@ export function apply(ctx) {
             thread.id,
             sep = char::from(31)
         ));
-        model.push_turn(crate::llm_client::mock::canned::simple_text_turn(
-            "Existing operation result",
-        ));
+        model.push_turn(
+            codewhale_engine::llm_client::mock::canned::simple_text_turn(
+                "Existing operation result",
+            ),
+        );
         let accepted = runtime_threads
             .start_turn(
                 &thread.id,
@@ -590,7 +597,7 @@ export function apply(ctx) {
         )
         .await?;
         if owned {
-            let store = crate::runtime_threads::RuntimeThreadStore::open(
+            let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
             )?;
             let mut input =
@@ -661,7 +668,7 @@ export function apply(ctx) {
     plugins
         .disable("native-command-fixture")
         .map_err(anyhow::Error::msg)?;
-    crate::extension_host::plugins_changed(Arc::new(plugins));
+    codewhale_engine::extension_host::plugins_changed(Arc::new(plugins));
     extension_manager
         .reconcile()
         .await
@@ -670,7 +677,7 @@ export function apply(ctx) {
     plugins
         .enable("native-command-fixture")
         .map_err(anyhow::Error::msg)?;
-    crate::extension_host::plugins_changed(Arc::new(plugins));
+    codewhale_engine::extension_host::plugins_changed(Arc::new(plugins));
     extension_manager
         .reconcile()
         .await

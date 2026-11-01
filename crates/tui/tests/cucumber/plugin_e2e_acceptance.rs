@@ -38,7 +38,7 @@ const MISSING_SCENARIO: &str = "Missing plugin directory reports the path";
 // ---------------------------------------------------------------------------
 // Test-local plugin scanner
 //
-// Mirrors the real `scan_plugin_dir` from `crates/tui/src/tools/plugin.rs`
+// Mirrors the real `scan_plugin_dir` from `crates/engine/src/tools/plugin.rs`
 // so the test can run as a standalone integration test without relying on
 // `#[path]` (which breaks on internal `crate::` and `super::` imports).
 // The contract (frontmatter format, skip rules) matches exactly.

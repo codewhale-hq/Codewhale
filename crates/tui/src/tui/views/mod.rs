@@ -11,10 +11,6 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
-use crate::tools::UserInputResponse;
-use crate::tools::subagent::{
-    SubAgentAssignment, SubAgentResult, SubAgentStatus, localized_whale_display_names,
-};
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::focus_texture::FocusTextureMode;
@@ -23,6 +19,10 @@ use crate::tui::tideline::{SettingApplySemantics, SettingAuthority, SettingFact,
 use crate::tui::widgets::agent_card::AgentLifecycle;
 use codewhale_agent_contract::role::FleetRole;
 use codewhale_config::ProviderKind;
+use codewhale_engine::tools::UserInputResponse;
+use codewhale_engine::tools::subagent::{
+    SubAgentAssignment, SubAgentResult, SubAgentStatus, localized_whale_display_names,
+};
 use codewhale_localization::{
     Locale, MessageId, configured_locale_is_partial_pack, normalize_configured_locale, tr, tr_key,
 };
@@ -777,7 +777,7 @@ pub enum ViewEvent {
         workspace: std::path::PathBuf,
     },
     SessionRenamed {
-        metadata: Box<crate::session_manager::SessionMetadata>,
+        metadata: Box<codewhale_engine::session_manager::SessionMetadata>,
     },
     /// A session's archive flag was flipped (#2934 / #4397).
     ///
@@ -786,7 +786,7 @@ pub enum ViewEvent {
     /// archive, which is exactly the kind of small lie that erodes trust in
     /// every other receipt.
     SessionArchived {
-        metadata: Box<crate::session_manager::SessionMetadata>,
+        metadata: Box<codewhale_engine::session_manager::SessionMetadata>,
     },
     SessionDeleted {
         session_id: String,
@@ -802,9 +802,9 @@ pub enum ViewEvent {
     ModelPickerApplied {
         model: String,
         identity: Option<codewhale_runtime::config::ProviderIdentity>,
-        effort: crate::reasoning_preference::ReasoningEffort,
+        effort: codewhale_engine::reasoning_preference::ReasoningEffort,
         previous_model: String,
-        previous_effort: crate::reasoning_preference::ReasoningEffort,
+        previous_effort: codewhale_engine::reasoning_preference::ReasoningEffort,
         save_as_startup_default: bool,
     },
     /// Emitted by the `/model` picker on Esc so the next open can restore
@@ -854,7 +854,7 @@ pub enum ViewEvent {
         provider: codewhale_config::ProviderKind,
         provider_id: Option<String>,
         model: String,
-        reasoning: Option<crate::reasoning_preference::ReasoningEffort>,
+        reasoning: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
     },
     FleetProfileRouteCommitRequested {
         editor_id: uuid::Uuid,
@@ -878,7 +878,7 @@ pub enum ViewEvent {
         /// Exact named route for `Custom`; built-in providers leave this unset.
         provider_id: Option<String>,
         model: String,
-        reasoning: Option<crate::reasoning_preference::ReasoningEffort>,
+        reasoning: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
     },
     ModelPickerNeedsAuth {
         identity: codewhale_runtime::config::ProviderIdentity,
@@ -1063,7 +1063,7 @@ pub enum ViewEvent {
     /// The Fleet list view asks the host to open a saved Fleet's detail view.
     FleetListOpenDetailRequested {
         name: String,
-        scope: crate::fleet::store::FleetScope,
+        scope: codewhale_engine::fleet::store::FleetScope,
     },
     /// A Fleet store mutation happened (select/save/delete/rename/copy).
     /// The message is the exact receipt; the host refreshes roster state.
@@ -1075,8 +1075,8 @@ pub enum ViewEvent {
     /// renders TOML deterministically from the validated draft and persists it
     /// atomically in the explicitly selected project or personal scope.
     FleetProfileDraftCommitRequested {
-        draft: Box<crate::fleet::profile::FleetProfileDraft>,
-        scope: crate::fleet::profile::FleetProfileScope,
+        draft: Box<codewhale_engine::fleet::profile::FleetProfileDraft>,
+        scope: codewhale_engine::fleet::profile::FleetProfileScope,
     },
     /// Emitted by the Fleet setup Model step when the user selects a route that
     /// has structurally valid external-consent credentials but is not the
@@ -2002,8 +2002,7 @@ enum ConfigSection {
     Experimental,
 }
 
-/// The seven Tideline settings categories in rail order
-/// (`docs/design/tideline-redesign.html`, "Settings categories").
+/// The seven settings categories in rail order.
 ///
 /// A category is a projection over the existing [`ConfigRow`] store: rows keep
 /// their fine-grained [`ConfigSection`]; the category follows the section
@@ -2414,7 +2413,7 @@ impl ConfigView {
                 value: settings.reasoning_effort.as_deref().map_or_else(
                     || tr(app.ui_locale, MessageId::ConfigDefaultReasoning).to_string(),
                     |value| {
-                        crate::reasoning_preference::ReasoningEffort::from_setting_for_provider(
+                        codewhale_engine::reasoning_preference::ReasoningEffort::from_setting_for_provider(
                             value,
                             app.api_provider,
                         )
@@ -2445,7 +2444,7 @@ impl ConfigView {
             shell_row,
             ConfigRow {
                 key: "telemetry".to_string(),
-                value: crate::telemetry_notice::saved_preference_enabled(&config).to_string(),
+                value: codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
                 // Telemetry is a trust decision, not a network knob.
@@ -5360,7 +5359,8 @@ impl ConfigView {
             .and_then(|value| codewhale_execpolicy::ApprovalMode::from_config_value(&value))
             .unwrap_or(codewhale_execpolicy::ApprovalMode::Suggest);
         let mode_label = crate::tui::underwater::mode_label(self.locale, mode);
-        let permission = crate::core::authority::permission_label_for(self.locale, mode, approval);
+        let permission =
+            codewhale_engine::core::authority::permission_label_for(self.locale, mode, approval);
         let footer = crate::tui::phase_strip::TidelineFooter::new(
             &theme,
             (
@@ -6013,8 +6013,9 @@ fn lifecycle_to_subagent_status(status: AgentLifecycle, reason: Option<&str>) ->
 /// row label and whale state show instead of the coarse `Running`.
 fn lifecycle_worker_status(
     status: AgentLifecycle,
-) -> Option<crate::tools::subagent::AgentWorkerStatus> {
-    (status == AgentLifecycle::Pending).then_some(crate::tools::subagent::AgentWorkerStatus::Queued)
+) -> Option<codewhale_engine::tools::subagent::AgentWorkerStatus> {
+    (status == AgentLifecycle::Pending)
+        .then_some(codewhale_engine::tools::subagent::AgentWorkerStatus::Queued)
 }
 
 fn live_subagent_result(
@@ -6802,14 +6803,15 @@ fn format_agent_type(locale: Locale, agent_type: &FleetRole) -> Cow<'static, str
 fn format_agent_status(
     locale: Locale,
     status: &SubAgentStatus,
-    worker_status: Option<crate::tools::subagent::AgentWorkerStatus>,
+    worker_status: Option<codewhale_engine::tools::subagent::AgentWorkerStatus>,
 ) -> (Cow<'static, str>, ratatui::style::Style, Option<&str>) {
     use ratatui::style::Style;
 
     match status {
         // A worker that has not started yet waits; it is not running.
         SubAgentStatus::Running
-            if worker_status == Some(crate::tools::subagent::AgentWorkerStatus::Queued) =>
+            if worker_status
+                == Some(codewhale_engine::tools::subagent::AgentWorkerStatus::Queued) =>
         {
             (
                 tr(locale, MessageId::AutomationRunStatusQueued),
@@ -6889,12 +6891,12 @@ mod tests {
         config_label_for_key_for_locale, render_modal_footer_with_gutter,
         render_underwater_surface, subagent_view_agents, truncate_view_text,
     };
-    use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus};
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::history::{HistoryCell, SubAgentCell};
     use crate::tui::views::{CommandPaletteAction, SubAgentsView};
     use crate::tui::widgets::agent_card::{AgentLifecycle, FanoutCard};
     use codewhale_agent_contract::role::FleetRole;
+    use codewhale_engine::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus};
     use codewhale_localization::{Locale, MessageId, tr, tr_key};
     use codewhale_palette as palette;
     use codewhale_runtime::config::Config;
@@ -7736,14 +7738,16 @@ mod tests {
         assert_eq!(progress_only[0].nickname.as_deref(), Some("Agent 1"));
 
         let mut manager = manager_agent("agent_live", SubAgentStatus::Running);
-        manager.nickname = Some(crate::tools::subagent::whale_name_for_id_in_locale(
-            "agent_live",
-            "ja",
-        ));
+        manager.nickname = Some(
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale("agent_live", "ja"),
+        );
         let manager_backed = subagent_view_agents(&app, &[manager]);
         assert_eq!(
             manager_backed[0].nickname.as_deref(),
-            Some(crate::tools::subagent::whale_name_for_id_in_locale("agent_live", "en").as_str())
+            Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale("agent_live", "en")
+                    .as_str()
+            )
         );
     }
 
@@ -7762,8 +7766,11 @@ mod tests {
         assert_eq!(
             agents[1].nickname.as_deref(),
             Some(
-                crate::tools::subagent::whale_name_for_id_in_locale("agent_plain_lane", "en")
-                    .as_str()
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                    "agent_plain_lane",
+                    "en"
+                )
+                .as_str()
             )
         );
     }
@@ -9427,7 +9434,8 @@ context_window = 262144
             context_tokens: Some(262_144),
             ..Default::default()
         });
-        app.active_context_window_source = crate::route_runtime::ContextWindowSource::Configured;
+        app.active_context_window_source =
+            codewhale_engine::route_runtime::ContextWindowSource::Configured;
 
         let view = ConfigView::new_for_app(&app);
         let configured = view
@@ -9950,7 +9958,7 @@ context_window = 131072
 
     #[test]
     fn a_pending_worker_row_reads_queued_not_running() {
-        use crate::tools::subagent::AgentWorkerStatus;
+        use codewhale_engine::tools::subagent::AgentWorkerStatus;
         assert_eq!(
             super::lifecycle_worker_status(AgentLifecycle::Pending),
             Some(AgentWorkerStatus::Queued)

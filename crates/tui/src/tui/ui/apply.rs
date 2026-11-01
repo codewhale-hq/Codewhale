@@ -93,7 +93,7 @@ pub(crate) fn apply_agent_complete_status_and_observer(
 
 pub(crate) fn apply_coordination_detail_projection(
     app: &mut App,
-    projection: crate::tools::subagent::CoordinationDetailProjection,
+    projection: codewhale_engine::tools::subagent::CoordinationDetailProjection,
 ) {
     // §2.6: when this process does not own the workspace coordination flock,
     // say so on the sticky status strip. A silent "running (543s)" row on a
@@ -112,7 +112,7 @@ pub(crate) fn apply_coordination_detail_projection(
             .as_deref()
             .unwrap_or("another Codewhale process owns delegated coordination for this workspace");
         let same_process_handover =
-            note.contains(crate::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
+            note.contains(codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
         // The strip is one row. The old copy opened with the diagnosis
         // ("Delegated coordination unavailable — ") and buried the cause
         // behind a `{note}` carrying a pid, an absolute workspace path, and an
@@ -121,7 +121,9 @@ pub(crate) fn apply_coordination_detail_projection(
         // that explains it — a second session is open here — and leave the pid
         // and path to the coordination detail view, which already renders
         // `process_lock_note` in full.
-        let message = if note.contains(crate::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER) {
+        let message = if note
+            .contains(codewhale_engine::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER)
+        {
             "Timed out claiming delegated coordination for this workspace — job rows still settle locally.".to_string()
         } else {
             "Another Codewhale session in this workspace owns delegated coordination — job rows still settle locally.".to_string()
@@ -166,7 +168,7 @@ pub(crate) fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
 
 pub(crate) fn apply_picker_session_rename_to_active_app(
     app: &mut App,
-    metadata: crate::session_manager::SessionMetadata,
+    metadata: codewhale_engine::session_manager::SessionMetadata,
 ) -> bool {
     if app.current_session_id.as_deref() != Some(metadata.id.as_str()) {
         return false;
@@ -332,14 +334,14 @@ pub(crate) fn apply_engine_error_to_app(
 pub(crate) fn apply_message_submit_outcome(
     app: &mut App,
     message: &mut QueuedMessage,
-    outcome: crate::hooks::MessageSubmitOutcome,
+    outcome: codewhale_engine::hooks::MessageSubmitOutcome,
 ) -> bool {
     if let Some(warning) = outcome.warning() {
         app.status_message = Some(warning.to_string());
     }
     match outcome {
-        crate::hooks::MessageSubmitOutcome::Unchanged { .. } => true,
-        crate::hooks::MessageSubmitOutcome::Replaced { text, .. } => {
+        codewhale_engine::hooks::MessageSubmitOutcome::Unchanged { .. } => true,
+        codewhale_engine::hooks::MessageSubmitOutcome::Replaced { text, .. } => {
             // A queued message was already echoed with its pre-hook text.
             // Retarget that one cell so dispatch reuses it instead of adding a
             // second User cell beside the stale echo (U02-03).
@@ -355,7 +357,7 @@ pub(crate) fn apply_message_submit_outcome(
             message.display = text;
             true
         }
-        crate::hooks::MessageSubmitOutcome::Blocked { reason } => {
+        codewhale_engine::hooks::MessageSubmitOutcome::Blocked { reason } => {
             app.status_message = Some(reason);
             false
         }
@@ -364,7 +366,7 @@ pub(crate) fn apply_message_submit_outcome(
 
 fn visible_goal_as_durable(
     app: &App,
-) -> Result<Option<crate::session_manager::SessionGoalState>, String> {
+) -> Result<Option<codewhale_engine::session_manager::SessionGoalState>, String> {
     let Some(objective) = app.goal.objective.as_deref() else {
         return Ok(None);
     };
@@ -374,7 +376,7 @@ fn visible_goal_as_durable(
         .map(|started| started.elapsed().as_secs())
         .unwrap_or(app.goal.time_used_seconds)
         .max(app.goal.time_used_seconds);
-    crate::session_manager::SessionGoalState::from_runtime(&GoalSnapshot {
+    codewhale_engine::session_manager::SessionGoalState::from_runtime(&GoalSnapshot {
         objective: Some(objective.to_string()),
         status: app.goal.status.as_str().to_string(),
         token_budget: app.goal.token_budget,
@@ -391,7 +393,7 @@ fn visible_goal_as_durable(
 fn desired_goal_state(
     app: &App,
     intent: &GoalControlIntent,
-) -> Result<Option<crate::session_manager::SessionGoalState>, String> {
+) -> Result<Option<codewhale_engine::session_manager::SessionGoalState>, String> {
     let mut base = if app.pending_goal_controls.is_empty() {
         match app.last_known_goal_state.clone() {
             Some(goal) => Some(goal),
@@ -411,12 +413,17 @@ fn desired_goal_state(
             let goal = base
                 .as_mut()
                 .ok_or_else(|| "No goal is available for this control.".to_string())?;
-            let was_active = goal.status == crate::session_manager::SessionGoalStatus::Active;
+            let was_active =
+                goal.status == codewhale_engine::session_manager::SessionGoalStatus::Active;
             goal.status = match status {
-                GoalStatus::Active => crate::session_manager::SessionGoalStatus::Active,
-                GoalStatus::Paused => crate::session_manager::SessionGoalStatus::Paused,
-                GoalStatus::Complete => crate::session_manager::SessionGoalStatus::Complete,
-                GoalStatus::Blocked => crate::session_manager::SessionGoalStatus::Blocked,
+                GoalStatus::Active => codewhale_engine::session_manager::SessionGoalStatus::Active,
+                GoalStatus::Paused => codewhale_engine::session_manager::SessionGoalStatus::Paused,
+                GoalStatus::Complete => {
+                    codewhale_engine::session_manager::SessionGoalStatus::Complete
+                }
+                GoalStatus::Blocked => {
+                    codewhale_engine::session_manager::SessionGoalStatus::Blocked
+                }
             };
             if *status == GoalStatus::Active && !was_active {
                 goal.goal_id = Some(uuid::Uuid::new_v4().to_string());
@@ -425,13 +432,13 @@ fn desired_goal_state(
                 goal.last_gap_pass = None;
             }
             goal.pause_reason = (*status == GoalStatus::Paused)
-                .then_some(crate::tools::goal::GoalPauseReason::User);
+                .then_some(codewhale_engine::tools::goal::GoalPauseReason::User);
             Ok(base)
         }
         GoalControlIntent::SetObjective {
             objective,
             token_budget,
-        } => crate::session_manager::SessionGoalState::from_runtime(&GoalSnapshot {
+        } => codewhale_engine::session_manager::SessionGoalState::from_runtime(&GoalSnapshot {
             goal_id: Some(uuid::Uuid::new_v4().to_string()),
             objective: Some(objective.clone()),
             status: GoalStatus::Active.as_str().to_string(),
@@ -445,7 +452,7 @@ fn desired_goal_state(
 
 fn persist_accepted_goal_state(
     app: &mut App,
-    desired: Option<&crate::session_manager::SessionGoalState>,
+    desired: Option<&codewhale_engine::session_manager::SessionGoalState>,
 ) -> Result<(), String> {
     let manager = SessionManager::default_location()
         .map_err(|error| format!("could not open the session store: {error}"))?;
@@ -504,7 +511,7 @@ pub(crate) fn flush_pending_goal_controls(app: &mut App, engine_handle: &EngineH
 
 fn goal_control_matches(
     intent: &GoalControlIntent,
-    durable: Option<&crate::session_manager::SessionGoalState>,
+    durable: Option<&codewhale_engine::session_manager::SessionGoalState>,
 ) -> bool {
     match intent {
         GoalControlIntent::SetStatus { clear: true, .. } => durable.is_none(),
@@ -514,10 +521,18 @@ fn goal_control_matches(
         } => durable.is_some_and(|goal| {
             goal.status
                 == match status {
-                    GoalStatus::Active => crate::session_manager::SessionGoalStatus::Active,
-                    GoalStatus::Paused => crate::session_manager::SessionGoalStatus::Paused,
-                    GoalStatus::Complete => crate::session_manager::SessionGoalStatus::Complete,
-                    GoalStatus::Blocked => crate::session_manager::SessionGoalStatus::Blocked,
+                    GoalStatus::Active => {
+                        codewhale_engine::session_manager::SessionGoalStatus::Active
+                    }
+                    GoalStatus::Paused => {
+                        codewhale_engine::session_manager::SessionGoalStatus::Paused
+                    }
+                    GoalStatus::Complete => {
+                        codewhale_engine::session_manager::SessionGoalStatus::Complete
+                    }
+                    GoalStatus::Blocked => {
+                        codewhale_engine::session_manager::SessionGoalStatus::Blocked
+                    }
                 }
         }),
         GoalControlIntent::SetObjective {
@@ -525,7 +540,7 @@ fn goal_control_matches(
             token_budget,
         } => durable.is_some_and(|goal| {
             goal.objective == *objective
-                && goal.status == crate::session_manager::SessionGoalStatus::Active
+                && goal.status == codewhale_engine::session_manager::SessionGoalStatus::Active
                 && goal.token_budget == *token_budget
         }),
     }
@@ -579,13 +594,14 @@ fn accept_goal_control(app: &mut App, engine_handle: &EngineHandle, intent: Goal
 }
 
 pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot) -> bool {
-    let durable_goal = match crate::session_manager::SessionGoalState::from_runtime(snapshot) {
-        Ok(goal) => goal,
-        Err(error) => {
-            tracing::warn!("ignoring invalid runtime goal snapshot: {error}");
-            return false;
-        }
-    };
+    let durable_goal =
+        match codewhale_engine::session_manager::SessionGoalState::from_runtime(snapshot) {
+            Ok(goal) => goal,
+            Err(error) => {
+                tracing::warn!("ignoring invalid runtime goal snapshot: {error}");
+                return false;
+            }
+        };
     let pending_desired = app.last_known_goal_state.clone();
     let matched_pending = app.pending_goal_controls.front().is_some_and(|pending| {
         pending.dispatched
@@ -688,7 +704,8 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
     // report the user is handed back with.
     if progress_changed
         && (verdict == GoalStatus::Active
-            || snapshot.pause_reason == Some(crate::tools::goal::GoalPauseReason::Yielded))
+            || snapshot.pause_reason
+                == Some(codewhale_engine::tools::goal::GoalPauseReason::Yielded))
         && let Some(progress) = snapshot.progress.as_ref()
     {
         let mut content = app
@@ -696,7 +713,7 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
             .replace("{percent}", &progress.percent.to_string())
             .replace(
                 "{bar}",
-                &crate::tools::goal::goal_progress_bar(progress.percent),
+                &codewhale_engine::tools::goal::goal_progress_bar(progress.percent),
             );
         if let Some(now) = progress.now.as_deref() {
             content.push('\n');
@@ -797,7 +814,9 @@ pub(crate) async fn apply_yolo_compat_update(
 /// keepalive bound to this workspace. Burn rate is optional; default is
 /// unbounded.
 async fn present_operate_board(app: &mut App, config: &Config) {
-    let store = match crate::operate::OperationStore::open(crate::operate::default_operate_dir()) {
+    let store = match codewhale_engine::operate::OperationStore::open(
+        codewhale_engine::operate::default_operate_dir(),
+    ) {
         Ok(store) => store,
         Err(error) => {
             app.add_message(crate::tui::history::HistoryCell::System {
@@ -832,7 +851,11 @@ async fn present_operate_board(app: &mut App, config: &Config) {
     };
     let (lead_model, credentials) = {
         let manager = automations.lock().await;
-        match crate::operate::keepalive_readiness(&manager, config, Some((&identity, &model))) {
+        match codewhale_engine::operate::keepalive_readiness(
+            &manager,
+            config,
+            Some((&identity, &model)),
+        ) {
             Ok(credentials) => credentials,
             Err(error) => {
                 app.add_message(crate::tui::history::HistoryCell::System {
@@ -842,7 +865,7 @@ async fn present_operate_board(app: &mut App, config: &Config) {
             }
         }
     };
-    let operation = match crate::operate::attach_or_start_operation(
+    let operation = match codewhale_engine::operate::attach_or_start_operation(
         &store,
         &app.workspace,
         None,
@@ -877,7 +900,7 @@ async fn present_operate_board(app: &mut App, config: &Config) {
         .is_some_and(|plan| !plan.slices.is_empty());
     {
         let manager = automations.lock().await;
-        if let Err(error) = crate::operate::upsert_keepalive(
+        if let Err(error) = codewhale_engine::operate::upsert_keepalive(
             &manager,
             &app.workspace,
             needs_lead_plan,
@@ -890,13 +913,13 @@ async fn present_operate_board(app: &mut App, config: &Config) {
         }
     }
     app.add_message(crate::tui::history::HistoryCell::System {
-        content: crate::operate::render_plan_board_locale(&operation, app.ui_locale),
+        content: codewhale_engine::operate::render_plan_board_locale(&operation, app.ui_locale),
     });
 }
 
 pub(crate) async fn apply_model_and_compaction_update(
     engine_handle: &EngineHandle,
-    compaction: crate::compaction::CompactionConfig,
+    compaction: codewhale_engine::compaction::CompactionConfig,
     mode: AppMode,
     route_limits: Option<codewhale_config::route::RouteLimits>,
 ) {
@@ -927,9 +950,9 @@ pub(crate) async fn apply_model_picker_choice(
     config: &mut Config,
     model: String,
     target_identity: Option<codewhale_runtime::config::ProviderIdentity>,
-    effort: crate::reasoning_preference::ReasoningEffort,
+    effort: codewhale_engine::reasoning_preference::ReasoningEffort,
     previous_model: String,
-    previous_effort: crate::reasoning_preference::ReasoningEffort,
+    previous_effort: codewhale_engine::reasoning_preference::ReasoningEffort,
     save_as_startup_default: bool,
 ) {
     if app.reject_setting_change_while_busy(
@@ -997,7 +1020,7 @@ pub(crate) async fn apply_model_picker_choice(
     let mut route_base_url = config.active_route_base_url();
     let mut resolved_budget = None;
     if !model_is_auto {
-        match crate::route_runtime::resolve_runtime_route_for_identity(
+        match codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
             config,
             &current_identity,
             Some(&model),
@@ -1039,7 +1062,7 @@ pub(crate) async fn apply_model_picker_choice(
             app.active_route_limits = app.context_window_override_limits();
             app.active_route_base_url = route_base_url.clone();
             app.active_context_window_source = app.active_context_window.map_or(
-                crate::route_runtime::ContextWindowSource::Fallback,
+                codewhale_engine::route_runtime::ContextWindowSource::Fallback,
                 |window| window.source,
             );
         }
@@ -1261,7 +1284,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     *config = *next_config;
     app.refresh_notification_settings(config);
     app.set_provider_identity_record(target_identity.clone());
-    app.billing_presentation = crate::route_billing::for_route(config, &target_identity);
+    app.billing_presentation = codewhale_engine::route_billing::for_route(config, &target_identity);
 
     let new_base_url = resolved_endpoint;
     let new_endpoint = display_base_url_host(&new_base_url);
@@ -1381,7 +1404,7 @@ async fn apply_conversation_undo(
     );
     let before = engine.get_session_snapshot().await?;
     let before_prompt =
-        crate::compaction::strip_compaction_summaries(before.system_prompt.as_ref());
+        codewhale_engine::compaction::strip_compaction_summaries(before.system_prompt.as_ref());
     anyhow::ensure!(
         app.current_session_id
             .as_deref()
@@ -1390,10 +1413,11 @@ async fn apply_conversation_undo(
             && sync.workspace == before.workspace
             && sync.model == before.model
             && before.mode == app.mode.as_setting()
-            && crate::compaction::strip_compaction_summaries(app.system_prompt.as_ref())
+            && codewhale_engine::compaction::strip_compaction_summaries(app.system_prompt.as_ref())
                 == before_prompt
-            && crate::compaction::strip_compaction_summaries(sync.system_prompt.as_ref())
-                == before_prompt
+            && codewhale_engine::compaction::strip_compaction_summaries(
+                sync.system_prompt.as_ref()
+            ) == before_prompt
             && before.messages.as_slice() == app.api_messages.as_slice()
             && sync.messages.len() < before.messages.len()
             && before.messages.starts_with(&sync.messages),
@@ -1403,8 +1427,9 @@ async fn apply_conversation_undo(
     let id = before.session_id.clone();
     // A live rewind retains the checkpoint already owned by these messages.
     // The Engine alone restores it and invalidates dependent caches.
-    let expected =
-        crate::runtime_handoff::project_owned_messages_for_restore(sync.messages.clone());
+    let expected = codewhale_engine::runtime_handoff::project_owned_messages_for_restore(
+        sync.messages.clone(),
+    );
     let (tx, receive) = tokio::sync::oneshot::channel();
     engine
         .send(Op::RewindConversation {
@@ -1575,8 +1600,10 @@ async fn apply_command_result_inner(
                     }
                 };
                 let resumed_id = session.metadata.id.clone();
-                let title = crate::session_manager::sanitize_session_title(&session.metadata.title);
-                crate::runtime_threads::prepare_canonical_sessions_root().await;
+                let title = codewhale_engine::session_manager::sanitize_session_title(
+                    &session.metadata.title,
+                );
+                codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
                 let respawn = match apply_loaded_session_config_snapshot(
                     app,
                     config,
@@ -1809,13 +1836,15 @@ async fn apply_command_result_inner(
             AppAction::PluginRegistryChanged => {
                 // Revoke a disabled or untrusted plugin's host code now, not at
                 // the next turn's rebuild.
-                crate::extension_host::plugins_changed(std::sync::Arc::clone(&app.plugin_registry));
+                codewhale_engine::extension_host::plugins_changed(std::sync::Arc::clone(
+                    &app.plugin_registry,
+                ));
                 let command_errors = crate::commands::user_registry::install_plugin_registry(
                     &app.workspace,
                     app.plugin_registry.as_ref(),
                 );
                 app.hooks = app.hooks.rebind(
-                    crate::hooks::config::load_with_project_and_plugins(
+                    codewhale_engine::hooks::config::load_with_project_and_plugins(
                         config.hooks_config(),
                         &app.workspace,
                         Some(app.plugin_registry.as_ref()),
@@ -1924,14 +1953,14 @@ async fn apply_command_result_inner(
                 name,
                 input,
             } => {
-                use crate::extension_host::command::CommandOutcome;
+                use codewhale_engine::extension_host::command::CommandOutcome;
                 // The origin labels the output: it is the plugin's text, not
                 // Codewhale's.
                 let origin = command.origin.clone();
                 app.status_message = Some(format!("Running /{name} ({origin})..."));
                 // Awaited here like `/balance`; the call is bounded by its
                 // deadline and cancelled in the host when it expires.
-                match crate::extension_host::run_command_for_plugins(
+                match codewhale_engine::extension_host::run_command_for_plugins(
                     &command,
                     &input,
                     app.current_session_id.as_deref(),
@@ -2204,7 +2233,7 @@ async fn apply_command_result_inner(
                                 app.provider_identity_for_persistence(),
                                 &app.model,
                                 &models,
-                                &crate::fleet::members::fleet_models(&app.workspace),
+                                &codewhale_engine::fleet::members::fleet_models(&app.workspace),
                             ),
                         });
                         app.status_message = Some(format!("Found {} model(s)", models.len()));
@@ -2229,9 +2258,9 @@ async fn apply_command_result_inner(
             }
             AppAction::RefreshModelsDevCatalog => {
                 app.status_message = Some("Refreshing Models.dev catalog...".to_string());
-                let message = match crate::models_dev_live::refresh(true).await {
+                let message = match codewhale_engine::models_dev_live::refresh(true).await {
                     Ok(count) => {
-                        let status = crate::models_dev_live::status();
+                        let status = codewhale_engine::models_dev_live::status();
                         let source = if status.source_label.is_empty() {
                             "unknown"
                         } else {
@@ -2243,7 +2272,7 @@ async fn apply_command_result_inner(
                         )
                     }
                     Err(err) => {
-                        let status = crate::models_dev_live::status();
+                        let status = codewhale_engine::models_dev_live::status();
                         format!(
                             "Models.dev refresh failed ({err}); keeping prior/bundled rows ({} offerings, {:?})",
                             status.offering_count, status.freshness
@@ -2462,7 +2491,7 @@ async fn apply_command_result_inner(
             AppAction::OpenWorktreeManager => {
                 if app.view_stack.top_kind() != Some(ModalKind::WorktreeManager) {
                     // Non-blocking: git_status caches; manager never shells on paint.
-                    crate::git_status::refresh_if_stale(&app.workspace);
+                    codewhale_engine::git_status::refresh_if_stale(&app.workspace);
                     app.view_stack
                         .push(crate::tui::worktree_manager::WorktreeManagerView::new(
                             app.workspace.clone(),
@@ -2711,7 +2740,7 @@ async fn apply_command_result_inner(
                     .or_else(|| fleet_catalog_rejection(locale, &provider, &model));
                 let content = match rejection {
                     Some(rejection) => rejection,
-                    None => match crate::fleet::members::add_fleet_model(
+                    None => match codewhale_engine::fleet::members::add_fleet_model(
                         &app.workspace,
                         &provider,
                         &model,
@@ -2720,11 +2749,11 @@ async fn apply_command_result_inner(
                         Ok(change) => {
                             if !matches!(
                                 change,
-                                crate::fleet::members::FleetModelChange::Unchanged { .. }
+                                codewhale_engine::fleet::members::FleetModelChange::Unchanged { .. }
                             ) {
                                 app.fleet_roster_stale = true;
                             }
-                            crate::fleet::members::change_receipt(
+                            codewhale_engine::fleet::members::change_receipt(
                                 locale, &provider, &model, &change,
                             )
                         }
@@ -2736,14 +2765,16 @@ async fn apply_command_result_inner(
             }
             AppAction::FleetRemoveModel { provider, model } => {
                 let locale = app.ui_locale;
-                let content = match crate::fleet::members::remove_fleet_model(
+                let content = match codewhale_engine::fleet::members::remove_fleet_model(
                     &app.workspace,
                     &provider,
                     &model,
                 ) {
                     Ok(change) => {
                         app.fleet_roster_stale = true;
-                        crate::fleet::members::change_receipt(locale, &provider, &model, &change)
+                        codewhale_engine::fleet::members::change_receipt(
+                            locale, &provider, &model, &change,
+                        )
                     }
                     Err(error) => tr(locale, MessageId::FleetRemoveFailed)
                         .replace("{error}", &error.message(locale)),
@@ -2775,7 +2806,7 @@ async fn apply_command_result_inner(
             AppAction::OpenConstitutionManager { review } => {
                 let profile = config.account_profile.clone();
                 let account = tokio::task::spawn_blocking(move || {
-                    crate::profile_constitution::account_is_present(profile.as_deref())
+                    codewhale_engine::profile_constitution::account_is_present(profile.as_deref())
                         .map_err(|error| error.to_string())
                 })
                 .await
@@ -3038,14 +3069,14 @@ fn apply_validated_profile_config(
     config: &mut Config,
     profile: &str,
     next_config: Config,
-    route: &crate::route_runtime::ValidatedRuntimeRoute,
+    route: &codewhale_engine::route_runtime::ValidatedRuntimeRoute,
 ) {
     *config = next_config;
     app.config_profile = Some(profile.to_string());
     app.configured_models = config.custom_models.clone().unwrap_or_default();
     app.refresh_notification_settings(config);
     app.set_provider_identity_record(route.identity.clone());
-    app.billing_presentation = crate::route_billing::for_route(config, &route.identity);
+    app.billing_presentation = codewhale_engine::route_billing::for_route(config, &route.identity);
     app.set_model_selection(route.model.clone());
     app.set_active_context_window_override(config, &route.identity);
     app.set_active_route_resolution(
@@ -3082,7 +3113,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
         && let Err(error) = codewhale_util::fs_confined::write(
             &app.workspace,
             &path,
-            crate::hooks::PROJECT_HOOKS_TEMPLATE.as_bytes(),
+            codewhale_engine::hooks::PROJECT_HOOKS_TEMPLATE.as_bytes(),
         )
     {
         app.push_status_toast(
@@ -3107,7 +3138,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
     match outcome {
         Ok(crate::tui::external_editor::EditorOutcome::Edited(_)) => {
             app.hooks = app.hooks.rebind(
-                crate::hooks::config::load_with_project_and_plugins(
+                codewhale_engine::hooks::config::load_with_project_and_plugins(
                     config.hooks_config(),
                     &app.workspace,
                     Some(app.plugin_registry.as_ref()),
@@ -3124,7 +3155,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
             // Project hooks are executable repository configuration; an
             // untrusted workspace parses them and then ignores them, which is
             // a silent no-op unless it is said out loud.
-            if !crate::hooks::workspace_allows_project_hooks(&app.workspace) {
+            if !codewhale_engine::hooks::workspace_allows_project_hooks(&app.workspace) {
                 content.push_str(
                     " Project hooks are not approved for these exact contents. Use /hooks review, \
                      then /hooks approve <digest> after reviewing the commands.",
@@ -3193,7 +3224,7 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
     // Switching workspace reloads the hook set (project hooks are per-repo)
     // but stays inside the same TUI session, so the session id is preserved.
     app.hooks = app.hooks.rebind(
-        crate::hooks::config::load_with_project_and_plugins(
+        codewhale_engine::hooks::config::load_with_project_and_plugins(
             config.hooks_config(),
             &workspace,
             Some(app.plugin_registry.as_ref()),
@@ -3212,7 +3243,7 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
     app.workspace_context_refreshed_at = None;
     app.file_tree = None;
 
-    let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
+    let shell_manager = codewhale_engine::tools::shell::new_shared_shell_manager(workspace);
     app.runtime_services.shell_manager = Some(shell_manager);
     app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }
@@ -3262,7 +3293,7 @@ pub(crate) fn settle_pending_human_requests(app: &mut App) {
     // A completed/cancelled parent turn cannot still await an approval.
     // Children own their separate lifecycle and may legitimately remain live.
     for id in app.view_stack.tool_decision_request_ids() {
-        if !crate::tools::subagent::SubAgentManager::is_child_approval_id(&id) {
+        if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(&id) {
             crate::tui::pending_requests::retire(app, &id);
             app.retire_action_notices(Some(&id));
         }
@@ -3374,7 +3405,9 @@ pub(crate) async fn apply_approval_decision(
     match event.decision {
         // A child's card never stops the parent's turn (approvals C1).
         ReviewDecision::Abort
-            if crate::tools::subagent::SubAgentManager::is_child_approval_id(&event.tool_id) => {}
+            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
+                &event.tool_id,
+            ) => {}
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
             // Mirror mode: clear the shared-approval gate so a late web
             // decision acks "no longer pending" instead of double-answering.
@@ -3753,7 +3786,7 @@ fn sanitize_probe_status(reason: &str, api_key: &str) -> String {
         && let Some((code, body)) = rest.split_once(':')
         && let Ok(status) = code.trim().parse::<u16>()
     {
-        text = crate::llm_client::sanitize_http_error_body(None, status, body.trim());
+        text = codewhale_engine::llm_client::sanitize_http_error_body(None, status, body.trim());
     }
     let secret = api_key.trim();
     if !secret.is_empty() {
@@ -3781,7 +3814,10 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
         return;
     }
     let selected_id = Some(identity.key.to_string());
-    if !crate::client::provider_api_key_verification_is_observed(provider) {
+    let base_url = scoped_config.active_route_base_url();
+    if !codewhale_engine::client::provider_api_key_verification_is_observed_for_route(
+        provider, &base_url,
+    ) {
         app.push_status_toast(
             app.tr(MessageId::ProviderTestConnectionNoEndpoint)
                 .replace("{provider}", identity.key.as_str()),
@@ -3805,7 +3841,6 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
             return;
         }
     };
-    let base_url = scoped_config.active_route_base_url();
     let model = scoped_config.default_model();
     let outcome = verifier.verify(provider, &api_key, &base_url).await;
     if let Err(reason) = config.verify_provider_identity(&identity) {
@@ -3926,7 +3961,9 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
             // so record a distinct connection-checked state rather than
             // claiming the model is ready. Providers without a real `/models`
             // probe remain unchecked.
-            if crate::client::provider_api_key_verification_is_observed(provider) {
+            if codewhale_engine::client::provider_api_key_verification_is_observed_for_route(
+                provider, &base_url,
+            ) {
                 let verified_model = scoped_config.default_model();
                 app.provider_health.record_models_probe_success(
                     &scoped_config,
@@ -3980,7 +4017,7 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
             // reply (often truncated JSON) is not the message: say what went
             // wrong and what to do next in plain words (#6566).
             let plain = plain_key_verification_error(app, &reason, &api_key);
-            let reason = match crate::llm_client::base_url_authority(&base_url) {
+            let reason = match codewhale_engine::llm_client::base_url_authority(&base_url) {
                 Some(authority) => format!("{plain} ({authority})"),
                 None => plain.clone(),
             };
@@ -4201,7 +4238,7 @@ pub(crate) async fn apply_codewhale_owned_login(
     if provider == ProviderKind::OpenaiCodex {
         let mut selected = config.clone();
         selected.provider = Some(provider.as_str().to_string());
-        if crate::codex_model_cache::update_from_chatgpt(&selected)
+        if codewhale_engine::codex_model_cache::update_from_chatgpt(&selected)
             .await
             .is_err()
         {
@@ -4355,7 +4392,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     app: &mut App,
     config: &mut Config,
     mut session: SavedSession,
-    goal: Option<&crate::session_manager::SessionGoalState>,
+    goal: Option<&codewhale_engine::session_manager::SessionGoalState>,
 ) -> Result<(), String> {
     let mut recovered_binding = None;
     if let Some(binding) = session.metadata.runtime_store.as_ref()
@@ -4382,7 +4419,9 @@ pub(crate) fn apply_loaded_session_with_goal(
         if refusal.is_none() {
             recovered_binding = tasks.session_store_binding();
         }
-        if let Some(crate::runtime_threads::StoreAdoptionRefusal::HeldByLiveProcess) = refusal {
+        if let Some(codewhale_engine::runtime_threads::StoreAdoptionRefusal::HeldByLiveProcess) =
+            refusal
+        {
             // A fresh `codewhale resume` would meet the same live holder, so
             // name the step that actually frees the store (#6418).
             return Err(format!(
@@ -4431,7 +4470,7 @@ pub(crate) fn apply_loaded_session_with_goal(
         .map_err(|reason| {
             format!(
                 "{reason}. {}",
-                crate::session_export::export_recovery_hint(&session.metadata.id)
+                codewhale_engine::session_export::export_recovery_hint(&session.metadata.id)
             )
         })?;
     let restored_route = resolve_runtime_route_for_identity(
@@ -4467,7 +4506,7 @@ pub(crate) fn apply_loaded_session_with_goal(
         // document still binds it (#6144 P1a) — otherwise it stayed on disk
         // with nothing pointing at it.
         if let Some(abandoned) = abandoned {
-            crate::session_reconcile::retire_unbound_store_in_background(
+            codewhale_engine::session_reconcile::retire_unbound_store_in_background(
                 manager,
                 abandoned.data_dir,
                 "conversation rebound to another host's store",
@@ -4483,7 +4522,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     // All fallible preflight is complete. Retire the old session's background
     // accounting atomically before mutating live state; any late old-scope
     // provider response is rejected by `cost_status::report`.
-    let _settled_old_cost_scope = crate::cost_status::close_current_scope();
+    let _settled_old_cost_scope = codewhale_engine::cost_status::close_current_scope();
     *config = *restored_route.config;
     app.refresh_notification_settings(config);
     app.restore_api_messages_from_owned(&mut session);
@@ -4592,12 +4631,12 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    let restored_parent = crate::pricing::CostEstimate {
+    let restored_parent = codewhale_engine::pricing::CostEstimate {
         usd: session.metadata.cost.session_cost_usd,
         cny: session.metadata.cost.session_cost_cny,
     }
     .sanitized();
-    let restored_background = crate::pricing::CostEstimate {
+    let restored_background = codewhale_engine::pricing::CostEstimate {
         usd: session.metadata.cost.subagent_cost_usd,
         cny: session.metadata.cost.subagent_cost_cny,
     }
@@ -4616,7 +4655,7 @@ pub(crate) fn apply_loaded_session_with_goal(
         .iter()
         .cloned()
         .collect();
-    crate::cost_status::restore_usage_source_ledger(
+    codewhale_engine::cost_status::restore_usage_source_ledger(
         session
             .metadata
             .cost
@@ -4657,7 +4696,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     // the restored total with no regression.
     let total_restored_usd = session.metadata.cost.total_usd();
     let total_restored_cny = session.metadata.cost.total_cny();
-    let restored_high_water = crate::pricing::CostEstimate {
+    let restored_high_water = codewhale_engine::pricing::CostEstimate {
         usd: session.metadata.cost.displayed_cost_high_water_usd,
         cny: session.metadata.cost.displayed_cost_high_water_cny,
     }
@@ -4785,7 +4824,7 @@ mod profile_snapshot_tests {
                 let route = validated_profile_default_route(&next).unwrap();
                 assert_eq!(
                     route.context_window.source,
-                    crate::route_runtime::ContextWindowSource::UserDeclared,
+                    codewhale_engine::route_runtime::ContextWindowSource::UserDeclared,
                 );
                 let expected_models = next.custom_models.clone().unwrap();
                 apply_validated_profile_config(&mut app, &mut config, "new", next, &route);
@@ -4821,7 +4860,7 @@ mod profile_snapshot_tests {
                 );
                 assert_ne!(
                     app.active_context_window_source,
-                    crate::route_runtime::ContextWindowSource::UserDeclared,
+                    codewhale_engine::route_runtime::ContextWindowSource::UserDeclared,
                 );
             })
             .unwrap()

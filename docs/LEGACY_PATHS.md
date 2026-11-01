@@ -59,11 +59,11 @@ that actively migrates `~/.deepseek/` → `~/.codewhale/` on first run and a dep
 |---|---|---|
 | `config::resolve_state_dir` / `ensure_state_dir` | n/a (the resolver itself) | keep — canonical |
 | `crates/skills/src/roots.rs` (`~/.deepseek/skills`) | no — compatible-root enumeration | Keep read-only harness discovery; this is not an owned write target. |
-| `crates/tui/src/prompts.rs` (`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`) | no — explicit legacy const | keep — explicit legacy handoff fallback |
+| `crates/engine/src/prompts.rs` (`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`) | no — explicit legacy const | keep — explicit legacy handoff fallback |
 | `crates/tui/src/workspace_trust.rs` | no — hardcoded | keep-as-fallback; follow-up |
-| `crates/tui/src/session_manager.rs` | no — hardcoded | keep-as-fallback; follow-up |
+| `crates/engine/src/session_manager.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/skill_state.rs` | no — hardcoded | keep-as-fallback; follow-up |
-| `crates/tui/src/tools/skill.rs` | no — hardcoded | keep-as-fallback; follow-up |
+| `crates/engine/src/tools/skill.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/snapshot/src/lib.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/workspace_discovery.rs` | no — hardcoded | keep-as-fallback; follow-up |
 

@@ -348,7 +348,7 @@ pub fn read_lines(path: &Path) -> Vec<String> {
 /// Take every buffered line and truncate the buffer, under the compaction lock.
 ///
 /// Returns an empty vector when the tombstone is present or the lock is held
-/// elsewhere. Truncates rather than unlinks — `crates/tui/src/fleet/ledger.rs`
+/// elsewhere. Truncates rather than unlinks — `crates/engine/src/fleet/ledger.rs`
 /// documents the rule: replacing the file leaves appenders holding the old
 /// inode.
 #[must_use]

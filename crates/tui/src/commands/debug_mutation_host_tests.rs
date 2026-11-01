@@ -997,20 +997,20 @@ fn undo_refuses_lossy_shared_prefix_and_first_line_labels() {
         let fx = UndoFixture::new();
         fx.write("a.txt", "a0");
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("pre-turn", 1, Some(&first)),
+            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&first)),
             "s1",
         );
         fx.write("a.txt", "a1");
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("post-turn", 1, Some(&first)),
+            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&first)),
             "s1",
         );
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("pre-turn", 2, Some(&second)),
+            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 2, Some(&second)),
             "s1",
         );
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("post-turn", 2, Some(&second)),
+            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 2, Some(&second)),
             "s1",
         );
         let mut app = fx.app("s1");
@@ -1031,12 +1031,12 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
         let fx = UndoFixture::new();
         fx.write("a.txt", "a0");
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
+            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
             "s1",
         );
         fx.write("a.txt", "a1");
         fx.snapshot(
-            &crate::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
+            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
             "s1",
         );
         fx.snapshot("pre-turn:2: update a.txt again", "s1");
@@ -1046,8 +1046,8 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
         push_exchange(&mut app, &prompt);
         push_exchange(&mut app, "update a.txt again");
         app.session_turn_outcomes = vec![
-            crate::session_manager::SavedTurnOutcome::failed("first failure", 2),
-            crate::session_manager::SavedTurnOutcome::failed("second failure", 4),
+            codewhale_engine::session_manager::SavedTurnOutcome::failed("first failure", 2),
+            codewhale_engine::session_manager::SavedTurnOutcome::failed("second failure", 4),
         ];
 
         let result = super::execute("/undo", &mut app);
@@ -1144,12 +1144,12 @@ fn undo_keeps_lossless_hundred_character_unicode_prompts_available() {
     let prompt = "漢".repeat(100);
     fx.write("a.txt", "a0");
     fx.snapshot(
-        &crate::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
+        &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
         "s1",
     );
     fx.write("a.txt", "a1");
     fx.snapshot(
-        &crate::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
+        &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
         "s1",
     );
     let mut app = fx.app("s1");
@@ -1393,9 +1393,14 @@ fn patch_undo_restores_turns_a_fork_inherited() {
 
     let fork = |created_at: chrono::DateTime<chrono::Utc>| {
         let mut app = fx.app("fork");
-        let mut metadata =
-            crate::session_manager::create_saved_session(&[], "model", &fx.workspace, 0, None)
-                .metadata;
+        let mut metadata = codewhale_engine::session_manager::create_saved_session(
+            &[],
+            "model",
+            &fx.workspace,
+            0,
+            None,
+        )
+        .metadata;
         metadata.id = "fork".to_string();
         metadata.parent_session_id = Some("source".to_string());
         metadata.created_at = created_at;

@@ -142,7 +142,7 @@ pub(super) struct VoiceInputAdapter<'a> {
 
 impl codewhale_command_contract::navigation::CommandVoiceInputContext for VoiceInputAdapter<'_> {
     fn recorder_available(&self) -> bool {
-        crate::voice::is_available()
+        codewhale_engine::voice::is_available()
     }
     fn voice_enabled(&self) -> bool {
         self.host.app.borrow().voice_enabled

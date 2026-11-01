@@ -147,5 +147,5 @@ code_mode = false`,
     },
   ],
   sourceNote:
-    "来源文档：docs/MCP.md、crates/tui/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。",
+    "来源文档：docs/MCP.md、crates/engine/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。",
 };

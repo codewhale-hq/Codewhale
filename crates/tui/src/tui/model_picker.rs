@@ -24,14 +24,6 @@ use codewhale_config::catalog::{CatalogSource, CatalogStatus};
 use codewhale_config::model_reference::ModelReferenceCard;
 use codewhale_config::pricing::OfferingPricing;
 
-use crate::codex_model_cache::{self};
-use crate::model_profile::{
-    CapabilityOverride, SupportState, resolved_capability_profile_for_route_with_overrides,
-    resolved_capability_profile_with_overrides,
-};
-use crate::models_dev_live::{self, ModelsDevFreshness};
-use crate::provider_lake::{catalog_offering_for_model_identity, configured_providers};
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::provider_picker::ProviderOffer;
 use crate::tui::views::fleet_detail::{FleetRouteSelection, FleetRouteTarget};
@@ -41,6 +33,14 @@ use crate::tui::views::{
 };
 use codewhale_config::ProviderKind;
 use codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT;
+use codewhale_engine::codex_model_cache::{self};
+use codewhale_engine::model_profile::{
+    CapabilityOverride, SupportState, resolved_capability_profile_for_route_with_overrides,
+    resolved_capability_profile_with_overrides,
+};
+use codewhale_engine::models_dev_live::{self, ModelsDevFreshness};
+use codewhale_engine::provider_lake::{catalog_offering_for_model_identity, configured_providers};
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::codex_model_roster::{
@@ -242,13 +242,13 @@ pub struct ModelPickerView {
     route_config: Config,
     /// Session-local provider checks used by custom/current rows. Catalog rows
     /// resolve the same snapshot during construction.
-    provider_health: crate::provider_readiness::ProviderReadinessSnapshot,
+    provider_health: codewhale_engine::provider_readiness::ProviderReadinessSnapshot,
     view: ModelListView,
     /// Other providers considered "configured" (#3830), shown by default
     /// alongside `initial_provider`'s own rows without requiring the user to
     /// type a search query first. Uses the same definition as the
     /// `/provider` manager's default view
-    /// (`crate::provider_readiness::provider_is_configured_for_active`): active
+    /// (`codewhale_engine::provider_readiness::provider_is_configured_for_active`): active
     /// provider, working credentials/OAuth, or an explicit
     /// `[providers.<name>]` entry. Self-hosted providers (Ollama/Sglang/
     /// Vllm) don't qualify just because routing to them doesn't require a
@@ -987,7 +987,7 @@ impl ModelPickerView {
                 });
         }
         self.custom_model_row().is_some_and(|(model, provider)| {
-            crate::provider_readiness::resolve_for_model(
+            codewhale_engine::provider_readiness::resolve_for_model(
                 &self.route_config,
                 &provider,
                 &model,
@@ -1109,7 +1109,7 @@ impl ModelPickerView {
         let Some(identity) = self.resolved_admitted_identity() else {
             return String::new();
         };
-        crate::route_runtime::resolve_runtime_route_for_identity(
+        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
             &self.route_config,
             &identity,
             Some(model),
@@ -2200,7 +2200,7 @@ fn pin_names_row(pin: &PinnedModel, row: &ModelPickerRow) -> bool {
 fn picker_pins_for_app(app: &App) -> Vec<PinnedModel> {
     // A selected fleet that cannot be read contributes no pins; ⇧F on any
     // row then surfaces that store error instead of writing past it.
-    crate::fleet::members::fleet_models(&app.workspace)
+    codewhale_engine::fleet::members::fleet_models(&app.workspace)
         .unwrap_or_default()
         .into_iter()
         .map(|member| PinnedModel {
@@ -2345,7 +2345,7 @@ fn assign_default_sections(
 ) {
     let now = chrono::Utc::now();
     let guard = app.route_usage.read().ok();
-    let empty = crate::model_relevance::RouteUsageIndex::default();
+    let empty = codewhale_engine::model_relevance::RouteUsageIndex::default();
     let usage = guard.as_deref().unwrap_or(&empty);
     let find = |rows: &[ModelPickerRow], identity: &str, model: &str| {
         rows.iter().position(|row| {
@@ -2577,7 +2577,7 @@ fn push_provider_model_rows(
     active_provider: ProviderKind,
     config: &Config,
     codex_roster: &CodexModelRoster,
-    provider_health: &crate::provider_readiness::ProviderReadinessSnapshot,
+    provider_health: &codewhale_engine::provider_readiness::ProviderReadinessSnapshot,
 ) {
     if config.verify_provider_identity(admitted).is_err() {
         return;
@@ -2601,7 +2601,7 @@ fn push_provider_model_rows(
         }
     }
     let readiness_scope =
-        crate::provider_readiness::RouteReadinessScope::for_route(config, admitted);
+        codewhale_engine::provider_readiness::RouteReadinessScope::for_route(config, admitted);
     for id in model_ids {
         if id == "auto" {
             continue;
@@ -2650,11 +2650,11 @@ fn push_provider_model_rows(
         let blocked_reason = (!selectable).then(|| readiness_label.to_string());
         let credentialed = matches!(
             readiness,
-            crate::provider_readiness::ResolvedProviderReadiness::SavedUnchecked
-                | crate::provider_readiness::ResolvedProviderReadiness::ImportedTokenUnchecked
-                | crate::provider_readiness::ResolvedProviderReadiness::Ready
-                | crate::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked
-                | crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedUnchecked
+                | codewhale_engine::provider_readiness::ResolvedProviderReadiness::ImportedTokenUnchecked
+                | codewhale_engine::provider_readiness::ResolvedProviderReadiness::Ready
+                | codewhale_engine::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked
+                | codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         );
         let not_listed = fresh_roster.as_ref().and_then(|(listed, checked)| {
             (!listed.iter().any(|listed| listed.eq_ignore_ascii_case(&id))).then(|| NotListed {
@@ -2701,15 +2701,18 @@ fn fresh_roster_listing(
         return None;
     }
     // Reading the entry first loads a roster an earlier process persisted.
-    let entry = crate::provider_catalog_live::cached_entry_for_route(provider, identity, base_url)
-        .ok()
-        .flatten()?;
-    if crate::provider_catalog_live::status_for_route(provider, identity, base_url)
+    let entry = codewhale_engine::provider_catalog_live::cached_entry_for_route(
+        provider, identity, base_url,
+    )
+    .ok()
+    .flatten()?;
+    if codewhale_engine::provider_catalog_live::status_for_route(provider, identity, base_url)
         != CatalogStatus::Fresh
     {
         return None;
     }
-    let mut listed = crate::provider_lake::catalog_models_for_route(provider, identity, base_url);
+    let mut listed =
+        codewhale_engine::provider_lake::catalog_models_for_route(provider, identity, base_url);
     for offering in &entry.offerings {
         listed.push(picker_visible_model_id(provider, &offering.wire_model_id, false).to_string());
         if let Some(canonical) = &offering.canonical_model {
@@ -2740,7 +2743,7 @@ fn provider_catalog_receipt_for_route(
     // is probed (named live gateways, custom hosts, and builtin names on a
     // private endpoint) reports its freshness here, so a widened probe cannot
     // leave this receipt behind.
-    if !crate::provider_catalog_live::provider_owns_live_catalog(provider, &base_url) {
+    if !codewhale_engine::provider_catalog_live::provider_owns_live_catalog(provider, &base_url) {
         return None;
     }
     let endpoint_matches = match source {
@@ -2754,7 +2757,7 @@ fn provider_catalog_receipt_for_route(
         _ => true,
     };
     Some((
-        crate::provider_catalog_live::status_for_route(provider, identity, &base_url),
+        codewhale_engine::provider_catalog_live::status_for_route(provider, identity, &base_url),
         endpoint_matches,
     ))
 }
@@ -2762,9 +2765,9 @@ fn provider_catalog_receipt_for_route(
 fn push_auto_model_row(rows: &mut Vec<ModelPickerRow>, app: &App, config: &Config, hint: &str) {
     let captured = app.admitted_provider_identity().ok();
     let readiness = captured.map_or(
-        crate::provider_readiness::ResolvedProviderReadiness::Legacy,
+        codewhale_engine::provider_readiness::ResolvedProviderReadiness::Legacy,
         |identity| {
-            crate::provider_readiness::resolve_for_model(
+            codewhale_engine::provider_readiness::resolve_for_model(
                 config,
                 identity,
                 "auto",
@@ -2791,12 +2794,13 @@ fn push_auto_model_row(rows: &mut Vec<ModelPickerRow>, app: &App, config: &Confi
 }
 
 fn auto_picker_hint(app: &App, config: &Config) -> String {
-    let inventory = match crate::model_inventory::ModelInventory::auto_router_only(config) {
-        Ok(inventory) => inventory,
-        Err(reason) => {
-            return format!("{} · {reason}", app.tr(MessageId::ModelPickerAutoLocalHint));
-        }
-    };
+    let inventory =
+        match codewhale_engine::model_inventory::ModelInventory::auto_router_only(config) {
+            Ok(inventory) => inventory,
+            Err(reason) => {
+                return format!("{} · {reason}", app.tr(MessageId::ModelPickerAutoLocalHint));
+            }
+        };
     // #4411: the classifier only sees other providers under the persisted
     // `[auto] cross_provider` opt-in, so the default hint says active provider
     // only and names the classifier route it will actually call.
@@ -2868,7 +2872,9 @@ fn provider_catalog_model_ids(
     base_url: &str,
 ) -> Vec<String> {
     let mut models = Vec::new();
-    for id in crate::provider_lake::catalog_models_for_route(provider, identity, base_url) {
+    for id in
+        codewhale_engine::provider_lake::catalog_models_for_route(provider, identity, base_url)
+    {
         // Cached IDs belong to this exact endpoint. The configured/current
         // model is appended separately so users can still select saved IDs.
         push_model_id(&mut models, picker_visible_model_id(provider, &id, false));
@@ -3690,7 +3696,7 @@ fn effective_picker_metadata_with_codex(
     }
     let offering = captured.as_ref().and_then(|identity| {
         let base_url = config.base_url_for_route(identity);
-        crate::provider_lake::configured_catalog_offering_for_route(
+        codewhale_engine::provider_lake::configured_catalog_offering_for_route(
             config,
             identity.provider,
             identity.key.as_str(),
@@ -3714,7 +3720,7 @@ fn effective_picker_metadata_with_codex(
                 .as_ref()
                 .is_some_and(|meta| meta.reasoning == Some(true)),
             vision: SupportState::Unknown,
-            pricing: if crate::pricing::has_pricing_for_model(id) {
+            pricing: if codewhale_engine::pricing::has_pricing_for_model(id) {
                 PickerPricing::Known("priced".to_string())
             } else {
                 PickerPricing::Unknown
@@ -3882,7 +3888,7 @@ fn effective_picker_metadata_with_codex(
         PickerPricing::Status(status)
     } else if let Some(label) = card_price {
         PickerPricing::Known(label)
-    } else if crate::pricing::has_pricing_for_provider(provider, id) {
+    } else if codewhale_engine::pricing::has_pricing_for_provider(provider, id) {
         PickerPricing::Known("priced".to_string())
     } else {
         PickerPricing::Unknown
@@ -4873,15 +4879,15 @@ pub(crate) fn effective_tier_for_route(
     base_url: &str,
     wire_model: &str,
 ) -> ReasoningEffort {
-    match crate::work_graph::constrained_effective_reasoning_for_route(
+    match codewhale_engine::work_graph::constrained_effective_reasoning_for_route(
         effort.into(),
         provider,
         base_url,
         wire_model,
     )
-    .map(crate::reasoning_preference::EffectiveReasoningEffort::from)
+    .map(codewhale_engine::reasoning_preference::EffectiveReasoningEffort::from)
     {
-        Some(crate::reasoning_preference::EffectiveReasoningEffort::Tier(tier)) => tier,
+        Some(codewhale_engine::reasoning_preference::EffectiveReasoningEffort::Tier(tier)) => tier,
         _ => effort.normalize_for_route(provider, base_url, wire_model),
     }
 }
@@ -5135,7 +5141,7 @@ mod tests {
     #[test]
     fn configured_model_picker_and_runtime_share_exact_persisted_metadata() {
         let _env = crate::test_support::lock_test_env();
-        let _catalog = crate::provider_lake::lock_live_snapshot();
+        let _catalog = codewhale_engine::provider_lake::lock_live_snapshot();
         let mut config: Config = toml::from_str(include_str!(
             "../../../config/tests/fixtures/custom_models.toml"
         ))
@@ -5160,7 +5166,7 @@ mod tests {
                 .contains("user declared")
         );
         assert!(
-            crate::provider_lake::configured_catalog_models_for_route(
+            codewhale_engine::provider_lake::configured_catalog_models_for_route(
                 &config,
                 ProviderKind::Deepseek,
                 "deepseek",
@@ -5169,14 +5175,17 @@ mod tests {
             .iter()
             .any(|model| model == id)
         );
-        let route =
-            crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Deepseek, Some(id))
-                .unwrap();
+        let route = codewhale_engine::route_runtime::resolve_runtime_route(
+            &config,
+            ProviderKind::Deepseek,
+            Some(id),
+        )
+        .unwrap();
         assert_eq!(route.model, id);
         assert_eq!(Some(route.context_window.tokens), metadata.context_window);
         assert_eq!(
             route.context_window.source,
-            crate::route_runtime::ContextWindowSource::UserDeclared
+            codewhale_engine::route_runtime::ContextWindowSource::UserDeclared
         );
         assert!(!route.context_window.source.is_verified());
         assert_eq!(
@@ -5188,7 +5197,9 @@ mod tests {
             SupportState::Unknown
         );
         assert_eq!(
-            crate::route_budget::route_output_limit_tokens(Some(route.candidate.limits())),
+            codewhale_engine::route_budget::route_output_limit_tokens(Some(
+                route.candidate.limits()
+            )),
             metadata.max_output
         );
         // /load replaces the same metadata alongside the provider route.
@@ -5507,12 +5518,12 @@ mod tests {
     #[test]
     fn fleet_picker_keeps_the_rows_exact_pin_and_effort_after_refresh() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, mut app, home, _workspace) =
             resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
         app.model_picker_memory = Some(crate::tui::app::ModelPickerMemory {
             catalog_view: true,
             view: Some("catalog".to_string()),
@@ -5580,7 +5591,7 @@ mod tests {
     #[test]
     fn fleet_shortlist_picker_has_no_inherit_or_reasoning_edits() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, app, home, _workspace) = resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let mut picker = ModelPickerView::new_for_fleet_route(
@@ -5631,7 +5642,7 @@ mod tests {
     #[test]
     fn fleet_inherited_route_is_selectable_and_named_without_session_autorouting_claims() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, app, home, _workspace) = resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let mut picker = ModelPickerView::new_for_fleet_route(
@@ -5751,7 +5762,7 @@ mod tests {
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
         let workspace = temp.path().join("repo");
         std::fs::create_dir_all(&workspace).expect("workspace");
-        crate::fleet::members::add_fleet_model(
+        codewhale_engine::fleet::members::add_fleet_model(
             &workspace,
             "openrouter",
             "z-ai/glm-5.3-flash",
@@ -5814,14 +5825,14 @@ mod tests {
                 let mut second = config.custom_models.as_ref().unwrap()[0].clone();
                 second.id = upper.into();
                 config.custom_models.as_mut().unwrap().push(second);
-                crate::fleet::members::add_fleet_model(
+                codewhale_engine::fleet::members::add_fleet_model(
                     &workspace,
                     "deepseek",
                     lower,
                     &["scout".into()],
                 )
                 .unwrap();
-                crate::fleet::members::add_fleet_model(
+                codewhale_engine::fleet::members::add_fleet_model(
                     &workspace,
                     "deepseek",
                     upper,
@@ -6121,17 +6132,17 @@ mod tests {
         );
 
         // A real catalog/readiness refresh replaces cached presentation facts.
-        let mut offering = crate::provider_lake::catalog_offering_for_model(
+        let mut offering = codewhale_engine::provider_lake::catalog_offering_for_model(
             ProviderKind::Deepseek,
             "deepseek-v4-pro",
         )
         .unwrap();
         offering.limit.as_mut().unwrap().context = Some(777_000);
-        crate::provider_lake::set_live_snapshot(
+        codewhale_engine::provider_lake::set_live_snapshot(
             codewhale_config::catalog::CatalogSnapshot {
                 offerings: vec![offering],
             },
-            crate::provider_lake::LiveSource::ModelsDev,
+            codewhale_engine::provider_lake::LiveSource::ModelsDev,
         );
         picker.re_resolve_from_app(&app, &config);
         let visible = picker.visible_model_rows();
@@ -6181,11 +6192,11 @@ mod tests {
     #[test]
     fn baseten_picker_models_use_exact_identity_and_direct_provider_label() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let home = tempfile::tempdir().expect("test home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         // No compiled seeds: a custom route offers nothing until a live
         // listing lands for its exact endpoint (#6289).
@@ -6201,7 +6212,7 @@ mod tests {
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(
             codewhale_config::catalog::BASETEN_BASE_URL,
         );
-        crate::provider_catalog_live::record_success(
+        codewhale_engine::provider_catalog_live::record_success(
             codewhale_config::catalog::ProviderCatalogDelta {
                 provider: codewhale_config::catalog::BASETEN_PROVIDER_ID.to_string(),
                 base_url_fingerprint: fingerprint.clone(),
@@ -6275,11 +6286,11 @@ mod tests {
     #[test]
     fn first_provider_catalog_failure_is_visible_on_bundled_fallback_rows() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let home = tempfile::tempdir().expect("test home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         let config = {
             let __cw_config_init_0_0 = Some("openrouter".to_string());
@@ -6293,7 +6304,7 @@ mod tests {
                 .unwrap(),
         );
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
-        crate::provider_catalog_live::record_failure(
+        codewhale_engine::provider_catalog_live::record_failure(
             "openrouter",
             &fingerprint,
             CatalogRefreshError::Unauthorized,
@@ -6323,7 +6334,7 @@ mod tests {
             ProviderKind::Openrouter,
             &config,
             &codex_roster,
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
         assert_eq!(rows.len(), 1);
         assert!(
@@ -6332,18 +6343,18 @@ mod tests {
             rows[0].hint
         );
 
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
     }
 
     #[test]
     fn same_model_on_distinct_custom_routes_keeps_readiness_and_applied_identity() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, app, home, _workspace) = resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         const MODEL: &str = "deepseek/deepseek-v4-flash";
         let mut picker = ModelPickerView::new(&app, &config);
@@ -6393,8 +6404,8 @@ mod tests {
             }
         }
 
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
     }
 
     #[test]
@@ -6466,18 +6477,18 @@ model = "deepseek/deepseek-v4-flash"
     #[test]
     fn a_custom_relays_live_roster_reaches_the_default_view() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, app, home, _workspace) = resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         // The listing the relay answered, recorded the way the probe records
         // it. `command_code` is not the session's route, so the row can only
         // reach the default view through the relay-roster rule.
         let base_url = "https://command.example.test/v1";
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(base_url);
-        let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             ProviderKind::Custom,
             "command_code",
             base_url,
@@ -6494,7 +6505,7 @@ model = "deepseek/deepseek-v4-flash"
         let roster: Vec<_> = (0..ROUTE_ROSTER_ROWS_IN_DEFAULT_VIEW + 5)
             .map(|index| offering(&format!("relay-{index}")))
             .collect();
-        crate::provider_catalog_live::record_success_if_current(
+        codewhale_engine::provider_catalog_live::record_success_if_current(
             &ticket,
             codewhale_config::catalog::ProviderCatalogDelta {
                 provider: "command_code".to_string(),
@@ -6531,11 +6542,11 @@ model = "deepseek/deepseek-v4-flash"
     #[test]
     fn resumed_session_lists_every_configured_custom_route_by_identity() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (config, app, home, _workspace) = resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         let rows = picker_model_rows_for_app(&app, &config);
         let custom: Vec<_> = rows
@@ -6571,19 +6582,19 @@ model = "deepseek/deepseek-v4-flash"
             );
         }
 
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
     }
 
     #[test]
     fn shared_custom_model_opens_on_exact_active_route_despite_other_route_pin() {
         let _env = crate::test_support::lock_test_env();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let (mut config, mut app, home, _workspace) =
             resumed_openrouter_session_with_named_custom_routes();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
 
         const MODEL: &str = "deepseek/deepseek-v4-flash";
         config.provider = Some("other_code".to_string());
@@ -6649,8 +6660,8 @@ model = "deepseek/deepseek-v4-flash"
                 ..
             } if identity.persisted_id() == Some("other_code")
         ));
-        crate::provider_catalog_live::reset_cache_for_test();
-        crate::provider_lake::clear_live_snapshot();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_lake::clear_live_snapshot();
     }
 
     #[test]
@@ -6692,7 +6703,7 @@ model = "deepseek/deepseek-v4-flash"
         )
         .unwrap();
         assert!(settings_path.starts_with(home));
-        crate::fleet::members::add_fleet_model(
+        codewhale_engine::fleet::members::add_fleet_model(
             workspace,
             "xai",
             "grok-4.6",
@@ -6765,14 +6776,14 @@ api_key = "fixture-xai-key"
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
                 let _env = crate::test_support::lock_test_env();
-                let _live = crate::provider_lake::lock_live_snapshot();
+                let _live = codewhale_engine::provider_lake::lock_live_snapshot();
                 let root = tempfile::tempdir().unwrap();
                 let home = root.path().join("home");
                 let workspace = root.path().join("repo");
                 std::fs::create_dir_all(&workspace).unwrap();
                 let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
-                crate::provider_catalog_live::reset_cache_for_test();
-                crate::provider_lake::clear_live_snapshot();
+                codewhale_engine::provider_catalog_live::reset_cache_for_test();
+                codewhale_engine::provider_lake::clear_live_snapshot();
                 let (config, app) = founder_shaped_app(&home, &workspace);
 
                 let mut picker = ModelPickerView::new(&app, &config);
@@ -6910,8 +6921,8 @@ api_key = "fixture-xai-key"
                     "the session's own route is ordinary recent use here: {fleet_rows:#?}"
                 );
 
-                crate::provider_catalog_live::reset_cache_for_test();
-                crate::provider_lake::clear_live_snapshot();
+                codewhale_engine::provider_catalog_live::reset_cache_for_test();
+                codewhale_engine::provider_lake::clear_live_snapshot();
             })
             .unwrap()
             .join()
@@ -6924,14 +6935,14 @@ api_key = "fixture-xai-key"
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
                 let _env = crate::test_support::lock_test_env();
-                let _live = crate::provider_lake::lock_live_snapshot();
+                let _live = codewhale_engine::provider_lake::lock_live_snapshot();
                 let root = tempfile::tempdir().unwrap();
                 let home = root.path().join("home");
                 let workspace = root.path().join("repo");
                 std::fs::create_dir_all(&workspace).unwrap();
                 let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
-                crate::provider_catalog_live::reset_cache_for_test();
-                crate::provider_lake::clear_live_snapshot();
+                codewhale_engine::provider_catalog_live::reset_cache_for_test();
+                codewhale_engine::provider_lake::clear_live_snapshot();
                 let (config, mut app) = founder_shaped_app(&home, &workspace);
                 // OpenRouter was used recently, so its leftover model is its
                 // default row and reaches the default view.
@@ -6944,7 +6955,7 @@ api_key = "fixture-xai-key"
                             .unwrap(),
                     );
                     let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
-                    let _ = crate::provider_catalog_live::record_success(
+                    let _ = codewhale_engine::provider_catalog_live::record_success(
                         codewhale_config::catalog::ProviderCatalogDelta {
                             provider: provider.as_str().to_string(),
                             base_url_fingerprint: fingerprint.clone(),
@@ -6964,7 +6975,7 @@ api_key = "fixture-xai-key"
                                 .collect(),
                         },
                     );
-                    crate::provider_catalog_live::status_for_route(
+                    codewhale_engine::provider_catalog_live::status_for_route(
                         provider,
                         provider.as_str(),
                         &base_url,
@@ -7029,8 +7040,8 @@ api_key = "fixture-xai-key"
                     "config is never rewritten"
                 );
 
-                crate::provider_catalog_live::reset_cache_for_test();
-                crate::provider_lake::clear_live_snapshot();
+                codewhale_engine::provider_catalog_live::reset_cache_for_test();
+                codewhale_engine::provider_lake::clear_live_snapshot();
             })
             .unwrap()
             .join()

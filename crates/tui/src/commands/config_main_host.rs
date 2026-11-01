@@ -1,7 +1,6 @@
 //! Config commands: config, settings, mode switches, trust, logout
 
 use crate::commands::CommandResult;
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, AppAction, AppModeUi, SettingSelection, VimMode};
 use anyhow::Result;
 use codewhale_command_contract::config::{CommandWorkflowSummary, ConfigMessage, ConfigReply};
@@ -11,6 +10,7 @@ use codewhale_config::descriptors::defaults::DEFAULT_XIAOMI_MIMO_BASE_URL;
 use codewhale_config::notifications::{
     NotificationConfigUpdate, NotificationSetting, NotificationsConfig,
 };
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_localization::{MessageId, resolve_locale, tr};
 use codewhale_runtime::config::{
@@ -73,7 +73,7 @@ fn config_action_reply(message: impl Into<ConfigMessage>, action: AppAction) -> 
 }
 
 pub(in crate::commands) fn workflow_summary(app: &App) -> CommandWorkflowSummary {
-    let refreshed = crate::tools::workflow::session_workflow_config(&app.workspace);
+    let refreshed = codewhale_engine::tools::workflow::session_workflow_config(&app.workspace);
     let cfg = refreshed.as_ref().unwrap_or(&app.workflow_config);
     CommandWorkflowSummary {
         automatic: cfg.automatic,
@@ -455,9 +455,9 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
         "search" | "search.provider" | "search_provider" => load_command_config(app)
             .ok()
             .map(|config| search_provider_display(&config, app.ui_locale)),
-        "telemetry" => load_command_config(app)
-            .ok()
-            .map(|config| crate::telemetry_notice::saved_preference_enabled(&config).to_string()),
+        "telemetry" => load_command_config(app).ok().map(|config| {
+            codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string()
+        }),
         "prompt_suggestion" => load_command_config(app)
             .ok()
             .map(|config| prompt_suggestion_display(&config)),
@@ -1756,7 +1756,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 Ok(enabled) => enabled,
                 Err(err) => return ConfigReply::error(err),
             };
-            let applied = crate::telemetry_notice::apply_persistent_preference(
+            let applied = codewhale_engine::telemetry_notice::apply_persistent_preference(
                 app.config_path.clone(),
                 enabled,
             );
@@ -1891,7 +1891,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 model
             };
             let saved = if persist {
-                match crate::route_preferences::persist_provider_selection(
+                match codewhale_engine::route_preferences::persist_provider_selection(
                     app.config_path.as_deref(),
                     match app.admitted_provider_identity() {
                         Ok(identity) => identity,
@@ -2180,7 +2180,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             // bidi/zero-width policy as `/title` and `/rename`. Persist the
             // normalized value too, so a restart cannot reintroduce bytes the
             // live session already discarded.
-            let sanitized = crate::session_manager::sanitize_session_title(value);
+            let sanitized = codewhale_engine::session_manager::sanitize_session_title(value);
             let value = sanitized.trim();
             if value.is_empty() {
                 return ConfigReply::error(
@@ -5035,11 +5035,13 @@ context_window = 262144
             context_tokens: Some(262_144),
             ..Default::default()
         });
-        app.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
-            tokens: 262_144,
-            source: crate::route_runtime::ContextWindowSource::Configured,
-        });
-        app.active_context_window_source = crate::route_runtime::ContextWindowSource::Configured;
+        app.active_context_window =
+            Some(codewhale_engine::route_runtime::ContextWindowResolution {
+                tokens: 262_144,
+                source: codewhale_engine::route_runtime::ContextWindowSource::Configured,
+            });
+        app.active_context_window_source =
+            codewhale_engine::route_runtime::ContextWindowSource::Configured;
 
         let result = config_command(&mut app, Some("context_window"));
         let message = result.message.expect("context window message");
@@ -6047,7 +6049,7 @@ context_window = 262144
         assert_eq!(app.auto_compact_threshold_percent, 65.0);
         assert_eq!(
             app.compact_threshold,
-            crate::route_budget::compaction_threshold_for_route_at_percent(
+            codewhale_engine::route_budget::compaction_threshold_for_route_at_percent(
                 app.api_provider,
                 app.effective_model_for_budget(),
                 app.active_route_limits,

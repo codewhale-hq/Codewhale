@@ -2,10 +2,10 @@
 use super::contract::structcopy_host::observe_path_roots;
 use super::groups::session::structcopy::{self, *};
 use crate::commands::CommandResult;
-use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use crate::tui::app::App;
 use crate::tui::app::TuiOptions;
 use crate::tui::clipboard::ClipboardHandler;
+use codewhale_engine::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message};
@@ -343,7 +343,7 @@ fn workflow_copy_projects_existing_run_without_side_effects() {
         "read-only copy must not create the workflow journal"
     );
 
-    crate::tools::workflow::structcopy_test_seed_run(
+    codewhale_engine::tools::workflow::structcopy_test_seed_run(
         tmpdir.path(),
         "structcopy-test-run-alpha",
         app.current_session_id
@@ -1466,12 +1466,12 @@ fn structcopy_is_registered_human_only_and_absent_from_model_catalog() {
     // Never a model-visible tool: neither in the native tool catalog nor
     // in the legacy tool registry surface sent to providers.
     assert!(
-        !crate::core::engine::default_active_native_tool_names().contains(&"structcopy"),
+        !codewhale_engine::core::engine::default_active_native_tool_names().contains(&"structcopy"),
         "structcopy must not be a native tool"
     );
     let tmpdir = TempDir::new().expect("tempdir");
-    let context = crate::tools::spec::ToolContext::new(tmpdir.path().to_path_buf());
-    let registry = crate::tools::ToolRegistryBuilder::new()
+    let context = codewhale_engine::tools::spec::ToolContext::new(tmpdir.path().to_path_buf());
+    let registry = codewhale_engine::tools::ToolRegistryBuilder::new()
         .with_file_tools()
         .with_read_only_file_tools()
         .with_shell_tools()

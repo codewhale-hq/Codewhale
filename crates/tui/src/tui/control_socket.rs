@@ -82,7 +82,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
@@ -351,13 +351,14 @@ impl SessionControl {
         let sessions_dir = match self.sessions_dir.clone() {
             Some(dir) => dir,
             None => {
-                let manager = match crate::session_manager::SessionManager::default_location() {
-                    Ok(manager) => manager,
-                    Err(error) => {
-                        tracing::warn!(%error, "control socket: cannot resolve the sessions directory");
-                        return;
-                    }
-                };
+                let manager =
+                    match codewhale_engine::session_manager::SessionManager::default_location() {
+                        Ok(manager) => manager,
+                        Err(error) => {
+                            tracing::warn!(%error, "control socket: cannot resolve the sessions directory");
+                            return;
+                        }
+                    };
                 let dir = manager.sessions_dir().to_path_buf();
                 self.sessions_dir = Some(dir.clone());
                 dir
@@ -405,7 +406,7 @@ impl SessionControl {
         &mut self,
         app: &mut App,
         config: &codewhale_runtime::config::Config,
-        engine_handle: &crate::core::engine::EngineHandle,
+        engine_handle: &codewhale_engine::core::engine::EngineHandle,
         current_streaming_text: &mut String,
         stream_display_clock: &mut StreamDisplayClock,
     ) {
@@ -474,7 +475,7 @@ fn snapshot_from_app(app: &App) -> StatusSnapshot {
 async fn execute_command(
     app: &mut App,
     config: &codewhale_runtime::config::Config,
-    engine_handle: &crate::core::engine::EngineHandle,
+    engine_handle: &codewhale_engine::core::engine::EngineHandle,
     current_streaming_text: &mut String,
     stream_display_clock: &mut StreamDisplayClock,
     id: String,
@@ -596,7 +597,8 @@ pub(crate) fn bind_control_socket(
 
     let listener = UnixListener::bind(&path)?;
     let identity = socket_file_identity(&path);
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    codewhale_config::private_directory::tighten_mode(&path, 0o600)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     listener.set_nonblocking(true)?;
 
     let stop = Arc::new(AtomicBool::new(false));

@@ -141,9 +141,9 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
         .recent
         .iter()
         .map(|session| {
-            let raw = crate::session_manager::extract_title(&session.title);
+            let raw = codewhale_engine::session_manager::extract_title(&session.title);
             let title = if raw == "Session" || raw.trim().is_empty() {
-                crate::session_manager::truncate_id(&session.id).to_string()
+                codewhale_engine::session_manager::truncate_id(&session.id).to_string()
             } else {
                 raw.to_string()
             };
@@ -587,7 +587,7 @@ fn app_has_unfinished_subagents(app: &App) -> bool {
         || app.subagent_cache.iter().any(|agent| {
             matches!(
                 agent.status,
-                crate::tools::subagent::SubAgentStatus::Running
+                codewhale_engine::tools::subagent::SubAgentStatus::Running
             )
         })
 }
@@ -923,7 +923,11 @@ pub(crate) fn mode_label(locale: Locale, mode: AppMode) -> Cow<'static, str> {
 /// earns header columns when it is worth reading — see
 /// [`filesystem_scope_notice`].
 pub(crate) fn permission_label(app: &App) -> Cow<'static, str> {
-    crate::core::authority::permission_label_for(app.ui_locale, app.mode, app.approval_mode)
+    codewhale_engine::core::authority::permission_label_for(
+        app.ui_locale,
+        app.mode,
+        app.approval_mode,
+    )
 }
 
 /// The effective filesystem scope — but only when it says something the
@@ -947,12 +951,14 @@ fn filesystem_scope_notice(app: &App) -> Option<Cow<'static, str>> {
     // Spelled out because the old `fs:` prefix read as an unexplained
     // acronym (user report, 2026-07-23): this chip states which files the
     // session may write.
-    let policy = crate::core::authority::sandbox_policy_for_turn(
+    let policy = codewhale_engine::core::authority::sandbox_policy_for_turn(
         app.mode,
         app.approval_mode,
         app.configured_sandbox_mode.as_deref(),
         &app.workspace,
-        crate::core::authority::SandboxNetworkAccess::from_config(app.configured_sandbox_network),
+        codewhale_engine::core::authority::SandboxNetworkAccess::from_config(
+            app.configured_sandbox_network,
+        ),
     );
     // A policy is an intent; enforcement needs a backend. On default Linux
     // (bubblewrap is opt-in) and on all Windows there is none. Say
@@ -2144,7 +2150,9 @@ mod launch_card_tests {
     /// The founder's own shape: many servers, a couple genuinely broken, a
     /// pile sitting unauthenticated, the rest fine.
     fn with_mcp(mut app: App) -> App {
-        use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+        use codewhale_engine::mcp::{
+            McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+        };
         let mut servers = Vec::new();
         let mut push = |name: &str, connected: bool, error: Option<&str>, auth: bool| {
             servers.push(McpServerSnapshot {

@@ -365,9 +365,8 @@ pub(super) fn system_body_style() -> Style {
 /// backslash:
 ///
 /// - a fenced block, closed only by a run at least as long as its opener;
-/// - a line carrying an inline delimiter the renderer treats as a passthrough
-///   (`` ` ``, `**`, `~~`) — inline code, bold and strikethrough are the shapes
-///   a note's third-party text (MCP guidance, extension prompts) brings with it;
+/// - a line carrying inline code (`` ` ``), a shape a note's third-party text
+///   (MCP guidance, extension prompts) brings with it;
 /// - a table row.
 ///
 /// A line that is both prose and delimited keeps today's behavior rather than
@@ -419,9 +418,5 @@ fn carries_verbatim_inline_markdown(line: &str) -> bool {
     if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1 {
         return true;
     }
-    // `__bold__` and `_italic_` are deliberately absent: `_` is everywhere in
-    // identifiers (`setup_state.json`), and a false positive there would leave
-    // the paths this pass exists to protect untouched. `*` covers both the bold
-    // and italic forms and is rare enough in a machine note to keep this cheap.
-    line.contains('`') || line.contains('*') || line.contains("~~")
+    line.contains('`')
 }

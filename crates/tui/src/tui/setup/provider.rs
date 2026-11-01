@@ -1,7 +1,7 @@
 use codewhale_config::{SetupState, SetupStep, StepEntry, StepStatus};
 
-use crate::provider_readiness::ResolvedProviderReadiness;
 use crate::tui::app::App;
+use codewhale_engine::provider_readiness::ResolvedProviderReadiness;
 
 pub(super) fn step_status(readiness: &ResolvedProviderReadiness) -> StepStatus {
     if matches!(readiness, ResolvedProviderReadiness::Ready) {
@@ -36,7 +36,7 @@ pub(crate) async fn record_configured_route(app: &App) -> anyhow::Result<()> {
     }
     let entry = step_entry(
         StepStatus::Configured,
-        crate::prompts::CONSTITUTION_CHECKPOINT_VERSION,
+        codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION,
         format!(
             "provider={}, model={}; configured, not checked",
             app.provider_identity_for_persistence(),

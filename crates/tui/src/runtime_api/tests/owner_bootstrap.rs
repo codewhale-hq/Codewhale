@@ -1,10 +1,10 @@
 //! Actual manager/store/lease bootstrap, without any provider turn. Transport
 //! fixtures do not substitute for the separate rebuilt two-process proof.
 use super::*;
-use crate::runtime_threads::{
+use codewhale_config::private_directory::PrivateDirectory;
+use codewhale_engine::runtime_threads::{
     RuntimeProcessOwnerLock, RuntimeStoreBinding, manager::ThreadListFilter,
 };
-use codewhale_config::private_directory::PrivateDirectory;
 use codewhale_protocol::RuntimeOwnerReceipt;
 
 struct OwnedChild(std::process::Child);
@@ -219,6 +219,7 @@ async fn two_crash_reentries_converge_on_one_owner_and_preserve_saved_draft() ->
         Some(recovery),
     )
     .await?;
+    let daemon = daemon.expect("a private endpoint directory is available on this host");
     let stop = daemon.shutdown_handle();
     let serving = tokio::spawn(daemon.serve());
     let RuntimeHostAdmission::Attached(client) = loser.await?? else {
