@@ -160,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Python REPL drains stderr while code runs, retains at most 64 KiB of diagnostics and reports omitted bytes, so noisy code cannot block request completion (#6554).
+- Saved tool results use bounded streaming inspection while preserving session ownership, digest and generation checks. Text refuses oversized lines or selections with byte-recovery guidance; verification also has explicit scan and cancellation limits (#6554).
 - Telemetry bounds its pending event queue and disk-tail reads, keeps final flush admission available, and skips invalid UTF-8 records without discarding intact neighboring records. Existing opt-out and privacy ordering remain in force (#6554).
 - Workflow history summaries retain large child totals without allocating one row per claimed child. Missing outcomes, usage and elapsed time remain unknown, including in the workbar (#6554). The independent terminal kit advances to unpublished 0.2.0 for its `u64` total API; registry-based TUI packaging waits for separately approved kit publication.
 - Web build dependencies cap glob preprocessing and stop cancelled directory traversals through compatible, verified upstream backports. Raw dependency findings remain visible. Thanks [@isaacs](https://github.com/isaacs) for the [minimatch](https://github.com/isaacs/minimatch/commit/77a0f5c4b80bdc641c3c930a1d9edf5ad2db57f8) and [glob](https://github.com/isaacs/node-glob/commit/4682e8c9babee1b385202ede36389634e12076d7) fixes (#6560).

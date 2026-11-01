@@ -23,6 +23,11 @@ const DEFAULT_MAX_MATCHES: usize = 20;
 const HARD_MAX_MATCHES: usize = 100;
 const DEFAULT_CONTEXT_LINES: usize = 1;
 const HARD_CONTEXT_LINES: usize = 5;
+const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_TEXT_LINE_BYTES: usize = 1024 * 1024;
+const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_QUERY_BYTES: usize = 4 * 1024;
+const MAX_REFERENCE_BYTES: usize = 32 * 1024;
 
 /// Retrieve summaries or slices of a prior spilled tool result.
 pub struct RetrieveToolResultTool;
@@ -111,99 +116,134 @@ impl ToolSpec for RetrieveToolResultTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let reference = required_str(&input, "ref")?.trim();
+        let reference = required_str(&input, "ref")?;
+        if reference.len() > MAX_REFERENCE_BYTES {
+            return Err(ToolError::invalid_input(
+                "ref exceeds the 32768-byte inspection limit",
+            ));
+        }
+        let reference = reference.trim();
         if reference.is_empty() {
             return Err(ToolError::invalid_input("ref cannot be empty"));
         }
 
-        let mode = optional_str(&input, "mode")?
-            .unwrap_or("summary")
-            .trim()
-            .to_ascii_lowercase();
+        let mode = optional_str(&input, "mode")?.unwrap_or("summary");
+        if mode.len() > 16 {
+            return Err(ToolError::invalid_input(
+                "mode exceeds the inspection limit",
+            ));
+        }
+        let mode = mode.trim().to_ascii_lowercase();
+        if !matches!(
+            mode.as_str(),
+            "metadata" | "summary" | "head" | "tail" | "lines" | "query" | "bytes"
+        ) {
+            return Err(ToolError::invalid_input(format!(
+                "unsupported mode `{mode}` (expected metadata, summary, head, tail, lines, query, or bytes)"
+            )));
+        }
         let max_bytes = clamp_u64(
             optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES as u64)?,
             1,
             HARD_MAX_BYTES,
         );
-        let resolved = resolve_spillover_reference(reference, &context.state_namespace)?;
-        let legacy_ownership = if resolved.kind == ResolvedReferenceKind::LegacyGlobal {
-            Some(authorize_legacy_spillover(
-                &resolved.path,
-                &context.state_namespace,
-            )?)
-        } else {
+        let inspection = if mode == "metadata" || mode == "bytes" {
             None
+        } else {
+            Some(TextInspection::new(&mode, &input, max_bytes)?)
         };
-        let bytes = tokio::fs::read(&resolved.path).await.map_err(|_| {
-            ToolError::execution_failed("evidence is missing or no longer retained")
-        })?;
+        let owned_reference = reference.to_string();
+        let session_id = context.state_namespace.clone();
+        let (resolved, legacy_ownership, file, initial_size) =
+            evidence_owner_work(context, move |cancel| {
+                let resolved = resolve_spillover_reference(&owned_reference, &session_id)?;
+                check_evidence_cancelled(cancel)?;
+                let legacy_ownership = if resolved.kind == ResolvedReferenceKind::LegacyGlobal {
+                    Some(authorize_legacy_spillover(&resolved.path, &session_id)?)
+                } else {
+                    None
+                };
+                check_evidence_cancelled(cancel)?;
+                let relative = resolved.path.strip_prefix(&resolved.root).map_err(|_| {
+                    ToolError::permission_denied("evidence path is not owned by the active session")
+                })?;
+                let file =
+                    codewhale_util::files::WorkspaceFile::open_delivery(&resolved.root, relative)
+                        .and_then(|file| file.open_file())
+                        .map_err(|_| {
+                            ToolError::execution_failed("evidence is missing or no longer retained")
+                        })?;
+                check_evidence_cancelled(cancel)?;
+                let initial_size = file
+                    .metadata()
+                    .map_err(|_| {
+                        ToolError::execution_failed("evidence is missing or no longer retained")
+                    })?
+                    .len();
+                Ok((resolved, legacy_ownership, file, initial_size))
+            })
+            .await?;
+        let snapshot = stream_evidence(
+            file,
+            initial_size,
+            &input,
+            &mode,
+            max_bytes,
+            inspection,
+            context,
+        )
+        .await?;
         if let Some(ownership) = legacy_ownership {
-            let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-            if ownership.size_bytes != size
-                || ownership.digest != codewhale_runtime::hashing::sha256_hex(&bytes)
-            {
+            if ownership.size_bytes != snapshot.size_bytes || ownership.digest != snapshot.digest {
                 return Err(ToolError::execution_failed(
                     "legacy evidence content is corrupt",
                 ));
             }
         }
-        let evidence = validate_evidence_if_present(
-            reference,
-            &resolved.path,
-            &bytes,
-            &context.state_namespace,
-            &input,
-        )?;
+        let owned_reference = reference.to_string();
+        let session_id = context.state_namespace.clone();
+        let size_bytes = snapshot.size_bytes;
+        let digest = snapshot.digest.clone();
+        let generation = input.get("generation").and_then(Value::as_u64);
+        let evidence = evidence_owner_work(context, move |_| {
+            validate_evidence_if_present(
+                &owned_reference,
+                &resolved.path,
+                size_bytes,
+                &digest,
+                &session_id,
+                generation,
+            )
+        })
+        .await?;
         if mode == "metadata" {
             return ToolResult::json(&json!({
                 "ref": reference,
                 "available": true,
-                "total_bytes": bytes.len(),
+                "total_bytes": snapshot.size_bytes,
                 "evidence": evidence,
             }))
             .map_err(|err| ToolError::execution_failed(err.to_string()));
         }
         if mode == "bytes" {
             use base64::Engine as _;
-            let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let requested = input
-                .get("length")
-                .and_then(Value::as_u64)
-                .unwrap_or(max_bytes as u64) as usize;
-            let end = offset
-                .saturating_add(requested.min(max_bytes))
-                .min(bytes.len());
-            let slice = bytes.get(offset.min(bytes.len())..end).unwrap_or_default();
+            let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            let slice = &snapshot.byte_slice;
             return ToolResult::json(&json!({
                 "ref": reference,
                 "mode": "bytes",
                 "offset": offset,
                 "returned_bytes": slice.len(),
-                "total_bytes": bytes.len(),
+                "total_bytes": snapshot.size_bytes,
                 "encoding": "base64",
                 "data": base64::engine::general_purpose::STANDARD.encode(slice),
             }))
             .map_err(|err| ToolError::execution_failed(err.to_string()));
         }
-        let content = String::from_utf8(bytes).map_err(|_| {
-            ToolError::execution_failed(
-                "evidence encoding is binary; bounded text inspection is unavailable",
-            )
-        })?;
-
-        let lines: Vec<&str> = content.lines().collect();
-        let payload = match mode.as_str() {
-            "summary" => build_summary_payload(reference, &content, &lines, &input, max_bytes)?,
-            "head" => build_head_tail_payload(reference, "head", &lines, &input, max_bytes)?,
-            "tail" => build_head_tail_payload(reference, "tail", &lines, &input, max_bytes)?,
-            "lines" => build_lines_payload(reference, &lines, &input, max_bytes)?,
-            "query" => build_query_payload(reference, &lines, &input, max_bytes)?,
-            other => {
-                return Err(ToolError::invalid_input(format!(
-                    "unsupported mode `{other}` (expected metadata, summary, head, tail, lines, query, or bytes)"
-                )));
-            }
-        };
+        let inspection = snapshot
+            .inspection?
+            .ok_or_else(|| ToolError::execution_failed("text inspection was unavailable"))?;
+        let payload = inspection.payload(reference, snapshot.size_bytes);
 
         ToolResult::json(&payload).map_err(|err| {
             ToolError::execution_failed(format!("failed to serialize result: {err}"))
@@ -211,12 +251,51 @@ impl ToolSpec for RetrieveToolResultTool {
     }
 }
 
+async fn evidence_owner_work<T: Send + 'static>(
+    context: &ToolContext,
+    work: impl FnOnce(&tokio_util::sync::CancellationToken) -> Result<T, ToolError> + Send + 'static,
+) -> Result<T, ToolError> {
+    let cancel = context
+        .cancel_token
+        .as_ref()
+        .map(tokio_util::sync::CancellationToken::child_token)
+        .unwrap_or_default();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let worker_cancel = cancel.clone();
+    #[cfg(any(test, feature = "test-support"))]
+    let ticket = crate::test_support::env_scope_ticket();
+    let worker = codewhale_app_server::daemon_socket::owner_work(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        let result = (|| {
+            check_evidence_cancelled(&worker_cancel)?;
+            let result = work(&worker_cancel);
+            check_evidence_cancelled(&worker_cancel)?;
+            result
+        })();
+        Ok(result)
+    });
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(ToolError::cancelled("Evidence inspection cancelled")),
+        result = worker => result.map_err(|_| ToolError::execution_failed("evidence inspection preparation failed"))?,
+    }
+}
+
+fn check_evidence_cancelled(cancel: &tokio_util::sync::CancellationToken) -> Result<(), ToolError> {
+    if cancel.is_cancelled() {
+        return Err(ToolError::cancelled("Evidence inspection cancelled"));
+    }
+    Ok(())
+}
+
 fn validate_evidence_if_present(
     reference: &str,
     path: &std::path::Path,
-    bytes: &[u8],
+    size_bytes: u64,
+    digest: &str,
     session_id: &str,
-    input: &Value,
+    generation: Option<u64>,
 ) -> Result<Option<crate::tools::large_output_router::EvidenceArtifact>, ToolError> {
     let handle = path
         .file_stem()
@@ -258,18 +337,12 @@ fn validate_evidence_if_present(
             "evidence retention has expired",
         ));
     }
-    if input
-        .get("generation")
-        .and_then(Value::as_u64)
-        .is_some_and(|generation| generation != u64::from(metadata.generation))
-    {
+    if generation.is_some_and(|generation| generation != u64::from(metadata.generation)) {
         return Err(ToolError::execution_failed(
             "evidence generation does not match",
         ));
     }
-    if metadata.size_bytes != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        || metadata.digest != codewhale_runtime::hashing::sha256_hex(bytes)
-    {
+    if metadata.size_bytes != size_bytes || metadata.digest != digest {
         return Err(ToolError::execution_failed("evidence content is corrupt"));
     }
     Ok(Some(metadata))
@@ -284,6 +357,7 @@ enum ResolvedReferenceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedSpilloverReference {
     path: PathBuf,
+    root: PathBuf,
     kind: ResolvedReferenceKind,
 }
 
@@ -396,11 +470,13 @@ fn resolve_spillover_reference(
         if inside_session {
             Some(ResolvedSpilloverReference {
                 path: canonical,
+                root: session_artifacts_root_canonical.as_ref()?.clone(),
                 kind: ResolvedReferenceKind::ActiveSession,
             })
         } else if inside_legacy {
             Some(ResolvedSpilloverReference {
                 path: canonical,
+                root: root_canonical.as_ref()?.clone(),
                 kind: ResolvedReferenceKind::LegacyGlobal,
             })
         } else {
@@ -488,181 +564,402 @@ fn not_found(reference: &str, tried: usize) -> ToolError {
     ))
 }
 
-fn build_summary_payload(
-    reference: &str,
-    content: &str,
-    lines: &[&str],
-    input: &Value,
+#[derive(Default)]
+struct TextInspection {
+    mode: String,
     max_bytes: usize,
-) -> Result<Value, ToolError> {
-    let max_matches = clamp_u64(
-        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64)?,
-        1,
-        HARD_MAX_MATCHES,
-    );
-    let signal_lines = collect_signal_lines(lines, max_matches);
-    let head_count = DEFAULT_LINE_COUNT.min(lines.len());
-    let tail_count = DEFAULT_LINE_COUNT.min(lines.len());
-    let head = render_numbered_lines(
-        lines
-            .iter()
-            .take(head_count)
-            .enumerate()
-            .map(|(idx, line)| (idx + 1, *line)),
-        max_bytes / 2,
-    );
-    let tail_start = lines.len().saturating_sub(tail_count);
-    let tail = render_numbered_lines(
-        lines
-            .iter()
-            .enumerate()
-            .skip(tail_start)
-            .map(|(idx, line)| (idx + 1, *line)),
-        max_bytes / 2,
-    );
-
-    Ok(json!({
-        "ref": reference,
-        "mode": "summary",
-        "total_bytes": content.len(),
-        "total_lines": lines.len(),
-        "non_empty_lines": lines.iter().filter(|line| !line.trim().is_empty()).count(),
-        "signal_lines": signal_lines,
-        "head": head,
-        "tail": tail,
-        "hint": "Use mode=head, tail, lines, or query to retrieve a narrower slice."
-    }))
+    line_count: usize,
+    max_matches: usize,
+    context_lines: usize,
+    range: (usize, usize),
+    query: String,
+    query_lower: String,
+    total_lines: usize,
+    non_empty_lines: usize,
+    matched_lines: usize,
+    retained_bytes: usize,
+    leading_bytes: usize,
+    leading: Vec<(usize, String)>,
+    trailing: std::collections::VecDeque<(usize, String)>,
+    signal_lines: Vec<Value>,
+    previous: std::collections::VecDeque<(usize, String)>,
+    matches: Vec<(usize, Vec<(usize, String)>)>,
+    active_matches: std::collections::VecDeque<(usize, usize)>,
 }
 
-fn build_head_tail_payload(
-    reference: &str,
-    mode: &str,
-    lines: &[&str],
-    input: &Value,
-    max_bytes: usize,
-) -> Result<Value, ToolError> {
-    let count = clamp_u64(
-        optional_u64(input, "line_count", DEFAULT_LINE_COUNT as u64)?,
-        1,
-        HARD_LINE_COUNT,
-    );
-    let selected: Vec<(usize, &str)> = if mode == "head" {
-        lines
-            .iter()
-            .take(count)
-            .enumerate()
-            .map(|(idx, line)| (idx + 1, *line))
-            .collect()
-    } else {
-        let start = lines.len().saturating_sub(count);
-        lines
-            .iter()
-            .enumerate()
-            .skip(start)
-            .map(|(idx, line)| (idx + 1, *line))
-            .collect()
-    };
-    let excerpt = render_numbered_lines(selected.iter().copied(), max_bytes);
-
-    Ok(json!({
-        "ref": reference,
-        "mode": mode,
-        "total_lines": lines.len(),
-        "line_count": count,
-        "excerpt": excerpt,
-    }))
-}
-
-fn build_lines_payload(
-    reference: &str,
-    lines: &[&str],
-    input: &Value,
-    max_bytes: usize,
-) -> Result<Value, ToolError> {
-    let (start, end) = parse_line_selector(input)?;
-    let excerpt = if start > lines.len() {
-        String::new()
-    } else {
-        let end = end.min(lines.len());
-        render_numbered_lines(
-            lines
-                .iter()
-                .enumerate()
-                .skip(start - 1)
-                .take(end.saturating_sub(start) + 1)
-                .map(|(idx, line)| (idx + 1, *line)),
+impl TextInspection {
+    fn new(mode: &str, input: &Value, max_bytes: usize) -> Result<Self, ToolError> {
+        let mut state = Self {
+            mode: mode.to_string(),
             max_bytes,
-        )
-    };
-
-    Ok(json!({
-        "ref": reference,
-        "mode": "lines",
-        "total_lines": lines.len(),
-        "start_line": start,
-        "end_line": end.min(lines.len()),
-        "excerpt": excerpt,
-    }))
-}
-
-fn build_query_payload(
-    reference: &str,
-    lines: &[&str],
-    input: &Value,
-    max_bytes: usize,
-) -> Result<Value, ToolError> {
-    let query = optional_str(input, "query")?
-        .map(str::trim)
-        .filter(|q| !q.is_empty())
-        .ok_or_else(|| ToolError::invalid_input("query is required when mode=query"))?;
-    let query_lower = query.to_lowercase();
-    let max_matches = clamp_u64(
-        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64)?,
-        1,
-        HARD_MAX_MATCHES,
-    );
-    let context_lines = clamp_u64(
-        optional_u64(input, "context_lines", DEFAULT_CONTEXT_LINES as u64)?,
-        0,
-        HARD_CONTEXT_LINES,
-    );
-
-    let mut matched_lines = 0usize;
-    let mut results = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if !line.to_lowercase().contains(&query_lower) {
-            continue;
+            ..Self::default()
+        };
+        match mode {
+            "summary" | "query" => {
+                state.max_matches = clamp_u64(
+                    optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64)?,
+                    1,
+                    HARD_MAX_MATCHES,
+                );
+                if mode == "summary" {
+                    state.line_count = DEFAULT_LINE_COUNT;
+                } else {
+                    let raw = optional_str(input, "query")?.ok_or_else(|| {
+                        ToolError::invalid_input("query is required when mode=query")
+                    })?;
+                    if raw.len() > MAX_QUERY_BYTES {
+                        return Err(ToolError::invalid_input(
+                            "query exceeds the 4096-byte inspection limit; use a shorter substring",
+                        ));
+                    }
+                    let query = raw.trim();
+                    if query.is_empty() {
+                        return Err(ToolError::invalid_input(
+                            "query is required when mode=query",
+                        ));
+                    }
+                    state.query = query.to_string();
+                    state.query_lower = query.to_lowercase();
+                    state.context_lines = clamp_u64(
+                        optional_u64(input, "context_lines", DEFAULT_CONTEXT_LINES as u64)?,
+                        0,
+                        HARD_CONTEXT_LINES,
+                    );
+                }
+            }
+            "head" | "tail" => {
+                state.line_count = clamp_u64(
+                    optional_u64(input, "line_count", DEFAULT_LINE_COUNT as u64)?,
+                    1,
+                    HARD_LINE_COUNT,
+                );
+            }
+            "lines" => state.range = parse_line_selector(input)?,
+            _ => return Err(ToolError::invalid_input("unsupported text inspection mode")),
         }
-        matched_lines += 1;
-        if results.len() >= max_matches {
-            continue;
-        }
-        let start = idx.saturating_sub(context_lines);
-        let end = (idx + context_lines).min(lines.len().saturating_sub(1));
-        let excerpt = render_numbered_lines(
-            lines
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(end.saturating_sub(start) + 1)
-                .map(|(line_idx, text)| (line_idx + 1, *text)),
-            max_bytes / max_matches.max(1),
-        );
-        results.push(json!({
-            "line": idx + 1,
-            "excerpt": excerpt,
-        }));
+        Ok(state)
     }
 
-    Ok(json!({
-        "ref": reference,
-        "mode": "query",
-        "query": query,
-        "total_lines": lines.len(),
-        "matched_lines": matched_lines,
-        "matches_returned": results.len(),
-        "results": results,
-    }))
+    fn retain(
+        &mut self,
+        line_no: usize,
+        line: &str,
+        limit: usize,
+    ) -> Result<(usize, String), ToolError> {
+        let mut end = line.len().min(limit.saturating_add(4));
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        let size = end.saturating_add(std::mem::size_of::<(usize, String)>());
+        if self.retained_bytes.saturating_add(size) > MAX_SELECTION_BYTES {
+            return Err(ToolError::execution_failed(
+                "text selection exceeds the 8 MiB inspection memory limit; reduce line_count, context_lines or max_bytes, or use mode=bytes",
+            ));
+        }
+        self.retained_bytes += size;
+        Ok((line_no, line[..end].to_string()))
+    }
+
+    fn release(&mut self, record: &(usize, String)) {
+        self.retained_bytes = self.retained_bytes.saturating_sub(
+            record
+                .1
+                .len()
+                .saturating_add(std::mem::size_of::<(usize, String)>()),
+        );
+    }
+
+    fn push_line(&mut self, line: &str) -> Result<(), ToolError> {
+        self.total_lines += 1;
+        let line_no = self.total_lines;
+        if !line.trim().is_empty() {
+            self.non_empty_lines += 1;
+        }
+        let budget = if self.mode == "summary" {
+            self.max_bytes / 2
+        } else {
+            self.max_bytes
+        };
+        if (self.mode == "summary" || self.mode == "head")
+            && self.leading.len() < self.line_count
+            && self.leading_bytes <= budget
+            || self.mode == "lines"
+                && line_no >= self.range.0
+                && line_no <= self.range.1
+                && self.leading_bytes <= budget
+        {
+            let record = self.retain(line_no, line, budget)?;
+            self.leading_bytes = self
+                .leading_bytes
+                .saturating_add(line_no.to_string().len())
+                .saturating_add(record.1.len())
+                .saturating_add(3);
+            self.leading.push(record);
+        }
+        if self.mode == "summary" || self.mode == "tail" {
+            if self.trailing.len() == self.line_count {
+                if let Some(record) = self.trailing.pop_front() {
+                    self.release(&record);
+                }
+            }
+            let record = self.retain(line_no, line, budget)?;
+            self.trailing.push_back(record);
+        }
+        if self.mode == "summary"
+            && self.signal_lines.len() < self.max_matches
+            && is_signal_line(line)
+        {
+            self.signal_lines.push(json!({
+                "line": line_no,
+                "text": truncate_line(line.trim(), 300),
+            }));
+        }
+        if self.mode != "query" {
+            return Ok(());
+        }
+        let budget = self.max_bytes / self.max_matches;
+        while self
+            .active_matches
+            .front()
+            .is_some_and(|(_, end)| *end < line_no)
+        {
+            self.active_matches.pop_front();
+        }
+        for position in 0..self.active_matches.len() {
+            let index = self.active_matches[position].0;
+            let record = self.retain(line_no, line, budget)?;
+            self.matches[index].1.push(record);
+        }
+        if line.to_lowercase().contains(&self.query_lower) {
+            self.matched_lines += 1;
+            if self.matches.len() < self.max_matches {
+                let mut window = Vec::new();
+                let before: Vec<(usize, String)> = self.previous.iter().cloned().collect();
+                for (number, text) in before {
+                    window.push(self.retain(number, &text, budget)?);
+                }
+                window.push(self.retain(line_no, line, budget)?);
+                let index = self.matches.len();
+                self.matches.push((line_no, window));
+                self.active_matches
+                    .push_back((index, line_no.saturating_add(self.context_lines)));
+            }
+        }
+        if self.context_lines > 0 && self.matches.len() < self.max_matches {
+            if self.previous.len() == self.context_lines {
+                if let Some(record) = self.previous.pop_front() {
+                    self.release(&record);
+                }
+            }
+            let record = self.retain(line_no, line, budget)?;
+            self.previous.push_back(record);
+        }
+        Ok(())
+    }
+
+    fn payload(self, reference: &str, total_bytes: u64) -> Value {
+        let numbered = |records: &[(usize, String)], budget| {
+            render_numbered_lines(
+                records
+                    .iter()
+                    .map(|(number, text)| (*number, text.as_str())),
+                budget,
+            )
+        };
+        match self.mode.as_str() {
+            "summary" => json!({
+                "ref": reference,
+                "mode": "summary",
+                "total_bytes": total_bytes,
+                "total_lines": self.total_lines,
+                "non_empty_lines": self.non_empty_lines,
+                "signal_lines": self.signal_lines,
+                "head": numbered(&self.leading, self.max_bytes / 2),
+                "tail": render_numbered_lines(self.trailing.iter().map(|(n, text)| (*n, text.as_str())), self.max_bytes / 2),
+                "hint": "Use mode=head, tail, lines, or query to retrieve a narrower slice."
+            }),
+            "head" | "tail" => json!({
+                "ref": reference,
+                "mode": self.mode,
+                "total_lines": self.total_lines,
+                "line_count": self.line_count,
+                "excerpt": if self.mode == "head" { numbered(&self.leading, self.max_bytes) } else { render_numbered_lines(self.trailing.iter().map(|(n, text)| (*n, text.as_str())), self.max_bytes) },
+            }),
+            "lines" => json!({
+                "ref": reference,
+                "mode": "lines",
+                "total_lines": self.total_lines,
+                "start_line": self.range.0,
+                "end_line": self.range.1.min(self.total_lines),
+                "excerpt": numbered(&self.leading, self.max_bytes),
+            }),
+            "query" => json!({
+                "ref": reference,
+                "mode": "query",
+                "query": self.query,
+                "total_lines": self.total_lines,
+                "matched_lines": self.matched_lines,
+                "matches_returned": self.matches.len(),
+                "results": self.matches.iter().map(|(line, window)| json!({
+                    "line": line,
+                    "excerpt": numbered(window, self.max_bytes / self.max_matches),
+                })).collect::<Vec<_>>(),
+            }),
+            _ => unreachable!(),
+        }
+    }
+}
+
+struct EvidenceSnapshot {
+    size_bytes: u64,
+    digest: String,
+    byte_slice: Vec<u8>,
+    inspection: Result<Option<TextInspection>, ToolError>,
+}
+
+async fn stream_evidence(
+    source: std::fs::File,
+    initial_size: u64,
+    input: &Value,
+    mode: &str,
+    max_bytes: usize,
+    inspection: Option<TextInspection>,
+    context: &ToolContext,
+) -> Result<EvidenceSnapshot, ToolError> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    let limit_error = || {
+        ToolError::execution_failed(
+            "evidence exceeds the 512 MiB verification scan limit; export a smaller artifact through the owning session",
+        )
+    };
+    if initial_size > MAX_SCAN_BYTES {
+        return Err(limit_error());
+    }
+    let mut file = tokio::fs::File::from_std(source);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let length = input
+        .get("length")
+        .and_then(Value::as_u64)
+        .unwrap_or(max_bytes as u64)
+        .min(max_bytes as u64);
+    let slice_end = offset.saturating_add(length);
+    let mut state = inspection;
+    let mut text_error = None;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut chunk = [0u8; 64 * 1024];
+    let mut line = Vec::new();
+    let mut byte_slice = Vec::new();
+    loop {
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(ToolError::cancelled("Evidence inspection cancelled"));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ToolError::execution_failed(
+                "evidence verification exceeded the 20-second scan limit; export a smaller artifact through the owning session",
+            ));
+        }
+        let read = async {
+            loop {
+                let result = match context.cancel_token.as_ref() {
+                    Some(token) => tokio::select! {
+                        biased;
+                        () = token.cancelled() => return Err(ToolError::cancelled("Evidence inspection cancelled")),
+                        result = file.read(&mut chunk) => result,
+                    },
+                    None => file.read(&mut chunk).await,
+                };
+                match result {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => {
+                        return result.map_err(|_| {
+                            ToolError::execution_failed("evidence is missing or no longer retained")
+                        });
+                    }
+                }
+            }
+        };
+        let n = tokio::time::timeout_at(deadline, read).await
+            .map_err(|_| ToolError::execution_failed("evidence verification exceeded the 20-second scan limit; export a smaller artifact through the owning session"))??;
+        if n == 0 {
+            break;
+        }
+        let start = total;
+        total = total.saturating_add(n as u64);
+        if total > MAX_SCAN_BYTES {
+            return Err(limit_error());
+        }
+        hasher.update(&chunk[..n]);
+        if mode == "bytes" {
+            let first = offset.max(start);
+            let last = slice_end.min(total);
+            if first < last {
+                byte_slice
+                    .extend_from_slice(&chunk[(first - start) as usize..(last - start) as usize]);
+            }
+        }
+        if state.is_some() {
+            for piece in chunk[..n].split_inclusive(|byte| *byte == b'\n') {
+                if line.len().saturating_add(piece.len()) > MAX_TEXT_LINE_BYTES {
+                    text_error = Some(ToolError::execution_failed(
+                        "evidence contains a line above the 1 MiB text inspection limit; use mode=bytes with offset and length for exact recovery",
+                    ));
+                    state = None;
+                    line.clear();
+                    break;
+                }
+                line.extend_from_slice(piece);
+                if piece.ends_with(b"\n") {
+                    let raw = line.strip_suffix(b"\n").unwrap_or(&line);
+                    let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+                    let result = std::str::from_utf8(raw)
+                        .map_err(|_| ToolError::execution_failed("evidence encoding is binary; bounded text inspection is unavailable"))
+                        .and_then(|text| state.as_mut().unwrap().push_line(text));
+                    if let Err(error) = result {
+                        text_error = Some(error);
+                        state = None;
+                        line.clear();
+                        break;
+                    }
+                    line.clear();
+                }
+            }
+        }
+    }
+    if let Some(state) = state.as_mut() {
+        if !line.is_empty() {
+            if let Err(error) = std::str::from_utf8(&line)
+                .map_err(|_| {
+                    ToolError::execution_failed(
+                        "evidence encoding is binary; bounded text inspection is unavailable",
+                    )
+                })
+                .and_then(|text| state.push_line(text))
+            {
+                text_error = Some(error);
+            }
+        }
+    }
+    if tokio::time::Instant::now() >= deadline {
+        return Err(ToolError::execution_failed(
+            "evidence verification exceeded the 20-second scan limit; export a smaller artifact through the owning session",
+        ));
+    }
+    Ok(EvidenceSnapshot {
+        size_bytes: total,
+        digest: codewhale_runtime::hashing::hex_bytes(hasher.finalize()),
+        byte_slice,
+        inspection: match text_error {
+            Some(error) => Err(error),
+            None => Ok(state),
+        },
+    })
 }
 
 fn parse_line_selector(input: &Value) -> Result<(usize, usize), ToolError> {
@@ -673,10 +970,20 @@ fn parse_line_selector(input: &Value) -> Result<(usize, usize), ToolError> {
             ToolError::invalid_input("start_line is required when end_line is supplied")
         })?;
         let end = explicit_end.unwrap_or(start);
-        return validate_line_range(start as usize, end as usize);
+        let start = usize::try_from(start)
+            .map_err(|_| ToolError::invalid_input("start_line exceeds the platform range"))?;
+        let end = usize::try_from(end)
+            .map_err(|_| ToolError::invalid_input("end_line exceeds the platform range"))?;
+        return validate_line_range(start, end);
     }
 
-    let spec = optional_str(input, "lines")?
+    let raw = optional_str(input, "lines")?;
+    if raw.is_some_and(|value| value.len() > 64) {
+        return Err(ToolError::invalid_input(
+            "lines selector exceeds the 64-byte inspection limit",
+        ));
+    }
+    let spec = raw
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
@@ -711,23 +1018,6 @@ fn parse_positive_line(raw: &str, field: &str) -> Result<usize, ToolError> {
     raw.parse::<usize>().map_err(|_| {
         ToolError::invalid_input(format!("{field} must be a positive integer line number"))
     })
-}
-
-fn collect_signal_lines(lines: &[&str], max_matches: usize) -> Vec<Value> {
-    let mut out = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if !is_signal_line(line) {
-            continue;
-        }
-        out.push(json!({
-            "line": idx + 1,
-            "text": truncate_line(line.trim(), 300),
-        }));
-        if out.len() >= max_matches {
-            break;
-        }
-    }
-    out
 }
 
 fn is_signal_line(line: &str) -> bool {
@@ -786,7 +1076,7 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 }
 
 fn clamp_u64(value: u64, min: usize, max: usize) -> usize {
-    (value as usize).clamp(min, max)
+    usize::try_from(value).unwrap_or(usize::MAX).clamp(min, max)
 }
 
 #[cfg(test)]
