@@ -21,7 +21,7 @@
 //! Edit prompt text here directly. Content and ordering invariants are
 //! guarded by the test suite in `../prompts.rs` (constitution structure,
 //! binding gates, prefix privacy, byte-stable prefix ordering) — run
-//! `cargo test -p codewhale-tui --bin codewhale-tui prompts` after edits.
+//! `cargo test -p codewhale-engine --lib prompts` after edits.
 //!
 //! The locale-tagged bookends (per-locale preambles/closers) remain in
 //! `../prompts.rs` next to the override cells that can replace them.
