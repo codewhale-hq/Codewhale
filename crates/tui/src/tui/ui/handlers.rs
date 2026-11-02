@@ -1858,6 +1858,7 @@ pub(crate) async fn handle_view_events(
                     }
                 }
                 crate::tui::views::CommandPaletteAction::InsertText { text } => {
+                    app.clear_input_recoverable();
                     app.input = text;
                     app.cursor_position = app.input.chars().count();
                     app.status_message = Some(
