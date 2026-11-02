@@ -6516,6 +6516,7 @@ mod tests {
         assert!(worker_rx.try_recv().is_err());
 
         controller.observe_engine_event(&EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "turn_started_later".to_string(),
             created_at: chrono::Utc::now(),
             route: None,

@@ -18,10 +18,85 @@ pub const USER_SHELL_TOOL_ID_PREFIX: &str = "user_shell_";
 
 pub type FleetMemberStarted = Result<String, String>;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionControlId(String);
+
+impl Default for SessionControlId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionControlId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub(crate) fn for_admitted_history(id: String) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionSnapshotSource {
+    pub turn_id: Option<String>,
+    pub submission_id: Option<String>,
+    pub compaction_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_id: Option<SessionControlId>,
+}
+
+impl SessionSnapshotSource {
+    pub fn turn(turn_id: String, submission_id: Option<String>) -> Self {
+        Self {
+            turn_id: Some(turn_id),
+            submission_id,
+            compaction_id: None,
+            control_id: None,
+        }
+    }
+
+    pub fn control(control_id: SessionControlId) -> Self {
+        Self {
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            control_id: Some(control_id),
+        }
+    }
+
+    pub fn compaction(compaction_id: String) -> Self {
+        Self {
+            turn_id: None,
+            submission_id: None,
+            compaction_id: Some(compaction_id),
+            control_id: None,
+        }
+    }
+
+    pub fn terminal(
+        turn_id: Option<String>,
+        submission_id: Option<String>,
+        compaction_id: Option<String>,
+    ) -> Option<Self> {
+        if turn_id.is_some() == compaction_id.is_some() {
+            return None;
+        }
+        Some(Self {
+            turn_id,
+            submission_id,
+            compaction_id,
+            control_id: None,
+        })
+    }
+}
+
 /// Snapshot of session state for saving to disk.
 /// Returned by `Op::GetSessionSnapshot` via a oneshot channel.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SessionSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SessionSnapshotSource>,
     /// The live conversation id this engine session is running under.
     ///
     /// Every workspace snapshot the conversation takes is tagged with it. A
@@ -385,6 +460,7 @@ pub enum Op {
 
     /// Sync engine session state (used for resume/load)
     SyncSession {
+        control: SessionControlId,
         session_id: Option<String>,
         messages: Vec<Message>,
         system_prompt: Option<SystemPrompt>,
@@ -398,6 +474,7 @@ pub enum Op {
     /// compares the full expected state before changing history or caches.
     /// A rejected rewind returns None and performs no mutation or inference.
     RewindConversation {
+        control: SessionControlId,
         expected: Box<SessionSnapshot>,
         messages: Vec<Message>,
         tx: tokio::sync::oneshot::Sender<Option<SessionSnapshot>>,

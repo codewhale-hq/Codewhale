@@ -325,7 +325,9 @@ async fn headless_turn_retries_mid_stream_network_drop_and_recovers() {
     let transcript_text = events
         .iter()
         .filter_map(|event| match event {
-            Event::SessionUpdated { messages, .. } => Some(messages),
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => Some(messages),
             _ => None,
         })
         .flat_map(|messages| messages.iter())
@@ -1250,7 +1252,9 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
         .iter()
         .rev()
         .find_map(|event| match event {
-            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => Some(messages.clone()),
             _ => None,
         })
         .expect("final SessionUpdated");

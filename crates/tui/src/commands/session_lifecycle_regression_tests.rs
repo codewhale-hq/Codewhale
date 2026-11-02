@@ -161,6 +161,7 @@ fn fork_saves_parent_and_switches_to_child_session() {
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.set_provider_identity(codewhale_config::ProviderKind::Custom, "lm-studio");
     app.current_session_id = Some("parent-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     let mut cached_parent = create_saved_session_with_id_and_mode(
         "parent-session".to_string(),
         &[],
@@ -264,6 +265,7 @@ fn fork_rejects_active_runtime_without_switching_sessions() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("parent-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![codewhale_models::ContentBlock::Text {
@@ -287,6 +289,7 @@ fn new_session_from_resumed_state_creates_distinct_empty_session() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.session_title = Some("Old Session".to_string());
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
@@ -354,6 +357,7 @@ fn conversation_reset_forgets_approvals(command: &str) {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.approval_session_denied
         .insert("shell:rm -rf build:call-1".to_string());
     app.approval_session_approved
@@ -410,6 +414,7 @@ fn new_session_blocks_unsent_input_without_force() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.input = "draft text".to_string();
 
     let result = new_session(&mut app, None);
@@ -433,6 +438,7 @@ fn new_session_force_discards_unsent_input() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.input = "draft text".to_string();
 
     let result = new_session(&mut app, Some("--force"));
@@ -449,6 +455,7 @@ fn new_session_blocks_in_flight_turn_without_force() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.is_loading = true;
 
     let result = new_session(&mut app, None);
@@ -464,6 +471,7 @@ fn new_session_force_cannot_detach_an_in_flight_turn() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![],
@@ -494,6 +502,7 @@ fn load_rejects_an_active_runtime_before_reading_or_mutating() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![],
@@ -706,6 +715,7 @@ fn new_session_is_all_or_nothing_when_work_state_is_busy() {
         content: vec![],
     });
     app.current_session_id = Some("current-session".to_string());
+    crate::test_support::capture_session_fixture_source(&mut app);
     let todos = app.todos.clone();
     let _held = todos.try_lock().expect("hold todos lock");
 

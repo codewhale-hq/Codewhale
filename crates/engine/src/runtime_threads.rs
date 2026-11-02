@@ -411,6 +411,8 @@ pub struct ThreadReadMarker {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedSessionCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_observation: Option<crate::session_manager::SessionObservation>,
     pub covered_turn_id: Option<String>,
     /// Fingerprint of the document's first `messages_len` messages.
     pub messages_sha256: String,
@@ -4721,6 +4723,10 @@ impl HeldRuntimeStore {
         let mut thread = store.load_thread(thread_id)?;
         thread.session_id = Some(session.metadata.id.clone());
         thread.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+            publication_observation: session
+                .write_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.observation().ok()),
             covered_turn_id: thread.latest_turn_id.clone(),
             messages_sha256: session_messages_sha256(&session.messages)?,
             messages_len: Some(session.messages.len()),
@@ -5069,6 +5075,8 @@ pub struct RuntimeHistoryOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_document_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_base: Option<crate::session_manager::SessionObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_source_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_target_digest: Option<String>,
@@ -5091,6 +5099,18 @@ pub struct RuntimeHistoryWitness {
     pub workspace: PathBuf,
 }
 impl RuntimeHistoryOperation {
+    pub fn session_publication_id(&self) -> Result<String> {
+        self.validate()?;
+        Ok(codewhale_runtime::hashing::sha256_hex(
+            codewhale_runtime::hashing::canonical_json(&serde_json::json!({
+                "session_publication": 1,
+                "key_fingerprint": self.key_fingerprint,
+                "receipt": self.receipt,
+            }))
+            .as_bytes(),
+        ))
+    }
+
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.version == 1 && self.receipt.version == 1,

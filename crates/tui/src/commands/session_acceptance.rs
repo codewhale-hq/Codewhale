@@ -101,8 +101,12 @@ fn persisted_workspace_with_one_user_message(world: &mut SessionCommandWorld) {
     let original_id = "original-session".to_string();
     let app = world.app.as_deref_mut().expect("app should exist");
     app.current_session_id = Some(original_id.clone());
+    crate::test_support::capture_session_fixture_source(app);
     world.original_session_id = Some(original_id);
     persist_active_session(world);
+    crate::test_support::capture_session_fixture_source(
+        world.app.as_deref_mut().expect("fixture app"),
+    );
 }
 
 #[given("a CodeWhale session workspace with stale and fresh saved sessions")]

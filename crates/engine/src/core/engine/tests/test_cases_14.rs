@@ -27,6 +27,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("headless-resume".to_string()),
             messages,
             system_prompt: None,
@@ -55,7 +56,8 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
         |block| matches!(block, ContentBlock::Text { text, .. } if text == "Keep the original task")
     ));
     let restored =
-        codewhale_models::turn_classify::restored_subagent_checkpoint_display(&snapshot.messages[1])
+        codewhale_models::turn_classify::restored_subagent_checkpoint_display(&snapshot.messages[1],
+    )
             .expect("projected headless checkpoint");
     assert!(restored.contains("agent_headless"));
     assert!(restored.contains("Checkpoint: engine restore is covered."));
@@ -164,6 +166,7 @@ async fn edit_last_turn_preserves_current_mode() {
     ];
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-mode-test".to_string()),
             messages: seeded_messages,
             system_prompt: None,
@@ -320,6 +323,7 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
     ];
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-cut-test".to_string()),
             messages: seeded_messages,
             system_prompt: None,
@@ -424,6 +428,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     // must surface an error instead of silently appending the message.
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-no-user-test".to_string()),
             messages: vec![Message {
                 role: Role::Assistant,
@@ -546,6 +551,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     ];
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-unsupported-user-test".to_string()),
             messages: image_only_history.clone(),
             system_prompt: None,
@@ -727,7 +733,8 @@ fn context_budget_scenario() {
         let _lock = lock_test_env();
         let budget = context_input_budget_for_provider(ProviderKind::OpenaiCodex, "gpt-5.5")
             .expect("OpenAI Codex should use a conservative fallback without route metadata");
-        let expected = usize::try_from(codewhale_runtime::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
+        let expected = usize::try_from(codewhale_runtime::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
+        )
             .expect("context window fits usize")
             - crate::provider_lake::provider_capability(ProviderKind::OpenaiCodex, "gpt-5.5")
                 .max_output

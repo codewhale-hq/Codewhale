@@ -1277,6 +1277,11 @@ fn the_wire_result_is_the_tools_text_and_json_and_says_when_it_was_cut() {
         SessionCheckpointRequest,
     };
     let snapshot = Arc::new(crate::core::ops::SessionSnapshot {
+        source: Some(crate::core::ops::SessionSnapshotSource::turn(
+            "turn".into(),
+            None,
+        )),
+
         session_id: "session".into(),
         messages: Vec::new(),
         total_tokens: 0,

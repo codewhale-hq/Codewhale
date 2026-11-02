@@ -2260,6 +2260,9 @@ pub struct App {
     pub undo_selection: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    pub(crate) session_write_receipt:
+        Option<codewhale_engine::session_manager::SessionWriteReceipt>,
+    pub(crate) session_write_owner: Option<codewhale_engine::session_manager::SessionWriteOwner>,
     /// Exclusive editor ownership, shared with outstanding queue writes.
     pub(crate) offline_queue_lease:
         Option<std::sync::Arc<codewhale_engine::session_manager::OfflineQueueLease>>,
@@ -5307,9 +5310,38 @@ impl App {
         self.needs_redraw = true;
     }
 
+    pub(crate) fn adopt_session_mutation(&mut self, metadata: &SessionMetadata) {
+        if self.current_session_id.as_deref() == Some(metadata.id.as_str())
+            && let Some(mutation) = metadata.native_mutation_observation.as_ref()
+            && let Some(receipt) = self.session_write_receipt.as_ref()
+            && let Ok(receipt) = receipt.adopt_mutation(mutation)
+        {
+            self.session_write_receipt = Some(receipt);
+        }
+    }
+
+    pub(crate) fn owns_session_projection(
+        &self,
+        source: Option<&codewhale_engine::core::ops::SessionSnapshotSource>,
+    ) -> bool {
+        self.session_write_owner
+            .as_ref()
+            .zip(source)
+            .is_some_and(|(owner, source)| owner.matches_source(source))
+    }
+
+    pub(crate) fn session_sync_control(&mut self) -> codewhale_engine::core::ops::SessionControlId {
+        let id = codewhale_engine::core::ops::SessionControlId::new();
+        self.session_write_owner =
+            Some(codewhale_engine::session_manager::SessionWriteOwner::Control(id.clone()));
+        id
+    }
+
     pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
         if self.current_session_id != session_id {
             self.view_stack.remove_owned_evidence_pagers();
+            self.session_write_receipt = None;
+            self.session_write_owner = None;
         }
         self.current_session_id = session_id;
     }
@@ -5587,6 +5619,11 @@ impl App {
         messages: Vec<Message>,
         session: &codewhale_engine::session_manager::SavedSession,
     ) {
+        self.session_write_receipt = session.write_receipt.clone();
+        self.session_write_owner = session
+            .write_receipt
+            .as_ref()
+            .map(|_| codewhale_engine::session_manager::SessionWriteOwner::control());
         let journal = session.journal.clone().unwrap_or_else(|| {
             codewhale_runtime::session_tree::SessionJournal::from_messages(
                 session.messages.clone(),
@@ -5605,6 +5642,11 @@ impl App {
         &mut self,
         session: &mut codewhale_engine::session_manager::SavedSession,
     ) {
+        self.session_write_receipt = session.write_receipt.clone();
+        self.session_write_owner = session
+            .write_receipt
+            .as_ref()
+            .map(|_| codewhale_engine::session_manager::SessionWriteOwner::control());
         let stamps = session.journal_message_stamps();
         let journal = match session.journal.take() {
             Some(journal) => journal,

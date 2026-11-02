@@ -3854,6 +3854,7 @@ impl Engine {
                             };
                             let request = crate::core::events::SessionCheckpointRequest::new(caller, snapshot, prefix_sha256, projection, withdraw, reply);
                             let event = Event::SessionUpdated {
+                                source: self.session.snapshot_source.clone(),
                                 checkpoint: Some(request.clone()),
                                 session_id: self.session.id.clone(),
                                 messages: self.session.messages.snapshot(),

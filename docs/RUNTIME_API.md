@@ -634,6 +634,12 @@ the original intent from a source that may already have changed. An unprepared
 target stays pending; a changed or unverifiable target refuses completion.
 Repeat recovery with the same key to observe the same committed result.
 
+New history reservations retain their original document/checkpoint observation.
+An uncommitted recovery must match the complete prepared document and the
+operation's own publication generation, with its original checkpoint unchanged.
+An older reservation without that original observation stays pending or refuses
+recovery; reading current records cannot retrospectively supply it.
+
 The selected workspace comes from the acknowledged owner or the explicitly
 admitted request. History and historical receipts cannot supply permissions,
 credentials, endpoints or a different owner. A missing, changed, busy or
@@ -1140,6 +1146,18 @@ catalog and lifecycle routes; the source remains unchanged. A catalog with
 unreadable records returns an error rather than an incomplete successful list.
 The terminal picker retains readable rows and reports its inspection warning.
 These limits cover metadata inspection, not full transcript loading.
+
+Saved-document and checkpoint publication uses a native source captured before
+snapshot preparation or queueing. Both physical records must still match under
+the existing session write admission before archival, pruning, replacement or
+checkpoint consumption. A mismatch refuses and retains recovery. Optional
+serialized `publication_id` metadata identifies a generation; it does not grant
+write authority. An unknown checkpoint needs explicit held resume/attach/promotion
+before automatic completion can consume it. Runtime prefix-restore validation
+remains distinct from the full-document predicate required for a later write.
+Optional usage-store damage remains visible as incomplete coverage while valid
+recovery data can be read without a publication receipt. Known retirement and
+changed raw records still refuse; this read result cannot authorize a save.
 
 `PATCH /v1/sessions/{id}` renames and/or archives a saved session and returns a
 lifecycle receipt shaped like the thread patch receipt:

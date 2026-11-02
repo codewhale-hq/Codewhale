@@ -747,6 +747,13 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     if codewhale_engine::runtime_handoff::is_operate_contract_message(msg) {
         return Vec::new();
     }
+    if codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(msg)
+        && let Some(ContentBlock::Text { text, .. }) = msg.content.first()
+    {
+        return vec![HistoryCell::System {
+            content: text.clone(),
+        }];
+    }
     if let Some(display) =
         codewhale_models::turn_classify::restored_subagent_checkpoint_display(msg)
     {

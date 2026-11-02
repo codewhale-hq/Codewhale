@@ -2745,7 +2745,13 @@ impl Engine {
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_narrowed(&prior).await;
 
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn_id.clone(),
+            None,
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn_id.clone(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -3303,6 +3309,7 @@ impl Engine {
         system_prompt: Option<codewhale_models::SystemPrompt>,
         system_prompt_override: bool,
     ) {
+        self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
@@ -3350,6 +3357,7 @@ impl Engine {
         let total_tokens =
             self.session.total_usage.input_tokens + self.session.total_usage.output_tokens;
         SessionSnapshot {
+            source: self.session.snapshot_source.clone(),
             session_id: self.session.id.clone(),
             messages: self.session.messages.to_vec(),
             total_tokens,
@@ -4343,6 +4351,7 @@ impl Engine {
                             self.config.fleet_roster = roster;
                         }
                         Op::SyncSession {
+                            control,
                             session_id,
                             messages,
                             system_prompt,
@@ -4421,6 +4430,8 @@ impl Engine {
                                 system_prompt,
                                 system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
@@ -4470,6 +4481,7 @@ impl Engine {
                             self.emit_session_updated().await;
                         }
                         Op::RewindConversation {
+                            control,
                             expected,
                             messages,
                             tx,
@@ -4489,6 +4501,8 @@ impl Engine {
                                 self.session.system_prompt.clone(),
                                 self.session.system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
                             let _ = tx.send(Some(self.session_snapshot()));
@@ -4862,6 +4876,7 @@ impl Engine {
         }
         let _ = self
             .send_event(Event::SessionUpdated {
+                source: self.session.snapshot_source.clone(),
                 checkpoint: None,
                 session_id: self.session.id.clone(),
                 messages: self.session.messages.snapshot(),
@@ -6982,7 +6997,13 @@ impl Engine {
         // Emit turn started event IMMEDIATELY so the UI knows the turn is
         // active. The snapshot below can take 30+ seconds on slow filesystems
         // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn.id.clone(),
+            submission_id.clone(),
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn.id.clone(),
             created_at: turn_started_at,
             route: Some(turn_route),
