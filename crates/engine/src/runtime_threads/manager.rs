@@ -14667,7 +14667,6 @@ impl RuntimeThreadManager {
                     turn_id: started_turn_id,
                     created_at,
                     route,
-                    submission_id: _,
                     ..
                 } => {
                     saw_turn_started = true;

@@ -455,7 +455,7 @@ fn render_preserved_output_mode(
     let limit = if transcript || line_limit == 0 {
         MAX_SELECTED_ROWS
     } else {
-        line_limit.min(MAX_SELECTED_ROWS).max(1)
+        line_limit.clamp(1, MAX_SELECTED_ROWS)
     };
     let content_hash = crate::tui::output_rows_cache::hash_output(output);
     let projection = crate::tui::output_rows_cache::get_or_compute_rows_with_hash(
