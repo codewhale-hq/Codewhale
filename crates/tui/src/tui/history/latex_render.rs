@@ -44,18 +44,30 @@ fn find_math_end(text: &str) -> Option<(usize, bool)> {
             }
         }
     } else if b.starts_with(b"$") && !b.starts_with(b"$$") {
+        if b.get(1).is_some_and(u8::is_ascii_whitespace) {
+            return None;
+        }
         for (j, &byte) in b[1..].iter().enumerate() {
             if byte == b'{' {
                 continue;
             }
+            if byte == b'\n' {
+                return None;
+            }
             let i = j + 1;
-            if byte == b'$'
-                && !is_escaped(b, i)
-                && !b
-                    .get(i.wrapping_sub(1))
-                    .is_some_and(u8::is_ascii_whitespace)
-                && !b.get(i + 1).is_some_and(u8::is_ascii_digit)
+            if byte != b'$' || is_escaped(b, i) {
+                continue;
+            }
+            let prev = b[i - 1];
+            let next = b.get(i + 1).copied().unwrap_or(b' ');
+            if next == b'{'
+                || (next.is_ascii_alphanumeric()
+                    && !prev.is_ascii_alphanumeric()
+                    && !matches!(prev, b')' | b']' | b'}'))
             {
+                return None;
+            }
+            if !prev.is_ascii_whitespace() && !next.is_ascii_digit() {
                 return Some((i, false));
             }
         }
