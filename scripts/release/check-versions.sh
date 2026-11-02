@@ -131,7 +131,7 @@ fi
 
 # 4) Internal path dependency pins.
 internal_dep_drift="$(
-  grep -nE 'codewhale-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
+  grep -nE 'codewhale-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml vendor/codewhale-ratatui/Cargo.toml \
     | grep -vF 'codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }' \
     | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
 )"

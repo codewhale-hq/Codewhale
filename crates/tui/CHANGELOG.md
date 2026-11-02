@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Internal coarse split: shared bounded owner work and frontend selection types live in Runtime, and protected socket layout lives in Paths. Existing App Server aliases remain available; Engine and Sandbox no longer depend on App Server. The avatar-contract and host-band moves remain open (#5586).
+- Internal coarse split: shared bounded owner work and frontend selection types live in Runtime, protected socket layout lives in Paths, and Engine/terminal avatars share one Protocol data contract. Existing App Server and terminal-kit aliases remain available. Engine and Sandbox no longer depend on App Server; the host-band move and Stage B remain open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
   DSH 0.2.1-rc.5 with Cordis 4.0.5 and refreshed reviewed composition
   packages. Boolean `deferLoading` hints are accepted while the Engine keeps
@@ -335,7 +335,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Maintenance
 
 - MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
-- **`codewhale-ratatui` is re-versioned to 0.1.3:** the vendored terminal kit gained the `Accent` role after 0.1.2 was published, and `codewhale-tui` uses it, so crates.io needs the new version before `codewhale-tui` can build from the registry. `crates/tui` and `pet/tui` pin 0.1.3; publishing it stays a release-time step.
+- **Independent terminal kit candidate 0.2.0:** its workflow totals use `u64`, and its existing avatar API reexports the shared Protocol contract. All local consumers pin 0.2.0. Protocol 0.10.3 must be published and verified before the kit, followed by the dependent Engine packages; each publication retains its separate approval.
 - **`codewhale-plugins` crate:** plugin discovery, review, install and marketplace parsing move out of `codewhale-tui` into a new crate; MCP server config types move to `codewhale-mcp`, and the skill parse core and recommendations to `codewhale-skill-install`. Review and trust behavior is unchanged. (S19, #5316)
 - **`codewhale-config` modules (internal):** the 8,100-line `lib.rs` is split into 23 modules (provider TOML, permissions, fleet, config resolution, env overrides, state dirs, config store and backup, and others); `codewhale_config::` paths are unchanged. No behavior change. (S57, #5316)
 - **`codewhale-app-server` modules (internal):** `lib.rs` is carved into `http`, `stdio`, `turns`, `bridge` and `config_rpc` modules; `BoundedLines` and `runtime_compatibility_router` now live at `codewhale_app_server::stdio` and `::http`. No behavior change. (S49, #5316)

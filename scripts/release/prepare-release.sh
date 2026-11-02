@@ -45,6 +45,9 @@ transaction_missing="${transaction_dir}/missing"
 transaction_paths=(
   Cargo.toml
   Cargo.lock
+  vendor/codewhale-ratatui/Cargo.toml
+  vendor/codewhale-ratatui/Cargo.lock
+  pet/tui/Cargo.lock
   package-lock.json
   npm/codewhale/package.json
   npm/runtime-sdk/package.json
@@ -134,7 +137,11 @@ bump("Cargo.toml", rf'^version = "{old_re}"$', f'version = "{new}"', 1)
 
 # 2) Internal codewhale-* dependency pins in every crate manifest.
 total = 0
-for manifest in sorted(pathlib.Path("crates").glob("*/Cargo.toml")):
+manifests = list(pathlib.Path("crates").glob("*/Cargo.toml"))
+kit_manifest = pathlib.Path("vendor/codewhale-ratatui/Cargo.toml")
+if kit_manifest.is_file():
+    manifests.append(kit_manifest)
+for manifest in sorted(manifests):
     text = manifest.read_text()
     out, n = re.subn(
         rf'(codewhale-[a-z0-9-]+\s*=\s*\{{[^}}]*version = "){old_re}(")',
@@ -147,6 +154,15 @@ for manifest in sorted(pathlib.Path("crates").glob("*/Cargo.toml")):
         total += n
 if total == 0:
     sys.exit("error: no internal dependency pins were bumped — wrong old version?")
+
+for lock_path in (pathlib.Path("vendor/codewhale-ratatui/Cargo.lock"), pathlib.Path("pet/tui/Cargo.lock")):
+    if not lock_path.is_file():
+        continue
+    text = lock_path.read_text()
+    out, count = re.subn(rf'(name = "codewhale-protocol"\nversion = "){old_re}("\n)', rf"\g<1>{new}\g<2>", text)
+    if count:
+        lock_path.write_text(out)
+        print(f"  {lock_path}: {count} Protocol record(s)")
 
 # 3) npm wrapper.
 bump(

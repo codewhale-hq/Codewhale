@@ -103,8 +103,12 @@ Before part 2:
   Locked Cargo metadata for all 48 workspace members is acyclic, including
   optional and target-specific production edges. The focused native socket
   checks passed; Windows transport qualification remains separate.
-- Remove extension-host avatar coupling to `codewhale-ratatui` (CRATE_MAP
-  P0b). The Engine is still linked to that terminal library.
+- Completed prerequisite: the unchanged avatar data contract lives in
+  `codewhale_protocol::avatar`; the terminal kit reexports those same types.
+  Engine no longer directly depends on the kit or its artwork. Engine still
+  has direct ratatui/crossterm and Palette coupling, so this is not a
+  terminal-free Engine claim. Protocol 0.10.3 publication/registry proof must
+  precede the separately versioned kit 0.2.0 and dependent family publication.
 - Publishing `codewhale-engine` to crates.io remains a separate founder action.
 
 The blocking-call guard also needed a scope correction: an external

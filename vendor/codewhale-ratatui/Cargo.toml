@@ -36,6 +36,7 @@ include = [
 ]
 
 [dependencies]
+codewhale-protocol = { path = "../../crates/protocol", version = "0.10.2" }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "layout-cache", "unstable-rendered-line-info"] }
 # Enable style data directly without resolving optional facade backend packages.
 ratatui-core = { version = "0.1.2", default-features = false, features = ["underline-color"] }

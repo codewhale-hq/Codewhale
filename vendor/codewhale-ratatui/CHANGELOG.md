@@ -2,6 +2,10 @@
 
 ## Unreleased — 0.2.0
 
+- Reexport the shared avatar contract from Codewhale Protocol. Rendering and
+  artwork stay in this library. Protocol 0.10.3 registry proof must precede
+  this package publication.
+
 - Use `u64` for `WorkflowRun.total` and the total argument to `outcomes`, so
   hosts can render large reported counts without narrowing on 32-bit targets.
   This breaks the 0.1.x `usize` API; convert existing totals with `as u64`.

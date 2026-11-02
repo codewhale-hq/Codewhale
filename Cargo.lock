@@ -1081,7 +1081,6 @@ dependencies = [
  "codewhale-paths",
  "codewhale-plugins",
  "codewhale-protocol",
- "codewhale-ratatui",
  "codewhale-release",
  "codewhale-repl",
  "codewhale-runtime",
@@ -1423,6 +1422,7 @@ dependencies = [
 name = "codewhale-ratatui"
 version = "0.2.0"
 dependencies = [
+ "codewhale-protocol",
  "crossterm",
  "libc",
  "ratatui",
