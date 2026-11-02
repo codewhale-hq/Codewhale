@@ -5,12 +5,13 @@
 use crate::daemon_client::UnavailablePublication;
 use crate::daemon_socket::{
     AuthorizedPeer, ConnectionTasks, DaemonShutdownHandle, DaemonSocketError, DaemonSocketOptions,
-    SocketPathInputs, connection_context, owner_work, run_authorized_connection, socket_owner_work,
+    connection_context, owner_work, run_authorized_connection, socket_owner_work,
 };
 use crate::{AppState, AppTransport, build_state_off_runtime};
 use anyhow::{Context as _, Result};
 use codewhale_config::private_directory::PrivateDirectory;
 use codewhale_config::windows_identity::{CurrentWindowsUser, OwnerOnlyAcl, WindowsPeerProcess};
+use codewhale_paths::daemon_socket::SocketPathInputs;
 use codewhale_protocol::RuntimeOwnerReceipt;
 use std::fs::File;
 use std::os::windows::io::AsRawHandle as _;

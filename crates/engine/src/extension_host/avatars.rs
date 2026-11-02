@@ -12,7 +12,7 @@ use codewhale_plugins::{
     activation::PluginActivationCapability,
     manifest::{PluginManifest, ValidatedManifest},
 };
-use codewhale_ratatui::avatar::{MAX_PACK_BYTES, MAX_PNG_BYTES, Pack, RegisteredPack};
+use codewhale_protocol::avatar::{MAX_PACK_BYTES, MAX_PNG_BYTES, Pack, RegisteredPack};
 use sha2::{Digest, Sha256};
 use std::{
     io::Read,
@@ -115,7 +115,7 @@ pub(super) async fn admit(
         if tier != HostTier::Plugin || !params.spec.description.is_empty() {
             return Err("avatar packs require a reviewed Native bundle and a manifest path".into());
         }
-        if !codewhale_ratatui::avatar::relative_asset(&params.spec.name)
+        if !codewhale_protocol::avatar::relative_asset(&params.spec.name)
             || !params.spec.name.ends_with(".json")
         {
             return Err("avatar manifest must be a bounded bundle-relative JSON path".into());
@@ -294,7 +294,7 @@ mod tests {
                 "hash-b",
             )
             .unwrap();
-        let pack = codewhale_ratatui::whale_girl::pack().clone();
+        let pack = Pack::parse(br#"{"version":1,"id":"fixture","name":"Fixture","atlases":["atlas.png"],"columns":1,"rows":1,"tileWidth":8,"tileHeight":8,"actions":{"rest":{"frames":[0],"durationsMs":[100],"poster":0}},"states":{"rest":"rest"}}"#).unwrap();
         // Ownership does not depend on native artwork. Generate a valid page
         // so the test also works from a package without repository-only PNGs.
         let mut page = std::io::Cursor::new(Vec::new());

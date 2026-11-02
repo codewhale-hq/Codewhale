@@ -1999,7 +1999,13 @@ fn trailing_url_end(candidate: &str) -> usize {
     let mut end = candidate.len();
     while end > 0 {
         let remaining = &candidate[..end];
-        if let Some(start) = remaining.rfind('&')
+        if let Some(start) = remaining
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .rev()
+            .take(10)
+            .find_map(|(index, byte)| (*byte == b'&').then_some(index))
             && html_character_reference(&remaining[start..])
                 .is_some_and(|(_, len)| start + len == end)
         {

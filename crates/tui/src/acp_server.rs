@@ -45,7 +45,9 @@ pub async fn run_acp_server(
             port: 0,
             config_path,
             config_profile,
-            control_frontend: Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }),
+            control_frontend: Some(
+                codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model },
+            ),
             ..Default::default()
         },
     )
@@ -1361,6 +1363,7 @@ mod tests {
             std::fs::create_dir(&workspace)?;
             let runtime_dir = dir.path().join("runtime");
             let manager_config = RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
                 data_dir: runtime_dir.clone(),
                 task_data_dir: runtime_dir,
                 sessions_dir: None,
@@ -1492,10 +1495,9 @@ mod tests {
         )?;
         let manager = rig.server.runtime.clone();
         let capture = manager.clone();
-        let (binding, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
-            capture.capture_control_owner()
-        })
-        .await?;
+        let (binding, generation) =
+            codewhale_runtime::runtime_control::owner_work(move || capture.capture_control_owner())
+                .await?;
         #[cfg(unix)]
         let socket_directory = rig._dir.path().canonicalize()?.join("endpoint");
         #[cfg(unix)]
@@ -1512,7 +1514,7 @@ mod tests {
         let principal =
             codewhale_config::private_directory::PrivateDirectory::current_user_id().to_string();
         #[cfg(windows)]
-        let principal = codewhale_app_server::daemon_socket::owner_work(|| {
+        let principal = codewhale_runtime::runtime_control::owner_work(|| {
             codewhale_config::windows_identity::CurrentWindowsUser::open()?.sid_string()
         })
         .await?;
@@ -1681,10 +1683,9 @@ mod tests {
             assert_eq!(manager.get_thread_detail(&rows[0].id).await?.turns.len(), 2);
         }
         let capture = manager.clone();
-        let (after, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
-            capture.capture_control_owner()
-        })
-        .await?;
+        let (after, generation) =
+            codewhale_runtime::runtime_control::owner_work(move || capture.capture_control_owner())
+                .await?;
         assert_eq!(after.data_dir, receipt.data_dir);
         assert_eq!(
             generation, receipt.lease_generation,

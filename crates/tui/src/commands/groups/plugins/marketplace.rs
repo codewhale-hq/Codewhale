@@ -15,6 +15,7 @@
 //! the TUI adapter; the handler consumes portable marketplace values and
 //! renders them.
 
+use super::render::ReviewTextContext;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -65,7 +66,7 @@ fn add(
             CommandResult::message(format!(
                 "Added marketplace `{}` ({} candidate(s), {} warning(s)).\n{summary}\n\
                  Tiers and provenance are display-only. Nothing was installed, trusted, or enabled.",
-                escape_review_text(name),
+                escape_review_text(name, ReviewTextContext::InlineCode),
                 receipt.candidate_count,
                 receipt.warning_count,
             ))
@@ -132,7 +133,7 @@ fn show(
     let Some(catalog) = catalog else {
         return CommandResult::error(format!(
             "No marketplace named `{}`. Use /plugin marketplace list.",
-            escape_review_text(name)
+            escape_review_text(name, ReviewTextContext::InlineCode)
         ));
     };
     let mut output = render_catalog_summary(name, catalog);
@@ -140,7 +141,10 @@ fn show(
     let _ = writeln!(
         output,
         "{}",
-        escape_review_path(Path::new(catalog.source_path.as_deref().unwrap_or(name)))
+        escape_review_path(
+            Path::new(catalog.source_path.as_deref().unwrap_or(name)),
+            ReviewTextContext::Prose
+        )
     );
     output.push_str(&render_candidates(presentation, catalog, true));
     CommandResult::message(output)
@@ -154,11 +158,11 @@ fn remove(
     match plugin.marketplace_remove(name) {
         Ok(true) => CommandResult::message(format!(
             "Removed marketplace `{}`. Installed plugins and their trust state are unaffected.",
-            escape_review_text(name)
+            escape_review_text(name, ReviewTextContext::InlineCode)
         )),
         Ok(false) => CommandResult::error(format!(
             "No marketplace named `{}`. Use /plugin marketplace list.",
-            escape_review_text(name)
+            escape_review_text(name, ReviewTextContext::InlineCode)
         )),
         Err(error) => CommandResult::error(error),
     }
@@ -182,7 +186,7 @@ fn install(
                     let mut output = format!(
                         "Installed plugin '{name}' from marketplace `{}`.\n\
                          It is disabled and untrusted. Review its requested authority below, then trust and enable it.\n",
-                        escape_review_text(catalog_name)
+                        escape_review_text(catalog_name, ReviewTextContext::InlineCode)
                     );
                     if let Some(review) = super::review_bundle(presentation, plugin, &name).message
                     {
@@ -203,13 +207,13 @@ fn install(
                 PluginMutationOutcome::NoChange => CommandResult::message(format!(
                     "`{}` is built into Codewhale, so there is nothing to install. \
                      Review it with /plugin show {}.",
-                    escape_review_text(candidate_name),
-                    escape_review_text(&receipt.name)
+                    escape_review_text(candidate_name, ReviewTextContext::InlineCode),
+                    escape_review_text(&receipt.name, ReviewTextContext::Prose)
                 )),
                 _ => CommandResult::message(format!(
                     "Installed `{}` from marketplace `{}`.",
-                    escape_review_text(candidate_name),
-                    escape_review_text(catalog_name)
+                    escape_review_text(candidate_name, ReviewTextContext::InlineCode),
+                    escape_review_text(catalog_name, ReviewTextContext::InlineCode)
                 )),
             }
         }
@@ -240,20 +244,28 @@ fn render_catalog_summary(name: &str, catalog: &PluginMarketplaceCatalog) -> Str
     let _ = writeln!(
         out,
         "`{}` — {} format, {} candidate(s), tier={} (display only)",
-        escape_review_text(name),
+        escape_review_text(name, ReviewTextContext::InlineCode),
         catalog.format,
         catalog.total_candidates,
         catalog.tier
     );
     if let Some(display) = display {
-        let _ = writeln!(out, "  display name: {}", escape_review_text(display));
+        let _ = writeln!(
+            out,
+            "  display name: {}",
+            escape_review_text(display, ReviewTextContext::Prose)
+        );
     }
     if let Some(description) = catalog
         .description
         .as_deref()
         .filter(|d| !d.trim().is_empty())
     {
-        let _ = writeln!(out, "  {}", escape_review_text(description));
+        let _ = writeln!(
+            out,
+            "  {}",
+            escape_review_text(description, ReviewTextContext::Prose)
+        );
     }
     if !catalog.diagnostics.is_empty() {
         let _ = writeln!(
@@ -285,17 +297,21 @@ fn render_candidates(
         let _ = write!(
             out,
             "  • {} [{}] — {}",
-            escape_review_text(&candidate.name),
+            escape_review_text(&candidate.name, ReviewTextContext::Prose),
             status,
             candidate
                 .display_name
                 .as_deref()
-                .map(escape_review_text)
+                .map(|value| escape_review_text(value, ReviewTextContext::Prose))
                 .as_deref()
                 .unwrap_or("no display name")
         );
         if let Some(version) = &candidate.version {
-            let _ = write!(out, " · v{}", escape_review_text(version));
+            let _ = write!(
+                out,
+                " · v{}",
+                escape_review_text(version, ReviewTextContext::Prose)
+            );
         }
         let _ = write!(out, " · tier={}", candidate.tier);
         let _ = writeln!(out);
@@ -313,21 +329,29 @@ fn render_candidates(
                 let _ = writeln!(
                     out,
                     "    installable via {source_kind}: /plugin marketplace install {} {}",
-                    escape_review_text(&catalog.id),
-                    escape_review_text(&candidate.name)
+                    escape_review_text(&catalog.id, ReviewTextContext::Prose),
+                    escape_review_text(&candidate.name, ReviewTextContext::Prose)
                 );
             }
             PluginMarketplaceInstallPlan::AlreadyPresent { selector, reason } => {
-                let _ = writeln!(out, "    {}", escape_review_text(reason));
+                let _ = writeln!(
+                    out,
+                    "    {}",
+                    escape_review_text(reason, ReviewTextContext::Prose)
+                );
                 let _ = writeln!(
                     out,
                     "    manage: /plugin show {}",
-                    escape_review_text(selector)
+                    escape_review_text(selector, ReviewTextContext::Prose)
                 );
             }
             PluginMarketplaceInstallPlan::Unsupported { reason } => {
                 let reason = localized_plan_text(presentation, reason);
-                let _ = writeln!(out, "    not installable: {}", escape_review_text(&reason));
+                let _ = writeln!(
+                    out,
+                    "    not installable: {}",
+                    escape_review_text(&reason, ReviewTextContext::Prose)
+                );
             }
         }
         if detailed {
@@ -336,25 +360,45 @@ fn render_candidates(
                 .as_deref()
                 .filter(|d| !d.trim().is_empty())
             {
-                let _ = writeln!(out, "    {}", escape_review_text(description));
+                let _ = writeln!(
+                    out,
+                    "    {}",
+                    escape_review_text(description, ReviewTextContext::Prose)
+                );
             }
             if let Some(homepage) = &candidate.homepage {
-                let _ = writeln!(out, "    homepage: {}", escape_review_text(homepage));
+                let _ = writeln!(
+                    out,
+                    "    homepage: {}",
+                    escape_review_text(homepage, ReviewTextContext::Prose)
+                );
             }
             if let Some(repository) = &candidate.repository {
-                let _ = writeln!(out, "    repository: {}", escape_review_text(repository));
+                let _ = writeln!(
+                    out,
+                    "    repository: {}",
+                    escape_review_text(repository, ReviewTextContext::Prose)
+                );
             }
             if let Some(author) = &candidate.author {
-                let _ = writeln!(out, "    author: {}", escape_review_text(author));
+                let _ = writeln!(
+                    out,
+                    "    author: {}",
+                    escape_review_text(author, ReviewTextContext::Prose)
+                );
             }
             if let Some(license) = &candidate.license {
-                let _ = writeln!(out, "    license: {}", escape_review_text(license));
+                let _ = writeln!(
+                    out,
+                    "    license: {}",
+                    escape_review_text(license, ReviewTextContext::Prose)
+                );
             }
             if !candidate.keywords.is_empty() {
                 let _ = writeln!(
                     out,
                     "    keywords: {}",
-                    escape_review_text(&candidate.keywords.join(", "))
+                    escape_review_text(&candidate.keywords.join(", "), ReviewTextContext::Prose)
                 );
             }
             if let Some(when) = &candidate.when {
@@ -395,17 +439,17 @@ fn render_diagnostics_inline(
                     }
                 },
                 d.code,
-                escape_review_text(&d.message)
+                escape_review_text(&d.message, ReviewTextContext::Prose)
             )
         })
         .collect::<Vec<_>>()
         .join("; ")
 }
 
-pub(super) fn escape_review_text(value: &str) -> String {
-    super::escape_review_text(value)
+pub(super) fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
+    super::escape_review_text(value, context)
 }
 
-pub(super) fn escape_review_path(path: &Path) -> String {
-    super::escape_review_path(path)
+pub(super) fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    super::escape_review_path(path, context)
 }

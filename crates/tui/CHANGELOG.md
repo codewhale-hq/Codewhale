@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Internal coarse split: shared bounded owner work and frontend selection types live in Runtime, protected socket layout lives in Paths, and Engine/terminal avatars share one Protocol data contract. Existing App Server and terminal-kit aliases remain available. Engine and Sandbox no longer depend on App Server; the host-band move and Stage B remain open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
   DSH 0.2.1-rc.5 with Cordis 4.0.5 and refreshed reviewed composition
   packages. Boolean `deferLoading` hints are accepted while the Engine keeps
@@ -159,6 +160,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown character references:** ordinary prose renders valid references once, while inline code, plugin approval text and argv retain their literal values. Long URL punctuation stays linear to scan. Thanks [@Lstarsky0](https://github.com/Lstarsky0) for the report and original fix ([#7192](https://github.com/codewhale-hq/Codewhale/pull/7192)).
+- Managed Fleet validates overlapping write roots with a component-sorted scan and deduplicates roots once. Large valid request bodies no longer spend quadratic CPU before admission; existing write-scope refusals and execution limits remain in force (#6554).
+- MCP transports, connection pools and child Engines retain the owning host credential context for placeholders, headers, bearer tokens and OAuth setup. Missing injected values never fall back to process secrets. Reviewed plugins keep their captured environment authority, whose Debug output now masks values. Durable OAuth token custody and full subprocess isolation remain separate work (#5637).
+- Python REPL drains stderr while code runs, retains at most 64 KiB of diagnostics and reports omitted bytes, so noisy code cannot block request completion (#6554).
+- Saved tool results use bounded streaming inspection while preserving session ownership, digest and generation checks. Text refuses oversized lines or selections with byte-recovery guidance; verification also has explicit scan and cancellation limits (#6554).
+- Telemetry bounds its pending event queue and disk-tail reads, keeps final flush admission available, and skips invalid UTF-8 records without discarding intact neighboring records. Existing opt-out and privacy ordering remain in force (#6554).
+- Workflow history summaries retain large child totals without allocating one row per claimed child. Missing outcomes, usage and elapsed time remain unknown, including in the workbar (#6554). The independent terminal kit advances to unpublished 0.2.0 for its `u64` total API; registry-based TUI packaging waits for separately approved kit publication.
+- Web build dependencies cap glob preprocessing and stop cancelled directory traversals through compatible, verified upstream backports. Raw dependency findings remain visible. Thanks [@isaacs](https://github.com/isaacs) for the [minimatch](https://github.com/isaacs/minimatch/commit/77a0f5c4b80bdc641c3c930a1d9edf5ad2db57f8) and [glob](https://github.com/isaacs/node-glob/commit/4682e8c9babee1b385202ede36389634e12076d7) fixes (#6560).
+- Repeated requests no longer make `/undo` restore files from an older invocation. `/undo select` chooses a request range and shows checking, restoring and saving progress. Missing, ambiguous or stale restore points refuse before changing files. Esc–Esc continues to rewind only the conversation. Thanks [@luestr](https://github.com/luestr) for reporting [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970).
 - `web.run` refuses more than 64 operations across its command arrays before starting network work or changing its session cache (#6554).
 - Skill discovery and audit marker reads stop at 512 KiB. Approved linked global skills still load; oversized, invalid and non-regular files produce visible refusals instead of unbounded reads (#6554).
 - OpenSandbox caps successful responses at 8 MiB before parsing and limits remote error details to 4 KiB with terminal controls removed. Oversized responses fail explicitly. Remote execution cancellation remains a separate requirement (#6554).
@@ -318,13 +328,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Saved tool-result reads refuse links in the selected session, including a linked session directory, while preserving deliberately relocated application storage. Owned files and digest-checked legacy results keep their existing access paths.
 - **Pinned marketplace archives:** a Codewhale or Claude marketplace entry whose tarball source carries a `sha256` now installs only when the downloaded bytes match it; a mismatch, a malformed pin or a pin on a non-archive source refuses the install with nothing written. The pin also applies to direct installs as `https://…/x.tar.gz#sha256=<hex>`.
 - **Sandboxed commands cannot plant git hooks or edit git config:** in workspace-write mode, `.git/hooks` and `.git/config` (and a linked worktree's shared `hooks` and `config`) are read-only to sandboxed commands, so a command cannot leave a hook or `core.hooksPath` that later runs outside the sandbox. The workspace's `.codewhale/` is protected even before it exists (on Linux it is created first, because bubblewrap can only protect existing paths). `git commit` and ordinary file writes are unaffected; `git config` writes and hook edits need an approved unsandboxed command.
 - **Tool image validation:** an image returned by a tool must decode before it is sent, so truncated or corrupt files are omitted with a receipt even when they are already within the delivery budget.
 
 ### Maintenance
 
-- **`codewhale-ratatui` is re-versioned to 0.1.3:** the vendored terminal kit gained the `Accent` role after 0.1.2 was published, and `codewhale-tui` uses it, so crates.io needs the new version before `codewhale-tui` can build from the registry. `crates/tui` and `pet/tui` pin 0.1.3; publishing it stays a release-time step.
+- MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
+- **Independent terminal kit candidate 0.2.0:** its workflow totals use `u64`, and its existing avatar API reexports the shared Protocol contract. All local consumers pin 0.2.0. Protocol 0.10.3 must be published and verified before the kit, followed by the dependent Engine packages; each publication retains its separate approval.
 - **`codewhale-plugins` crate:** plugin discovery, review, install and marketplace parsing move out of `codewhale-tui` into a new crate; MCP server config types move to `codewhale-mcp`, and the skill parse core and recommendations to `codewhale-skill-install`. Review and trust behavior is unchanged. (S19, #5316)
 - **`codewhale-config` modules (internal):** the 8,100-line `lib.rs` is split into 23 modules (provider TOML, permissions, fleet, config resolution, env overrides, state dirs, config store and backup, and others); `codewhale_config::` paths are unchanged. No behavior change. (S57, #5316)
 - **`codewhale-app-server` modules (internal):** `lib.rs` is carved into `http`, `stdio`, `turns`, `bridge` and `config_rpc` modules; `BoundedLines` and `runtime_compatibility_router` now live at `codewhale_app_server::stdio` and `::http`. No behavior change. (S49, #5316)
@@ -357,6 +369,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Contributors
 
+- **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
 - **[@Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[@Felixkw12](https://github.com/Felixkw12)** — added Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — per-scope instruction budgets with visible truncation ([#7086](https://github.com/codewhale-hq/Codewhale/pull/7086), [#6526](https://github.com/codewhale-hq/Codewhale/issues/6526)).

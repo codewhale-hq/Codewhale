@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — 0.2.0
+
+- Reexport the shared avatar contract from Codewhale Protocol. Rendering and
+  artwork stay in this library. Protocol 0.10.3 registry proof must precede
+  this package publication.
+
+- Use `u64` for `WorkflowRun.total` and the total argument to `outcomes`, so
+  hosts can render large reported counts without narrowing on 32-bit targets.
+  This breaks the 0.1.x `usize` API; convert existing totals with `as u64`.
+- Include the Engine vendor snapshot's previously unreleased `Role::Accent`.
+- This snapshot is prepared in the Engine repository and is not published.
+  Its publication precedes registry-based Engine TUI package qualification.
+
 ## 0.1.2 - 2026-10-11
 
 - Let the host paint its prepared pet in `PetMode` (`DotWhale`,
@@ -60,4 +73,4 @@
 - Source view guide, 195-entry gallery across nine terminal profiles, and
   generated dark/light README previews and animations.
 
-This version has not been published to a package registry.
+The 0.1.0 section records the development baseline, not a registry release.

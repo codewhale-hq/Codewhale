@@ -7,8 +7,8 @@
 use super::*;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 
-fn inputs() -> codewhale_app_server::daemon_socket::SocketPathInputs {
-    codewhale_app_server::daemon_socket::SocketPathInputs {
+fn inputs() -> codewhale_paths::daemon_socket::SocketPathInputs {
+    codewhale_paths::daemon_socket::SocketPathInputs {
         explicit: None,
         codewhale_home_override: None,
         xdg_runtime_dir: None,

@@ -100,6 +100,7 @@ fn open_server_manager(config: &Config, root: &Path) -> Result<SharedRuntimeThre
         config,
         workspace.clone(),
         RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
             data_dir: root.join("runtime"),
             task_data_dir: root.join("tasks"),
             sessions_dir: None,

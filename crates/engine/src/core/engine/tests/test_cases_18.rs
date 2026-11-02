@@ -871,6 +871,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // Construct a minimal EngineHandle with the tiny channel.
     let cancel_token = CancellationToken::new();
     let handle = EngineHandle {
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,
@@ -1078,6 +1079,14 @@ async fn first_turn_waits_for_explicit_mcp_schema_without_waiting_for_unrelated_
         return;
     };
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("server.mjs");
     let release = tmp.path().join("release-slow");
     let release_fast = tmp.path().join("release-fast");
@@ -1300,6 +1309,7 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
     assert!(result.success);
     assert!(active.contains("mcp_slow_ready"));
     engine.wait_for_mcp_boot().await;
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
@@ -1317,6 +1327,14 @@ async fn assert_incremental_mcp_boot(invalidate_config: bool) {
         return;
     }
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("server.mjs");
     let release = tmp.path().join("release-slow");
     std::fs::write(
@@ -1417,6 +1435,7 @@ lines.on('line', async (line) => {
     drop(events);
     handle.send(Op::Shutdown).await.expect("shutdown");
     task.await.expect("engine task");
+    fixture_manager.shutdown().await;
     let progress = progress.expect("fast server must be visible before slow server is released");
     assert!(
         progress
@@ -1622,6 +1641,8 @@ async fn mcp_boot_updates_preserve_authority_errors_and_replace_ordinary_errors(
 async fn mcp_search_fixture(
     allowed: Option<Vec<String>>,
 ) -> (
+    crate::extension_host::TestManagerGuard,
+    Arc<crate::extension_host::ExtensionHostManager>,
     Engine,
     tool_catalog::ToolSurfacePolicy,
     tempfile::TempDir,
@@ -1630,6 +1651,14 @@ async fn mcp_search_fixture(
     let node =
         codewhale_dependencies::resolve_node().expect("MCP discovery qualification requires Node");
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("discovery.mjs");
     fs::write(&server, r#"import fs from 'node:fs';
 import path from 'node:path';
@@ -1711,12 +1740,20 @@ readline.createInterface({input:process.stdin}).on('line', line => {
             "discovery",
         )
         .await;
-    (engine, build.surface, tmp, model)
+    (
+        fixture_manager_guard,
+        fixture_manager,
+        engine,
+        build.surface,
+        tmp,
+        model,
+    )
 }
 
 #[tokio::test]
 async fn mcp_tool_search_discovers_optional_server_real_schema_without_eager_siblings() {
-    let (mut engine, policy, tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
+        mcp_search_fixture(None).await;
     let mut surface = crate::core::engine::ChildSurfaceProbe {
         policy,
         cache: crate::core::session::ToolActivationCache::default(),
@@ -1763,11 +1800,12 @@ async fn mcp_tool_search_discovers_optional_server_real_schema_without_eager_sib
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_respects_captured_turn_ceiling_and_disabled_servers() {
-    let (mut engine, policy, tmp, model) =
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
         mcp_search_fixture(Some(vec!["tool_search".into()])).await;
     let mut catalog = policy.catalog.clone();
     let mut active = policy.active_names.clone();
@@ -1790,11 +1828,13 @@ async fn mcp_tool_search_respects_captured_turn_ceiling_and_disabled_servers() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_failed_connection_is_bounded_without_guessed_tools() {
-    let (mut engine, policy, _tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, _tmp, model) =
+        mcp_search_fixture(None).await;
     let mut catalog = policy.catalog.clone();
     let mut active = policy.active_names.clone();
     tokio::time::timeout(
@@ -1821,11 +1861,13 @@ async fn mcp_tool_search_failed_connection_is_bounded_without_guessed_tools() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
-    let (mut engine, policy, tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
+        mcp_search_fixture(None).await;
     let pool = engine.mcp_pool.clone().unwrap();
     let cancel = engine.cancel_token.clone();
     let mut catalog = policy.catalog.clone();
@@ -1859,4 +1901,5 @@ async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }

@@ -82,6 +82,7 @@ mod recovery {
         fs::create_dir(&workspace)?;
         let runtime_dir = dir.path().join("runtime");
         let manager_cfg = RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
             max_active_threads: 1,
             ..test_manager_config(runtime_dir)
         };
@@ -196,6 +197,7 @@ mod recovery {
         let workspace = dir.path().join("workspace");
         fs::create_dir(&workspace)?;
         let manager_cfg = RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
             max_active_threads: 1,
             ..test_manager_config(dir.path().join("runtime"))
         };
@@ -2585,6 +2587,7 @@ impl Drop for RuntimeEventChildGuard {
 
 fn test_manager_config(data_dir: PathBuf) -> RuntimeThreadManagerConfig {
     RuntimeThreadManagerConfig {
+        mcp_auth_context: Default::default(),
         task_data_dir: data_dir.clone(),
         sessions_dir: None,
         data_dir,

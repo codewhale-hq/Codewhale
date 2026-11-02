@@ -66,7 +66,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     threads.set_test_model_client(model.clone());
     let manager = threads.clone();
     let (binding, generation) =
-        codewhale_app_server::daemon_socket::owner_work(move || manager.capture_control_owner())
+        codewhale_runtime::runtime_control::owner_work(move || manager.capture_control_owner())
             .await?;
     let owner_client = codewhale_app_server::daemon_client::connect(
         Some(config_path.clone()),
@@ -92,7 +92,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     #[cfg(windows)]
     assert_eq!(
         captured.principal,
-        codewhale_app_server::daemon_socket::owner_work(|| {
+        codewhale_runtime::runtime_control::owner_work(|| {
             codewhale_config::windows_identity::CurrentWindowsUser::open()?.sid_string()
         })
         .await?
@@ -112,7 +112,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     .await??;
     let manager = threads.clone();
     let (after_acp_eof, after_generation) =
-        codewhale_app_server::daemon_socket::owner_work(move || manager.capture_control_owner())
+        codewhale_runtime::runtime_control::owner_work(move || manager.capture_control_owner())
             .await?;
     assert_eq!(after_acp_eof.data_dir, captured.data_dir);
     assert_eq!(after_generation, captured.lease_generation);
@@ -200,7 +200,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     assert!(detail.latest_seq > 0);
     let manager = threads.clone();
     let (after, generation) =
-        codewhale_app_server::daemon_socket::owner_work(move || manager.capture_control_owner())
+        codewhale_runtime::runtime_control::owner_work(move || manager.capture_control_owner())
             .await?;
     assert_eq!(after.data_dir, captured.data_dir);
     assert_eq!(generation, captured.lease_generation);
@@ -563,7 +563,7 @@ async fn real_normal_owner_distinct_listener_detach_keeps_turn_compat_acp_and_su
 
     let captured = manager.clone();
     let (binding, generation) =
-        codewhale_app_server::daemon_socket::owner_work(move || captured.capture_control_owner())
+        codewhale_runtime::runtime_control::owner_work(move || captured.capture_control_owner())
             .await?;
     assert_eq!(generation, receipt.lease_generation);
     assert_eq!(binding.data_dir, receipt.data_dir);
@@ -1006,7 +1006,7 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
     fs::create_dir(&execution_workspace)?;
     let mut actor = workers.clone().write_owned().await;
     let selected_root = selected_workspace.clone();
-    let direct_id = codewhale_app_server::daemon_socket::owner_work(move || {
+    let direct_id = codewhale_runtime::runtime_control::owner_work(move || {
         actor
             .insert_test_running_direct_child_in_origin(
                 "scope-direct",
@@ -1521,7 +1521,7 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     let directory = sessions_dir.clone();
     let session_id = receipt.session_id.clone();
     let ticket = crate::test_support::env_scope_ticket();
-    let saved = codewhale_app_server::daemon_socket::owner_work(move || {
+    let saved = codewhale_runtime::runtime_control::owner_work(move || {
         let _scope = crate::test_support::join_env_scope(ticket);
         Ok(SessionManager::new(directory)?.load_session_snapshot(&session_id)?)
     })
@@ -1669,7 +1669,7 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     let directory = sessions_dir;
     let session_id = receipt.session_id.clone();
     let ticket = crate::test_support::env_scope_ticket();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let _scope = crate::test_support::join_env_scope(ticket);
         let manager = SessionManager::new(directory.clone())?;
         let _lease = manager.reserve_session_for_external_write(&session_id)?;

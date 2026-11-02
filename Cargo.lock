@@ -882,6 +882,7 @@ dependencies = [
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-release",
+ "codewhale-runtime",
  "codewhale-state",
  "reqwest",
  "rusqlite",
@@ -1061,7 +1062,6 @@ dependencies = [
  "clap",
  "codewhale-agent",
  "codewhale-agent-contract",
- "codewhale-app-server",
  "codewhale-build-support",
  "codewhale-command-contract",
  "codewhale-commands",
@@ -1081,7 +1081,6 @@ dependencies = [
  "codewhale-paths",
  "codewhale-plugins",
  "codewhale-protocol",
- "codewhale-ratatui",
  "codewhale-release",
  "codewhale-repl",
  "codewhale-runtime",
@@ -1336,7 +1335,10 @@ dependencies = [
 name = "codewhale-paths"
 version = "0.10.2"
 dependencies = [
+ "anyhow",
  "dirs 7.0.0",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1418,8 +1420,9 @@ dependencies = [
 
 [[package]]
 name = "codewhale-ratatui"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
+ "codewhale-protocol",
  "crossterm",
  "libc",
  "ratatui",
@@ -1525,7 +1528,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "codewhale-app-server",
  "codewhale-execpolicy",
  "codewhale-paths",
  "codewhale-release",

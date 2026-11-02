@@ -1,8 +1,7 @@
 //! Host operations moved out of `groups/debug/undo.rs` and `receipts.rs`.
 //! Snapshot safety and authoritative state mutation remain here. The portable
 //! commands receive typed observations/outcomes, never completed command text.
-//! Existing synchronous dispatch timing is preserved; this does not introduce
-//! an asynchronous I/O execution model.
+//! File undo is admitted by the asynchronous TUI owner before mutation.
 
 use super::SharedCommandHost;
 use crate::tui::app::App;
@@ -90,8 +89,11 @@ impl CommandDebugHistoryContext for DebugOperationsAdapter<'_> {
 }
 
 impl CommandDebugUndoContext for DebugOperationsAdapter<'_> {
-    fn undo_files(&mut self, force: bool) -> DebugUndoOutcome {
-        undo_files(&mut self.host.app.borrow_mut(), force)
+    fn undo_files(&mut self, _force: bool) -> DebugUndoOutcome {
+        DebugUndoOutcome::RestoreBlocked(
+            "File undo requires the interactive Engine admission boundary; use /undo or /restore."
+                .to_string(),
+        )
     }
 }
 
@@ -190,13 +192,10 @@ pub(in crate::commands) fn undo_conversation_for_engine(app: &mut App) -> DebugC
         .rposition(|cell| matches!(cell, HistoryCell::User { .. }))
         .map_or(0, |index| app.history.len() - index);
     let mut sync = session_sync_payload(app);
-    if let Some(index) = sync.messages.iter().rposition(|message| {
-        !matches!(
-            codewhale_models::turn_classify::classify_user_turn_prompt(message),
-            codewhale_models::turn_classify::UserTurnPromptKind::NotPrompt
-        )
-    }) {
+    if let Some(index) = crate::tui::ui::backtrack_api_cut_index(app, 0) {
         sync.messages.truncate(index);
+    } else if !sync.messages.is_empty() {
+        return DebugConversationUndo { removed: 0, sync };
     }
     DebugConversationUndo { removed, sync }
 }
@@ -212,109 +211,7 @@ fn session_sync_payload(app: &App) -> SessionSyncPayload {
     }
 }
 
-/// Full text of this conversation's requests, oldest first. Missing text is
-/// retained: an image-only request is a boundary, not a request to skip.
-fn request_prompts(app: &App) -> Vec<Option<String>> {
-    if app.api_messages.is_empty() {
-        return app
-            .history
-            .iter()
-            .filter_map(|cell| match cell {
-                HistoryCell::User { content } => Some(Some(content.clone())),
-                _ => None,
-            })
-            .collect();
-    }
-    app.api_messages
-        .iter()
-        .filter(|message| {
-            !matches!(
-                codewhale_models::turn_classify::classify_user_turn_prompt(message),
-                codewhale_models::turn_classify::UserTurnPromptKind::NotPrompt
-            )
-        })
-        .map(|message| {
-            let meta_index = codewhale_models::turn_classify::turn_metadata_text(message)
-                .map(|(index, _)| index);
-            let mut content = message
-                .content
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| Some(*index) != meta_index);
-            // A text label cannot identify the rest of a multipart request.
-            match (content.next(), content.next()) {
-                (Some((_, codewhale_models::ContentBlock::Text { text, .. })), None) => {
-                    Some(text.clone())
-                }
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-type RequestPositionResult = Result<Option<bool>, Box<DebugUndoOutcome>>;
-
-/// Match only unique prompt snippets. Display snippets are not durable
-/// request identities: repeated snippets or multipart prompts cannot
-/// authorize a combined file/conversation rollback. `/restore` remains explicit.
-fn request_is_last(
-    requests: &[Option<String>],
-    owned_request_snippets: &[Option<String>],
-    label: &str,
-) -> RequestPositionResult {
-    use codewhale_engine::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
-    if requests.is_empty() {
-        return Ok(None);
-    }
-    let refusal = || {
-        Box::new(DebugUndoOutcome::RestoreBlocked(
-            concat!(
-                "Nothing was undone. This restore point cannot be matched safely to a request ",
-                "in the conversation. Use /restore to choose a restore point explicitly.",
-            )
-            .to_string(),
-        ))
-    };
-    if requests.iter().any(Option::is_none) {
-        return Err(refusal());
-    }
-    let requests: Vec<_> = requests
-        .iter()
-        .map(|prompt| {
-            prompt
-                .as_deref()
-                .and_then(snapshot_label_prompt_snippet)
-                .map(|snippet| snippet.trim_end().to_string())
-                .filter(|snippet| !snippet.is_empty())
-        })
-        .collect();
-    let request = parse_snapshot_label(label).prompt_snippet;
-    let Some(prompt) = request.as_deref().map(str::trim_end).filter(|prompt| {
-        !prompt.is_empty() && snapshot_label_prompt_snippet(prompt).as_deref() == Some(*prompt)
-    }) else {
-        return Err(refusal());
-    };
-    let matches = requests
-        .iter()
-        .filter(|candidate| candidate.as_deref() == Some(prompt))
-        .count();
-    if matches != 1
-        || owned_request_snippets
-            .iter()
-            .filter(|candidate| candidate.as_deref().map(str::trim_end) == Some(prompt))
-            .count()
-            > 1
-    {
-        // Snapshots outlive conversation rewinds, so checking only the held
-        // prompts would still confuse an older occurrence with the latest.
-        return Err(refusal());
-    }
-    Ok(Some(
-        requests.last().and_then(Option::as_deref) == Some(prompt),
-    ))
-}
-
-/// Deepest fork chain [`snapshot_owners`] follows. A chain this long is
+/// Deepest fork chain [`snapshot_owners_from`] follows. A chain this long is
 /// already unusual; the bound only stops a corrupt lineage from looping.
 const MAX_FORK_ANCESTORS: usize = 32;
 
@@ -345,8 +242,11 @@ impl SnapshotOwner {
 ///
 /// Lineage the saved sessions cannot prove ends the chain: fewer owners
 /// means fewer restorable steps, never someone else's.
-pub(in crate::commands) fn snapshot_owners(app: &App) -> Vec<SnapshotOwner> {
-    let Some(current) = app.current_session_id.clone() else {
+fn snapshot_owners_from(
+    session_id: Option<String>,
+    current_metadata: Option<codewhale_engine::session_manager::SessionMetadata>,
+) -> Vec<SnapshotOwner> {
+    let Some(current) = session_id else {
         return Vec::new();
     };
     let manager = codewhale_engine::session_manager::SessionManager::default_location().ok();
@@ -355,9 +255,7 @@ pub(in crate::commands) fn snapshot_owners(app: &App) -> Vec<SnapshotOwner> {
             .as_ref()
             .and_then(|manager| manager.load_session_metadata_by_id(id).ok())
     };
-    let mut metadata = app
-        .current_session_metadata
-        .clone()
+    let mut metadata = current_metadata
         .filter(|metadata| metadata.id == current)
         .or_else(|| load(&current));
     let mut owners = vec![SnapshotOwner {
@@ -387,6 +285,343 @@ pub(in crate::commands) fn snapshot_owners(app: &App) -> Vec<SnapshotOwner> {
     owners
 }
 
+pub(crate) struct UndoRangeInput {
+    workspace: PathBuf,
+    session_id: Option<String>,
+    metadata: Option<codewhale_engine::session_manager::SessionMetadata>,
+    requests: Vec<Option<String>>,
+    messages: std::sync::Arc<Vec<codewhale_models::Message>>,
+    boundaries: Vec<usize>,
+    first_request: usize,
+}
+
+pub(crate) struct UndoRangePlan {
+    workspace: PathBuf,
+    turns: Vec<codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots>,
+}
+
+pub(crate) fn undo_range_input(app: &App, cut: usize) -> anyhow::Result<UndoRangeInput> {
+    let total = app
+        .history
+        .iter()
+        .filter(|cell| matches!(cell, HistoryCell::User { .. }))
+        .count();
+    let boundaries = (0..total).rev().map(|depth| crate::tui::ui::backtrack_api_cut_index(app, depth))
+        .collect::<Option<Vec<_>>>().ok_or_else(|| anyhow::anyhow!("The displayed requests no longer match the Engine conversation; nothing was undone."))?;
+    anyhow::ensure!(
+        boundaries.windows(2).all(|pair| pair[0] < pair[1]),
+        "The displayed request order changed; nothing was undone."
+    );
+    let first_request = boundaries
+        .iter()
+        .position(|index| *index == cut)
+        .ok_or_else(|| {
+            anyhow::anyhow!("The selected request is no longer present; nothing was undone.")
+        })?;
+    let requests = boundaries
+        .iter()
+        .map(|index| {
+            let message = &app.api_messages[*index];
+            let metadata = codewhale_models::turn_classify::turn_metadata_text(message)
+                .map(|(index, _)| index);
+            let mut content = message
+                .content
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != metadata);
+            match (content.next(), content.next()) {
+                (Some((_, codewhale_models::ContentBlock::Text { text, .. })), None) => {
+                    Some(text.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    Ok(UndoRangeInput {
+        workspace: app.workspace.clone(),
+        session_id: app.current_session_id.clone(),
+        metadata: app.current_session_metadata.clone(),
+        requests,
+        messages: app.api_messages.clone(),
+        boundaries,
+        first_request,
+    })
+}
+
+pub(crate) fn plan_undo_range(input: UndoRangeInput) -> anyhow::Result<UndoRangePlan> {
+    use codewhale_engine::core::turn::{parse_snapshot_label, snapshot_label_prompt_snippet};
+    use codewhale_engine::tools::spec::ToolSpec;
+    use codewhale_models::{ContentBlock, ToolCallKey};
+    use codewhale_snapshot::{WorkspaceSnapshotKind, WorkspaceSnapshotRef};
+    let owners = snapshot_owners_from(input.session_id, input.metadata);
+    let mut repo = None;
+    let mut snapshots = Vec::new();
+    let mut turns = Vec::new();
+    let mut previous_before = None;
+    let mut execution_ids = std::collections::BTreeSet::new();
+    let boundaries: Vec<_> = input
+        .boundaries
+        .iter()
+        .copied()
+        .chain(std::iter::once(input.messages.len()))
+        .collect();
+    for turn_index in input.first_request..input.requests.len() {
+        let messages = &input.messages[boundaries[turn_index]..boundaries[turn_index + 1]];
+        let has_tools = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolUse { .. }
+                        | ContentBlock::ServerToolUse { .. }
+                        | ContentBlock::ToolResult { .. }
+                        | ContentBlock::ToolSearchToolResult { .. }
+                        | ContentBlock::CodeExecutionToolResult { .. }
+                )
+            });
+        if !has_tools {
+            turns.push(
+                codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+                    turn_id: format!("conversation-{}", boundaries[turn_index]),
+                    may_change_files: false,
+                    snapshots: Vec::new(),
+                    declared_writes: Vec::new(),
+                    unrun_tool_calls: Default::default(),
+                },
+            );
+            continue;
+        }
+        let mut calls = std::collections::BTreeMap::new();
+        let mut declared_writes = Vec::new();
+        let mut all_readonly = true;
+        for message in messages {
+            for block in &message.content {
+                if let ContentBlock::ToolUse {
+                    execution_id,
+                    name,
+                    input,
+                    ..
+                } = block
+                {
+                    let id = execution_id.as_deref().filter(|id| !id.trim().is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("A selected tool call has no recorded host execution identifier; nothing was undone. Use /restore or conversation backtracking."))?;
+                    anyhow::ensure!(
+                        execution_ids.insert(id),
+                        "Selected tool calls have a repeated host execution identifier; nothing was undone."
+                    );
+                    all_readonly &= match name.as_str() {
+                        "read" => {
+                            codewhale_engine::tools::file_tool::ReadTool.is_read_only_for(input)
+                        }
+                        "read_file" => {
+                            codewhale_engine::tools::file::ReadFileTool.is_read_only_for(input)
+                        }
+                        "list_dir" => {
+                            codewhale_engine::tools::file::ListDirTool.is_read_only_for(input)
+                        }
+                        "File" => codewhale_engine::tools::file_tool::FileTool::with_patch("File")
+                            .is_read_only_for(input),
+                        _ => false,
+                    };
+                    let writes =
+                        codewhale_engine::core::engine::file_write_tool_target_paths(name, input);
+                    declared_writes.extend(writes.iter().flatten().cloned());
+                    calls.insert(id, writes);
+                }
+            }
+        }
+        let mut completed = std::collections::HashSet::new();
+        for block in messages.iter().flat_map(|message| &message.content) {
+            match block {
+                ContentBlock::ToolResult { .. } => match block.tool_call_key() {
+                    Some(ToolCallKey::Execution(id)) if calls.contains_key(id) => {
+                        all_readonly &= completed.insert(id);
+                    }
+                    _ => all_readonly = false,
+                },
+                ContentBlock::ServerToolUse { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. } => all_readonly = false,
+                _ => {}
+            }
+        }
+        if all_readonly && !calls.is_empty() && completed.len() == calls.len() {
+            turns.push(
+                codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+                    turn_id: format!("read-only-{}", boundaries[turn_index]),
+                    may_change_files: false,
+                    snapshots: Vec::new(),
+                    declared_writes: Vec::new(),
+                    unrun_tool_calls: Default::default(),
+                },
+            );
+            continue;
+        }
+        anyhow::ensure!(
+            !owners.is_empty(),
+            "This conversation has no owned restore points; nothing was undone. Use /restore or conversation backtracking."
+        );
+        if repo.is_none() {
+            anyhow::ensure!(
+                codewhale_snapshot::wait_for_pending_post_turn_snapshots(POST_TURN_SNAPSHOT_WAIT),
+                "A restore point is still being saved; nothing was undone. Try again when it finishes."
+            );
+            let opened = codewhale_snapshot::SnapshotRepo::open_existing(&input.workspace)?
+                .ok_or_else(|| anyhow::anyhow!("This request has no recorded file restore points; nothing was undone. Use /restore or conversation backtracking."))?;
+            snapshots = opened.list(usize::MAX)?;
+            repo = Some(opened);
+        }
+        let repo = repo.as_ref().unwrap();
+        let mut window = None;
+        for (id, writes) in &calls {
+            let label = format!("tool:{id}");
+            let matches: Vec<_> = snapshots
+                .iter()
+                .enumerate()
+                .filter(|(_, snapshot)| {
+                    snapshot.label == label && owners.iter().any(|owner| owner.owns(snapshot))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if matches.is_empty() {
+                anyhow::ensure!(
+                    writes.is_none(),
+                    "A file-writing invocation has no owned restore point; nothing was undone. Use /restore or conversation backtracking."
+                );
+                continue;
+            }
+            anyhow::ensure!(
+                matches.len() == 1,
+                "A host execution has repeated restore points; nothing was undone."
+            );
+            let tool = matches[0];
+            let before = (tool + 1..snapshots.len()).find(|index| is_restore_point_label(&snapshots[*index].label))
+                .ok_or_else(|| anyhow::anyhow!("The file invocation has no complete request start; nothing was undone. Use /restore."))?;
+            let after = (0..tool).rev().find(|index| is_restore_point_label(&snapshots[*index].label))
+                .ok_or_else(|| anyhow::anyhow!("The file invocation has no complete request end; nothing was undone. Use /restore."))?;
+            anyhow::ensure!(
+                is_undo_step_label(&snapshots[before].label)
+                    && snapshots[after].label.starts_with("post-turn:"),
+                "The file invocation has an incomplete request boundary; nothing was undone. Use /restore."
+            );
+            anyhow::ensure!(
+                window.is_none_or(|previous| previous == (before, after)),
+                "The request's host executions do not share one completed window; nothing was undone."
+            );
+            window = Some((before, after));
+        }
+        let (oldest, newest) = window.ok_or_else(|| anyhow::anyhow!("The request has no owned file-writer receipt; nothing was undone. Use conversation backtracking, or /restore for an explicit file restore."))?;
+        let before = &snapshots[oldest];
+        let after = &snapshots[newest];
+        let pre = parse_snapshot_label(&before.label);
+        let post = parse_snapshot_label(&after.label);
+        let snippet = input.requests[turn_index].as_deref().and_then(snapshot_label_prompt_snippet)
+            .ok_or_else(|| anyhow::anyhow!("The selected multipart request cannot be checked against its file restore point; nothing was undone. Use /restore or conversation backtracking."))?;
+        anyhow::ensure!(
+            pre.prompt_snippet.as_deref().map(str::trim_end) == Some(snippet.trim_end()),
+            "The file invocation's request text does not match the selected request; nothing was undone."
+        );
+        anyhow::ensure!(
+            pre.seq.is_some() && pre.seq == post.seq && before.session_id == after.session_id,
+            "The selected request has an incomplete restore point; nothing was undone. Use /restore."
+        );
+        anyhow::ensure!(
+            snapshots[newest..=oldest]
+                .iter()
+                .all(|snapshot| snapshot.session_id == before.session_id),
+            "The request's restore points mix different sessions; nothing was undone. Use /restore or conversation backtracking."
+        );
+        anyhow::ensure!(
+            newest < oldest && previous_before.is_none_or(|previous| oldest < previous),
+            "Selected file invocations do not follow the conversation; nothing was undone."
+        );
+        let range_oldest = previous_before.unwrap_or(oldest);
+        anyhow::ensure!(
+            snapshots[newest..=range_oldest]
+                .iter()
+                .all(|snapshot| owners.iter().any(|owner| owner.owns(snapshot))),
+            "Another conversation recorded workspace changes inside the selected range; nothing was undone."
+        );
+        previous_before = Some(oldest);
+        let mut receipts = Vec::new();
+        let mut previous_tree = None;
+        for snapshot in snapshots[newest..=oldest].iter().rev() {
+            let (kind, call) = if snapshot.id == before.id {
+                (WorkspaceSnapshotKind::PreTurn, None)
+            } else if snapshot.id == after.id {
+                (WorkspaceSnapshotKind::PostTurn, None)
+            } else if let Some(call) = snapshot.label.strip_prefix("tool:") {
+                (WorkspaceSnapshotKind::Tool, Some(call))
+            } else if let Some(call) = snapshot.label.strip_prefix("post-tool:") {
+                (WorkspaceSnapshotKind::PostTool, Some(call))
+            } else {
+                anyhow::bail!(
+                    "An unrecognized restore point lies inside the selected request; nothing was undone."
+                )
+            };
+            let writes = call.map(|id| calls.get(id).ok_or_else(|| anyhow::anyhow!("A restore point cannot be bound to the selected request's recorded host execution; nothing was undone. Use /restore or conversation backtracking."))).transpose()?.cloned().flatten();
+            let changed_paths = previous_tree
+                .as_ref()
+                .map(|previous| repo.changed_paths_between(previous, &snapshot.tree))
+                .transpose()?
+                .map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect()
+                });
+            receipts.push(WorkspaceSnapshotRef {
+                kind,
+                snapshot_id: snapshot.id.as_str().to_string(),
+                tree_id: snapshot.tree.as_str().to_string(),
+                session_id: snapshot.session_id.clone().unwrap(),
+                tool_call_id: call.map(str::to_owned),
+                write_paths: writes,
+                changed_paths,
+            });
+            previous_tree = Some(snapshot.tree.clone());
+        }
+        for (index, receipt) in receipts
+            .iter()
+            .enumerate()
+            .filter(|(_, receipt)| receipt.kind == WorkspaceSnapshotKind::Tool)
+        {
+            anyhow::ensure!(
+                receipts[index + 1..]
+                    .iter()
+                    .any(|later| later.kind == WorkspaceSnapshotKind::PostTool
+                        && later.tool_call_id == receipt.tool_call_id),
+                "The request has no closed per-tool restore point; nothing was undone. Use /restore or conversation backtracking."
+            );
+        }
+        turns.push(
+            codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots {
+                turn_id: before.id.as_str().to_string(),
+                may_change_files: true,
+                snapshots: receipts,
+                declared_writes,
+                unrun_tool_calls: Default::default(),
+            },
+        );
+    }
+    Ok(UndoRangePlan {
+        workspace: input.workspace,
+        turns,
+    })
+}
+
+pub(crate) fn restore_undo_range(plan: UndoRangePlan) -> anyhow::Result<String> {
+    if plan.turns.iter().all(|turn| !turn.may_change_files) {
+        return Ok("Workspace files were left unchanged.".to_string());
+    }
+    let result = crate::runtime_api::patch_undo_workspace_files(&plan.workspace, &plan.turns, true)
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    Ok(result
+        .summary
+        .unwrap_or_else(|| "No workspace file changes needed restoring.".to_string()))
+}
+
 /// Label a `/undo` step starts at: before one request (a turn). `/undo`,
 /// `/retry`, Esc Esc and the Runtime's `patch-undo` all go back by request;
 /// the per-tool `tool:` restore points stay available to `/restore`.
@@ -398,212 +633,6 @@ fn is_undo_step_label(label: &str) -> bool {
 /// `pre-turn:` point to the next one of these the conversation owns.
 fn is_restore_point_label(label: &str) -> bool {
     is_undo_step_label(label) || label.starts_with("post-turn:")
-}
-
-/// One `/undo` step, planned but not applied.
-pub(in crate::commands) struct UndoStep {
-    /// Restore point the step started at.
-    pub(in crate::commands) target: codewhale_snapshot::Snapshot,
-    /// Tree the step ended at: the next restore point this conversation
-    /// owns, or, for the newest step, a snapshot of the workspace as it is
-    /// now. Trees, not commit ids, because a prune rewrites commit ids.
-    pub(in crate::commands) end: codewhale_snapshot::SnapshotId,
-    /// The paths the step changed that are still as it left them.
-    pub(in crate::commands) restore: Vec<PathBuf>,
-    /// Changed paths `/undo` leaves in place because they are not regular
-    /// files (a symlink, a directory, a submodule), in this step or in a
-    /// newer one it walked past.
-    pub(in crate::commands) skipped: Vec<PathBuf>,
-    /// The `pre-restore:` snapshot planning took of the workspace, when the
-    /// step ends now; the restore reuses it as its safety backup.
-    pub(in crate::commands) backup: Option<codewhale_snapshot::SnapshotId>,
-    /// The step has no recorded end and runs only because the user typed
-    /// `force`: it also puts back edits made since the request started.
-    pub(in crate::commands) forced: bool,
-    /// The validated request boundary, captured before any backup is taken.
-    request_is_last: Option<bool>,
-}
-
-/// Find the newest step of `snapshots` (newest first) that `owners` own and
-/// that is not undone yet, and the paths undoing it restores.
-///
-/// A step is scoped to the paths that changed between its restore point and
-/// the next one: edits to any other file (the user's, another session's)
-/// are never touched. A path the step changed that changed again since is
-/// refused rather than overwritten. A step whose paths are all back at its
-/// restore point is already undone, so `/undo` walks back one request at a
-/// time. A changed path that is not a regular file is
-/// left in place and reported (file-scoped restore never writes symlinks or
-/// directories); it does not block the step's other paths or older steps.
-///
-/// Trust is never asked. A step that runs from a request's `pre-turn:` point
-/// to that same request's `post-turn:` point puts back, inside the
-/// workspace, only what changed while that request ran, and only where the
-/// file is still as the request left it: the reverse of writes the session
-/// already made. Any other step has no recorded end (the request never
-/// finished, or its post-turn snapshot is missing), so it also takes in
-/// whatever was edited since; that one is refused unless the user typed
-/// `force`.
-///
-/// `request_position` validates each non-no-op candidate before any backup or
-/// restore write and says whether it names the last held request. An earlier held request means
-/// the conversation still holds a request newer than this restore point. Such a
-/// request left no file change to undo and comes off first (the caller's
-/// conversation-only undo), so the conversation never keeps a request whose files went back,
-/// and a refusal about an older request never blocks taking a newer one off.
-///
-/// Planning writes nothing, except when the newest step ends now: the
-/// workspace is then snapshotted, and only with `force`.
-///
-/// Known limits: the TUI records no per-tool receipts (the Runtime's
-/// `post-tool:` spans and declared write paths), so a step owns everything
-/// that changed between its restore point and the next one this
-/// conversation owns, including a write another session made in that window.
-/// The newest step, when no later restore point exists yet (the turn is still
-/// running, or its post-turn snapshot failed), ends at the workspace as it
-/// is now, so an edit made since the step's restore point counts as the
-/// step's. [`undo_files`] first waits for a post-turn snapshot this process
-/// is still taking, so this is not the case right after a turn.
-// The planner is host-internal. Box only its uncommon early outcome to keep
-// Result small; the public facet still returns an owned data-only value.
-fn plan_undo_step(
-    repo: &codewhale_snapshot::SnapshotRepo,
-    snapshots: Vec<codewhale_snapshot::Snapshot>,
-    owners: &[SnapshotOwner],
-    force: bool,
-    request_position: &dyn Fn(&str) -> RequestPositionResult,
-) -> Result<UndoStep, Box<DebugUndoOutcome>> {
-    let owned: Vec<codewhale_snapshot::Snapshot> = snapshots
-        .into_iter()
-        .filter(|snapshot| is_restore_point_label(&snapshot.label))
-        .filter(|snapshot| owners.iter().any(|owner| owner.owns(snapshot)))
-        .collect();
-    if !owned
-        .iter()
-        .any(|snapshot| is_undo_step_label(&snapshot.label))
-    {
-        return Err(Box::new(DebugUndoOutcome::NoOwnedSteps));
-    }
-
-    let compare_failed = |error: std::io::Error| DebugUndoOutcome::CompareFailed(error.to_string());
-    // `InvalidInput` from a path comparison: the path is not a regular file
-    // (or not a safe workspace path) on one side, so it is left alone.
-    let unrestorable = |error: &std::io::Error| error.kind() == std::io::ErrorKind::InvalidInput;
-
-    let mut skipped: Vec<PathBuf> = Vec::new();
-    for (index, target) in owned.iter().enumerate() {
-        if !is_undo_step_label(&target.label) {
-            continue;
-        }
-        let mut backup = None;
-        let bounded = index.checked_sub(1).is_some_and(|newer| {
-            let start = codewhale_engine::core::turn::parse_snapshot_label(&target.label);
-            let end = codewhale_engine::core::turn::parse_snapshot_label(&owned[newer].label);
-            end.kind == "post-turn" && end.seq.is_some() && end.seq == start.seq
-        });
-        let end = match index.checked_sub(1) {
-            Some(newer) => owned[newer].tree.clone(),
-            // The newest step has no later restore point (the turn is still
-            // running, stopped early, or its post-turn snapshot has not
-            // landed): the workspace now is the only record of its end.
-            None => {
-                if repo
-                    .work_tree_matches_snapshot(&target.tree)
-                    .map_err(compare_failed)?
-                {
-                    continue;
-                }
-                // An open-ended step can write its backup while planning:
-                // establish identity before force can take that snapshot.
-                let request_is_last = request_position(&target.label)?;
-                if request_is_last == Some(false) {
-                    return Err(Box::new(DebugUndoOutcome::NoDifference));
-                }
-                if !force {
-                    return Err(Box::new(DebugUndoOutcome::OpenEnded));
-                }
-                let short = &target.id.as_str()[..target.id.as_str().len().min(12)];
-                let taken = repo
-                    .take_snapshot(&format!("pre-restore:{short}"), None)
-                    .map_err(|error| DebugUndoOutcome::SnapshotFailed(error.to_string()))?;
-                backup = Some(taken.id);
-                taken.tree
-            }
-        };
-        let changed = repo
-            .changed_paths_between(&target.tree, &end)
-            .map_err(compare_failed)?;
-        let mut restore = Vec::new();
-        let mut changed_since = Vec::new();
-        'paths: for path in changed {
-            match repo.path_matches_snapshot(&end, &path) {
-                // Still as the step left it. Comparing the step's start too
-                // proves it holds a regular file (or nothing) to restore.
-                Ok(true) => match repo.path_same_in_snapshots(&target.tree, &end, &path) {
-                    Ok(_) => {
-                        restore.push(path);
-                        continue;
-                    }
-                    Err(error) if unrestorable(&error) => {
-                        skipped.push(path);
-                        continue;
-                    }
-                    Err(error) => return Err(Box::new(compare_failed(error))),
-                },
-                Ok(false) => {}
-                Err(error) if unrestorable(&error) => {
-                    skipped.push(path);
-                    continue;
-                }
-                Err(error) => return Err(Box::new(compare_failed(error))),
-            }
-            // Back at the step's start, or at an older restore point that an
-            // earlier `/undo` walked it back to: already undone.
-            for older in &owned[index..] {
-                match repo.path_matches_snapshot(&older.tree, &path) {
-                    Ok(true) => continue 'paths,
-                    Ok(false) => {}
-                    Err(error) if unrestorable(&error) => {
-                        skipped.push(path);
-                        continue 'paths;
-                    }
-                    Err(error) => return Err(Box::new(compare_failed(error))),
-                }
-            }
-            changed_since.push(path.display().to_string());
-        }
-        if restore.is_empty() && changed_since.is_empty() {
-            // Already undone, changed nothing, or changed only paths `/undo`
-            // cannot restore: keep walking back.
-            continue;
-        }
-        // No-op and already-undone snapshots outlive conversation rewinds.
-        // Only a candidate with remaining changes needs request identity.
-        let request_is_last = request_position(&target.label)?;
-        if request_is_last == Some(false) {
-            return Err(Box::new(DebugUndoOutcome::NoDifference));
-        }
-        if !changed_since.is_empty() {
-            return Err(Box::new(DebugUndoOutcome::ChangedSince {
-                paths: changed_since,
-            }));
-        }
-        if !bounded && !force {
-            return Err(Box::new(DebugUndoOutcome::OpenEnded));
-        }
-        skipped.sort();
-        skipped.dedup();
-        return Ok(UndoStep {
-            target: target.clone(),
-            end,
-            restore,
-            skipped,
-            backup,
-            forced: !bounded,
-            request_is_last,
-        });
-    }
-    Err(Box::new(DebugUndoOutcome::NoDifference))
 }
 
 /// How long `/undo` waits for a post-turn snapshot still being written.
@@ -622,161 +651,5 @@ pub(in crate::commands) fn active_turn_restore_refusal(app: &App) -> Option<Stri
     turn_active.then(|| {
         "A turn is still running in this workspace, so files were not restored and nothing was changed. Wait for it to finish, or press Esc to stop it, then run the command again."
             .to_string()
-    })
-}
-
-/// Undo the most recent request: its file changes and its messages.
-///
-/// Opens the side-git snapshot repo and finds the newest `pre-turn:*` restore
-/// point this conversation owns (see [`snapshot_owners`]) whose step is not
-/// undone yet, then restores only the files that request changed (see
-/// [`plan_undo_step`]), whichever tool or shell command changed them.
-///
-/// The conversation moves with the files. The step's request is matched to
-/// the conversation by the prompt its label carries: when it is the last
-/// request, that request and its reply are removed; when newer requests are
-/// still in the conversation, nothing is restored and the caller's
-/// conversation-only undo takes the newest one off first; when it is no
-/// longer in the conversation (Esc Esc rewound past it), only its files go
-/// back. The outcome says which happened.
-///
-/// Trust mode and Full Access are not consulted: the restore is confined to
-/// regular files inside the workspace that the request itself changed.
-/// `force` (the user typed `/undo force`) accepts a request with no recorded
-/// end, never an ambiguous request identity.
-pub(in crate::commands) fn undo_files(app: &mut App, force: bool) -> DebugUndoOutcome {
-    if let Some(refusal) = active_turn_restore_refusal(app) {
-        return DebugUndoOutcome::RestoreBlocked(refusal);
-    }
-    let workspace = app.workspace.clone();
-
-    let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
-        Ok(r) => r,
-        Err(e) => {
-            return DebugUndoOutcome::RepoUnavailable {
-                workspace,
-                error: e.to_string(),
-            };
-        }
-    };
-
-    // A post-turn snapshot this process is still taking is the newest step's
-    // end: without it, every edit since the step's restore point would count
-    // as the step's.
-    if !codewhale_snapshot::wait_for_pending_post_turn_snapshots(POST_TURN_SNAPSHOT_WAIT) {
-        return DebugUndoOutcome::SnapshotPending;
-    }
-
-    // The whole store: an older restore point that is still stored must not
-    // be mistaken for a pruned one.
-    let snapshots = match repo.list(usize::MAX) {
-        Ok(s) => s,
-        Err(e) => {
-            return DebugUndoOutcome::ListFailed(e.to_string());
-        }
-    };
-
-    if snapshots.is_empty() {
-        return DebugUndoOutcome::NoSnapshots;
-    }
-
-    // Automatic file rollback is allowed only when ownership is provable.
-    // Untagged legacy snapshots and snapshots from another conversation may
-    // describe unrelated user work in this same workspace, so fail closed
-    // and let the command dispatcher fall back to conversation-only undo.
-    let owners = snapshot_owners(app);
-    if owners.is_empty() {
-        return DebugUndoOutcome::NoSession;
-    }
-
-    let requests = request_prompts(app);
-    let owned_request_snippets: Vec<_> = snapshots
-        .iter()
-        .filter(|snapshot| is_undo_step_label(&snapshot.label))
-        .filter(|snapshot| owners.iter().any(|owner| owner.owns(snapshot)))
-        .map(|snapshot| {
-            codewhale_engine::core::turn::parse_snapshot_label(&snapshot.label).prompt_snippet
-        })
-        .collect();
-    let request_position = |label: &str| request_is_last(&requests, &owned_request_snippets, label);
-    let step = match plan_undo_step(&repo, snapshots, &owners, force, &request_position) {
-        Ok(step) => step,
-        Err(outcome) => return *outcome,
-    };
-    let target = &step.target;
-    let is_last_request = step.request_is_last;
-
-    let plan: Vec<(PathBuf, codewhale_snapshot::SnapshotId)> = step
-        .restore
-        .iter()
-        .map(|path| (path.clone(), target.tree.clone()))
-        .collect();
-    // Re-verify after the safety snapshot, immediately before the first
-    // write: a change that landed meanwhile is refused.
-    let preflight = || {
-        for path in &step.restore {
-            if !repo.path_matches_snapshot(&step.end, path)? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    format!(
-                        "'{}' changed while the undo was being prepared; nothing was changed.",
-                        path.display()
-                    ),
-                ));
-            }
-        }
-        Ok(())
-    };
-    let restored = match &step.backup {
-        // Planning already snapshotted the workspace (and `preflight` proves
-        // every planned path is still as that snapshot holds it).
-        Some(backup) => repo.restore_path_plan_with_backup(&plan, backup, true, preflight),
-        None => {
-            let backup_short = &target.id.as_str()[..target.id.as_str().len().min(12)];
-            repo.restore_path_plan(
-                &plan,
-                &format!("pre-restore:{backup_short}"),
-                true,
-                preflight,
-            )
-        }
-    };
-    let outcomes = match restored {
-        Ok(outcomes) => outcomes,
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            return DebugUndoOutcome::RestoreBlocked(e.to_string());
-        }
-        Err(e) => return DebugUndoOutcome::RestoreFailed(e.to_string()),
-    };
-
-    // The files are back. Take the request off the conversation at the same
-    // boundary a conversation-only undo uses (the user's prompt, never a
-    // tool result), or leave a conversation that no longer holds it alone.
-    let rewind_conversation = is_last_request == Some(true);
-    let sync = if rewind_conversation {
-        undo_conversation_for_engine(app).sync
-    } else {
-        session_sync_payload(app)
-    };
-
-    DebugUndoOutcome::Restored(DebugUndoRestored {
-        request: codewhale_engine::core::turn::parse_snapshot_label(&target.label).prompt_snippet,
-        rewind_conversation,
-        forced: step.forced,
-        files: outcomes
-            .into_iter()
-            .map(|outcome| DebugRestoredFile {
-                path: outcome.path,
-                action: match outcome.action {
-                    codewhale_snapshot::PathRestoreAction::Modified => DebugRestoreAction::Modified,
-                    codewhale_snapshot::PathRestoreAction::Recreated => {
-                        DebugRestoreAction::Recreated
-                    }
-                    codewhale_snapshot::PathRestoreAction::Removed => DebugRestoreAction::Removed,
-                },
-            })
-            .collect(),
-        skipped: step.skipped,
-        sync,
     })
 }

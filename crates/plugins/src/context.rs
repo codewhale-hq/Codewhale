@@ -8,9 +8,15 @@ use super::registry::PluginRegistry;
 
 /// Immutable environment inherited from the host before workspace dotenv is
 /// loaded. Reviewed plugins may resolve only values from this snapshot.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct HostEnvironment {
     entries: Arc<[(OsString, OsString)]>,
+}
+
+impl std::fmt::Debug for HostEnvironment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HostEnvironment(<captured environment>)")
+    }
 }
 
 impl HostEnvironment {

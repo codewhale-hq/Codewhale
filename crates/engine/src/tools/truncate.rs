@@ -169,7 +169,26 @@ pub fn read_legacy_spillover_ownership(
             "legacy spillover ownership sidecar must not be a symlink",
         ));
     }
-    let ownership = serde_json::from_slice::<LegacySpilloverOwnership>(&std::fs::read(sidecar)?)
+    use std::io::Read;
+    const MAX_OWNERSHIP_BYTES: u64 = 64 * 1024;
+    let parent = sidecar
+        .parent()
+        .ok_or_else(|| io::Error::other("missing ownership parent"))?;
+    let filename = sidecar
+        .file_name()
+        .ok_or_else(|| io::Error::other("missing ownership filename"))?;
+    let file = codewhale_util::files::WorkspaceFile::open_delivery(parent, Path::new(filename))?;
+    let mut raw = Vec::new();
+    file.open_file()?
+        .take(MAX_OWNERSHIP_BYTES + 1)
+        .read_to_end(&mut raw)?;
+    if raw.len() as u64 > MAX_OWNERSHIP_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "legacy ownership metadata exceeds limit",
+        ));
+    }
+    let ownership = serde_json::from_slice::<LegacySpilloverOwnership>(&raw)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if ownership.schema_version != LEGACY_SPILLOVER_OWNER_SCHEMA_VERSION {
         return Err(io::Error::new(

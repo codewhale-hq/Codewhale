@@ -10,6 +10,7 @@
 //! FEAT-020: the managed-directory scan runs host-side in the TUI adapter;
 //! the handler consumes the portable `PluginManagedScan` and renders it.
 
+use super::render::ReviewTextContext;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -56,7 +57,7 @@ fn list(
         Ok(scan) => scan,
         Err(error) => return CommandResult::error(error),
     };
-    let root = escape_review_path(&scan.root);
+    let root = escape_review_path(&scan.root, ReviewTextContext::Prose);
     let mut output = presentation
         .translate("plugin_kimi_managed_root_heading", &[("root", &root)])
         .unwrap_or_default();
@@ -71,12 +72,12 @@ fn list(
         output.push('\n');
     }
     for candidate in &scan.candidates {
-        let name = escape_review_text(&candidate.name);
-        let version = escape_review_text(&candidate.version);
+        let name = escape_review_text(&candidate.name, ReviewTextContext::Prose);
+        let version = escape_review_text(&candidate.version, ReviewTextContext::Prose);
         let license = candidate
             .license
             .as_deref()
-            .map(escape_review_text)
+            .map(|value| escape_review_text(value, ReviewTextContext::Prose))
             .unwrap_or_else(|| {
                 presentation
                     .translate("plugin_kimi_license_unspecified", &[])
@@ -92,7 +93,7 @@ fn list(
                 &[],
             )
             .unwrap_or_default();
-        let inventory = escape_review_text(&candidate.inventory);
+        let inventory = escape_review_text(&candidate.inventory, ReviewTextContext::Prose);
         let summary = presentation
             .translate(
                 "plugin_kimi_candidate_summary",
@@ -107,7 +108,7 @@ fn list(
             .unwrap_or_default();
         let _ = writeln!(output, "\n{summary}");
 
-        let path = escape_review_path(&candidate.canonical_path);
+        let path = escape_review_path(&candidate.canonical_path, ReviewTextContext::Prose);
         let approve_command = format!(
             "/plugin import kimi approve {} {}",
             candidate.name, candidate.content_hash
@@ -162,7 +163,7 @@ fn approve(
         .into_iter()
         .find(|candidate| candidate.name == name)
     else {
-        let name = escape_review_text(name);
+        let name = escape_review_text(name, ReviewTextContext::InlineCode);
         return CommandResult::error(
             presentation
                 .translate(
@@ -173,8 +174,8 @@ fn approve(
         );
     };
     if candidate.content_hash != expected_hash {
-        let name = escape_review_text(name);
-        let expected = escape_review_text(expected_hash);
+        let name = escape_review_text(name, ReviewTextContext::InlineCode);
+        let expected = escape_review_text(expected_hash, ReviewTextContext::Prose);
         return CommandResult::error(
             presentation
                 .translate(
@@ -201,10 +202,10 @@ fn approve(
     )
 }
 
-pub(super) fn escape_review_path(path: &Path) -> String {
-    super::escape_review_path(path)
+pub(super) fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    super::escape_review_path(path, context)
 }
 
-pub(super) fn escape_review_text(value: &str) -> String {
-    super::escape_review_text(value)
+pub(super) fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
+    super::escape_review_text(value, context)
 }

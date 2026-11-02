@@ -96,6 +96,8 @@ pub(in crate::commands) fn host_result(result: DebugCommandResult) -> CommandRes
         }
         DebugAction::OpenDiffPager { title, diff } => AppAction::OpenDiffPager { title, diff },
         DebugAction::OpenContextInspector => AppAction::OpenContextInspector,
+        DebugAction::OpenUndoSelector => AppAction::OpenUndoSelector,
+        DebugAction::UndoLatestRequest { force } => AppAction::UndoLatestRequest { force },
         DebugAction::SendMessage(input) => AppAction::SendMessage(input),
         DebugAction::SyncSession(sync) => sync_session(sync),
         DebugAction::ConversationUndo {

@@ -100,14 +100,7 @@ impl std::fmt::Debug for AppServerOptions {
     }
 }
 
-/// Selected frontend facts passed by the canonical CLI in memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeControlFrontend {
-    Stdio,
-    Socket { path: Option<PathBuf> },
-    LegacyHttp,
-    Acp { model: String },
-}
+pub use codewhale_runtime::runtime_control::RuntimeControlFrontend;
 
 /// A bounded listener request admitted only over the authenticated owner channel.
 /// The bearer is explicit operator input, never discovery or response data.

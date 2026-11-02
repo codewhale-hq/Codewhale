@@ -1450,7 +1450,7 @@ impl ToolSpec for AgentsCoordinateTool {
             let caller = self.caller.clone();
             let session = context.state_namespace.clone();
             let workspace = context.workspace.clone();
-            return codewhale_app_server::daemon_socket::owner_work(move || {
+            return codewhale_runtime::runtime_control::owner_work(move || {
                 Ok(Self::mutate_coordination(
                     caller.as_deref(),
                     &session,

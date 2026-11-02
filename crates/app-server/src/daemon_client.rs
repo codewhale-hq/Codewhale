@@ -9,10 +9,14 @@ use std::path::PathBuf;
 mod platform {
     use super::*;
     use crate::daemon_socket::AuthorizedPeer;
-    use crate::daemon_socket::{default_socket_path, owner_work};
+    #[cfg(windows)]
+    use crate::daemon_socket::default_socket_path;
+    use crate::daemon_socket::owner_work;
     use crate::stdio::{BoundedLines, ParsedStdioLine, parse_stdio_line, write_stdio_line};
     use anyhow::{Context as _, bail};
     use codewhale_config::private_directory::PrivateDirectory;
+    #[cfg(unix)]
+    use codewhale_paths::daemon_socket::default_socket_path;
     use codewhale_protocol::RuntimeOwnerReceipt;
     use serde_json::{Value, json};
     use std::sync::Arc;

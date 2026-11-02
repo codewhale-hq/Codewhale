@@ -1145,6 +1145,7 @@ pub struct RuntimeThreadManagerConfig {
     /// Selected document store, captured once before owner recovery or hydration.
     pub sessions_dir: Option<PathBuf>,
     pub max_active_threads: usize,
+    pub mcp_auth_context: crate::mcp::McpAuthContext,
 }
 
 impl RuntimeThreadManagerConfig {
@@ -1170,6 +1171,7 @@ impl RuntimeThreadManagerConfig {
             task_data_dir,
             sessions_dir: None,
             max_active_threads: MAX_ACTIVE_THREADS_DEFAULT,
+            mcp_auth_context: Default::default(),
         }
     }
 }
@@ -3954,6 +3956,10 @@ impl RuntimeThreadManager {
         };
         manager.recover_interrupted_state()?;
         Ok(manager)
+    }
+
+    pub fn mcp_auth_context(&self) -> Arc<dyn codewhale_runtime::credentials::AuthContext> {
+        Arc::clone(&self.manager_cfg.mcp_auth_context.0)
     }
 
     pub fn sessions_dir(&self) -> &Path {
@@ -13015,6 +13021,7 @@ impl RuntimeThreadManager {
                 trust_mode: thread.trust_mode,
                 notes_path: cfg.notes_path(),
                 mcp_config_path: cfg.mcp_config_path(),
+                mcp_auth_context: self.manager_cfg.mcp_auth_context.clone(),
                 mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
                 mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
                 skills_dir: cfg.skills_dir(),

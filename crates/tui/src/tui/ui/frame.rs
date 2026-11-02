@@ -1000,6 +1000,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         trust_mode: app.trust_mode,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
+        mcp_auth_context: Default::default(),
         mcp_oauth_callback_port: config.mcp_oauth_callback_port,
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
@@ -1064,9 +1065,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .snapshots_config()
             .max_workspace_gb
             .saturating_mul(1024 * 1024 * 1024),
-        // The TUI records no snapshot receipts; its post-turn snapshot stays
-        // off the input path (#234).
-        record_restore_points: false,
+        record_restore_points: true,
         lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),

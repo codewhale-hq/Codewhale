@@ -41,7 +41,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         "[tool](https://example.invalid)",
         "\n# approved\u{202e}",
     ] {
-        assert!(output.contains(&escape_review_text(value)));
+        assert!(output.contains(&escape_review_text(value, ReviewTextContext::Prose)));
         assert!(!output.contains(value));
     }
     let mut localized = String::new();
@@ -71,7 +71,10 @@ fn plugin_config_summary_lists_keys_never_values_and_escapes_them() {
     assert!(output.contains("[plugins.\"greeter\".config]"), "{output}");
     assert!(output.contains("values not shown"));
     assert!(output.contains("greeting"));
-    assert!(output.contains(&escape_review_text("\u{1b}[31mkey")));
+    assert!(output.contains(&escape_review_text(
+        "\u{1b}[31mkey",
+        ReviewTextContext::Prose
+    )));
     assert!(!output.contains('\u{1b}'));
 
     let mut refused = String::new();

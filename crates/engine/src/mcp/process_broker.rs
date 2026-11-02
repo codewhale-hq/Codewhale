@@ -94,6 +94,22 @@ impl BrokerSession {
         config: &McpServerConfig,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(Self, ChildStdout)> {
+        Self::spawn_with_auth_context(
+            server_name,
+            command,
+            config,
+            cancel_token,
+            super::process_mcp_auth_context(),
+        )
+    }
+
+    pub fn spawn_with_auth_context(
+        server_name: &str,
+        command: &str,
+        config: &McpServerConfig,
+        cancel_token: tokio_util::sync::CancellationToken,
+        auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Result<(Self, ChildStdout)> {
         let reviewed_launch = if let Some(reviewed_plugin) = config.reviewed_plugin_source() {
             // This is deliberately the last trust check before constructing
             // and spawning the lazy stdio child. It re-reads only the
@@ -165,11 +181,12 @@ impl BrokerSession {
         }
 
         // Expand `${NAME}` placeholders so secret env values can be sourced
-        // from the process environment instead of being stored in cleartext
+        // from the owning credential context instead of being stored in cleartext
         // in the MCP config. The child env is allowlist-sanitized below, so
         // these vars would not otherwise be inherited by the child.
-        let expanded_env = super::expanded_mcp_stdio_env(config)
-            .with_context(|| format!("MCP server '{server_name}' env expansion failed"))?;
+        let expanded_env =
+            super::expanded_mcp_stdio_env_with_auth_context(config, auth_context.as_ref())
+                .with_context(|| format!("MCP server '{server_name}' env expansion failed"))?;
 
         // User-configured MCP keeps the compatibility-oriented Node/Python
         // bootstrap allowlist (#1244). Reviewed plugins receive only the base
