@@ -1336,7 +1336,10 @@ dependencies = [
 name = "codewhale-paths"
 version = "0.10.2"
 dependencies = [
+ "anyhow",
  "dirs 7.0.0",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1525,7 +1528,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "codewhale-app-server",
  "codewhale-execpolicy",
  "codewhale-paths",
  "codewhale-release",

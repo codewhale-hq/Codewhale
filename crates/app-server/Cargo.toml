@@ -34,8 +34,6 @@ tower-http.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 uuid.workspace = true
-# The store-derived control endpoint hashes the runtime store root
-# (`daemon_socket::store_selected_socket_path`).
 sha2.workspace = true
 
 [dev-dependencies]

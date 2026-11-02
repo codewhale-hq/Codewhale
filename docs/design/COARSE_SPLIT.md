@@ -42,8 +42,9 @@ The checker now reads both Engine and TUI source roots. Its mapped bands have
 310,401 Engine, 41,829 host and 219,597 TUI production lines, with 2,146
 cross-band references and `cycles=0 upward_edges=0 upward_refs=0 oversize=0
 unassigned=0 duplicates=0`. These are the mapped bands, not all existing
-workspace dependencies; the existing App Server dependency below still has
-to move before part 2. A direct count of current `src/**/*.rs`, including
+workspace dependencies. The lower Runtime owner and Paths socket-layout
+prerequisites are now implemented; neither Engine nor Sandbox reaches App Server
+through production dependencies. The host band still needs to move for part 2. A direct count of current `src/**/*.rs`, including
 tests, is 636,073 lines in Engine, 527,873 in TUI (still including the host
 band), and 14,726 in the existing App Server. What got there:
 
@@ -95,9 +96,13 @@ guard tests; at most two native builds at once.
 
 Before part 2:
 
-- Move `daemon_socket::owner_work` and `RuntimeControlFrontend` below the
-  existing App Server crate. Engine currently consumes them; moving the host
-  band into App Server first would create a Cargo dependency cycle.
+- Completed prerequisite: the existing `owner_work` and
+  `RuntimeControlFrontend` live in `codewhale_runtime::runtime_control`, with
+  compatibility aliases in App Server. Shared protected socket layout lives in
+  `codewhale_paths::daemon_socket`; Sandbox no longer depends on App Server.
+  Locked Cargo metadata for all 48 workspace members is acyclic, including
+  optional and target-specific production edges. The focused native socket
+  checks passed; Windows transport qualification remains separate.
 - Remove extension-host avatar coupling to `codewhale-ratatui` (CRATE_MAP
   P0b). The Engine is still linked to that terminal library.
 - Publishing `codewhale-engine` to crates.io remains a separate founder action.

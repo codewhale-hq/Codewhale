@@ -22,6 +22,10 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
+#[cfg(windows)]
+use codewhale_app_server::daemon_socket::default_socket_path;
+#[cfg(unix)]
+use codewhale_paths::daemon_socket::default_socket_path;
 use codewhale_protocol::agent_mail::{
     AgentMailDeliveryMode, AgentMailEnvelope, AgentMailMessageId, AgentMailSendRequest,
     AgentMailSendResponse,
@@ -2474,10 +2478,6 @@ fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
 ///
 /// `selected_store` is the store root this run resolved, the same value the
 /// thread manager will open.
-///
-/// Unix only, with `daemon_socket::store_selected_socket_path`: a Windows
-/// owner endpoint is a named pipe whose derived-name form is follow-up work,
-/// so Windows keeps the well-known endpoint and the explicit selection.
 #[cfg(unix)]
 async fn store_selected_control_socket(
     explicit: Option<PathBuf>,
@@ -2486,7 +2486,7 @@ async fn store_selected_control_socket(
     let selected_store = selected_store.to_path_buf();
     codewhale_runtime::runtime_control::owner_work(move || {
         let store_override = codewhale_engine::runtime_threads::canonical_runtime_dir_override()?;
-        let inputs = codewhale_app_server::daemon_socket::SocketPathInputs::from_environment(None)?;
+        let inputs = codewhale_paths::daemon_socket::SocketPathInputs::from_environment(None)?;
         store_selected_control_socket_with(
             explicit,
             &selected_store,
@@ -2507,7 +2507,7 @@ fn store_selected_control_socket_with(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
     store_override: Option<&FsPath>,
-    inputs: &codewhale_app_server::daemon_socket::SocketPathInputs,
+    inputs: &codewhale_paths::daemon_socket::SocketPathInputs,
 ) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path);
@@ -2520,7 +2520,7 @@ fn store_selected_control_socket_with(
         selected_store.to_path_buf(),
     )?;
     let derived_from = store_override.filter(|dir| *dir == selected);
-    codewhale_app_server::daemon_socket::store_selected_socket_path(derived_from, inputs)
+    codewhale_paths::daemon_socket::store_selected_socket_path(derived_from, inputs)
         .map_err(Into::into)
 }
 
@@ -2575,7 +2575,7 @@ async fn bind_captured_runtime_frontends(
     let socket_path =
         codewhale_runtime::runtime_control::owner_work(move || match selected_socket {
             Some(path) => Ok(path),
-            None => codewhale_app_server::daemon_socket::default_socket_path().map_err(Into::into),
+            None => default_socket_path().map_err(Into::into),
         })
         .await?;
     let process_start =

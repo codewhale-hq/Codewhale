@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Internal coarse split: shared bounded owner work and frontend selection types move below App Server, removing its direct dependency from Engine while preserving existing public aliases. The host-band move and the Sandbox socket-layout dependency remain open (#5586).
+- Internal coarse split: shared bounded owner work and frontend selection types live in Runtime, and protected socket layout lives in Paths. Existing App Server aliases remain available; Engine and Sandbox no longer depend on App Server. The avatar-contract and host-band moves remain open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
   DSH 0.2.1-rc.5 with Cordis 4.0.5 and refreshed reviewed composition
   packages. Boolean `deferLoading` hints are accepted while the Engine keeps
