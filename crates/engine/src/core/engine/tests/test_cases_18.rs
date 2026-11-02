@@ -3,6 +3,16 @@
 /// authoritative assistant answer in the persisted conversation.
 #[tokio::test]
 async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_did() {
+    let _environment = lock_test_env();
+    let workspace = tempdir().expect("owned stream recovery workspace");
+    let fixture_state = workspace.path().join(".codewhale");
+    fs::create_dir_all(&fixture_state).unwrap();
+    fs::write(
+        fixture_state.join("AGENTS.md"),
+        "Preserve the exact operator input.\n",
+    )
+    .unwrap();
+    let _state_home = EnvVarGuard::set("CODEWHALE_HOME", &fixture_state);
     let model = std::sync::Arc::new(ThinkingOnlyDropModelClient {
         calls: std::sync::atomic::AtomicUsize::new(0),
         failures: 1,
@@ -14,9 +24,11 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         snapshots_enabled: false,
         subagents_enabled: false,
         terminal_chrome_enabled: true,
-        ..EngineConfig::default()
+        ..deterministic_engine_config(workspace.path())
     };
-    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    engine.instruction_settings.home = Some(workspace.path().to_path_buf());
+    engine.refresh_system_prompt();
     let run_task = tokio::spawn(engine.run());
 
     handle
@@ -72,8 +84,8 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the thinking-only drop must be re-issued exactly once"
+        1,
+        "thinking-only drop must not replay an admitted request"
     );
     let status = events
         .iter()
@@ -82,10 +94,10 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             _ => None,
         })
         .expect("terminal TurnComplete");
-    assert_eq!(status, TurnOutcomeStatus::Completed);
+    assert_eq!(status, TurnOutcomeStatus::Failed);
 
     assert!(
-        events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
             Event::Status { message } if message.starts_with("Retry attempt: stream-resume 1/")
         )),
@@ -99,7 +111,9 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         .iter()
         .rev()
         .find_map(|event| match event {
-            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => Some(messages.clone()),
             _ => None,
         })
         .expect("final SessionUpdated");
@@ -116,7 +130,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             .iter()
             .filter(|message| message.role == "assistant")
             .count(),
-        1,
+        0,
         "exactly one authoritative assistant answer after recovery: {transcript:?}"
     );
     let transcript_text = transcript
@@ -140,7 +154,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         transcript_text
             .matches("the one authoritative answer")
             .count(),
-        1,
+        0,
         "the recovered answer must be persisted exactly once: {transcript_text}"
     );
 }
@@ -544,7 +558,7 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1 + super::DEFAULT_STREAM_MAX_RESUMES as usize,
+        1,
         "initial attempt plus the bounded resume budget, then the turn fails"
     );
     let (status, error) = events
@@ -586,14 +600,9 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
                 Event::Status { message } if message.starts_with("Retry attempt: stream-resume ")
             ))
             .count(),
-        super::DEFAULT_STREAM_MAX_RESUMES as usize,
+        0,
         "every admitted resume must have its own numbered progress receipt"
     );
-    for attempt in 1..=super::DEFAULT_STREAM_MAX_RESUMES {
-        assert!(events.iter().any(|event| matches!(event,
-            Event::Status { message } if message.starts_with(&format!("Retry attempt: stream-resume {attempt}/"))
-        )));
-    }
 }
 
 // === Issue #66: error taxonomy wired through engine + audit + capacity ===

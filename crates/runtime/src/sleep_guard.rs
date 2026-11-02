@@ -1,9 +1,9 @@
 //! Keep the host from idling into sleep while a turn is in flight.
 //!
 //! A suspended host cannot run the engine, so nothing here survives a real
-//! suspend — `core::engine::streaming::sleep_gap_detected` already reports that
-//! case and the engine re-issues the request (issue #2990). What this module
-//! prevents is the avoidable one: an unattended machine idling into sleep in
+//! suspend. A provider request interrupted by sleep retains an unknown outcome
+//! and is not automatically replayed. This module prevents an unattended
+//! machine from idling into sleep in
 //! the middle of a turn, which is how a long turn gets lost with no error at
 //! all.
 //!

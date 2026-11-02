@@ -64,45 +64,32 @@ pub const MIN_STREAM_MAX_DURATION_SECS: u64 = 10;
 /// Largest accepted per-step stream duration cap (24 hours).
 pub const MAX_STREAM_MAX_DURATION_SECS: u64 = 86_400;
 
-/// Default whole-request resume budget after a failed stream (open failure,
-/// dead stream, sleep, or mid-stream network drop). Shared by the
-/// nothing-streamed outer retry (#103 Phase 3), the sleep-resume retry
-/// (#2990), the network-drop resumes, and stream-open failures (#6699).
-/// Overridable via `[tui].stream_max_resumes` (#6700).
+/// Default retry budget for proven pre-dispatch stream-open failures.
+/// An unknown dispatched outcome never spends this budget to replay a POST.
 pub const DEFAULT_STREAM_MAX_RESUMES: u32 = 3;
-/// Largest accepted resume budget. `0` is accepted and disables resumes.
+/// Largest accepted safe-open retry budget. `0` disables outer open retries.
 pub const MAX_STREAM_MAX_RESUMES: u32 = 10;
-/// Default in-stream transparent retry budget. These retries only happen
-/// when the wire dies before any content was streamed. The user has seen
-/// nothing, but provider usage or billing may already exist. Two attempts
-/// can ride out a flaky edge node without amplifying real outages (#103).
-/// `[tui].stream_max_transparent_retries` overrides it (#6700).
+/// Historical default retained for configuration compatibility; inactive in Core.
 pub const DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES: u32 = 2;
-/// Largest accepted transparent retry budget. `0` disables them.
+/// Historical accepted bound for the inactive compatibility setting.
 pub const MAX_STREAM_MAX_TRANSPARENT_RETRIES: u32 = 10;
-/// Default streak of recoverable stream errors tolerated in one stream before
-/// the turn fails. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive
-/// defaults (#103) — keepalive should make spurious decode errors rarer, so
-/// we can tolerate a longer streak before giving up on the turn.
-/// `[tui].stream_max_errors` overrides it (#6700).
+/// Historical error-count default retained for compatibility; Core ends on
+/// the first uncertain admitted stream error.
 pub const DEFAULT_STREAM_MAX_ERRORS: u32 = 5;
-/// Smallest accepted error streak: the first error ends the stream. `0` is
-/// not a value here; like the other finite stream budgets it selects
-/// [`DEFAULT_STREAM_MAX_ERRORS`].
+/// Smallest accepted compatibility value. `0` selects the historical default.
 pub const MIN_STREAM_MAX_ERRORS: u32 = 1;
-/// Largest accepted error streak.
+/// Largest accepted compatibility value.
 pub const MAX_STREAM_MAX_ERRORS: u32 = 50;
 
-/// Stream-level retry budgets for one engine (#6700). Every field stays
-/// finite; the defaults are the historical compiled-in values.
+/// Safe-open retries and parsed historical stream settings. The compatibility
+/// fields never authorize replay or error tolerance for an opened stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamRetryLimits {
-    /// Whole-request re-issues after a failed stream, shared by every
-    /// resume path and by stream-open failures (#6699).
+    /// Proven pre-dispatch stream-open retries.
     pub max_resumes: u32,
-    /// In-stream re-requests while nothing has streamed yet (#103).
+    /// Inactive Core compatibility setting.
     pub max_transparent_retries: u32,
-    /// Recoverable errors tolerated in one stream before it ends.
+    /// Inactive Core compatibility setting; an uncertain error ends the stream.
     pub max_errors: u32,
 }
 

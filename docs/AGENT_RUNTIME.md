@@ -59,16 +59,17 @@ nested assignment.
 
 ## The cutover rule
 
-If a detached `agent` child can fail on a one-off provider timeout with no
-retry while an equivalent Runtime worker would retry and preserve ledger
-evidence, then the cutover is incomplete. Treat that as a Codewhale Runtime
-gap, not as normal "sub-agent behavior".
+Detached `agent` children and Runtime workers must preserve the same request
+evidence and recovery state. A timeout after possible dispatch is an unknown
+outcome on both paths and cannot authorize automatic inference replay.
 
-The compatibility `agent` runtime now retries transient provider header,
-stream, and timeout failures with backoff before marking a worker interrupted;
-when retries are exhausted it preserves a checkpoint and returns a continuation
-handle. The remaining convergence work is to keep that lifecycle durable across
-process restarts, remote execution, and full Runtime-ledger scheduling.
+The compatibility `agent` runtime retries ordinary rate limits and proven
+transient connection failures before dispatch. A header timeout, interrupted
+stream or other uncertain outcome preserves a checkpoint and returns a
+continuation handle without automatically sending another inference request.
+Reported usage stays attached to the original request; missing usage remains
+unknown. Restart, remote execution and Runtime-ledger scheduling retain their
+own durability requirements.
 
 The target rule is:
 

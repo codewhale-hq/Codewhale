@@ -2333,7 +2333,7 @@ fn runtime_surface_hardening_plugin_collisions_preserve_registered_tools() {
 fn registration_adapter_origins_are_bounded_and_exclude_execution_payloads() {
     use crate::tools::dynamic::RuntimeDynamicTool;
     use crate::tools::plugin::tool_from_override;
-    use codewhale_protocol::runtime::DynamicToolSpec;
+    use codewhale_app_server_protocol::runtime::DynamicToolSpec;
     let tmp = tempdir().unwrap();
     let hostile = format!(
         "\u{1b}[31m\nhttps://private.invalid/token?{}",
@@ -2500,7 +2500,7 @@ fn read_media_is_not_offered_to_a_text_only_route() {
 /// model-facing name from another namespace cannot replace the first.
 #[test]
 fn dynamic_tools_never_replace_registered_tools() {
-    use codewhale_protocol::runtime::DynamicToolSpec;
+    use codewhale_app_server_protocol::runtime::DynamicToolSpec;
     let tmp = tempdir().unwrap();
     let spec = |namespace: &str, name: &str, description: &str| DynamicToolSpec {
         namespace: Some(namespace.to_string()),

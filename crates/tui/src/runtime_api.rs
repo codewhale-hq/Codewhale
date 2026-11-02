@@ -24,15 +24,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 #[cfg(windows)]
 use codewhale_app_server::daemon_socket::default_socket_path;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+};
 #[cfg(unix)]
 use codewhale_paths::daemon_socket::default_socket_path;
 use codewhale_protocol::agent_mail::{
     AgentMailDeliveryMode, AgentMailEnvelope, AgentMailMessageId, AgentMailSendRequest,
     AgentMailSendResponse,
-};
-use codewhale_protocol::runtime::{
-    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
 };
 use codewhale_secrets::account::RuntimeAccountInfo;
 #[cfg(not(test))]
@@ -1087,15 +1087,13 @@ async fn write_frontend_ready(
     output: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
     ready: RuntimeFrontendReady,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt as _;
-    let frame = serde_json::to_vec(
+    let frame = codewhale_app_server::stdio::serialize_control_frame(
         &json!({"jsonrpc":"2.0","method":"daemon/frontend_ready","params":ready}),
     )?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        output.write_all(&frame).await?;
-        output.write_all(b"\n").await?;
-        output.flush().await
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        codewhale_app_server::stdio::write_control_line(output, &frame),
+    )
     .await
     .context("selected listener readiness write timed out; outcome uncertain")??;
     Ok(())
@@ -1238,7 +1236,7 @@ struct StreamTurnRequest {
     max_output_tokens: Option<std::num::NonZeroU32>,
     prompt: String,
     #[serde(default)]
-    images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     model: Option<String>,
     mode: Option<String>,
     permission_posture: Option<String>,
@@ -2222,7 +2220,12 @@ pub async fn run_http_server(
         existing_binding.as_ref(),
     )?;
     let sessions_dir = runtime_threads.sessions_dir().to_path_buf();
-    let sub_agent_manager = runtime_api_sub_agent_manager(&workspace, options.workers)?;
+    let sub_agent_manager = codewhale_runtime::runtime_control::owner_work({
+        let workspace = workspace.clone();
+        let workers = options.workers;
+        move || runtime_api_sub_agent_manager(&workspace, workers)
+    })
+    .await?;
     runtime_threads
         .attach_subagent_manager(sub_agent_manager.clone())
         .await?;
@@ -2910,7 +2913,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/stream",
             post(stream_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route("/v1/git", get(git::git_status_detail))
@@ -3045,7 +3048,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/turns",
             post(start_thread_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route(
@@ -4496,7 +4499,13 @@ async fn start_fleet_run(
         ));
     }
     let run_id = FleetRunId::from(run_id);
-    let report = manager.activate_run(&run_id).map_err(|error| {
+    let activation_manager = manager.clone();
+    let activation_run = run_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        activation_manager.activate_run(&activation_run)
+    })
+    .await
+    .map_err(|error| {
         let message = format!("Failed to start Fleet run '{}': {error}", run_id.0);
         if message.contains("already terminal") {
             ApiError::conflict(message)
@@ -4516,12 +4525,12 @@ async fn start_fleet_run(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(error) = manager
             .run_to_completion(
                 &execution_run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),
@@ -4848,7 +4857,13 @@ async fn restart_fleet_worker(
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let manager = open_fleet_manager(&state)?;
-    let report = manager.restart_worker(&worker_id).map_err(|err| {
+    let restart_manager = manager.clone();
+    let restart_worker = worker_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        restart_manager.restart_worker(&restart_worker)
+    })
+    .await
+    .map_err(|err| {
         ApiError::bad_request(format!(
             "Failed to restart Fleet worker '{worker_id}': {err}"
         ))
@@ -4862,12 +4877,12 @@ async fn restart_fleet_worker(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(err) = manager
             .run_to_completion(
                 &run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),
@@ -8442,7 +8457,7 @@ struct UndoTurnResponse {
     /// so the GUI can pre-populate the input box.
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn undo_thread_turn(
@@ -8540,7 +8555,7 @@ struct PatchUndoResponse {
     /// The original user text from the removed turn (for re-editing).
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn patch_undo_thread_turn(
@@ -9389,7 +9404,7 @@ struct RetryTurnRequest {
     /// them, so a retry the client starts must re-send them; without it the
     /// retried turn silently lost tools such as the desktop's `open_in_app`.
     #[serde(default)]
-    dynamic_tools: Vec<codewhale_protocol::runtime::DynamicToolSpec>,
+    dynamic_tools: Vec<codewhale_app_server_protocol::runtime::DynamicToolSpec>,
 }
 
 #[derive(Debug, Serialize)]

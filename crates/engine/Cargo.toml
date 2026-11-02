@@ -73,6 +73,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
 codewhale-memory = { path = "../memory", version = "0.10.2" }
 anyhow.workspace = true
@@ -187,6 +188,7 @@ wiremock = { version = "0.6", optional = true }
 codewhale-build-support = { path = "../build-support", version = "0.10.2" }
 
 [dev-dependencies]
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2", features = ["schema"] }
 codewhale-skills = { path = "../skills", version = "0.10.2", features = ["test-support"] }
 codewhale-dependencies = { path = "../dependencies", version = "0.10.2", features = ["test-support"] }
 codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2", features = ["test-support"] }

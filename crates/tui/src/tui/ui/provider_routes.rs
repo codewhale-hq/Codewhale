@@ -908,6 +908,7 @@ async fn switch_provider_inner(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
                 system_prompt: app.system_prompt.clone(),

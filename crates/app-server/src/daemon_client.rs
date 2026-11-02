@@ -12,7 +12,10 @@ mod platform {
     #[cfg(windows)]
     use crate::daemon_socket::default_socket_path;
     use crate::daemon_socket::owner_work;
-    use crate::stdio::{BoundedLines, ParsedStdioLine, parse_stdio_line, write_stdio_line};
+    use crate::stdio::{
+        BoundedLines, ParsedStdioLine, is_frame_refusal, parse_stdio_line, serialize_control_frame,
+        write_control_line, write_stdio_line,
+    };
     use anyhow::{Context as _, bail};
     use codewhale_config::private_directory::PrivateDirectory;
     #[cfg(unix)]
@@ -36,6 +39,7 @@ mod platform {
         receipt: RuntimeOwnerReceipt,
         routing: Option<crate::RuntimeOwnerRouting>,
         frontend: crate::daemon_socket::AttachFrontend,
+        output_failed: bool,
     }
 
     /// Host startup is the only caller allowed to acquire the Runtime lease.
@@ -602,6 +606,7 @@ mod platform {
             receipt,
             routing,
             frontend,
+            output_failed: false,
         })))
     }
 
@@ -614,23 +619,29 @@ mod platform {
             &self.receipt
         }
         pub async fn send(&mut self, id: Value, method: &str, params: Value) -> Result<()> {
-            let frame = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-            let bytes = serde_json::to_vec(&frame)?;
             anyhow::ensure!(
-                bytes.len() <= crate::MAX_RUNTIME_IMAGE_BODY_BYTES,
-                "owner request exceeds transport bound"
+                !self.output_failed,
+                "owner transport write previously failed; outcomes uncertain, not replayed"
             );
+            let frame = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+            let bytes = serialize_control_frame(&frame)?;
             let check = self.peer.clone();
             owner_work(move || check.check()).await?;
+            self.output_failed = true;
             tokio::time::timeout(
                 Duration::from_secs(5),
-                write_stdio_line(&mut self.write, &frame),
+                write_control_line(&mut self.write, &bytes),
             )
             .await
             .context("owner write deadline expired; outcome uncertain, not replayed")??;
+            self.output_failed = false;
             Ok(())
         }
         pub async fn recv(&mut self) -> Result<Option<Value>> {
+            anyhow::ensure!(
+                !self.output_failed,
+                "owner transport write previously failed; outcomes uncertain, not replayed"
+            );
             let Some(line) = self.read.next_line().await? else {
                 return Ok(None);
             };
@@ -643,25 +654,37 @@ mod platform {
             I: tokio::io::AsyncRead + Unpin,
             O: tokio::io::AsyncWrite + Unpin,
         {
+            anyhow::ensure!(
+                !self.output_failed,
+                "owner transport write previously failed; outcomes uncertain, not replayed"
+            );
             let mut input = BoundedLines::new(BufReader::new(input));
             let mut output = tokio::io::BufWriter::new(output);
             let mut input_open = true;
             loop {
                 tokio::select! {
-                    line = input.next_line(), if input_open => match line? {
+                    line = input.next_line(), if input_open => match match line {
+                        Ok(line) => line,
+                        Err(error) if self.frontend == crate::daemon_socket::AttachFrontend::Acp && is_frame_refusal(&error) => {
+                            write_stdio_line(&mut output, &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":error.to_string()}})).await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    } {
                         None => {
                             input_open=false;
-                            tokio::time::timeout(Duration::from_secs(5),write_stdio_line(&mut self.write,&json!({"jsonrpc":"2.0","method":"daemon/input_closed","params":{}}))).await.context("owner input-close write outcome uncertain, not replayed")??;
-                            self.write.shutdown().await?;
+                            tokio::time::timeout(Duration::from_secs(5), async {
+                                write_stdio_line(&mut self.write,&json!({"jsonrpc":"2.0","method":"daemon/input_closed","params":{}})).await?;
+                                self.write.shutdown().await?;
+                                Ok::<(), anyhow::Error>(())
+                            }).await.context("owner input-close write outcome uncertain, not replayed")??;
                         }
                         Some(line) if self.frontend==crate::daemon_socket::AttachFrontend::Acp => {
                             let check=self.peer.clone();
                             owner_work(move || check.check()).await?;
-                            let value:Value=serde_json::from_str(&line)?;
-                            anyhow::ensure!(value.is_object() && value["jsonrpc"]=="2.0","ACP frame must be a JSON-RPC object");
                             // Preserve response IDs/permission replies verbatim.
                             // Actual ACP authority/parser stays in AcpServer.
-                            tokio::time::timeout(Duration::from_secs(5),async {self.write.write_all(line.as_bytes()).await?;self.write.write_all(b"\n").await?;self.write.flush().await}).await.context("ACP write outcome uncertain; not replayed")??;
+                            tokio::time::timeout(Duration::from_secs(5),write_control_line(&mut self.write,line.as_bytes())).await.context("ACP write outcome uncertain; not replayed")??;
                         }
                         Some(line) => match parse_stdio_line(&line) {
                             ParsedStdioLine::Blank => {},
@@ -677,9 +700,7 @@ mod platform {
                         None => bail!("selected owner connection closed; pending operation outcomes may be uncertain"),
                         Some(line) => {
                             let _: Value = serde_json::from_str(&line).context("invalid owner response")?;
-                            output.write_all(line.as_bytes()).await?;
-                            output.write_all(b"\n").await?;
-                            output.flush().await?;
+                            write_control_line(&mut output, line.as_bytes()).await?;
                         }
                     }
                 }

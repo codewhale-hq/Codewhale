@@ -27,7 +27,7 @@ const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TEXT_LINE_BYTES: usize = 1024 * 1024;
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_QUERY_BYTES: usize = 4 * 1024;
-const MAX_REFERENCE_BYTES: usize = 32 * 1024;
+pub const MAX_REFERENCE_BYTES: usize = 32 * 1024;
 
 /// Retrieve summaries or slices of a prior spilled tool result.
 pub struct RetrieveToolResultTool;
@@ -92,6 +92,10 @@ impl ToolSpec for RetrieveToolResultTool {
                     "minimum": 1,
                     "description": "Optional expected evidence generation; mismatches fail closed."
                 },
+                "expected_sha256": {
+                    "type": "string",
+                    "description": "Expected SHA256 from an earlier verified window; a changed snapshot is refused."
+                },
                 "offset": {
                     "type": "integer",
                     "minimum": 0,
@@ -147,6 +151,16 @@ impl ToolSpec for RetrieveToolResultTool {
             1,
             HARD_MAX_BYTES,
         );
+        let expected_digest = optional_str(&input, "expected_sha256")?
+            .map(|digest| {
+                if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(ToolError::invalid_input(
+                        "expected_sha256 must be a SHA256 digest",
+                    ));
+                }
+                Ok(digest.to_ascii_lowercase())
+            })
+            .transpose()?;
         let inspection = if mode == "metadata" || mode == "bytes" {
             None
         } else {
@@ -207,12 +221,20 @@ impl ToolSpec for RetrieveToolResultTool {
             context,
         )
         .await?;
-        if let Some(ownership) = legacy_ownership {
-            if ownership.size_bytes != snapshot.size_bytes || ownership.digest != snapshot.digest {
-                return Err(ToolError::execution_failed(
-                    "legacy evidence content is corrupt",
-                ));
-            }
+        if expected_digest
+            .as_ref()
+            .is_some_and(|digest| digest != &snapshot.digest)
+        {
+            return Err(ToolError::execution_failed(
+                "evidence changed since the previous window",
+            ));
+        }
+        if let Some(ownership) = legacy_ownership
+            && (ownership.size_bytes != snapshot.size_bytes || ownership.digest != snapshot.digest)
+        {
+            return Err(ToolError::execution_failed(
+                "legacy evidence content is corrupt",
+            ));
         }
         let owned_reference = reference.to_string();
         let session_id = context.state_namespace.clone();
@@ -235,6 +257,7 @@ impl ToolSpec for RetrieveToolResultTool {
                 "ref": reference,
                 "available": true,
                 "total_bytes": snapshot.size_bytes,
+                "sha256": snapshot.digest,
                 "evidence": evidence,
             }))
             .map_err(|err| ToolError::execution_failed(err.to_string()));
@@ -250,6 +273,7 @@ impl ToolSpec for RetrieveToolResultTool {
                 "returned_bytes": slice.len(),
                 "total_bytes": snapshot.size_bytes,
                 "encoding": "base64",
+                "sha256": snapshot.digest,
                 "data": base64::engine::general_purpose::STANDARD.encode(slice),
             }))
             .map_err(|err| ToolError::execution_failed(err.to_string()));
@@ -711,10 +735,10 @@ impl TextInspection {
             self.leading.push(record);
         }
         if self.mode == "summary" || self.mode == "tail" {
-            if self.trailing.len() == self.line_count {
-                if let Some(record) = self.trailing.pop_front() {
-                    self.release(&record);
-                }
+            if self.trailing.len() == self.line_count
+                && let Some(record) = self.trailing.pop_front()
+            {
+                self.release(&record);
             }
             let record = self.retain(line_no, line, budget)?;
             self.trailing.push_back(record);
@@ -760,10 +784,10 @@ impl TextInspection {
             }
         }
         if self.context_lines > 0 && self.matches.len() < self.max_matches {
-            if self.previous.len() == self.context_lines {
-                if let Some(record) = self.previous.pop_front() {
-                    self.release(&record);
-                }
+            if self.previous.len() == self.context_lines
+                && let Some(record) = self.previous.pop_front()
+            {
+                self.release(&record);
             }
             let record = self.retain(line_no, line, budget)?;
             self.previous.push_back(record);
@@ -946,19 +970,17 @@ async fn stream_evidence(
             }
         }
     }
-    if let Some(state) = state.as_mut() {
-        if !line.is_empty() {
-            if let Err(error) = std::str::from_utf8(&line)
-                .map_err(|_| {
-                    ToolError::execution_failed(
-                        "evidence encoding is binary; bounded text inspection is unavailable",
-                    )
-                })
-                .and_then(|text| state.push_line(text))
-            {
-                text_error = Some(error);
-            }
-        }
+    if let Some(state) = state.as_mut()
+        && !line.is_empty()
+        && let Err(error) = std::str::from_utf8(&line)
+            .map_err(|_| {
+                ToolError::execution_failed(
+                    "evidence encoding is binary; bounded text inspection is unavailable",
+                )
+            })
+            .and_then(|text| state.push_line(text))
+    {
+        text_error = Some(error);
     }
     if tokio::time::Instant::now() >= deadline {
         return Err(ToolError::execution_failed(

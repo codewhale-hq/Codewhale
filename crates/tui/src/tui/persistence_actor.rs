@@ -12,7 +12,7 @@
 //!
 //! ## Design
 //!
-//! - **One dedicated tokio task** owns disk I/O. The UI only sends requests;
+//! - **One dedicated tokio task** orders owned blocking batches. The UI only sends requests;
 //!   keystrokes never wait for writes.
 //! - **Latest-wins coalescing per session**: when multiple `SaveCheckpoint`,
 //!   `SessionSnapshot`, or offline-queue requests pile up before the actor's
@@ -24,7 +24,7 @@
 //! - **Bounded command channel with sender-side coalescing** (#6212):
 //!   `try_send` absorbs each request into a shared latest-wins state at send
 //!   time and wakes the actor through a small bounded channel, so a paused
-//!   consumer retains one snapshot per session instead of one per send.
+//!   consumer retains one barrier and one successor per session instead of one per send.
 //!   Queued snapshots retain only the canonical journal; legacy `messages`
 //!   are derived at the disk boundary instead of doubling every paused
 //!   request.
@@ -36,7 +36,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use codewhale_engine::session_manager::{
-    OfflineQueueLease, OfflineQueueState, SavedSession, SessionManager,
+    OfflineQueueLease, OfflineQueueState, SavedSession, SessionManager, SessionPublication,
+    SessionPublicationKind as PublicationKind,
 };
 use codewhale_util::utils::spawn_supervised;
 
@@ -52,7 +53,7 @@ pub enum PersistRequest {
     SaveCheckpoint { session: SavedSession },
     AcknowledgedCheckpoint {
         session: SavedSession,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<SessionPublication, String>>,
     },
     /// Write a full session snapshot (completed turn, durable save).
     SessionSnapshot(SavedSession),
@@ -84,6 +85,18 @@ pub enum PersistRequest {
     FlushAndReport { reply: oneshot::Sender<FlushReport> },
     /// Graceful shutdown — flush pending writes, then exit the actor loop.
     Shutdown,
+}
+
+impl PersistRequest {
+    fn receipt(&self) -> Option<codewhale_engine::session_manager::SessionWriteReceipt> {
+        match self {
+            Self::SaveCheckpoint { session }
+            | Self::AcknowledgedCheckpoint { session, .. }
+            | Self::SessionSnapshot(session)
+            | Self::CompletedCommit { session } => session.write_receipt.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Aggregated durability results: how many writes/removals completed and
@@ -128,7 +141,7 @@ enum PendingOfflineQueue {
 
 /// Control commands the actor reacts to. Work itself never crosses the
 /// channel: requests are coalesced into the shared [`PendingState`] at send
-/// time, so a paused consumer retains at most the latest request per session
+/// time, so a paused consumer retains one ordered barrier and one latest successor per session
 /// instead of every snapshot ever sent (#6212).
 enum ActorCommand {
     /// The shared pending state has work the actor has not taken yet.
@@ -209,10 +222,10 @@ impl Drop for PersistRequestReceiver {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.closed = true;
         guard.notified = false;
-        for (_, reply) in std::mem::take(&mut guard.pending.checkpoint_replies) {
-            let _ = reply.send(Err(
-                "persistence actor shut down before checkpoint write".into()
-            ));
+        for (_, slot) in std::mem::take(&mut guard.pending.publications) {
+            for publication in slot.barrier.into_iter().chain(slot.latest) {
+                publication.refuse("persistence actor shut down before publication");
+            }
         }
     }
 }
@@ -266,9 +279,14 @@ impl PersistActorHandle {
     /// Queue a persistence request without blocking. The request is
     /// coalesced into the shared pending state immediately (latest-wins per
     /// session), so repeated snapshots of one session retain only the
-    /// newest. Returns `false` when the actor is already shut down.
+    /// newest compatible successor. Returns `false` when the actor is closed
+    /// or the native predecessor cannot be retained in order.
     pub fn try_send(&self, mut request: PersistRequest) -> bool {
+        let receipt = request.receipt();
         if self.tx.cmd_tx.is_closed() {
+            if let Some(receipt) = receipt {
+                receipt.refuse("persistence actor is closed");
+            }
             return false;
         }
         match &mut request {
@@ -287,11 +305,15 @@ impl PersistActorHandle {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if guard.closed {
+                if let Some(receipt) = receipt {
+                    receipt.refuse("persistence actor is closed");
+                }
                 return false;
             }
             guard.pending.absorb(request)
         };
         match control {
+            Control::Refused => false,
             Control::Continue => {
                 // A WorkReady the actor has not taken yet is already queued;
                 // that take will observe this request too. `notified` resets
@@ -308,18 +330,20 @@ impl PersistActorHandle {
                     }
                     guard.notified = true;
                 }
-                if self.tx.cmd_tx.try_send(ActorCommand::WorkReady).is_ok() {
-                    true
-                } else {
-                    // Roll the flag back so later sends re-attempt (and
-                    // re-fail) honestly instead of riding a dead wake.
-                    let mut guard = self
-                        .tx
-                        .shared
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    guard.notified = false;
-                    false
+                match self.tx.cmd_tx.try_send(ActorCommand::WorkReady) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        let mut guard = self
+                            .tx
+                            .shared
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.notified = false;
+                        if let Some(receipt) = receipt {
+                            receipt.refuse("persistence actor is closed");
+                        }
+                        false
+                    }
                 }
             }
             Control::Flush(reply) => self
@@ -401,8 +425,12 @@ pub fn persist(request: PersistRequest) {
 
 pub(crate) fn persist_checked(request: PersistRequest) -> Result<(), String> {
     let label = request_label(&request);
+    let receipt = request.receipt();
     if try_persist(request) {
         return Ok(());
+    }
+    if let Some(error) = receipt.and_then(|receipt| receipt.observation().err()) {
+        return Err(error.to_string());
     }
     if ACTOR_TX.get().is_some() {
         tracing::warn!(
@@ -415,7 +443,7 @@ pub(crate) fn persist_checked(request: PersistRequest) -> Result<(), String> {
             request = label,
             "persistence request dropped: actor not initialised yet"
         );
-        Ok(())
+        Err("session persistence actor is not initialized".to_string())
     }
 }
 
@@ -474,9 +502,15 @@ pub(crate) fn session_save_health() -> Option<SaveHealthReading> {
 }
 
 pub fn try_persist(request: PersistRequest) -> bool {
-    ACTOR_TX
-        .get()
-        .is_some_and(|handle| handle.try_send(request))
+    match ACTOR_TX.get() {
+        Some(handle) => handle.try_send(request),
+        None => {
+            if let Some(receipt) = request.receipt() {
+                receipt.refuse("session persistence actor is not initialized");
+            }
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +527,7 @@ pub fn spawn_persistence_actor(
 ) -> (PersistActorHandle, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = persistence_request_channel();
     let handle = PersistActorHandle { tx };
+    let manager = Arc::new(manager);
 
     let task = spawn_supervised(
         "persistence-actor",
@@ -500,43 +535,84 @@ pub fn spawn_persistence_actor(
         async move {
             let mut unreported = FlushReport::default();
 
-            // Flush pending work, log new failures, and fold the cycle's
-            // results into the unreported accumulator.
-            fn flush_cycle(
-                manager: &SessionManager,
-                pending: &mut PendingState,
+            async fn flush_cycle(
+                manager: &Arc<SessionManager>,
+                mut pending: PendingState,
                 unreported: &mut FlushReport,
                 health: &SessionSaveHealth,
             ) {
-                let cycle = flush_inner(manager, pending, health);
-                unreported.merge(cycle);
+                let session_ids: Vec<_> = pending
+                    .publications
+                    .iter()
+                    .filter(|(_, slot)| {
+                        slot.barrier
+                            .iter()
+                            .chain(slot.latest.iter())
+                            .any(|publication| publication.kind != PublicationKind::Checkpoint)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let receipts: Vec<_> = pending
+                    .publications
+                    .values()
+                    .flat_map(|slot| slot.barrier.iter().chain(slot.latest.iter()))
+                    .filter_map(|publication| publication.session.write_receipt.clone())
+                    .collect();
+                let manager = manager.clone();
+                let worker_health = health.clone();
+                let cycle = codewhale_runtime::runtime_control::owner_work(move || {
+                    Ok(flush_inner(&manager, &mut pending, &worker_health))
+                })
+                .await;
+                match cycle {
+                    Ok(cycle) => unreported.merge(cycle),
+                    Err(error) => {
+                        for receipt in receipts {
+                            receipt.refuse(format!("owned persistence batch failed: {error}"));
+                        }
+                        tracing::warn!(target: "persistence", %error, "owned persistence batch failed");
+                        for session_id in session_ids {
+                            health.record::<()>(
+                                &session_id,
+                                &Err(std::io::Error::other(error.to_string())),
+                            );
+                        }
+                        unreported.merge(FlushReport {
+                            completed: 0,
+                            failures: vec![(
+                                "persistence-worker".to_string(),
+                                std::io::ErrorKind::Other,
+                            )],
+                        });
+                    }
+                }
             }
 
             // Work is coalesced at send time into the shared pending state;
             // every command handler takes whatever has accumulated and
             // flushes it outside the sender lock.
             while let Some(command) = rx.recv().await {
-                let mut pending = rx.take_pending();
+                let pending = rx.take_pending();
                 match command {
                     ActorCommand::WorkReady => {
                         if !pending.is_empty() {
-                            flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                            flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         }
                     }
                     ActorCommand::FlushAndReport { reply } => {
-                        flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                        flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         let _ = reply.send(std::mem::take(&mut unreported));
                     }
                     ActorCommand::Shutdown => {
-                        flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                        flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         return;
                     }
                 }
             }
             // Every sender is gone — final flush and exit. Each absorb
             // guarantees a queued WorkReady, so this is normally empty.
-            let mut pending = rx.take_pending();
-            flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+            let pending = rx.take_pending();
+            flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
         },
     );
 
@@ -544,116 +620,202 @@ pub fn spawn_persistence_actor(
 }
 
 #[derive(Debug)]
-enum PendingSession {
-    Snapshot(SavedSession),
-    Completion(SavedSession),
+struct PendingPublication {
+    kind: PublicationKind,
+    session: SavedSession,
+    reply: Option<oneshot::Sender<Result<SessionPublication, String>>>,
 }
 
-/// Coalesced work waiting for the next write cycle.
+impl PendingPublication {
+    fn refuse(self, error: &str) {
+        if let Some(receipt) = self.session.write_receipt.as_ref() {
+            receipt.refuse(error);
+        }
+        if let Some(reply) = self.reply {
+            let _ = reply.send(Err(error.into()));
+        }
+        tracing::warn!(session_id = %self.session.metadata.id, %error, "session publication refused before queueing");
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingSlot {
+    barrier: Option<PendingPublication>,
+    latest: Option<PendingPublication>,
+}
+
 #[derive(Debug, Default)]
 struct PendingState {
-    /// Latest-wins per session id. Crash checkpoints are keyed per session
-    /// (mirroring `sessions` below) so concurrent sessions can interleave
-    /// saves and clears without clobbering each other.
-    checkpoints: BTreeMap<String, SavedSession>,
-    checkpoint_replies: BTreeMap<String, oneshot::Sender<Result<(), String>>>,
-    /// Latest-wins per session id. Coalescing into one global slot can
-    /// drop session A when an immediate `/new` queues session B before
-    /// the actor drains.
-    sessions: BTreeMap<String, PendingSession>,
-    /// Compound completion commits, latest-wins per session id: the
-    /// completed snapshot body to write, followed by that session's own
-    /// checkpoint clear — the clear only if the write succeeded. A newer
-    /// snapshot can replace the body while retaining the clear intent until
-    /// an explicit clear changes that ordering.
-    completed_commits: BTreeMap<String, PendingSession>,
-    /// Latest-wins per session id, for the same reason `sessions` above is:
-    /// a single global slot dropped session A's queued text when session B
-    /// queued before the actor drained, which defeats the per-session file
-    /// naming entirely. Each pending request retains its editor lease, so a
-    /// window changing session cannot release ownership ahead of its writes.
+    publications: BTreeMap<String, PendingSlot>,
     offline_queue: BTreeMap<String, PendingOfflineQueue>,
 }
 
-/// What the actor loop should do after absorbing a request.
 enum Control {
     Continue,
+    Refused,
     Flush(oneshot::Sender<FlushReport>),
     Shutdown,
 }
 
 impl PendingState {
-    /// True when nothing coalesced is waiting. An empty `WorkReady` take is
-    /// skipped instead of running a no-op flush cycle.
     fn is_empty(&self) -> bool {
-        self.checkpoints.is_empty()
-            && self.sessions.is_empty()
-            && self.completed_commits.is_empty()
-            && self.offline_queue.is_empty()
+        self.publications.is_empty() && self.offline_queue.is_empty()
+    }
+
+    fn absorb_publication(&mut self, publication: PendingPublication) -> Control {
+        let id = publication.session.metadata.id.clone();
+        if publication
+            .session
+            .write_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.owner())
+            .is_none()
+        {
+            publication.refuse("session publication lacks a captured native producer");
+            return Control::Refused;
+        }
+        let slot = self.publications.entry(id).or_default();
+        if slot.latest.is_none()
+            && let Some(barrier) = slot.barrier.as_ref()
+            && !publication
+                .session
+                .write_receipt
+                .as_ref()
+                .zip(barrier.session.write_receipt.as_ref())
+                .is_some_and(|(current, prior)| current.is_successor_of(prior))
+        {
+            publication
+                .refuse("session publication is not the captured successor of its pending barrier");
+            return Control::Refused;
+        }
+        if let Some(previous) = slot.latest.take() {
+            if previous.reply.is_some() {
+                slot.latest = Some(previous);
+                publication.refuse("an acknowledged checkpoint must publish before its successor");
+                return Control::Refused;
+            }
+            let receipts = publication
+                .session
+                .write_receipt
+                .as_ref()
+                .zip(previous.session.write_receipt.as_ref());
+            if !receipts
+                .as_ref()
+                .is_some_and(|(current, prior)| current.is_successor_of(prior))
+            {
+                slot.latest = Some(previous);
+                publication
+                    .refuse("session publication is not the captured successor of pending work");
+                return Control::Refused;
+            }
+            if previous.kind == PublicationKind::Completion {
+                if slot.barrier.is_some() {
+                    slot.latest = Some(previous);
+                    publication.refuse(
+                        "completion publication is waiting on its checkpoint acknowledgement",
+                    );
+                    return Control::Refused;
+                }
+                slot.barrier = Some(previous);
+            } else {
+                let same_execution = receipts.as_ref().is_some_and(|(current, prior)| {
+                    current
+                        .owner()
+                        .zip(prior.owner())
+                        .is_some_and(|(current, prior)| current.same_execution(&prior))
+                });
+                let history_follows = same_execution
+                    || match (
+                        publication.session.journal.as_ref(),
+                        previous.session.journal.as_ref(),
+                    ) {
+                        (Some(current), Some(prior)) => {
+                            let current_index = current.index();
+                            let retained_graph = prior.entries.iter().all(|entry| {
+                                current_index
+                                    .get(entry.id.as_str())
+                                    .is_some_and(|current| **current == *entry)
+                            });
+                            let current_path = current.root_to_leaf();
+                            let prior_path = prior.root_to_leaf();
+                            retained_graph
+                                && current_path.len() >= prior_path.len()
+                                && prior_path
+                                    .iter()
+                                    .zip(current_path.iter())
+                                    .all(|(prior, current)| prior == current)
+                        }
+                        (None, None) => publication
+                            .session
+                            .messages
+                            .starts_with(&previous.session.messages),
+                        _ => false,
+                    };
+                let explicit_control = publication.session.write_receipt.as_ref().and_then(|receipt| receipt.owner())
+                    .is_some_and(|owner| matches!(owner, codewhale_engine::session_manager::SessionWriteOwner::Control(_))
+                        || matches!(owner, codewhale_engine::session_manager::SessionWriteOwner::Engine(source) if source.compaction_id.is_some()));
+                if !same_execution && !history_follows {
+                    if explicit_control && slot.barrier.is_none() {
+                        slot.barrier = Some(previous);
+                        slot.latest = Some(publication);
+                        return Control::Continue;
+                    }
+                    slot.latest = Some(previous);
+                    publication
+                        .refuse("pending publication history is incompatible with its successor");
+                    return Control::Refused;
+                }
+                if !receipts
+                    .is_some_and(|(current, prior)| current.coalesce_after(prior, previous.kind))
+                {
+                    slot.latest = Some(previous);
+                    publication
+                        .refuse("pending publication could not preserve its captured predecessor");
+                    return Control::Refused;
+                }
+                tracing::debug!(session_id = %publication.session.metadata.id, previous = ?previous.kind, current = ?publication.kind, "coalesced native publication without acknowledging the predecessor");
+            }
+        }
+        if publication.reply.is_some() && slot.barrier.is_none() {
+            slot.barrier = Some(publication);
+        } else {
+            slot.latest = Some(publication);
+        }
+        Control::Continue
     }
 
     fn absorb(&mut self, req: PersistRequest) -> Control {
-        let replaced = match &req {
-            PersistRequest::SaveCheckpoint { session }
-            | PersistRequest::AcknowledgedCheckpoint { session, .. }
-            | PersistRequest::SessionSnapshot(session)
-            | PersistRequest::CompletedCommit { session } => Some(session.metadata.id.as_str()),
-            _ => None,
-        };
-        if let Some(id) = replaced
-            && let Some(reply) = self.checkpoint_replies.remove(id)
-        {
-            let _ = reply.send(Err("checkpoint superseded before persistence".into()));
-        }
         match req {
             PersistRequest::AcknowledgedCheckpoint { session, reply } => {
-                let id = session.metadata.id.clone();
-                self.absorb(PersistRequest::SaveCheckpoint { session });
-                self.checkpoint_replies.insert(id, reply);
+                if let Some(receipt) = session.write_receipt.as_ref() {
+                    receipt.require_checkpoint_acknowledgement();
+                }
+                self.absorb_publication(PendingPublication {
+                    kind: PublicationKind::Checkpoint,
+                    session,
+                    reply: Some(reply),
+                })
             }
             PersistRequest::SaveCheckpoint { session } => {
-                // Last-writer-wins per session: a fresh checkpoint supersedes
-                // a pending clear for the same session so the two never both
-                // apply in one drain (which previously cleared then re-wrote
-                // the stale checkpoint, undoing the clear).
-                let id = session.metadata.id.clone();
-                // A new in-flight checkpoint means newer turn work started
-                // after the completion it would have cleared: the compound's
-                // clear-on-success intent is stale now (it would erase the
-                // fresher recovery record), but the completed snapshot still
-                // needs to be saved.
-                if let Some(completed) = self.completed_commits.remove(&id) {
-                    tracing::debug!(
-                        session_id = %id,
-                        "pending completed commit retained beside a newer in-flight checkpoint"
-                    );
-                    self.sessions.insert(id.clone(), completed);
-                }
-                self.checkpoints.insert(id, session);
+                self.absorb_publication(PendingPublication {
+                    kind: PublicationKind::Checkpoint,
+                    session,
+                    reply: None,
+                })
             }
             PersistRequest::SessionSnapshot(session) => {
-                // A newer full snapshot of a session with a pending
-                // completed commit refreshes the commit's body (and keeps
-                // its clear-on-success intent): the in-flight checkpoint it
-                // guards is already captured by the newer completed state.
-                let id = session.metadata.id.clone();
-                if let Some(pending) = self.completed_commits.get_mut(&id) {
-                    *pending = PendingSession::Snapshot(session);
-                } else {
-                    self.sessions.insert(id, PendingSession::Snapshot(session));
-                }
+                self.absorb_publication(PendingPublication {
+                    kind: PublicationKind::Snapshot,
+                    session,
+                    reply: None,
+                })
             }
             PersistRequest::CompletedCommit { session } => {
-                let id = session.metadata.id.clone();
-                // The compound owns this session's snapshot and clear: a
-                // pending plain snapshot is superseded, a pending standalone
-                // clear would erase the recovery record even when the save
-                // fails, and a pending checkpoint write would re-create the
-                // record after the compound cleared it.
-                self.sessions.remove(&id);
-                self.checkpoints.remove(&id);
-                self.completed_commits
-                    .insert(id, PendingSession::Completion(session));
+                self.absorb_publication(PendingPublication {
+                    kind: PublicationKind::Completion,
+                    session,
+                    reply: None,
+                })
             }
             PersistRequest::OfflineQueue { state, lease } => {
                 self.offline_queue.insert(
@@ -663,18 +825,18 @@ impl PendingState {
                         lease,
                     },
                 );
+                Control::Continue
             }
             PersistRequest::ClearOfflineQueue { lease } => {
-                // A clear supersedes a pending save for its OWN session only.
                 self.offline_queue.insert(
                     lease.session_id().to_string(),
                     PendingOfflineQueue::Clear { lease },
                 );
+                Control::Continue
             }
-            PersistRequest::FlushAndReport { reply } => return Control::Flush(reply),
-            PersistRequest::Shutdown => return Control::Shutdown,
+            PersistRequest::FlushAndReport { reply } => Control::Flush(reply),
+            PersistRequest::Shutdown => Control::Shutdown,
         }
-        Control::Continue
     }
 }
 
@@ -716,47 +878,45 @@ fn flush_inner(
         }
     };
 
-    // Document saves are bounded (#6842): an oversized journal is archived
-    // and pruned here, on the actor, never on the UI loop.
-    for (session_id, pending_session) in std::mem::take(&mut pending.sessions) {
-        let session = match pending_session {
-            PendingSession::Snapshot(session) | PendingSession::Completion(session) => session,
-        };
-        let result = manager.save_session_bounded(session).map(|_| ());
-        health.record(&session_id, &result);
-        record(format!("session:{session_id}"), result);
-    }
-    for (session_id, pending_session) in std::mem::take(&mut pending.completed_commits) {
-        let session = match pending_session {
-            PendingSession::Snapshot(session) | PendingSession::Completion(session) => session,
-        };
-        let commit_result = manager.save_session_bounded(session);
-        health.record(&session_id, &commit_result);
-        let save_succeeded = commit_result.is_ok();
-        record(
-            format!("completed-commit:{session_id}"),
-            commit_result.map(|_| ()),
-        );
-        if save_succeeded {
-            // Only the committed session's own checkpoint is cleared, and
-            // only because its snapshot safely landed. A failure above
-            // retains the checkpoint as the sole recovery record.
-            record(
-                format!("clear-checkpoint:{session_id}"),
-                manager.clear_session_checkpoint(&session_id),
-            );
+    for (session_id, slot) in std::mem::take(&mut pending.publications) {
+        for publication in slot.barrier.into_iter().chain(slot.latest) {
+            let PendingPublication {
+                kind,
+                session,
+                reply,
+            } = publication;
+            if reply.as_ref().is_some_and(oneshot::Sender::is_closed) {
+                if let Some(receipt) = session.write_receipt.as_ref() {
+                    receipt.refuse("checkpoint acknowledgement was withdrawn before publication");
+                }
+                continue;
+            }
+            match kind {
+                PublicationKind::Checkpoint => {
+                    let result = manager.publish_checkpoint_owned(session);
+                    if let Some(reply) = reply {
+                        let _ = reply.send(result.as_ref().cloned().map_err(ToString::to_string));
+                    }
+                    record(format!("checkpoint:{session_id}"), result.map(|_| ()));
+                }
+                PublicationKind::Snapshot => {
+                    let result = manager.publish_session_bounded(session);
+                    health.record(&session_id, &result);
+                    record(format!("session:{session_id}"), result.map(|_| ()));
+                }
+                PublicationKind::Completion => {
+                    let result = manager.publish_completed_session(session);
+                    health.record(&session_id, &result);
+                    match result {
+                        Ok((_, clear)) => {
+                            record(format!("completed-commit:{session_id}"), Ok(()));
+                            record(format!("clear-checkpoint:{session_id}"), clear);
+                        }
+                        Err(error) => record(format!("completed-commit:{session_id}"), Err(error)),
+                    }
+                }
+            }
         }
-    }
-    for (session_id, session) in std::mem::take(&mut pending.checkpoints) {
-        let reply = pending.checkpoint_replies.remove(&session_id);
-        if reply.as_ref().is_some_and(oneshot::Sender::is_closed) {
-            continue;
-        }
-        let result = manager.save_checkpoint_owned(session).map(|_| ());
-        if let Some(reply) = reply {
-            let _ = reply.send(result.as_ref().map(|_| ()).map_err(ToString::to_string));
-        }
-        record(format!("checkpoint:{session_id}"), result);
     }
     for (_, request) in std::mem::take(&mut pending.offline_queue) {
         match request {
@@ -995,7 +1155,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1003,6 +1163,14 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let (tx, mut receiver) = persistence_request_channel();
         let retained = PersistActorHandle { tx };
         assert!(retained.try_send(PersistRequest::Shutdown));
@@ -1025,6 +1193,10 @@ mod tests {
         }));
         assert!(after_shutdown.await.is_err());
         let session_id = session.metadata.id.clone();
+        session.write_receipt = Some(manager.expect_absent_session(&session_id).unwrap());
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .unwrap();
         let (handle, task) = spawn_persistence_actor(manager);
 
         handle.try_send(PersistRequest::SessionSnapshot(session));
@@ -1051,6 +1223,14 @@ mod tests {
             None,
             Some("agent"),
         );
+        first.write_receipt = Some(
+            manager
+                .expect_absent_session(&first.metadata.id)
+                .expect("native fresh source"),
+        );
+        first
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         first.metadata.title = "Session A".to_string();
         let mut second = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
@@ -1060,6 +1240,14 @@ mod tests {
             None,
             Some("agent"),
         );
+        second.write_receipt = Some(
+            manager
+                .expect_absent_session(&second.metadata.id)
+                .expect("native fresh source"),
+        );
+        second
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         second.metadata.title = "Session B".to_string();
         let first_id = first.metadata.id.clone();
         let second_id = second.metadata.id.clone();
@@ -1094,7 +1282,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1102,32 +1290,64 @@ mod tests {
             None,
             Some("agent"),
         );
-        for replacement in [
-            PersistRequest::SaveCheckpoint {
-                session: session.clone(),
-            },
-            PersistRequest::CompletedCommit {
-                session: session.clone(),
-            },
-        ] {
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
+        for completion in [false, true] {
             let mut pending = PendingState::default();
-            let (reply, receiver) = oneshot::channel();
+            let mut checkpoint = session.clone();
+            checkpoint.metadata.id = uuid::Uuid::new_v4().to_string();
+            checkpoint.write_receipt = Some(
+                manager
+                    .expect_absent_session(&checkpoint.metadata.id)
+                    .unwrap(),
+            );
+            checkpoint
+                .capture_publication(
+                    codewhale_engine::session_manager::SessionWriteOwner::control(),
+                )
+                .unwrap();
+            let mut successor = checkpoint.clone();
+            successor
+                .capture_publication(
+                    codewhale_engine::session_manager::SessionWriteOwner::control(),
+                )
+                .unwrap();
+            let (reply, mut receiver) = oneshot::channel();
             pending.absorb(PersistRequest::AcknowledgedCheckpoint {
-                session: session.clone(),
+                session: checkpoint,
                 reply,
             });
-            pending.absorb(replacement);
-            assert!(receiver.await.expect("supersession reply").is_err());
-            assert!(pending.checkpoint_replies.is_empty());
-        }
-        let (handle, task) = spawn_persistence_actor(manager);
+            pending.absorb(if completion {
+                PersistRequest::CompletedCommit { session: successor }
+            } else {
+                PersistRequest::SaveCheckpoint { session: successor }
+            });
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            let report = flush_inner(&manager, &mut pending, &SessionSaveHealth::default());
+            assert!(report.failures.is_empty(), "{report:?}");
 
-        assert!(handle.try_send(PersistRequest::SessionSnapshot(session.clone())));
+            assert!(receiver.await.expect("real publication reply").is_ok());
+        }
+        let mut snapshot = session.clone();
+        snapshot
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .unwrap();
+        let (handle, task) = spawn_persistence_actor(manager);
         let (checkpoint_reply, checkpoint_result) = oneshot::channel();
         assert!(handle.try_send(PersistRequest::AcknowledgedCheckpoint {
             session: session.clone(),
-            reply: checkpoint_reply
+            reply: checkpoint_reply,
         }));
+        assert!(handle.try_send(PersistRequest::SessionSnapshot(snapshot)));
         let report = handle
             .flush(Duration::from_secs(2))
             .await
@@ -1159,9 +1379,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
-        std::fs::write(sessions_dir.join("checkpoints"), b"not a directory")
-            .expect("block checkpoints dir");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let checkpoint_blocker = sessions_dir.join("checkpoints");
+        std::fs::write(&checkpoint_blocker, b"not a directory").expect("block checkpoints dir");
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1169,6 +1389,14 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let session_id = session.metadata.id.clone();
         // A directory where the document goes makes its save fail.
         let blocker = sessions_dir.join(format!("{session_id}.json"));
@@ -1195,6 +1423,17 @@ mod tests {
         );
 
         std::fs::remove_dir(&blocker).expect("unblock");
+        handle.try_send(PersistRequest::SessionSnapshot(session.clone()));
+        flush(&handle).await.expect("flush");
+        assert_eq!(
+            handle
+                .session_save_health()
+                .failing
+                .as_ref()
+                .map(|(id, _)| id.as_str()),
+            Some(session_id.as_str())
+        );
+        std::fs::remove_file(&checkpoint_blocker).expect("unblock checkpoint inspection");
         handle.try_send(PersistRequest::SessionSnapshot(session));
         flush(&handle).await.expect("flush");
         let healed = handle.session_save_health();
@@ -1214,7 +1453,7 @@ mod tests {
         // checkpoint write deterministically fails on all platforms.
         std::fs::write(sessions_dir.join("checkpoints"), b"not a directory")
             .expect("block checkpoints dir");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1222,6 +1461,14 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let session_id = session.metadata.id.clone();
         let (handle, task) = spawn_persistence_actor(manager);
 
@@ -1248,19 +1495,30 @@ mod tests {
         task.await.expect("persistence actor join");
     }
 
-    /// Pre-write a crash-recovery checkpoint file for `session_id` directly,
-    /// so completion-commit tests can assert on its survival without needing
-    /// a prior in-flight turn.
+    /// Pre-write a crash-recovery checkpoint through its real writer so
+    /// completion-commit tests can assert on valid recovery evidence without
+    /// needing a prior in-flight turn.
     fn seed_checkpoint_file(
         sessions_dir: &std::path::Path,
         session_id: &str,
-    ) -> std::path::PathBuf {
-        let path = sessions_dir
-            .join("checkpoints")
-            .join(format!("{session_id}.json"));
-        std::fs::create_dir_all(path.parent().expect("checkpoints parent")).expect("mkdir");
-        std::fs::write(&path, "{}").expect("seed checkpoint file");
-        path
+    ) -> SessionPublication {
+        let manager = SessionManager::new(sessions_dir.to_path_buf()).expect("checkpoint manager");
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
+            session_id.to_string(),
+            &[],
+            "deepseek-v4-pro",
+            sessions_dir.parent().expect("fixture workspace"),
+            0,
+            None,
+            Some("agent"),
+        );
+        session.write_receipt = Some(manager.expect_absent_session(session_id).unwrap());
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .unwrap();
+        manager
+            .publish_checkpoint_owned(session)
+            .expect("seed checkpoint file")
     }
 
     /// Deterministically fail session-file saves only: a directory at the
@@ -1276,7 +1534,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1284,8 +1542,21 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let session_id = session.metadata.id.clone();
-        let checkpoint_path = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_publication = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_path = checkpoint_publication.path.clone();
+        session.write_receipt = Some(checkpoint_publication.write_receipt());
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("checkpoint successor");
         block_session_file(&sessions_dir, &session_id);
         let (handle, task) = spawn_persistence_actor(manager);
 
@@ -1325,7 +1596,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1333,8 +1604,21 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let session_id = session.metadata.id.clone();
-        let checkpoint_path = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_publication = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_path = checkpoint_publication.path.clone();
+        session.write_receipt = Some(checkpoint_publication.write_receipt());
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("checkpoint successor");
         let (handle, task) = spawn_persistence_actor(manager);
 
         handle.try_send(PersistRequest::CompletedCommit { session });
@@ -1365,7 +1649,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let committed = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut committed = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1373,7 +1657,15 @@ mod tests {
             None,
             Some("agent"),
         );
-        let inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
+        committed.write_receipt = Some(
+            manager
+                .expect_absent_session(&committed.metadata.id)
+                .expect("native fresh source"),
+        );
+        committed
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
+        let mut inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1381,11 +1673,23 @@ mod tests {
             None,
             Some("agent"),
         );
+        inflight.write_receipt = Some(
+            manager
+                .expect_absent_session(&inflight.metadata.id)
+                .expect("native fresh source"),
+        );
+        inflight
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let committed_id = committed.metadata.id.clone();
         let inflight_id = inflight.metadata.id.clone();
-        let committed_checkpoint = seed_checkpoint_file(&sessions_dir, &committed_id);
-        // The concurrent session's checkpoint must carry a loadable body, so
-        // seed it through the real manager instead of a placeholder file.
+        let checkpoint_publication = seed_checkpoint_file(&sessions_dir, &committed_id);
+        let committed_checkpoint = checkpoint_publication.path.clone();
+        committed.write_receipt = Some(checkpoint_publication.write_receipt());
+        committed
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("checkpoint successor");
+        // The concurrent session's checkpoint must carry a loadable body too.
         let inflight_checkpoint = verification_manager
             .save_checkpoint(&inflight)
             .expect("seed the concurrent session's checkpoint");
@@ -1417,7 +1721,7 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("verify");
-        let session = codewhale_engine::session_manager::create_saved_session_with_mode(
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             tmp.path(),
@@ -1425,8 +1729,21 @@ mod tests {
             None,
             Some("agent"),
         );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         let session_id = session.metadata.id.clone();
-        let checkpoint_path = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_publication = seed_checkpoint_file(&sessions_dir, &session_id);
+        let checkpoint_path = checkpoint_publication.path.clone();
+        session.write_receipt = Some(checkpoint_publication.write_receipt());
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("checkpoint successor");
         let (handle, task) = spawn_persistence_actor(manager);
 
         handle.try_send(PersistRequest::SaveCheckpoint { session });
@@ -1457,7 +1774,16 @@ mod tests {
             None,
             Some("agent"),
         );
+        completed.write_receipt = Some(
+            manager
+                .expect_absent_session(&completed.metadata.id)
+                .expect("native fresh source"),
+        );
+        completed
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         completed.metadata.title = "Completed turn".to_string();
+        completed.metadata.total_tokens = 7;
         let mut inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
@@ -1466,10 +1792,27 @@ mod tests {
             None,
             Some("agent"),
         );
+        inflight.write_receipt = Some(
+            manager
+                .expect_absent_session(&inflight.metadata.id)
+                .expect("native fresh source"),
+        );
+        inflight
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
         // The new turn reuses the same session id: a fresh in-flight
         // checkpoint arrives while the previous completion is still queued.
         inflight.metadata.id = completed.metadata.id.clone();
         inflight.metadata.title = "Next turn in progress".to_string();
+        inflight.metadata.total_tokens = 11;
+        inflight.write_receipt = completed.write_receipt.clone();
+        inflight
+            .capture_publication(
+                codewhale_engine::session_manager::SessionWriteOwner::Submission(
+                    uuid::Uuid::new_v4().to_string(),
+                ),
+            )
+            .expect("next native submission");
         let session_id = completed.metadata.id.clone();
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let (handle, task) = spawn_persistence_actor(manager);
@@ -1502,11 +1845,13 @@ mod tests {
             .load_session(&session_id)
             .expect("completed turn document must survive coalescing");
         assert_eq!(saved.metadata.title, "Completed turn");
+        assert_eq!(saved.metadata.total_tokens, 7);
         let recovery = verification_manager
             .load_session_checkpoint(&session_id)
             .expect("read in-flight checkpoint")
             .expect("in-flight checkpoint must survive");
-        assert_eq!(recovery.metadata.title, "Next turn in progress");
+        assert_eq!(recovery.metadata.title, "Completed turn");
+        assert_eq!(recovery.metadata.total_tokens, 11);
         assert!(
             report.completed >= 2,
             "both the completed document and newer checkpoint must be counted, got: {report:?}"

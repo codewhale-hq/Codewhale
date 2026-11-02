@@ -677,52 +677,45 @@ mod tests {
         let fx = Fixture::new();
         fx.save("live", "Being worked on", &fx.workspace);
 
-        let stale = fx
-            .manager
-            .list_sessions()
-            .expect("list")
-            .into_iter()
-            .find(|m| m.id == "live")
-            .expect("metadata");
-        assert!(!stale.archived);
-
+        let mut stale = fx.manager.load_session("live").expect("load");
+        assert!(!stale.metadata.archived);
         fx.manager
             .set_session_archived("live", true, SessionMutator::Owner)
             .expect("archive");
-
-        // Simulate the autosave: rebuild from the stale snapshot, then merge.
-        let mut autosaved = stale.clone();
-        autosaved.message_count = 99;
-        assert!(fx.manager.merge_persisted_lifecycle(&mut autosaved));
+        let mut messages = stale.messages.clone();
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "newest conversation content".to_string(),
+                cache_control: None,
+            }],
+        });
+        stale = codewhale_engine::session_manager::update_session(stale, &messages, 99, None);
+        fx.manager.save_session_bounded(stale).expect("autosave");
+        let autosaved = fx.manager.load_session_snapshot("live").expect("session");
         assert!(
-            autosaved.archived,
-            "autosave must not revert an archive applied after its snapshot"
+            autosaved.metadata.archived,
+            "autosave must preserve a later archive"
         );
-        assert_eq!(
-            autosaved.message_count, 99,
-            "merging lifecycle state must not clobber conversation state"
-        );
+        assert_eq!(autosaved.messages, messages);
+        assert_eq!(autosaved.metadata.total_tokens, 99);
     }
 
     #[test]
     fn rename_survives_the_next_autosave() {
         let fx = Fixture::new();
         fx.save("live", "Before", &fx.workspace);
-        let stale = fx
-            .manager
-            .list_sessions()
-            .expect("list")
-            .into_iter()
-            .find(|m| m.id == "live")
-            .expect("metadata");
-
+        let stale = fx.manager.load_session("live").expect("load");
         fx.manager
-            .rename_session("live", "After", SessionMutator::Owner)
+            .rename_session("live", "New Session", SessionMutator::Owner)
             .expect("rename");
-
-        let mut autosaved = stale.clone();
-        assert!(fx.manager.merge_persisted_lifecycle(&mut autosaved));
-        assert_eq!(autosaved.title, "After");
+        fx.manager.save_session_bounded(stale).expect("autosave");
+        let autosaved = fx
+            .manager
+            .load_session_metadata_by_id("live")
+            .expect("metadata");
+        assert_eq!(autosaved.title, "New Session");
+        assert!(autosaved.title_is_custom);
     }
 
     #[test]
