@@ -15,7 +15,7 @@ pub(super) struct StdioTransport {
 }
 
 impl StdioTransport {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn spawn(
         server_name: &str,
         command: &str,
