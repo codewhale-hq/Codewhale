@@ -3,7 +3,7 @@
 //! Unicode approximations for terminal display.
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn is_escaped(bytes: &[u8], idx: usize) -> bool {
     let mut slashes = 0;
@@ -58,12 +58,13 @@ fn find_math_end(text: &str) -> Option<(usize, bool)> {
             if byte != b'$' || is_escaped(b, i) {
                 continue;
             }
-            let prev = b[i - 1];
+            let prev = text[..i].chars().next_back().unwrap_or(' ');
             let next = b.get(i + 1).copied().unwrap_or(b' ');
             if next == b'{'
                 || (next.is_ascii_alphanumeric()
                     && !prev.is_ascii_alphanumeric()
-                    && !matches!(prev, b')' | b']' | b'}'))
+                    && !matches!(prev, ')' | ']' | '}')
+                    && (prev.is_ascii() || prev.width() == Some(2)))
             {
                 return None;
             }
