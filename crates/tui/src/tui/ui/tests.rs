@@ -9500,10 +9500,16 @@ fn authoritative_user_message(text: &str) -> Message {
 
 fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
     SavedSession {
+        write_receipt: None,
+
         schema_version: 1,
         metadata: codewhale_engine::session_manager::SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: uuid::Uuid::new_v4().to_string(),
             title: "resume recovery".to_string(),
+            title_is_custom: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             message_count: messages.len(),
@@ -14167,10 +14173,14 @@ async fn a_steer_settles_even_though_the_engine_stored_it_trimmed() {
     let workspace = app.workspace.clone();
     // The engine's record carries the trimmed form, which is what
     // `turn_loop` stores for a committed steer.
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: session,
             messages: std::sync::Arc::new(vec![
@@ -14246,10 +14256,14 @@ async fn steer_becomes_the_newest_transcript_entry_only_when_the_engine_records_
     app.is_loading = false;
     let model = app.model.clone();
     let workspace = app.workspace.clone();
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: session,
             messages: std::sync::Arc::new(vec![
@@ -19409,6 +19423,7 @@ fn local_cancel_marks_late_stream_events_for_suppression() {
     ));
     assert!(suppress_engine_event_after_local_cancel(
         &EngineEvent::SessionUpdated {
+            source: None,
             checkpoint: None,
             session_id: "session".to_string(),
             messages: std::sync::Arc::new(Vec::new()),
@@ -19661,6 +19676,10 @@ fn turn_started_route_is_captured_before_cancel_suppression() {
     });
     let created_at = chrono::Utc::now();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_cancel_race".to_string(),
         created_at,
         submission_id: None,
@@ -19730,6 +19749,10 @@ fn turn_started_suggestion_authority_comes_from_the_route_receipt_not_config() {
         "sk-route-a-secret",
     );
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_route_receipt".to_string(),
         created_at: chrono::Utc::now(),
         route: Some(codewhale_engine::core::events::TurnRoute {
@@ -19775,6 +19798,10 @@ fn turn_started_suggestion_authority_comes_from_the_route_receipt_not_config() {
 fn turn_started_without_a_route_receipt_captures_no_suggestion_authority() {
     let mut app = create_test_app();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_no_receipt".to_string(),
         created_at: chrono::Utc::now(),
         route: Some(codewhale_engine::core::events::TurnRoute {
@@ -19814,6 +19841,10 @@ fn engine_error_health_accounting_uses_active_turn_route() {
     app.api_provider = ProviderKind::Deepseek;
     app.model = "current-model".to_string();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "routed-turn".to_string(),
         created_at: chrono::Utc::now(),
         route: Some(codewhale_engine::core::events::TurnRoute {
@@ -22496,6 +22527,32 @@ fn tool_details_empty_state_points_to_turn_inspector() {
     );
 }
 
+fn spillover_pager_section(app: &mut App, cell_index: usize) -> Option<String> {
+    use crate::tui::views::ViewAction;
+    spillover_pager_reference(app, cell_index)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            assert!(open_details_pager_for_cell(app, cell_index));
+            let mut view = app.view_stack.pop().expect("owned evidence pager");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !matches!(view.tick(), ViewAction::Redraw) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("owned evidence pager did not finish");
+            Some(
+                view.as_any_mut()
+                    .downcast_mut::<PagerView>()
+                    .expect("retained evidence uses existing pager")
+                    .body_text(),
+            )
+        })
+}
+
 #[test]
 fn spillover_pager_section_returns_none_when_no_spillover() {
     let mut app = create_test_app();
@@ -22510,7 +22567,7 @@ fn spillover_pager_section_returns_none_when_no_spillover() {
         is_diff: false,
     }))];
     app.resync_history_revisions();
-    assert!(spillover_pager_section(&app, 0).is_none());
+    assert!(spillover_pager_section(&mut app, 0).is_none());
 }
 
 #[test]
@@ -22553,8 +22610,8 @@ fn spillover_pager_section_loads_file_when_present() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("section present");
-    assert!(section.contains("── Full output ──"));
+    let section = spillover_pager_section(&mut app, 0).expect("section present");
+    assert!(section.contains("Loaded byte range"));
     assert!(
         section.contains("FULL_OUTPUT_BYTES_HERE"),
         "section missing file body: {section}"
@@ -22568,6 +22625,7 @@ fn spillover_pager_section_loads_file_when_present() {
 #[test]
 fn spillover_pager_section_returns_notice_when_file_missing() {
     let mut app = create_test_app();
+    app.current_session_id = Some("session-pager-missing".to_string());
     let bogus = std::path::PathBuf::from("/private/sensitive/session/does-not-exist.txt");
     app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "exec_shell".to_string(),
@@ -22581,7 +22639,7 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
+    let section = spillover_pager_section(&mut app, 0).expect("still emits a notice section");
     assert!(section.contains("retained output is unavailable"));
     assert!(!section.contains("/private/sensitive"));
     assert!(!section.contains("No such file"));
@@ -22653,14 +22711,14 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
     app.session_artifacts.push(artifact.clone());
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("session artifact section");
+    let section = spillover_pager_section(&mut app, 0).expect("session artifact section");
     assert!(section.contains("BASH_EXACT_DEEP_SENTINEL"));
     assert!(!section.contains(&path.display().to_string()));
 
     app.session_artifacts[0].storage_path = path.clone();
-    let absolute = spillover_pager_section(&app, 0).expect("unavailable absolute-path section");
-    assert!(absolute.contains("retained output is unavailable"));
-    assert!(!absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    let absolute = spillover_pager_section(&mut app, 0).expect("owned absolute-path section");
+    assert!(absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    assert!(!absolute.contains(&path.display().to_string()));
 
     app.session_artifacts[0] = codewhale_runtime::artifacts::ArtifactRecord {
         session_id: "foreign-session".to_string(),
@@ -22668,7 +22726,7 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
         ..artifact
     };
     assert!(
-        spillover_pager_section(&app, 0).is_none(),
+        spillover_pager_section(&mut app, 0).is_none(),
         "a foreign artifact record must not become an Option+V detail source"
     );
 }
@@ -33171,6 +33229,10 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
     // Fresh launch (event_loop::run_tui): the App claims the id, the engine
     // adopts it.
     let app_session_id = super::event_loop::ensure_runtime_session_id(&mut app);
+    app.session_write_receipt = Some(manager.expect_absent_session(&app_session_id).unwrap());
+    app.session_write_owner = Some(
+        codewhale_engine::session_manager::SessionWriteOwner::Submission("fresh-submission".into()),
+    );
     let (engine, _handle) =
         codewhale_engine::core::engine::Engine::new(build_engine_config(&app, &config), &config);
 
@@ -33182,11 +33244,16 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
             cache_control: None,
         }],
     });
-    let checkpoint = build_session_snapshot(&mut app, &manager).expect("turn-start snapshot");
+    let mut checkpoint = build_session_snapshot(&mut app, &manager).expect("turn-start snapshot");
     assert_eq!(checkpoint.metadata.id, app_session_id);
-    manager
-        .save_checkpoint(&checkpoint)
+    let receipt = checkpoint
+        .capture_publication(app.session_write_owner.clone().unwrap())
+        .unwrap();
+    let publication = manager
+        .publish_checkpoint_owned(checkpoint)
         .expect("save turn-start checkpoint");
+    assert_eq!(receipt.observation().unwrap(), *publication.observation());
+    app.session_write_receipt = Some(publication.write_receipt());
 
     // The engine reports its conversation id (`SessionUpdated` handler).
     app.current_session_id = Some(engine.session_id().to_string());
@@ -33200,14 +33267,23 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
             cache_control: None,
         }],
     });
-    let completed = build_session_snapshot(&mut app, &manager).expect("completed snapshot");
-    manager.save_session(&completed).expect("save session");
-    manager
-        .clear_session_checkpoint(&completed.metadata.id)
-        .expect("clear checkpoint");
+    let mut completed = build_session_snapshot(&mut app, &manager).expect("completed snapshot");
+    completed
+        .capture_publication(
+            codewhale_engine::session_manager::SessionWriteOwner::Engine(
+                codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                    "fresh-turn".into(),
+                    Some("fresh-submission".into()),
+                ),
+            ),
+        )
+        .unwrap();
+    let completed_id = completed.metadata.id.clone();
+    let (_, clear) = manager.publish_completed_session(completed).expect("save session");
+    clear.expect("clear checkpoint");
 
     assert_eq!(
-        completed.metadata.id, app_session_id,
+        completed_id, app_session_id,
         "the completed turn must commit under the id the checkpoint was written with"
     );
     let orphans = manager.list_checkpoints().expect("list checkpoints");
@@ -33962,6 +34038,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: None,
             checkpoint: None,
             session_id: previous,
             messages: std::sync::Arc::new(vec![text_message("user", "stale transcript")]),
@@ -33987,8 +34064,21 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     assert_eq!(app.status_toasts.len(), notice_count);
     app.runtime_turn_id = Some("checkpoint-turn".into());
     app.is_loading = true;
+    app.session_write_owner = Some(
+        codewhale_engine::session_manager::SessionWriteOwner::Engine(
+            codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "checkpoint-turn".into(),
+                None,
+            ),
+        ),
+    );
     for invalid in ["session", "turn", "workspace", "child", "withdrawn"] {
         let snapshot = std::sync::Arc::new(codewhale_engine::core::ops::SessionSnapshot {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "checkpoint-turn".into(),
+                None,
+            )),
+
             session_id: if invalid == "session" {
                 "stale-session".into()
             } else {
@@ -34038,6 +34128,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
                 &mut app,
                 &Config::default(),
                 EngineEvent::SessionUpdated {
+                    source: snapshot.source.clone(),
                     checkpoint: Some(request),
                     session_id: snapshot.session_id.clone(),
                     messages: std::sync::Arc::new(snapshot.messages.clone()),
@@ -34081,10 +34172,14 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     app.active_context_window = Some(accepted_window);
     app.active_context_window_source = accepted_window.source;
     app.pending_turn_route = Some((app.api_provider, "canonical-model".into(), false));
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: current.clone(),
             messages: std::sync::Arc::new(vec![

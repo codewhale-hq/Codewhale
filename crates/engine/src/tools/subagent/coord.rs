@@ -122,25 +122,27 @@ impl ToolSpec for AgentsListTool {
             .unwrap_or(false);
         let agent_ref = parse_agent_ref(&input)?;
 
-        let mut manager = self.manager.write().await;
-        manager.cleanup_for_session(&context.state_namespace, COMPLETED_AGENT_RETENTION);
-        let summaries = if let Some(agent_ref) = agent_ref {
-            let summary = manager
-                .coordination_summary_for_session(
-                    &context.state_namespace,
-                    &agent_ref,
+        let manager = self.manager.clone();
+        let session = context.state_namespace.clone();
+        let summaries = codewhale_runtime::runtime_control::owner_work(move || {
+            let mut manager = manager.blocking_write();
+            manager.cleanup_for_session(&session, COMPLETED_AGENT_RETENTION)?;
+            let summaries = if let Some(agent_ref) = agent_ref {
+                manager
+                    .coordination_summary_for_session(&session, &agent_ref, RECENT_PROGRESS_LIMIT)
+                    .map(|summary| vec![summary])
+                    .map_err(|err| ToolError::invalid_input(err.to_string()))
+            } else {
+                Ok(manager.list_coordination_summaries_for_session(
+                    &session,
+                    include_archived,
                     RECENT_PROGRESS_LIMIT,
-                )
-                .map_err(|err| ToolError::invalid_input(err.to_string()))?;
-            vec![summary]
-        } else {
-            manager.list_coordination_summaries_for_session(
-                &context.state_namespace,
-                include_archived,
-                RECENT_PROGRESS_LIMIT,
-            )
-        };
-        drop(manager);
+                ))
+            };
+            Ok(summaries)
+        })
+        .await
+        .map_err(|error| ToolError::execution_failed(error.to_string()))??;
 
         let payload = json!({
             "action": "list",
@@ -316,66 +318,80 @@ impl AgentsFollowupTool {
         message: &str,
         context: &ToolContext,
     ) -> Result<Value, ToolError> {
-        let mut manager = self.manager.write().await;
-        let (source, target) = manager
-            .continuation_target_for_caller(
-                &context.state_namespace,
-                agent_ref,
-                self.caller_agent_id.as_deref(),
-                "agents/followup",
-            )
-            .map_err(|error| ToolError::invalid_input(error.to_string()))?;
-        let snapshot = manager
-            .get_result(&target)
-            .map_err(|error| ToolError::invalid_input(error.to_string()))?;
-        let resumed_already = source != target;
-        let receipt = if super::subagent_checkpoint_is_continuable(&snapshot)
-            && self.runtime.is_some()
-        {
-            let snapshot = manager
-                .resume_from_checkpoint_for_session(
-                    &context.state_namespace,
-                    Arc::clone(&self.manager),
-                    self.runtime.clone().expect("runtime checked"),
-                    &target,
-                    message,
-                )
-                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-            ParentMailReceipt {
-                agent_id: snapshot.agent_id.clone(),
-                status: subagent_status_name(&snapshot.status).to_string(),
-                queue_depth: 0,
-                woke: true,
-                continued_from_checkpoint: true,
-                continuation_handle: None,
-                note: format!(
-                    "resumed from checkpoint {source} as {}; original receipt retained",
-                    snapshot.agent_id
-                ),
-            }
-        } else if resumed_already && snapshot.status != SubAgentStatus::Running {
-            ParentMailReceipt {
-                agent_id: target, status: subagent_status_name(&snapshot.status).to_string(),
-                queue_depth: 0, woke: false, continued_from_checkpoint: true,
-                continuation_handle: None,
-                note: "Existing continuation has settled; no duplicate worker was started and no message was delivered.".to_string(),
-            }
-        } else {
-            manager
-                .followup_child_for_session(&context.state_namespace, &target, message.to_string())
-                .map_err(|error| ToolError::invalid_input(error.to_string()))?
-        };
-        let child_route = manager
-            .get_worker_record_for_session(&context.state_namespace, &receipt.agent_id)
-            .and_then(|record| record.spec.child_route);
-        Ok(json!({
-            "action": "followup", "from": source, "to": receipt.agent_id,
-            "agent_id": receipt.agent_id, "queued": receipt.woke || receipt.queue_depth > 0,
-            "woke": receipt.woke, "queue_depth": receipt.queue_depth, "status": receipt.status,
-            "continued_from_checkpoint": receipt.continued_from_checkpoint || resumed_already,
-            "continuation_handle": receipt.continuation_handle, "note": receipt.note,
-            "child_route": child_route,
-        }))
+        let manager_handle = self.manager.clone();
+        let manager = manager_handle.clone();
+        let session = context.state_namespace.clone();
+        let caller = self.caller_agent_id.clone();
+        let runtime = self.runtime.clone();
+        let agent_ref = agent_ref.to_owned();
+        let message = message.to_owned();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let mut manager = manager.blocking_write();
+            let result = (|| {
+                let (source, target) = manager
+                    .continuation_target_for_caller(
+                        &session,
+                        &agent_ref,
+                        caller.as_deref(),
+                        "agents/followup",
+                    )
+                    .map_err(|error| ToolError::invalid_input(error.to_string()))?;
+                let snapshot = manager
+                    .get_result(&target)
+                    .map_err(|error| ToolError::invalid_input(error.to_string()))?;
+                let resumed_already = source != target;
+                let receipt = if super::subagent_checkpoint_is_continuable(&snapshot)
+                    && runtime.is_some()
+                {
+                    let snapshot = manager
+                        .resume_from_checkpoint_for_session(
+                            &session,
+                            Arc::clone(&manager_handle),
+                            runtime.expect("runtime checked"),
+                            &target,
+                            &message,
+                        )
+                        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+                    ParentMailReceipt {
+                        agent_id: snapshot.agent_id.clone(),
+                        status: subagent_status_name(&snapshot.status).to_string(),
+                        queue_depth: 0,
+                        woke: true,
+                        continued_from_checkpoint: true,
+                        continuation_handle: None,
+                        note: format!(
+                            "resumed from checkpoint {source} as {}; original receipt retained",
+                            snapshot.agent_id
+                        ),
+                    }
+                } else if resumed_already && snapshot.status != SubAgentStatus::Running {
+                    ParentMailReceipt {
+                        agent_id: target, status: subagent_status_name(&snapshot.status).to_string(),
+                        queue_depth: 0, woke: false, continued_from_checkpoint: true,
+                        continuation_handle: None,
+                        note: "Existing continuation has settled; no duplicate worker was started and no message was delivered.".to_string(),
+                    }
+                } else {
+                    manager
+                        .followup_child_for_session(&session, &target, message)
+                        .map_err(|error| ToolError::invalid_input(error.to_string()))?
+                };
+                let child_route = manager
+                    .get_worker_record_for_session(&session, &receipt.agent_id)
+                    .and_then(|record| record.spec.child_route);
+                Ok(json!({
+                    "action": "followup", "from": source, "to": receipt.agent_id,
+                    "agent_id": receipt.agent_id, "queued": receipt.woke || receipt.queue_depth > 0,
+                    "woke": receipt.woke, "queue_depth": receipt.queue_depth, "status": receipt.status,
+                    "continued_from_checkpoint": receipt.continued_from_checkpoint || resumed_already,
+                    "continuation_handle": receipt.continuation_handle, "note": receipt.note,
+                    "child_route": child_route,
+                }))
+            })();
+            Ok(result)
+        })
+        .await
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?
     }
 }
 
@@ -602,17 +618,19 @@ impl ToolSpec for AgentsInterruptTool {
             .unwrap_or("interrupted by parent via agents/interrupt")
             .to_string();
 
-        let (prior, snapshot) = {
-            let mut manager = self.manager.write().await;
-            manager
-                .interrupt_child_for_session(
-                    &context.state_namespace,
-                    &agent_ref,
-                    self.caller_agent_id.as_deref(),
-                    reason,
-                )
-                .map_err(|err| ToolError::invalid_input(err.to_string()))?
-        };
+        let manager = self.manager.clone();
+        let session = context.state_namespace.clone();
+        let caller = self.caller_agent_id.clone();
+        let (prior, snapshot) = codewhale_runtime::runtime_control::owner_work(move || {
+            manager.blocking_write().interrupt_child_for_session(
+                &session,
+                &agent_ref,
+                caller.as_deref(),
+                reason,
+            )
+        })
+        .await
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
 
         let snapshot = super::settle_requested_child(&self.manager, snapshot).await;
         let worker_record = {
@@ -1445,30 +1463,22 @@ impl ToolSpec for AgentsCoordinateTool {
             )));
         }
 
-        let mut manager = self.manager.clone().write_owned().await;
-        if matches!(action, "claim" | "propose") {
-            let caller = self.caller.clone();
-            let session = context.state_namespace.clone();
-            let workspace = context.workspace.clone();
-            return codewhale_app_server::daemon_socket::owner_work(move || {
-                Ok(Self::mutate_coordination(
-                    caller.as_deref(),
-                    &session,
-                    &workspace,
-                    &mut manager,
-                    input,
-                ))
+        let manager = self.manager.clone();
+        let caller = self.caller.clone();
+        let session = context.state_namespace.clone();
+        let workspace = context.workspace.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let mut manager = manager.blocking_write();
+            manager.with_store_transaction(|manager| {
+                Self::mutate_coordination(caller.as_deref(), &session, &workspace, manager, input)
+                    .map_err(anyhow::Error::new)
             })
-            .await
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-        }
-        Self::mutate_coordination(
-            self.caller.as_deref(),
-            &context.state_namespace,
-            &context.workspace,
-            &mut manager,
-            input,
-        )
+        })
+        .await
+        .map_err(|error| match error.downcast::<ToolError>() {
+            Ok(error) => error,
+            Err(error) => ToolError::execution_failed(error.to_string()),
+        })
     }
 }
 
@@ -1710,7 +1720,10 @@ mod tests {
             .await
             .expect_err("mutation must fail when its receipt cannot persist")
             .to_string();
-        assert!(error.contains("failed to persist"), "{error}");
+        assert!(
+            error.contains("Runtime coordination was opened without its writer lock"),
+            "{error}"
+        );
         assert!(
             blocked_manager
                 .read()
@@ -1825,31 +1838,35 @@ mod tests {
         ));
         let (claimant, owner) = {
             let mut guard = manager.write().await;
-            let claimant = guard.insert_test_running_agent("claimant", tmp.path());
-            let owner = guard.insert_test_running_agent("owner", tmp.path());
-            let active = [claimant.clone(), owner.clone()]
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            for claim in [
-                WriteScopeClaim {
-                    owner: claimant.clone(),
-                    roots: vec!["src/claimant".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-                WriteScopeClaim {
-                    owner: owner.clone(),
-                    roots: vec!["src/shared".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-            ] {
-                guard
-                    .coordination
-                    .register_claim(claim, false, |candidate| active.contains(candidate))
-                    .expect("initial non-overlapping claim");
-            }
-            (claimant, owner)
+            guard
+                .with_store_transaction(|guard| {
+                    let claimant = guard.insert_test_running_agent("claimant", tmp.path());
+                    let owner = guard.insert_test_running_agent("owner", tmp.path());
+                    let active = [claimant.clone(), owner.clone()]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    for claim in [
+                        WriteScopeClaim {
+                            owner: claimant.clone(),
+                            roots: vec!["src/claimant".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                        WriteScopeClaim {
+                            owner: owner.clone(),
+                            roots: vec!["src/shared".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                    ] {
+                        guard
+                            .coordination
+                            .register_claim(claim, false, |candidate| active.contains(candidate))
+                            .expect("initial non-overlapping claim");
+                    }
+                    Ok((claimant, owner))
+                })
+                .unwrap()
         };
 
         let error = AgentsCoordinateTool::new(Arc::clone(&manager), Some(claimant.clone()))
@@ -1886,31 +1903,35 @@ mod tests {
         ));
         let claimant = {
             let mut guard = manager.write().await;
-            let claimant = guard.insert_test_running_agent("claimant", tmp.path());
-            let owner = guard.insert_test_running_agent("owner", tmp.path());
-            let active = [claimant.clone(), owner.clone()]
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            for claim in [
-                WriteScopeClaim {
-                    owner: claimant.clone(),
-                    roots: vec!["src/claimant".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-                WriteScopeClaim {
-                    owner: owner.clone(),
-                    roots: vec!["src/shared".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-            ] {
-                guard
-                    .coordination
-                    .register_claim(claim, false, |candidate| active.contains(candidate))
-                    .expect("initial non-overlapping claim");
-            }
-            claimant
+            guard
+                .with_store_transaction(|guard| {
+                    let claimant = guard.insert_test_running_agent("claimant", tmp.path());
+                    let owner = guard.insert_test_running_agent("owner", tmp.path());
+                    let active = [claimant.clone(), owner.clone()]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    for claim in [
+                        WriteScopeClaim {
+                            owner: claimant.clone(),
+                            roots: vec!["src/claimant".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                        WriteScopeClaim {
+                            owner: owner.clone(),
+                            roots: vec!["src/shared".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                    ] {
+                        guard
+                            .coordination
+                            .register_claim(claim, false, |candidate| active.contains(candidate))
+                            .expect("initial non-overlapping claim");
+                    }
+                    Ok(claimant)
+                })
+                .unwrap()
         };
 
         AgentsCoordinateTool::new(Arc::clone(&manager), Some(claimant.clone()))
@@ -1923,23 +1944,27 @@ mod tests {
 
         let resolution_sequence = {
             let mut guard = manager.write().await;
-            let record = guard
-                .coordination
-                .register_claim(
-                    WriteScopeClaim {
-                        owner: claimant.clone(),
-                        roots: vec!["src/isolated".into()],
-                        exact_files: Vec::new(),
-                        contracts: Vec::new(),
-                    },
-                    true,
-                    |_| true,
-                )
-                .expect("later isolated claim resolves contention");
             guard
-                .persist_state_synchronously()
-                .expect("persist resolved contention");
-            record.sequence
+                .with_store_transaction(|guard| {
+                    let record = guard
+                        .coordination
+                        .register_claim(
+                            WriteScopeClaim {
+                                owner: claimant.clone(),
+                                roots: vec!["src/isolated".into()],
+                                exact_files: Vec::new(),
+                                contracts: Vec::new(),
+                            },
+                            true,
+                            |_| true,
+                        )
+                        .expect("later isolated claim resolves contention");
+                    guard
+                        .persist_state_synchronously()
+                        .expect("persist resolved contention");
+                    Ok(record.sequence)
+                })
+                .unwrap()
         };
 
         let mut replayed = super::super::SubAgentManager::new(tmp.path().to_path_buf(), 4)
@@ -1955,48 +1980,50 @@ mod tests {
             Some(resolution_sequence)
         );
 
-        let slots = COORDINATION_RECORD_LIMIT - replayed.coordination.write_claims.len();
-        for index in 0..slots {
-            replayed
-                .coordination
-                .register_claim(
-                    WriteScopeClaim {
-                        owner: format!("inactive-fill-{index:03}"),
-                        roots: vec![format!("pkg/fill-{index:03}")],
-                        exact_files: Vec::new(),
-                        contracts: Vec::new(),
-                    },
-                    true,
-                    |_| false,
-                )
-                .expect("fill inactive claim capacity");
-        }
-        for index in 0..2 {
-            replayed
-                .coordination
-                .register_claim(
-                    WriteScopeClaim {
-                        owner: format!("inactive-overflow-{index}"),
-                        roots: vec![format!("pkg/overflow-{index}")],
-                        exact_files: Vec::new(),
-                        contracts: Vec::new(),
-                    },
-                    true,
-                    |_| false,
-                )
-                .expect("evict oldest inactive claim at capacity");
-        }
-        assert!(
-            !replayed
-                .coordination
-                .write_claims
-                .iter()
-                .any(|claim| claim.claim.owner == claimant),
-            "the resolving claimant claim must be evicted for the durability regression"
-        );
         replayed
-            .persist_state_synchronously()
-            .expect("persist after inactive claim eviction");
+            .with_store_transaction(|held| {
+                let slots = COORDINATION_RECORD_LIMIT - held.coordination.write_claims.len();
+                for index in 0..slots {
+                    held.coordination
+                        .register_claim(
+                            WriteScopeClaim {
+                                owner: format!("inactive-fill-{index:03}"),
+                                roots: vec![format!("pkg/fill-{index:03}")],
+                                exact_files: Vec::new(),
+                                contracts: Vec::new(),
+                            },
+                            true,
+                            |_| false,
+                        )
+                        .expect("fill inactive claim capacity");
+                }
+                for index in 0..2 {
+                    held.coordination
+                        .register_claim(
+                            WriteScopeClaim {
+                                owner: format!("inactive-overflow-{index}"),
+                                roots: vec![format!("pkg/overflow-{index}")],
+                                exact_files: Vec::new(),
+                                contracts: Vec::new(),
+                            },
+                            true,
+                            |_| false,
+                        )
+                        .expect("evict oldest inactive claim at capacity");
+                }
+                assert!(
+                    !held
+                        .coordination
+                        .write_claims
+                        .iter()
+                        .any(|claim| claim.claim.owner == claimant),
+                    "the resolving claimant claim must be evicted for the durability regression"
+                );
+                held.persist_state_synchronously()
+                    .expect("persist after inactive claim eviction");
+                Ok(())
+            })
+            .unwrap();
 
         let mut final_replay = super::super::SubAgentManager::new(tmp.path().to_path_buf(), 4)
             .with_state_path(state_path);

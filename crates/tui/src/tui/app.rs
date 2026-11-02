@@ -1176,8 +1176,8 @@ pub struct SessionState {
     pub pending_turn_cache_write_tokens: u32,
     pub subagent_cost: f64,
     pub subagent_cost_cny: f64,
-    /// Redacted provider-response identities already accrued. The same
-    /// fingerprints are persisted by the session and worker projections.
+    /// Redacted provider-response identities settled by parent or routed owners.
+    /// Membership never adds a child amount; parent usage keeps its own pricing.
     pub subagent_usage_sources: HashSet<String>,
     pub missing_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
@@ -1496,6 +1496,12 @@ impl SessionState {
 pub struct ToolEvidence {
     pub tool_name: String,
     pub summary: String,
+}
+
+pub(crate) struct LocalOllamaProbe {
+    pub task:
+        tokio::task::JoinHandle<Option<codewhale_engine::local_ollama::LiveLocalOllamaCatalog>>,
+    pub requested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2179,6 +2185,7 @@ pub struct App {
     pub onboarding_had_provider_step: bool,
     pub onboarding_had_trust_step: bool,
     pub local_runtime_detected: bool,
+    pub(crate) local_ollama_probe: Option<LocalOllamaProbe>,
     /// True when the active credential was discovered only through an
     /// environment variable. Missing-key recovery and route rollback use this
     /// provenance to decide whether a durable provider slot still exists;
@@ -2250,8 +2257,12 @@ pub struct App {
     /// Esc primes, second Esc opens the live-transcript overlay scoped to
     /// previous user messages so the user can rewind a turn.
     pub backtrack: crate::tui::backtrack::BacktrackState,
+    pub undo_selection: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    pub(crate) session_write_receipt:
+        Option<codewhale_engine::session_manager::SessionWriteReceipt>,
+    pub(crate) session_write_owner: Option<codewhale_engine::session_manager::SessionWriteOwner>,
     /// Exclusive editor ownership, shared with outstanding queue writes.
     pub(crate) offline_queue_lease:
         Option<std::sync::Arc<codewhale_engine::session_manager::OfflineQueueLease>>,
@@ -2911,6 +2922,22 @@ impl App {
         self.mcp_boot_predicted_at = None;
         self.mcp_connecting.clear();
         self.needs_redraw = true;
+    }
+
+    pub(crate) fn start_local_ollama_probe(&mut self, config: &Config, requested: bool) -> bool {
+        if !self.should_adopt_live_local_ollama() {
+            return false;
+        }
+        if let Some(probe) = self.local_ollama_probe.as_mut()
+            && !probe.task.is_finished()
+        {
+            probe.requested |= requested;
+            return true;
+        }
+        self.local_ollama_probe =
+            codewhale_engine::local_ollama::spawn_local_ollama_adoption_probe(config, true)
+                .map(|task| LocalOllamaProbe { task, requested });
+        self.local_ollama_probe.is_some()
     }
 
     pub(crate) fn should_adopt_live_local_ollama(&mut self) -> bool {
@@ -5283,9 +5310,46 @@ impl App {
         self.needs_redraw = true;
     }
 
+    pub(crate) fn adopt_session_mutation(&mut self, metadata: &SessionMetadata) {
+        if self.current_session_id.as_deref() == Some(metadata.id.as_str())
+            && let Some(mutation) = metadata.native_mutation_observation.as_ref()
+            && let Some(receipt) = self.session_write_receipt.as_ref()
+            && let Ok(receipt) = receipt.adopt_mutation(mutation)
+        {
+            self.session_write_receipt = Some(receipt);
+        }
+    }
+
+    pub(crate) fn owns_session_projection(
+        &self,
+        source: Option<&codewhale_engine::core::ops::SessionSnapshotSource>,
+    ) -> bool {
+        self.session_write_owner
+            .as_ref()
+            .zip(source)
+            .is_some_and(|(owner, source)| owner.matches_source(source))
+    }
+
+    pub(crate) fn session_sync_control(&mut self) -> codewhale_engine::core::ops::SessionControlId {
+        let id = codewhale_engine::core::ops::SessionControlId::new();
+        self.session_write_owner =
+            Some(codewhale_engine::session_manager::SessionWriteOwner::Control(id.clone()));
+        id
+    }
+
+    pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
+        if self.current_session_id != session_id {
+            self.view_stack.remove_owned_evidence_pagers();
+            self.session_write_receipt = None;
+            self.session_write_owner = None;
+        }
+        self.current_session_id = session_id;
+    }
+
     /// Clear the history and its session-scoped side indexes. Used by /clear,
     /// session reset, and other "wipe and reload" flows.
     pub fn clear_history(&mut self) {
+        self.view_stack.remove_owned_evidence_pagers();
         self.history.clear();
         self.history_revisions.clear();
         self.completed_assistant_outputs.clear();
@@ -5555,6 +5619,11 @@ impl App {
         messages: Vec<Message>,
         session: &codewhale_engine::session_manager::SavedSession,
     ) {
+        self.session_write_receipt = session.write_receipt.clone();
+        self.session_write_owner = session
+            .write_receipt
+            .as_ref()
+            .map(|_| codewhale_engine::session_manager::SessionWriteOwner::control());
         let journal = session.journal.clone().unwrap_or_else(|| {
             codewhale_runtime::session_tree::SessionJournal::from_messages(
                 session.messages.clone(),
@@ -5573,6 +5642,11 @@ impl App {
         &mut self,
         session: &mut codewhale_engine::session_manager::SavedSession,
     ) {
+        self.session_write_receipt = session.write_receipt.clone();
+        self.session_write_owner = session
+            .write_receipt
+            .as_ref()
+            .map(|_| codewhale_engine::session_manager::SessionWriteOwner::control());
         let stamps = session.journal_message_stamps();
         let journal = match session.journal.take() {
             Some(journal) => journal,
@@ -7990,3 +8064,33 @@ pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn capture_session_fixture_source(&mut self) {
+        use codewhale_engine::session_manager::{SessionManager, SessionWriteOwner};
+        let Some(id) = self.current_session_id.as_deref() else {
+            return;
+        };
+        let manager = SessionManager::default_location().expect("fixture session manager");
+        let source = match manager.load_session_snapshot(id) {
+            Ok(session) => session.write_receipt,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match manager
+                    .load_session_checkpoint(id)
+                    .expect("fixture checkpoint source")
+                {
+                    Some(session) => session.write_receipt,
+                    None => Some(
+                        manager
+                            .expect_absent_session(id)
+                            .expect("fresh fixture source"),
+                    ),
+                }
+            }
+            Err(error) => panic!("fixture session source: {error}"),
+        };
+        self.session_write_receipt = Some(source.expect("fixture admitted source"));
+        self.session_write_owner = Some(SessionWriteOwner::control());
+    }
+}

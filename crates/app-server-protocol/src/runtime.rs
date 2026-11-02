@@ -14,6 +14,7 @@ pub const MAX_RUNTIME_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_RUNTIME_IMAGE_TOTAL_BYTES: usize = 5 * 1024 * 1024;
 
 /// Inline bytes only: neither host paths nor remote URLs confer attachment authority.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeImageInput {
@@ -21,6 +22,7 @@ pub struct RuntimeImageInput {
     pub data_base64: String,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEventEnvelope {
     #[serde(default = "default_runtime_event_envelope_schema_version")]
@@ -32,6 +34,10 @@ pub struct RuntimeEventEnvelope {
     pub turn_id: Option<String>,
     pub item_id: Option<String>,
     pub timestamp: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(default, schema_with = "optional_string_schema")
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     pub payload: Value,
@@ -44,6 +50,15 @@ fn default_runtime_event_envelope_schema_version() -> u32 {
     RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION
 }
 
+#[cfg(feature = "schema")]
+fn optional_string_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    if generator.contract().is_serialize() {
+        generator.subschema_for::<String>()
+    } else {
+        generator.subschema_for::<Option<String>>()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Capability advertisement
 // ---------------------------------------------------------------------------
@@ -51,6 +66,7 @@ fn default_runtime_event_envelope_schema_version() -> u32 {
 /// Fixed capability map advertised by `GET /v1/runtime/info`.
 ///
 /// All fields are required on serialization so clients can rely on the shape.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
     /// Device client tokens have immutable watch/drive intent. Watch cannot
@@ -174,6 +190,7 @@ pub struct RuntimeCapabilities {
 /// Experimental opt-in flags advertised by `GET /v1/runtime/info`.
 ///
 /// Fields are additive and default to `false` when omitted by older servers.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeExperimentalCapabilities {
     #[serde(default)]
@@ -203,11 +220,16 @@ pub struct RuntimeExperimentalCapabilities {
 ///   }
 /// }
 /// ```
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolSpec {
     /// Optional namespace that groups related tools (e.g. `"tau_bench"`).
     /// When present, the runtime may expose the tool as
     /// `<namespace>::<name>` to the model.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(default, schema_with = "optional_string_schema")
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 
@@ -231,6 +253,7 @@ pub struct DynamicToolSpec {
 
 /// Lifecycle status of a dynamic tool item shown in thread detail and event
 /// payloads.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamicToolItemStatus {
@@ -243,6 +266,7 @@ pub enum DynamicToolItemStatus {
 ///
 /// This is the typed payload for `tool_call.requested` events and also the
 /// natural identifier used when the runtime looks up a pending call.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolCallParams {
     pub thread_id: String,
@@ -250,6 +274,10 @@ pub struct DynamicToolCallParams {
     pub call_id: String,
 
     /// Optional namespace that was registered with the tool.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(default, schema_with = "optional_string_schema")
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 
@@ -261,6 +289,7 @@ pub struct DynamicToolCallParams {
 }
 
 /// Result submitted by a runtime client after executing a dynamic tool.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolCallResult {
     /// Whether the client-side tool execution succeeded.
@@ -275,6 +304,7 @@ pub struct DynamicToolCallResult {
 }
 
 /// A single content fragment inside a [`DynamicToolCallResult`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DynamicToolCallContent {
@@ -296,6 +326,7 @@ pub enum DynamicToolCallContent {
 ///   "cwd": "/workspace"
 /// }
 /// ```
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TurnEnvironmentParams {
     pub environment_id: String,

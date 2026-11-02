@@ -24,7 +24,7 @@ NAMES = {
 }
 REQUIRED = {ROOTS[0]} | {f"{GROUP}/{name}.rs" for name in NAMES}
 ALLOWED_NORMAL = {
-    "codewhale-portable-core-navigation", "codewhale-command-contract", "codewhale-protocol",
+    "codewhale-portable-core-navigation", "codewhale-command-contract", "codewhale-protocol", "codewhale-app-server-protocol",
     "chrono", "iana-time-zone", "android_system_properties", "libc", "core-foundation-sys",
     "iana-time-zone-haiku", "js-sys", "cfg-if", "futures-util", "futures-core", "futures-task",
     "pin-project-lite", "slab", "wasm-bindgen", "once_cell", "wasm-bindgen-macro", "quote",

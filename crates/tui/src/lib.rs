@@ -57,9 +57,7 @@ mod doctor_loader_tests;
 #[cfg(test)]
 mod session_control_acceptance;
 #[cfg(test)]
-mod test_support {
-    pub(crate) use codewhale_engine::test_support::*;
-}
+mod test_support;
 mod tui;
 /// Portable, dependency-free dot-whale core and conformance helpers.
 /// The terminal and external renderers share this implementation.
@@ -734,10 +732,10 @@ enum FleetAlertAdapterArg {
     PagerDuty,
 }
 
-/// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, gives the interactive
-/// owner and persistence actor a bounded recovery window, restores terminal
-/// modes and exits with the conventional 128 + signal code.
+/// Spawn a tokio task that listens for terminating signals (SIGINT, SIGTERM
+/// and SIGHUP on Unix; Ctrl+C, Ctrl+Break and console close on Windows), gives
+/// the interactive owner and persistence actor a bounded recovery window,
+/// restores terminal modes and exits with the signal cancellation code.
 /// Multiple deliveries are tolerated: once the cleanup runs, a second
 /// signal short-circuits to plain exit so a stuck cleanup can never
 /// trap a frustrated user pressing Ctrl+C repeatedly.
@@ -874,12 +872,13 @@ impl TerminatingSignals {
     }
 }
 
-/// Windows: `ctrl_c` covers both Ctrl+C and Ctrl+Break (CTRL_C_EVENT /
-/// CTRL_BREAK_EVENT). Console-close, logoff, and shutdown events are not
-/// currently routed through tokio.
+/// Windows console events share the bounded cleanup path. Logoff and shutdown
+/// notifications are not handled here.
 #[cfg(not(unix))]
 struct TerminatingSignals {
     ctrl_c: Option<tokio::signal::windows::CtrlC>,
+    ctrl_break: Option<tokio::signal::windows::CtrlBreak>,
+    ctrl_close: Option<tokio::signal::windows::CtrlClose>,
 }
 
 #[cfg(not(unix))]
@@ -887,15 +886,16 @@ impl TerminatingSignals {
     fn register() -> Self {
         Self {
             ctrl_c: tokio::signal::windows::ctrl_c().ok(),
+            ctrl_break: tokio::signal::windows::ctrl_break().ok(),
+            ctrl_close: tokio::signal::windows::ctrl_close().ok(),
         }
     }
 
     async fn wait(&mut self) -> i32 {
-        match self.ctrl_c.as_mut() {
-            Some(s) => {
-                s.recv().await;
-            }
-            None => std::future::pending::<()>().await,
+        tokio::select! {
+            _ = async { match self.ctrl_c.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
+            _ = async { match self.ctrl_break.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
+            _ = async { match self.ctrl_close.as_mut() { Some(s) => { s.recv().await; }, None => std::future::pending::<()>().await, } } => {},
         }
         130
     }
@@ -3793,17 +3793,6 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
 
-    let max_subagents = config.max_subagents_for_provider(&identity);
-    let coordination_manager =
-        codewhale_engine::tools::subagent::new_shared_subagent_manager_with_timeout(
-            workspace.to_path_buf(),
-            max_subagents,
-            config
-                .max_admitted_subagents_for_provider(&identity)
-                .max(max_subagents),
-            Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
-            config.launch_concurrency_for_provider(&identity),
-        );
     // Probe the durable ledger *before* opening the manager: FleetManager::open
     // creates `.codewhale/fleet.jsonl` as a side effect, so a later probe would
     // always find a ledger and the CLI would report availability differently
@@ -3837,12 +3826,30 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
 
     // The configured route is the operator: fleet workers without a
     // task/profile model pin inherit the session's active model.
-    let manager = FleetManager::open(workspace)?
-        .with_exec_config(fleet_config.exec.clone())
-        .with_fleet_config(fleet_config)
-        .with_sub_agent_manager(coordination_manager)
-        .with_session_model(config.default_model())
-        .with_route_config(config.clone());
+    let owned_workspace = workspace.to_path_buf();
+    let owned_config = config.clone();
+    let manager = codewhale_runtime::runtime_control::owner_work(move || {
+        let config = &owned_config;
+        let max_subagents = config.max_subagents_for_provider(&identity);
+        let coordination_manager =
+            codewhale_engine::tools::subagent::new_shared_subagent_manager_with_timeout(
+                owned_workspace.clone(),
+                max_subagents,
+                config
+                    .max_admitted_subagents_for_provider(&identity)
+                    .max(max_subagents),
+                Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
+                config.launch_concurrency_for_provider(&identity),
+            );
+        let manager = FleetManager::open(&owned_workspace)?
+            .with_exec_config(fleet_config.exec.clone())
+            .with_fleet_config(fleet_config)
+            .with_sub_agent_manager(coordination_manager)
+            .with_session_model(config.default_model())
+            .with_route_config(config.clone());
+        Ok(manager)
+    })
+    .await?;
     match args.command {
         FleetCommand::Init => {
             println!("Fleet ledger: {}", manager.ledger_path().display());
@@ -3853,7 +3860,12 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             let max_workers = args.max_workers.clamp(1, 128);
             let manager =
                 manager.with_stale_after(Duration::from_secs(args.stale_after_seconds.max(1)));
-            let report = manager.create_run_from_task_spec_path(&args.task_spec, max_workers)?;
+            let launch_manager = manager.clone();
+            let task_spec = args.task_spec.clone();
+            let report = codewhale_runtime::runtime_control::owner_work(move || {
+                launch_manager.create_run_from_task_spec_path(&task_spec, max_workers)
+            })
+            .await?;
             println!(
                 "Fleet run: {} tasks={} leased={} queued={}",
                 report.run_id.0, report.task_count, report.leased, report.queued
@@ -3872,19 +3884,20 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             println!(
                 "manager loop running; use `codewhale fleet status`, `inspect`, `interrupt`, or `stop --all` from another terminal."
             );
-            let mut executor = FleetExecutor::new(workspace)
+            let executor = FleetExecutor::new(workspace)
                 .with_sessions_dir(session_manager::default_sessions_dir()?);
             let codewhale_binary = fleet::executor::configured_codewhale_binary();
             let status = manager
                 .run_to_completion(
                     &report.run_id,
                     max_workers,
-                    &mut executor,
+                    executor,
                     &codewhale_binary,
                     None,
                     Duration::from_secs(2),
                 )
-                .await?;
+                .await?
+                .0;
             print_status(&status);
             Ok(())
         }
@@ -3928,25 +3941,30 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             ))
         }
         FleetCommand::Restart { worker_id } => {
-            let report = manager.restart_worker(&worker_id)?;
+            let restart_manager = manager.clone();
+            let report = codewhale_runtime::runtime_control::owner_work(move || {
+                restart_manager.restart_worker(&worker_id)
+            })
+            .await?;
             print_inspection(&report.inspection);
             println!(
                 "manager loop running for restarted run {}; use `codewhale fleet status`, `inspect`, `interrupt`, or `stop --all` from another terminal.",
                 report.run_id.0
             );
-            let mut executor = FleetExecutor::new(workspace)
+            let executor = FleetExecutor::new(workspace)
                 .with_sessions_dir(session_manager::default_sessions_dir()?);
             let codewhale_binary = fleet::executor::configured_codewhale_binary();
             let status = manager
                 .run_to_completion(
                     &report.run_id,
                     report.max_workers,
-                    &mut executor,
+                    executor,
                     &codewhale_binary,
                     None,
                     Duration::from_secs(2),
                 )
-                .await?;
+                .await?
+                .0;
             print_status(&status);
             Ok(())
         }
@@ -3955,14 +3973,19 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             stale_after_seconds,
         } => {
             let manager = manager.with_stale_after(Duration::from_secs(stale_after_seconds.max(1)));
-            emit_fleet_receipt(&fleet_control::execute_fleet_control_with(
-                ControlSurface::Cli,
-                workspace,
-                fleet_context,
-                &manager,
-                ControlOperation::FleetResume,
-                Some(&run_id),
-            ))
+            let owned_workspace = workspace.to_path_buf();
+            let receipt = codewhale_runtime::runtime_control::owner_work(move || {
+                Ok(fleet_control::execute_fleet_control_with(
+                    ControlSurface::Cli,
+                    &owned_workspace,
+                    fleet_context,
+                    &manager,
+                    ControlOperation::FleetResume,
+                    Some(&run_id),
+                ))
+            })
+            .await?;
+            emit_fleet_receipt(&receipt)
         }
         FleetCommand::Stop { all } => {
             if !all {
@@ -9524,7 +9547,10 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
     } else {
         let (sessions, interrupted, warning) = manager.list_sessions_with_recovery()?;
         if let Some(warning) = warning {
-            eprintln!("Some interrupted sessions could not be listed: {warning}");
+            eprintln!("Some sessions could not be listed: {warning}");
+            if sessions.is_empty() {
+                anyhow::bail!("Session listing is incomplete: {warning}");
+            }
         }
         (sessions, interrupted)
     };
@@ -10181,11 +10207,8 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        let stale_checkpoint = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
+        manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
-        if stale_checkpoint {
-            let _ = manager.clear_session_checkpoint(&id);
-        }
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
         // that snapshot to a different saved project. Match the same physical/
@@ -13253,14 +13276,11 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
         }
     };
 
-    let stale_checkpoint =
-        match manager.promote_interrupted_checkpoint(&session_id, Some(launch_workspace)) {
-            Ok(stale) => stale,
-            Err(error) => {
-                eprintln!("Interrupted session was preserved but could not be resumed: {error}");
-                return None;
-            }
-        };
+    if let Err(error) = manager.promote_interrupted_checkpoint(&session_id, Some(launch_workspace))
+    {
+        eprintln!("Interrupted session was preserved but could not be resumed: {error}");
+        return None;
+    }
     let recovered = match manager.load_session(&session_id) {
         Ok(recovered) => recovered,
         Err(error) => {
@@ -13272,10 +13292,6 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
         eprintln!("Interrupted session was preserved but belongs to another workspace.");
         return None;
     }
-    if stale_checkpoint {
-        let _ = manager.clear_session_checkpoint(&session_id);
-    }
-
     let age_str = checkpoint_age_label(best.age);
     eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
 
@@ -14501,28 +14517,6 @@ fn write_exec_stdout(text: &str) -> Result<()> {
     }
 }
 
-/// Process exit code `codewhale exec` uses when a turn ends on a retryable
-/// infrastructure failure (provider/transport) rather than a genuine task
-/// failure. 75 is `EX_TEMPFAIL` from sysexits.h — "temporary failure; the
-/// invocation is expected to succeed on retry" — so bench harnesses and
-/// supervisors can distinguish retryable infra exits from genuine task
-/// failures (exit 1) without parsing the stream-json metadata.
-const EXEC_EXIT_RETRYABLE_INFRA: i32 = 75; // EX_TEMPFAIL
-
-/// Map a terminal exec error category to the process exit code.
-///
-/// `network` / `timeout` mean the provider connection dropped or stalled
-/// after every in-session retry budget was exhausted: the task itself
-/// neither passed nor failed, and re-running the same command is safe.
-/// `rate_limit` is deliberately NOT mapped to the retryable code — the same
-/// category also covers quota exhaustion, which a blind retry would hammer.
-fn exec_failure_exit_code(error_category: Option<&str>) -> i32 {
-    match error_category {
-        Some("network" | "timeout") => EXEC_EXIT_RETRYABLE_INFRA,
-        _ => 1,
-    }
-}
-
 fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(event)?;
     if let Some(object) = value.as_object_mut() {
@@ -14933,16 +14927,25 @@ async fn build_direct_workflow_tool(
         context = context.with_sandbox_backend(Arc::from(backend));
     }
 
-    let max_subagents = config.max_subagents_for_provider(&identity);
-    let manager = new_shared_subagent_manager_with_timeout(
-        workspace.to_path_buf(),
-        max_subagents,
-        config
-            .max_admitted_subagents_for_provider(&identity)
-            .max(max_subagents),
-        Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
-        config.launch_concurrency_for_provider(&identity),
-    );
+    let owned_workspace = workspace.to_path_buf();
+    let owned_config = config.clone();
+    let owned_identity = identity.clone();
+    let manager = codewhale_runtime::runtime_control::owner_work(move || {
+        let config = &owned_config;
+        let identity = owned_identity;
+        let max_subagents = config.max_subagents_for_provider(&identity);
+        let manager = new_shared_subagent_manager_with_timeout(
+            owned_workspace,
+            max_subagents,
+            config
+                .max_admitted_subagents_for_provider(&identity)
+                .max(max_subagents),
+            Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
+            config.launch_concurrency_for_provider(&identity),
+        );
+        Ok(manager)
+    })
+    .await?;
     let roster = Arc::new(codewhale_engine::fleet::identity::load_effective_roster(
         &config.fleet_config(),
         workspace,
@@ -15253,9 +15256,15 @@ fn persist_exec_session(
     total_tokens: u64,
     turn_failure: Option<&str>,
     manager: &SessionManager,
-    image_request_receipts: &[serde_json::Value],
+    provider_request_receipts: &[serde_json::Value],
     checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
-) -> Result<String> {
+    source: &session_manager::SessionWriteReceipt,
+    owner: &codewhale_engine::core::ops::SessionSnapshotSource,
+) -> Result<session_manager::SessionPublication> {
+    let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
+    if checkpoint.is_some() {
+        captured.require_checkpoint_acknowledgement();
+    }
     let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         match manager.load_session_snapshot(id) {
             Ok(existing) => session_manager::update_session(
@@ -15287,6 +15296,7 @@ fn persist_exec_session(
             Some("exec"),
         )
     };
+    saved.write_receipt = Some(captured);
     stamp_exec_session_metadata(
         &mut saved,
         model,
@@ -15300,16 +15310,85 @@ fn persist_exec_session(
             session_manager::SavedTurnOutcome::failed(error, messages.len()),
         );
     }
-    if !image_request_receipts.is_empty() {
+    if !provider_request_receipts.is_empty() {
         saved.ensure_journal();
         if let Some(journal) = saved.journal.as_mut() {
             let leaf = journal.leaf_id.clone();
-            for receipt in image_request_receipts {
+            for receipt in provider_request_receipts {
+                let label = if receipt
+                    .get("wire_observations")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|value| value.get("image_projection").is_some())
+                    }) {
+                    "Provider request image projection"
+                } else {
+                    "Provider request receipt"
+                };
                 journal.append(codewhale_runtime::session_tree::SessionEntryKind::System {
-                    content: format!("Provider request image projection: {receipt}"),
+                    content: format!("{label}: {receipt}"),
                 });
                 journal.leaf_id.clone_from(&leaf);
             }
+        }
+    }
+    for receipt in provider_request_receipts
+        .iter()
+        .filter(|receipt| receipt["primary"].as_bool() == Some(true))
+    {
+        let Some(source) = receipt["source_id"].as_str() else {
+            continue;
+        };
+        if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
+            );
+        }
+        let coverage = receipt.get("coverage").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
+                .ok()
+        });
+        if matches!(
+            coverage,
+            Some(
+                codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                    | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+                .ok()
+        }) {
+            let reason =
+                if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                } else {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                };
+            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                    source_id: source.to_string(),
+                    route,
+                    reason,
+                },
+            );
+            let cost = &mut saved.metadata.cost;
+            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
+                &mut cost.missing_usage_sources,
+                &mut cost.missing_usage_overflowed,
+                &mut cost.unpriced_turns,
+                &mut cost.cny_unpriced_turns,
+                &pool,
+            );
+            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
+            cost.cny_unpriced_turns = cost
+                .cny_unpriced_turns
+                .saturating_add(pool.cny_unpriced_turns);
+            cost.unpriced_reasons
+                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
+            cost.cny_unpriced_reasons
+                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
         }
     }
     saved.make_storage_compatible();
@@ -15322,11 +15401,9 @@ fn persist_exec_session(
             )
             .map_err(anyhow::Error::msg)?;
     }
-    let id = saved.metadata.id.clone();
     manager
-        .save_session(&saved)
-        .context("could not save exec session")?;
-    Ok(id)
+        .publish_session(&saved)
+        .context("could not save exec session")
 }
 
 fn stamp_exec_session_metadata(

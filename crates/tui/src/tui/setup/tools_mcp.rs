@@ -439,7 +439,11 @@ fn classify_config_server(server: &McpServerConfig) -> InventoryStatus {
     if server.url.is_some()
         && let Some(env_var) = server.bearer_token_env_var.as_deref()
         && !env_var.is_empty()
-        && std::env::var_os(env_var).is_none()
+        && !codewhale_engine::mcp::mcp_secret_available(
+            server,
+            env_var,
+            &codewhale_runtime::credentials::context::ProcessAuthContext,
+        )
     {
         return InventoryStatus::NeedsConfig;
     }

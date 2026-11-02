@@ -23,7 +23,7 @@
 //! writing to a stale inode.
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -243,33 +243,66 @@ fn enforce_ring(root: &Path, path: &Path) {
         if len < PROBE_BYTES {
             return Ok(());
         }
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
-        if lines.len() <= MAX_EVENTS && len <= MAX_BYTES {
-            return Ok(());
-        }
-        let mut kept: Vec<&str> = lines
-            .iter()
-            .rev()
-            .take(MAX_EVENTS)
-            .rev()
-            .copied()
-            .collect::<Vec<_>>();
-        // Byte ceiling second: drop from the oldest end until the survivors fit.
-        while kept.len() > 1 && byte_len(&kept) > MAX_BYTES {
-            kept.remove(0);
-        }
-        let mut body = kept.join("\n");
+        let lines = read_ring_tail(path)?;
+        let mut body = lines.join("\n");
         if !body.is_empty() {
             body.push('\n');
+        }
+        if body.len() as u64 == len {
+            return Ok(());
         }
         rewrite(path, body.as_bytes())
     });
 }
 
-fn byte_len(lines: &[&str]) -> u64 {
-    lines.iter().map(|l| l.len() as u64 + 1).sum()
+fn read_ring_tail(path: &Path) -> Result<Vec<String>> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.is_file(),
+        "{} is not a regular telemetry sink",
+        path.display()
+    );
+    let start = metadata.len().saturating_sub(MAX_BYTES);
+    let mut partial = false;
+    if start > 0 {
+        file.seek(SeekFrom::Start(start - 1))?;
+        let mut previous = [0];
+        file.read_exact(&mut previous)?;
+        partial = previous[0] != b'\n';
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_BYTES) as usize);
+    (&mut file).take(MAX_BYTES).read_to_end(&mut bytes)?;
+    let contents = if partial {
+        bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&[][..], |index| &bytes[index + 1..])
+    } else {
+        &bytes
+    };
+    let mut lines = Vec::new();
+    let mut retained = 0;
+    for line in contents.split(|byte| *byte == b'\n').rev() {
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let size = line.len() as u64 + 1;
+        if lines.len() == MAX_EVENTS || retained + size > MAX_BYTES {
+            break;
+        }
+        retained += size;
+        lines.push(line.to_string());
+    }
+    lines.reverse();
+    Ok(lines)
 }
 
 /// Replace `path` atomically through a sibling temp file in the same directory.
@@ -328,21 +361,14 @@ pub fn try_with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> R
     }
 }
 
-/// Read every intact line from `path`, dropping a torn trailing line.
+/// Read the newest bounded tail from `path`, skipping invalid UTF-8 lines.
 ///
 /// `std::process::exit` on the signal path can truncate a concurrent write, so
 /// the last line may be a partial JSON document. Skipping unparseable lines is
 /// the whole tolerance: a drain must never fail because one record was cut.
 #[must_use]
 pub fn read_lines(path: &Path) -> Vec<String> {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    contents
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(str::to_string)
-        .collect()
+    read_ring_tail(path).unwrap_or_default()
 }
 
 /// Take every buffered line and truncate the buffer, under the compaction lock.

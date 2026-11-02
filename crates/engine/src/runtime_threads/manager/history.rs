@@ -8,7 +8,7 @@ pub async fn history_owner_work<T: Send + 'static>(
 ) -> Result<T> {
     #[cfg(any(test, feature = "test-support"))]
     let ticket = crate::test_support::env_scope_ticket();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = crate::test_support::join_env_scope(ticket);
         work()

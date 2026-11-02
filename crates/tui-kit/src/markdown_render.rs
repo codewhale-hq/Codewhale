@@ -1837,10 +1837,25 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             }
         }
         // `inline code`
-        if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
-            let inner = &rest[1..1 + end];
+        let ticks = rest.bytes().take_while(|byte| *byte == b'`').count();
+        if ticks > 0 {
+            let body = &rest[ticks..];
+            let Some(end) = closing_backtick_run(body, ticks) else {
+                out.push(InlineToken::new(
+                    rest[..ticks].to_string(),
+                    base_style,
+                    None,
+                ));
+                rest = body;
+                continue;
+            };
+            let inner = &body[..end];
+            let inner = match inner.strip_prefix(' ').and_then(|s| s.strip_suffix(' ')) {
+                Some(padded) if !inner.trim_matches(' ').is_empty() => padded,
+                _ => inner,
+            };
             out.push(InlineToken::new(inner.to_string(), code_style, None));
-            rest = &rest[1 + end + 1..];
+            rest = &body[end + ticks..];
             continue;
         }
         // ~~strikethrough~~
@@ -2024,6 +2039,22 @@ fn has_unmatched_closing_delimiter(candidate: &str, closing: char) -> bool {
         > candidate.chars().filter(|ch| *ch == opening).count()
 }
 
+fn closing_backtick_run(body: &str, ticks: usize) -> Option<usize> {
+    let mut start = 0;
+    while let Some(offset) = body[start..].find('`') {
+        let run_start = start + offset;
+        let run = body[run_start..]
+            .bytes()
+            .take_while(|byte| *byte == b'`')
+            .count();
+        if run == ticks {
+            return Some(run_start);
+        }
+        start = run_start + run;
+    }
+    None
+}
+
 /// Find the index of the next inline marker (`**`, `__`, `*`, `_`, `http`)
 /// in `s`, or `s.len()` if none found.
 fn find_next_marker(s: &str) -> usize {
@@ -2123,12 +2154,27 @@ fn render_table_row(
     // get blank-padded continuation lines so column separators stay aligned.
     let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
         .map(|i| {
-            render_line_with_links_tagged(
-                cells.get(i).map_or("", String::as_str),
-                col_width,
-                base_style,
-                link_style(),
-            )
+            let cell = cells.get(i).map_or("", String::as_str);
+            let tokens = parse_inline_spans(cell, base_style, link_style());
+            if tokens.iter().map(|token| token.text.width()).sum::<usize>() > col_width {
+                return render_line_with_links_tagged(cell, col_width, base_style, link_style());
+            }
+            let mut spans = Vec::with_capacity(tokens.len());
+            let mut links = Vec::new();
+            let mut column = 0;
+            for token in tokens {
+                let token_width = token.text.width();
+                record_inline_link(&mut links, &token, column, token_width);
+                column += token_width;
+                spans.push(token.into_span());
+            }
+            vec![RenderedMarkdownLine {
+                line: Line::from(spans),
+                links,
+                is_code: false,
+                copy_prefix_width: 0,
+                copy_separator_after: CopyLineSeparator::Newline,
+            }]
         })
         .collect();
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);

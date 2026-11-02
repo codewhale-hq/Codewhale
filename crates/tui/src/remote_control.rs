@@ -1316,6 +1316,16 @@ impl RemoteControlController {
             })
     }
 
+    pub(crate) async fn workspace_restore_guard(
+        &self,
+        workspace: &Path,
+    ) -> Result<Option<tokio::sync::OwnedRwLockWriteGuard<()>>, String> {
+        match self.runtime_chat.as_ref() {
+            Some(host) => host.workspace_restore_guard(workspace).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn block_runtime_chat_dispatch_for_tests(&mut self) {
         self.pending_runtime_chat_configuration = Some(PendingRuntimeChatConfiguration {
@@ -4612,7 +4622,7 @@ async fn runner_request(
         });
     }
     let limit = if segments.last() == Some(&"commands") {
-        codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
+        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
     } else {
         MAX_RESPONSE_BYTES
     };
@@ -6506,6 +6516,7 @@ mod tests {
         assert!(worker_rx.try_recv().is_err());
 
         controller.observe_engine_event(&EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "turn_started_later".to_string(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -9007,7 +9018,7 @@ mod tests {
         );
         let parsed = read_bounded_json_with_limit(
             client.get(&url).send().await.unwrap(),
-            codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+            codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
         )
         .await
         .unwrap();

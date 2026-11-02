@@ -5,11 +5,13 @@ use anyhow::Context as _;
 use anyhow::{Result, anyhow};
 use axum::http::{Method, StatusCode};
 use codewhale_agent::ModelRegistry;
+#[cfg(test)]
+use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
+use codewhale_app_server_protocol::runtime::RuntimeImageInput;
 use codewhale_config::ConfigStore;
 use codewhale_core::Runtime;
 use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
 use codewhale_protocol::EventFrame;
-use codewhale_protocol::runtime::{MAX_RUNTIME_IMAGE_BODY_BYTES, RuntimeImageInput};
 use codewhale_state::StateStore;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -100,14 +102,7 @@ impl std::fmt::Debug for AppServerOptions {
     }
 }
 
-/// Selected frontend facts passed by the canonical CLI in memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeControlFrontend {
-    Stdio,
-    Socket { path: Option<PathBuf> },
-    LegacyHttp,
-    Acp { model: String },
-}
+pub use codewhale_runtime::runtime_control::RuntimeControlFrontend;
 
 /// A bounded listener request admitted only over the authenticated owner channel.
 /// The bearer is explicit operator input, never discovery or response data.
@@ -339,6 +334,7 @@ struct JsonRpcError {
     code: i64,
     message: String,
     data: Option<Value>,
+    transport_error: Option<anyhow::Error>,
 }
 
 #[derive(Debug)]
@@ -841,6 +837,7 @@ fn jsonrpc_error(id: Option<Value>, err: JsonRpcError) -> Value {
 impl JsonRpcError {
     fn parse_error(message: impl Into<String>) -> Self {
         Self {
+            transport_error: None,
             code: -32700,
             message: message.into(),
             data: None,
@@ -849,6 +846,7 @@ impl JsonRpcError {
 
     fn invalid_request(message: impl Into<String>) -> Self {
         Self {
+            transport_error: None,
             code: -32600,
             message: message.into(),
             data: None,
@@ -857,6 +855,7 @@ impl JsonRpcError {
 
     fn method_not_found(method: &str) -> Self {
         Self {
+            transport_error: None,
             code: -32601,
             message: format!("unsupported method: {method}"),
             data: None,
@@ -865,6 +864,7 @@ impl JsonRpcError {
 
     fn invalid_params(message: impl Into<String>) -> Self {
         Self {
+            transport_error: None,
             code: -32602,
             message: message.into(),
             data: None,
@@ -873,6 +873,7 @@ impl JsonRpcError {
 
     fn unsupported_interactive_execution() -> Self {
         Self {
+            transport_error: None,
             code: -32602,
             message: "Compatibility transports cannot answer approvals or clarification requests. Use codewhale app-server --http and /v1/* for interactive turns and goal execution; tool-free turn requests require explicit allowed_tools: [].".to_string(),
             data: Some(json!({
@@ -890,6 +891,7 @@ impl JsonRpcError {
     fn runtime_unavailable(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
+            transport_error: None,
             code: RUNTIME_UNAVAILABLE_CODE,
             message: message.clone(),
             data: Some(json!({
@@ -902,6 +904,7 @@ impl JsonRpcError {
     /// Server error (-32000..-32099): the named thread does not exist.
     fn thread_not_found(thread_id: &str) -> Self {
         Self {
+            transport_error: None,
             code: THREAD_NOT_FOUND_CODE,
             message: format!("thread not found: {thread_id}"),
             data: Some(json!({
@@ -913,6 +916,7 @@ impl JsonRpcError {
 
     fn internal(message: impl Into<String>) -> Self {
         Self {
+            transport_error: None,
             code: -32603,
             message: message.into(),
             data: None,
@@ -924,6 +928,7 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn attach_required(method: &str) -> Self {
         Self {
+            transport_error: None,
             code: ATTACH_REQUIRED_CODE,
             message: format!("send daemon/attach before `{method}`"),
             data: Some(json!({
@@ -938,6 +943,7 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn daemon_already_claimed(owner: &Value) -> Self {
         Self {
+            transport_error: None,
             code: DAEMON_ALREADY_CLAIMED_CODE,
             message: "daemon already claimed by another client; attach with mode=attach"
                 .to_string(),
@@ -951,6 +957,7 @@ impl JsonRpcError {
     /// Server error (-32000..-32099): only the owner may stop the daemon.
     fn not_daemon_owner() -> Self {
         Self {
+            transport_error: None,
             code: NOT_DAEMON_OWNER_CODE,
             message: "only the client that claimed this daemon may shut it down".to_string(),
             data: Some(json!({ "error": "not_daemon_owner" })),
@@ -962,6 +969,7 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn daemon_version_skew(expected: &str, actual: &str) -> Self {
         Self {
+            transport_error: None,
             code: DAEMON_VERSION_SKEW_CODE,
             message: format!(
                 "daemon version {actual} does not match the client's expected {expected}"
@@ -977,6 +985,7 @@ impl JsonRpcError {
     /// Server error (-32000..-32099): `daemon/attach` after attaching.
     fn already_attached() -> Self {
         Self {
+            transport_error: None,
             code: ALREADY_ATTACHED_CODE,
             message: "this connection is already attached".to_string(),
             data: Some(json!({ "error": "already_attached" })),

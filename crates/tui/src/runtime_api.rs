@@ -22,13 +22,17 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
+#[cfg(windows)]
+use codewhale_app_server::daemon_socket::default_socket_path;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+};
+#[cfg(unix)]
+use codewhale_paths::daemon_socket::default_socket_path;
 use codewhale_protocol::agent_mail::{
     AgentMailDeliveryMode, AgentMailEnvelope, AgentMailMessageId, AgentMailSendRequest,
     AgentMailSendResponse,
-};
-use codewhale_protocol::runtime::{
-    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
 };
 use codewhale_secrets::account::RuntimeAccountInfo;
 #[cfg(not(test))]
@@ -273,7 +277,7 @@ impl RuntimeWorkspaceScope {
     }
     async fn validate(self: &Arc<Self>) -> Result<()> {
         let scope = self.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || scope.validate_sync()).await
+        codewhale_runtime::runtime_control::owner_work(move || scope.validate_sync()).await
     }
 }
 
@@ -371,7 +375,7 @@ impl RuntimeWorkspaceScopes {
 
     async fn admit(self: &Arc<Self>, lexical: PathBuf) -> Result<Arc<RuntimeWorkspaceScope>> {
         let owner = self.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || {
+        codewhale_runtime::runtime_control::owner_work(move || {
             let (canonical, directory) =
                 codewhale_util::workspace_dir::open_workspace_directory(&lexical)?;
             let directory = Arc::new(directory);
@@ -794,7 +798,7 @@ impl CapturedRuntimeFrontend {
             .loaded_config_path
             .clone()
             .or_else(|| state.config_path.clone());
-        let config_source = codewhale_app_server::daemon_socket::owner_work(move || {
+        let config_source = codewhale_runtime::runtime_control::owner_work(move || {
             canonical_runtime_config_source(source)
         })
         .await?;
@@ -820,7 +824,7 @@ impl CapturedRuntimeFrontend {
             "selected config profile differs from the captured owner scope"
         );
         if let Some(source) = scope.config_source.clone() {
-            let source = codewhale_app_server::daemon_socket::owner_work(move || {
+            let source = codewhale_runtime::runtime_control::owner_work(move || {
                 canonical_runtime_config_source(Some(source))
             })
             .await?;
@@ -879,7 +883,7 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                         mobile: selection.mobile,
                         web: selection.web,
                         control_frontend: Some(
-                            codewhale_app_server::RuntimeControlFrontend::LegacyHttp,
+                            codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
                         ),
                         ..Default::default()
                     })?;
@@ -957,7 +961,9 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 insecure_no_auth: selection.insecure_no_auth,
                 mobile: selection.mobile,
                 web: selection.web,
-                control_frontend: Some(codewhale_app_server::RuntimeControlFrontend::LegacyHttp),
+                control_frontend: Some(
+                    codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
+                ),
                 ..Default::default()
             };
             validate_runtime_listener_security(&options)?;
@@ -1081,15 +1087,13 @@ async fn write_frontend_ready(
     output: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
     ready: RuntimeFrontendReady,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt as _;
-    let frame = serde_json::to_vec(
+    let frame = codewhale_app_server::stdio::serialize_control_frame(
         &json!({"jsonrpc":"2.0","method":"daemon/frontend_ready","params":ready}),
     )?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        output.write_all(&frame).await?;
-        output.write_all(b"\n").await?;
-        output.flush().await
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        codewhale_app_server::stdio::write_control_line(output, &frame),
+    )
     .await
     .context("selected listener readiness write timed out; outcome uncertain")??;
     Ok(())
@@ -1200,7 +1204,7 @@ pub struct RuntimeApiOptions {
     pub config_path: Option<PathBuf>,
     /// Effective profile used to load the server's initial Config.
     pub config_profile: Option<String>,
-    pub control_frontend: Option<codewhale_app_server::RuntimeControlFrontend>,
+    pub control_frontend: Option<codewhale_runtime::runtime_control::RuntimeControlFrontend>,
     pub runtime_event_tap: Option<
         fn(tokio::sync::broadcast::Receiver<codewhale_engine::runtime_threads::RuntimeEventRecord>),
     >,
@@ -1232,7 +1236,7 @@ struct StreamTurnRequest {
     max_output_tokens: Option<std::num::NonZeroU32>,
     prompt: String,
     #[serde(default)]
-    images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     model: Option<String>,
     mode: Option<String>,
     permission_posture: Option<String>,
@@ -1985,7 +1989,7 @@ async fn admit_runtime_host(
     selected_store: PathBuf,
 ) -> Result<RuntimeHostAdmission> {
     use codewhale_app_server::daemon_client::{HostOwnerProbe, PublicationChangedBeforeAttach};
-    use codewhale_app_server::daemon_socket::owner_work;
+    use codewhale_runtime::runtime_control::owner_work;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let probe = match codewhale_app_server::daemon_client::probe_owner_for_host_startup(
@@ -2055,7 +2059,7 @@ pub async fn run_http_server(
     validate_runtime_listener_security(&options)?;
     let acp_selected = matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Acp { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. })
     );
 
     let task_default_model = runtime_request_model(&config, None).unwrap_or_else(|_| "auto".into());
@@ -2107,7 +2111,7 @@ pub async fn run_http_server(
         validate_selected_owner(&control, selected_store.clone()).await?;
         let observed_owner = control.receipt().clone();
         let client = match options.control_frontend.as_ref() {
-            Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }) => {
+            Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model }) => {
                 drop(control);
                 let client =
                     codewhale_app_server::daemon_client::connect_selected_acp_if_published(
@@ -2134,8 +2138,8 @@ pub async fn run_http_server(
                 client
             }
             Some(
-                codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Socket { .. },
+                codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. },
             ) => {
                 drop(control);
                 codewhale_app_server::daemon_client::connect_scoped_control_if_published(
@@ -2216,7 +2220,12 @@ pub async fn run_http_server(
         existing_binding.as_ref(),
     )?;
     let sessions_dir = runtime_threads.sessions_dir().to_path_buf();
-    let sub_agent_manager = runtime_api_sub_agent_manager(&workspace, options.workers)?;
+    let sub_agent_manager = codewhale_runtime::runtime_control::owner_work({
+        let workspace = workspace.clone();
+        let workers = options.workers;
+        move || runtime_api_sub_agent_manager(&workspace, workers)
+    })
+    .await?;
     runtime_threads
         .attach_subagent_manager(sub_agent_manager.clone())
         .await?;
@@ -2322,7 +2331,9 @@ pub async fn run_http_server(
         &state,
         control_socket.clone(),
         match options.control_frontend.as_ref() {
-            Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }) => model.clone(),
+            Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model }) => {
+                model.clone()
+            }
             _ => task_default_model.clone(),
         },
         options.workers,
@@ -2343,8 +2354,8 @@ pub async fn run_http_server(
     let owned_stdio = matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     );
 
@@ -2450,7 +2461,9 @@ pub async fn run_http_server(
 
 fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
     match options.control_frontend.as_ref() {
-        Some(codewhale_app_server::RuntimeControlFrontend::Socket { path }) => path.clone(),
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { path }) => {
+            path.clone()
+        }
         _ => None,
     }
 }
@@ -2468,19 +2481,15 @@ fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
 ///
 /// `selected_store` is the store root this run resolved, the same value the
 /// thread manager will open.
-///
-/// Unix only, with `daemon_socket::store_selected_socket_path`: a Windows
-/// owner endpoint is a named pipe whose derived-name form is follow-up work,
-/// so Windows keeps the well-known endpoint and the explicit selection.
 #[cfg(unix)]
 async fn store_selected_control_socket(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
 ) -> Result<PathBuf> {
     let selected_store = selected_store.to_path_buf();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let store_override = codewhale_engine::runtime_threads::canonical_runtime_dir_override()?;
-        let inputs = codewhale_app_server::daemon_socket::SocketPathInputs::from_environment(None)?;
+        let inputs = codewhale_paths::daemon_socket::SocketPathInputs::from_environment(None)?;
         store_selected_control_socket_with(
             explicit,
             &selected_store,
@@ -2501,7 +2510,7 @@ fn store_selected_control_socket_with(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
     store_override: Option<&FsPath>,
-    inputs: &codewhale_app_server::daemon_socket::SocketPathInputs,
+    inputs: &codewhale_paths::daemon_socket::SocketPathInputs,
 ) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path);
@@ -2514,7 +2523,7 @@ fn store_selected_control_socket_with(
         selected_store.to_path_buf(),
     )?;
     let derived_from = store_override.filter(|dir| *dir == selected);
-    codewhale_app_server::daemon_socket::store_selected_socket_path(derived_from, inputs)
+    codewhale_paths::daemon_socket::store_selected_socket_path(derived_from, inputs)
         .map_err(Into::into)
 }
 
@@ -2533,7 +2542,7 @@ async fn validate_selected_owner_receipt(
     receipt: codewhale_protocol::RuntimeOwnerReceipt,
     selected_store: PathBuf,
 ) -> Result<codewhale_engine::runtime_threads::RuntimeStoreBinding> {
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let selected =
             codewhale_engine::runtime_threads::RuntimeStoreBinding::for_store_dir(&selected_store)?;
         selected.validate_existing_store()?;
@@ -2561,15 +2570,15 @@ async fn bind_captured_runtime_frontends(
     codewhale_app_server::AppState,
 )> {
     let captured_manager = state.runtime_threads.clone();
-    let (binding, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
+    let (binding, generation) = codewhale_runtime::runtime_control::owner_work(move || {
         captured_manager.capture_control_owner()
     })
     .await?;
     let config_path = state.config_path.clone();
     let socket_path =
-        codewhale_app_server::daemon_socket::owner_work(move || match selected_socket {
+        codewhale_runtime::runtime_control::owner_work(move || match selected_socket {
             Some(path) => Ok(path),
-            None => codewhale_app_server::daemon_socket::default_socket_path().map_err(Into::into),
+            None => default_socket_path().map_err(Into::into),
         })
         .await?;
     let process_start =
@@ -2578,7 +2587,7 @@ async fn bind_captured_runtime_frontends(
     let principal =
         codewhale_config::private_directory::PrivateDirectory::current_user_id().to_string();
     #[cfg(windows)]
-    let principal = codewhale_app_server::daemon_socket::owner_work(|| {
+    let principal = codewhale_runtime::runtime_control::owner_work(|| {
         codewhale_config::windows_identity::CurrentWindowsUser::open()?.sid_string()
     })
     .await?;
@@ -2625,7 +2634,7 @@ async fn run_attached_frontend(
         .context("authenticated owner has no selected frontend facts")?;
     let acp_selected = matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Acp { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. })
     );
     anyhow::ensure!(
         (!acp_selected || routing.acp) && (acp_selected || !routing.acp_only),
@@ -2634,8 +2643,8 @@ async fn run_attached_frontend(
     if matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     ) {
         let forwarded = client
@@ -2652,7 +2661,7 @@ async fn run_attached_frontend(
     }
     if matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::Socket { .. })
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. })
     ) {
         println!(
             "Attached to the authenticated Runtime control owner at {}.",
@@ -2696,7 +2705,7 @@ async fn run_attached_frontend(
 fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()> {
     if matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_app_server::RuntimeControlFrontend::LegacyHttp)
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp)
     ) && !is_loopback_bind_host(&options.host)
         && options
             .auth_token
@@ -2708,9 +2717,9 @@ fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()>
     if matches!(
         options.control_frontend.as_ref(),
         Some(
-            codewhale_app_server::RuntimeControlFrontend::Stdio
-                | codewhale_app_server::RuntimeControlFrontend::Socket { .. }
-                | codewhale_app_server::RuntimeControlFrontend::Acp { .. }
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. }
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
         )
     ) && !is_loopback_bind_host(&options.host)
     {
@@ -2904,7 +2913,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/stream",
             post(stream_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route("/v1/git", get(git::git_status_detail))
@@ -3039,7 +3048,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/turns",
             post(start_thread_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route(
@@ -3944,7 +3953,7 @@ fn fleet_worker_has_selected_lease(
 async fn workspace_agent_runs(state: &RuntimeApiState) -> Result<Vec<AgentWorkerRecord>, ApiError> {
     let manager = state.sub_agent_manager.clone().read_owned().await;
     let selected_state = state.clone();
-    codewhale_app_server::daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         let projected = manager
             .worker_records_for_workspace(&selected_state.workspace)
             .map_err(anyhow::Error::msg)?;
@@ -4054,7 +4063,7 @@ async fn cancel_agent_run(
         let manager = state.sub_agent_manager.clone().read_owned().await;
         let selected_workspace = state.workspace.clone();
         let expected = selected_record.clone();
-        codewhale_app_server::daemon_socket::owner_work(move || {
+        codewhale_runtime::runtime_control::owner_work(move || {
             Ok(manager
                 .worker_records_for_workspace(&selected_workspace)
                 .map_err(anyhow::Error::msg)?
@@ -4083,7 +4092,7 @@ async fn cancel_agent_run(
         let selected_workspace = state.workspace.clone();
         let selected_state = state.clone();
         let expected_record = record.clone();
-        let cancelled = codewhale_app_server::daemon_socket::owner_work(move || {
+        let cancelled = codewhale_runtime::runtime_control::owner_work(move || {
             let (current, needs_lease) = manager
                 .worker_records_for_workspace(&selected_workspace)
                 .map_err(anyhow::Error::msg)?
@@ -4408,7 +4417,7 @@ fn managed_fleet_token(field: &str, value: &str) -> Result<String, ApiError> {
 }
 
 fn reject_parallel_write_collisions(tasks: &[FleetTaskSpec]) -> Result<(), ApiError> {
-    let mut claims: Vec<(String, String)> = Vec::new();
+    let mut claims = Vec::new();
     for task in tasks {
         let write_roots = fleet_write_roots(task).map_err(|error| {
             ApiError::bad_request(format!(
@@ -4417,15 +4426,26 @@ fn reject_parallel_write_collisions(tasks: &[FleetTaskSpec]) -> Result<(), ApiEr
             ))
         })?;
         for normalized in write_roots {
-            for (owner, existing) in &claims {
-                if owner != &task.id && managed_paths_overlap(existing.as_str(), &normalized) {
-                    return Err(ApiError::bad_request(format!(
-                        "Parallel Workflow write scope collision: tasks '{owner}' and '{}' both claim overlapping paths",
-                        task.id
-                    )));
-                }
+            claims.push((task.id.as_str(), normalized));
+        }
+    }
+    claims.sort_unstable_by(|(_, left), (_, right)| {
+        (left.as_str() != ".")
+            .cmp(&(right.as_str() != "."))
+            .then_with(|| left.split('/').cmp(right.split('/')))
+    });
+    let mut covering: Option<(&str, &str)> = None;
+    for (owner, path) in &claims {
+        if let Some((existing_owner, existing)) = covering
+            && managed_paths_overlap(existing, path)
+        {
+            if existing_owner != *owner {
+                return Err(ApiError::bad_request(format!(
+                    "Parallel Workflow write scope collision: tasks '{existing_owner}' and '{owner}' both claim overlapping paths"
+                )));
             }
-            claims.push((task.id.clone(), normalized));
+        } else {
+            covering = Some((*owner, path.as_str()));
         }
     }
     Ok(())
@@ -4479,7 +4499,13 @@ async fn start_fleet_run(
         ));
     }
     let run_id = FleetRunId::from(run_id);
-    let report = manager.activate_run(&run_id).map_err(|error| {
+    let activation_manager = manager.clone();
+    let activation_run = run_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        activation_manager.activate_run(&activation_run)
+    })
+    .await
+    .map_err(|error| {
         let message = format!("Failed to start Fleet run '{}': {error}", run_id.0);
         if message.contains("already terminal") {
             ApiError::conflict(message)
@@ -4499,12 +4525,12 @@ async fn start_fleet_run(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(error) = manager
             .run_to_completion(
                 &execution_run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),
@@ -4831,7 +4857,13 @@ async fn restart_fleet_worker(
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let manager = open_fleet_manager(&state)?;
-    let report = manager.restart_worker(&worker_id).map_err(|err| {
+    let restart_manager = manager.clone();
+    let restart_worker = worker_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        restart_manager.restart_worker(&restart_worker)
+    })
+    .await
+    .map_err(|err| {
         ApiError::bad_request(format!(
             "Failed to restart Fleet worker '{worker_id}': {err}"
         ))
@@ -4845,12 +4877,12 @@ async fn restart_fleet_worker(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(err) = manager
             .run_to_completion(
                 &run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),
@@ -6874,7 +6906,7 @@ async fn mcp_pool_handle(
             let env_ticket = crate::test_support::env_scope_ticket();
             if policy_changed {
                 let (rebuilt, admitted_policy) =
-                    codewhale_app_server::daemon_socket::owner_work(move || {
+                    codewhale_runtime::runtime_control::owner_work(move || {
                         #[cfg(test)]
                         let _membership = crate::test_support::join_env_scope(env_ticket);
                         load_mcp_management_pool(&current)
@@ -6887,7 +6919,7 @@ async fn mcp_pool_handle(
                 *held = rebuilt;
                 *state.workspace_scope.mcp_policy.lock() = admitted_policy;
             } else {
-                codewhale_app_server::daemon_socket::owner_work(move || {
+                codewhale_runtime::runtime_control::owner_work(move || {
                     #[cfg(test)]
                     let _membership = crate::test_support::join_env_scope(env_ticket);
                     // Keep the exact scope/owner alive through synchronous disk
@@ -6908,7 +6940,7 @@ async fn mcp_pool_handle(
             #[cfg(test)]
             let env_ticket = crate::test_support::env_scope_ticket();
             let (pool, admitted_policy) =
-                codewhale_app_server::daemon_socket::owner_work(move || {
+                codewhale_runtime::runtime_control::owner_work(move || {
                     #[cfg(test)]
                     let _membership = crate::test_support::join_env_scope(env_ticket);
                     load_mcp_management_pool(&current)
@@ -6944,8 +6976,12 @@ fn load_mcp_management_pool(state: &RuntimeApiState) -> Result<(McpPool, Value)>
     let plugins = state
         .plugin_discovery
         .registry_for_workspace(&state.workspace);
-    let mut pool =
-        McpPool::from_config_path_with_workspace_and_plugins(&path, &state.workspace, plugins)?;
+    let mut pool = McpPool::from_config_path_with_workspace_and_plugins_and_auth_context(
+        &path,
+        &state.workspace,
+        plugins,
+        state.runtime_threads.mcp_auth_context(),
+    )?;
     let config = state.config.read();
     pool = pool.with_backend(config.mcp_backend()).with_oauth_callback(
         config.mcp_oauth_callback_port,
@@ -8421,7 +8457,7 @@ struct UndoTurnResponse {
     /// so the GUI can pre-populate the input box.
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn undo_thread_turn(
@@ -8499,12 +8535,12 @@ async fn fork_thread_at_turn(
 /// Result of the snapshot-based file rollback step of patch-undo, reported
 /// alongside the new forked thread.
 #[derive(Debug, Serialize)]
-struct PatchUndoResult {
+pub(crate) struct PatchUndoResult {
     /// Whether files were restored from a snapshot.
     files_restored: bool,
     /// Human-readable summary: one `<action> <path>` line per restored file,
     /// or why nothing needed restoring.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// Label of the pre-turn snapshot the files went back to (e.g.
     /// "pre-turn:3: fix the parser").
     snapshot_label: Option<String>,
@@ -8519,7 +8555,7 @@ struct PatchUndoResponse {
     /// The original user text from the removed turn (for re-editing).
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn patch_undo_thread_turn(
@@ -8806,12 +8842,12 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 ///
 /// # Ownership
 ///
-/// The restore points are the `pre_turn`/`post_turn` receipts recorded on the
-/// dropped turns themselves (`TurnRecord::workspace_snapshots`), resolved by
-/// tree and session tag against the snapshot store. Nothing is selected by
-/// scanning the shared store, so another thread's (or the TUI's) snapshots in
-/// the same workspace are never candidates, and a fork restores the turns it
-/// inherited because it carries their records.
+/// The Runtime handler passes receipts recorded on the dropped turns themselves
+/// (`TurnRecord::workspace_snapshots`), including the turns a fork inherited.
+/// The TUI caller binds owned request windows to persisted host execution IDs
+/// and checks their prompt text, refusing missing or ambiguous tool spans.
+/// Both callers resolve those receipts by tree and session tag against the
+/// snapshot store before any restoration.
 ///
 /// # What is restored
 ///
@@ -8845,7 +8881,7 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 ///
 /// `trusted` mirrors the gate the TUI's `patch_undo()` applies
 /// (`yolo || trust_mode`), evaluated once a real change is known.
-fn patch_undo_workspace_files(
+pub(crate) fn patch_undo_workspace_files(
     workspace: &FsPath,
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,
@@ -9368,7 +9404,7 @@ struct RetryTurnRequest {
     /// them, so a retry the client starts must re-send them; without it the
     /// retried turn silently lost tools such as the desktop's `open_in_app`.
     #[serde(default)]
-    dynamic_tools: Vec<codewhale_protocol::runtime::DynamicToolSpec>,
+    dynamic_tools: Vec<codewhale_app_server_protocol::runtime::DynamicToolSpec>,
 }
 
 #[derive(Debug, Serialize)]

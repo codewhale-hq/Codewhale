@@ -821,11 +821,14 @@ spawn rather than silently falling back to the parent provider.
 
 ## Per-step API timeout (#1806, #1808)
 
-Each sub-agent step wraps its DeepSeek `create_message` call in a
+Each sub-agent step wraps its provider streaming call in a
 per-step timeout so a single stuck request can't pin the parent's
 completion wakeup channel indefinitely. The default is `600` seconds.
-A timed-out attempt is retried with exponential backoff (up to 5
-retries) before the step interrupts with a preserved checkpoint.
+A timeout after possible dispatch interrupts the step with a preserved
+checkpoint and unknown request outcome. Only a transient connection timeout
+proven to precede dispatch uses the existing backoff, up to 5 retries. Ordinary
+rate limits retain their bounded retry policy; stream interruptions do not
+automatically reissue inference.
 Long-thinking children that legitimately exceed that, for example
 heavy plan or review work behind `agent`, can extend the timeout in
 `~/.codewhale/config.toml`:

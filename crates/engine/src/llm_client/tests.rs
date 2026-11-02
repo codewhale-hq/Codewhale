@@ -91,16 +91,21 @@ fn retryability_distinguishes_transient_failures_from_durable_failures() {
             message: "too many requests".into(),
             retry_after: None,
         },
+        LlmError::ConnectError {
+            message: "refused".into(),
+            transient: true,
+            timed_out: false,
+        },
+    ] {
+        assert!(error.is_retryable(), "expected transient error: {error}");
+    }
+    for error in [
         LlmError::ServerError {
             status: 500,
             message: "internal error".into(),
         },
         LlmError::NetworkError("connection refused".into()),
         LlmError::Timeout(Duration::from_secs(30)),
-    ] {
-        assert!(error.is_retryable(), "expected transient error: {error}");
-    }
-    for error in [
         LlmError::authentication_error("invalid key"),
         LlmError::AuthorizationError("blocked".into()),
         LlmError::InvalidRequest {
@@ -116,6 +121,18 @@ fn retryability_distinguishes_transient_failures_from_durable_failures() {
 
 #[test]
 fn http_response_boundary_classifies_status_contract() {
+    for status in [408, 409, 499, 500, 502, 503, 504] {
+        let error = LlmError::from_http_response(
+            status,
+            r#"{"error":{"code":"usage_limit_reached","message":"context length,429 and HTTP413"}}"#,
+        );
+        assert_eq!(error.transmission(), RequestTransmission::OutcomeUnknown);
+        assert!(!error.is_retryable());
+        if status >= 499 {
+            assert!(matches!(error, LlmError::ServerError { .. }));
+        }
+    }
+
     let body = LlmError::from_http_response(413, "maximum images exceeded model token limit");
     assert!(matches!(body, LlmError::InvalidRequest { status: 413, .. }));
     assert!(!body.is_retryable());
@@ -140,7 +157,8 @@ fn http_response_boundary_classifies_status_contract() {
         &cancelled,
         LlmError::ServerError { status: 499, .. }
     ));
-    assert!(cancelled.is_retryable());
+    assert!(!cancelled.is_retryable());
+    assert!(cancelled.is_retryable_for(RetryOperation::ReadOnly));
     assert!(matches!(
         LlmError::from_http_response(500, "internal server error"),
         LlmError::ServerError { status: 500, .. }
@@ -346,23 +364,25 @@ fn missing_google_signature_400_explains_recovery_without_widening_gateway_prefl
 
 #[tokio::test]
 async fn retry_loop_stops_after_one_typed_quota_failure() {
-    let mut calls = 0;
-    let result: RetryResult<i32> = with_retry(
-        &RetryConfig::default(),
-        || {
-            calls += 1;
-            async {
-                Err(LlmError::from_http_response(
-                    429,
-                    r#"{"error":{"code":"insufficient_quota"}}"#,
-                ))
-            }
-        },
-        None,
-    )
-    .await;
-    assert_eq!(result.unwrap_err().attempts, 1);
-    assert_eq!(calls, 1);
+    for (status, body) in [
+        (429, r#"{"error":{"code":"insufficient_quota"}}"#),
+        (500, "upstream accepted then failed"),
+        (408, "request timeout"),
+        (409, "conflict"),
+    ] {
+        let mut calls = 0;
+        let result: RetryResult<i32> = with_retry(
+            &RetryConfig::default(),
+            || {
+                calls += 1;
+                async move { Err(LlmError::from_http_response(status, body)) }
+            },
+            None,
+        )
+        .await;
+        assert_eq!(result.unwrap_err().attempts, 1);
+        assert_eq!(calls, 1);
+    }
 }
 
 #[tokio::test]
@@ -389,6 +409,7 @@ fn retry_receipt_observation() -> (
     let captured = receipts.clone();
     (
         RequestRetryObservation {
+            request_id: format!("fixture:{}", uuid::Uuid::new_v4().simple()),
             wire_observations: Default::default(),
             retries: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             emit: std::sync::Arc::new(move |message| {
@@ -404,6 +425,7 @@ fn retry_receipt_observation() -> (
 
 fn immediate_retry_policy(max_retries: u32) -> RetryConfig {
     RetryConfig {
+        operation: RetryOperation::ReadOnly,
         max_retries,
         initial_delay: 0.0,
         jitter: false,

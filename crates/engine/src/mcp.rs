@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use codewhale_config::McpBackend;
+use codewhale_runtime::credentials::AuthContext;
+use codewhale_runtime::credentials::context::ProcessAuthContext;
 use futures_util::FutureExt;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -119,14 +121,44 @@ fn reject_linked_workspace_state_path(path: &Path) -> Result<()> {
         .with_context(|| format!("MCP config {} is not safe to write", path.display()))
 }
 
+#[derive(Clone)]
+pub struct McpAuthContext(pub Arc<dyn AuthContext>);
+
+impl std::fmt::Debug for McpAuthContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("McpAuthContext(<host authority>)")
+    }
+}
+
+impl Default for McpAuthContext {
+    fn default() -> Self {
+        Self(process_mcp_auth_context())
+    }
+}
+
+pub fn process_mcp_auth_context() -> Arc<dyn AuthContext> {
+    static CONTEXT: std::sync::OnceLock<Arc<dyn AuthContext>> = std::sync::OnceLock::new();
+    Arc::clone(CONTEXT.get_or_init(|| Arc::new(ProcessAuthContext)))
+}
+
 fn mcp_secret_var(
     reviewed_plugin: Option<&ReviewedPluginMcpSource>,
     name: &str,
-) -> Result<String, std::env::VarError> {
+    auth_context: &dyn AuthContext,
+) -> Option<String> {
     match reviewed_plugin {
-        Some(source) => source.host_environment.var(name),
-        None => std::env::var(name),
+        Some(source) => source.host_environment.var(name).ok(),
+        None => auth_context.env(name),
     }
+}
+
+pub fn mcp_secret_available(
+    server: &McpServerConfig,
+    name: &str,
+    auth_context: &dyn AuthContext,
+) -> bool {
+    mcp_secret_var(server.reviewed_plugin_source(), name, auth_context)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 /// Expand `${NAME}` placeholders in an MCP config value from its permitted
@@ -140,6 +172,7 @@ fn mcp_secret_var(
 fn expand_env_placeholders_with(
     value: &str,
     reviewed_plugin: Option<&ReviewedPluginMcpSource>,
+    auth_context: &dyn AuthContext,
 ) -> Result<String> {
     let mut out = String::new();
     let mut rest = value;
@@ -153,7 +186,7 @@ fn expand_env_placeholders_with(
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             anyhow::bail!("invalid environment placeholder in MCP config value");
         }
-        let env_value = mcp_secret_var(reviewed_plugin, name).with_context(|| {
+        let env_value = mcp_secret_var(reviewed_plugin, name, auth_context).with_context(|| {
             format!("environment variable {name} required by MCP config is not set")
         })?;
         out.push_str(&env_value);
@@ -165,7 +198,7 @@ fn expand_env_placeholders_with(
 
 #[cfg(test)]
 fn expand_env_placeholders(value: &str) -> Result<String> {
-    expand_env_placeholders_with(value, None)
+    expand_env_placeholders_with(value, None, &ProcessAuthContext)
 }
 
 /// Expand `${NAME}` placeholders across every value of an MCP config map
@@ -175,12 +208,13 @@ fn expand_env_placeholders_map_with_environment(
     values: &HashMap<String, String>,
     context: &str,
     reviewed_plugin: Option<&ReviewedPluginMcpSource>,
+    auth_context: &dyn AuthContext,
 ) -> Result<HashMap<String, String>> {
     let mut expanded = HashMap::with_capacity(values.len());
     for (key, value) in values {
         expanded.insert(
             key.clone(),
-            expand_env_placeholders_with(value, reviewed_plugin)
+            expand_env_placeholders_with(value, reviewed_plugin, auth_context)
                 .with_context(|| format!("failed to expand MCP {context} value for {key}"))?,
         );
     }
@@ -192,21 +226,38 @@ fn expand_env_placeholders_map(
     values: &HashMap<String, String>,
     context: &str,
 ) -> Result<HashMap<String, String>> {
-    expand_env_placeholders_map_with_environment(values, context, None)
+    expand_env_placeholders_map_with_environment(values, context, None, &ProcessAuthContext)
 }
 
+#[cfg(test)]
 fn expanded_mcp_stdio_env(config: &McpServerConfig) -> Result<HashMap<String, String>> {
+    expanded_mcp_stdio_env_with_auth_context(config, &ProcessAuthContext)
+}
+
+fn expanded_mcp_stdio_env_with_auth_context(
+    config: &McpServerConfig,
+    auth_context: &dyn AuthContext,
+) -> Result<HashMap<String, String>> {
     expand_env_placeholders_map_with_environment(
         &config.env,
         "env",
         config.reviewed_plugin_source(),
+        auth_context,
     )
 }
 
 /// Mirror the exact expanded and sanitized environment applied by the MCP
 /// stdio spawn path, without constructing or starting a process.
+#[cfg(test)]
 fn mcp_stdio_child_env(config: &McpServerConfig) -> Result<Vec<(OsString, OsString)>> {
-    let expanded_env = expanded_mcp_stdio_env(config)?;
+    mcp_stdio_child_env_with_auth_context(config, &ProcessAuthContext)
+}
+
+fn mcp_stdio_child_env_with_auth_context(
+    config: &McpServerConfig,
+    auth_context: &dyn AuthContext,
+) -> Result<Vec<(OsString, OsString)>> {
+    let expanded_env = expanded_mcp_stdio_env_with_auth_context(config, auth_context)?;
     let overrides = codewhale_runtime::child_env::string_map_env(&expanded_env);
     Ok(if let Some(source) = config.reviewed_plugin_source() {
         // Plugin reviews name every extra environment source explicitly. Do
@@ -328,6 +379,13 @@ fn command_availability_on_path(
 /// Inspect an MCP stdio command using the same expanded, sanitized environment
 /// as the real spawn path, without starting the configured process.
 pub fn static_mcp_command_availability(server: &McpServerConfig) -> Result<McpCommandAvailability> {
+    static_mcp_command_availability_with_auth_context(server, &ProcessAuthContext)
+}
+
+pub fn static_mcp_command_availability_with_auth_context(
+    server: &McpServerConfig,
+    auth_context: &dyn AuthContext,
+) -> Result<McpCommandAvailability> {
     if server.url.is_some() {
         return Ok(McpCommandAvailability::NotApplicable);
     }
@@ -340,7 +398,7 @@ pub fn static_mcp_command_availability(server: &McpServerConfig) -> Result<McpCo
 
     // StdioTransport expands every configured env value before spawning, even
     // when the command itself is absolute. Mirror that failure boundary here.
-    let child_env = mcp_stdio_child_env(server)?;
+    let child_env = mcp_stdio_child_env_with_auth_context(server, auth_context)?;
     let path = Path::new(cmd);
     let is_absolute = path.is_absolute() || cmd.starts_with('/');
     if is_absolute {
@@ -1745,6 +1803,7 @@ fn response_id_matches(id: Option<&serde_json::Value>, expected_id: &str) -> boo
 
 /// Manages a single async connection to an MCP server
 pub struct McpConnection {
+    auth_context: Arc<dyn AuthContext>,
     name: String,
     transport: Box<dyn McpTransport>,
     tools: Vec<McpTool>,
@@ -1875,6 +1934,7 @@ async fn prepare_mcp_http_client(
     network_policy: Option<&NetworkPolicyDecider>,
     cancel_token: &tokio_util::sync::CancellationToken,
     connect_timeout_secs: u64,
+    auth_context: Arc<dyn AuthContext>,
 ) -> Result<http_client::McpHttpClient> {
     let url = config.url.as_deref().context("MCP HTTP URL absent")?;
     // Per-domain network policy gate (#135). Only the HTTP/SSE transport
@@ -1915,7 +1975,7 @@ async fn prepare_mcp_http_client(
     let oauth_runtime = if config.reviewed_plugin.is_some() {
         None
     } else {
-        match oauth::build_default_headers(config) {
+        match oauth::build_default_headers_with_auth_context(config, auth_context.as_ref()) {
             Ok(default_headers) => {
                 let prepared = tokio::select! {
                     biased;
@@ -1971,7 +2031,12 @@ async fn prepare_mcp_http_client(
             }
         }
     };
-    let client = client.with_mcp_auth(McpHttpAuth::from_config(name, config, oauth_runtime));
+    let client = client.with_mcp_auth(McpHttpAuth::from_config_with_auth_context(
+        name,
+        config,
+        oauth_runtime,
+        auth_context,
+    ));
     Ok(client)
 }
 
@@ -2004,6 +2069,25 @@ impl McpConnection {
         network_policy: Option<&NetworkPolicyDecider>,
         backend: McpBackend,
     ) -> Result<Self> {
+        Self::connect_with_backend_and_auth_context(
+            name,
+            config,
+            global_timeouts,
+            network_policy,
+            backend,
+            process_mcp_auth_context(),
+        )
+        .await
+    }
+
+    pub async fn connect_with_backend_and_auth_context(
+        name: String,
+        config: McpServerConfig,
+        global_timeouts: &McpTimeouts,
+        network_policy: Option<&NetworkPolicyDecider>,
+        backend: McpBackend,
+        auth_context: Arc<dyn AuthContext>,
+    ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
         let read_timeout_secs = config.effective_read_timeout(global_timeouts);
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -2033,6 +2117,7 @@ impl McpConnection {
                     network_policy,
                     &cancel_token,
                     connect_timeout_secs,
+                    Arc::clone(&auth_context),
                 )
                 .await?,
             )
@@ -2041,12 +2126,13 @@ impl McpConnection {
         };
         let transport: Box<dyn McpTransport> = if backend == McpBackend::Host {
             Box::new(
-                crate::extension_host::mcp::SdkTransport::connect_with_http(
+                crate::extension_host::mcp::SdkTransport::connect_with_http_and_auth_context(
                     &name,
                     &config,
                     cancel_token.clone(),
                     Duration::from_secs(connect_timeout_secs),
                     http_client,
+                    Arc::clone(&auth_context),
                 )
                 .await?,
             )
@@ -2085,11 +2171,12 @@ impl McpConnection {
                 Box::new(http)
             }
         } else if let Some(command) = &config.command {
-            Box::new(StdioTransport::spawn(
+            Box::new(StdioTransport::spawn_with_auth_context(
                 &name,
                 command,
                 &config,
                 cancel_token.clone(),
+                Arc::clone(&auth_context),
             )?)
         } else {
             anyhow::bail!("MCP server '{name}' config must have either 'command' or 'url'");
@@ -2104,6 +2191,7 @@ impl McpConnection {
         let authority_watch = authority_watch.map(PendingAuthorityWatch::disarm);
 
         let mut conn = Self {
+            auth_context,
             name: name.clone(),
             transport,
             tools: Vec::new(),
@@ -3238,6 +3326,7 @@ pub async fn authenticate_tool_via_pool(
 
 /// Pool of MCP connections for reuse
 pub struct McpPool {
+    auth_context: Arc<dyn AuthContext>,
     backend: McpBackend,
     /// Immutable operator ceiling; source reloads and shared child pools cannot relax it.
     disallowed_tools: Vec<String>,
@@ -3312,6 +3401,7 @@ pub struct McpPool {
 }
 
 pub struct McpHandoff {
+    auth_context: Arc<dyn AuthContext>,
     workspace: Option<PathBuf>,
     backend: McpBackend,
     connections: Vec<(String, McpServerIdentity, McpConnection)>,
@@ -3351,6 +3441,7 @@ pub struct SupervisionDue {
 /// One supervisor sweep's plan: candidates to redial plus the transitions
 /// the plan phase already knows (recoveries and newly parked servers).
 pub struct SupervisionPlan {
+    pub auth_context: Arc<dyn AuthContext>,
     pub backend: McpBackend,
     pub due: Vec<SupervisionDue>,
     pub recovered: Vec<String>,
@@ -3443,8 +3534,13 @@ pub fn tool_selection_covers_server(requested: &[String], server: &str) -> bool 
 impl McpPool {
     /// Create a new pool with the given configuration
     pub fn new(config: McpConfig) -> Self {
+        Self::new_with_auth_context(config, process_mcp_auth_context())
+    }
+
+    pub fn new_with_auth_context(config: McpConfig, auth_context: Arc<dyn AuthContext>) -> Self {
         let config_hash = hash_mcp_config(&config);
         Self {
+            auth_context,
             backend: McpBackend::default(),
             connections: HashMap::new(),
             disallowed_tools: Vec::new(),
@@ -3474,6 +3570,10 @@ impl McpPool {
         self.backend = backend;
         self
     }
+    pub fn auth_context(&self) -> Arc<dyn AuthContext> {
+        Arc::clone(&self.auth_context)
+    }
+
     pub fn backend(&self) -> McpBackend {
         self.backend
     }
@@ -3505,12 +3605,26 @@ impl McpPool {
         workspace: &Path,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<Self> {
+        Self::from_config_path_with_workspace_and_plugins_and_auth_context(
+            path,
+            workspace,
+            plugins,
+            process_mcp_auth_context(),
+        )
+    }
+
+    pub fn from_config_path_with_workspace_and_plugins_and_auth_context(
+        path: &std::path::Path,
+        workspace: &Path,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        auth_context: Arc<dyn AuthContext>,
+    ) -> Result<Self> {
         if plugins.workspace() != workspace {
             anyhow::bail!("plugin registry workspace does not match MCP pool workspace");
         }
         let config = load_config_with_workspace_and_plugins(path, workspace, plugins.as_ref())?;
         let workspace = checked_workspace_path(workspace)?;
-        let mut pool = Self::new(config);
+        let mut pool = Self::new_with_auth_context(config, auth_context);
         pool.config_sources = vec![
             path.to_path_buf(),
             checked_workspace_mcp_config_path(&workspace)?,
@@ -3536,12 +3650,26 @@ impl McpPool {
         workspace: &Path,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<Self> {
+        Self::empty_with_workspace_config_sources_and_auth_context(
+            path,
+            workspace,
+            plugins,
+            process_mcp_auth_context(),
+        )
+    }
+
+    pub fn empty_with_workspace_config_sources_and_auth_context(
+        path: &std::path::Path,
+        workspace: &Path,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        auth_context: Arc<dyn AuthContext>,
+    ) -> Result<Self> {
         validate_mcp_config_path(path)?;
         if plugins.workspace() != workspace {
             anyhow::bail!("plugin registry workspace does not match MCP pool workspace");
         }
         let workspace = checked_workspace_path(workspace)?;
-        let mut pool = Self::new(McpConfig::default());
+        let mut pool = Self::new_with_auth_context(McpConfig::default(), auth_context);
         pool.config_sources = vec![
             path.to_path_buf(),
             checked_workspace_mcp_config_path(&workspace)?,
@@ -3897,7 +4025,7 @@ impl McpPool {
                 merge_plugin_mcp_servers(config, plugins.as_ref())?
             }
         };
-        let mut pool = Self::new(config)
+        let mut pool = Self::new_with_auth_context(config, Arc::clone(&self.auth_context))
             .with_backend(self.backend)
             .with_disallowed_tools(self.disallowed_tools.clone());
         pool.network_policy = self.network_policy.clone();
@@ -4013,12 +4141,13 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let mut connection = match McpConnection::connect_with_backend(
+        let mut connection = match McpConnection::connect_with_backend_and_auth_context(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
             self.network_policy.as_ref(),
             self.backend,
+            Arc::clone(&self.auth_context),
         )
         .await
         {
@@ -4053,12 +4182,13 @@ impl McpPool {
     /// the named transport.
     pub async fn retry_connection(&mut self, server_name: &str) -> Result<&mut McpConnection> {
         let server_config = self.retry_server_config(server_name)?;
-        let mut connection = match McpConnection::connect_with_backend(
+        let mut connection = match McpConnection::connect_with_backend_and_auth_context(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
             self.network_policy.as_ref(),
             self.backend,
+            Arc::clone(&self.auth_context),
         )
         .await
         {
@@ -4132,6 +4262,10 @@ impl McpPool {
     ) -> Result<()> {
         self.require_server(&name)?;
         anyhow::ensure!(
+            Arc::ptr_eq(&connection.auth_context, &self.auth_context),
+            "MCP connection belongs to another credential authority"
+        );
+        anyhow::ensure!(
             connection.catalog_generation == self.current_catalog_generation(),
             "MCP configuration changed while connecting {name}; retry against the current config"
         );
@@ -4160,11 +4294,17 @@ impl McpPool {
                 let identity = mcp_server_identity(&self.config, &name)?;
                 (identity.1.is_none()
                     && connection.config().url.is_none()
+                    && !connection
+                        .config()
+                        .env
+                        .values()
+                        .any(|value| value.contains("${"))
                     && connection.is_transport_ready())
                 .then_some((name, identity, connection))
             })
             .collect();
         McpHandoff {
+            auth_context: Arc::clone(&self.auth_context),
             workspace: self.workspace.clone(),
             backend: self.backend,
             connections,
@@ -4172,7 +4312,11 @@ impl McpPool {
     }
 
     pub fn adopt_handoff(&mut self, handoff: McpHandoff) -> usize {
-        if self.retired || handoff.workspace != self.workspace || handoff.backend != self.backend {
+        if self.retired
+            || handoff.workspace != self.workspace
+            || handoff.backend != self.backend
+            || !Arc::ptr_eq(&handoff.auth_context, &self.auth_context)
+        {
             return 0;
         }
         let generation = self.current_catalog_generation();
@@ -4367,6 +4511,7 @@ impl McpPool {
             });
         }
         SupervisionPlan {
+            auth_context: Arc::clone(&self.auth_context),
             backend: self.backend,
             due,
             recovered,
@@ -4490,7 +4635,7 @@ impl McpPool {
             if plan.due.is_empty() && plan.recovered.is_empty() && plan.parked.is_empty() {
                 continue;
             }
-            let mut connects = Self::spawn_pending_connects(
+            let mut connects = Self::spawn_pending_connects_with_auth_context(
                 plan.due
                     .iter()
                     .map(|due| (due.name.clone(), due.config.clone()))
@@ -4499,6 +4644,7 @@ impl McpPool {
                 plan.network_policy.clone(),
                 plan.catalog_generation,
                 plan.backend,
+                Arc::clone(&plan.auth_context),
             );
             let mut update = McpSupervisorUpdate {
                 recovered: plan.recovered,
@@ -4857,21 +5003,41 @@ impl McpPool {
         catalog_generation: u64,
         backend: McpBackend,
     ) -> tokio::task::JoinSet<(String, Result<McpConnection, anyhow::Error>)> {
+        Self::spawn_pending_connects_with_auth_context(
+            pending,
+            timeouts,
+            network_policy,
+            catalog_generation,
+            backend,
+            process_mcp_auth_context(),
+        )
+    }
+
+    pub fn spawn_pending_connects_with_auth_context(
+        pending: Vec<McpPendingConnect>,
+        timeouts: McpTimeouts,
+        network_policy: Option<NetworkPolicyDecider>,
+        catalog_generation: u64,
+        backend: McpBackend,
+        auth_context: Arc<dyn AuthContext>,
+    ) -> tokio::task::JoinSet<(String, Result<McpConnection, anyhow::Error>)> {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(Self::CONNECT_CONCURRENCY));
         let mut joins: tokio::task::JoinSet<(String, Result<McpConnection, anyhow::Error>)> =
             tokio::task::JoinSet::new();
         for (name, config) in pending {
             let permit = semaphore.clone();
             let network_policy = network_policy.clone();
+            let auth_context = Arc::clone(&auth_context);
             joins.spawn(async move {
                 let connection = std::panic::AssertUnwindSafe(async {
                     let _permit = permit.acquire_owned().await;
-                    McpConnection::connect_with_backend(
+                    McpConnection::connect_with_backend_and_auth_context(
                         name.clone(),
                         config,
                         &timeouts,
                         network_policy.as_ref(),
                         backend,
+                        auth_context,
                     )
                     .await
                     .map(|mut connection| {
@@ -4944,12 +5110,13 @@ impl McpPool {
                 break;
             }
 
-            let mut connects = Self::spawn_pending_connects(
+            let mut connects = Self::spawn_pending_connects_with_auth_context(
                 pending,
                 self.config.timeouts,
                 self.network_policy.clone(),
                 self.catalog_generation.load(Ordering::SeqCst),
                 self.backend,
+                Arc::clone(&self.auth_context),
             );
             while let Some(joined) = connects.join_next().await {
                 let (name, result) = joined
@@ -5083,18 +5250,24 @@ impl McpPool {
             .get(server_name)
             .is_some_and(McpConnection::is_ready);
         if ready
-            || oauth::has_usable_stored_tokens(server_name, &server, self.network_policy.as_ref())
-                .await?
+            || oauth::has_usable_stored_tokens_with_auth_context(
+                server_name,
+                &server,
+                self.network_policy.as_ref(),
+                Arc::clone(&self.auth_context),
+            )
+            .await?
         {
             return Ok(AuthenticateToolStart::AlreadyAuthorized);
         }
-        let login = oauth::begin_oauth_login_for_server_tool(
+        let login = oauth::begin_oauth_login_for_server_tool_with_auth_context(
             server_name,
             &server,
             None,
             self.oauth_callback_port,
             self.oauth_callback_url.as_deref(),
             self.network_policy.as_ref(),
+            Arc::clone(&self.auth_context),
         )
         .await?;
         Ok(AuthenticateToolStart::Login(Box::new(login)))
@@ -5399,6 +5572,7 @@ impl McpPool {
         }))
         .expect("minimal server config");
         let conn = McpConnection {
+            auth_context: Arc::clone(&self.auth_context),
             name: server.to_string(),
             transport: Box::new(IdleTransport),
             tools: tools

@@ -1674,7 +1674,8 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
 
 /// The workspace file a right-click on a transcript cell points at: the first
 /// `path:line` on the clicked line, else a bare path there at line 1, else
-/// the same search over the cell. All must be
+/// the same search over its displayed preview; hidden references are not
+/// enumerated for this click. All must be
 /// regular files inside the workspace, reached without links
 /// (`history::workspace_file`); `open_file_in_editor` checks again.
 fn context_menu_file_reference(

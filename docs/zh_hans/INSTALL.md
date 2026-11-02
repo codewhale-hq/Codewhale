@@ -771,7 +771,6 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 
 下面各节原样沿用自本页的上一版。它们**没有**在上文的 v0.10.0 安装测试中重新运行（不在范围内：Windows、macOS、Android/Termux、FreeBSD、中国大陆镜像），仅 [macOS 说明](#macos-说明)中提到的 macOS 路径除外。通过检查已发布的 v0.10.0 资源，发现下列内容与之矛盾（[详情](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b0d058b97c3946e62c34bd31/docs/install-report/v0.10.0-2026-09-23/DOC_DEFECTS.md)，D15 和 D16）：
 
-* `packaging/winget/` 里的 winget 清单仍停留在 0.9.6。
 * v0.10.0 同时发布了 `codewhale-windows-x64.zip`（附带一个把文件复制到 `%USERPROFILE%\bin` 的 `install.bat`）和 `codewhale-windows-x64-portable.zip`；下面各节只提到了前者。
 * 独立的 `codewhale.bat` 启动器只能在 x64 exe 旁边工作。
 
@@ -987,23 +986,22 @@ Scoop 清单维护在本仓库的发布工作流之外，可能落后于 GitHub/
 
 #### Windows winget
 
-已发布的 winget 包是 **`HunterBown.CodeWhale`**（2026-10-04 在
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale)
-核实；最新发布版本为 0.10.0）。它是便携式 x64 包：winget 下载
-`codewhale-tui-windows-x64.exe`，将其安装为 `codewhale` 命令，并安装 Microsoft Visual C++ 2015+ x64 运行库。
+WinGet 将 **`HunterBown.CodeWhale`** 安装为便携式 x64 命令 `codewhale`。
+它下载 `codewhale-tui-windows-x64.exe`，并声明依赖 Microsoft Visual C++ 2015+ x64 运行库。
+[已发布的 0.10.2 清单](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale/0.10.2)
 
 ```powershell
 winget install HunterBown.CodeWhale
 codewhale --version
 ```
 
-使用 `winget upgrade HunterBown.CodeWhale` 或 `codewhale update` 更新。每个版本在 GitHub Release 之后都要经过 winget-pkgs 审核，因此 winget 可能落后于 GitHub/npm/Cargo；需要立即获得最新版本时，请使用 npm 或 GitHub Release 资源。
+使用 `winget upgrade --id HunterBown.CodeWhale` 更新。每个版本在 GitHub Release 之后都要经过 winget-pkgs 审核，因此 winget 可能落后于 GitHub/npm/Cargo；需要立即获得最新版本时，请使用 npm 或 GitHub Release 资源。
 
 winget 方式的已知限制：
 
 * **仅 x64。** 已发布的清单没有 ARM64 安装包。在 Windows ARM64 上，请在原生 ARM64 Node.js 下运行 `npm install -g codewhale`，或从 GitHub Releases 下载 `codewhale-windows-arm64.zip`。
 * **仅安装 `codewhale`。** winget 不安装简短别名 `codew`；请使用 `codewhale`。
-* 本仓库中的清单（`packaging/winget/`）不是 winget 实际提供的清单；见 [`packaging/winget/README.md`](../../packaging/winget/README.md)。
+* 发布脚本生成与上述安装方式一致的本地清单。[WinGet 打包说明](../../packaging/winget/README.md)。
 
 #### Windows NSIS 安装器
 

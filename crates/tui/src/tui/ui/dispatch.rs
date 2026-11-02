@@ -674,6 +674,7 @@ pub(crate) fn prepare_user_dispatch(
     // Capture the App state before any optimistic mutation so a failure can
     // roll back cleanly.
     let snapshot = UserDispatchSnapshot {
+        session_write_owner: app.session_write_owner.clone(),
         is_loading: app.is_loading,
         suppress_stream_events_until_turn_complete: app.suppress_stream_events_until_turn_complete,
         runtime_turn_status: app.runtime_turn_status.clone(),
@@ -722,6 +723,7 @@ pub(crate) fn prepare_user_dispatch(
     let allowed_tools = allowed_tools_for_message(app.active_allowed_tools.clone(), &message);
 
     Ok(UserDispatchPrepare {
+        submission_id: uuid::Uuid::new_v4().to_string(),
         message,
         content,
         references,
@@ -1023,8 +1025,7 @@ pub(crate) async fn spawned_dispatch_inner(
         hook_executor: prepare.hook_executor.clone(),
         verbosity: prepare.verbosity.clone(),
         provenance: prepare.provenance,
-        // Interactive TUI submissions do not correlate submissions.
-        submission_id: None,
+        submission_id: Some(prepare.submission_id.clone()),
     });
     // Reserve capacity off the render thread, but do not let Engine start
     // until the completion callback has installed the UI's acceptance state.
@@ -1096,6 +1097,11 @@ pub(crate) fn build_dispatch_success_closure(
         move |app: &mut App, engine_handle: &EngineHandle, config: &Config| -> anyhow::Result<()> {
             app.dispatch_in_flight = false;
             prepare.paused_dispatch.apply(app, engine_handle);
+            app.session_write_owner = Some(
+                codewhale_engine::session_manager::SessionWriteOwner::Submission(
+                    prepare.submission_id.clone(),
+                ),
+            );
 
             let dispatch_started_at = Instant::now();
             app.is_loading = true;
@@ -1251,6 +1257,7 @@ pub(crate) fn build_dispatch_error_closure(
             }
             app.remote_control.fail_active_dispatch(&error);
             // Roll back the optimistic sync prepare mutations.
+            app.session_write_owner = prepare.snapshot.session_write_owner.clone();
             app.is_loading = prepare.snapshot.is_loading;
             app.runtime_turn_status = prepare.snapshot.runtime_turn_status.clone();
             app.receipt_text = prepare.snapshot.receipt_text.clone();

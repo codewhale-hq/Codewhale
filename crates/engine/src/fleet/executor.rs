@@ -22,7 +22,9 @@
 
 use anyhow::Result;
 use codewhale_config::FleetExecConfig;
-use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerEventPayload};
+use codewhale_protocol::fleet::{
+    FleetHostSpec, FleetReceipt, FleetTaskSpec, FleetWorkerEventPayload,
+};
 
 use super::host::{FleetHostAdapter, FleetWorkerCommand};
 use super::profile::AgentProfile;
@@ -551,11 +553,11 @@ pub fn classify_worker_exit(exit_code: Option<i32>, stopped: bool) -> FleetWorke
         },
         Some(code) => FleetWorkerEventPayload::Failed {
             reason: format!("worker exited with code {code}"),
-            recoverable: true,
+            recoverable: false,
         },
         None => FleetWorkerEventPayload::Failed {
             reason: "worker exited without a status code".to_string(),
-            recoverable: true,
+            recoverable: false,
         },
     }
 }
@@ -595,6 +597,8 @@ struct WorkerStream {
     // corrupts valid UTF-8 when a multibyte code point crosses a read boundary.
     pending: Vec<u8>,
     terminal: bool,
+    confirmed_stopped: bool,
+    pending_terminal: Option<PendingFleetTerminal>,
     terminal_route: TerminalRouteEvidence,
     /// When this worker process was started, for per-task wall-clock limits (R5).
     started_at: std::time::Instant,
@@ -720,20 +724,25 @@ pub struct FleetWorkerTerminalEvent {
     pub requires_reported_route: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct FleetPreparedTaskOutcome {
+    pub payload: FleetWorkerEventPayload,
+    pub tail_payloads: Vec<FleetWorkerEventPayload>,
+    pub final_status: Option<super::ledger::FleetTaskLedgerStatus>,
+    pub receipt: FleetReceipt,
+}
+
+#[derive(Debug, Clone)]
+enum PendingFleetTerminal {
+    Observed(FleetWorkerTerminalEvent),
+    Prepared(FleetPreparedTaskOutcome),
+}
+
 impl FleetExecutor {
-    pub async fn refresh_tailnet_inventory(&mut self) {
-        let snapshot = tokio::task::spawn_blocking(|| {
-            super::tailnet::TailnetSnapshot::new(
-                super::tailnet::inventory().map_err(|error| error.to_string()),
-            )
-        })
-        .await
-        .unwrap_or_else(|error| {
-            super::tailnet::TailnetSnapshot::new(Err(format!(
-                "Tailnet inventory task failed: {error}"
-            )))
-        });
-        self.tailnet_snapshot = Some(std::sync::Arc::new(snapshot));
+    pub fn refresh_tailnet_inventory(&mut self) {
+        self.tailnet_snapshot = Some(std::sync::Arc::new(super::tailnet::TailnetSnapshot::new(
+            super::tailnet::inventory().map_err(|error| error.to_string()),
+        )));
     }
 
     pub fn new(workspace: impl AsRef<std::path::Path>) -> Self {
@@ -855,6 +864,8 @@ impl FleetExecutor {
                 offset: 0,
                 pending: Vec::new(),
                 terminal: false,
+                confirmed_stopped: false,
+                pending_terminal: None,
                 terminal_route: TerminalRouteEvidence::default(),
                 started_at: std::time::Instant::now(),
                 final_answer: None,
@@ -877,6 +888,79 @@ impl FleetExecutor {
         self.streams
             .get(worker_id)
             .and_then(|stream| stream.attempt.clone())
+    }
+
+    pub(crate) fn confirmed_stopped_attempts(
+        &self,
+    ) -> std::collections::BTreeMap<String, FleetExecutorAttempt> {
+        self.streams
+            .iter()
+            .filter_map(|(id, stream)| {
+                stream
+                    .confirmed_stopped
+                    .then(|| stream.attempt.clone())
+                    .flatten()
+                    .map(|attempt| (id.clone(), attempt))
+            })
+            .collect()
+    }
+
+    pub(crate) fn is_confirmed_stopped(&self, worker_id: &str) -> bool {
+        self.streams
+            .get(worker_id)
+            .is_some_and(|stream| stream.confirmed_stopped)
+    }
+
+    pub(crate) fn prepared_terminal_outcome(
+        &self,
+        worker_id: &str,
+    ) -> Option<FleetPreparedTaskOutcome> {
+        match self.streams.get(worker_id)?.pending_terminal.as_ref()? {
+            PendingFleetTerminal::Prepared(outcome) => Some(outcome.clone()),
+            PendingFleetTerminal::Observed(_) => None,
+        }
+    }
+
+    pub(crate) fn retain_prepared_terminal_outcome(
+        &mut self,
+        worker_id: &str,
+        outcome: FleetPreparedTaskOutcome,
+    ) -> Result<()> {
+        let stream = self
+            .streams
+            .get_mut(worker_id)
+            .ok_or_else(|| anyhow::anyhow!("Fleet terminal stream is absent"))?;
+        anyhow::ensure!(
+            stream.confirmed_stopped,
+            "Fleet terminal process is not confirmed stopped"
+        );
+        if let Some(attempt) = &stream.attempt {
+            anyhow::ensure!(
+                outcome.receipt.run_id == attempt.run_id
+                    && outcome.receipt.task_id == attempt.task_id
+                    && outcome.receipt.attempt == Some(attempt.attempt)
+                    && outcome.receipt.worker_id == worker_id,
+                "Fleet terminal candidate does not match its tracked attempt"
+            );
+        }
+        stream.pending_terminal = Some(PendingFleetTerminal::Prepared(outcome));
+        Ok(())
+    }
+
+    pub(crate) fn poll_terminal_for_commit(
+        &mut self,
+        worker_id: &str,
+    ) -> Option<FleetWorkerTerminalEvent> {
+        if let Some(pending) = self.streams.get(worker_id)?.pending_terminal.as_ref() {
+            return match pending {
+                PendingFleetTerminal::Observed(event) => Some(event.clone()),
+                PendingFleetTerminal::Prepared(_) => None,
+            };
+        }
+        let event = self.poll_terminal_with_status(worker_id)?;
+        self.streams.get_mut(worker_id)?.pending_terminal =
+            Some(PendingFleetTerminal::Observed(event.clone()));
+        Some(event)
     }
 
     /// Wall-clock time this worker process has been running (R5). `None` when
@@ -911,6 +995,9 @@ impl FleetExecutor {
             adapter.stop_worker(worker_id)?;
         } else {
             self.adapter.stop_worker(worker_id)?;
+        }
+        if let Some(stream) = self.streams.get_mut(worker_id) {
+            stream.confirmed_stopped = true;
         }
         Ok(())
     }
@@ -1027,6 +1114,7 @@ impl FleetExecutor {
             tail_payloads.push(payload);
         }
         stream.terminal = true;
+        stream.confirmed_stopped = true;
         let final_answer = stream.final_answer.take();
         // Surface the visible final answer on a successful completion so
         // report/summary tasks (no scorer, no file artifact) show their
@@ -1198,6 +1286,8 @@ mod tests {
                 offset: 0,
                 pending: Vec::new(),
                 terminal: false,
+                confirmed_stopped: false,
+                pending_terminal: None,
                 terminal_route: TerminalRouteEvidence::default(),
                 started_at: std::time::Instant::now(),
                 final_answer: None,
@@ -1866,13 +1956,15 @@ mod tests {
             classify_worker_exit(Some(0), false),
             FleetWorkerEventPayload::Completed { .. }
         ));
-        assert!(matches!(
-            classify_worker_exit(Some(1), false),
-            FleetWorkerEventPayload::Failed {
-                recoverable: true,
-                ..
-            }
-        ));
+        for exit_code in [Some(1), Some(75), None] {
+            assert!(matches!(
+                classify_worker_exit(exit_code, false),
+                FleetWorkerEventPayload::Failed {
+                    recoverable: false,
+                    ..
+                }
+            ));
+        }
         assert!(matches!(
             classify_worker_exit(Some(0), true),
             FleetWorkerEventPayload::Cancelled { .. }

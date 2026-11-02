@@ -1,6 +1,6 @@
 //! Canonical user-scoped runtime path resolution for Codewhale.
 //!
-//! This leaf crate owns only the environment and platform-home decision. File
+//! This leaf crate owns environment, platform-home and daemon endpoint layout. File
 //! migration and per-subsystem fallback remain with the crate that owns those
 //! files.
 #![deny(missing_docs)]
@@ -8,6 +8,8 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+pub mod daemon_socket;
 
 /// Canonical Codewhale app directory name under the user home.
 pub const CODEWHALE_APP_DIR: &str = ".codewhale";

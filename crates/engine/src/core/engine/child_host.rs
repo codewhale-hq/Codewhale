@@ -64,6 +64,8 @@ impl Engine {
         config.session_id = Some(authority.runtime.context.state_namespace.clone());
         config.plugin_registry = authority.runtime.context.plugin_registry.clone();
         config.runtime_services = authority.runtime.context.runtime.clone();
+        config.mcp_auth_context =
+            crate::mcp::McpAuthContext(Arc::clone(&authority.runtime.mcp_auth_context));
         config.todos = authority.runtime.todos.clone();
         config.max_spawn_depth = authority.runtime.max_spawn_depth;
         config.allow_shell = authority.runtime.allow_shell;
@@ -317,6 +319,17 @@ impl Engine {
                     .clone()
                     .unwrap_or_else(|| "Core child turn interrupted".into()),
             ),
+            (TurnOutcomeStatus::Failed, _, _)
+                if self
+                    .child_host
+                    .as_ref()
+                    .and_then(|state| state.request_stop_reason)
+                    == Some("request_outcome_unknown") =>
+            {
+                SubAgentStatus::Interrupted(error.clone().unwrap_or_else(|| {
+                    "provider request outcome unknown; checkpoint preserved".into()
+                }))
+            }
             (TurnOutcomeStatus::Failed, Some(reason), _)
                 if reason == super::dispatch::FLEET_NO_PROGRESS_STOP =>
             {

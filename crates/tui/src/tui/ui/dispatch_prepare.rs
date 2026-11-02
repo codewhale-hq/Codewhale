@@ -222,6 +222,7 @@ pub(crate) enum DispatchRecovery {
 /// dispatch can roll back the optimistic history/api_messages changes.
 #[derive(Debug, Clone)]
 pub(crate) struct UserDispatchSnapshot {
+    pub(crate) session_write_owner: Option<codewhale_engine::session_manager::SessionWriteOwner>,
     pub(crate) is_loading: bool,
     pub(crate) suppress_stream_events_until_turn_complete: bool,
     pub(crate) runtime_turn_status: Option<String>,
@@ -239,6 +240,7 @@ pub(crate) struct UserDispatchSnapshot {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub(crate) struct UserDispatchPrepare {
+    pub(super) submission_id: String,
     pub(super) message: QueuedMessage,
     pub(super) content: String,
     pub(super) references: Vec<ContextReference>,

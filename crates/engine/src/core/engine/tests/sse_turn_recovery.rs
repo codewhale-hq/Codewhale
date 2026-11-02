@@ -218,8 +218,17 @@ fn retry_status_count(events: &[Event]) -> usize {
 }
 
 async fn verify_next_user_turn_after_loss(failure: Failure) {
+    let _environment = lock_test_env();
+    let workspace = tempdir().expect("owned stream recovery workspace");
+    let fixture_state = workspace.path().join(".codewhale");
+    fs::create_dir_all(&fixture_state).unwrap();
+    fs::write(
+        fixture_state.join("AGENTS.md"),
+        "Preserve the exact operator input.\n",
+    )
+    .unwrap();
+    let _state_home = EnvVarGuard::set("CODEWHALE_HOME", &fixture_state);
     let server = LoopbackSse::start(failure).await;
-    let workspace = tempdir().unwrap();
     let config = {
         let __cw_config_init_0_0 = Some("custom".to_string());
         let __cw_config_init_0_1 =
@@ -233,7 +242,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         Some("synthetic-loopback-key".to_string()),
         Some(server.base_url.clone()),
     );
-    let (engine, handle) = Engine::new(
+    let (mut engine, handle) = Engine::new(
         EngineConfig {
             max_steps: 1,
             terminal_chrome_enabled: true,
@@ -242,7 +251,14 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         },
         &config,
     );
-    let task = tokio::spawn(engine.run());
+    engine.instruction_settings.home = Some(workspace.path().to_path_buf());
+    engine.refresh_system_prompt();
+    let env_scope = crate::test_support::env_scope_ticket();
+    let mut run = Box::pin(engine.run());
+    let task = tokio::spawn(std::future::poll_fn(move |context| {
+        let _membership = crate::test_support::join_env_scope(env_scope);
+        std::future::Future::poll(run.as_mut(), context)
+    }));
     send_user(&handle, &config, FIRST_USER).await;
     let mut first = Vec::new();
     if matches!(failure, Failure::StalledBody) {
@@ -278,12 +294,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
                 && envelope.message.contains("error decoding response body")))
         );
     }
-    let partial_count = match failure {
-        Failure::TruncatedBody => {
-            usize::try_from(super::super::DEFAULT_STREAM_MAX_RESUMES).unwrap() + 1
-        }
-        Failure::StalledBody => 1,
-    };
+    let partial_count = 1;
     assert_eq!(
         server.requests.lock().unwrap().len(),
         partial_count,
@@ -295,10 +306,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         partial_count,
         "terminal parent-request count must match POSTs observed by the loopback"
     );
-    let expected_resumes = match failure {
-        Failure::TruncatedBody => super::super::DEFAULT_STREAM_MAX_RESUMES,
-        Failure::StalledBody => 0,
-    };
+    let expected_resumes = 0;
     assert_eq!(first_terminal.stream_resumes, expected_resumes);
     assert_eq!(first_terminal.transparent_stream_retries, 0);
     assert_eq!(
@@ -353,7 +361,9 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
             ),
             "this regression has no pending approval or user-input gate: {event:?}"
         );
-        if let Event::SessionUpdated { session_id, .. } = event {
+        if let Event::SessionUpdated {
+            source: _,
+            session_id, .. } = event {
             assert_eq!(session_id, SESSION_ID);
         }
     }

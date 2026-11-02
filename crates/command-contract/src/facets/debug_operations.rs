@@ -124,7 +124,7 @@ pub trait CommandDebugUndoContext {
     /// the conversation when it is still its last one. Preserves snapshot
     /// ownership, regular-file checks, backup and preflight, and asks for no
     /// trust: it only puts back, inside the workspace, what that request
-    /// changed. `force` accepts a request with no recorded end. Never falls
+    /// changed. `force` never waives owned identity or a complete write record. Never falls
     /// back to chat truncation: the portable handler decides that from the
     /// typed outcome.
     fn undo_files(&mut self, force: bool) -> DebugUndoOutcome;

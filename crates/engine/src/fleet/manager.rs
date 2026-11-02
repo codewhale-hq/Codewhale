@@ -7,7 +7,6 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,8 +17,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::executor::{
-    FleetExecutor, FleetExecutorAttempt, FleetWorkerReportedRoute, FleetWorkerTerminalEvent,
-    authority_envelope_for_worker, build_worker_exec_command_with_launch_spec,
+    FleetExecutor, FleetExecutorAttempt, FleetPreparedTaskOutcome, FleetWorkerReportedRoute,
+    FleetWorkerTerminalEvent, authority_envelope_for_worker,
+    build_worker_exec_command_with_launch_spec,
 };
 use super::host::FleetHostErrorKind;
 use super::ledger::{
@@ -36,9 +36,16 @@ use codewhale_runtime::config::Config;
 
 const DEFAULT_STALE_AFTER_SECONDS: u64 = 300;
 
+#[derive(Debug, thiserror::Error)]
+#[error("worker {worker_id} task changed before it could be restarted")]
+struct FleetRestartChanged {
+    worker_id: String,
+}
+
+#[derive(Clone)]
 pub struct FleetManager {
     workspace: PathBuf,
-    ledger: FleetLedger,
+    ledger: std::sync::Arc<FleetLedger>,
     stale_after: Duration,
     exec_config: codewhale_config::FleetExecConfig,
     /// `[fleet]` table used to build the agent roster for dispatch
@@ -300,7 +307,7 @@ struct FleetExecutorTaskContext {
 impl FleetManager {
     pub fn open(workspace: impl AsRef<Path>) -> Result<Self> {
         let workspace = workspace.as_ref().to_path_buf();
-        let ledger = FleetLedger::open(&workspace)?;
+        let ledger = std::sync::Arc::new(FleetLedger::open(&workspace)?);
         Ok(Self {
             workspace,
             ledger,
@@ -628,7 +635,9 @@ impl FleetManager {
         max_workers: usize,
         unavailable_workers: &BTreeSet<String>,
     ) -> Result<FleetTickReport> {
-        self.reconcile_coordination_worker_statuses()?;
+        if !self.reconcile_coordination_worker_statuses(run_id, &BTreeMap::new())? {
+            return Ok(FleetTickReport::default());
+        }
         let max_workers = max_workers.clamp(1, 128);
         let mut report = FleetTickReport::default();
         let state = self.ledger.rebuild_state()?;
@@ -694,58 +703,167 @@ impl FleetManager {
         Ok(report)
     }
 
-    fn reconcile_coordination_worker_statuses(&self) -> Result<()> {
+    fn reconcile_coordination_worker_statuses(
+        &self,
+        run_id: &FleetRunId,
+        stopped_workers: &BTreeMap<String, FleetExecutorAttempt>,
+    ) -> Result<bool> {
         let Some(manager) = self.sub_agent_manager.as_ref() else {
-            return Ok(());
+            return Ok(true);
         };
         let Ok(mut guard) = manager.try_write() else {
-            // The next scheduler tick retries before leasing more work.
-            return Ok(());
+            return Ok(false);
         };
         let state = self.ledger.rebuild_state()?;
-        for record in guard
-            .fleet_worker_records_for_workspace(&self.workspace)
-            .map_err(anyhow::Error::msg)?
+        if state.tasks.values().any(|task| {
+            matches!(
+                task.status,
+                FleetTaskLedgerStatus::Completed
+                    | FleetTaskLedgerStatus::Failed
+                    | FleetTaskLedgerStatus::Cancelled
+            )
+        }) || state
+            .receipts
+            .values()
+            .any(|receipt| receipt.attempt.is_some() && receipt.terminal_seq.is_some())
         {
-            let current = state
-                .tasks
-                .values()
-                .filter(|task| task.entry.run_id.0 == record.spec.run_id)
-                .filter(|task| task.leased_to.as_deref() == Some(record.spec.worker_id.as_str()))
-                .max_by_key(|task| task.lifecycle_seq);
-            let Some(current) = current else {
-                continue;
-            };
-            let (status, status_label) = match current.status {
-                FleetTaskLedgerStatus::Enqueued => {
-                    (crate::tools::subagent::AgentWorkerStatus::Queued, "queued")
-                }
-                FleetTaskLedgerStatus::Leased => (
-                    crate::tools::subagent::AgentWorkerStatus::Running,
-                    "running",
-                ),
-                FleetTaskLedgerStatus::Completed => (
-                    crate::tools::subagent::AgentWorkerStatus::Completed,
-                    "completed",
-                ),
-                FleetTaskLedgerStatus::Failed => {
-                    (crate::tools::subagent::AgentWorkerStatus::Failed, "failed")
-                }
-                FleetTaskLedgerStatus::Cancelled => (
-                    crate::tools::subagent::AgentWorkerStatus::Cancelled,
-                    "cancelled",
-                ),
-            };
-            guard.project_external_worker_status(
-                &record.spec.worker_id,
-                status,
-                Some(format!(
-                    "Fleet task {} is {}",
-                    current.entry.task_id, status_label
-                )),
-            );
+            self.ledger.ensure_durable()?;
         }
-        Ok(())
+        let roster = self.agent_roster();
+        guard.with_store_transaction(|held| {
+            let mut reconciled = true;
+            for mut record in held
+                .fleet_worker_records_for_workspace(&self.workspace)
+                .map_err(anyhow::Error::msg)?
+            {
+                let current = state
+                    .tasks
+                    .values()
+                    .filter(|task| task.entry.run_id.0 == record.spec.run_id)
+                    .filter(|task| {
+                        task.leased_to.as_deref() == Some(record.spec.worker_id.as_str())
+                    })
+                    .max_by_key(|task| task.lifecycle_seq);
+                let Some(current) = current else {
+                    continue;
+                };
+                if record.spec.run_id != run_id.0
+                    && !(held.owns_store_record(&record.spec.worker_id)
+                        && held.get_result(&record.spec.worker_id).is_err()
+                        && record.started_at_ms.is_none()
+                        && record.prepared_generation.is_none()
+                        && record.launch_admission_version == 1
+                        && !record.recovery_interrupted
+                        && record.spec.launch_manifest.as_ref().is_some_and(|manifest| manifest.generation == 1)
+                        && matches!(current.status, FleetTaskLedgerStatus::Completed | FleetTaskLedgerStatus::Failed | FleetTaskLedgerStatus::Cancelled))
+                {
+                    continue;
+                }
+                let run = state
+                    .runs
+                    .get(&current.entry.run_id.0)
+                    .ok_or_else(|| anyhow!("Fleet lifecycle run is absent"))?;
+                let task_spec = run
+                    .task_specs
+                    .iter()
+                    .find(|task| task.id == current.entry.task_id)
+                    .ok_or_else(|| anyhow!("Fleet lifecycle task spec is absent"))?;
+                let worker_spec = run
+                    .worker_specs
+                    .iter()
+                    .find(|worker| worker.id == record.spec.worker_id)
+                    .cloned()
+                    .unwrap_or_else(|| default_local_worker(&record.spec.worker_id));
+                let cwd = resolve_task_cwd(&self.workspace, task_spec)?;
+                let expected = bind_fleet_launch_attempt(
+                    worker_runtime::apply_exec_hardening(
+                        worker_runtime::fleet_task_to_worker_spec_with_profiles(
+                            &record.spec.worker_id,
+                            &current.entry.run_id.0,
+                            task_spec,
+                            &worker_spec,
+                            self.run_model(),
+                            &cwd,
+                            &self.workspace,
+                            roster.members(),
+                            None,
+                        )?,
+                        &self.exec_config,
+                    ),
+                    current.entry.attempts,
+                );
+                let mut registered = record.spec.clone();
+                if record.prepared_generation.is_some()
+                    && let (Some(manifest), Some(expected_manifest)) = (
+                        registered.launch_manifest.as_mut(),
+                        expected.launch_manifest.as_ref(),
+                    )
+                    && expected_manifest.generation.checked_add(1) == Some(manifest.generation)
+                {
+                    manifest.generation = expected_manifest.generation;
+                }
+                validate_registered_launch_spec(&registered, &expected)?;
+                let (status, status_label) = match current.status {
+                    FleetTaskLedgerStatus::Enqueued => {
+                        (crate::tools::subagent::AgentWorkerStatus::Queued, "queued")
+                    }
+                    FleetTaskLedgerStatus::Leased => (
+                        crate::tools::subagent::AgentWorkerStatus::Running,
+                        "running",
+                    ),
+                    FleetTaskLedgerStatus::Completed => (
+                        crate::tools::subagent::AgentWorkerStatus::Completed,
+                        "completed",
+                    ),
+                    FleetTaskLedgerStatus::Failed => {
+                        (crate::tools::subagent::AgentWorkerStatus::Failed, "failed")
+                    }
+                    FleetTaskLedgerStatus::Cancelled => (
+                        crate::tools::subagent::AgentWorkerStatus::Cancelled,
+                        "cancelled",
+                    ),
+                };
+                let receipt = state.receipts.get(&task_key(&current.entry.run_id.0, &current.entry.task_id));
+                let receipt_worker_id = record.spec.worker_id.clone();
+                let receipt_matches = |attempt: u32| receipt.is_some_and(|receipt| {
+                    receipt.run_id == current.entry.run_id && receipt.task_id == current.entry.task_id
+                        && receipt.worker_id == receipt_worker_id && receipt.attempt == Some(attempt)
+                        && receipt.terminal_seq.is_some()
+                });
+                let generation = record.spec.launch_manifest.as_ref().map_or(0, |manifest| manifest.generation);
+                if record.prepared_previous_attempt_unsettled {
+                    let previous_generation = generation.checked_sub(1).ok_or_else(|| anyhow!("invalid prepared Fleet generation"))?;
+                    let stopped = stopped_workers.get(&record.spec.worker_id).is_some_and(|attempt| attempt.run_id == current.entry.run_id && attempt.task_id == current.entry.task_id && attempt.attempt == previous_generation);
+                    if stopped || receipt_matches(previous_generation) {
+                        let mut previous = record.spec.clone();
+                        previous.launch_manifest.as_mut().expect("prepared manifest checked").generation = previous_generation;
+                        held.confirm_previous_worker_attempt_settled(&previous)?;
+                        record = held.get_worker_record(&record.spec.worker_id).expect("settled prepared worker exists");
+                    } else {
+                        if status.is_terminal() { reconciled = false; }
+                        continue;
+                    }
+                }
+                if status.is_terminal() && !(record.status.is_terminal() && !record.recovery_interrupted) {
+                    let unstarted = record.started_at_ms.is_none() && (record.launch_admission_version == 1 && generation == 1 || record.prepared_generation == Some(generation));
+                    let stopped = stopped_workers.get(&record.spec.worker_id).is_some_and(|attempt| attempt.run_id == current.entry.run_id && attempt.task_id == current.entry.task_id && attempt.attempt == current.entry.attempts);
+                    if !unstarted && !stopped && !receipt_matches(current.entry.attempts) {
+                        anyhow::ensure!(!record.recovery_interrupted, "Fleet worker {} has no acknowledged actual process outcome; retain its uncertain attempt", record.spec.worker_id);
+                        reconciled = false;
+                        continue;
+                    }
+                }
+                held.project_external_worker_status(
+                    &registered,
+                    status,
+                    Some(format!(
+                        "Fleet task {} is {}",
+                        current.entry.task_id, status_label
+                    )),
+                )?;
+            }
+            Ok(reconciled)
+        })
     }
 
     pub fn status(&self) -> Result<FleetStatusSnapshot> {
@@ -832,11 +950,11 @@ impl FleetManager {
         &self,
         run_id: &FleetRunId,
         max_workers: usize,
-        executor: &mut FleetExecutor,
+        mut executor: FleetExecutor,
         codewhale_binary: &str,
         model: Option<&str>,
         tick_interval: Duration,
-    ) -> Result<FleetStatusSnapshot> {
+    ) -> Result<(FleetStatusSnapshot, FleetExecutor)> {
         let max_workers = max_workers.clamp(1, 128);
         let manager_lock_path = self.manager_lock_path(run_id);
         // Directory creation and the lock-file open are blocking filesystem
@@ -846,7 +964,7 @@ impl FleetManager {
             let path = manager_lock_path.clone();
             let workspace = self.workspace.clone();
             let relative = Self::manager_lock_relative_path(run_id);
-            tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+            codewhale_runtime::runtime_control::owner_work(move || -> Result<std::fs::File> {
                 // Created and opened through the pinned no-follow handle, so a
                 // linked `.codewhale` or lock name is refused, not followed.
                 codewhale_util::files::WorkspaceFile::open(&workspace, &relative, true)
@@ -854,101 +972,103 @@ impl FleetManager {
                     .with_context(|| format!("opening Fleet manager lock {}", path.display()))
             })
             .await
-            .context("Fleet manager lock setup task failed to join")??
+            .context("Fleet manager lock setup task failed")?
         };
-        let mut manager_lock = fd_lock::RwLock::new(lock_file);
+        let manager_guard = std::sync::Arc::new(lock_file);
         let standby_interval = tick_interval
             .min(Duration::from_millis(100))
             .max(Duration::from_millis(10));
         let mut observed_owner = false;
-        let _manager_guard = loop {
-            match manager_lock.try_write() {
-                Ok(guard) => {
-                    if observed_owner {
-                        if self.run_has_open_work(run_id)? {
-                            bail!(
-                                "Fleet manager for run {} exited with open work; wait for stale reconciliation before resuming",
-                                run_id.0
-                            );
-                        }
-                        return self.run_status(run_id);
-                    }
-                    break guard;
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    // Another process owns this run. Wait for it to finish,
-                    // but never treat lock release as permission to relaunch
-                    // its unchanged leased attempts: an orphan child may still
-                    // be alive after a crash. Stale reconciliation owns that
-                    // recovery/generation transition.
-                    observed_owner = true;
-                    if !self.run_has_open_work(run_id)? {
-                        return self.run_status(run_id);
-                    }
-                    tokio::time::sleep(standby_interval).await;
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!(
-                            "locking Fleet manager ownership {}",
-                            manager_lock_path.display()
-                        )
-                    });
-                }
-            }
-        };
-        let tailnet_workers: BTreeSet<_> = self
-            .ledger
-            .rebuild_state()?
-            .runs
-            .get(&run_id.0)
-            .into_iter()
-            .flat_map(|run| &run.worker_specs)
-            .filter(|worker| matches!(worker.host, FleetHostSpec::Tailscale { .. }))
-            .map(|worker| worker.id.clone())
-            .collect();
         loop {
-            // A terminal ledger update can race the foreground host process.
-            // Do not lease new work onto a logical worker until its executor
-            // handle has been observed and forgotten below.
-            let unavailable_workers = executor.worker_ids().into_iter().collect();
-            let scheduling_error = self
-                .schedule_run_excluding(run_id, max_workers, &unavailable_workers)
-                .err();
-            if !tailnet_workers.is_empty() {
-                let state = self.ledger.rebuild_state()?;
-                let needs_inventory = active_tasks_for_run(&state, run_id).any(|task| {
-                    task.leased_to.as_deref().is_some_and(|worker| {
-                        tailnet_workers.contains(worker) && !executor.is_tracking(worker)
-                    })
-                });
-                if needs_inventory {
-                    executor.refresh_tailnet_inventory().await;
-                }
+            let acquired = codewhale_util::lock::try_lock_file_exclusive(&manager_guard)
+                .with_context(|| {
+                    format!(
+                        "locking Fleet manager ownership {}",
+                        manager_lock_path.display()
+                    )
+                })?;
+            if acquired && !observed_owner {
+                break;
             }
-            self.drive_executor_tick(run_id, executor, codewhale_binary, model)?;
-            self.refresh_run_status(run_id)?;
-            if let Some(error) = scheduling_error {
-                if executor.worker_ids().is_empty() {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "scheduling Fleet run {} after draining owned workers",
-                            run_id.0
-                        )
-                    });
-                }
-                tracing::warn!(
-                    run_id = %run_id.0,
-                    error = %error,
-                    "Fleet scheduling paused while already-leased workers continue"
+            observed_owner = true;
+            let manager = self.clone();
+            let owned_run_id = run_id.clone();
+            let guard = std::sync::Arc::clone(&manager_guard);
+            let (open, status) = codewhale_runtime::runtime_control::owner_work(move || {
+                let _guard = guard;
+                let open = manager.run_has_open_work(&owned_run_id)?;
+                let status = if open {
+                    None
+                } else {
+                    Some(manager.run_status(&owned_run_id)?)
+                };
+                Ok((open, status))
+            })
+            .await?;
+            if acquired && open {
+                bail!(
+                    "Fleet manager for run {} exited with open work; wait for stale reconciliation before resuming",
+                    run_id.0
                 );
             }
-            // A separate `fleet interrupt` process can make the ledger
-            // terminal while this manager still owns a live host child. Keep
-            // driving until the executor has observed that cancellation and
-            // stopped every tracked process.
-            if !self.run_has_open_work(run_id)? && executor.worker_ids().is_empty() {
-                return self.run_status(run_id);
+            if let Some(status) = status {
+                return Ok((status, executor));
+            }
+            tokio::time::sleep(standby_interval).await;
+        }
+        let manager = self.clone();
+        let owned_run_id = run_id.clone();
+        let guard = std::sync::Arc::clone(&manager_guard);
+        let tailnet_workers = codewhale_runtime::runtime_control::owner_work(move || {
+            let _guard = guard;
+            Ok(manager
+                .ledger
+                .rebuild_state()?
+                .runs
+                .get(&owned_run_id.0)
+                .into_iter()
+                .flat_map(|run| &run.worker_specs)
+                .filter(|worker| matches!(worker.host, FleetHostSpec::Tailscale { .. }))
+                .map(|worker| worker.id.clone())
+                .collect::<BTreeSet<_>>())
+        })
+        .await?;
+        loop {
+            let manager = self.clone();
+            let run_id = run_id.clone();
+            let guard = std::sync::Arc::clone(&manager_guard);
+            let codewhale_binary = codewhale_binary.to_string();
+            let model = model.map(str::to_string);
+            let tailnet_workers = tailnet_workers.clone();
+            let (returned_executor, returned_guard, outcome) = codewhale_runtime::runtime_control::owner_work(move || {
+                let outcome = (|| -> Result<Option<FleetStatusSnapshot>> {
+                    let unavailable_workers = executor.worker_ids().into_iter().collect();
+                    let scheduling_error = manager.schedule_run_excluding(&run_id, max_workers, &unavailable_workers).err();
+                    if !tailnet_workers.is_empty() {
+                        let state = manager.ledger.rebuild_state()?;
+                        if active_tasks_for_run(&state, &run_id).any(|task| task.leased_to.as_deref().is_some_and(|worker| tailnet_workers.contains(worker) && !executor.is_tracking(worker))) {
+                            executor.refresh_tailnet_inventory();
+                        }
+                    }
+                    let execution_error = manager.drive_executor_tick(&run_id, &mut executor, &codewhale_binary, model.as_deref()).err();
+                    if let Some(error) = execution_error.or(scheduling_error) {
+                        if executor.worker_ids().is_empty() {
+                            return Err(error).with_context(|| format!("scheduling Fleet run {} after draining owned workers", run_id.0));
+                        }
+                        tracing::warn!(run_id = %run_id.0, error = %error, "Fleet scheduling paused while already-leased workers continue");
+                    }
+                    if !manager.run_has_open_work(&run_id)? && executor.worker_ids().is_empty()
+                        && manager.reconcile_coordination_worker_statuses(&run_id, &BTreeMap::new())? {
+                        return manager.run_status(&run_id).map(Some);
+                    }
+                    Ok(None)
+                })();
+                Ok((executor, guard, outcome))
+            }).await?;
+            executor = returned_executor;
+            drop(returned_guard);
+            if let Some(status) = outcome? {
+                return Ok((status, executor));
             }
             tokio::time::sleep(tick_interval).await;
         }
@@ -962,119 +1082,156 @@ impl FleetManager {
         model: Option<&str>,
     ) -> Result<FleetExecutorTickReport> {
         let mut report = FleetExecutorTickReport::default();
-        report.started += self.start_leased_workers(run_id, executor, codewhale_binary, model)?;
-
+        let stopped = executor.confirmed_stopped_attempts();
+        let reconciliation = self.reconcile_coordination_worker_statuses(run_id, &stopped);
+        let reconciled = reconciliation.as_ref().is_ok_and(|ready| *ready);
+        let reconciliation_error = reconciliation.err();
+        if let Some(manager) = self.sub_agent_manager.as_ref()
+            && let Ok(guard) = manager.try_read()
+        {
+            let state = self.ledger.rebuild_state()?;
+            for record in guard
+                .fleet_worker_records_for_workspace(&self.workspace)
+                .map_err(anyhow::Error::msg)?
+            {
+                if record.spec.run_id == run_id.0 && record.prepared_previous_attempt_unsettled {
+                    let generation = record
+                        .spec
+                        .launch_manifest
+                        .as_ref()
+                        .map_or(0, |manifest| manifest.generation);
+                    let task = state
+                        .tasks
+                        .values()
+                        .filter(|task| {
+                            task.entry.run_id == *run_id
+                                && task.leased_to.as_deref() == Some(record.spec.worker_id.as_str())
+                        })
+                        .max_by_key(|task| task.lifecycle_seq);
+                    anyhow::ensure!(
+                        executor
+                            .tracked_attempt(&record.spec.worker_id)
+                            .is_some_and(|attempt| attempt.run_id == *run_id
+                                && task.is_some_and(|task| attempt.task_id == task.entry.task_id)
+                                && attempt.attempt.checked_add(1) == Some(generation)),
+                        "Fleet worker {} previous process teardown is unacknowledged; retain its prepared attempt",
+                        record.spec.worker_id
+                    );
+                }
+            }
+        }
+        if reconciled {
+            report.started +=
+                self.start_leased_workers(run_id, executor, codewhale_binary, model)?;
+        }
         for worker_id in executor.worker_ids() {
+            if let Some(outcome) = executor.prepared_terminal_outcome(&worker_id) {
+                if self.publish_task_outcome(&outcome)? {
+                    report.terminals += 1;
+                }
+                continue;
+            }
             let tracked_attempt = executor.tracked_attempt(&worker_id);
             let tracked_task = match tracked_attempt.as_ref() {
                 Some(attempt) => {
-                    let Some(task) = self.executor_task_context_for_attempt(&worker_id, attempt)?
-                    else {
-                        // The ledger advanced to another attempt (restart), or
-                        // made this attempt terminal (cancel/stop), while this
-                        // process was still alive. The executor owns the host
-                        // handle, so fence and reap the old process without
-                        // publishing any event against the replacement
-                        // generation.
-                        executor.stop_worker(&worker_id)?;
-                        executor.forget_worker(&worker_id);
-                        report.terminals += 1;
-                        continue;
-                    };
-                    Some(task)
+                    match self.executor_task_context_for_attempt(&worker_id, attempt)? {
+                        Some(task) => Some(task),
+                        None => {
+                            executor.stop_worker(&worker_id)?;
+                            report.terminals += 1;
+                            continue;
+                        }
+                    }
                 }
                 None => None,
             };
             if tracked_attempt.is_none()
-                && let Some(_task) = self.cancelled_executor_task_context(&worker_id)?
+                && self.cancelled_executor_task_context(&worker_id)?.is_some()
             {
-                // Cancellation is ledgered by an out-of-process control
-                // command. Only this executor owns the host process handle,
-                // so it must enforce the terminal state before returning from
-                // the foreground manager loop. Do not ingest output produced
-                // after cancellation; publish one final authoritative event
-                // after the process is actually stopped instead.
                 executor.stop_worker(&worker_id)?;
-                executor.forget_worker(&worker_id);
                 report.terminals += 1;
                 continue;
             }
-
-            for payload in executor.drain_events(&worker_id) {
-                // The subprocess exit is the task-completion authority. Stream
-                // `done` / `error` lines are useful progress signals, but
-                // appending them as terminal ledger events before the process
-                // exits would free the logical worker too early.
-                if is_terminal_payload(&payload) {
-                    continue;
+            let mut observed = executor.poll_terminal_for_commit(&worker_id);
+            if observed.is_none() && !executor.is_confirmed_stopped(&worker_id) {
+                for payload in executor.drain_events(&worker_id) {
+                    if is_terminal_payload(&payload) {
+                        continue;
+                    }
+                    let task = match tracked_attempt.as_ref() {
+                        Some(attempt) => {
+                            self.executor_task_context_for_attempt(&worker_id, attempt)?
+                        }
+                        None => self.executor_task_context(&worker_id)?,
+                    };
+                    let Some(task) = task else {
+                        continue;
+                    };
+                    if self
+                        .ledger
+                        .append_event_if_leased(
+                            &task.entry.run_id,
+                            &worker_id,
+                            &task.entry.task_id,
+                            task.entry.attempts,
+                            &timestamp(),
+                            payload,
+                        )?
+                        .is_some()
+                    {
+                        self.ledger
+                            .heartbeat(&worker_id, &timestamp(), None, None)?;
+                        report.events += 1;
+                    }
                 }
-                let task = if let Some(attempt) = tracked_attempt.as_ref() {
-                    self.executor_task_context_for_attempt(&worker_id, attempt)?
-                } else {
-                    self.executor_task_context(&worker_id)?
-                };
-                let Some(task) = task else {
-                    continue;
-                };
-                if self
-                    .ledger
-                    .append_event_if_leased(
-                        &task.entry.run_id,
-                        &worker_id,
-                        &task.entry.task_id,
-                        task.entry.attempts,
-                        &timestamp(),
-                        payload,
-                    )?
-                    .is_none()
-                {
-                    continue;
-                }
-                self.ledger
-                    .heartbeat(&worker_id, &timestamp(), None, None)?;
-                report.events += 1;
+                observed = executor.poll_terminal_for_commit(&worker_id);
             }
-
-            let Some(terminal) = executor.poll_terminal_with_status(&worker_id) else {
-                // Per-task wall-clock limit (R5), enforced on the live
-                // process: a worker that never exits must not hold its lease
-                // (and spend) forever. Stop it first, then finalize with an
-                // honest Timeout receipt.
-                let task = match tracked_task {
-                    Some(task) => Some(task),
+            if let Some(terminal) = observed {
+                let task = match tracked_attempt.as_ref() {
+                    Some(attempt) => self.executor_task_context_for_attempt(&worker_id, attempt)?,
                     None => self.executor_task_context(&worker_id)?,
                 };
                 if let Some(task) = task
-                    && let Some(limit) = task_wall_clock_limit(&task.task_spec)
-                    && executor
-                        .worker_running_for(&worker_id)
-                        .is_some_and(|running| running >= limit)
+                    && let Some(outcome) = self.prepare_task_outcome(&task, terminal)?
                 {
-                    executor.stop_worker(&worker_id)?;
-                    executor.forget_worker(&worker_id);
-                    self.record_task_timeout(&task, limit)?;
-                    report.terminals += 1;
+                    executor.retain_prepared_terminal_outcome(&worker_id, outcome.clone())?;
+                    if self.publish_task_outcome(&outcome)? {
+                        report.terminals += 1;
+                    }
                 }
                 continue;
-            };
-            // The process already exited: its exit is the completion
-            // authority, even when this tick observed it after the deadline.
-            let task = if let Some(attempt) = tracked_attempt.as_ref() {
-                self.executor_task_context_for_attempt(&worker_id, attempt)?
-            } else {
-                self.executor_task_context(&worker_id)?
-            };
-            let Some(task) = task else {
-                executor.forget_worker(&worker_id);
-                continue;
-            };
-            if self.record_task_outcome(&task, terminal)? {
-                report.terminals += 1;
             }
-            executor.forget_worker(&worker_id);
+            let task = match tracked_task {
+                Some(task) => Some(task),
+                None => self.executor_task_context(&worker_id)?,
+            };
+            if let Some(task) = task
+                && let Some(limit) = task_wall_clock_limit(&task.task_spec)
+                && executor
+                    .worker_running_for(&worker_id)
+                    .is_some_and(|running| running >= limit)
+            {
+                executor.stop_worker(&worker_id)?;
+                if let Some(outcome) = self.prepare_task_timeout(&task, limit)? {
+                    executor.retain_prepared_terminal_outcome(&worker_id, outcome.clone())?;
+                    if self.publish_task_outcome(&outcome)? {
+                        report.terminals += 1;
+                    }
+                }
+            }
         }
-
+        let stopped = executor.confirmed_stopped_attempts();
+        if self.reconcile_coordination_worker_statuses(run_id, &stopped)? {
+            for worker_id in executor.worker_ids() {
+                if executor.is_confirmed_stopped(&worker_id) {
+                    executor.forget_worker(&worker_id);
+                }
+            }
+        }
         self.refresh_run_status(run_id)?;
+        if let Some(error) = reconciliation_error {
+            return Err(error);
+        }
         Ok(report)
     }
 
@@ -1262,15 +1419,20 @@ impl FleetManager {
                         .ok_or_else(|| {
                             anyhow!("Fleet task {} does not exist", task.entry.task_id)
                         })?;
-                    self.prepare_registered_restart_generation(
-                        guard, &state, task, task_spec, worker_id,
-                    )?;
+                    guard.with_store_transaction(|held| {
+                        self.prepare_registered_restart_generation(
+                            held, &state, task, task_spec, worker_id,
+                        )
+                    })?;
                 }
                 Ok(())
             },
         )?;
         if !restarted {
-            bail!("worker {worker_id} task changed before it could be restarted");
+            return Err(FleetRestartChanged {
+                worker_id: worker_id.to_string(),
+            }
+            .into());
         }
         self.ledger
             .update_run_status(&task.entry.run_id, FleetRunStatus::Running, &timestamp())?;
@@ -1528,9 +1690,7 @@ impl FleetManager {
             }
             None => None,
         };
-        let registration_snapshot = coordination_guard
-            .as_ref()
-            .map(|guard| guard.coordination_registration_snapshot());
+        let mut registration_snapshot = None;
         let worker_origin = coordination_guard
             .as_ref()
             .map(|guard| guard.capture_fleet_worker_origin(&origin_workspace))
@@ -1558,15 +1718,18 @@ impl FleetManager {
                 // Registration shares the durable transition lock, so a
                 // cancellation cannot win between claim and projection setup.
                 if let Some(guard) = coordination_guard.as_mut() {
-                    guard
-                        .register_worker_with_coordination_in_origin(
+                    guard.with_store_transaction(|held| {
+                        registration_snapshot = Some(held.coordination_registration_snapshot());
+                        held.register_worker_with_coordination_in_origin(
                             sub_agent_worker,
                             worker_origin
                                 .clone()
                                 .expect("coordination guard captured worker origin"),
                         )
                         .map_err(anyhow::Error::msg)?;
-                    registration_succeeded = true;
+                        registration_succeeded = true;
+                        Ok(())
+                    })?;
                 }
                 Ok(())
             },
@@ -1629,10 +1792,15 @@ impl FleetManager {
                 .find(|worker| worker.id == worker_id)
                 .cloned()
                 .unwrap_or_else(|| default_local_worker(worker_id));
-            let coordination_record = if let Some(manager) = self.sub_agent_manager.as_ref() {
-                let Ok(mut guard) = manager.try_write() else {
+            let mut coordination_guard = if let Some(manager) = self.sub_agent_manager.as_ref() {
+                let Ok(guard) = manager.try_write() else {
                     continue;
                 };
+                Some(guard)
+            } else {
+                None
+            };
+            let coordination_record = if let Some(guard) = coordination_guard.as_mut() {
                 let record = guard
                     .fleet_worker_records_for_workspace(&self.workspace)
                     .map_err(anyhow::Error::msg)?
@@ -1650,6 +1818,15 @@ impl FleetManager {
             } else {
                 None
             };
+            if coordination_record
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|record| record.prepared_previous_attempt_unsettled)
+            {
+                bail!(
+                    "Fleet worker {worker_id} previous process teardown is unacknowledged; retain its prepared attempt"
+                );
+            }
             let preparation = (|| -> Result<_> {
                 let cwd = resolve_task_cwd(&self.workspace, &task_spec)?;
                 validate_task_cwd_for_host(&self.workspace, &worker_spec.host, &cwd)?;
@@ -1688,16 +1865,17 @@ impl FleetManager {
                     model,
                     roster.members(),
                 )?;
-                Ok((cwd, command))
+                Ok((cwd, command, launch_spec))
             })();
             let attempt = FleetExecutorAttempt {
                 run_id: task.entry.run_id.clone(),
                 task_id: task.entry.task_id.clone(),
                 attempt: task.entry.attempts,
             };
-            let (cwd, command) = match preparation {
+            let (cwd, command, launch_spec) = match preparation {
                 Ok(prepared) => prepared,
                 Err(err) => {
+                    drop(coordination_guard);
                     let task = FleetExecutorTaskContext {
                         entry: task.entry.clone(),
                         task_spec,
@@ -1719,6 +1897,10 @@ impl FleetManager {
                     continue;
                 }
             };
+            if let Some(guard) = coordination_guard.as_mut() {
+                guard.activate_registered_worker_attempt(&launch_spec)?;
+            }
+            drop(coordination_guard);
             match executor.start_worker_attempt_on_host(
                 worker_id,
                 &worker_spec.host,
@@ -1867,21 +2049,21 @@ impl FleetManager {
         }))
     }
 
-    fn record_task_outcome(
+    fn prepare_task_outcome(
         &self,
         task: &FleetExecutorTaskContext,
         terminal: FleetWorkerTerminalEvent,
-    ) -> Result<bool> {
+    ) -> Result<Option<FleetPreparedTaskOutcome>> {
         let state = self.ledger.rebuild_state()?;
         let key = task_key(&task.entry.run_id.0, &task.entry.task_id);
         let Some(current) = state.tasks.get(&key) else {
-            return Ok(false);
+            return Ok(None);
         };
         if current.status != FleetTaskLedgerStatus::Leased
             || current.leased_to.as_deref() != Some(task.worker_id.as_str())
             || current.entry.attempts != task.entry.attempts
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         let FleetWorkerTerminalEvent {
@@ -1901,25 +2083,6 @@ impl FleetManager {
             FleetWorkerEventPayload::Cancelled { .. } => FleetTaskLedgerStatus::Cancelled,
             _ => bail!("Fleet executor outcome must contain a terminal worker event"),
         };
-        for tail_payload in tail_payloads {
-            if is_terminal_payload(&tail_payload) {
-                continue;
-            }
-            if self
-                .ledger
-                .append_event_if_leased(
-                    &task.entry.run_id,
-                    &task.worker_id,
-                    &task.entry.task_id,
-                    task.entry.attempts,
-                    &timestamp(),
-                    tail_payload,
-                )?
-                .is_none()
-            {
-                return Ok(false);
-            }
-        }
         let artifacts = self.task_artifacts_for_receipt(
             &task.entry.run_id,
             &task.entry.task_id,
@@ -1988,39 +2151,63 @@ impl FleetManager {
             FleetTaskResult::Fail | FleetTaskResult::Timeout
         ) && expected_terminal_status != FleetTaskLedgerStatus::Failed)
             .then_some(FleetTaskLedgerStatus::Failed);
+        Ok(Some(FleetPreparedTaskOutcome {
+            payload,
+            tail_payloads: tail_payloads
+                .into_iter()
+                .filter(|payload| !is_terminal_payload(payload))
+                .collect(),
+            final_status,
+            receipt,
+        }))
+    }
+
+    fn publish_task_outcome(&self, outcome: &FleetPreparedTaskOutcome) -> Result<bool> {
         Ok(self
             .ledger
-            .finalize_task_attempt_if_leased(
-                &task.entry.run_id,
-                &task.worker_id,
-                &task.entry.task_id,
-                task.entry.attempts,
-                &timestamp(),
-                payload,
-                final_status,
-                receipt,
+            .finalize_task_attempt_with_tail_if_leased(
+                &outcome.receipt.run_id,
+                &outcome.receipt.worker_id,
+                &outcome.receipt.task_id,
+                outcome
+                    .receipt
+                    .attempt
+                    .ok_or_else(|| anyhow!("Fleet terminal candidate has no attempt"))?,
+                &outcome.receipt.completed_at,
+                outcome.payload.clone(),
+                outcome.tail_payloads.clone(),
+                outcome.final_status,
+                outcome.receipt.clone(),
             )?
             .is_some())
     }
 
-    /// Mark a leased task timed out after its wall-clock limit (R5). The
-    /// caller stops and forgets the worker before this runs; the ledger's
-    /// implicit rule maps a Timeout receipt onto the Failed terminal status.
-    fn record_task_timeout(
+    fn record_task_outcome(
+        &self,
+        task: &FleetExecutorTaskContext,
+        terminal: FleetWorkerTerminalEvent,
+    ) -> Result<bool> {
+        match self.prepare_task_outcome(task, terminal)? {
+            Some(outcome) => self.publish_task_outcome(&outcome),
+            None => Ok(false),
+        }
+    }
+
+    fn prepare_task_timeout(
         &self,
         task: &FleetExecutorTaskContext,
         limit: std::time::Duration,
-    ) -> Result<bool> {
+    ) -> Result<Option<FleetPreparedTaskOutcome>> {
         let state = self.ledger.rebuild_state()?;
         let key = task_key(&task.entry.run_id.0, &task.entry.task_id);
         let Some(current) = state.tasks.get(&key) else {
-            return Ok(false);
+            return Ok(None);
         };
         if current.status != FleetTaskLedgerStatus::Leased
             || current.leased_to.as_deref() != Some(task.worker_id.as_str())
             || current.entry.attempts != task.entry.attempts
         {
-            return Ok(false);
+            return Ok(None);
         }
         let artifacts = self.task_artifacts_for_receipt(
             &task.entry.run_id,
@@ -2045,19 +2232,23 @@ impl FleetManager {
         let payload = FleetWorkerEventPayload::Cancelled {
             cancelled_by: Some(format!("driver-timeout-{}-seconds", limit.as_secs())),
         };
-        Ok(self
-            .ledger
-            .finalize_task_attempt_if_leased(
-                &task.entry.run_id,
-                &task.worker_id,
-                &task.entry.task_id,
-                task.entry.attempts,
-                &timestamp(),
-                payload,
-                Some(FleetTaskLedgerStatus::Failed),
-                receipt,
-            )?
-            .is_some())
+        Ok(Some(FleetPreparedTaskOutcome {
+            payload,
+            tail_payloads: Vec::new(),
+            final_status: Some(FleetTaskLedgerStatus::Failed),
+            receipt,
+        }))
+    }
+
+    fn record_task_timeout(
+        &self,
+        task: &FleetExecutorTaskContext,
+        limit: Duration,
+    ) -> Result<bool> {
+        match self.prepare_task_timeout(task, limit)? {
+            Some(outcome) => self.publish_task_outcome(&outcome),
+            None => Ok(false),
+        }
     }
 
     /// Resolve the route snapshot to persist on a task's receipt (#3154).
@@ -3628,19 +3819,20 @@ mod tests {
         binary: &Path,
     ) -> FleetStatusSnapshot {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut executor = FleetExecutor::new(&manager.workspace);
+        let executor = FleetExecutor::new(&manager.workspace);
         rt.block_on(async {
             manager
                 .run_to_completion(
                     run_id,
                     max_workers,
-                    &mut executor,
+                    executor,
                     &binary.display().to_string(),
                     None,
                     Duration::from_millis(10),
                 )
                 .await
                 .unwrap()
+                .0
         })
     }
 
@@ -4207,17 +4399,17 @@ sleep 30
 "#,
         );
         let report = manager.create_run_from_task_spec_path(&path, 1).unwrap();
-        let mut executor = FleetExecutor::new(&manager.workspace);
+        let executor = FleetExecutor::new(&manager.workspace);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let status = rt
+        let (status, executor) = rt
             .block_on(async {
                 tokio::time::timeout(
                     Duration::from_secs(10),
                     manager.run_to_completion(
                         &report.run_id,
                         1,
-                        &mut executor,
+                        executor,
                         &fake.display().to_string(),
                         None,
                         Duration::from_millis(20),
@@ -4376,10 +4568,10 @@ sleep 30
         );
         let report = manager.create_run_from_task_spec_path(&path, 1).unwrap();
         let worker_id = report.worker_ids[0].clone();
-        let mut executor = FleetExecutor::new(&manager.workspace);
+        let executor = FleetExecutor::new(&manager.workspace);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let (status, interrupted) = rt.block_on(async {
+        let ((status, executor), interrupted) = rt.block_on(async {
             tokio::time::timeout(Duration::from_secs(15), async {
                 tokio::join!(
                     async {
@@ -4387,7 +4579,7 @@ sleep 30
                             .run_to_completion(
                                 &report.run_id,
                                 1,
-                                &mut executor,
+                                executor,
                                 &fake.display().to_string(),
                                 None,
                                 Duration::from_millis(10),
@@ -4467,10 +4659,10 @@ while :; do sleep 1; done
         );
         let report = manager.create_run_from_task_spec_path(&path, 1).unwrap();
         let worker_id = report.worker_ids[0].clone();
-        let mut executor = FleetExecutor::new(&manager.workspace);
+        let executor = FleetExecutor::new(&manager.workspace);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let status = rt.block_on(async {
+        let (status, executor) = rt.block_on(async {
             tokio::time::timeout(Duration::from_secs(15), async {
                 tokio::join!(
                     async {
@@ -4478,7 +4670,7 @@ while :; do sleep 1; done
                             .run_to_completion(
                                 &report.run_id,
                                 1,
-                                &mut executor,
+                                executor,
                                 &fake.display().to_string(),
                                 None,
                                 Duration::from_millis(10),
@@ -4494,7 +4686,38 @@ while :; do sleep 1; done
                         })
                         .await
                         .expect("first Fleet attempt never started");
-                        controller.restart_worker(&worker_id).unwrap();
+                        loop {
+                            let restarting = controller.clone();
+                            let target = worker_id.clone();
+                            let (before, result, after) =
+                                codewhale_runtime::runtime_control::owner_work(move || {
+                                    let before = restarting.rebuild_state()?;
+                                    let result = restarting.restart_worker(&target);
+                                    let after = restarting.rebuild_state()?;
+                                    Ok((before, result, after))
+                                })
+                                .await
+                                .unwrap();
+                            match result {
+                                Ok(_) => break,
+                                Err(error) => {
+                                    assert!(
+                                        error.downcast_ref::<FleetRestartChanged>().is_some(),
+                                        "{error:#}"
+                                    );
+                                    let before = active_task_for_worker(&before, &worker_id)
+                                        .expect("original attempt remains active");
+                                    let after = active_task_for_worker(&after, &worker_id)
+                                        .expect("original attempt remains active");
+                                    assert_eq!(before.entry.run_id, after.entry.run_id);
+                                    assert_eq!(before.entry.task_id, after.entry.task_id);
+                                    assert_eq!(before.entry.attempts, 1);
+                                    assert_eq!(after.entry.attempts, 1);
+                                    assert_eq!(before.leased_to, after.leased_to);
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+                        }
                     }
                 )
                 .0
@@ -4575,7 +4798,7 @@ exit 0
 
         manager.interrupt_worker(worker_id).unwrap();
         let restart = manager.restart_worker(worker_id).unwrap();
-        let mut executor = FleetExecutor::new(&manager.workspace);
+        let executor = FleetExecutor::new(&manager.workspace);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let status = rt
             .block_on(async {
@@ -4584,7 +4807,7 @@ exit 0
                     manager.run_to_completion(
                         &restart.run_id,
                         restart.max_workers,
-                        &mut executor,
+                        executor,
                         &fake.display().to_string(),
                         None,
                         Duration::from_millis(10),
@@ -4593,7 +4816,8 @@ exit 0
                 .await
             })
             .expect("standalone restart left a ghost running task")
-            .unwrap();
+            .unwrap()
+            .0;
 
         assert!(
             marker.is_file(),
@@ -4931,8 +5155,8 @@ exit 0
             ),
         );
         let report = manager.create_run_from_task_spec_path(&path, 1).unwrap();
-        let mut primary_executor = FleetExecutor::new(&manager.workspace);
-        let mut standby_executor = FleetExecutor::new(&manager.workspace);
+        let primary_executor = FleetExecutor::new(&manager.workspace);
+        let standby_executor = FleetExecutor::new(&manager.workspace);
         let binary = fake.display().to_string();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -4946,7 +5170,7 @@ exit 0
                         manager.run_to_completion(
                             &report.run_id,
                             1,
-                            &mut primary_executor,
+                            primary_executor,
                             &binary,
                             None,
                             Duration::from_millis(10),
@@ -4954,7 +5178,7 @@ exit 0
                         standby.run_to_completion(
                             &report.run_id,
                             1,
-                            &mut standby_executor,
+                            standby_executor,
                             &binary,
                             None,
                             Duration::from_millis(10),
@@ -4965,16 +5189,14 @@ exit 0
             })
             .unwrap_or_else(|error| {
                 panic!(
-                    "competing Fleet managers did not converge: {error}; status={:?}; primary={:?}; standby={:?}; starts={:?}",
+                    "competing Fleet managers did not converge: {error}; status={:?}; starts={:?}",
                     manager.run_status(&report.run_id),
-                    primary_executor.worker_ids(),
-                    standby_executor.worker_ids(),
                     std::fs::read_to_string(&starts),
                 )
             });
 
-        assert_eq!(primary_status.unwrap().completed, 1);
-        assert_eq!(standby_status.unwrap().completed, 1);
+        assert_eq!(primary_status.unwrap().0.completed, 1);
+        assert_eq!(standby_status.unwrap().0.completed, 1);
         let starts = std::fs::read_to_string(starts).unwrap();
         assert_eq!(
             starts.lines().count(),

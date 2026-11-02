@@ -1,3 +1,6 @@
+import type { RuntimeEventEnvelope } from "./generated/runtime.js";
+export type { RuntimeImageInput, RuntimeEventEnvelope, RuntimeCapabilities, RuntimeExperimentalCapabilities, DynamicToolSpec, DynamicToolSpecOutput, DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult, DynamicToolCallContent, TurnEnvironmentParams } from "./generated/runtime.js";
+
 export type FleetRunId = string;
 export type FleetRunStatus =
   | "pending"
@@ -299,15 +302,11 @@ export interface RuntimeClientOptions {
   fetch?: typeof fetch;
 }
 
-export interface ThreadRuntimeEvent {
+export interface ThreadRuntimeEvent extends Pick<RuntimeEventEnvelope, "seq" | "event" | "thread_id" | "timestamp"> {
   schema_version?: number;
-  seq: number;
   previous_seq?: number;
-  event: string;
-  thread_id: string;
   turn_id?: string | null;
   item_id?: string | null;
-  timestamp: string;
   payload: Record<string, unknown>;
 }
 

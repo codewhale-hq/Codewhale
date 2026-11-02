@@ -4,7 +4,7 @@ use axum::{Json, extract::State};
 
 pub(super) async fn list_avatars(
     State(state): State<RuntimeApiState>,
-) -> Json<Vec<codewhale_ratatui::avatar::RegisteredPack>> {
+) -> Json<Vec<codewhale_protocol::avatar::RegisteredPack>> {
     Json(codewhale_engine::extension_host::avatars::catalog(state.workspace.clone()).await)
 }
 
