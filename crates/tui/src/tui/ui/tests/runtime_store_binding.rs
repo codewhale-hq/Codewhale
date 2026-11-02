@@ -614,9 +614,8 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
         "binding repair survives a contended UI restore"
     );
     drop(held);
-    let stale_error =
-        apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
-            .expect_err("the repaired binding invalidates its original picker source");
+    let stale_error = apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
+        .expect_err("the repaired binding invalidates its original picker source");
     assert!(
         stale_error.contains("changed after its captured source"),
         "{stale_error}"

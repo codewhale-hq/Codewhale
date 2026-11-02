@@ -1598,10 +1598,6 @@ fn plan_snapshot_to_sections(
     }
 }
 
-/// Recover the session document for a live turn that has not completed (and
-/// therefore persisted) its first snapshot yet (#5430). Mirrors the legacy
-/// `/rename`/`/title` recovery exactly.
-
 /// `/resume <file>` import: read, parse a container or plain saved session,
 /// and apply it atomically. Errors are the exact baseline text.
 fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt, String> {

@@ -194,7 +194,7 @@ enum SessionWriteState {
         publication_id: String,
         checkpoint_predecessor: Option<SessionWriteOwner>,
         acknowledgement_required: bool,
-        result: Option<Result<SessionPublication, String>>,
+        result: Option<Result<Box<SessionPublication>, String>>,
         closed: bool,
     },
 }
@@ -527,7 +527,12 @@ impl SessionWriteReceipt {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
-            *stored = Some(result.as_ref().cloned().map_err(ToString::to_string));
+            *stored = Some(
+                result
+                    .as_ref()
+                    .map(|publication| Box::new(publication.clone()))
+                    .map_err(ToString::to_string),
+            );
         }
     }
 
@@ -3278,7 +3283,9 @@ impl SessionManager {
             }
             digest.update(&buffer[..count]);
         }
-        Ok(Some(codewhale_runtime::hashing::hex_bytes(digest.finalize())))
+        Ok(Some(codewhale_runtime::hashing::hex_bytes(
+            digest.finalize(),
+        )))
     }
 
     fn observe_session_admitted(&self, id: &str) -> io::Result<SessionObservation> {
@@ -4270,7 +4277,11 @@ impl SessionManager {
                     if error.kind() == io::ErrorKind::FileTooLarge
                         || (!admission_entered
                             && error.kind() != io::ErrorKind::NotFound
-                            && session.metadata.cost.unpriced_reasons.contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+                            && session
+                                .metadata
+                                .cost
+                                .unpriced_reasons
+                                .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
                 {
                     if !self.validate_unadmitted_read(
                         id,
@@ -4469,8 +4480,8 @@ impl SessionManager {
             // A checkpoint another running session is still refreshing is
             // that session's in-flight work, not a prior crash.
             if Some(id.as_str()) == exclude
-                || !self.session_from_prior_instance(&id)
-                || self.is_session_live_anywhere(&id)
+                || !self.session_from_prior_instance(id)
+                || self.is_session_live_anywhere(id)
             {
                 continue;
             }
@@ -4817,7 +4828,11 @@ impl SessionManager {
                 if error.kind() == io::ErrorKind::FileTooLarge
                     || (!admission_entered
                         && error.kind() != io::ErrorKind::NotFound
-                        && session.metadata.cost.unpriced_reasons.contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+                        && session
+                            .metadata
+                            .cost
+                            .unpriced_reasons
+                            .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
             {
                 if !self.validate_unadmitted_read(
                     id,

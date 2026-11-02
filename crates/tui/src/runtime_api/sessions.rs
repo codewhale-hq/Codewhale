@@ -526,7 +526,8 @@ pub(super) async fn create_session_from_thread(
         });
     }
 
-    let manager = SessionManager::new(state.sessions_dir.clone()).map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    let manager = SessionManager::new(state.sessions_dir.clone())
+        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
     // Export is idempotent (#6144). Every POST used to mint a fresh document
     // and rebind the thread to it, so each re-export left the previous
     // document unreferenced, and a crash between the save and the bind below
@@ -883,7 +884,8 @@ pub(crate) async fn save_session_in_runtime(
     // collide with another thread's document. Snapshot ownership does not
     // depend on this binding: a thread owns the restore points recorded on
     // its turns.
-    let document_id = req.session_id
+    let document_id = req
+        .session_id
         .clone()
         .or_else(|| detail.thread.session_id.clone())
         .unwrap_or_else(|| codewhale_engine::runtime_threads::thread_session_id(&thread_id));

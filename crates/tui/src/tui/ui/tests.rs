@@ -33279,7 +33279,9 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
         )
         .unwrap();
     let completed_id = completed.metadata.id.clone();
-    let (_, clear) = manager.publish_completed_session(completed).expect("save session");
+    let (_, clear) = manager
+        .publish_completed_session(completed)
+        .expect("save session");
     clear.expect("clear checkpoint");
 
     assert_eq!(
