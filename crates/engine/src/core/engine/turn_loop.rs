@@ -807,6 +807,8 @@ pub(super) fn replace_runtime_mcp_tools(
     let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
     if changed {
         super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+    } else {
+        *tool_catalog = catalog_before;
     }
     changed
 }
