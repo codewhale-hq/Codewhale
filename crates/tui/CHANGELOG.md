@@ -334,6 +334,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Maintenance
 
+- MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
 - **`codewhale-ratatui` is re-versioned to 0.1.3:** the vendored terminal kit gained the `Accent` role after 0.1.2 was published, and `codewhale-tui` uses it, so crates.io needs the new version before `codewhale-tui` can build from the registry. `crates/tui` and `pet/tui` pin 0.1.3; publishing it stays a release-time step.
 - **`codewhale-plugins` crate:** plugin discovery, review, install and marketplace parsing move out of `codewhale-tui` into a new crate; MCP server config types move to `codewhale-mcp`, and the skill parse core and recommendations to `codewhale-skill-install`. Review and trust behavior is unchanged. (S19, #5316)
 - **`codewhale-config` modules (internal):** the 8,100-line `lib.rs` is split into 23 modules (provider TOML, permissions, fleet, config resolution, env overrides, state dirs, config store and backup, and others); `codewhale_config::` paths are unchanged. No behavior change. (S57, #5316)

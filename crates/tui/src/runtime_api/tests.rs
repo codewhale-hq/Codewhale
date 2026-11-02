@@ -1938,6 +1938,15 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
     let root = std::env::temp_dir().join(format!("codewhale-mcp-tools-api-{}", Uuid::new_v4()));
     let sessions_dir = root.join("sessions");
     fs::create_dir_all(&root)?;
+    let fixture_manager = Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+        codewhale_engine::extension_host::ExtensionHostOptions {
+            root: Some(root.join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let shutdown = RuntimeServerShutdown::default();
     let sentinel = root.join("mcp-spawned");
     fs::write(
         root.join("mcp.json"),
@@ -1958,7 +1967,18 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
     )?;
 
     let Some((addr, _runtime_threads, handle)) =
-        spawn_test_server_with_root(root.clone(), sessions_dir).await?
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            sessions_dir,
+            None,
+            false,
+            root.join("workspace"),
+            TestServerOverrides {
+                shutdown: Some(shutdown.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
     else {
         return Ok(());
     };
@@ -1996,7 +2016,10 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
         "explicit MCP connect should spawn configured stdio servers"
     );
 
+    fixture_manager.shutdown().await;
+    assert!(shutdown.drain(ci_scaled(Duration::from_secs(10))).await);
     handle.abort();
+    let _ = handle.await;
     Ok(())
 }
 
@@ -24071,6 +24094,15 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         .route("/two", axum::routing::post(fixture).with_state(two.clone()));
     let fixture_task = tokio::spawn(async move { axum::serve(listener, app).await });
     let root = tempfile::tempdir()?;
+    let fixture_manager = Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+        codewhale_engine::extension_host::ExtensionHostOptions {
+            root: Some(root.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let shutdown = RuntimeServerShutdown::default();
     fs::write(
         root.path().join("mcp.json"),
         json!({"servers":{
@@ -24080,10 +24112,19 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         }})
         .to_string(),
     )?;
-    let (addr, _, handle) =
-        spawn_test_server_with_root(root.path().to_owned(), root.path().join("sessions"))
-            .await?
-            .context("MCP management test requires loopback")?;
+    let (addr, _, handle) = spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+        root.path().to_owned(),
+        root.path().join("sessions"),
+        None,
+        false,
+        root.path().join("workspace"),
+        TestServerOverrides {
+            shutdown: Some(shutdown.clone()),
+            ..Default::default()
+        },
+    )
+    .await?
+    .context("MCP management test requires loopback")?;
     let client = codewhale_release::tls::reqwest_client();
     let base = format!("http://{addr}/v1/apps/mcp");
     let failed: Value = client
@@ -24216,8 +24257,12 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         "malformed sources must not connect cached endpoints"
     );
     assert_eq!(two.load(Ordering::SeqCst), 1);
+    fixture_manager.shutdown().await;
+    assert!(shutdown.drain(ci_scaled(Duration::from_secs(10))).await);
     handle.abort();
+    let _ = handle.await;
     fixture_task.abort();
+    let _ = fixture_task.await;
     Ok(())
 }
 
