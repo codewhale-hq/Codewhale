@@ -6,6 +6,9 @@ use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::route_budget::known_route_limits;
 use crate::tools::subagent::SubAgentStatus;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult,
+};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{SystemPrompt, ToolCaller};
 use codewhale_protocol::agent_mail::{
@@ -13,9 +16,6 @@ use codewhale_protocol::agent_mail::{
     AgentMailSendRequest,
 };
 use codewhale_protocol::agent_mail::{AgentMailDeliveryMode, AgentMailSender, AgentMailStatus};
-use codewhale_protocol::runtime::{
-    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult,
-};
 use codewhale_runtime::config::Config;
 use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 use std::time::{Duration, Instant};
@@ -21345,7 +21345,7 @@ mod runtime_image_inputs {
             (
                 "look",
                 "deepseek-v4-flash-vision-exp",
-                codewhale_protocol::runtime::RuntimeImageInput {
+                codewhale_app_server_protocol::runtime::RuntimeImageInput {
                     mime: "image/jpeg".into(),
                     ..good
                 },
@@ -21858,7 +21858,7 @@ mod runtime_image_inputs {
 fn runtime_image_native_fingerprint_keeps_legacy_text_and_binds_bytes() -> Result<()> {
     let thread = sample_thread("thr_image_legacy");
     let policy = RuntimePolicyProjection::from_persisted("agent", Some("ask"), false);
-    let fingerprint = |images: &[codewhale_protocol::runtime::RuntimeImageInput]| {
+    let fingerprint = |images: &[codewhale_app_server_protocol::runtime::RuntimeImageInput]| {
         runtime_turn_request_fingerprint(
             &thread,
             "hello",

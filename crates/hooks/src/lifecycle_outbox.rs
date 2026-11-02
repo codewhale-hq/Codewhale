@@ -9,7 +9,7 @@
 //!
 //! # Line schema
 //!
-//! Every line is a `codewhale_protocol::runtime::RuntimeEventEnvelope`:
+//! Every line is a `codewhale_app_server_protocol::runtime::RuntimeEventEnvelope`:
 //!
 //! ```json
 //! {"schema_version": 1, "seq": 3, "event": "turn_start", "kind": "turn.started",
@@ -46,7 +46,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use codewhale_protocol::runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope};
+use codewhale_app_server_protocol::runtime::{
+    RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope,
+};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::error::TrySendError;

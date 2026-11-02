@@ -1370,7 +1370,7 @@ pub struct StartTurnRequest {
     pub max_output_tokens: Option<std::num::NonZeroU32>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     /// Optional caller-supplied idempotency key, scoped to this Runtime store
     /// and thread. The raw key is validated but never persisted.
     #[serde(default, alias = "operationKey")]
@@ -1501,7 +1501,7 @@ pub(super) fn runtime_turn_request_fingerprint(
     trust_mode: bool,
     dynamic_tools: &[DynamicToolSpec],
     environment_id: Option<&str>,
-    images: &[codewhale_protocol::runtime::RuntimeImageInput],
+    images: &[codewhale_app_server_protocol::runtime::RuntimeImageInput],
     max_output_tokens: Option<std::num::NonZeroU32>,
 ) -> Result<String> {
     let mut payload = json!({
@@ -2611,7 +2611,7 @@ pub struct PreparedThreadFork {
     pub(super) thread: ThreadRecord,
     pub(super) records: Vec<(TurnRecord, Vec<TurnItemRecord>)>,
     pub(super) original_user_text: Option<String>,
-    pub(super) original_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub(super) original_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     pub(super) max_output_tokens: Option<std::num::NonZeroU32>,
     /// The checked full source/goal/lease, retained prefix and covered cloned
     /// turn travel together. The private target document is written only at
@@ -9220,7 +9220,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         self.fork_at_user_message_in_sessions_dir(id, depth, self.sessions_dir())
@@ -9235,7 +9235,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9284,7 +9284,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         self.fork_at_user_turn_in_sessions_dir(id, turn_id, self.sessions_dir())
@@ -9299,7 +9299,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9328,7 +9328,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9800,7 +9800,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (captured_source, prefix, covered_turn_id) = prepared.own_session;
@@ -15324,7 +15324,8 @@ impl RuntimeThreadManager {
                         )?;
                     }
                 }
-                EngineEvent::CompactionStarted { id, auto, message, ..
+                EngineEvent::CompactionStarted {
+                    id, auto, message, ..
                 } => {
                     let item_id = runtime_record_id("item");
                     compaction_items.insert(id.clone(), item_id.clone());

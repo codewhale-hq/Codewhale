@@ -49,6 +49,10 @@ use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentStatus, new_shared_runtime_subagent_manager,
 };
 use crate::tools::todo::new_shared_todo_list;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
+    TurnEnvironmentParams,
+};
 #[cfg(test)]
 use codewhale_config::AppMode;
 use codewhale_config::ProviderKind;
@@ -64,10 +68,6 @@ use codewhale_protocol::agent_mail::{
     AgentMailEventPayload, AgentMailFailureCode, AgentMailFailureReceipt, AgentMailMessageId,
     AgentMailSendRequest, AgentMailSendResponse, AgentMailStatus, MAX_AGENT_MAIL_DELIVERY_ATTEMPTS,
     MAX_AGENT_MAIL_SUMMARY_BYTES,
-};
-use codewhale_protocol::runtime::{
-    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
-    TurnEnvironmentParams,
 };
 use codewhale_runtime::config::{Config, MAX_SUBAGENTS, ProviderIdentity};
 use codewhale_runtime::runtime_policy::RuntimePolicyProjection;

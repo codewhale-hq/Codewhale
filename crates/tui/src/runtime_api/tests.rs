@@ -20061,7 +20061,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(768, 768, bytes).unwrap());
     let mut encoded = std::io::Cursor::new(Vec::new());
     image.write_to(&mut encoded, image::ImageFormat::Png)?;
-    let large = codewhale_protocol::runtime::RuntimeImageInput {
+    let large = codewhale_app_server_protocol::runtime::RuntimeImageInput {
         mime: "image/png".into(),
         data_base64: base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
     };

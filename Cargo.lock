@@ -872,6 +872,7 @@ dependencies = [
 name = "codewhale-app-server"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "anyhow",
  "axum",
  "chrono",
@@ -898,6 +899,15 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "codewhale-app-server-protocol"
+version = "0.10.2"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1052,6 +1062,7 @@ dependencies = [
 name = "codewhale-engine"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "anyhow",
  "arboard",
  "async-stream",
@@ -1184,6 +1195,7 @@ dependencies = [
 name = "codewhale-hooks"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "anyhow",
  "async-trait",
  "chrono",
@@ -1412,6 +1424,7 @@ dependencies = [
 name = "codewhale-protocol"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "chrono",
  "serde",
  "serde_json",
@@ -1690,6 +1703,7 @@ dependencies = [
 name = "codewhale-tui"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "ahash",
  "ansi-to-tui",
  "anyhow",

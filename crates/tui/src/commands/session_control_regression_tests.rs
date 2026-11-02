@@ -61,7 +61,7 @@ impl ControlHarness {
         let session_id = session.metadata.id.clone();
         self.manager.save_session(&session).expect("save session");
         self.app.current_session_id = Some(session_id.clone());
-        crate::test_support::capture_session_fixture_source(&mut self.app);
+        self.app.capture_session_fixture_source();
         session_id
     }
 }
@@ -127,7 +127,7 @@ fn rename_persists_all_live_metadata_through_public_dispatch() {
         .save_session(&session)
         .expect("save session");
     harness.app.current_session_id = Some(session_id.clone());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     harness
         .app
         .set_model_selection("local-code-model".to_string());
@@ -218,7 +218,7 @@ fn rename_recovers_first_snapshot_from_checkpoint() {
         .save_checkpoint(&checkpoint)
         .expect("save checkpoint");
     harness.app.current_session_id = Some(session_id.clone());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     harness.app.api_messages =
         std::sync::Arc::new(vec![user_message("first turn still streaming")]);
 
@@ -239,7 +239,7 @@ fn rename_builds_from_app_state_before_any_checkpoint_exists() {
     let mut harness = ControlHarness::new();
     let session_id = "live-before-first-checkpoint";
     harness.app.current_session_id = Some(session_id.to_string());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     harness.app.api_messages =
         std::sync::Arc::new(vec![user_message("turn one, nothing persisted yet")]);
 
@@ -264,7 +264,7 @@ fn title_requires_an_active_session_and_preserves_raw_length_limit() {
 
     harness.app.current_session_id = Some("any".to_string());
 
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     let too_long = "x".repeat(MAX_TITLE_LEN + 1);
     let result = dispatch(&mut harness.app, "title", Some(&too_long));
     assert!(result.is_error);
@@ -283,7 +283,7 @@ fn title_set_and_clear_persist_without_renaming_the_session() {
         .save_session(&session)
         .expect("save session");
     harness.app.current_session_id = Some("title-test".to_string());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
 
     let result = dispatch(&mut harness.app, "title", Some("parallel-task"));
     assert!(!result.is_error, "{result:?}");
@@ -354,7 +354,7 @@ fn title_recovers_first_snapshot_from_checkpoint() {
         .save_checkpoint(&checkpoint)
         .expect("save checkpoint");
     harness.app.current_session_id = Some(session_id.clone());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     harness.app.api_messages =
         std::sync::Arc::new(vec![user_message("first turn still streaming")]);
 
@@ -376,7 +376,7 @@ fn title_builds_from_app_state_before_any_checkpoint_exists() {
     let mut harness = ControlHarness::new();
     let session_id = "live-title-before-first-checkpoint";
     harness.app.current_session_id = Some(session_id.to_string());
-    crate::test_support::capture_session_fixture_source(&mut harness.app);
+    harness.app.capture_session_fixture_source();
     harness.app.api_messages =
         std::sync::Arc::new(vec![user_message("turn one, nothing persisted yet")]);
 

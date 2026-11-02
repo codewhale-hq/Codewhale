@@ -6,11 +6,11 @@
 use crate::compaction::CompactionConfig;
 use crate::route_runtime::ResolvedRuntimeRoute;
 use crate::tools::goal::GoalStatus;
+use codewhale_app_server_protocol::runtime::DynamicToolSpec;
 use codewhale_config::AppMode;
 use codewhale_config::ProviderKind;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{Message, SystemPrompt};
-use codewhale_protocol::runtime::DynamicToolSpec;
 use std::path::PathBuf;
 
 /// Prefix used for tool-call ids created by local composer shell shortcuts.
@@ -257,7 +257,7 @@ pub struct TurnSpec {
     pub max_output_tokens: Option<std::num::NonZeroU32>,
     pub content: String,
     /// Inline image bytes validated by Runtime admission; no file references.
-    pub images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     pub mode: AppMode,
     /// Exact, structurally resolved route authority for this turn. The
     /// engine activates its client before mutating turn state; injected

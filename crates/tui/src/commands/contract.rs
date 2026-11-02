@@ -567,8 +567,10 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                             .capture_publication(control_owner)
                             .map_err(|error| error.to_string())?;
                     }
-                    manager.publish_session_bounded(session.clone()).map(|publication| {
-                        session.adopt_publication(&publication);
+                    manager
+                        .publish_session_bounded(session.clone())
+                        .map(|publication| {
+                            session.adopt_publication(&publication);
                         })
                 } else {
                     let json = match serde_json::to_string_pretty(&session) {
@@ -642,7 +644,8 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
 
         let work_owner = app.current_session_id.clone();
         parent.make_storage_compatible();
-        let publication = manager.publish_session_bounded(parent.clone())
+        let publication = manager
+            .publish_session_bounded(parent.clone())
             .map_err(|error| format!("Failed to save parent session: {error}"))?;
         parent.adopt_publication(&publication);
         app.session_write_receipt = parent.write_receipt.clone();
@@ -671,7 +674,8 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             crate::tui::ui::prepare_offline_queue_transition(&app, &forked.metadata.id)?;
 
         forked.write_receipt = Some(fork_source);
-        let publication = manager.publish_session(&forked)
+        let publication = manager
+            .publish_session(&forked)
             .map_err(|error| format!("Failed to save forked session: {error}"))?;
         forked.adopt_publication(&publication);
         if let Err(err) =
@@ -783,7 +787,8 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         forked.work_state = source_session.work_state.clone();
         forked.last_auto_route = source_session.last_auto_route.clone();
         forked.write_receipt = Some(fork_source);
-        let publication = manager.publish_session(&forked)
+        let publication = manager
+            .publish_session(&forked)
             .map_err(|error| format!("Failed to save forked session: {error}"))?;
         forked.adopt_publication(&publication);
         let parent_label =
@@ -1657,7 +1662,8 @@ fn import_session_container(
     let new_id = imported.metadata.id.clone();
     let queue_transition = crate::tui::ui::prepare_offline_queue_transition(app, &new_id)?;
     imported.write_receipt = Some(
-        manager.expect_absent_session(&new_id)
+        manager
+            .expect_absent_session(&new_id)
             .map_err(|error| error.to_string())?,
     );
     imported
@@ -7621,7 +7627,7 @@ mod tests {
         save_control_session(&tmpdir, "rename-1");
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("rename-1".to_string());
-        crate::test_support::capture_session_fixture_source(&mut app);
+        app.capture_session_fixture_source();
 
         let receipt = {
             let mut bundle = app.command_contexts();
@@ -7668,7 +7674,7 @@ mod tests {
 
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("midturn-1".to_string());
-        crate::test_support::capture_session_fixture_source(&mut app);
+        app.capture_session_fixture_source();
         app.api_messages = std::sync::Arc::new(vec![user_message("first turn still streaming")]);
 
         let receipt = {
@@ -7708,7 +7714,7 @@ mod tests {
         save_control_session(&tmpdir, "title-1");
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("title-1".to_string());
-        crate::test_support::capture_session_fixture_source(&mut app);
+        app.capture_session_fixture_source();
 
         // No session window title and no config default -> unset, no source.
         let report = {

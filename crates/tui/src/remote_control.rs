@@ -4622,7 +4622,7 @@ async fn runner_request(
         });
     }
     let limit = if segments.last() == Some(&"commands") {
-        codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
+        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
     } else {
         MAX_RESPONSE_BYTES
     };
@@ -9018,7 +9018,7 @@ mod tests {
         );
         let parsed = read_bounded_json_with_limit(
             client.get(&url).send().await.unwrap(),
-            codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+            codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
         )
         .await
         .unwrap();

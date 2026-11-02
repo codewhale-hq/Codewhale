@@ -11,6 +11,7 @@ description = "Hook dispatch and notifications support for Codewhale"
 workspace = true
 
 [dependencies]
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

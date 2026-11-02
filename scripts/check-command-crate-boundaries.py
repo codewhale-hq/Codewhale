@@ -414,7 +414,7 @@ BOUNDARY_RULES = (
          "codewhale-state", "codewhale-mcp", "codewhale-hooks", "codewhale-secrets",
          "reqwest", "tokio", "rusqlite", "keyring", "dbus", "zbus", "ratatui", "crossterm"),
         "portable shapes and sanitization must not import host services",
-    ) for package in ("codewhale-command-contract", "codewhale-commands", "codewhale-protocol", "codewhale-sanitize")),
+    ) for package in ("codewhale-command-contract", "codewhale-commands", "codewhale-protocol", "codewhale-app-server-protocol", "codewhale-sanitize")),
     # The headless runtime split out of the TUI (docs/design/TUI_DECONSTRUCTION.md):
     # never a terminal UI crate or library, checked with per-package feature
     # resolution because the TUI turns on palette's `ratatui` feature.

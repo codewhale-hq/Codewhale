@@ -3,7 +3,7 @@ use crate::{
     AppState, JsonRpcError, RuntimeThreadHint, TurnTerminalStatus, TurnTranscript, thread_control,
 };
 use anyhow::{Result, anyhow};
-use codewhale_protocol::runtime::RuntimeImageInput;
+use codewhale_app_server_protocol::runtime::RuntimeImageInput;
 use codewhale_protocol::{PromptRequest, PromptResponse, ThreadRequest, ThreadResponse};
 use serde_json::{Value, json};
 use std::path::Path;

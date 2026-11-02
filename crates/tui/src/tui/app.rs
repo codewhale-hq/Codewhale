@@ -8064,3 +8064,33 @@ pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn capture_session_fixture_source(&mut self) {
+        use codewhale_engine::session_manager::{SessionManager, SessionWriteOwner};
+        let Some(id) = self.current_session_id.as_deref() else {
+            return;
+        };
+        let manager = SessionManager::default_location().expect("fixture session manager");
+        let source = match manager.load_session_snapshot(id) {
+            Ok(session) => session.write_receipt,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match manager
+                    .load_session_checkpoint(id)
+                    .expect("fixture checkpoint source")
+                {
+                    Some(session) => session.write_receipt,
+                    None => Some(
+                        manager
+                            .expect_absent_session(id)
+                            .expect("fresh fixture source"),
+                    ),
+                }
+            }
+            Err(error) => panic!("fixture session source: {error}"),
+        };
+        self.session_write_receipt = Some(source.expect("fixture admitted source"));
+        self.session_write_owner = Some(SessionWriteOwner::control());
+    }
+}
