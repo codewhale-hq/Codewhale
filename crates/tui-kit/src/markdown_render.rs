@@ -644,6 +644,12 @@ fn push_parsed_line(
         return;
     }
 
+    if is_horizontal_rule(trimmed) {
+        *in_list = false;
+        blocks.push(Block::HorizontalRule);
+        return;
+    }
+
     if let Some((bullet, text)) = parse_list_item(trimmed) {
         *in_list = true;
         blocks.push(Block::ListItem {
@@ -651,12 +657,6 @@ fn push_parsed_line(
             bullet,
             text: text.to_string(),
         });
-        return;
-    }
-
-    if is_horizontal_rule(trimmed) {
-        *in_list = false;
-        blocks.push(Block::HorizontalRule);
         return;
     }
 
