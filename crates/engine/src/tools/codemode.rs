@@ -141,7 +141,9 @@ pub fn execute_tools_tool_definition() -> Tool {
              matching tool names with their input schemas without loading them into the \
              conversation. Each result is {content, metadata, truncated}. A bare single MCP \
              JSON text block is parsed directly into content; mixed/rich blocks retain \
-             their MCP envelope. When a result is cut, truncated names its full size \
+             their MCP envelope. Nested results do not deliver inline images to the model; \
+             for visual input, discover the capture tool with a direct tool_search call \
+             and invoke it directly. When a result is cut, truncated names its full size \
              and saved copy and content is the leading \
              text of the raw output instead of parsed JSON, so check truncated before \
              reading fields. Not \

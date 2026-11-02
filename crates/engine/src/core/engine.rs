@@ -9482,7 +9482,11 @@ impl Engine {
                 }
                 None => Default::default(),
             };
-        tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members);
+        if tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members) {
+            self.session
+                .pending_prefix_change_reason
+                .get_or_insert_with(|| "tool_surface".to_string());
+        }
         let previous =
             self.session.messages.iter().rev().find(|message| {
                 crate::runtime_handoff::is_mcp_server_instructions_message(message)
