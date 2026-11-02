@@ -128,23 +128,24 @@ async fn persist_exec_checkpoint(
         return;
     };
     let write_request = Arc::clone(&request);
-    let mut writer = tokio::task::spawn_blocking(move || -> Result<codewhale_engine::session_manager::SessionPublication> {
-        let snapshot = &write_request.snapshot;
-        let publication = persist_exec_session(
-            &snapshot.messages,
-            &snapshot.model,
-            PersistedProviderRoute {
-                kind: &snapshot.model_provider,
-                id: snapshot.model_provider_id.as_deref(),
-            },
-            &snapshot.workspace,
-            &snapshot.system_prompt,
-            Some(&snapshot.session_id),
-            snapshot.total_tokens,
-            None,
-            manager.as_ref(),
-            &[],
-            Some(write_request.as_ref()),
+    let mut writer = tokio::task::spawn_blocking(
+        move || -> Result<codewhale_engine::session_manager::SessionPublication> {
+            let snapshot = &write_request.snapshot;
+            let publication = persist_exec_session(
+                &snapshot.messages,
+                &snapshot.model,
+                PersistedProviderRoute {
+                    kind: &snapshot.model_provider,
+                    id: snapshot.model_provider_id.as_deref(),
+                },
+                &snapshot.workspace,
+                &snapshot.system_prompt,
+                Some(&snapshot.session_id),
+                snapshot.total_tokens,
+                None,
+                manager.as_ref(),
+                &[],
+                Some(write_request.as_ref()),
                 &captured_source,
                 &captured_owner,
             )?;
@@ -1992,8 +1993,7 @@ mod tests {
             manager.as_ref(),
             &[],
             None,
-            source.as_ref()
-        .unwrap(),
+            source.as_ref().unwrap(),
             snapshot.source.as_ref().unwrap(),
         )
         .unwrap();

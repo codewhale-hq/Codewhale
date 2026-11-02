@@ -156,7 +156,11 @@ pub fn diff_row_for_origin(diff: &str, width: u16, origin: usize) -> usize {
 }
 
 fn render_diff_into(diff: &str, width: u16, summary: bool, collector: &mut BoundedLineCollector) {
-    let totals = summary.then(|| diff_totals(diff)).unwrap_or_default();
+    let totals = if summary {
+        diff_totals(diff)
+    } else {
+        DiffTotals::default()
+    };
     let origin_offset = usize::from(totals.files > 0);
     if totals.files > 0 {
         render_diff_summary(diff, totals, width, collector);
@@ -527,7 +531,6 @@ impl BoundedLineCollector {
     }
 }
 
-#[must_use]
 pub fn summarize_diff(diff: &str) -> impl Iterator<Item = DiffFileSummary<'_>> {
     let mut lines = diff.lines();
     let mut current: Option<DiffFileSummary<'_>> = None;

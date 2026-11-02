@@ -235,9 +235,7 @@ pub(super) fn apply_engine_session_projection(
         let (reply, receiver) = tokio::sync::oneshot::channel();
         if !super::session_state::try_persist_session(
             app,
-            PersistRequest::AcknowledgedCheckpoint {
-            session,
-            reply },
+            PersistRequest::AcknowledgedCheckpoint { session, reply },
         ) {
             request.fail("terminal persistence actor is unavailable");
             return false;
@@ -3883,9 +3881,8 @@ pub(crate) async fn run_event_loop(
                                 "terminal session source no longer matches; checkpoint retained"
                             );
                             let session_id = app.current_session_id.clone();
-                            let error = snapshot_error.unwrap_or_else(|| {
-                                std::io::ErrorKind::ResourceBusy.to_string()
-                            });
+                            let error = snapshot_error
+                                .unwrap_or_else(|| std::io::ErrorKind::ResourceBusy.to_string());
                             surface_session_save_failure(app, session_id.as_deref(), &error);
                         }
                         if terminal_snapshot.is_some()
@@ -3901,8 +3898,7 @@ pub(crate) async fn run_event_loop(
                             // sole recovery record instead of erasing it.
                             let queued = super::session_state::try_persist_session(
                                 app,
-                                PersistRequest::CompletedCommit {
-                                    session },
+                                PersistRequest::CompletedCommit { session },
                             );
                             if queued {
                                 if let Err(err) =

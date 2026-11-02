@@ -699,7 +699,8 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
                 interrupted: *interrupted,
             }
         }
-        Event::CompactionStarted { id, auto, message, ..
+        Event::CompactionStarted {
+            id, auto, message, ..
         } => wire::EventMsg::CompactionStarted {
             thread_id,
             session_id,
@@ -1268,10 +1269,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             mode: app_mode_str(*mode).to_string(),
         },
         Op::RewindConversation {
-            expected,
-            messages,
-            tx: _,
-            ..
+            expected, messages, ..
         } => wire_op::Op::RewindConversation {
             expected: to_value(expected),
             messages: messages.iter().map(to_value).collect(),
