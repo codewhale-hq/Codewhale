@@ -1269,10 +1269,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             mode: app_mode_str(*mode).to_string(),
         },
         Op::RewindConversation {
-            expected,
-            messages,
-            tx: _,
-            ..
+            expected, messages, ..
         } => wire_op::Op::RewindConversation {
             expected: to_value(expected),
             messages: messages.iter().map(to_value).collect(),

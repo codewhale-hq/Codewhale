@@ -411,8 +411,7 @@ impl DisplayNormalizer {
             if needed > self.pending.capacity() {
                 let capacity = needed
                     .max(self.pending.capacity().saturating_mul(2))
-                    .max(64)
-                    .min(MAX_DISPLAY_GRAPHEME_BYTES);
+                    .clamp(64, MAX_DISPLAY_GRAPHEME_BYTES);
                 self.pending
                     .reserve_exact(capacity.saturating_sub(self.pending.len()));
             }
