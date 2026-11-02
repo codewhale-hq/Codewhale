@@ -1087,15 +1087,13 @@ async fn write_frontend_ready(
     output: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
     ready: RuntimeFrontendReady,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt as _;
-    let frame = serde_json::to_vec(
+    let frame = codewhale_app_server::stdio::serialize_control_frame(
         &json!({"jsonrpc":"2.0","method":"daemon/frontend_ready","params":ready}),
     )?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        output.write_all(&frame).await?;
-        output.write_all(b"\n").await?;
-        output.flush().await
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        codewhale_app_server::stdio::write_control_line(output, &frame),
+    )
     .await
     .context("selected listener readiness write timed out; outcome uncertain")??;
     Ok(())

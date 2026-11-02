@@ -160,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local control and ACP output serialize within the existing 8 MiB frame limit and stop a damaged or stalled output stream. Compatibility replies, events and relay stdout now share the 30-second write deadline; owner forwarding keeps its tighter 5 seconds. Standalone and attached ACP recover after complete invalid UTF-8 or oversized input frames, discard oversized tails through the real newline, and preserve cancellation, permissions and actual Core receipts.
 - MCP composition records actual schema or description changes before the next request, so a conservative batch withdrawal re-pins the declared tool surface instead of failing the C5 prefix guard. Equal schemas retain their existing order. The `execute_tools` description also explains that visual input needs a direct capture call because nested results do not deliver inline images to the model.
 - Inference requests stop after uncertain delivery or an interrupted stream instead of silently sending another request. Automatic retries require an ordinary rate limit or a transient connection failure before dispatch. Redirects and HTTP protocol retries cannot bypass this policy; retained output and missing usage coverage remain visible. Terminal `exec` failures return exit 1; error categories no longer imply that repeating a saved command is safe.
 

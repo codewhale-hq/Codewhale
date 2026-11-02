@@ -160,7 +160,13 @@ pub(crate) async fn run_bridged_turn<W: AsyncWrite + Unpin>(
         let mut thread_map = state.runtime_thread_map.lock().await;
         bridge.forget_thread(&mut thread_map, turn.thread_key);
     }
-    result.map_err(|err| JsonRpcError::internal(err.to_string()))
+    result.map_err(|err| {
+        let mut response = JsonRpcError::internal(err.to_string());
+        if crate::stdio::is_control_write_failure(&err) {
+            response.transport_error = Some(err);
+        }
+        response
+    })
 }
 
 /// Run a prompt as a genuine model turn and return what the model actually

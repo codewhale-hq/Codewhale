@@ -14,8 +14,9 @@ such as Zed.
 `codewhale serve --http` / `serve --mobile` remain as **compatibility aliases**
 for `codewhale app-server --http` / `--mobile`; both launch the identical
 server. Desktop, web, SDK and custom integrations should target
-`app-server --http`. Bare `app-server`, `--stdio` and `--socket` select smaller
-compatibility interfaces, not the full Engine API.
+`app-server --http`. `--stdio` and `--socket` expose compatibility controls.
+The current bare `app-server` HTTP listener serves compatibility routes and
+the full `/v1/*` router through the same Runtime owner.
 
 `codewhale exec` is the separate one-shot headless worker path (stream-json,
 fleet worker subprocess, CI primitive). It is not part of this API, but it
@@ -57,7 +58,7 @@ For the read-only record of what a thread or turn did, see
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
 | `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Compatibility controls and explicit tool-free turns; no full Engine event or approval/input channel. |
 | `codewhale app-server --socket [--socket-path P]` | JSON-RPC 2.0 over a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
-| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`. Turn requests require explicit `allowed_tools: []`; interactive execution fails before a turn starts. Use `app-server --http` for tools, approvals, clarification, goal execution, steering and the full event journal. |
+| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`, plus the full `/v1/*` router. Compatibility turn requests require explicit `allowed_tools: []`; those routes refuse interactive execution before a turn starts. New integrations should use `app-server --http`. |
 | `codewhale serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
 
 `app-server --http` and `--mobile` launch the same mature runtime API server
@@ -430,6 +431,16 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' \
   | codewhale app-server --stdio
 ```
+
+Local control and ACP frames have an 8 MiB encoded body limit, excluding the
+newline separator. Serialization stops at that limit before writing an
+oversized frame. Body, newline and flush share a 30-second backpressure
+deadline; owner attachment, request forwarding and frontend readiness keep
+their tighter 5-second envelopes. A partial write, flush failure or deadline
+ends the affected stream; it cannot be followed by another response or an
+automatic replay. This write deadline also applies to compatibility stdio
+replies/events and relay stdout. The current stdio host can bind a private
+loopback listener for its internal Runtime bridge.
 
 `capabilities` returns the advertised method families (`thread/*`, `app/*`,
 `prompt/*`) and the full method list; `thread/capabilities`,
@@ -814,6 +825,16 @@ cancellation does not fabricate success. `stopReason` is `end_turn`, `cancelled`
 or typed `max_turn_requests`; Core failure remains an error. Prompts use at most
 50 model steps (a lower configured limit still wins) and Core's bounded final
 report response; this profile does not dispatch autonomous goal continuations.
+
+An oversized or non-UTF8 ACP input frame produces one bounded `-32700` error.
+After an oversized frame, input is discarded through its actual newline before
+another request can be admitted; cancellation preserves that discard state.
+This applies to standalone ACP and an authenticated guest of a normal Runtime
+owner. Other input I/O failures, owner-reply validation failures and compatibility
+control framing failures end the stream. An oversized ACP response becomes a
+bounded `-32603` error, with a null ID if echoing the original ID would also
+exceed the limit. Oversized notifications refuse before writing and use the
+existing operation cleanup; they do not report truncated success.
 
 When no process owns the Runtime store, ACP claims its own exclusive canonical
 Runtime owner. When a non-ACP Runtime host already owns it (the desktop app,
