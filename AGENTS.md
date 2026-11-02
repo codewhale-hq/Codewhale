@@ -169,11 +169,11 @@ casually it reads as taking the work even when credit is preserved.
 - The model-facing subagent tool is `agent`; `agent_open`/`agent_eval`/
   `agent_close`/`delegate_to_agent` are removed surfaces. If the shape must
   move, move the code and its existing guard test with it.
-- `BASE_PROMPT` in `crates/tui/src/prompts/text.rs` is the sole base prompt
+- `BASE_PROMPT` in `crates/engine/src/prompts/text.rs` is the sole base prompt
   by convention. Same rule: move the code, not the prose, if that changes.
 - There is exactly one turn loop: `Engine::run_turn` in
-  `crates/tui/src/core/engine/turn_loop.rs`. Note that `crates/tui/src/core/`
-  is a module inside the TUI crate — it is not `crates/core`, which owns
+  `crates/engine/src/core/engine/turn_loop.rs`. Note that `crates/engine/src/core/`
+  is a module inside the engine crate (`codewhale-engine`) — it is not `crates/core`, which owns
   request construction, bounded fragments, and thread/session types and
   runs no turns. A guard test (`crates/core/tests/single_turn_loop.rs`)
   fails on a second loop; changing the shape means changing the guard
@@ -184,7 +184,7 @@ casually it reads as taking the work even when credit is preserved.
   volatile fact into the prefix; append it as a user-role message.
 - These active modules are repeatedly misidentified as dead; verify consumers
   before removal: `runtime/src/context_budget.rs`,
-  `runtime/src/prompt_zones.rs`, `tui/src/tools/remember.rs`, and
+  `runtime/src/prompt_zones.rs`, `engine/src/tools/remember.rs`, and
   `config/src/route/`. Native memory lives in `runtime/src/native_memory.rs`;
   `tools/remember.rs` is its capture path.
 - Environment-specific behavior belongs in `docs/ENVIRONMENTS.md`, not here.
