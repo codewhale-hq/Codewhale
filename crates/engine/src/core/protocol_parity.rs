@@ -699,7 +699,8 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
                 interrupted: *interrupted,
             }
         }
-        Event::CompactionStarted { id, auto, message, ..
+        Event::CompactionStarted {
+            id, auto, message, ..
         } => wire::EventMsg::CompactionStarted {
             thread_id,
             session_id,

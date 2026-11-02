@@ -1500,7 +1500,8 @@ pub(super) async fn apply_conversation_undo(
         )
     })?;
     anyhow::ensure!(
-        installed.session_id == id && installed.messages == expected
+        installed.session_id == id
+            && installed.messages == expected
             && installed.source.as_ref()
                 == Some(
                     &codewhale_engine::core::ops::SessionSnapshotSource::control(control.clone())
@@ -1535,7 +1536,8 @@ pub(super) async fn apply_conversation_undo(
         anyhow::ensure!(
             super::session_state::try_persist_session(
                 app,
-                PersistRequest::CompletedCommit { session }),
+                PersistRequest::CompletedCommit { session }
+            ),
             "the session persistence worker is unavailable"
         );
         let (reply, receive) = tokio::sync::oneshot::channel();

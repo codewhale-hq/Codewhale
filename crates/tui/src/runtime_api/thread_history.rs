@@ -362,44 +362,44 @@ async fn import_into_owner(
             None
         };
         let mut session = SavedSession::import_foreign(
-        SessionImportContainer::new("legacy-state-sqlite".into(), &journal, None),
-        thread.workspace.clone(),
-        thread.model.clone(),
-    )
-    .map_err(anyhow::Error::msg)?;
-    session.write_receipt = publication_source;
+            SessionImportContainer::new("legacy-state-sqlite".into(), &journal, None),
+            thread.workspace.clone(),
+            thread.model.clone(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        session.write_receipt = publication_source;
         session.metadata.publication_id = session
             .write_receipt
             .as_ref()
             .and_then(|receipt| receipt.publication_id());
         session.metadata.id = operation.receipt.session_id.clone();
-    session.system_prompt.clone_from(&thread.system_prompt);
-    session.metadata.created_at = operation.created_at;
-    session.metadata.updated_at = operation.created_at;
-    session.metadata.runtime_store = Some(runtime.session_store_binding());
-    session.metadata.set_model_provider_route(
-        thread
-            .model_provider
-            .as_deref()
-            .ok_or_else(|| anyhow!("canonical thread has no captured provider"))?,
-        thread.model_provider_id.as_deref(),
-    );
-    let mut captured_target_document_digest = None;
-    if target.is_some() {
-        let detail = runtime.get_thread_detail(&thread.id).await?;
-        ensure!(
-            !super::sessions::thread_detail_has_live_work(&detail),
-            "canonical target has live work; retry the same import after settlement"
+        session.system_prompt.clone_from(&thread.system_prompt);
+        session.metadata.created_at = operation.created_at;
+        session.metadata.updated_at = operation.created_at;
+        session.metadata.runtime_store = Some(runtime.session_store_binding());
+        session.metadata.set_model_provider_route(
+            thread
+                .model_provider
+                .as_deref()
+                .ok_or_else(|| anyhow!("canonical thread has no captured provider"))?,
+            thread.model_provider_id.as_deref(),
         );
-        let (full, source) = snapshot_in_owner(state.clone(), thread.id.clone())
-            .await
-            .map_err(|error| anyhow!(error.message))?;
-        captured_target_document_digest = full.saved_document_digest;
-        ensure!(
-            captured_target_document_digest.is_some(),
-            "canonical target full document witness is absent"
-        );
-        let mut observed: SavedSession = serde_json::from_value(full.session)?;
+        let mut captured_target_document_digest = None;
+        if target.is_some() {
+            let detail = runtime.get_thread_detail(&thread.id).await?;
+            ensure!(
+                !super::sessions::thread_detail_has_live_work(&detail),
+                "canonical target has live work; retry the same import after settlement"
+            );
+            let (full, source) = snapshot_in_owner(state.clone(), thread.id.clone())
+                .await
+                .map_err(|error| anyhow!(error.message))?;
+            captured_target_document_digest = full.saved_document_digest;
+            ensure!(
+                captured_target_document_digest.is_some(),
+                "canonical target full document witness is absent"
+            );
+            let mut observed: SavedSession = serde_json::from_value(full.session)?;
             let source_runtime = Arc::clone(&runtime);
             let captured_operation = operation.clone();
             let source =
@@ -414,53 +414,53 @@ async fn import_into_owner(
                 .write_receipt
                 .as_ref()
                 .and_then(|receipt| receipt.publication_id());
-        ensure!(
-            observed.metadata.id == operation.receipt.session_id,
-            "canonical target session changed before source merge"
-        );
-        let imported = session
-            .journal
-            .take()
-            .ok_or_else(|| anyhow!("source journal missing"))?;
-        let destination = observed
-            .journal
-            .as_mut()
-            .ok_or_else(|| anyhow!("target full journal missing"))?;
-        let mut positions: HashMap<String, usize> = destination
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (entry.id.clone(), index))
-            .collect();
-        for entry in imported.entries {
-            if let Some(index) = positions.get(&entry.id).copied() {
-                ensure!(
-                    destination.entries[index] == entry,
-                    "imported entry identity conflicts with canonical history"
-                );
-            } else {
-                ensure!(
-                    destination.entries.len() < MAX_CANONICAL_HISTORY_ENTRIES,
-                    "merged full history exceeds entry transport bound; both sources retained"
-                );
-                positions.insert(entry.id.clone(), destination.entries.len());
-                destination.entries.push(entry);
+            ensure!(
+                observed.metadata.id == operation.receipt.session_id,
+                "canonical target session changed before source merge"
+            );
+            let imported = session
+                .journal
+                .take()
+                .ok_or_else(|| anyhow!("source journal missing"))?;
+            let destination = observed
+                .journal
+                .as_mut()
+                .ok_or_else(|| anyhow!("target full journal missing"))?;
+            let mut positions: HashMap<String, usize> = destination
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (entry.id.clone(), index))
+                .collect();
+            for entry in imported.entries {
+                if let Some(index) = positions.get(&entry.id).copied() {
+                    ensure!(
+                        destination.entries[index] == entry,
+                        "imported entry identity conflicts with canonical history"
+                    );
+                } else {
+                    ensure!(
+                        destination.entries.len() < MAX_CANONICAL_HISTORY_ENTRIES,
+                        "merged full history exceeds entry transport bound; both sources retained"
+                    );
+                    positions.insert(entry.id.clone(), destination.entries.len());
+                    destination.entries.push(entry);
+                }
             }
+            if destination.leaf_id.is_none() {
+                destination.leaf_id = imported.leaf_id;
+                observed.leaf_id = destination.leaf_id.clone();
+                observed.messages = destination.to_messages();
+            }
+            ensure!(
+                destination.entries.len() <= MAX_CANONICAL_HISTORY_ENTRIES,
+                "merged full history exceeds entry transport bound; both sources retained"
+            );
+            let mut bound = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
+            serde_json::to_writer(&mut bound, &observed)?;
+            session = observed;
         }
-        if destination.leaf_id.is_none() {
-            destination.leaf_id = imported.leaf_id;
-            observed.leaf_id = destination.leaf_id.clone();
-            observed.messages = destination.to_messages();
-        }
-        ensure!(
-            destination.entries.len() <= MAX_CANONICAL_HISTORY_ENTRIES,
-            "merged full history exceeds entry transport bound; both sources retained"
-        );
-        let mut bound = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
-        serde_json::to_writer(&mut bound, &observed)?;
-        session = observed;
-    }
-    let document_digest = saved_document_digest(&session)?;
+        let document_digest = saved_document_digest(&session)?;
         let prepare_runtime = Arc::clone(&runtime);
         let prepared_operation = operation.clone();
         let bound_operation = history_owner_work(move || {
@@ -468,8 +468,8 @@ async fn import_into_owner(
         })
         .await?;
         let target_merge = target.is_some();
-    let sessions_dir = state.sessions_dir.clone();
-    let verification_runtime = Arc::clone(&runtime);
+        let sessions_dir = state.sessions_dir.clone();
+        let verification_runtime = Arc::clone(&runtime);
         let verification_operation = bound_operation.clone();
         let (session, target_lease) = history_owner_work(move || {
         let mut session = session;
@@ -614,7 +614,9 @@ pub(super) async fn snapshot_thread_history(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<codewhale_protocol::CanonicalThreadSnapshot>, ApiError> {
     let _admission = state.runtime_threads.session_checkpoint_guard().await;
-    snapshot_in_owner(state, id).await.map(|(snapshot, _)| Json(snapshot))
+    snapshot_in_owner(state, id)
+        .await
+        .map(|(snapshot, _)| Json(snapshot))
 }
 
 async fn snapshot_in_owner(

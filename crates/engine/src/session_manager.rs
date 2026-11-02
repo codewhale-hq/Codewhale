@@ -3278,7 +3278,9 @@ impl SessionManager {
             }
             digest.update(&buffer[..count]);
         }
-        Ok(Some(codewhale_runtime::hashing::hex_bytes(digest.finalize())))
+        Ok(Some(codewhale_runtime::hashing::hex_bytes(
+            digest.finalize(),
+        )))
     }
 
     fn observe_session_admitted(&self, id: &str) -> io::Result<SessionObservation> {
@@ -4270,7 +4272,11 @@ impl SessionManager {
                     if error.kind() == io::ErrorKind::FileTooLarge
                         || (!admission_entered
                             && error.kind() != io::ErrorKind::NotFound
-                            && session.metadata.cost.unpriced_reasons.contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+                            && session
+                                .metadata
+                                .cost
+                                .unpriced_reasons
+                                .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
                 {
                     if !self.validate_unadmitted_read(
                         id,
@@ -4817,7 +4823,11 @@ impl SessionManager {
                 if error.kind() == io::ErrorKind::FileTooLarge
                     || (!admission_entered
                         && error.kind() != io::ErrorKind::NotFound
-                        && session.metadata.cost.unpriced_reasons.contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+                        && session
+                            .metadata
+                            .cost
+                            .unpriced_reasons
+                            .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
             {
                 if !self.validate_unadmitted_read(
                     id,

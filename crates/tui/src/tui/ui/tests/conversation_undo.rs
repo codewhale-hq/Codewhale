@@ -56,7 +56,8 @@ async fn settled(app: &mut App, handle: &EngineHandle, answer: &str) {
     });
 }
 
-fn sync_snapshot(snapshot: &codewhale_engine::core::ops::SessionSnapshot,
+fn sync_snapshot(
+    snapshot: &codewhale_engine::core::ops::SessionSnapshot,
     control: codewhale_engine::core::ops::SessionControlId,
 ) -> Op {
     Op::SyncSession {
