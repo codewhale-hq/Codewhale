@@ -64,9 +64,13 @@ impl Engine {
         id: String,
         auto: bool,
         message: String,
+        previous_source: Option<crate::core::ops::SessionSnapshotSource>,
     ) {
         let _ = self
-            .send_event(Event::CompactionStarted { id, auto, message })
+            .send_event(Event::CompactionStarted {
+                previous_source,
+                id, auto, message,
+            })
             .await;
     }
 
@@ -200,15 +204,15 @@ impl Engine {
         prompt_context: &NextTurnPromptContext,
         system_prompt: Option<&SystemPrompt>,
         messages: &[Message],
+        planned_compaction: Option<&CompactionConfig>,
     ) -> Option<String> {
-        // The engine owns automatic compaction. Asking the model to warn the
-        // user here created a competing save/compact ceremony before the
-        // automatic request-boundary guard could do its work (#5620).
-        if self.config.compaction.enabled {
-            return None;
-        }
         let input_tokens =
-            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
+            crate::compaction::estimate_input_tokens_for_pressure(messages, system_prompt)
+                .saturating_add(if current_text.trim().is_empty() {
+                    0
+                } else {
+                    current_text.len() / 4 + 12
+                });
         let budget = crate::route_budget::route_context_budget_with_window(
             prompt_context.provider,
             &prompt_context.model,
@@ -216,9 +220,36 @@ impl Engine {
             prompt_context.context_window.map(|window| window.tokens),
             input_tokens,
         )?;
-        context_pressure_message(budget.usage_percent()).map(|warning| format!(
-            "{warning}. Estimated input: {input_tokens} tokens ({:.1}% of route budget). Making room automatically is off for this session. /compact saves the original conversation and its model-written handoff before replacing context.",
+        let estimate = format!(
+            "Estimated conversation input: {input_tokens} / {} context tokens ({:.1}%).",
+            budget.window_tokens,
             budget.usage_percent(),
+        );
+        let compaction = planned_compaction.unwrap_or(&self.config.compaction);
+        if compaction.enabled {
+            let matches_route = planned_compaction.is_some()
+                || (self.api_provider == prompt_context.provider
+                    && self.config.model == prompt_context.model
+                    && self.active_route_limits == prompt_context.route_limits);
+            if matches_route
+                && compaction.effective_context_window.map(u64::from) == Some(budget.window_tokens)
+            {
+                return Some(format!(
+                    "{estimate} Automatic compaction threshold: {} tokens.",
+                    compaction.token_threshold
+                ));
+            }
+            return Some(format!("{estimate} Automatic compaction is enabled."));
+        }
+        let conservative =
+            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
+        let pressure = codewhale_runtime::context_budget::usage_percent(
+            budget.window_tokens,
+            conservative as u64,
+        );
+        Some(context_pressure_message(pressure).map_or_else(
+            || format!("{estimate} Automatic compaction is off."),
+            |warning| format!("{warning}. {estimate} Making room automatically is off for this session. /compact saves the original conversation and its model-written handoff before replacing context."),
         ))
     }
 
@@ -288,8 +319,6 @@ impl Engine {
         // Manual compaction terminals identify the compaction operation, never
         // a surrounding host submission or a model turn.
         let compaction_id = Some(id.clone());
-        self.emit_compaction_started(id.clone(), false, "Making room…".to_string())
-            .await;
         let Some(cancel_token) = self.claim_compaction(&id) else {
             let message = "Making room stopped before it started".to_string();
             self.emit_compaction_cancelled(id, false, message).await;
@@ -309,6 +338,14 @@ impl Engine {
                 .await;
             return;
         };
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::compaction(
+            id.clone(),
+        ));
+        self.emit_compaction_started(id.clone(), false, "Making room…".to_string(),
+            previous_source,
+        )
+            .await;
         if let Err(err) = self.install_resolved_runtime_route(route) {
             let message =
                 format!("Cannot compact context because its provider route is not ready: {err}");
@@ -681,7 +718,9 @@ impl Engine {
             let compaction_cancel = self
                 .claim_compaction(&compaction_id)
                 .expect("a fresh automatic compaction id cannot be pre-canceled");
-            self.emit_compaction_started(compaction_id.clone(), true, "Making room…".to_string())
+            self.emit_compaction_started(compaction_id.clone(), true, "Making room…".to_string(),
+                self.session.snapshot_source.clone(),
+            )
                 .await;
             let auto_messages_before = self.session.messages.len();
             let auto_tokens_before = self.estimated_input_tokens();
@@ -906,7 +945,9 @@ impl Engine {
             .emergency_compaction_attempts
             .saturating_add(1);
         let start_message = format!("Making room now ({reason})");
-        self.emit_compaction_started(id.clone(), true, start_message)
+        self.emit_compaction_started(id.clone(), true, start_message,
+            self.session.snapshot_source.clone(),
+        )
             .await;
         let Some(compaction_cancel) = self.claim_compaction(&id) else {
             self.emit_compaction_cancelled(

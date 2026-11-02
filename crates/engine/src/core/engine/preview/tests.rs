@@ -278,16 +278,17 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         None,
     );
     let system_prompt = engine.compose_stable_system_prompt(&prompt_context);
-    assert_eq!(
-        engine.context_pressure_line(
+    let planned_pressure = engine
+        .context_pressure_line(
             "cross-route budget",
             &prompt_context,
             system_prompt.as_ref(),
             &engine.session.messages,
-        ),
-        None,
-        "the planned 123K route must not inherit the installed route's pressure"
-    );
+            None,
+        )
+        .unwrap();
+    assert!(planned_pressure.contains("/ 123456 context tokens"));
+    assert!(!planned_pressure.contains("Context pressure:"));
     let installed_context = NextTurnPromptContext::for_planned_turn(
         ProviderKind::Deepseek,
         "deepseek-v4-flash".to_string(),
@@ -305,10 +306,11 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
             &installed_context,
             None,
             &engine.session.messages,
+            None,
         )
         .unwrap();
     assert!(pressure.contains("Context pressure: critical"));
-    assert!(pressure.contains("Estimated input:"));
+    assert!(pressure.contains("/ 4096 context tokens"));
     assert!(pressure.contains("Making room automatically is off"));
     let message = engine.user_text_message_from_snapshot(
         "cross-route budget".to_string(),
@@ -318,6 +320,7 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         false,
         UserInputProvenance::ExternalUser,
         TurnMetadataSnapshot {
+            planned_compaction: None,
             prompt_context: &prompt_context,
             system_prompt: system_prompt.as_ref(),
             approval_mode: ApprovalMode::Suggest,
@@ -339,8 +342,8 @@ fn turn_metadata_uses_planned_cross_route_limits_not_installed_limits() {
         !metadata.contains("Context pressure:"),
         "planned route metadata must remain below warning: {metadata}"
     );
-    assert!(!metadata.contains("123456 tokens"), "{metadata}");
-    assert!(!metadata.contains("4096 tokens"), "{metadata}");
+    assert!(metadata.contains("/ 123456 context tokens"), "{metadata}");
+    assert!(!metadata.contains("/ 4096 context tokens"), "{metadata}");
 }
 
 /// #perf-r5: the pressure-line helper must estimate the history IN PLACE and

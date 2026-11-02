@@ -822,7 +822,8 @@ fn windows_installer_uninstaller(executable: &Path) -> Option<PathBuf> {
 #[cfg(windows)]
 fn delete_after_exit(path: &Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+
     let system = std::env::var_os("SystemRoot").context("SystemRoot is not set")?;
     let powershell = Path::new(&system).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
     std::process::Command::new(powershell)
@@ -835,7 +836,7 @@ fn delete_after_exit(path: &Path) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .creation_flags(DETACHED_PROCESS)
+        .creation_flags(CREATE_NO_WINDOW.0)
         .spawn()
         .context("failed to start the deferred deletion helper")?;
     Ok(())

@@ -3,6 +3,16 @@
 /// authoritative assistant answer in the persisted conversation.
 #[tokio::test]
 async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_did() {
+    let _environment = lock_test_env();
+    let workspace = tempdir().expect("owned stream recovery workspace");
+    let fixture_state = workspace.path().join(".codewhale");
+    fs::create_dir_all(&fixture_state).unwrap();
+    fs::write(
+        fixture_state.join("AGENTS.md"),
+        "Preserve the exact operator input.\n",
+    )
+    .unwrap();
+    let _state_home = EnvVarGuard::set("CODEWHALE_HOME", &fixture_state);
     let model = std::sync::Arc::new(ThinkingOnlyDropModelClient {
         calls: std::sync::atomic::AtomicUsize::new(0),
         failures: 1,
@@ -14,9 +24,11 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         snapshots_enabled: false,
         subagents_enabled: false,
         terminal_chrome_enabled: true,
-        ..EngineConfig::default()
+        ..deterministic_engine_config(workspace.path())
     };
-    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    engine.instruction_settings.home = Some(workspace.path().to_path_buf());
+    engine.refresh_system_prompt();
     let run_task = tokio::spawn(engine.run());
 
     handle
@@ -72,8 +84,8 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the thinking-only drop must be re-issued exactly once"
+        1,
+        "thinking-only drop must not replay an admitted request"
     );
     let status = events
         .iter()
@@ -82,10 +94,10 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             _ => None,
         })
         .expect("terminal TurnComplete");
-    assert_eq!(status, TurnOutcomeStatus::Completed);
+    assert_eq!(status, TurnOutcomeStatus::Failed);
 
     assert!(
-        events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
             Event::Status { message } if message.starts_with("Retry attempt: stream-resume 1/")
         )),
@@ -99,7 +111,9 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         .iter()
         .rev()
         .find_map(|event| match event {
-            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => Some(messages.clone()),
             _ => None,
         })
         .expect("final SessionUpdated");
@@ -116,7 +130,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             .iter()
             .filter(|message| message.role == "assistant")
             .count(),
-        1,
+        0,
         "exactly one authoritative assistant answer after recovery: {transcript:?}"
     );
     let transcript_text = transcript
@@ -140,7 +154,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         transcript_text
             .matches("the one authoritative answer")
             .count(),
-        1,
+        0,
         "the recovered answer must be persisted exactly once: {transcript_text}"
     );
 }
@@ -544,7 +558,7 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1 + super::DEFAULT_STREAM_MAX_RESUMES as usize,
+        1,
         "initial attempt plus the bounded resume budget, then the turn fails"
     );
     let (status, error) = events
@@ -586,14 +600,9 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
                 Event::Status { message } if message.starts_with("Retry attempt: stream-resume ")
             ))
             .count(),
-        super::DEFAULT_STREAM_MAX_RESUMES as usize,
+        0,
         "every admitted resume must have its own numbered progress receipt"
     );
-    for attempt in 1..=super::DEFAULT_STREAM_MAX_RESUMES {
-        assert!(events.iter().any(|event| matches!(event,
-            Event::Status { message } if message.starts_with(&format!("Retry attempt: stream-resume {attempt}/"))
-        )));
-    }
 }
 
 // === Issue #66: error taxonomy wired through engine + audit + capacity ===
@@ -871,6 +880,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // Construct a minimal EngineHandle with the tiny channel.
     let cancel_token = CancellationToken::new();
     let handle = EngineHandle {
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,
@@ -1078,6 +1088,14 @@ async fn first_turn_waits_for_explicit_mcp_schema_without_waiting_for_unrelated_
         return;
     };
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("server.mjs");
     let release = tmp.path().join("release-slow");
     let release_fast = tmp.path().join("release-fast");
@@ -1300,6 +1318,7 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
     assert!(result.success);
     assert!(active.contains("mcp_slow_ready"));
     engine.wait_for_mcp_boot().await;
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
@@ -1317,6 +1336,14 @@ async fn assert_incremental_mcp_boot(invalidate_config: bool) {
         return;
     }
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("server.mjs");
     let release = tmp.path().join("release-slow");
     std::fs::write(
@@ -1417,6 +1444,7 @@ lines.on('line', async (line) => {
     drop(events);
     handle.send(Op::Shutdown).await.expect("shutdown");
     task.await.expect("engine task");
+    fixture_manager.shutdown().await;
     let progress = progress.expect("fast server must be visible before slow server is released");
     assert!(
         progress
@@ -1622,6 +1650,8 @@ async fn mcp_boot_updates_preserve_authority_errors_and_replace_ordinary_errors(
 async fn mcp_search_fixture(
     allowed: Option<Vec<String>>,
 ) -> (
+    crate::extension_host::TestManagerGuard,
+    Arc<crate::extension_host::ExtensionHostManager>,
     Engine,
     tool_catalog::ToolSurfacePolicy,
     tempfile::TempDir,
@@ -1630,6 +1660,14 @@ async fn mcp_search_fixture(
     let node =
         codewhale_dependencies::resolve_node().expect("MCP discovery qualification requires Node");
     let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
     let server = tmp.path().join("discovery.mjs");
     fs::write(&server, r#"import fs from 'node:fs';
 import path from 'node:path';
@@ -1711,12 +1749,20 @@ readline.createInterface({input:process.stdin}).on('line', line => {
             "discovery",
         )
         .await;
-    (engine, build.surface, tmp, model)
+    (
+        fixture_manager_guard,
+        fixture_manager,
+        engine,
+        build.surface,
+        tmp,
+        model,
+    )
 }
 
 #[tokio::test]
 async fn mcp_tool_search_discovers_optional_server_real_schema_without_eager_siblings() {
-    let (mut engine, policy, tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
+        mcp_search_fixture(None).await;
     let mut surface = crate::core::engine::ChildSurfaceProbe {
         policy,
         cache: crate::core::session::ToolActivationCache::default(),
@@ -1763,11 +1809,12 @@ async fn mcp_tool_search_discovers_optional_server_real_schema_without_eager_sib
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_respects_captured_turn_ceiling_and_disabled_servers() {
-    let (mut engine, policy, tmp, model) =
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
         mcp_search_fixture(Some(vec!["tool_search".into()])).await;
     let mut catalog = policy.catalog.clone();
     let mut active = policy.active_names.clone();
@@ -1790,11 +1837,13 @@ async fn mcp_tool_search_respects_captured_turn_ceiling_and_disabled_servers() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_failed_connection_is_bounded_without_guessed_tools() {
-    let (mut engine, policy, _tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, _tmp, model) =
+        mcp_search_fixture(None).await;
     let mut catalog = policy.catalog.clone();
     let mut active = policy.active_names.clone();
     tokio::time::timeout(
@@ -1821,11 +1870,13 @@ async fn mcp_tool_search_failed_connection_is_bounded_without_guessed_tools() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }
 
 #[tokio::test]
 async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
-    let (mut engine, policy, tmp, model) = mcp_search_fixture(None).await;
+    let (_fixture_manager_guard, fixture_manager, mut engine, policy, tmp, model) =
+        mcp_search_fixture(None).await;
     let pool = engine.mcp_pool.clone().unwrap();
     let cancel = engine.cancel_token.clone();
     let mut catalog = policy.catalog.clone();
@@ -1859,4 +1910,5 @@ async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
 }

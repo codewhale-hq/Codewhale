@@ -1301,7 +1301,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `max_subagents`(int，可选)：默认 `64`，钳制到 `1..=128`。
 
-- `subagents.*`（可选的兼容表）：面向直接启动和 Workflow `agent` 启动的手动按角色模型固定项。显式保存的配置优先，然后是手动角色固定项，然后是唯一的已保存角色固定项。相互冲突的工具 `model` 或 `model_strength` 选择会在准入之前被拒绝。未固定的角色允许在继承默认值之前使用任务级 model/strength 选择。`[subagents.roles.<role>] model = "provider/model"` 折叠进现有的覆盖映射，并优先于 `[subagents.models]`，然后才是便捷键。结构化的规范角色键优先于旧别名。只有这种结构化写法才会把显式 provider 与模型后缀分开；未知 provider 会在准入之前失败。裸的结构化模型 id 继承活动 provider。旧的标量/映射值会原样保留带命名空间的 provider 自有 id。支持的便捷键是 `default_model`、`worker_model`、`scout_model`、`planner_model`、`reviewer_model`、`custom_model`、`max_concurrent`、`max_admitted`、`launch_concurrency`、`token_budget`、`api_timeout_secs` 和 `heartbeat_timeout_secs`。v0.9.x 键 `explorer_model`、`awaiter_model` 和 `review_model` 仍作为别名接受。`[subagents] max_concurrent` 值覆盖顶层 `max_subagents`，也钳制到 `1..=128`。`[subagents] max_admitted`(别名：`max_total`、`admission_limit`)是排队加运行子智能体的有界总数；默认 `1024`(`MAX_SUBAGENT_ADMISSION`，`crates/tui/src/config/subagent_limits.rs:21`，在 `config.rs:6400` 应用)，所以高扇出回合可以排队并排空，同时运行时启动压力保持有界，并钳制到 `max_concurrent..=1024`。`[subagents] launch_concurrency` 设置一次直接启动多少子智能体，其余排队等启动槽位；默认解析出的 `max_subagents` 上限，钳制到 `1..=max_subagents`(弃用的 `interactive_max_launch` 键作为别名接受，两者都设置时新键胜出)。`[subagents] token_budget` 是每个根 `agent` 运行及其后代的可选聚合 token 上限；未设置或 `0` 保留无限制的旧行为。`[subagents] api_timeout_secs` 控制子智能体模型调用的每步 API 超时，钳制到 `1..=3600`，`0` 或未设置保留 600 秒默认；超时尝试用指数退避重试(最多 5 次)，然后步骤以保留检查点中断。`[subagents] heartbeat_timeout_secs` 控制过期运行智能体清理，默认 `300`，钳制到 `30..=3600`，同时保持在解析出的 API 超时之上。`[subagents.providers.<provider>]` 接受同样的扇出、深度、预算和超时旋钮(`enabled`、`max_concurrent`、`max_admitted`、`launch_concurrency`、`max_depth`、`token_budget`、`api_timeout_secs`、`heartbeat_timeout_secs`)，并为省略的键继承全局 `[subagents]` 值。Provider 键接受 `deepseek`、`zai`、`openrouter`、`anthropic` 这样的规范名，加 `glm`(Z.ai)和 `deepseek_api`(直接 DeepSeek)这样的便捷别名：
+- `subagents.*`（可选的兼容表）：面向直接启动和 Workflow `agent` 启动的手动按角色模型固定项。显式保存的配置优先，然后是手动角色固定项，然后是唯一的已保存角色固定项。相互冲突的工具 `model` 或 `model_strength` 选择会在准入之前被拒绝。未固定的角色允许在继承默认值之前使用任务级 model/strength 选择。`[subagents.roles.<role>] model = "provider/model"` 折叠进现有的覆盖映射，并优先于 `[subagents.models]`，然后才是便捷键。结构化的规范角色键优先于旧别名。只有这种结构化写法才会把显式 provider 与模型后缀分开；未知 provider 会在准入之前失败。裸的结构化模型 id 继承活动 provider。旧的标量/映射值会原样保留带命名空间的 provider 自有 id。支持的便捷键是 `default_model`、`worker_model`、`scout_model`、`planner_model`、`reviewer_model`、`custom_model`、`max_concurrent`、`max_admitted`、`launch_concurrency`、`token_budget`、`api_timeout_secs` 和 `heartbeat_timeout_secs`。v0.9.x 键 `explorer_model`、`awaiter_model` 和 `review_model` 仍作为别名接受。`[subagents] max_concurrent` 值覆盖顶层 `max_subagents`，也钳制到 `1..=128`。`[subagents] max_admitted`(别名：`max_total`、`admission_limit`)是排队加运行子智能体的有界总数；默认 `1024`(`MAX_SUBAGENT_ADMISSION`，`crates/tui/src/config/subagent_limits.rs:21`，在 `config.rs:6400` 应用)，所以高扇出回合可以排队并排空，同时运行时启动压力保持有界，并钳制到 `max_concurrent..=1024`。`[subagents] launch_concurrency` 设置一次直接启动多少子智能体，其余排队等启动槽位；默认解析出的 `max_subagents` 上限，钳制到 `1..=max_subagents`(弃用的 `interactive_max_launch` 键作为别名接受，两者都设置时新键胜出)。`[subagents] token_budget` 是每个根 `agent` 运行及其后代的可选聚合 token 上限；未设置或 `0` 保留无限制的旧行为。`[subagents] api_timeout_secs` 控制子智能体模型调用的每步 API 超时，钳制到 `1..=3600`，`0` 或未设置保留 600 秒默认；可能发出请求后的超时会保留检查点并以结果未知中断；只有有证据证明请求尚未发出时的瞬时连接超时才使用指数退避，最多重试 5 次。`[subagents] heartbeat_timeout_secs` 控制过期运行智能体清理，默认 `300`，钳制到 `30..=3600`，同时保持在解析出的 API 超时之上。`[subagents.providers.<provider>]` 接受同样的扇出、深度、预算和超时旋钮(`enabled`、`max_concurrent`、`max_admitted`、`launch_concurrency`、`max_depth`、`token_budget`、`api_timeout_secs`、`heartbeat_timeout_secs`)，并为省略的键继承全局 `[subagents]` 值。Provider 键接受 `deepseek`、`zai`、`openrouter`、`anthropic` 这样的规范名，加 `glm`(Z.ai)和 `deepseek_api`(直接 DeepSeek)这样的便捷别名：
 
   ```toml
   [subagents]
@@ -1372,7 +1372,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   - `[retry].jitter_factor`（float，默认 `0.1`，即 ±10%；钳制到 `0.0..=1.0`）
   - `[retry].respect_retry_after`（bool，默认 `true`）：按服务器的 `Retry-After` 响应头等待，而不是使用计算出的退避延迟
 
-  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和遵循的 `Retry-After` 等待发生在请求之间，不占用这个时间，因此可以执行配置的重试次数。默认客户端遇到已分类的传输错误或响应头停滞时，可在该次尝试中改用 HTTP/1.1 一次；固定使用 HTTP/1.1 时跳过协议回退。两种客户端采用相同的 HTTP 状态分类和重试策略。明确的套餐周期用量耗尽会作为配额错误终止。提供方已接受请求之后发生的传输故障仍有歧义，重试可能产生另一笔生成费用。位于客户端之上的流级预算——一个回合对未能打开或中途断掉的流重新发起多少次请求——由下面的 `[stream]` 键控制；旧的 `tui.stream_max_*` 键仍作为回退。
+  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能触发重发。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
 
 - `[notifications]`：通知的投递、注意力、类别和声音共用同一套策略。`quiet = true`、`method = "off"`、`condition = "never"` 以及被禁用的类别，会同时抑制横幅和 Codewhale 所选的声音。
 - `notifications.method`：`auto`（默认）、`osc9`、`kitty`、`ghostty`、`bel`、`off`。
@@ -1402,13 +1402,13 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `tui.turn_wall_clock_secs`（int，可选，默认不设限）：每个回合累计的墙钟预算，单位为秒，跨一个回合的每个模型步骤度量（不是按请求）。等待人工审批所阻塞的时间不计入。省略或为 `0` 表示不设限；正值会原样保留，不再附加运行时上限。耗尽时，回合会在授权下一次计费请求之前停止，并给出一条指明该限制及要调高的键的信息。
 
-- `tui.stream_max_resumes`（int，可选，默认 `3`）：一个回合在其流失败之后，重新发起模型请求的次数——请求从未打开（连接失败或响应头停滞）、流在任何内容之前就断了、主机在流中途休眠，或网络在流中途断开。所有这些路径都消耗同一份预算，而健康的流会重置它。`0` 禁用回合级的重新发起（此时失败的流会使回合失败）；值钳制到 `0..=10`。
+- `tui.stream_max_resumes`（int，可选，默认 `3`）：仅用于有证据证明请求尚未发出时的瞬时连接故障恢复。`0` 禁用回合级恢复；值钳制到 `0..=10`。没有响应头、空流、部分输出、休眠或断网都不能授权推理重发。
 
-- `tui.stream_max_transparent_retries`（int，可选，默认 `2`）：尚无任何内容流出时的流内重新请求。`0` 禁用它们；值钳制到 `0..=10`。
+- `tui.stream_max_transparent_retries`（int，可选，默认 `2`）：为配置兼容保留，值钳制到 `0..=10`。流中断不再触发透明推理重发，即使尚无可见输出。
 
-- `tui.stream_max_errors`（int，可选，默认 `5`）：一条流在结束之前所容忍的可恢复错误数。与上面两个重试次数不同，`0` 并不会关闭任何东西：和其他有限的流预算一样，它选择默认值。其他值钳制到 `1..=50`，所以 `1` 会在第一个可恢复错误时结束该流。
+- `tui.stream_max_errors`（int，可选，默认 `5`）：为配置兼容保留；`0` 使用默认值，正值钳制到 `1..=50`。无论该值是多少，Core 都会在第一个结果不明的读取错误或错误帧处结束流。
 
-- `tui.stream_open_timeout_secs`（int，可选，默认 `45`）：等待流式请求响应头的时间（含连接建立）。HTTP/2 上的响应头停滞会以同样的等待时间在 HTTP/1.1 上重试一次。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=300`。
+- `tui.stream_open_timeout_secs`（int，可选，默认 `45`）：等待流式请求响应头的时间（含连接建立）。响应头停滞会以结果未知结束，不会改用 HTTP/1.1 重发。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=300`。
 
 - `tui.connect_timeout_secs`（int，可选，默认 `30`）：模型 HTTP 客户端的 TCP/TLS 连接超时。省略或为 `0` 使用默认值；值钳制到 `1..=300`。
 
@@ -1435,9 +1435,9 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 | --- | --- | --- | --- |
 | `open_timeout_secs` | 45 | 正数限制到 5–300；0 或省略时回退到环境变量/默认值 | `stream_open_timeout_secs` |
 | `chunk_timeout_secs` | 900 | 0 使用默认值；正数限制到 1–3600 | `stream_chunk_timeout_secs` |
-| `max_resumes` | 3 | 0 禁止重新发起整个请求；最大 10 | `stream_max_resumes` |
-| `max_transparent_retries` | 2 | 0 禁止输出任何内容前的重试；最大 10 | `stream_max_transparent_retries` |
-| `max_stream_errors` | 5 | 0 使用默认值；正数限制到 1–50 | `stream_max_errors` |
+| `max_resumes` | 3 | 仅恢复有证据的发出前瞬时连接故障；0 禁用，最大 10 | `stream_max_resumes` |
+| `max_transparent_retries` | 2 | 兼容值；流中断永不自动重发推理 | `stream_max_transparent_retries` |
+| `max_stream_errors` | 5 | 兼容值；Core 在第一个结果不明的流错误处结束 | `stream_max_errors` |
 | `max_duration_secs` | 1800 | 每条流的总时长；0 使用默认值，正数限制到 10–86400 秒 | `stream_max_duration_secs` |
 | `max_content_mb` | 10 | 每条流的内容上限；0 使用默认值，正数限制到 1–512 MiB | `stream_max_content_mb` |
 | `connect_timeout_secs` | 30 | TCP/TLS 建连；0 使用默认值，正数限制到 1–300 秒 | `connect_timeout_secs` |

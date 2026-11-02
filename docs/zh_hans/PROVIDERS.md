@@ -34,7 +34,7 @@ Tsubasa 只实现了 `GET /v1/models` 和 Chat Completions。它的两个公开�
 `codewhale config set providers.tsubasa.context_window 32768`。
 Cheaper Inference 是 OpenAI 兼容网关，模型 ID 不带前缀（例如 `gpt-5.4-mini`、`claude-sonnet-5`），以带密钥请求 `GET https://api.cheaperinference.com/v1/models` 的结果为准；价格随模型和路由而变，请以提供商的实时目录为准。
 Standard Compute 提供按月固定套餐和算力预算。默认情况下，预算用尽后请求返回 HTTP 402；符合条件的套餐可启用按量付费，通过额外预付费用继续请求，详见其[预算政策](https://docs.standardcompute.com/budgets-and-limits)。模型 ID `standardcompute` 会在多个模型和提供商之间路由每个请求；带厂商前缀的 ID（例如 `deepseek/deepseek-v4-pro`）则固定使用单个模型，以 `GET https://api.stdcmpt.com/v1/models` 的结果为准。
-Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。以 `GET https://api.runcrate.ai/v1/models`（公开，无需密钥）的结果为准，文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
+Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
 OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其他提供商相同；它们不在上表之列。在 `/provider` 中，直接输入即可筛选列表（未绑定行操作的字母）；`Ctrl+T` 探测所选行的 `/models`，只记录可达性（2xx 并不代表模型可用）。
 
@@ -87,7 +87,7 @@ codewhale models --update --provider openai
 codewhale models --provider openai --json
 ```
 
-`models --update`（也可写作 `--refresh`）会更新共享的 Models.dev 元数据，并用每个已配置提供商各自的凭据调用其现有的 `/models` 端点。`--provider ID` 把刷新限定在该提供商，包括具名的自定义端点。它不发起任何推理请求，也不会更改已保存的提供商或模型。命令行传入的 API 密钥只限于当前提供商；本次调用中其他路由会被报告为已跳过。
+`models --update`（也可写作 `--refresh`）会更新共享的 Models.dev 元数据，并调用各已配置提供商的 `/models` 端点。需要认证的端点使用该提供商自己的凭据，内置的公开模型列表可以匿名刷新。`--provider ID` 把刷新限定在该提供商，包括具名的自定义端点。它不发起任何推理请求，也不会更改已保存的提供商或模型。命令行传入的 API 密钥只限于当前提供商；本次调用中其他路由会被报告为已跳过。
 
 不带 `--update` 的 `models` 会列出当前提供商已保存的目录，不发起提供商请求。ChatGPT 路由会先在本地验证所选注册，再读取该账户的缓存目录。刷新成功后，结果保存在 Codewhale 的目录文件夹下，供模型/提供商选择器使用；账户目录（Codewhale 账户、Baseten 和插件账户目录）除外，它们只保留在读取它们的进程内存中，因此 `exec`、`review` 和工作流工具会在第一次请求前读取一次账户模型列表，读取失败时使用内置限制继续运行。缓存文件按提供商身份和端点划分；刷新失败时会保留原有行。文本输出报告来源、最近一次成功获取的时间（Unix 秒）和新鲜度。`--update --json` 会额外给出每个来源的回执和汇总计数；部分失败时，会在写完这些回执后返回非零退出码。普通的 `models --json` 仍保持模型数组格式。随附的或已配置的回退项并不能证明账户可以使用列出的每个模型。
 

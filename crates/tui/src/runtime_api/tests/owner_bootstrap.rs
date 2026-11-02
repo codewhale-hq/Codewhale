@@ -56,6 +56,7 @@ impl Rig {
             &self.config,
             self.root.join("workspace"),
             RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
                 data_dir: self.store.clone(),
                 task_data_dir: self.root.join("tasks"),
                 sessions_dir: Some(self.root.join("sessions")),

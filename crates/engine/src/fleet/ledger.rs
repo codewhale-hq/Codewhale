@@ -153,6 +153,8 @@ pub enum FleetLedgerRecord {
     /// publishing a terminal task without the receipt that explains it.
     TaskAttemptFinalized {
         event: FleetWorkerEvent,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tail_events: Vec<FleetWorkerEvent>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         final_status: Option<FleetTaskLedgerStatus>,
         receipt: Box<FleetReceipt>,
@@ -340,6 +342,7 @@ pub struct FleetLedger {
     ledger_file: WorkspaceFile,
     lock_file: WorkspaceFile,
     original_lock: std::fs::File,
+    durable_barrier: parking_lot::Mutex<Option<(std::fs::File, u64)>>,
     /// Stable advisory-lock inode shared by every manager for this workspace.
     ///
     /// The ledger itself is replaced during compaction, so locking
@@ -369,6 +372,7 @@ impl FleetLedger {
             ledger_file,
             lock_file,
             original_lock,
+            durable_barrier: parking_lot::Mutex::new(None),
             ledger_path,
             lock_path,
             #[cfg(any(test, feature = "test-support"))]
@@ -444,6 +448,7 @@ impl FleetLedger {
             .ledger_file
             .open_update(true, true)
             .with_context(|| format!("opening fleet ledger {}", self.ledger_path.display()))?;
+        self.durable_barrier.lock().take();
         // A process can die after writing only part of its final JSON record.
         // O_APPEND would otherwise concatenate the next valid record directly
         // onto that unterminated tail, causing replay to discard both. Preserve
@@ -480,6 +485,8 @@ impl FleetLedger {
             .with_context(|| format!("flushing fleet ledger {}", self.ledger_path.display()))?;
         file.sync_data()
             .with_context(|| format!("syncing fleet ledger {}", self.ledger_path.display()))?;
+        let length = file.metadata()?.len();
+        *self.durable_barrier.lock() = Some((file, length));
         // Wake SSE subscribers after the bytes are durable (#6211 R7b). Every
         // record kind funnels through here, so a wake only promises "something
         // changed" — subscribers re-poll with their cursor.
@@ -954,16 +961,40 @@ impl FleetLedger {
         timestamp: &str,
         payload: FleetWorkerEventPayload,
         final_status: Option<FleetTaskLedgerStatus>,
+        receipt: FleetReceipt,
+    ) -> Result<Option<FleetWorkerEvent>> {
+        self.finalize_task_attempt_with_tail_if_leased(
+            run_id,
+            worker_id,
+            task_id,
+            expected_attempts,
+            timestamp,
+            payload,
+            Vec::new(),
+            final_status,
+            receipt,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_task_attempt_with_tail_if_leased(
+        &self,
+        run_id: &FleetRunId,
+        worker_id: &str,
+        task_id: &str,
+        expected_attempts: u32,
+        timestamp: &str,
+        payload: FleetWorkerEventPayload,
+        tail_payloads: Vec<FleetWorkerEventPayload>,
+        final_status: Option<FleetTaskLedgerStatus>,
         mut receipt: FleetReceipt,
     ) -> Result<Option<FleetWorkerEvent>> {
-        if !matches!(
-            &payload,
-            FleetWorkerEventPayload::Completed { .. }
-                | FleetWorkerEventPayload::Failed { .. }
-                | FleetWorkerEventPayload::Cancelled { .. }
-        ) {
-            bail!("attempt finalization requires a terminal worker event");
-        }
+        let payload_status = match &payload {
+            FleetWorkerEventPayload::Completed { .. } => FleetTaskLedgerStatus::Completed,
+            FleetWorkerEventPayload::Failed { .. } => FleetTaskLedgerStatus::Failed,
+            FleetWorkerEventPayload::Cancelled { .. } => FleetTaskLedgerStatus::Cancelled,
+            _ => bail!("attempt finalization requires a terminal worker event"),
+        };
         if final_status.is_some_and(|status| {
             !matches!(
                 status,
@@ -984,28 +1015,126 @@ impl FleetLedger {
         {
             bail!("attempt receipt generation does not match its lease");
         }
-        self.with_write_lock(|| {
+        for tail in &tail_payloads {
+            if matches!(
+                tail,
+                FleetWorkerEventPayload::Completed { .. }
+                    | FleetWorkerEventPayload::Failed { .. }
+                    | FleetWorkerEventPayload::Cancelled { .. }
+            ) {
+                bail!("terminal tail contains another terminal outcome");
+            }
+        }
+        let had_usage = tail_payloads
+            .iter()
+            .any(|payload| matches!(payload, FleetWorkerEventPayload::UsageReport { .. }));
+        let tail_digest = (!tail_payloads.is_empty())
+            .then(|| serde_json::to_vec(&tail_payloads))
+            .transpose()?
+            .map(|bytes| codewhale_runtime::hashing::sha256_hex(&bytes));
+        let appended = self.with_write_lock(|| {
             let state = self.rebuild_state_unlocked()?;
             let key = task_key(&run_id.0, task_id);
             let Some(task) = state.tasks.get(&key) else {
                 return Ok(None);
             };
-            if task.status != FleetTaskLedgerStatus::Leased
-                || task.leased_to.as_deref() != Some(worker_id)
+            if task.leased_to.as_deref() != Some(worker_id)
                 || task.entry.attempts != expected_attempts
             {
                 return Ok(None);
             }
-            let event = next_worker_event(&state, run_id, worker_id, task_id, timestamp, payload);
+            let lifecycle_key = event_key(worker_id, &run_id.0, task_id);
+            if task.status != FleetTaskLedgerStatus::Leased {
+                let Some(existing_receipt) = state.receipts.get(&key) else {
+                    return Ok(None);
+                };
+                let Some(existing_event) = state.latest_events.get(&lifecycle_key) else {
+                    return Ok(None);
+                };
+                receipt.attempt = Some(expected_attempts);
+                receipt.terminal_seq = Some(existing_event.seq);
+                let mut expected_event = next_worker_event(
+                    &state,
+                    run_id,
+                    worker_id,
+                    task_id,
+                    timestamp,
+                    payload.clone(),
+                );
+                expected_event.seq = existing_event.seq;
+                if let Some(digest) = &tail_digest {
+                    expected_event
+                        .extra
+                        .insert("terminal_tail_sha256".into(), Value::String(digest.clone()));
+                }
+                if task.status != final_status.unwrap_or(payload_status)
+                    || serde_json::to_value(existing_receipt)? != serde_json::to_value(&receipt)?
+                    || serde_json::to_value(existing_event)?
+                        != serde_json::to_value(&expected_event)?
+                {
+                    return Ok(None);
+                }
+                self.sync_durable_unlocked()
+                    .context("retrying exact Fleet terminal durability")?;
+                return Ok(Some(existing_event.clone()));
+            }
+            let mut sequence = state.latest_seq.get(&lifecycle_key).copied().unwrap_or(0);
+            let mut tail_events = Vec::with_capacity(tail_payloads.len());
+            for tail in tail_payloads {
+                let mut event =
+                    next_worker_event(&state, run_id, worker_id, task_id, timestamp, tail);
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("Fleet event sequence exhausted"))?;
+                event.seq = sequence;
+                tail_events.push(event);
+            }
+            let mut event =
+                next_worker_event(&state, run_id, worker_id, task_id, timestamp, payload);
+            event.seq = sequence
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Fleet event sequence exhausted"))?;
+            if let Some(digest) = tail_digest {
+                event
+                    .extra
+                    .insert("terminal_tail_sha256".into(), Value::String(digest));
+            }
             receipt.attempt = Some(expected_attempts);
             receipt.terminal_seq = Some(event.seq);
             self.append_record_unlocked(&FleetLedgerRecord::TaskAttemptFinalized {
                 event: event.clone(),
+                tail_events,
                 final_status,
                 receipt: Box::new(receipt),
             })?;
             Ok(Some(event))
-        })
+        });
+        if matches!(&appended, Ok(Some(_))) && had_usage {
+            self.record_budget_exceeded_alert_once(run_id, timestamp)?;
+        }
+        appended
+    }
+
+    pub(crate) fn ensure_durable(&self) -> Result<()> {
+        self.with_write_lock(|| self.sync_durable_unlocked())
+    }
+
+    fn sync_durable_unlocked(&self) -> Result<()> {
+        let file = self.ledger_file.open_update(false, false)?;
+        let length = file.metadata()?.len();
+        let mut cached = self.durable_barrier.lock();
+        if let Some((previous, durable_length)) = cached.take()
+            && durable_length == length
+            && same_file(&previous, &file)?
+        {
+            *cached = Some((previous, durable_length));
+            return Ok(());
+        }
+        file.sync_data()
+            .context("acknowledging Fleet ledger durability")?;
+        let length = file.metadata()?.len();
+        *cached = Some((file, length));
+        Ok(())
     }
 
     /// Append a scheduler-owned terminal event only if the stale lease version
@@ -1770,6 +1899,7 @@ impl FleetLedger {
             if !contents.is_empty() {
                 contents.push('\n');
             }
+            self.durable_barrier.lock().take();
             self.ledger_file
                 .replace(contents.as_bytes())
                 .with_context(|| {
@@ -1871,10 +2001,38 @@ fn runtime_events_from_record(
             worker_seq: None,
             payload: json!({ "status": status }),
         }],
-        FleetLedgerRecord::TaskAttemptFinalized { event, receipt, .. } => vec![
-            runtime_worker_event("worker", ledger_ordinal, replay_epoch, event),
-            runtime_receipt_event("receipt", ledger_ordinal, replay_epoch, receipt),
-        ],
+        FleetLedgerRecord::TaskAttemptFinalized {
+            event,
+            tail_events,
+            receipt,
+            ..
+        } => {
+            let mut events = tail_events
+                .iter()
+                .enumerate()
+                .map(|(index, event)| {
+                    runtime_worker_event(
+                        &format!("tail-{index}"),
+                        ledger_ordinal,
+                        replay_epoch,
+                        event,
+                    )
+                })
+                .collect::<Vec<_>>();
+            events.push(runtime_worker_event(
+                "worker",
+                ledger_ordinal,
+                replay_epoch,
+                event,
+            ));
+            events.push(runtime_receipt_event(
+                "receipt",
+                ledger_ordinal,
+                replay_epoch,
+                receipt,
+            ));
+            events
+        }
         FleetLedgerRecord::EventAppended { event } => {
             vec![runtime_worker_event(
                 "worker",
@@ -2287,9 +2445,13 @@ fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
         }
         FleetLedgerRecord::TaskAttemptFinalized {
             event,
+            tail_events,
             final_status,
             receipt,
         } => {
+            for tail in tail_events {
+                apply_record(state, FleetLedgerRecord::EventAppended { event: tail });
+            }
             let run_id = event.run_id.clone();
             let task_id = event.task_id.clone();
             let worker_id = event.worker_id.clone();

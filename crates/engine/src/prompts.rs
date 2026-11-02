@@ -263,7 +263,7 @@ fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
 /// written and are stable for the life of the process. The release version was
 /// removed by the turn-meta diet: it is telemetry the model cannot act on and
 /// churned the otherwise-static prefix on every release. The live workspace
-/// path is delivered per-turn via `<turn_meta>` (see `turn_metadata_block`).
+/// path is delivered per-turn via `<turn_meta>` (see `turn_metadata_block_from_snapshot`).
 pub fn render_environment_block(_workspace: &Path, locale_tag: &str) -> String {
     let (platform, shell) = environment_host_facts();
     format_environment_block(locale_tag, &platform, &shell, npm_launcher_fact())

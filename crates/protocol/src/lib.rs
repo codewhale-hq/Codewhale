@@ -11,6 +11,7 @@ use serde_json::Value;
 
 pub mod agent_mail;
 pub mod agent_run;
+pub mod avatar;
 pub mod engine_owner;
 pub mod event_msg;
 pub mod fleet;
@@ -18,7 +19,6 @@ pub mod ids;
 pub mod journal;
 pub mod op;
 pub mod placement;
-pub mod runtime;
 
 /// Common trait for lifecycle status enums across the protocol layer.
 ///
@@ -601,7 +601,7 @@ pub enum ThreadRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         allowed_tools: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        images: Vec<runtime::RuntimeImageInput>,
+        images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         #[serde(
             default,
             rename = "maxOutputTokens",
@@ -722,7 +722,7 @@ pub struct PromptRequest {
     /// The prompt text.
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     /// Model override, or the default if omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

@@ -375,6 +375,15 @@ fn every_effective_mode_change_carries_a_structured_narrowing_event() {
         );
     }
 
+    assert!(!UserInputProvenance::GoalContinuation.can_authorize_work());
+    for provenance in [UserInputProvenance::Runtime, UserInputProvenance::GoalContinuation] {
+        let authority = effective_input_policy(
+            provenance, AppMode::Agent, "continue", true, true, true, ApprovalMode::Bypass,
+        );
+        assert!(authority.allow_shell && authority.trust_mode && authority.auto_approve);
+        assert_eq!(authority.approval_mode, ApprovalMode::Bypass);
+        assert!(authority.narrowing.is_none());
+    }
     // An authoritative turn narrows nothing and therefore reports nothing.
     let unchanged = effective_input_policy(
         UserInputProvenance::ExternalUser,

@@ -308,6 +308,7 @@ pub fn provenance_can_inherit_standing_auto_authority(provenance: UserInputProve
         provenance,
         UserInputProvenance::ExternalUser
             | UserInputProvenance::Runtime
+            | UserInputProvenance::GoalContinuation
             | UserInputProvenance::SubAgentHandoff
     )
 }

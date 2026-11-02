@@ -795,7 +795,22 @@ pub async fn resolve_auto_route_with_inventory_for_session_and_cache_policy(
     selected_thinking_mode: &str,
     allow_response_cache: bool,
 ) -> Result<AutoRouteSelection> {
-    let inventory = ModelInventory::from_config(config).map_err(anyhow::Error::msg)?;
+    let mut inventory = ModelInventory::from_config(config).map_err(anyhow::Error::msg)?;
+    if let Some(active) = inventory.active_default()
+        && active.provider == ProviderKind::Ollama
+        && active.auth_source == crate::model_inventory::ModelAuthSource::KeylessLocal
+        && active.context_window_unverified
+        && config
+            .context_window_for_provider_config(&active.identity)
+            .is_none()
+    {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            crate::provider_lake::refresh_local_ollama_catalog(config, &active.identity),
+        )
+        .await;
+        inventory = ModelInventory::from_config(config).map_err(anyhow::Error::msg)?;
+    }
     if !inventory.router_available {
         // Declared-default auto routing when no router is available. A router
         // that was declared but cannot run is marked failing on the receipt.

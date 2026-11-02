@@ -64,7 +64,7 @@ pub(crate) fn install_offline_queue_transition(
     }
     app.queued_messages.clear();
     app.held_restored_queue = 0;
-    app.current_session_id = Some(transition.lease.session_id().to_string());
+    app.set_current_session_id(Some(transition.lease.session_id().to_string()));
     app.offline_queue_lease = Some(transition.lease);
     transition
         .restored
@@ -127,6 +127,64 @@ pub(crate) async fn publish_pending_work_projection(app: &mut App) -> Result<boo
     work.publish_pending().await
 }
 
+pub(crate) fn prepare_session_publication(
+    app: &mut App,
+    request: &mut PersistRequest,
+) -> Result<(), String> {
+    if app.dispatch_in_flight {
+        return Err("session publication is waiting for native dispatch admission".to_string());
+    }
+    let session = match request {
+        PersistRequest::SaveCheckpoint { session }
+        | PersistRequest::AcknowledgedCheckpoint { session, .. }
+        | PersistRequest::SessionSnapshot(session)
+        | PersistRequest::CompletedCommit { session } => session,
+        _ => return Ok(()),
+    };
+    let owner = app
+        .session_write_owner
+        .clone()
+        .ok_or_else(|| "session publication lacks an admitted native owner".to_string())?;
+    let receipt = session
+        .capture_publication(owner)
+        .map_err(|error| error.to_string())?;
+    if app
+        .current_session_id
+        .as_deref()
+        .is_none_or(|id| id == session.metadata.id)
+    {
+        app.session_write_receipt = Some(receipt);
+    }
+    Ok(())
+}
+
+pub(crate) fn try_persist_session(app: &mut App, mut request: PersistRequest) -> bool {
+    if let Err(error) = prepare_session_publication(app, &mut request) {
+        tracing::warn!(%error, "session publication could not capture its native source");
+        let session_id = match &request {
+            PersistRequest::SaveCheckpoint { session }
+            | PersistRequest::AcknowledgedCheckpoint { session, .. }
+            | PersistRequest::SessionSnapshot(session)
+            | PersistRequest::CompletedCommit { session } => Some(session.metadata.id.as_str()),
+            _ => None,
+        };
+        super::event_loop::surface_session_save_failure(app, session_id, &error);
+        return false;
+    }
+    persistence_actor::try_persist(request)
+}
+
+pub(crate) fn expect_fresh_session(app: &mut App, id: &str) -> Result<(), String> {
+    let manager = SessionManager::default_location().map_err(|error| error.to_string())?;
+    app.session_write_receipt = Some(
+        manager
+            .expect_absent_session(id)
+            .map_err(|error| error.to_string())?,
+    );
+    app.session_write_owner = Some(codewhale_engine::session_manager::SessionWriteOwner::control());
+    Ok(())
+}
+
 pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<bool, String> {
     let Some(work) = app.runtime_services.work.clone() else {
         return Ok(false);
@@ -139,9 +197,9 @@ pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<boo
     let session = build_session_snapshot(app, &manager)?;
     let projection = saved_work_projection(app, &session);
     if app.current_session_id.is_none() {
-        app.current_session_id = Some(session.metadata.id.clone());
+        app.set_current_session_id(Some(session.metadata.id.clone()));
     }
-    if !persistence_actor::try_persist(PersistRequest::SaveCheckpoint { session }) {
+    if !try_persist_session(app, PersistRequest::SaveCheckpoint { session }) {
         return Err("persistence actor is unavailable".to_string());
     }
     publish_saved_work_projection(app, &projection).await
@@ -149,9 +207,10 @@ pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<boo
 
 pub(crate) fn persist_with_pending_work_boundary(
     app: &mut App,
-    request: PersistRequest,
+    mut request: PersistRequest,
     projection: &SavedWorkProjection,
 ) -> Result<(), String> {
+    prepare_session_publication(app, &mut request)?;
     let has_pending = app
         .runtime_services
         .work
@@ -460,11 +519,30 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
     if let Ok(manager) = SessionManager::default_location()
-        && let Ok(session) = build_session_snapshot(app, &manager)
+        && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
+        if let Some(turn) = app.active_turn.as_ref()
+            && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
+            && !app.suppress_stream_events_until_turn_complete
+            && app
+                .api_messages
+                .last()
+                .is_some_and(|message| message.role == codewhale_models::Role::User)
+            && let Some(HistoryCell::Assistant {
+                content,
+                streaming: true,
+            }) = app
+                .streaming_message_index
+                .and_then(|index| app.history.get(index))
+            && !content.is_empty()
+            && let Some(journal) = session.journal.as_mut()
+        {
+            session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
+            session.metadata.message_count += 1;
+        }
         let projection = saved_work_projection(app, &session);
         if app.current_session_id.is_none() {
-            app.current_session_id = Some(session.metadata.id.clone());
+            app.set_current_session_id(Some(session.metadata.id.clone()));
         }
         if let Err(err) = persist_with_pending_work_boundary(
             app,
@@ -503,7 +581,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
         }
     };
     let projection = saved_work_projection(app, &session);
-    app.current_session_id = Some(session.metadata.id.clone());
+    app.set_current_session_id(Some(session.metadata.id.clone()));
     if let Err(err) = persist_with_pending_work_boundary(
         app,
         PersistRequest::CompletedCommit { session },
@@ -673,14 +751,36 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
     true
 }
 
-pub(crate) fn capture_turn_started_metadata(app: &mut App, event: &EngineEvent) {
+pub(crate) fn capture_turn_started_metadata(app: &mut App, event: &EngineEvent) -> bool {
     match event {
         EngineEvent::TurnStarted {
+            previous_source,
             turn_id,
             created_at,
             route,
-            submission_id: _,
+            submission_id,
         } => {
+            let source = codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                turn_id.clone(),
+                submission_id.clone(),
+            );
+            let admitted = match app.session_write_owner.as_ref() {
+                Some(codewhale_engine::session_manager::SessionWriteOwner::Submission(id)) => {
+                    submission_id.as_ref() == Some(id)
+                }
+                Some(owner) => {
+                    owner.matches_source(&source)
+                        || previous_source
+                            .as_ref()
+                            .is_some_and(|previous| owner.matches_source(previous))
+                }
+                None => true,
+            };
+            if !admitted {
+                return false;
+            }
+            app.session_write_owner =
+                Some(codewhale_engine::session_manager::SessionWriteOwner::Engine(source));
             app.ocean_completion_started_at = None;
             let auto_route_receipt = if route.as_ref().is_some_and(|route| route.auto_model) {
                 app.pending_auto_route_receipt.take()
@@ -712,14 +812,18 @@ pub(crate) fn capture_turn_started_metadata(app: &mut App, event: &EngineEvent) 
         // already taken at `TurnStarted` are preserved — this event narrows the
         // route, it never re-opens an authority decision.
         EngineEvent::RouteDispatched { turn_id, route } => {
+            let newer_submission = matches!(
+                app.session_write_owner.as_ref(),
+                Some(codewhale_engine::session_manager::SessionWriteOwner::Submission(_))
+            );
             if let Some(active) = app
                 .active_turn
                 .as_mut()
                 .filter(|active| active.turn_id == *turn_id)
             {
-                if route.auto_model && active.auto_route_receipt.is_none() {
+                if !newer_submission && route.auto_model && active.auto_route_receipt.is_none() {
                     active.auto_route_receipt = app.pending_auto_route_receipt.take();
-                } else if !route.auto_model {
+                } else if !newer_submission && !route.auto_model {
                     app.pending_auto_route_receipt = None;
                     active.auto_route_receipt = None;
                 }
@@ -730,8 +834,28 @@ pub(crate) fn capture_turn_started_metadata(app: &mut App, event: &EngineEvent) 
                 active.route = Some(route.clone());
             }
         }
+        EngineEvent::CompactionStarted {
+            id,
+            previous_source,
+            auto: false,
+            ..
+        } => {
+            let source = codewhale_engine::core::ops::SessionSnapshotSource::compaction(id.clone());
+            let admitted = app.session_write_owner.as_ref().is_none_or(|owner| {
+                owner.matches_source(&source)
+                    || previous_source
+                        .as_ref()
+                        .is_some_and(|previous| owner.matches_source(previous))
+            });
+            if !admitted {
+                return false;
+            }
+            app.session_write_owner =
+                Some(codewhale_engine::session_manager::SessionWriteOwner::Engine(source));
+        }
         _ => {}
     }
+    true
 }
 
 pub(crate) fn record_turn_activity(app: &mut App, event: &EngineEvent, now: Instant) {
@@ -964,7 +1088,10 @@ pub(crate) fn begin_launch_session(
     if let Some(workspace) = workspace {
         app.workspace = workspace;
     }
-    app.current_session_id = Some(session_id.clone());
+    app.set_current_session_id(Some(session_id.clone()));
+    if let Err(error) = expect_fresh_session(app, &session_id) {
+        return commands::CommandResult::error(error);
+    }
     app.current_session_metadata = None;
     app.window_title = None;
     app.composer_color = None;
@@ -1019,6 +1146,7 @@ pub(crate) async fn switch_workspace(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
                 system_prompt: app.system_prompt.clone(),

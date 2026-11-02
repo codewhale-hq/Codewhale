@@ -50,7 +50,7 @@ registration!(
 registration!(
     UndoCmd,
     "undo",
-    "/undo [force]",
+    "/undo [force|select]",
     &[],
     "cmd_undo_description",
     Caps::DEBUG_UNDO
@@ -106,6 +106,7 @@ pub(super) fn retry(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandRe
                 format!("Retrying: {display_input}"),
                 DebugAction::ConversationUndo {
                     sync: undone.sync,
+                    restored_files: 0,
                     retry_input: Some(input),
                 },
             )
@@ -228,6 +229,7 @@ fn conversation_report(
             message,
             DebugAction::ConversationUndo {
                 sync: undone.sync,
+                restored_files: 0,
                 retry_input: None,
             },
         ))
@@ -240,96 +242,33 @@ fn conversation_report(
 
 pub(super) fn undo(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
     let mut parts = contexts.into_parts();
-    let Some(undo) = parts.debug_undo.as_deref_mut() else {
+    if parts.debug_undo.is_none() {
         return CommandResult::error("Command capability unavailable: debug_undo");
-    };
-    let Some(history) = parts.debug_history.as_deref_mut() else {
+    }
+    if parts.debug_history.is_none() {
         return CommandResult::error("Command capability unavailable: debug_history");
-    };
+    }
     let Some(presentation) = parts.presentation.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: presentation");
     };
-    match undo_report(undo, history, presentation, arg) {
-        Ok(result) => result,
-        Err(error) => CommandResult::error(error),
-    }
-}
-
-fn undo_report(
-    undo: &mut dyn CommandDebugUndoContext,
-    history: &mut dyn CommandDebugHistoryContext,
-    presentation: &dyn CommandPresentationContext,
-    arg: Option<&str>,
-) -> Result<CommandResult, String> {
-    // `force` accepts a request whose end was never recorded. Anything else
-    // is a mistake to report, not a request to undo.
-    let force = match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
-        None => false,
-        Some(arg) if arg.eq_ignore_ascii_case("force") => true,
+    match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
+        None => CommandResult::action(DebugAction::UndoLatestRequest { force: false }),
+        Some(arg) if arg.eq_ignore_ascii_case("force") => {
+            CommandResult::action(DebugAction::UndoLatestRequest { force: true })
+        }
+        Some(arg) if arg.eq_ignore_ascii_case("select") => {
+            CommandResult::action(DebugAction::OpenUndoSelector)
+        }
         Some(other) => {
-            return Ok(CommandResult::error(
-                presentation.translate("cmd_undo_unknown_option", &[("option", other)])?,
-            ));
+            match presentation.translate("cmd_undo_unknown_option", &[("option", other)]) {
+                Ok(message) => CommandResult::error(message),
+                Err(error) => CommandResult::error(error),
+            }
         }
-    };
-    match undo.undo_files(force) {
-        // No restore point of this conversation covers the request: say that
-        // its files stayed as they are.
-        DebugUndoOutcome::NoSnapshots
-        | DebugUndoOutcome::NoSession
-        | DebugUndoOutcome::NoOwnedSteps => conversation_only(
-            history.undo_conversation(),
-            presentation,
-            "cmd_undo_files_not_reverted_note",
-        ),
-        DebugUndoOutcome::NoDifference => conversation_only(
-            history.undo_conversation(),
-            presentation,
-            "cmd_undo_no_file_changes_note",
-        ),
-        DebugUndoOutcome::RepoUnavailable { workspace, error } => {
-            let mut result = conversation_report(history.undo_conversation(), presentation)?;
-            let note = format!(
-                "{}\n{}",
-                presentation.translate("cmd_undo_files_not_reverted_note", &[])?,
-                presentation.translate(
-                    "cmd_undo_snapshot_repo_unavailable",
-                    &[
-                        ("workspace", &workspace.display().to_string()),
-                        ("error", &error),
-                    ],
-                )?
-            );
-            result.message = Some(match result.message.take() {
-                Some(message) => format!("{message}\n{note}"),
-                None => note,
-            });
-            Ok(result)
-        }
-        outcome => patch_report(outcome, presentation),
     }
 }
 
-/// A conversation-only undo, with what happened to the files stated under it.
-fn conversation_only(
-    undone: DebugConversationUndo,
-    presentation: &dyn CommandPresentationContext,
-    note_key: &str,
-) -> Result<CommandResult, String> {
-    let removed = undone.removed;
-    let mut result = conversation_report(undone, presentation)?;
-    if removed > 0 {
-        let note = presentation.translate(note_key, &[])?;
-        result.message = result
-            .message
-            .take()
-            .map(|message| format!("{message}\n{note}"));
-    }
-    Ok(result)
-}
-
-/// Format snapshot outcomes without invoking host operations. Host tests also
-/// use this for the file-only operation before the command's chat fallback.
+/// Format snapshot outcomes without invoking host operations.
 pub fn patch_result(
     outcome: DebugUndoOutcome,
     presentation: &dyn CommandPresentationContext,
@@ -391,10 +330,16 @@ fn patch_report(
         DebugUndoOutcome::Restored(restored) => {
             let summary = restored_summary(&restored, presentation)
                 .unwrap_or_else(|error| restored_fallback(&restored, &error));
-            Ok(CommandResult::with_message_and_action(
-                summary,
-                DebugAction::SyncSession(restored.sync),
-            ))
+            let action = if restored.rewind_conversation {
+                DebugAction::ConversationUndo {
+                    sync: restored.sync,
+                    restored_files: restored.files.len(),
+                    retry_input: None,
+                }
+            } else {
+                DebugAction::SyncSession(restored.sync)
+            };
+            Ok(CommandResult::with_message_and_action(summary, action))
         }
     }
 }
@@ -445,7 +390,7 @@ fn restored_summary(
     }
     summary.push('\n');
     summary.push_str(&presentation.translate(
-        if restored.conversation_removed {
+        if restored.rewind_conversation {
             "cmd_undo_conversation_removed"
         } else {
             "cmd_undo_conversation_kept"
@@ -489,7 +434,7 @@ fn restored_fallback(restored: &DebugUndoRestored, error: &str) -> String {
             "\nThe end of this request was not recorded, so edits made to these files since it started were also put back.",
         );
     }
-    report.push_str(if restored.conversation_removed {
+    report.push_str(if restored.rewind_conversation {
         "\nThe request and its reply were removed from the conversation."
     } else {
         "\nThe conversation was not changed."

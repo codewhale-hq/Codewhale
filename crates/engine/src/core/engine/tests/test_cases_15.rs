@@ -620,6 +620,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
             false,
             UserInputProvenance::ExternalUser,
             TurnMetadataSnapshot {
+                planned_compaction: None,
                 prompt_context: &prompt_context,
                 system_prompt: None,
                 approval_mode: engine.session.approval_mode,
@@ -636,6 +637,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
         !first_meta.contains("Context pressure:"),
         "automatic continuity must not ask the user to manage context: {first_meta}"
     );
+    assert!(first_meta.contains("Estimated conversation input:"));
     assert!(!first_meta.contains("/compact"));
     engine.config.compaction.enabled = false;
     let first = message_for(&engine);
@@ -659,7 +661,7 @@ fn turn_metadata_keeps_stable_fields_while_pressure_reports_live_estimates() {
         without_pressure(&first_meta),
         without_pressure(&second_meta)
     );
-    assert!(second_meta.contains("Estimated input:"));
+    assert!(second_meta.contains("Estimated conversation input:"));
     assert!(second_meta.contains("Making room automatically is off"));
 }
 
@@ -739,11 +741,10 @@ async fn interrupted_turn_names_surviving_background_shell_jobs() {
 }
 
 /// R6 injection-size regression: the per-turn `<turn_meta>` block, built
-/// (never sent) from the same snapshot path production uses. Measured 254B
-/// on 2026-08-02; the unavailable-backend qualifier adds 48B (Linux without
-/// bwrap, all Windows). Ceiling is that host's measured size +10%
-/// so growth is a reviewed act.
-const TURN_META_BYTE_CEILING: usize = 333;
+/// (never sent) from the same snapshot path production uses. The context
+/// estimate and compaction posture brought the measured block to 396 bytes
+/// on macOS on 2026-11-01. The ceiling retains the 10% growth allowance.
+const TURN_META_BYTE_CEILING: usize = 436;
 
 #[test]
 fn turn_meta_block_stays_within_measured_ceiling() {
@@ -773,6 +774,7 @@ fn turn_meta_block_stays_within_measured_ceiling() {
         false,
         UserInputProvenance::ExternalUser,
         TurnMetadataSnapshot {
+            planned_compaction: None,
             prompt_context: &prompt_context,
             system_prompt: None,
             approval_mode: engine.session.approval_mode,
@@ -825,6 +827,7 @@ fn turn_metadata_names_the_effective_sandbox_posture() {
             false,
             UserInputProvenance::ExternalUser,
             TurnMetadataSnapshot {
+                planned_compaction: None,
                 prompt_context: &prompt_context,
                 system_prompt: None,
                 approval_mode: engine.session.approval_mode,

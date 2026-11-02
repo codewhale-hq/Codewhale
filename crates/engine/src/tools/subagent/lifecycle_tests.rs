@@ -171,8 +171,7 @@ async fn lifecycle_resume_lineage_survives_persist_and_rejects_cycles_and_foreig
         manager.insert_test_interrupted_continuable_agent("latest", &base, prior_messages());
     manager.resume_targets.insert(a.clone(), b.clone());
     manager.resume_targets.insert(b.clone(), c.clone());
-    let (path, payload) = manager.build_persist_payload().unwrap().unwrap();
-    write_json_atomic(&base, &path, &payload).unwrap();
+    manager.persist_state().unwrap().join().unwrap();
     let mut loaded = SubAgentManager::new(base.clone(), 6).with_state_path(state_path);
     loaded.load_state().unwrap();
     assert_eq!(loaded.continuation_target(&a).unwrap(), c);
@@ -614,8 +613,9 @@ async fn lifecycle_continuation_link_is_durable_before_the_child_can_run() {
     // Holding the manager lock keeps run_subagent_task_inner at its first
     // await. This is the earliest published snapshot, before any child step.
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    let persisted: PersistedSubAgentState =
+    let persisted: DurableSubAgentStore =
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let persisted = persisted.state;
     assert_eq!(
         persisted.resume_targets.get(&source),
         Some(&successor.agent_id)
@@ -635,7 +635,7 @@ async fn lifecycle_continuation_persist_failure_rolls_back_worker_and_link() {
     let base = dir.path().canonicalize().unwrap();
     let path = base.join(".codewhale/subagents/state.json");
     let manager = Arc::new(RwLock::new(
-        SubAgentManager::new(base.clone(), 4).with_state_path(path),
+        SubAgentManager::new(base.clone(), 4).with_state_path(path.clone()),
     ));
     let mut runtime = super::tests::stub_runtime();
     runtime.manager = Arc::clone(&manager);
@@ -657,9 +657,17 @@ async fn lifecycle_continuation_persist_failure_rolls_back_worker_and_link() {
             .permissions
             .write
     );
-    std::fs::create_dir_all(base.join(".codewhale")).unwrap();
-    std::fs::write(base.join(".codewhale/subagents"), "not a directory").unwrap();
-    let result = guard.resume_from_checkpoint(Arc::clone(&manager), runtime, &source, "Continue");
+    guard.persist_state_synchronously().unwrap();
+    let retained_path = path.with_extension("retained-before-failure");
+    let result = guard.with_store_transaction(|held| {
+        std::fs::rename(&path, &retained_path)?;
+        std::fs::create_dir(&path)?;
+        let resumed =
+            held.resume_from_checkpoint(Arc::clone(&manager), runtime, &source, "Continue");
+        std::fs::remove_dir(&path)?;
+        std::fs::rename(&retained_path, &path)?;
+        resumed
+    });
     assert!(result.is_err());
     assert_eq!(guard.agents.len(), 1);
     assert_eq!(guard.worker_records.len(), 1);
@@ -824,7 +832,9 @@ async fn lifecycle_cleanup_keeps_source_identity_while_descendants_still_need_it
     record.status = AgentWorkerStatus::Completed;
     record.completed_at_ms = Some(epoch_millis_now().saturating_sub(120_000));
 
-    manager.cleanup_for_session("workspace", Duration::from_secs(60));
+    manager
+        .cleanup_for_session("workspace", Duration::from_secs(60))
+        .expect("durable worker operation");
     assert_eq!(manager.continuation_target(&source).unwrap(), current);
     assert!(
         manager
@@ -847,7 +857,9 @@ async fn lifecycle_cleanup_keeps_source_identity_while_descendants_still_need_it
     for record in manager.worker_records.values_mut() {
         record.completed_at_ms = Some(epoch_millis_now().saturating_sub(120_000));
     }
-    manager.cleanup_for_session("workspace", Duration::from_secs(60));
+    manager
+        .cleanup_for_session("workspace", Duration::from_secs(60))
+        .expect("durable worker operation");
     assert!(manager.agents.is_empty());
     assert!(manager.worker_records.is_empty());
     assert!(manager.resume_targets.is_empty());

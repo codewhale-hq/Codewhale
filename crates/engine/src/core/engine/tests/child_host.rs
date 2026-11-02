@@ -791,6 +791,7 @@ struct ChildTimeoutClient {
     attempts: std::sync::atomic::AtomicUsize,
     held_attempts: usize,
     body: bool,
+    tool_use: bool,
 }
 impl crate::llm_client::LlmClient for ChildTimeoutClient {
     fn provider_name(&self) -> &'static str {
@@ -825,8 +826,24 @@ impl crate::llm_client::LlmClient for ChildTimeoutClient {
                     ..Default::default()
                 };
             }
+            let mut events = vec![
+                start,
+                crate::llm_client::mock::canned::text_block_start(0),
+                crate::llm_client::mock::canned::text_delta(0, "retained incomplete child text"),
+                crate::llm_client::mock::canned::block_stop(0),
+            ];
+            if self.tool_use {
+                events.extend([
+                    crate::llm_client::mock::canned::tool_use_block_start(1, "call_1", "read"),
+                    crate::llm_client::mock::canned::tool_input_delta(
+                        1,
+                        "{\"path\":\"must-not-run\"}",
+                    ),
+                    crate::llm_client::mock::canned::block_stop(1),
+                ]);
+            }
             return Ok(Box::pin(
-                futures_util::stream::once(async { Ok(start) })
+                futures_util::stream::iter(events.into_iter().map(Ok))
                     .chain(futures_util::stream::pending()),
             ));
         }
@@ -835,9 +852,9 @@ impl crate::llm_client::LlmClient for ChildTimeoutClient {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn child_step_timeout_bounds_open_and_body_with_one_outer_retry_and_exact_usage_sources() {
+async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_exact_sources() {
     use crate::llm_client::mock::canned;
-    for body in [false, true] {
+    for (body, tool_use) in [(false, false), (true, false), (true, true)] {
         let dir = tempdir().unwrap();
         let _home = crate::test_support::SealedHome::at(dir.path());
         let (_old, _old_handle, captured, _) = fixture(dir.path(), Some(Vec::new()));
@@ -865,6 +882,7 @@ async fn child_step_timeout_bounds_open_and_body_with_one_outer_retry_and_exact_
             attempts: std::sync::atomic::AtomicUsize::new(0),
             held_attempts: 2,
             body,
+            tool_use,
         });
         core.model_client = Some(timeout_client.clone());
         let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -875,22 +893,22 @@ async fn child_step_timeout_bounds_open_and_body_with_one_outer_retry_and_exact_
         .await
         .expect("per-step timeout includes both stream opening and reading")
         .unwrap();
-        assert_eq!(
+        assert!(matches!(
             result.status,
-            crate::tools::subagent::SubAgentStatus::Completed
-        );
+            crate::tools::subagent::SubAgentStatus::Interrupted(_)
+        ));
         assert_eq!(
             timeout_client
                 .attempts
                 .load(std::sync::atomic::Ordering::Acquire),
-            3
+            1
         );
         assert_eq!(
             job.steps(),
             1,
             "retries do not consume a fresh logical work step"
         );
-        assert_eq!(successful.call_count(), 1);
+        assert_eq!(successful.call_count(), 0);
         let record = job
             .authority
             .runtime
@@ -902,16 +920,16 @@ async fn child_step_timeout_bounds_open_and_body_with_one_outer_retry_and_exact_
         if body {
             assert_eq!(
                 record.usage_source_fingerprints.len(),
-                3,
-                "each opened response settles once before its retry"
+                1,
+                "the sole opened response settles once"
             );
-            assert_eq!(record.usage.input_tokens, Some(44));
-            assert_eq!(record.usage.output_tokens, Some(12));
+            assert_eq!(record.usage.input_tokens, Some(17));
+            assert_eq!(record.usage.output_tokens, Some(3));
         } else {
-            assert_eq!(record.usage_source_fingerprints.len(), 3);
-            assert_eq!(record.missing_usage_sources.len(), 2);
-            assert_eq!(record.usage.input_tokens, Some(10));
-            assert_eq!(record.usage.output_tokens, Some(6));
+            assert_eq!(record.usage_source_fingerprints.len(), 1);
+            assert_eq!(record.missing_usage_sources.len(), 1);
+            assert_eq!(record.usage.input_tokens, None);
+            assert_eq!(record.usage.output_tokens, None);
             assert!(record.missing_usage_sources.values().all(|coverage| {
                 coverage.reason
                     == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
@@ -922,7 +940,31 @@ async fn child_step_timeout_bounds_open_and_body_with_one_outer_retry_and_exact_
             !job.can_replace_first_request(),
             "opened/accepted response forbids route replacement"
         );
-        assert!(result.checkpoint.is_some());
+        let checkpoint = result.checkpoint.as_ref().unwrap();
+        assert!(checkpoint.continuable);
+        assert_eq!(checkpoint.reason, "request_outcome_unknown");
+        assert!(result.needs_input.is_some());
+        if body {
+            assert_eq!(
+                result.result.as_deref(),
+                Some("retained incomplete child text")
+            );
+            assert!(checkpoint.messages.iter().any(|message| {
+                message.role == Role::InterruptedAssistant
+                    && message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::Text { text, .. }
+                            if text == "retained incomplete child text")
+                    })
+            }));
+        }
+        assert!(checkpoint.messages.iter().all(|message| {
+            message.content.iter().all(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )
+            })
+        }));
     }
 }
 
@@ -948,6 +990,7 @@ async fn child_timeout_exhaustion_interrupts_with_checkpoint_and_never_dispatche
         attempts: std::sync::atomic::AtomicUsize::new(0),
         held_attempts: usize::MAX,
         body: false,
+        tool_use: false,
     });
     core.model_client = Some(timeout_client.clone());
     let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -960,13 +1003,13 @@ async fn child_timeout_exhaustion_interrupts_with_checkpoint_and_never_dispatche
     .unwrap();
     assert!(
         matches!(result.status, crate::tools::subagent::SubAgentStatus::Interrupted(ref reason)
-        if reason.contains("6 API attempt(s)"))
+        if reason.contains("outcome unknown"))
     );
     assert_eq!(
         timeout_client
             .attempts
             .load(std::sync::atomic::Ordering::Acquire),
-        6
+        1
     );
     assert_eq!(successful.call_count(), 0);
     assert_eq!(job.steps(), 1);
@@ -993,6 +1036,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
         attempts: std::sync::atomic::AtomicUsize::new(0),
         held_attempts: usize::MAX,
         body: false,
+        tool_use: false,
     });
     core.model_client = Some(held.clone());
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();

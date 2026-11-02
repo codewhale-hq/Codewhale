@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { isRepoFacts } from "./facts";
+import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 import { deriveFactsFromRemote, runFactsDrift } from "./facts-drift";
 
 const REVISION = "b".repeat(40);
@@ -162,9 +163,14 @@ describe("runFactsDrift", () => {
       },
     };
 
-    const result = await runFactsDrift({ CURATED_KV: kv });
-
-    expect(result.ok).toBe(true);
+    expect((await runFactsDrift({ CURATED_KV: kv })).ok).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+    const env = { CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock() };
+    const results = await Promise.all([runFactsDrift(env), runFactsDrift(env)]);
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(results.filter((result) => result.changed)).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/commits/main"))).toHaveLength(1);
+    expect(JSON.parse(store.get("facts:drift-log") ?? "[]")).toHaveLength(1);
     expect(isRepoFacts(JSON.parse(store.get("facts:current") ?? "null"))).toBe(true);
   });
 
@@ -178,7 +184,7 @@ describe("runFactsDrift", () => {
     };
     // The fixture's source commit is 2026-07-21T23:00:00Z: an overlapping,
     // slower run finishing after a newer one.
-    expect(await runFactsDrift({ CURATED_KV: kv })).toEqual({ ok: true, changed: false });
+    expect(await runFactsDrift({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock() })).toEqual({ ok: true, changed: false });
     expect(store.get("facts:current")).toBe(newer);
   });
 
@@ -198,7 +204,7 @@ describe("runFactsDrift", () => {
       },
     };
 
-    const result = await runFactsDrift({ CURATED_KV: kv });
+    const result = await runFactsDrift({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock() });
 
     expect(result).toEqual({ ok: false, reason: "remote facts failed validation" });
     expect(store.size).toBe(0);

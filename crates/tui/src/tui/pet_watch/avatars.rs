@@ -1,12 +1,8 @@
 //! Terminal avatar selection projects the existing owner frame and clock.
 use super::*;
 use base64::Engine as _;
-use codewhale_ratatui::{
-    Paint,
-    avatar::{Pack, RegisteredPack},
-    avatar_sprite::Sprite,
-    whale_girl,
-};
+use codewhale_protocol::avatar::{Pack, RegisteredPack};
+use codewhale_ratatui::{Paint, avatar_sprite::Sprite, whale_girl};
 use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},

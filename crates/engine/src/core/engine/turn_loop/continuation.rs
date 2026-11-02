@@ -184,7 +184,7 @@ impl Engine {
                 progress.step_budget_exhaustion_is_terminal = false;
                 self.add_session_message(self.runtime_text_message_with_turn_metadata(
                     continuation,
-                    UserInputProvenance::Runtime,
+                    UserInputProvenance::GoalContinuation,
                 ))
                 .await;
                 let _ = self

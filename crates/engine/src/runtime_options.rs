@@ -59,7 +59,7 @@ pub struct RuntimeOptions {
     #[arg(long, hide = true)]
     pub remote_control: bool,
     #[arg(skip)]
-    pub control_frontend: Option<codewhale_app_server::RuntimeControlFrontend>,
+    pub control_frontend: Option<codewhale_runtime::runtime_control::RuntimeControlFrontend>,
 }
 
 impl RuntimeOptions {

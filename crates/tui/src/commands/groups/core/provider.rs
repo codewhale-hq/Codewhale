@@ -112,6 +112,8 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
         .as_ref()
         .is_some_and(|identity| identity.key == selected_key)
         && model.is_none()
+        && !(target == ProviderKind::Ollama
+            && codewhale_runtime::config::is_unresolved_local_ollama_model(&app.model))
     {
         return CommandResult::message(format!("Already on provider: {}", selected_key));
     }
@@ -629,6 +631,18 @@ mod tests {
         let msg = result.message.expect("expected message");
         assert!(msg.contains("Already on provider"));
         assert!(result.action.is_none());
+        app.provider_identity = Some(
+            codewhale_runtime::config::Config::default()
+                .builtin_provider_identity(ProviderKind::Ollama)
+                .unwrap(),
+        );
+        app.model = "unknown".into();
+        assert!(matches!(
+            provider(&mut app, Some("ollama")).action,
+            Some(AppAction::SwitchProvider { model: None, .. })
+        ));
+        app.model = "qwen3:4b".into();
+        assert!(provider(&mut app, Some("ollama")).action.is_none());
     }
 
     #[test]

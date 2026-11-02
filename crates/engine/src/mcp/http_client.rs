@@ -22,8 +22,9 @@ use codewhale_mcp::config::McpServerConfig;
 use codewhale_net::guard::{guarded_reqwest_client_builder, is_restricted_ip};
 use codewhale_net::network_policy::{Decision, NetworkPolicyDecider};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct McpHttpAuth {
+    pub(super) auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
     pub(super) server_name: String,
     pub(super) headers: HashMap<String, String>,
     pub(super) env_headers: HashMap<String, String>,
@@ -46,13 +47,45 @@ pub(super) struct McpHttpAuth {
     pub(super) reviewed_plugin: Option<ReviewedPluginMcpSource>,
 }
 
+impl Default for McpHttpAuth {
+    fn default() -> Self {
+        Self {
+            auth_context: super::process_mcp_auth_context(),
+            server_name: String::new(),
+            headers: HashMap::new(),
+            env_headers: HashMap::new(),
+            bearer_token_env_var: None,
+            oauth: None,
+            oauth_configured: false,
+            suppress_server_error_details: false,
+            reviewed_plugin: None,
+        }
+    }
+}
+
 impl McpHttpAuth {
+    #[cfg(test)]
     pub(super) fn from_config(
         server_name: &str,
         config: &McpServerConfig,
         oauth: Option<oauth::McpOAuthRuntime>,
     ) -> Self {
+        Self::from_config_with_auth_context(
+            server_name,
+            config,
+            oauth,
+            super::process_mcp_auth_context(),
+        )
+    }
+
+    pub(super) fn from_config_with_auth_context(
+        server_name: &str,
+        config: &McpServerConfig,
+        oauth: Option<oauth::McpOAuthRuntime>,
+        auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Self {
         Self {
+            auth_context,
             server_name: server_name.to_string(),
             headers: config.headers.clone(),
             env_headers: config.env_headers.clone(),
@@ -78,8 +111,12 @@ impl McpHttpAuth {
         }
         let mut headers = self.headers.clone();
         for (name, env_var) in &self.env_headers {
-            let value = super::mcp_secret_var(self.reviewed_plugin.as_ref(), env_var);
-            if let Ok(value) = value
+            let value = super::mcp_secret_var(
+                self.reviewed_plugin.as_ref(),
+                env_var,
+                self.auth_context.as_ref(),
+            );
+            if let Some(value) = value
                 && !value.trim().is_empty()
             {
                 headers.insert(name.clone(), value);
@@ -87,7 +124,11 @@ impl McpHttpAuth {
         }
         if !mcp_headers_have_authorization(&headers)
             && let Some(env_var) = self.bearer_token_env_var.as_deref()
-            && let Ok(token) = super::mcp_secret_var(self.reviewed_plugin.as_ref(), env_var)
+            && let Some(token) = super::mcp_secret_var(
+                self.reviewed_plugin.as_ref(),
+                env_var,
+                self.auth_context.as_ref(),
+            )
         {
             let token = token.trim();
             if !token.is_empty() {

@@ -1,12 +1,11 @@
 //! Streaming response state and guardrails.
 //!
 //! This module owns the local state used while decoding one model stream:
-//! content block kind tracking, streamed tool-use buffers, transparent retry
-//! policy, and scrubbers for text that looks like a forged tool-call wrapper.
+//! content block kind tracking, streamed tool-use buffers, retry observations,
+//! and scrubbers for text that looks like a forged tool-call wrapper.
 
 use crate::core::events::TurnOutcomeStatus;
 use codewhale_models::ToolCaller;
-use std::time::Duration;
 
 /// A send that did not enter the existing event queue. Cancellation is not
 /// evidence that the consumer closed, and neither is user-visible delivery.
@@ -81,6 +80,7 @@ impl super::Engine {
         let cancel = self.cancel_token.clone();
         let quiet = self.api_config.notifications_config().quiet;
         crate::llm_client::RequestRetryObservation {
+            request_id: format!("primary:{}", uuid::Uuid::new_v4().simple()),
             wire_observations: Default::default(),
             retries: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             emit: std::sync::Arc::new(move |message| {
@@ -237,63 +237,7 @@ pub(super) fn tool_call_limit_error() -> codewhale_error_taxonomy::ErrorEnvelope
     )
 }
 
-/// Decide whether a stream error is eligible for a transparent retry.
-///
-/// True only when ALL three conditions hold:
-/// 1. No content has been received on the current attempt. Reissuing after
-///    visible partial deltas needs a separate recovery policy. This content
-///    check is not evidence that the provider consumed or billed zero tokens.
-/// 2. We still have transparent-retry budget remaining (`max_attempts`,
-///    `[tui].stream_max_transparent_retries`, default
-///    [`codewhale_runtime::turn_budget::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES`]).
-/// 3. The turn has not been cancelled.
-///
-/// Extracted as a pure function so the four #103 retry cases can be exercised
-/// in unit tests without booting the full engine state machine.
-pub(super) fn should_transparently_retry_stream(
-    any_content_received: bool,
-    transparent_attempts: u32,
-    max_attempts: u32,
-    cancelled: bool,
-) -> bool {
-    !any_content_received && transparent_attempts < max_attempts && !cancelled
-}
-
-/// Typed, engine-internal state for one mid-stream drop recovery.
-///
-/// This enum **is** the retry mechanism. A resumed turn used to append a
-/// synthetic `[runtime]` *user* message to the persisted conversation, which
-/// polluted the transcript and — when only hidden reasoning had streamed —
-/// promised a preserved partial answer that never existed (0.9.10
-/// regression). The retry is now modeled as this value, carried out of the
-/// stream decoder in [`StreamOutcome`] and consumed exactly once per drop:
-///
-/// * it is never persisted to the user transcript, and
-/// * nothing it triggers is serialized into the provider request history as
-///   a user role — the retried request is simply the persisted conversation
-///   re-issued, ending (when a visible fragment was preserved) with that
-///   assistant fragment so the provider continues from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum StreamResume {
-    /// The stream died before anything actionable was streamed (#103
-    /// Phase 3): discard the fragment and re-issue the identical request.
-    NoContentStreamDeath,
-    /// The host slept mid-stream (#2990): the partial output predates the
-    /// sleep and no operator watched it — discard and re-issue.
-    AfterSleep,
-    /// Mid-stream network drop on a headless host (v0.9.4 Terminal-Bench
-    /// P0): the fragment was never committed and no tool from it ran, so
-    /// discard and re-issue the identical request.
-    HeadlessNetworkDrop,
-    /// Mid-stream network drop in the interactive TUI. A fragment with
-    /// sendable content is preserved as the trailing assistant message and
-    /// the request is re-issued; a thinking-only fragment has nothing
-    /// visible to preserve, so it is discarded exactly like the headless
-    /// resume and the copy must never claim otherwise.
-    InteractiveNetworkDrop,
-}
-
-/// Bounded authorization for drop-resume retries.
+/// Bounded authorization for proven pre-dispatch connection retries.
 ///
 /// Mechanism, not comment: [`StreamRetryBudget::authorize`] is the only way
 /// to spend a resume and it returns `None` once `limit` resumes (default
@@ -323,7 +267,7 @@ impl StreamRetryBudget {
         self.limit
     }
 
-    /// Drop-resumes already issued without a healthy round in between.
+    /// Safe stream-open retries already issued without a healthy round in between.
     pub(super) fn spent(&self) -> u32 {
         self.spent
     }
@@ -440,98 +384,9 @@ mod repeated_upstream_failure_tests {
     }
 }
 
-/// Wall-clock vs monotonic divergence above which we conclude the host slept
-/// mid-stream (#2990). `Instant` pauses during system sleep (CLOCK_UPTIME_RAW
-/// on macOS, CLOCK_MONOTONIC on Linux) while `SystemTime` keeps advancing, so
-/// a large positive gap can only come from a suspend/resume cycle — ordinary
-/// network flakes never produce one. Windows `Instant` may keep ticking
-/// through sleep, in which case this simply never fires (no behavior change).
-pub(super) const SLEEP_GAP_THRESHOLD: Duration = Duration::from_secs(10);
-
-/// True when the gap between wall-clock and monotonic elapsed time since the
-/// last stream progress says the host was suspended.
-pub(super) fn sleep_gap_detected(monotonic_elapsed: Duration, wallclock_elapsed: Duration) -> bool {
-    wallclock_elapsed.saturating_sub(monotonic_elapsed) > SLEEP_GAP_THRESHOLD
-}
-
-/// Decide whether a failed stream should be silently re-issued because the
-/// host slept mid-turn (#2990).
-///
-/// Unlike the transparent retry (#103), this fires even after content has
-/// streamed: the partial output predates the sleep, the user was not
-/// watching, and re-running the identical request is the correct
-/// user-visible behavior. The double-billing concern that blocks ordinary
-/// post-content retries is accepted here because the alternative is a dead
-/// turn the user must re-prompt (and pay for) anyway.
-pub(super) fn should_resume_after_sleep(
-    sleep_detected: bool,
-    retry_attempts: u32,
-    retry_limit: u32,
-    cancelled: bool,
-) -> bool {
-    sleep_detected && retry_attempts < retry_limit && !cancelled
-}
-
-/// Decide whether a failed stream should be re-issued after a mid-stream
-/// network drop in a headless host (`exec` / stream-json / app-server), even
-/// though content already streamed.
-///
-/// This extends the #2990 sleep-resume contract to ordinary transport drops
-/// for hosts with no operator watching: the partial assistant fragment has
-/// not been committed to the conversation and no tool call from the
-/// incomplete response has executed, so discarding the fragment and
-/// re-issuing the identical request cannot duplicate side effects. The
-/// double-billing risk that blocks post-content retries in the interactive
-/// TUI (#103) is accepted here because the alternative is a dead turn that
-/// forfeits the entire headless run — the exact tradeoff #2990 already makes
-/// for sleep-resume. Interactive sessions keep the #103 surface-the-warning
-/// behavior: the user saw the partial deltas, and replaying would render the
-/// same prefix twice.
-pub(super) fn should_resume_after_network_drop(
-    headless_host: bool,
-    network_class_error: bool,
-    retry_attempts: u32,
-    retry_limit: u32,
-    cancelled: bool,
-) -> bool {
-    headless_host && network_class_error && retry_attempts < retry_limit && !cancelled
-}
-
-/// Decide whether an interactive TUI stream should be re-issued after a
-/// mid-stream network drop, preserving a visible partial reply.
-///
-/// Unlike the headless resume, this keeps a sendable fragment: the user has
-/// already seen the deltas, so the assistant message is committed and the
-/// re-issued request ends with that fragment, which is the provider-neutral
-/// continuation contract. No synthetic user turn is appended — the retry is
-/// typed state ([`StreamResume::InteractiveNetworkDrop`]), invisible to the
-/// transcript and to the provider request history as a user role. A
-/// thinking-only fragment preserves nothing and must not be described as a
-/// preserved reply. Tool calls are never resumed because an incomplete tool
-/// call could be re-issued and duplicate side effects. Bounded by
-/// `DEFAULT_STREAM_MAX_RESUMES` and gated on a network/timeout-class error so
-/// model/parse/auth failures still surface normally.
-pub(super) fn should_resume_interactive_after_network_drop(
-    terminal_chrome_enabled: bool,
-    network_class_error: bool,
-    any_content_received: bool,
-    tool_uses_empty: bool,
-    retry_attempts: u32,
-    retry_limit: u32,
-    cancelled: bool,
-) -> bool {
-    terminal_chrome_enabled
-        && network_class_error
-        && any_content_received
-        && tool_uses_empty
-        && retry_attempts < retry_limit
-        && !cancelled
-}
-
 /// Convert low-level reqwest/hyper stream read errors into an operator-facing
 /// message. The raw provider error remains attached, but the lead sentence
-/// explains why Codewhale may retry before any output and why it must surface
-/// the warning once partial output has already streamed.
+/// retains the interrupted output and the unknown provider outcome.
 pub(super) fn stream_read_error_user_message(message: &str, any_content_received: bool) -> String {
     let lower = message.to_ascii_lowercase();
     let is_stream_read = lower.contains("stream read error")
@@ -545,7 +400,7 @@ pub(super) fn stream_read_error_user_message(message: &str, any_content_received
     let retry_note = if any_content_received {
         "Some output had already streamed, so Codewhale is surfacing the warning instead of replaying the request and risking duplicated output."
     } else {
-        "No output had streamed yet, so Codewhale will retry automatically while retry budget remains."
+        "No output had streamed yet; the provider request outcome is unknown and Codewhale will not replay it automatically."
     };
     format!(
         "Provider stream connection dropped while reading the response body. {retry_note} Details: {message}"

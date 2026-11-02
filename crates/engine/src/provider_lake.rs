@@ -1837,7 +1837,12 @@ pub async fn update_provider_catalog(
     // Ordinary model listing never constructs a client. Explicit refresh uses
     // the existing read-only resolver: no secret migration or OAuth refresh.
     let account_owner = route_config.account_model_access.read().clone();
-    let prepared = route_config.with_read_only_api_key_for_diagnostic();
+    let prepared =
+        if crate::client::CodewhaleClient::public_catalog_for_route(&route_config, identity) {
+            Ok(route_config.clone())
+        } else {
+            route_config.with_read_only_api_key_for_diagnostic()
+        };
     let credential = prepared
         .as_ref()
         .ok()

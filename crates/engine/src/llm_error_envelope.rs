@@ -1,6 +1,6 @@
 use crate::llm_client::LlmError;
 use codewhale_error_taxonomy::{
-    ErrorCategory, ErrorEnvelope, ErrorSeverity, classify_error_message, is_spent_balance_message,
+    ErrorCategory, ErrorEnvelope, ErrorSeverity, classify_error_message,
 };
 
 /// Classify a boundary error from the typed [`LlmError`] when one is
@@ -25,7 +25,7 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
         }
         Err(error) => {
             drop(error);
-            ErrorEnvelope::classify(display_message, true)
+            ErrorEnvelope::classify(display_message, false)
         }
     }
 }
@@ -52,21 +52,30 @@ impl From<LlmError> for ErrorEnvelope {
             LlmError::ServerError { status, message } => Self::new(
                 ErrorCategory::Internal,
                 ErrorSeverity::Error,
-                true,
+                false,
                 format!("llm_server_{status}"),
                 message,
             ),
             LlmError::NetworkError(message) => Self::new(
                 ErrorCategory::Network,
                 ErrorSeverity::Error,
-                true,
+                false,
                 "llm_network_error",
+                message,
+            ),
+            LlmError::ConnectError {
+                message, transient, ..
+            } => Self::new(
+                ErrorCategory::Network,
+                ErrorSeverity::Error,
+                transient,
+                "llm_connect_before_dispatch",
                 message,
             ),
             LlmError::Timeout(duration) => Self::new(
                 ErrorCategory::Timeout,
                 ErrorSeverity::Warning,
-                true,
+                false,
                 "llm_timeout",
                 format!("Request timed out after {duration:?}"),
             ),
@@ -139,22 +148,12 @@ fn envelope_for_other_llm_error(message: String) -> ErrorEnvelope {
         return ErrorEnvelope::new(
             ErrorCategory::Internal,
             ErrorSeverity::Error,
-            true,
+            false,
             "llm_other",
             message,
         );
     }
-    // Mirror the typed variants. Only a credential or authorization refusal, a
-    // rejected input and a spent balance do not heal by resending; everything
-    // else (a transient class, a spent budget, an unparseable chunk) keeps the
-    // retry tail the legacy `Internal` label had.
-    let recoverable = match category {
-        ErrorCategory::Authentication
-        | ErrorCategory::Authorization
-        | ErrorCategory::InvalidInput => false,
-        ErrorCategory::RateLimit => !is_spent_balance_message(&message),
-        _ => true,
-    };
+    let recoverable = false;
     let mut envelope = ErrorEnvelope::classify(message, recoverable);
     // The typed `NetworkError` is an Error-severity card; an `Other` that reads
     // as one must not turn amber for a turn that later fails after its retries.
@@ -227,7 +226,7 @@ mod tests {
         let envelope =
             envelope_for_llm_error(untyped, "stream read error: connection reset".into());
         assert_eq!(envelope.category, ErrorCategory::Network);
-        assert!(envelope.recoverable);
+        assert!(!envelope.recoverable);
     }
 
     #[test]
@@ -252,7 +251,7 @@ mod tests {
         let envelope = ErrorEnvelope::from(LlmError::Other("Unknown retry error".to_string()));
         assert_eq!(envelope.category, ErrorCategory::Internal);
         assert_eq!(envelope.code, "llm_other");
-        assert!(envelope.recoverable);
+        assert!(!envelope.recoverable);
     }
 
     #[test]
@@ -262,7 +261,7 @@ mod tests {
         // spent balance are terminal.
         for message in ["malformed chunk in stream", "error decoding response body"] {
             let envelope = ErrorEnvelope::from(LlmError::Other(message.to_string()));
-            assert!(envelope.recoverable, "{message}");
+            assert!(!envelope.recoverable, "{message}");
         }
         // A transient `Other` is an Error-severity card like the typed
         // `NetworkError`, not an amber one that outlives a failed retry.

@@ -215,6 +215,13 @@ export class ThreadStore {
     return this.data.chats[chatId];
   }
 
+  async finishObservedTurn(chatId, threadId, turnId) {
+    const current = this.data.chats[chatId];
+    if (turnId && current?.threadId === threadId && current.activeTurnId === turnId) {
+      await this.patchChat(chatId, { activeTurnId: null, updatedAt: new Date().toISOString() });
+    }
+  }
+
   /**
    * Record only a turn accepted by Runtime, before its events are delivered.
    * A later sender cannot overwrite that turn's origin. Records use the chat's
@@ -626,33 +633,98 @@ function updateCodeFenceState(openFence, text) {
   return current;
 }
 
-export async function readJsonSafe(response) {
-  const text = await response.text();
-  if (!text) return {};
+export async function readJsonSafe(response, { jsonOnly = false } = {}) {
+  const limit = response.ok ? 8 * 1024 * 1024 : 4096;
+  const oversized = () => {
+    if (response.ok) throw new Error("Runtime response exceeds the size limit");
+    return jsonOnly ? null : "Runtime error body exceeds the size limit";
+  };
+  if (Number(response.headers.get("content-length")) > limit) {
+    await response.body?.cancel().catch(() => {});
+    return oversized();
+  }
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  if (response.body) {
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > limit) return oversized();
+      text += decoder.decode(chunk, { stream: true });
+    }
+    text += decoder.decode();
+  }
+  if (!text) return jsonOnly ? null : {};
   try {
     return JSON.parse(text);
   } catch {
-    return text;
+    return jsonOnly ? null : text;
   }
 }
 
+const MAX_EVENT_BYTES = 2 * 1024 * 1024;
+
 export async function* readSse(response) {
-  const decoder = new TextDecoder();
-  let buffer = "";
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let line = Buffer.allocUnsafe(1024);
+  let length = 0, frameBytes = 0, afterCr = false;
+  let event = "", data = "", sawData = false;
+
   for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-      const raw = buffer.slice(0, boundary).replace(/\r/g, "");
-      buffer = buffer.slice(boundary + 2);
-      const event = { event: "", data: "" };
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event.event = line.slice(6).trim();
-        if (line.startsWith("data:")) event.data += line.slice(5).trim();
+    for (const byte of chunk) {
+      const pairedLf = afterCr && byte === 10;
+      afterCr = byte === 13;
+      if (pairedLf && frameBytes === 0) continue;
+      if (++frameBytes > MAX_EVENT_BYTES) throw new Error("Runtime event frame exceeds the size limit");
+      if (pairedLf) continue;
+      if (byte !== 10 && byte !== 13) {
+        if (length === line.length) {
+          const larger = Buffer.allocUnsafe(Math.min(MAX_EVENT_BYTES, line.length * 2));
+          line.copy(larger);
+          line = larger;
+        }
+        line[length++] = byte;
+        continue;
       }
-      yield event;
+      if (length === 0) {
+        if (sawData || event) yield { event, data };
+        event = "";
+        data = "";
+        sawData = false;
+        frameBytes = 0;
+        continue;
+      }
+      const field = decoder.decode(line.subarray(0, length));
+      length = 0;
+      const colon = field.indexOf(":");
+      const name = colon < 0 ? field : field.slice(0, colon);
+      const value = colon < 0 ? "" : field.slice(colon + (field[colon + 1] === " " ? 2 : 1));
+      if (name === "event") event = value;
+      if (name === "data") {
+        data += (sawData ? "\n" : "") + value;
+        sawData = true;
+      }
     }
   }
+  if (frameBytes) throw new Error("Runtime event stream ended inside a frame");
+}
+
+export async function* readThreadEvents(response, threadId) {
+  if (!threadId) throw new Error("Missing expected Runtime thread identity");
+  for await (const { data } of readSse(response)) {
+    if (!data) continue;
+    const record = JSON.parse(data);
+    if (record?.thread_id !== threadId || typeof record.event !== "string" || !record.event) {
+      throw new Error("Invalid Runtime event or thread identity");
+    }
+    if (record.event === "stream.end") {
+      yield record;
+      return;
+    }
+    if (!Number.isSafeInteger(record.seq) || record.seq < 0) throw new Error("Invalid Runtime event sequence");
+    yield record;
+  }
+  throw new Error("Runtime event stream ended before a terminal event");
 }
 
 export function createRuntimeClient({ runtimeUrl, runtimeToken, runtimeRequestTimeoutMs }) {

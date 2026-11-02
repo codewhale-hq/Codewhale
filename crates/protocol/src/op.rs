@@ -52,7 +52,7 @@ where
 }
 
 use crate::ids::{SessionId, ThreadId};
-use crate::runtime::DynamicToolSpec;
+use codewhale_app_server_protocol::runtime::DynamicToolSpec;
 
 /// Every `Op` is paired with the ids that route it. This is the
 /// `Op`-in half of the `Op`-in / `EventMsg`-out contract.
@@ -120,7 +120,7 @@ pub struct TurnSpec {
     pub max_output_tokens: Option<std::num::NonZeroU32>,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<crate::runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     /// Effective mode for this turn (`"plan" | "agent" | "operate"` etc).
     #[serde(default = "default_mode")]
     pub mode: String,

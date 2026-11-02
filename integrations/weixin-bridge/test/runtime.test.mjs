@@ -84,7 +84,7 @@ async function fixture(t, options = {}) {
   state.disk = async () => { try { return JSON.parse(await fs.readFile(path.join(dir, "thread-map.json"), "utf8")); } catch { return {}; } };
   state.event = (event, payload, turnId = "turn-1") => {
     state.seq++;
-    const record = { event, payload, turn_id: turnId, seq: state.seq };
+    const record = { event, payload, thread_id: "thread-1", turn_id: turnId, seq: state.seq };
     for (const response of state.streams) response.write(`data: ${JSON.stringify(record)}\n\n`);
   };
   state.complete = (text, status = "completed") => {

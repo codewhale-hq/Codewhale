@@ -1439,6 +1439,10 @@
         assert!(!provider_api_key_verification_is_observed(
             ProviderKind::Concentrate
         ));
+        let runcrate = codewhale_config::descriptors::provider_descriptor("runcrate").unwrap();
+        assert!(!provider_api_key_verification_is_observed_for_route(ProviderKind::Custom, &runcrate.base_url));
+        assert!(provider_api_key_verification_is_observed_for_route(ProviderKind::Custom, &format!("{}/account", runcrate.base_url)));
+        assert!(verify_provider_api_key(ProviderKind::Custom, "fixture", &runcrate.base_url).await.unwrap().is_none());
         let requests = server.received_requests().await.expect("recorded requests");
         assert!(
             requests.is_empty(),

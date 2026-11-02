@@ -28,19 +28,19 @@
     "predeploy": "node scripts/check-kv-id.mjs",
     "deploy": "npm run build:cloudflare && opennextjs-cloudflare populateCache remote --config .cloudflare/opennext.json && cf deploy --prebuilt",
     "cf-typegen": "cf workers types",
-    "postinstall": "node scripts/patch-braces.mjs",
+    "postinstall": "node scripts/patch-braces.mjs && node scripts/patch-minimatch.mjs && node scripts/patch-glob.mjs && node scripts/patch-bundled-globs.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs"
   },
   "dependencies": {
     "next": "^16.4.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "stripe": "23.0.0"
+    "stripe": "23.1.0"
   },
   "devDependencies": {
     "@cloudflare/config": "0.23.0",
     "@opennextjs/cloudflare": "^1.20.9",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.2.5",
     "autoprefixer": "^10.6.1",

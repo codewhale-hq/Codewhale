@@ -60,6 +60,7 @@ struct Session {
     host_generation: u64,
     name: String,
     config: McpServerConfig,
+    auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
     cancel: CancellationToken,
     broker: AsyncMutex<Option<BrokerSession>>,
     frames: AsyncMutex<mpsc::Receiver<Value>>,
@@ -400,11 +401,12 @@ impl Broker {
             .command
             .as_deref()
             .context("MCP host stdio requires a command")?;
-        let (mut broker, stdout) = BrokerSession::spawn(
+        let (mut broker, stdout) = BrokerSession::spawn_with_auth_context(
             &session.name,
             command,
             &session.config,
             session.cancel.clone(),
+            Arc::clone(&session.auth_context),
         )?;
         session.validate(shared, generation, &params.owner)?;
         if session
@@ -752,6 +754,25 @@ impl SdkTransport {
         timeout: Duration,
         client: Option<crate::mcp::http_client::McpHttpClient>,
     ) -> Result<Self> {
+        Self::connect_with_http_and_auth_context(
+            name,
+            config,
+            cancel,
+            timeout,
+            client,
+            crate::mcp::process_mcp_auth_context(),
+        )
+        .await
+    }
+
+    pub async fn connect_with_http_and_auth_context(
+        name: &str,
+        config: &McpServerConfig,
+        cancel: CancellationToken,
+        timeout: Duration,
+        client: Option<crate::mcp::http_client::McpHttpClient>,
+        auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Result<Self> {
         if (config.url.is_some() != client.is_some())
             || (config.url.is_none() && config.command.is_none())
         {
@@ -783,6 +804,7 @@ impl SdkTransport {
             host_generation,
             name: name.to_string(),
             config: config.clone(),
+            auth_context,
             // The facade owns caller cancellation. Retiring this transport
             // must release its resources without cancelling that facade and
             // masking the concrete reply or failure it is about to receive.

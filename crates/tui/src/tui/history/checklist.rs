@@ -260,7 +260,7 @@ pub(super) fn render_checklist_card(
 
     let cap = match mode {
         RenderMode::Live => CHECKLIST_LIVE_ITEM_LIMIT,
-        RenderMode::Transcript => snapshot.items.len(),
+        RenderMode::Transcript | RenderMode::Source => snapshot.items.len(),
     };
     let visible: Vec<&ChecklistItemSnapshot> = snapshot.items.iter().take(cap).collect();
     let omitted = snapshot.items.len().saturating_sub(visible.len());

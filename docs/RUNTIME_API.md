@@ -14,8 +14,9 @@ such as Zed.
 `codewhale serve --http` / `serve --mobile` remain as **compatibility aliases**
 for `codewhale app-server --http` / `--mobile`; both launch the identical
 server. Desktop, web, SDK and custom integrations should target
-`app-server --http`. Bare `app-server`, `--stdio` and `--socket` select smaller
-compatibility interfaces, not the full Engine API.
+`app-server --http`. `--stdio` and `--socket` expose compatibility controls.
+The current bare `app-server` HTTP listener serves compatibility routes and
+the full `/v1/*` router through the same Runtime owner.
 
 `codewhale exec` is the separate one-shot headless worker path (stream-json,
 fleet worker subprocess, CI primitive). It is not part of this API, but it
@@ -57,7 +58,7 @@ For the read-only record of what a thread or turn did, see
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
 | `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Compatibility controls and explicit tool-free turns; no full Engine event or approval/input channel. |
 | `codewhale app-server --socket [--socket-path P]` | JSON-RPC 2.0 over a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
-| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`. Turn requests require explicit `allowed_tools: []`; interactive execution fails before a turn starts. Use `app-server --http` for tools, approvals, clarification, goal execution, steering and the full event journal. |
+| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`, plus the full `/v1/*` router. Compatibility turn requests require explicit `allowed_tools: []`; those routes refuse interactive execution before a turn starts. New integrations should use `app-server --http`. |
 | `codewhale serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
 
 `app-server --http` and `--mobile` launch the same mature runtime API server
@@ -431,6 +432,16 @@ printf '%s\n' \
   | codewhale app-server --stdio
 ```
 
+Local control and ACP frames have an 8 MiB encoded body limit, excluding the
+newline separator. Serialization stops at that limit before writing an
+oversized frame. Body, newline and flush share a 30-second backpressure
+deadline; owner attachment, request forwarding and frontend readiness keep
+their tighter 5-second envelopes. A partial write, flush failure or deadline
+ends the affected stream; it cannot be followed by another response or an
+automatic replay. This write deadline also applies to compatibility stdio
+replies/events and relay stdout. The current stdio host can bind a private
+loopback listener for its internal Runtime bridge.
+
 `capabilities` returns the advertised method families (`thread/*`, `app/*`,
 `prompt/*`) and the full method list; `thread/capabilities`,
 `app/capabilities`, and `prompt/capabilities` scope it per family. The method
@@ -623,6 +634,12 @@ the original intent from a source that may already have changed. An unprepared
 target stays pending; a changed or unverifiable target refuses completion.
 Repeat recovery with the same key to observe the same committed result.
 
+New history reservations retain their original document/checkpoint observation.
+An uncommitted recovery must match the complete prepared document and the
+operation's own publication generation, with its original checkpoint unchanged.
+An older reservation without that original observation stays pending or refuses
+recovery; reading current records cannot retrospectively supply it.
+
 The selected workspace comes from the acknowledged owner or the explicitly
 admitted request. History and historical receipts cannot supply permissions,
 credentials, endpoints or a different owner. A missing, changed, busy or
@@ -814,6 +831,16 @@ cancellation does not fabricate success. `stopReason` is `end_turn`, `cancelled`
 or typed `max_turn_requests`; Core failure remains an error. Prompts use at most
 50 model steps (a lower configured limit still wins) and Core's bounded final
 report response; this profile does not dispatch autonomous goal continuations.
+
+An oversized or non-UTF8 ACP input frame produces one bounded `-32700` error.
+After an oversized frame, input is discarded through its actual newline before
+another request can be admitted; cancellation preserves that discard state.
+This applies to standalone ACP and an authenticated guest of a normal Runtime
+owner. Other input I/O failures, owner-reply validation failures and compatibility
+control framing failures end the stream. An oversized ACP response becomes a
+bounded `-32603` error, with a null ID if echoing the original ID would also
+exceed the limit. Oversized notifications refuse before writing and use the
+existing operation cleanup; they do not report truncated success.
 
 When no process owns the Runtime store, ACP claims its own exclusive canonical
 Runtime owner. When a non-ACP Runtime host already owns it (the desktop app,
@@ -1112,6 +1139,25 @@ the terminal and the dashboard.
 metadata does not store a last message, and reading every transcript to
 synthesise one would make a list view an unbounded read. Full transcript
 preview lives in the TUI session picker, which reads one selected session.
+
+Metadata inspection reads at most 16 MiB from each regular session file. A
+resource refusal returns `413` with code `session_metadata_too_large` from
+catalog and lifecycle routes; the source remains unchanged. A catalog with
+unreadable records returns an error rather than an incomplete successful list.
+The terminal picker retains readable rows and reports its inspection warning.
+These limits cover metadata inspection, not full transcript loading.
+
+Saved-document and checkpoint publication uses a native source captured before
+snapshot preparation or queueing. Both physical records must still match under
+the existing session write admission before archival, pruning, replacement or
+checkpoint consumption. A mismatch refuses and retains recovery. Optional
+serialized `publication_id` metadata identifies a generation; it does not grant
+write authority. An unknown checkpoint needs explicit held resume/attach/promotion
+before automatic completion can consume it. Runtime prefix-restore validation
+remains distinct from the full-document predicate required for a later write.
+Optional usage-store damage remains visible as incomplete coverage while valid
+recovery data can be read without a publication receipt. Known retirement and
+changed raw records still refuse; this read result cannot authorize a save.
 
 `PATCH /v1/sessions/{id}` renames and/or archives a saved session and returns a
 lifecycle receipt shaped like the thread patch receipt:
@@ -2992,6 +3038,16 @@ client must not read that as a free call. A currency whose `*_priced` flag is
 false is unpriced. These receipts cover the parent model calls; child and
 compaction usage arrive through other paths. Summed per-call prices are
 therefore partial estimates, not the complete turn bill.
+
+`turn.provider_request` retains the captured route, logical request identity,
+bounded `physical_requests` identities, typed `transmission`, `coverage`, reported
+usage and outcome. An observed send or absent response headers do not prove
+provider acceptance or free work. Unknown primary outcomes remain unpriced in
+the turn diagnostics and usage totals; known primary usage stays in parent
+accounting. These receipts do not yet reconcile late cumulative primary usage.
+Inference automatically retries only an ordinary rate limit or a proven
+transient connection failure before dispatch. A later explicit user turn is a
+new request, not an automatic replay of an uncertain request.
 
 `turn.completed` carries the turn's authoritative cumulative token usage in
 `payload.turn.usage`, including routed work. It replaces the running token

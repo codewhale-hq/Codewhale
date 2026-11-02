@@ -1286,17 +1286,7 @@ fn classify_compaction_failure(e: &anyhow::Error) -> CompactionFailureKind {
         };
     }
 
-    let text = e.to_string();
-    if is_context_window_error_message(&text) {
-        return CompactionFailureKind::ContextOverflow;
-    }
-    let category = codewhale_error_taxonomy::classify_error_message(&text);
-    match category {
-        codewhale_error_taxonomy::ErrorCategory::Network
-        | codewhale_error_taxonomy::ErrorCategory::RateLimit
-        | codewhale_error_taxonomy::ErrorCategory::Timeout => CompactionFailureKind::Transient,
-        _ => CompactionFailureKind::Deterministic,
-    }
+    CompactionFailureKind::Deterministic
 }
 
 fn llm_error_in_chain(error: &anyhow::Error) -> Option<&crate::llm_client::LlmError> {
@@ -1363,29 +1353,16 @@ pub fn report_compaction_failure(
     format!("{prefix}: {detail}")
 }
 
-/// Check if an error is transient and worth retrying. Categories that map to
-/// transient retry: Network, RateLimit, Timeout. Context overflow is *not*
-/// transient — it needs a larger route window, not the same payload.
+/// Only typed pre-dispatch connection failures and authoritative ordinary429
+/// refusals permit replay. Context overflow needs a different request.
 fn is_transient_error(e: &anyhow::Error) -> bool {
     classify_compaction_failure(e).is_transient()
-}
-
-fn is_context_window_error_message(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("too long for this model")
-        || lower.contains("prompt is too long")
-        || lower.contains("maximum prompt length")
-        || lower.contains("maximum context length")
-        || lower.contains("context_length_exceeded")
-        || lower.contains("context window")
-        || (lower.contains("context")
-            && (lower.contains("token") || lower.contains("too long") || lower.contains("maximum")))
 }
 
 /// Compact messages with retry and backoff for transient errors.
 ///
 /// This function wraps `compact_messages` with retry logic to handle
-/// transient network errors and rate limits. It uses exponential backoff
+/// proven pre-dispatch connection failures and ordinary429 refusals. It uses exponential backoff
 /// with delays of 1s, 2s, 4s between retries.
 ///
 /// # Safety
@@ -2238,29 +2215,11 @@ enum RequestSizeLadder {
     ImagesReplaced,
 }
 
-/// Whether the provider refused the request body for size (HTTP 413 and its
-/// common wordings). A smaller payload can succeed where this one did not,
-/// which is exactly what the request-size ladder trades on.
-///
-/// Walks the whole error chain: the rejection may be stated by a fronting
-/// gateway (an HTML page from openresty reading "413 Request Entity Too
-/// Large") and then wrapped again by the client's own error text, so the
-/// top-level message alone is not reliable.
 fn is_request_too_large_error(e: &anyhow::Error) -> bool {
     matches!(
-        e.downcast_ref::<crate::llm_client::LlmError>(),
+        llm_error_in_chain(e),
         Some(crate::llm_client::LlmError::InvalidRequest { status: 413, .. })
-    ) || e.chain().any(|cause| {
-        let lower = cause.to_string().to_lowercase();
-        // The client always renders the status code into the message
-        // ("HTTP 413"), so that token is the primary signal; the phrase list
-        // below catches gateways that state the condition without it.
-        lower.contains("http 413")
-            || lower.contains("payload too large")
-            || lower.contains("request entity too large")
-            || lower.contains("request body too large")
-            || lower.contains("length limit exceeded")
-    })
+    )
 }
 
 /// Forward one user-visible progress sentence, when the host supplied a sink.
@@ -2295,16 +2254,10 @@ fn replace_inline_images_for_retry(
 }
 
 fn is_context_window_error(e: &anyhow::Error) -> bool {
-    let text = e.to_string();
-    if codewhale_error_taxonomy::classify_error_message(&text)
-        != codewhale_error_taxonomy::ErrorCategory::InvalidInput
-    {
-        return false;
-    }
-
-    let lower = text.to_lowercase();
-    is_context_window_error_message(&text)
-        || (lower.contains("requested") && lower.contains("tokens") && lower.contains("maximum"))
+    matches!(
+        llm_error_in_chain(e),
+        Some(crate::llm_client::LlmError::ContextLengthError(_))
+    )
 }
 
 /// Collect text from a user message without treating tool-result payloads
@@ -2681,9 +2634,12 @@ mod tests {
             "request exceeds context window",
         ] {
             assert!(
-                is_context_window_error(&anyhow::anyhow!(msg)),
+                !is_context_window_error(&anyhow::anyhow!(msg)),
                 "expected context-window detection for `{msg}`",
             );
+            assert!(is_context_window_error(&anyhow::Error::new(
+                crate::llm_client::LlmError::ContextLengthError(msg.to_string())
+            )));
         }
 
         assert!(!is_context_window_error(&anyhow::anyhow!(
@@ -2711,8 +2667,10 @@ mod tests {
         ];
         let before = original.clone();
         let client = ScriptedSummaryClient::with_outcomes(vec![
-            Err(anyhow::anyhow!(
-                "prompt is too long for this model's context window"
+            Err(anyhow::Error::new(
+                crate::llm_client::LlmError::ContextLengthError(
+                    "prompt is too long for this model's context window".to_string(),
+                ),
             )),
             Ok(summary_content()),
         ]);
@@ -2943,10 +2901,11 @@ mod tests {
     /// the API's own body reader. Reported on 2026-09-26; the ladder must
     /// treat it as the same byte-side rejection.
     fn request_body_413_html_gateway() -> anyhow::Error {
-        anyhow::anyhow!(
-            "LLM error: HTTP 413: DeepSeek API returned an HTML error page (HTTP 413): \
-             413 Request Entity Too Large 413 Request Entity Too Large openresty"
+        crate::llm_client::LlmError::from_http_response(
+            413,
+            "413 Request Entity Too Large openresty",
         )
+        .into()
     }
 
     #[derive(Debug, Default)]
@@ -3844,7 +3803,11 @@ mod tests {
                 text: "...".to_string(),
                 cache_control: None,
             }]),
-            Err(anyhow::anyhow!("request timed out")),
+            Err(crate::llm_client::LlmError::RateLimited {
+                message: "rate limited".into(),
+                retry_after: Some(Duration::ZERO),
+            }
+            .into()),
             Ok(vec![ContentBlock::Text {
                 text: FIXED_SUMMARY.to_string(),
                 cache_control: None,

@@ -433,10 +433,10 @@ impl CommandDebugUndoContext for UndoFacet {
     }
 }
 
-/// `force` is the only option `/undo` takes: it reaches the host as a typed
-/// flag, and anything else is reported before a file or message is touched.
+/// `/undo` defers mutation to the admitted host action; invalid options
+/// are reported before a file or message is touched.
 #[test]
-fn undo_passes_force_to_the_host_and_rejects_any_other_option() {
+fn undo_defers_latest_and_force_and_rejects_unknown_options() {
     let events = Rc::new(RefCell::new(vec![]));
     let mut history = HistoryFacet {
         events: events.clone(),
@@ -447,13 +447,12 @@ fn undo_passes_force_to_the_host_and_rejects_any_other_option() {
         events: events.clone(),
         outcome: DebugUndoOutcome::OpenEnded,
     };
-    for (arg, expected) in [
-        (None, "undo_files"),
-        (Some("  "), "undo_files"),
-        (Some("force"), "undo_files_forced"),
-        (Some(" FORCE "), "undo_files_forced"),
+    for (arg, force) in [
+        (None, false),
+        (Some("  "), false),
+        (Some("force"), true),
+        (Some(" FORCE "), true),
     ] {
-        events.borrow_mut().clear();
         let result = undo::undo(
             CommandContexts::empty()
                 .with_debug_undo(&mut facet)
@@ -461,17 +460,16 @@ fn undo_passes_force_to_the_host_and_rejects_any_other_option() {
                 .with_presentation(&mut UndoPresentation),
             arg,
         );
-        assert_eq!(&*events.borrow(), &[expected], "{arg:?}");
-        assert_eq!(
-            result.message.as_deref(),
-            Some(
-                "Nothing was undone. There is no record of where your last request's changes end, so undoing it would also put back edits made since. To do that anyway, run `/undo force`."
-            )
+        assert!(
+            events.borrow().is_empty(),
+            "mutation precedes host admission: {arg:?}"
         );
-        assert!(result.action.is_none());
+        assert_eq!(
+            result.action,
+            Some(DebugAction::UndoLatestRequest { force })
+        );
+        assert!(result.message.is_none());
     }
-
-    events.borrow_mut().clear();
     let result = undo::undo(
         CommandContexts::empty()
             .with_debug_undo(&mut facet)
@@ -495,9 +493,9 @@ fn undo_passes_force_to_the_host_and_rejects_any_other_option() {
 /// label or id.
 #[test]
 fn undo_reports_the_request_each_file_and_the_conversation() {
-    let restored = |forced, conversation_removed| DebugUndoRestored {
+    let restored = |forced, rewind_conversation| DebugUndoRestored {
         request: Some("Whole hours should read 2h".to_string()),
-        conversation_removed,
+        rewind_conversation,
         forced,
         files: vec![
             DebugRestoredFile {
@@ -526,7 +524,14 @@ fn undo_reports_the_request_each_file_and_the_conversation() {
             "Undid your request \"Whole hours should read 2h\". 3 files are back as they were before it:\n  restored duration.mjs\n  brought back old.mjs\n  removed new.mjs\nThe request and its reply were removed from the conversation."
         )
     );
-    assert!(matches!(result.action, Some(DebugAction::SyncSession(_))));
+    assert!(matches!(
+        result.action,
+        Some(DebugAction::ConversationUndo {
+            restored_files: 3,
+            retry_input: None,
+            ..
+        })
+    ));
 
     let forced = undo::patch_result(
         DebugUndoOutcome::Restored(restored(true, false)),
@@ -575,7 +580,11 @@ fn undo_reports_the_request_each_file_and_the_conversation() {
         assert!(!result.is_error);
         assert_eq!(
             result.action,
-            Some(DebugAction::SyncSession(synced_conversation()))
+            Some(DebugAction::ConversationUndo {
+                sync: synced_conversation(),
+                restored_files: 3,
+                retry_input: None
+            })
         );
     }
     let result = undo::patch_result(
@@ -594,43 +603,23 @@ fn undo_reports_the_request_each_file_and_the_conversation() {
 
 #[test]
 fn undo_refusals_never_fall_back_to_history_or_parse_backend_text() {
-    let events = Rc::new(RefCell::new(vec![]));
-    let mut history = HistoryFacet {
-        events: events.clone(),
-        removed: 2,
-        ..Default::default()
-    };
     for outcome in [
         DebugUndoOutcome::OpenEnded,
         DebugUndoOutcome::SnapshotPending,
         DebugUndoOutcome::ChangedSince {
             paths: vec!["a.txt".into()],
         },
-        // Deliberately resembles the old English fallback prefixes. Its typed
-        // failure must stay a refusal and cannot silently delete conversation.
         DebugUndoOutcome::RestoreBlocked("No snapshots found, but operation was refused".into()),
         DebugUndoOutcome::CompareFailed("read error".into()),
         DebugUndoOutcome::RestoreFailed("write error".into()),
     ] {
-        events.borrow_mut().clear();
-        let mut facet = UndoFacet {
-            events: events.clone(),
-            outcome,
-        };
-        let result = undo::undo(
-            CommandContexts::empty()
-                .with_debug_undo(&mut facet)
-                .with_debug_history(&mut history)
-                .with_presentation(&mut UndoPresentation),
-            None,
-        );
+        let result = undo::patch_result(outcome, &UndoPresentation);
         assert!(result.action.is_none());
-        assert_eq!(&*events.borrow(), &["undo_files"]);
     }
 }
 
 #[test]
-fn undo_fallback_requires_both_facets_and_keeps_file_warning() {
+fn undo_requires_both_facets_and_defers_without_mutating_history() {
     let events = Rc::new(RefCell::new(vec![]));
     let mut facet = UndoFacet {
         events: events.clone(),
@@ -650,38 +639,13 @@ fn undo_fallback_requires_both_facets_and_keeps_file_warning() {
         removed: 2,
         ..Default::default()
     };
-    let result = undo::undo(
-        CommandContexts::empty()
-            .with_debug_undo(&mut facet)
-            .with_debug_history(&mut history)
-            .with_presentation(&mut UndoPresentation),
-        None,
-    );
-    assert_eq!(
-        result.message.as_deref(),
-        Some(
-            "Removed 2 message(s)\nWorkspace files were NOT reverted — only the conversation was rolled back.\nSnapshot repo unavailable for /workspace: read denied"
-        )
-    );
-    assert_eq!(&*events.borrow(), &["undo_files", "undo_chat"]);
-    // A conversation-only undo always says what happened to the files.
-    for (outcome, files_note) in [
-        (
-            DebugUndoOutcome::NoSnapshots,
-            "Workspace files were NOT reverted — only the conversation was rolled back.",
-        ),
-        (
-            DebugUndoOutcome::NoSession,
-            "Workspace files were NOT reverted — only the conversation was rolled back.",
-        ),
-        (
-            DebugUndoOutcome::NoOwnedSteps,
-            "Workspace files were NOT reverted — only the conversation was rolled back.",
-        ),
-        (DebugUndoOutcome::NoDifference, "No file changes to undo."),
+    for outcome in [
+        DebugUndoOutcome::NoSnapshots,
+        DebugUndoOutcome::NoSession,
+        DebugUndoOutcome::NoOwnedSteps,
+        DebugUndoOutcome::NoDifference,
     ] {
         facet.outcome = outcome;
-        events.borrow_mut().clear();
         let result = undo::undo(
             CommandContexts::empty()
                 .with_debug_undo(&mut facet)
@@ -690,10 +654,14 @@ fn undo_fallback_requires_both_facets_and_keeps_file_warning() {
             None,
         );
         assert_eq!(
-            result.message,
-            Some(format!("Removed 2 message(s)\n{files_note}"))
+            result.action,
+            Some(DebugAction::UndoLatestRequest { force: false })
         );
-        assert_eq!(&*events.borrow(), &["undo_files", "undo_chat"]);
+        assert!(result.message.is_none());
+        assert!(
+            events.borrow().is_empty(),
+            "an old facet cannot bypass asynchronous admission or discard history"
+        );
     }
 }
 
@@ -713,6 +681,7 @@ fn retry_truncates_history_before_emitting_the_exact_original_input() {
         result.action,
         Some(DebugAction::ConversationUndo {
             sync: synced_conversation(),
+            restored_files: 0,
             retry_input: Some(input.clone()),
         })
     );

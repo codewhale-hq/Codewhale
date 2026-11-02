@@ -23,7 +23,7 @@ import {
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   readJsonSafe,
-  readSse,
+  readThreadEvents,
   ThreadStore as CoreThreadStore
 } from "../../bridge-core/src/lib.mjs";
 
@@ -274,13 +274,8 @@ async function runPrompt(chatId, prompt, identity) {
   });
   await sendText(chatId, `Started turn ${turnId || "(unknown)"}`);
 
-  try {
-    await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
-  } finally {
-    await threadStore.patchChat(chatId, {
-      activeTurnId: null,
-      updatedAt: new Date().toISOString()
-    });
+  if (await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq)) {
+    await threadStore.finishObservedTurn(chatId, state.threadId, turnId);
   }
 }
 
@@ -316,13 +311,8 @@ async function reattachActiveTurns() {
       chatId,
       `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
     );
-    try {
-      await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
-    } finally {
-      await threadStore.patchChat(chatId, {
-        activeTurnId: null,
-        updatedAt: new Date().toISOString()
-      });
+    if (await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq)) {
+      await threadStore.finishObservedTurn(chatId, state.threadId, turnId);
     }
   }
 }
@@ -347,13 +337,12 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
       throw new Error(compactRuntimeError(response.status, body));
     }
 
-    for await (const event of readSse(response)) {
-      if (!event.data) continue;
-      const record = JSON.parse(event.data);
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
       await threadStore.patchChat(chatId, { lastSeq: latestSeq });
 
-      if (turnId && record.turn_id && record.turn_id !== turnId) continue;
+      if (!turnId || record.turn_id !== turnId) continue;
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
@@ -392,21 +381,21 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
         } else {
           await sendText(chatId, responseText.trim() || "Turn completed.");
         }
-        return;
+        return true;
       }
 
       if (record.event === "turn.lifecycle") {
         const status = record.payload?.turn?.status || record.payload?.status;
         if (["failed", "canceled", "interrupted"].includes(status)) {
           await sendText(chatId, `Turn ${status}.`);
-          return;
+          return true;
         }
       }
     }
   } catch (error) {
     if (error.name === "AbortError") {
-      await sendText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return;
+      await sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+      return false;
     }
     throw error;
   } finally {

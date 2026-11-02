@@ -5,6 +5,7 @@
 > 2026-10-06 补齐设备令牌意图、逐调用变更、技能详情、持久配置与账号宪章契约。
 > 2026-10-11 补齐工作区信任契约：`workspace_trusted` 与 `POST /v1/workspace/trust`。
 > 2026-10-23 补齐完整 API 入口、兼容执行限制与 ACP MCP 拒绝边界。
+> 2026-11-02 补齐控制帧大小、写入背压、ACP 拒绝恢复与当前 HTTP 监听器边界。
 
 `codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
@@ -14,7 +15,8 @@ API（`/v1/*`）、基于 stdio 的 JSON-RPC 控制传输，以及面向手机�
 
 `codewhale serve --http` / `serve --mobile` 仍作为 `codewhale app-server --http` /
 `--mobile` 的**兼容别名**存在；两者启动的是同一个服务器。新的集成应当以
-`app-server --http` 为目标。裸 `app-server`、`--stdio` 和 `--socket` 是能力较小的兼容接口。
+`app-server --http` 为目标。`--stdio` 和 `--socket` 提供兼容控制接口。
+当前裸 `app-server` 的 HTTP 监听器通过同一个 Runtime owner 提供兼容路由和完整 `/v1/*` 路由。
 
 `codewhale exec` 是另一条一次性的无头 worker 路径（stream-json、fleet worker 子进程、
 CI 原语）。它不属于本 API，但共享同一个运行时、提供商/模型解析、权限配置
@@ -52,9 +54,9 @@ local supervisor / SDK / automation harness
 | `codewhale web [--port 7878]` | 在 `127.0.0.1:7878` 上的 HTTP/SSE + 内嵌客户端 | 一等公民的仅回环浏览器客户端；打开默认浏览器 |
 | `codewhale app-server --http` | 在 `127.0.0.1:7878` 上的 HTTP/SSE | 完整的 `/v1/*` 运行时 API（规范入口） |
 | `codewhale app-server --mobile` | 回环上的 HTTP/SSE + `/mobile` | 运行时 API + 本地移动端控制页 |
-| `codewhale app-server --stdio` | 基于 stdio 的 JSON-RPC 2.0 | 本地 SDK / 控制探针（不监听端口） |
+| `codewhale app-server --stdio` | 基于 stdio 的 JSON-RPC 2.0 | 兼容控制与显式禁用工具的回合；宿主仍可能绑定内部 Runtime 桥接使用的私有回环监听器。 |
 | `codewhale app-server --socket [--socket-path P]` | 基于权限为 `0600` 的 Unix 域套接字（macOS/Linux）或仅限所有者的命名管道（Windows）的 JSON-RPC 2.0 | 桌面守护进程：多客户端、内核对端身份校验、`daemon/attach` 认领握手。Windows 原生应用验收仍待完成。 |
-| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 兼容 `/healthz`、`/thread`、`/app`、`/prompt`。回合请求必须显式带 `allowed_tools: []`；交互执行在回合开始前拒绝。工具、审批、澄清、引导和完整事件日志请用 `app-server --http`。 |
+| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 兼容 `/healthz`、`/thread`、`/app`、`/prompt`，并提供完整 `/v1/*` 路由。兼容回合请求必须显式带 `allowed_tools: []`；这些路由在回合开始前拒绝交互执行。新集成请用 `app-server --http`。 |
 | `codewhale serve --http` / `--mobile` | 与 `app-server --http`/`--mobile` 相同的服务器 | 兼容别名 |
 
 `app-server --http` 与 `--mobile` 启动的是历史上经由 `serve --http` 访问的同一个
@@ -338,6 +340,11 @@ printf '%s\n' \
   | codewhale app-server --stdio
 ```
 
+本地控制与 ACP 帧的编码正文最多为 8 MiB，不计换行分隔符。序列化在达到上限时停止，
+不会先写入超限帧。正文、换行与 flush 共用 30 秒背压期限；owner 附着、请求转发和前端
+就绪通知保留更紧的 5 秒期限。部分写入、flush 失败或超时会结束当前流，不能再追加另一条
+响应或自动重放请求。兼容 stdio 响应、事件与中继 stdout 也使用该写入期限。
+
 `capabilities` 返回已声明的方法族（`thread/*`、`app/*`、
 `prompt/*`）以及完整的方法清单；`thread/capabilities`、
 `app/capabilities` 与 `prompt/capabilities` 则按族缩小范围。方法集合由
@@ -498,6 +505,10 @@ owner 存储中的原始操作；响应丢失或来源历史后来增长不会�
 它不会从可能已变化的来源重新构造原始意图。尚未准备好的目标保持待决；
 变化或无法验证的目标拒绝完成。使用同一个键重复恢复会观察到同一个已提交结果。
 
+新的历史操作预留会保存原始文档和检查点的观察值。尚未提交的恢复必须匹配完整的
+预备文档及该操作自己的发布代次，且原始检查点保持不变。旧预留没有该原始观察值时，
+仍保持待决或拒绝恢复；读取当前文件不能补造过去的写入依据。
+
 选定工作区来自已确认的 owner 或明确获准的请求。历史和旧回执不能提供权限、
 凭据、端点或另一个 owner。绑定存储缺失、变化、繁忙或不兼容时明确失败。
 规范目标缺失不会启动一个空的替代会话。
@@ -639,6 +650,12 @@ owner 关闭或无法产生终态的存储故障会明确报错，不会重新�
 无法确认取消时不伪造成功。`stopReason` 为 `end_turn`、`cancelled` 或类型化的
 `max_turn_requests`；Core 失败仍是错误。单次提示词最多50个模型步骤（更小的配置
 上限仍有效），并复用 Core 的有界最终报告响应；此 profile 不派发自主目标续跑。
+
+超大或非 UTF-8 的 ACP 输入帧产生一条有界 `-32700` 错误。超大帧必须丢弃到真正的换行后，
+才能接纳下一条请求；取消不会丢失这个丢弃状态。独立 ACP 与正常 Runtime owner 的认证访客
+都遵守该规则。其他输入 I/O 错误、owner 响应校验失败与兼容控制帧错误会结束流。
+超大 ACP 响应变为有界 `-32603` 错误；原 ID 本身也使错误超限时返回 null ID。
+超大通知在写入前拒绝，并走现有操作清理，不会把截断内容报告为成功。
 
 没有进程持有 Runtime 存储时，ACP 声明自己独占的规范 Runtime owner。已有非 ACP
 的 Runtime 宿主持有该存储时（桌面应用、`codewhale app-server --http` 或
@@ -903,6 +920,19 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 元数据不存储最后一条消息，而为了合成一条而读取每个转录
 会让列表视图变成无界读取。完整转录
 预览位于 TUI 会话选择器中，它只读取所选的那一个会话。
+
+元数据检查最多读取每份常规会话文件的16 MiB。目录和生命周期路由超限时返回
+`413`，错误代码为 `session_metadata_too_large`，来源保持不变。存在无法读取的记录时，
+目录返回错误而不是不完整的成功列表；终端选择器保留可读行并报告检查警告。
+此限制针对元数据检查，不代表完整转录加载的上限。
+
+保存文档或检查点的原生写入依据在准备快照或排队之前捕获。归档、修剪、替换或消费
+检查点之前，现有会话写入接纳范围内的两份物理记录都必须仍匹配；变化时拒绝并保留
+恢复记录。可选序列化元数据 `publication_id` 只标识发布代次，不授予写入权限。
+来源未知的检查点需要显式且持有写入接纳的恢复、挂接或提升，自动完成才可消费它。
+Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立。
+可选用量存储损坏时，不完整覆盖仍然可见，合法的恢复数据可在不带发布回执的情况下
+读取。已确认删除或原始记录变化时仍拒绝；这种读取结果不能授权保存。
 
 `PATCH /v1/sessions/{id}` 重命名并/或归档一个已保存会话，并返回一个
 形态与线程 patch 回执相同的生命周期回执：

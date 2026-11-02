@@ -18,9 +18,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::{AsyncBufRead, AsyncWrite};
 #[cfg(test)]
-use tokio::io::BufReader;
-use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWriteExt, BufReader};
 mod runtime;
 const ACP_PROTOCOL_VERSION: u64 = 1;
 const MAX_ACP_SESSIONS: usize = 64;
@@ -45,7 +45,9 @@ pub async fn run_acp_server(
             port: 0,
             config_path,
             config_profile,
-            control_frontend: Some(codewhale_app_server::RuntimeControlFrontend::Acp { model }),
+            control_frontend: Some(
+                codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model },
+            ),
             ..Default::default()
         },
     )
@@ -201,7 +203,16 @@ impl AcpServer {
         reader: &mut codewhale_app_server::stdio::BoundedLines<R>,
         writer: &mut W,
     ) -> Result<()> {
-        while let Some(line) = reader.next_line().await? {
+        loop {
+            let line = match reader.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                    write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -246,6 +257,9 @@ impl AcpServer {
                         }
                     }
                     Err(error) => {
+                        if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                            return Err(error);
+                        }
                         write_jsonrpc_error(
                             writer,
                             response_id,
@@ -272,6 +286,9 @@ impl AcpServer {
                         (Ok(()), Some(id)) => write_jsonrpc_result(writer, id, result).await?,
                         (Ok(()), None) => {}
                         (Err(error), id) => {
+                            if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                                return Err(error);
+                            }
                             write_jsonrpc_error(writer, id, -32603, error.to_string()).await?
                         }
                     }
@@ -1243,18 +1260,30 @@ where
     .await
 }
 
-async fn write_json_line<W>(writer: &mut W, value: Value) -> Result<()>
+async fn write_json_line<W>(writer: &mut W, mut value: Value) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        writer.write_all(value.to_string().as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await
-    })
-    .await
-    .map_err(|_| anyhow!("ACP transport write did not settle within 30 seconds"))??;
-    Ok(())
+    let frame = match codewhale_app_server::stdio::serialize_control_frame(&value) {
+        Ok(frame) => frame,
+        Err(error)
+            if codewhale_app_server::stdio::is_frame_refusal(&error)
+                && value.get("method").is_none() =>
+        {
+            let id = value.get_mut("id").map(Value::take).unwrap_or(Value::Null);
+            let mut failure = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"ACP response exceeds the 8 MiB transport limit; inspect canonical state without replay"}});
+            match codewhale_app_server::stdio::serialize_control_frame(&failure) {
+                Ok(frame) => frame,
+                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                    failure["id"] = Value::Null;
+                    codewhale_app_server::stdio::serialize_control_frame(&failure)?
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
+    codewhale_app_server::stdio::write_control_line(writer, &frame).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1361,6 +1390,7 @@ mod tests {
             std::fs::create_dir(&workspace)?;
             let runtime_dir = dir.path().join("runtime");
             let manager_config = RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
                 data_dir: runtime_dir.clone(),
                 task_data_dir: runtime_dir,
                 sessions_dir: None,
@@ -1492,10 +1522,9 @@ mod tests {
         )?;
         let manager = rig.server.runtime.clone();
         let capture = manager.clone();
-        let (binding, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
-            capture.capture_control_owner()
-        })
-        .await?;
+        let (binding, generation) =
+            codewhale_runtime::runtime_control::owner_work(move || capture.capture_control_owner())
+                .await?;
         #[cfg(unix)]
         let socket_directory = rig._dir.path().canonicalize()?.join("endpoint");
         #[cfg(unix)]
@@ -1512,7 +1541,7 @@ mod tests {
         let principal =
             codewhale_config::private_directory::PrivateDirectory::current_user_id().to_string();
         #[cfg(windows)]
-        let principal = codewhale_app_server::daemon_socket::owner_work(|| {
+        let principal = codewhale_runtime::runtime_control::owner_work(|| {
             codewhale_config::windows_identity::CurrentWindowsUser::open()?.sid_string()
         })
         .await?;
@@ -1681,10 +1710,9 @@ mod tests {
             assert_eq!(manager.get_thread_detail(&rows[0].id).await?.turns.len(), 2);
         }
         let capture = manager.clone();
-        let (after, generation) = codewhale_app_server::daemon_socket::owner_work(move || {
-            capture.capture_control_owner()
-        })
-        .await?;
+        let (after, generation) =
+            codewhale_runtime::runtime_control::owner_work(move || capture.capture_control_owner())
+                .await?;
         assert_eq!(after.data_dir, receipt.data_dir);
         assert_eq!(
             generation, receipt.lease_generation,

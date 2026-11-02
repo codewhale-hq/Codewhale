@@ -940,7 +940,7 @@ pub(crate) async fn build_preview_request_inputs(
 
     match planned {
         Ok(planned) => {
-            let mut prompt_context =
+            let prompt_context =
                 codewhale_engine::core::engine::NextTurnPromptContext::for_planned_turn(
                     planned.route.identity.provider,
                     planned.route.model.clone(),
@@ -954,20 +954,6 @@ pub(crate) async fn build_preview_request_inputs(
                     app.translation_enabled,
                     app.verbosity.clone(),
                 );
-            prompt_context.context_window = Some(planned.route.context_window);
-            let effort = planned.effective_reasoning_effort.as_deref();
-            prompt_context.planned_output_tokens = Some(
-                codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
-                    planned.route.identity.provider,
-                    &planned.route.model,
-                    codewhale_engine::route_budget::known_route_limits(
-                        planned.route.candidate.limits(),
-                    ),
-                    Some(planned.route.context_window.tokens),
-                    None,
-                    effort,
-                ),
-            );
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
@@ -1014,6 +1000,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         trust_mode: app.trust_mode,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
+        mcp_auth_context: Default::default(),
         mcp_oauth_callback_port: config.mcp_oauth_callback_port,
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
@@ -1078,9 +1065,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .snapshots_config()
             .max_workspace_gb
             .saturating_mul(1024 * 1024 * 1024),
-        // The TUI records no snapshot receipts; its post-turn snapshot stays
-        // off the input path (#234).
-        record_restore_points: false,
+        record_restore_points: true,
         lsp_config: config.lsp.clone().map(codewhale_lsp::LspConfig::from),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
@@ -1314,6 +1299,15 @@ pub(crate) fn build_session_snapshot(
         app.system_prompt.as_ref(),
         Some(app.mode.as_setting()),
     );
+    session.write_receipt = if app.current_session_id.is_none() {
+        Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        app.session_write_receipt.clone()
+    };
     let computed_title = session.metadata.title.clone();
     if let Some(cached) = app
         .current_session_metadata
@@ -1327,68 +1321,32 @@ pub(crate) fn build_session_snapshot(
             .clone_from(&cached.parent_session_id);
         session.metadata.forked_from_message_count = cached.forked_from_message_count;
         session.metadata.archived = cached.archived;
+        session.metadata.title.clone_from(&cached.title);
+        session.metadata.title_is_custom = cached.title_is_custom;
         session
             .metadata
             .runtime_store
             .clone_from(&cached.runtime_store);
     }
-    // The cache above is a hint; disk is the authority for lifecycle state.
-    // Re-reading here is what makes "an archive or rename cannot be reverted
-    // by autosave" true regardless of which surface applied it or when
-    // (#2934 / #4397). One bounded metadata-prefix read, not a transcript scan.
-    let merged = manager.merge_persisted_lifecycle(&mut session.metadata);
     if let Some(binding) = app
         .runtime_services
         .task_manager
         .as_ref()
         .and_then(|tasks| tasks.session_store_binding())
     {
-        if session
-            .metadata
-            .runtime_store
-            .as_ref()
-            .is_some_and(|saved| {
-                saved != &binding && !saved.is_missing_session_store().unwrap_or(false)
-            })
-        {
-            return Err(
-                "session snapshot refused to replace its saved Runtime store ownership".into(),
-            );
-        }
         session.metadata.runtime_store = Some(binding);
     }
-    // Title resolution, in priority order:
-    // 1. Disk, when the session already exists (#2934/#4397: a rename applied
-    //    through the session manager is persisted and must survive autosave).
-    // 2. The in-memory cache, when there is no disk record for the session
-    //    yet. (The session picker normally persists renames to disk first via
-    //    `rename_selected`; this branch covers sessions that have never been
-    //    saved, where the cache is the only title source.)
-    // 3. The title computed from the conversation (first user message).
-    //    The cache is NOT a candidate on its own: it is only refreshed at the
-    //    end of this function, so a snapshot taken before any user message
-    //    pins it to the `DEFAULT_SESSION_TITLE` placeholder, and restoring it
-    //    would prevent every later title update (the bug this block fixes).
-    if !merged
-        && let Some(cached) = app.current_session_metadata.as_ref()
-        && cached.id == session.metadata.id
-    {
-        session.metadata.title.clone_from(&cached.title);
-    }
-    if session.metadata.title == codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
+    if !session.metadata.title_is_custom
+        && session.metadata.title == codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
         && computed_title != codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
     {
-        // The placeholder survived from an earlier snapshot; the conversation
-        // now has a real first user message, so let the computed title win.
-        // Known edge: a session deliberately renamed to the literal
-        // placeholder title is treated the same way and yields to the
-        // computed title on the next snapshot.
         session.metadata.title = computed_title;
     }
     if let Some(cached) = app.current_session_metadata.as_mut()
         && cached.id == session.metadata.id
     {
         cached.title.clone_from(&session.metadata.title);
+        cached.title_is_custom = session.metadata.title_is_custom;
         cached.archived = session.metadata.archived;
     }
     session
@@ -1613,6 +1571,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // allocation. `Off` leaves the render byte-identical to before.
     app.view_stack
         .set_focus_texture(app.focus_texture, app.ui_theme);
+    app.view_stack.set_locale(app.ui_locale);
     app.sidebar_hover = crate::tui::app::SidebarHoverState::default();
     app.viewport.last_prompt_area = None;
     app.viewport.interaction_targets.clear();

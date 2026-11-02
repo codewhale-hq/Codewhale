@@ -388,7 +388,7 @@ fn projected_claim(claim: &WriteScopeClaim, root: &Path) -> WriteScopeClaim {
 }
 
 /// Durable, bounded coordination state owned by `SubAgentManager`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CoordinationLedger {
     #[serde(default = "coordination_schema_version")]
     pub schema_version: u32,

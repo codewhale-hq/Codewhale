@@ -84,9 +84,8 @@ pub struct DebugUndoRestored {
     /// First line of the undone request's prompt, when its restore point
     /// recorded one.
     pub request: Option<String>,
-    /// Whether the request and its reply were also removed from the
-    /// conversation. `false` when the conversation no longer held it.
-    pub conversation_removed: bool,
+    /// Whether the host must rewind the matching request and its reply.
+    pub rewind_conversation: bool,
     /// The request had no recorded end and `/undo force` ran it, so edits
     /// made to these files since it started went back too.
     pub forced: bool,
@@ -125,7 +124,7 @@ pub trait CommandDebugUndoContext {
     /// the conversation when it is still its last one. Preserves snapshot
     /// ownership, regular-file checks, backup and preflight, and asks for no
     /// trust: it only puts back, inside the workspace, what that request
-    /// changed. `force` accepts a request with no recorded end. Never falls
+    /// changed. `force` never waives owned identity or a complete write record. Never falls
     /// back to chat truncation: the portable handler decides that from the
     /// typed outcome.
     fn undo_files(&mut self, force: bool) -> DebugUndoOutcome;
