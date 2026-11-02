@@ -3113,6 +3113,10 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         },
         pending_request: None,
         status: AgentWorkerStatus::Completed,
+        prepared_generation: None,
+        prepared_previous_attempt_unsettled: false,
+        launch_admission_version: 1,
+        recovery_interrupted: false,
         created_at_ms: 1,
         updated_at_ms: 2,
         started_at_ms: Some(1),
@@ -3379,9 +3383,8 @@ async fn agent_run_cancel_refuses_a_run_owned_by_a_session_it_does_not_host() ->
     // A child parked on a question in another terminal session: in flight on
     // disk, but no engine in this runtime owns it.
     let mut record = {
-        let manager =
-            codewhale_engine::tools::subagent::new_shared_subagent_manager(workspace.clone(), 1);
-        let mut guard = manager.write().await;
+        let mut guard =
+            codewhale_engine::tools::subagent::SubAgentManager::new(workspace.clone(), 1);
         let id = guard.insert_test_running_agent("elsewhere", &workspace);
         guard.assign_test_session_owner(&id, "terminal-session");
         guard

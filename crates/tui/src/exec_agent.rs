@@ -665,7 +665,7 @@ pub(crate) async fn run_exec_agent(
             .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config, None);
+    let engine_handle = spawn_engine(engine_config, &execution_config, None).await;
     // A restricted posture that resolves to no enforcing sandbox must reach
     // the person running exec, not only the model's posture line: policy-only
     // is accepted (read-only already fails closed in the shell tool), but it

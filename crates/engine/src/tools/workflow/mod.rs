@@ -3909,6 +3909,7 @@ struct SubAgentWorkflowDriver {
     owner_session_id: String,
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
+    owner_runtime: Option<tokio::runtime::Handle>,
     parent_cancel_token: CancellationToken,
     state: Arc<WorkflowWorkspaceState>,
     completion_tx: mpsc::Sender<SubAgentCompletion>,
@@ -4007,6 +4008,7 @@ impl SubAgentWorkflowDriver {
             owner_session_id,
             manager,
             runtime,
+            owner_runtime: tokio::runtime::Handle::try_current().ok(),
             parent_cancel_token,
             state,
             completion_tx,
@@ -4046,7 +4048,13 @@ impl SubAgentWorkflowDriver {
         if let Ok(mut permits) = self.spawn_permits.lock() {
             permits.clear();
         }
-        cancel_child_agents(self.manager.clone(), ids);
+        cancel_child_agents(
+            self.manager.clone(),
+            self.owner_session_id.clone(),
+            ids,
+            self.owner_runtime.clone(),
+            self.runtime.event_tx.clone(),
+        );
         if let Ok(mut state) = self.completion_state.lock() {
             for (_, waiter) in state.waiters.drain() {
                 let _ = waiter.send(TaskCompletion::Cancelled);
@@ -4892,7 +4900,22 @@ impl SubAgentWorkflowDriver {
             };
         let task_id = result.result.agent_id.clone();
         if let Err(err) = self.ensure_admission_open() {
-            let _ = self.manager.write().await.cancel_agent(&task_id);
+            let manager = self.manager.clone();
+            let session = self.owner_session_id.clone();
+            let target = task_id.clone();
+            let cancelled = codewhale_runtime::runtime_control::owner_work(move || {
+                manager
+                    .blocking_write()
+                    .cancel_agent_for_session(&session, &target)
+                    .map(|_| ())
+            })
+            .await;
+            let err = match cancelled {
+                Ok(()) => err,
+                Err(error) => DriverError::Rejected(format!(
+                    "{err}; cancellation of child {task_id} is uncertain: {error}"
+                )),
+            };
             if let Some(receipt) = &fleet_receipt {
                 self.record_orphaned_fleet_receipt(receipt, &err.to_string());
             }
@@ -5700,27 +5723,56 @@ fn provider_usage_was_reported(
         .any(Option::is_some)
 }
 
-fn cancel_child_agents(manager: SharedSubAgentManager, ids: Vec<String>) {
+fn cancel_child_agents(
+    manager: SharedSubAgentManager,
+    session: String,
+    ids: Vec<String>,
+    owner_runtime: Option<tokio::runtime::Handle>,
+    event_tx: Option<mpsc::Sender<Event>>,
+) {
     if ids.is_empty() {
         return;
     }
-    if let Ok(mut manager_guard) = manager.try_write() {
-        for id in ids {
-            let _ = manager_guard.cancel_agent(&id);
-        }
-        return;
-    }
-    if tokio::runtime::Handle::try_current().is_ok() {
+    if let Some(owner_runtime) =
+        owner_runtime.or_else(|| tokio::runtime::Handle::try_current().ok())
+    {
+        let _runtime = owner_runtime.enter();
         spawn_supervised(
             "workflow-cancel-children",
             std::panic::Location::caller(),
             async move {
-                let mut manager_guard = manager.write().await;
-                for id in ids {
-                    let _ = manager_guard.cancel_agent(&id);
+                let cancelled = codewhale_runtime::runtime_control::owner_work(move || {
+                    let mut manager = manager.blocking_write();
+                    let mut failure = None;
+                    for id in ids {
+                        if let Err(error) = manager.cancel_agent_for_session(&session, &id) {
+                            failure.get_or_insert(error);
+                        }
+                    }
+                    failure.map_or(Ok(()), Err)
+                })
+                .await;
+                if let Err(error) = cancelled {
+                    let message = format!("Workflow child cancellation is uncertain: {error}");
+                    tracing::error!(%message);
+                    if let Some(event_tx) = event_tx {
+                        let _ = event_tx
+                            .send(Event::error(
+                                codewhale_error_taxonomy::ErrorEnvelope::transient(message),
+                            ))
+                            .await;
+                    }
                 }
             },
         );
+    } else {
+        let message = "Workflow child cancellation is uncertain: no runtime is available";
+        tracing::error!(%message);
+        if let Some(event_tx) = event_tx {
+            let _ = event_tx.try_send(Event::error(
+                codewhale_error_taxonomy::ErrorEnvelope::transient(message),
+            ));
+        }
     }
 }
 

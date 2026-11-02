@@ -15,6 +15,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> anyhow::Result<T> + Send + 'static,
 {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = crate::test_support::env_scope_ticket();
     static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
         std::sync::OnceLock::new();
     let permit = SLOTS
@@ -23,6 +25,8 @@ where
         .acquire_owned()
         .await?;
     tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(env_ticket);
         let _permit = permit;
         work()
     })

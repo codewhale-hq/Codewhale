@@ -2222,7 +2222,12 @@ pub async fn run_http_server(
         existing_binding.as_ref(),
     )?;
     let sessions_dir = runtime_threads.sessions_dir().to_path_buf();
-    let sub_agent_manager = runtime_api_sub_agent_manager(&workspace, options.workers)?;
+    let sub_agent_manager = codewhale_runtime::runtime_control::owner_work({
+        let workspace = workspace.clone();
+        let workers = options.workers;
+        move || runtime_api_sub_agent_manager(&workspace, workers)
+    })
+    .await?;
     runtime_threads
         .attach_subagent_manager(sub_agent_manager.clone())
         .await?;
@@ -4496,7 +4501,13 @@ async fn start_fleet_run(
         ));
     }
     let run_id = FleetRunId::from(run_id);
-    let report = manager.activate_run(&run_id).map_err(|error| {
+    let activation_manager = manager.clone();
+    let activation_run = run_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        activation_manager.activate_run(&activation_run)
+    })
+    .await
+    .map_err(|error| {
         let message = format!("Failed to start Fleet run '{}': {error}", run_id.0);
         if message.contains("already terminal") {
             ApiError::conflict(message)
@@ -4516,12 +4527,12 @@ async fn start_fleet_run(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(error) = manager
             .run_to_completion(
                 &execution_run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),
@@ -4848,7 +4859,13 @@ async fn restart_fleet_worker(
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let manager = open_fleet_manager(&state)?;
-    let report = manager.restart_worker(&worker_id).map_err(|err| {
+    let restart_manager = manager.clone();
+    let restart_worker = worker_id.clone();
+    let report = codewhale_runtime::runtime_control::owner_work(move || {
+        restart_manager.restart_worker(&restart_worker)
+    })
+    .await
+    .map_err(|err| {
         ApiError::bad_request(format!(
             "Failed to restart Fleet worker '{worker_id}': {err}"
         ))
@@ -4862,12 +4879,12 @@ async fn restart_fleet_worker(
     let workspace_scope = state.workspace_scope.clone();
     tokio::spawn(async move {
         let _workspace_scope = workspace_scope;
-        let mut executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
+        let executor = FleetExecutor::new(&workspace).with_sessions_dir(sessions_dir);
         if let Err(err) = manager
             .run_to_completion(
                 &run_id,
                 max_workers,
-                &mut executor,
+                executor,
                 &codewhale_binary,
                 None,
                 Duration::from_millis(250),

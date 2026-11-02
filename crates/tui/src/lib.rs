@@ -3793,17 +3793,6 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
 
-    let max_subagents = config.max_subagents_for_provider(&identity);
-    let coordination_manager =
-        codewhale_engine::tools::subagent::new_shared_subagent_manager_with_timeout(
-            workspace.to_path_buf(),
-            max_subagents,
-            config
-                .max_admitted_subagents_for_provider(&identity)
-                .max(max_subagents),
-            Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
-            config.launch_concurrency_for_provider(&identity),
-        );
     // Probe the durable ledger *before* opening the manager: FleetManager::open
     // creates `.codewhale/fleet.jsonl` as a side effect, so a later probe would
     // always find a ledger and the CLI would report availability differently
@@ -3837,12 +3826,30 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
 
     // The configured route is the operator: fleet workers without a
     // task/profile model pin inherit the session's active model.
-    let manager = FleetManager::open(workspace)?
-        .with_exec_config(fleet_config.exec.clone())
-        .with_fleet_config(fleet_config)
-        .with_sub_agent_manager(coordination_manager)
-        .with_session_model(config.default_model())
-        .with_route_config(config.clone());
+    let owned_workspace = workspace.to_path_buf();
+    let owned_config = config.clone();
+    let manager = codewhale_runtime::runtime_control::owner_work(move || {
+        let config = &owned_config;
+        let max_subagents = config.max_subagents_for_provider(&identity);
+        let coordination_manager =
+            codewhale_engine::tools::subagent::new_shared_subagent_manager_with_timeout(
+                owned_workspace.clone(),
+                max_subagents,
+                config
+                    .max_admitted_subagents_for_provider(&identity)
+                    .max(max_subagents),
+                Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
+                config.launch_concurrency_for_provider(&identity),
+            );
+        let manager = FleetManager::open(&owned_workspace)?
+            .with_exec_config(fleet_config.exec.clone())
+            .with_fleet_config(fleet_config)
+            .with_sub_agent_manager(coordination_manager)
+            .with_session_model(config.default_model())
+            .with_route_config(config.clone());
+        Ok(manager)
+    })
+    .await?;
     match args.command {
         FleetCommand::Init => {
             println!("Fleet ledger: {}", manager.ledger_path().display());
@@ -3853,7 +3860,12 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             let max_workers = args.max_workers.clamp(1, 128);
             let manager =
                 manager.with_stale_after(Duration::from_secs(args.stale_after_seconds.max(1)));
-            let report = manager.create_run_from_task_spec_path(&args.task_spec, max_workers)?;
+            let launch_manager = manager.clone();
+            let task_spec = args.task_spec.clone();
+            let report = codewhale_runtime::runtime_control::owner_work(move || {
+                launch_manager.create_run_from_task_spec_path(&task_spec, max_workers)
+            })
+            .await?;
             println!(
                 "Fleet run: {} tasks={} leased={} queued={}",
                 report.run_id.0, report.task_count, report.leased, report.queued
@@ -3872,19 +3884,20 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             println!(
                 "manager loop running; use `codewhale fleet status`, `inspect`, `interrupt`, or `stop --all` from another terminal."
             );
-            let mut executor = FleetExecutor::new(workspace)
+            let executor = FleetExecutor::new(workspace)
                 .with_sessions_dir(session_manager::default_sessions_dir()?);
             let codewhale_binary = fleet::executor::configured_codewhale_binary();
             let status = manager
                 .run_to_completion(
                     &report.run_id,
                     max_workers,
-                    &mut executor,
+                    executor,
                     &codewhale_binary,
                     None,
                     Duration::from_secs(2),
                 )
-                .await?;
+                .await?
+                .0;
             print_status(&status);
             Ok(())
         }
@@ -3928,25 +3941,30 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             ))
         }
         FleetCommand::Restart { worker_id } => {
-            let report = manager.restart_worker(&worker_id)?;
+            let restart_manager = manager.clone();
+            let report = codewhale_runtime::runtime_control::owner_work(move || {
+                restart_manager.restart_worker(&worker_id)
+            })
+            .await?;
             print_inspection(&report.inspection);
             println!(
                 "manager loop running for restarted run {}; use `codewhale fleet status`, `inspect`, `interrupt`, or `stop --all` from another terminal.",
                 report.run_id.0
             );
-            let mut executor = FleetExecutor::new(workspace)
+            let executor = FleetExecutor::new(workspace)
                 .with_sessions_dir(session_manager::default_sessions_dir()?);
             let codewhale_binary = fleet::executor::configured_codewhale_binary();
             let status = manager
                 .run_to_completion(
                     &report.run_id,
                     report.max_workers,
-                    &mut executor,
+                    executor,
                     &codewhale_binary,
                     None,
                     Duration::from_secs(2),
                 )
-                .await?;
+                .await?
+                .0;
             print_status(&status);
             Ok(())
         }
@@ -3955,14 +3973,19 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             stale_after_seconds,
         } => {
             let manager = manager.with_stale_after(Duration::from_secs(stale_after_seconds.max(1)));
-            emit_fleet_receipt(&fleet_control::execute_fleet_control_with(
-                ControlSurface::Cli,
-                workspace,
-                fleet_context,
-                &manager,
-                ControlOperation::FleetResume,
-                Some(&run_id),
-            ))
+            let owned_workspace = workspace.to_path_buf();
+            let receipt = codewhale_runtime::runtime_control::owner_work(move || {
+                Ok(fleet_control::execute_fleet_control_with(
+                    ControlSurface::Cli,
+                    &owned_workspace,
+                    fleet_context,
+                    &manager,
+                    ControlOperation::FleetResume,
+                    Some(&run_id),
+                ))
+            })
+            .await?;
+            emit_fleet_receipt(&receipt)
         }
         FleetCommand::Stop { all } => {
             if !all {
@@ -14933,16 +14956,25 @@ async fn build_direct_workflow_tool(
         context = context.with_sandbox_backend(Arc::from(backend));
     }
 
-    let max_subagents = config.max_subagents_for_provider(&identity);
-    let manager = new_shared_subagent_manager_with_timeout(
-        workspace.to_path_buf(),
-        max_subagents,
-        config
-            .max_admitted_subagents_for_provider(&identity)
-            .max(max_subagents),
-        Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
-        config.launch_concurrency_for_provider(&identity),
-    );
+    let owned_workspace = workspace.to_path_buf();
+    let owned_config = config.clone();
+    let owned_identity = identity.clone();
+    let manager = codewhale_runtime::runtime_control::owner_work(move || {
+        let config = &owned_config;
+        let identity = owned_identity;
+        let max_subagents = config.max_subagents_for_provider(&identity);
+        let manager = new_shared_subagent_manager_with_timeout(
+            owned_workspace,
+            max_subagents,
+            config
+                .max_admitted_subagents_for_provider(&identity)
+                .max(max_subagents),
+            Duration::from_secs(config.subagent_heartbeat_timeout_secs_for_provider(&identity)),
+            config.launch_concurrency_for_provider(&identity),
+        );
+        Ok(manager)
+    })
+    .await?;
     let roster = Arc::new(codewhale_engine::fleet::identity::load_effective_roster(
         &config.fleet_config(),
         workspace,

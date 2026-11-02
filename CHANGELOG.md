@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Worker coordination serializes durable admissions across processes, preserves foreign workers and winning completion receipts, and fences stale checkpoints. Fleet restart reservations retain uncertain prior processes until exact teardown is confirmed; final output, usage and the receipt publish together without duplicate accounting on retry. Retained transcripts follow committed ownership.
+
 - JSONPath projections bound path length, traversal steps and intermediate matches before cloning results. Direct fetches share the same parser and enforce one aggregate serialized-field budget; oversized selections refuse with narrower-selection guidance.
 
 - Long tool output and diffs use bounded display windows and a byte-limited row cache. Retained details load verified byte ranges and label what search and copy include; explicit source copy keeps stored text with control-sequence cleanup. Oversized Unicode is shown safely without changing question answers; long answers retain their exact bytes in the existing owned output artifact before bounded model-context projection. New pager notices are translated across all 15 complete language packs.
