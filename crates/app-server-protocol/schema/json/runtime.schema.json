@@ -1,0 +1,500 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "RuntimeImageInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mime": {
+          "type": "string"
+        },
+        "dataBase64": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mime",
+        "dataBase64"
+      ],
+      "description": "Inline bytes only: neither host paths nor remote URLs confer attachment authority."
+    },
+    "DynamicToolSpec": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional namespace that groups related tools (e.g. `\"tau_bench\"`).\nWhen present, the runtime may expose the tool as\n`<namespace>::<name>` to the model."
+        },
+        "name": {
+          "type": "string",
+          "description": "Short tool name. Combined with `namespace` it forms a unique tool id."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description exposed to the model."
+        },
+        "input_schema": {
+          "description": "JSON Schema describing the tool's input parameters."
+        },
+        "defer_loading": {
+          "type": "boolean",
+          "description": "If true, the runtime may defer schema validation / tool loading until\nthe model actually calls the tool.\n\nDefaults to `false` so that older clients omitting this field still\nbehave the same way.",
+          "default": false
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema"
+      ],
+      "description": "Specification for a dynamic external tool registered by a runtime client.\n\nExample JSON from the spec:\n\n```json\n{\n  \"namespace\": \"tau_bench\",\n  \"name\": \"get_reservation\",\n  \"description\": \"Look up an airline reservation.\",\n  \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"reservation_id\": { \"type\": \"string\" }\n    },\n    \"required\": [\"reservation_id\"],\n    \"additionalProperties\": false\n  }\n}\n```"
+    },
+    "DynamicToolItemStatus": {
+      "type": "string",
+      "enum": [
+        "in_progress",
+        "completed",
+        "failed"
+      ],
+      "description": "Lifecycle status of a dynamic tool item shown in thread detail and event\npayloads."
+    },
+    "DynamicToolCallResult": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether the client-side tool execution succeeded."
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DynamicToolCallContent"
+          },
+          "description": "Content fragments returned by the tool.\n\nDefaults to an empty vector when omitted so clients can send a minimal\n`{ \"success\": false }` payload.",
+          "default": []
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "description": "Result submitted by a runtime client after executing a dynamic tool."
+    },
+    "DynamicToolCallContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "input_text"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "image_url": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "input_image"
+            }
+          },
+          "required": [
+            "type",
+            "image_url"
+          ]
+        }
+      ],
+      "description": "A single content fragment inside a [`DynamicToolCallResult`]."
+    },
+    "TurnEnvironmentParams": {
+      "type": "object",
+      "properties": {
+        "environment_id": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environment_id",
+        "cwd"
+      ],
+      "description": "Environment target selected for a turn's shell/filesystem work.\n\nExample JSON:\n\n```json\n{\n  \"environment_id\": \"local\",\n  \"cwd\": \"/workspace\"\n}\n```"
+    },
+    "RuntimeEventEnvelope": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 1
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "event": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "payload": true
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "event",
+        "kind",
+        "thread_id",
+        "turn_id",
+        "item_id",
+        "timestamp",
+        "payload"
+      ],
+      "additionalProperties": true
+    },
+    "RuntimeCapabilities": {
+      "type": "object",
+      "properties": {
+        "client_token_intents": {
+          "type": "boolean",
+          "description": "Device client tokens have immutable watch/drive intent. Watch cannot\nmutate Runtime state, acquire control, or forward display input.",
+          "default": false
+        },
+        "account_session": {
+          "type": "boolean",
+          "default": false
+        },
+        "account_model_owner": {
+          "type": "boolean",
+          "default": false
+        },
+        "session_provider_keys": {
+          "type": "boolean",
+          "default": false
+        },
+        "threads": {
+          "type": "boolean"
+        },
+        "thread_create_idempotency": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_idle_precondition": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_shell_consent": {
+          "type": "boolean",
+          "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
+          "default": false
+        },
+        "turns": {
+          "type": "boolean"
+        },
+        "turn_operation_idempotency": {
+          "type": "boolean",
+          "description": "`POST /v1/threads/{id}/turns` accepts a durable, thread-scoped\n`operation_key` and returns the original turn for exact retries.",
+          "default": false
+        },
+        "turn_operation_lookup": {
+          "type": "boolean",
+          "description": "Read-only exact accepted-turn lookup by thread and operation key.",
+          "default": false
+        },
+        "structured_review_turns": {
+          "type": "boolean",
+          "default": false
+        },
+        "structured_review_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
+        "automation_mutation_preconditions": {
+          "type": "boolean",
+          "description": "Automation patch/run/pause/resume honor `expected_revision` (409\n`revision_conflict` carrying `current_revision`); create/patch/run/pause/\nresume honor a bounded, persisted `Idempotency-Key`. Delete honors\nneither.",
+          "default": false
+        },
+        "turn_image_inputs": {
+          "type": "boolean",
+          "description": "Bounded inline image inputs, persisted and replayed with their turn.",
+          "default": false
+        },
+        "turn_output_token_limit": {
+          "type": "boolean",
+          "description": "Per-turn maxOutputTokens is validated and intersected with the route ceiling.",
+          "default": false
+        },
+        "profile_constitution": {
+          "type": "boolean",
+          "description": "Account profile snapshots and Engine-owned constitution preview.",
+          "default": false
+        },
+        "turn_steer": {
+          "type": "boolean"
+        },
+        "turn_interrupt": {
+          "type": "boolean"
+        },
+        "event_replay": {
+          "type": "boolean"
+        },
+        "external_tools": {
+          "type": "boolean"
+        },
+        "environments": {
+          "type": "boolean"
+        },
+        "worker_runtime": {
+          "type": "boolean"
+        },
+        "fleet_run_create": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_fleet_members": {
+          "type": "boolean",
+          "default": false
+        },
+        "fleet_run_start": {
+          "type": "boolean",
+          "default": false
+        },
+        "fleet_event_replay": {
+          "type": "boolean",
+          "default": false
+        },
+        "fleet_event_stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "fleet_local_target": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_goals": {
+          "type": "boolean",
+          "description": "`GET/PUT/DELETE /v1/threads/{id}/goal` and the `complete`/`block`\nlifecycle actions are available.",
+          "default": false
+        },
+        "memory": {
+          "type": "boolean",
+          "description": "`GET /v1/memory` and `GET /v1/memory/{id}` are available for\nbounded inspection of the native memory store.  `POST /v1/memory`\nand `DELETE /v1/memory` are also available (auth-gated via the\nstandard route layer) for lifecycle controls.",
+          "default": false
+        },
+        "mcp_server_management": {
+          "type": "boolean",
+          "description": "Whether the runtime supports create/update/enable/disable/reconnect/delete\noperations on MCP server configuration via the `POST|GET|PATCH|DELETE\n/v1/apps/mcp/servers` family of endpoints.",
+          "default": false
+        },
+        "skill_lifecycle": {
+          "type": "boolean",
+          "description": "Skill lifecycle operations (install, update, uninstall, trust, audit)\nare available via the HTTP API.",
+          "default": false
+        },
+        "skill_detail": {
+          "type": "boolean",
+          "description": "`GET /v1/skills/{name}` returns one skill's full body and routing\nmetadata, so a client can compose an activation instruction for its\nnext turn. `GET /v1/skills` rows also carry `invocation`, `aliases`,\nand `bundled_tier` routing fields when this flag is set.",
+          "default": false
+        },
+        "plugin_management": {
+          "type": "boolean",
+          "description": "Plugin bundle and marketplace lifecycle operations (list/detail,\ninstall/update/uninstall, trust/enable/disable/revoke, marketplace\nadd/remove/install) are available via the `/v1/apps/plugins` and\n`/v1/apps/marketplaces` endpoint families.",
+          "default": false
+        },
+        "agent_mail": {
+          "type": "boolean",
+          "description": "Durable, workspace-scoped cross-task Agent Mail endpoints and events.",
+          "default": false
+        },
+        "terminal_stream": {
+          "type": "boolean",
+          "description": "`GET /v1/terminal/{name}/output` — the resumable byte stream over a\npersistent Engine-owned terminal session, with absolute cursors.",
+          "default": false
+        },
+        "terminal_input": {
+          "type": "boolean",
+          "description": "`POST /v1/terminal/{name}/input` — bytes into the live session.",
+          "default": false
+        },
+        "terminal_resize": {
+          "type": "boolean",
+          "description": "`POST /v1/terminal/{name}/resize` — the window the child draws for.",
+          "default": false
+        },
+        "terminal_kill": {
+          "type": "boolean",
+          "description": "`POST /v1/terminal/{name}/kill` — end the live session.",
+          "default": false
+        },
+        "event_stream_resume": {
+          "type": "boolean",
+          "description": "`GET /v1/threads/{id}/events` puts the durable `seq` on every journal\nframe as the SSE `id:` and resumes from a `Last-Event-ID` header, so a\nbrowser `EventSource` reconnects without a cursor in the query string.",
+          "default": false
+        }
+      },
+      "required": [
+        "client_token_intents",
+        "account_session",
+        "account_model_owner",
+        "session_provider_keys",
+        "threads",
+        "thread_create_idempotency",
+        "thread_idle_precondition",
+        "thread_shell_consent",
+        "turns",
+        "turn_operation_idempotency",
+        "turn_operation_lookup",
+        "structured_review_turns",
+        "structured_review_version",
+        "automation_mutation_preconditions",
+        "turn_image_inputs",
+        "turn_output_token_limit",
+        "profile_constitution",
+        "turn_steer",
+        "turn_interrupt",
+        "event_replay",
+        "external_tools",
+        "environments",
+        "worker_runtime",
+        "fleet_run_create",
+        "thread_fleet_members",
+        "fleet_run_start",
+        "fleet_event_replay",
+        "fleet_event_stream",
+        "fleet_local_target",
+        "thread_goals",
+        "memory",
+        "mcp_server_management",
+        "skill_lifecycle",
+        "skill_detail",
+        "plugin_management",
+        "agent_mail",
+        "terminal_stream",
+        "terminal_input",
+        "terminal_resize",
+        "terminal_kill",
+        "event_stream_resume"
+      ],
+      "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."
+    },
+    "RuntimeExperimentalCapabilities": {
+      "type": "object",
+      "properties": {
+        "environments": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "environments"
+      ],
+      "description": "Experimental opt-in flags advertised by `GET /v1/runtime/info`.\n\nFields are additive and default to `false` when omitted by older servers."
+    },
+    "DynamicToolCallParams": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Optional namespace that was registered with the tool."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Tool name that the model invoked."
+        },
+        "arguments": {
+          "description": "Arguments supplied by the model, validated against `input_schema`."
+        }
+      },
+      "required": [
+        "thread_id",
+        "turn_id",
+        "call_id",
+        "tool",
+        "arguments"
+      ],
+      "description": "Parameters identifying a dynamic tool call request emitted by the runtime.\n\nThis is the typed payload for `tool_call.requested` events and also the\nnatural identifier used when the runtime looks up a pending call."
+    },
+    "DynamicToolSpecOutput": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "Optional namespace that groups related tools (e.g. `\"tau_bench\"`).\nWhen present, the runtime may expose the tool as\n`<namespace>::<name>` to the model."
+        },
+        "name": {
+          "type": "string",
+          "description": "Short tool name. Combined with `namespace` it forms a unique tool id."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description exposed to the model."
+        },
+        "input_schema": {
+          "description": "JSON Schema describing the tool's input parameters."
+        },
+        "defer_loading": {
+          "type": "boolean",
+          "description": "If true, the runtime may defer schema validation / tool loading until\nthe model actually calls the tool.\n\nDefaults to `false` so that older clients omitting this field still\nbehave the same way.",
+          "default": false
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "defer_loading"
+      ],
+      "description": "Specification for a dynamic external tool registered by a runtime client.\n\nExample JSON from the spec:\n\n```json\n{\n  \"namespace\": \"tau_bench\",\n  \"name\": \"get_reservation\",\n  \"description\": \"Look up an airline reservation.\",\n  \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"reservation_id\": { \"type\": \"string\" }\n    },\n    \"required\": [\"reservation_id\"],\n    \"additionalProperties\": false\n  }\n}\n```"
+    }
+  }
+}

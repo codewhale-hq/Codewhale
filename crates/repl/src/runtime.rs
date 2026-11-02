@@ -20,11 +20,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use uuid::Uuid;
 
@@ -141,6 +142,7 @@ pub trait RpcDispatcher: Send + Sync {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_STDOUT_LIMIT: usize = 8_192;
+const MAX_STDERR_CAPTURE_BYTES: usize = 64 * 1024;
 /// Longest single stdout line (protocol or plain output) held in memory. An
 /// RPC request is one line, so this also bounds what a request can make Rust
 /// deserialize before the bridge's own caps apply; an over-long request is
@@ -159,12 +161,20 @@ const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 // PythonRuntime
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Default)]
+struct StderrCapture {
+    bytes: Vec<u8>,
+    omitted: usize,
+}
+
 /// Long-lived Python REPL.
 #[derive(Debug)]
 pub struct PythonRuntime {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr_capture: Arc<StdMutex<StderrCapture>>,
+    stderr_task: tokio::task::JoinHandle<()>,
     /// Per-spawn session id used in protocol sentinels.
     session_id: String,
     /// Path to the file holding `context` (kept around for cleanup).
@@ -254,11 +264,34 @@ impl PythonRuntime {
             .take()
             .ok_or_else(|| "Python interpreter stdout pipe missing".to_string())?;
         let stdout = BufReader::new(raw_stdout);
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Python interpreter stderr pipe missing".to_string())?;
+        let stderr_capture = Arc::new(StdMutex::new(StderrCapture::default()));
+        let capture = Arc::clone(&stderr_capture);
+        let stderr_task = tokio::spawn(async move {
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = match stderr.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                let mut capture = capture.lock().unwrap_or_else(|poison| poison.into_inner());
+                let keep = n.min(MAX_STDERR_CAPTURE_BYTES.saturating_sub(capture.bytes.len()));
+                capture.bytes.extend_from_slice(&chunk[..keep]);
+                capture.omitted = capture.omitted.saturating_add(n - keep);
+            }
+        });
 
         let mut rt = Self {
             child,
             stdin,
             stdout,
+            stderr_capture,
+            stderr_task,
             session_id: session_id.clone(),
             context_path: context_path.map(Path::to_path_buf),
             stdout_limit: DEFAULT_STDOUT_LIMIT,
@@ -600,28 +633,21 @@ impl PythonRuntime {
     }
 
     async fn drain_stderr(&mut self) -> String {
-        // We don't continuously read stderr — drain whatever's pending after
-        // a round so it can show up in error reports without deadlocking
-        // anything during normal operation.
-        let Some(stderr) = self.child.stderr.as_mut() else {
-            return String::new();
-        };
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        // Best-effort read with a tight deadline; we don't want to block.
-        let fut = async {
-            let mut chunk = [0u8; 4096];
-            loop {
-                match tokio::time::timeout(Duration::from_millis(20), stderr.read(&mut chunk)).await
-                {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
-                    _ => break,
-                }
-            }
-        };
-        let _ = fut.await;
-        String::from_utf8_lossy(&buf).to_string()
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let capture = std::mem::take(
+            &mut *self
+                .stderr_capture
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        );
+        let mut text = String::from_utf8_lossy(&capture.bytes).into_owned();
+        if capture.omitted > 0 {
+            text.push_str(&format!(
+                "\n[... REPL stderr capped: {} bytes omitted ...]\n",
+                capture.omitted
+            ));
+        }
+        text
     }
 
     /// True once a round failed or was dropped before reading its own DONE
@@ -659,6 +685,7 @@ impl PythonRuntime {
 
 impl Drop for PythonRuntime {
     fn drop(&mut self) {
+        self.stderr_task.abort();
         // tokio sets `kill_on_drop(true)` on the child; the context file
         // (if any) is removed on `shutdown()` — drop is best-effort.
         if let Some(path) = self.context_path.take() {

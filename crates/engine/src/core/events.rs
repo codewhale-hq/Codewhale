@@ -290,6 +290,12 @@ impl SessionCheckpointRequest {
             return Err("session checkpoint was withdrawn".into());
         }
         if self.caller.agent_id.is_some()
+            || self
+                .snapshot
+                .source
+                .as_ref()
+                .and_then(|source| source.turn_id.as_deref())
+                != Some(self.caller.turn_id.as_str())
             || session_id != self.caller.session_id
             || session_id != self.snapshot.session_id
             || workspace != self.caller.workspace
@@ -489,6 +495,7 @@ pub enum Event {
     // === Turn Lifecycle ===
     /// A new turn has started (user sent a message)
     TurnStarted {
+        previous_source: Option<super::ops::SessionSnapshotSource>,
         turn_id: String,
         created_at: DateTime<Utc>,
         /// Legacy/non-model hosts may still attach a route at start. Model
@@ -627,6 +634,7 @@ pub enum Event {
 
     /// Context compaction started.
     CompactionStarted {
+        previous_source: Option<super::ops::SessionSnapshotSource>,
         id: String,
         auto: bool,
         message: String,
@@ -894,6 +902,7 @@ pub enum Event {
     /// text block, and that assistant message still has to be persisted for
     /// later `reasoning_content` replay.
     SessionUpdated {
+        source: Option<crate::core::ops::SessionSnapshotSource>,
         checkpoint: Option<Arc<SessionCheckpointRequest>>,
         session_id: String,
         /// Shared history snapshot (#6214 T2): the engine hands out an `Arc`

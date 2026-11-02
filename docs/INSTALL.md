@@ -1150,9 +1150,6 @@ mirrors), apart from the macOS paths noted in [macOS notes](#macos-notes).
 Known contradictions with the published v0.10.0 assets, found by inspecting
 them ([details](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b0d058b97c3946e62c34bd31/docs/install-report/v0.10.0-2026-09-23/DOC_DEFECTS.md), D15 and D16):
 
-* The winget manifest kept in `packaging/winget/` is stale (0.9.6) and not the
-  published package; winget serves `HunterBown.CodeWhale`, see
-  [Windows winget](#windows-winget).
 * v0.10.0 publishes both `codewhale-windows-x64.zip` (with an `install.bat`
   that copies to `%USERPROFILE%\bin`) and `codewhale-windows-x64-portable.zip`;
   the sections below mention only the first.
@@ -1456,18 +1453,17 @@ when you need the newest version immediately.
 
 #### Windows winget
 
-The published winget package is **`HunterBown.CodeWhale`** (verified in
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale)
-on 2026-10-04; latest published version 0.10.0). It is a portable x64 package:
-winget downloads `codewhale-tui-windows-x64.exe`, installs it as the `codewhale`
-command, and pulls in the Microsoft Visual C++ 2015+ x64 runtime.
+WinGet installs **`HunterBown.CodeWhale`** as the portable x64 command
+`codewhale`. It downloads `codewhale-tui-windows-x64.exe` and declares a
+dependency on the Microsoft Visual C++ 2015+ x64 runtime.
+[Published 0.10.2 manifest](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale/0.10.2)
 
 ```powershell
 winget install HunterBown.CodeWhale
 codewhale --version
 ```
 
-Update with `winget upgrade HunterBown.CodeWhale` or `codewhale update`. Each
+Update with `winget upgrade --id HunterBown.CodeWhale`. Each
 version goes through winget-pkgs review after the GitHub Release, so winget can
 lag GitHub/npm/Cargo; use npm or the GitHub Release asset when you need the
 newest version immediately.
@@ -1479,8 +1475,7 @@ Known limits of the winget route:
   `codewhale-windows-arm64.zip` from GitHub Releases.
 * **`codewhale` only.** The short `codew` alias is not installed by winget; use
   `codewhale`.
-* The manifest in this repository (`packaging/winget/`) is not the one winget
-  serves; see [`packaging/winget/README.md`](../packaging/winget/README.md).
+* The release generator prepares a matching local manifest. [WinGet packaging](../packaging/winget/README.md).
 
 #### Windows NSIS Installer
 

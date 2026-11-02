@@ -94,7 +94,11 @@ async fn completion_usage_live_terminal_counts_grandchildren_and_continuations_o
         result.status = status;
         // The locked ledger wins over an earlier result snapshot.
         result.usage.as_mut().unwrap().total_tokens = Some(123_456);
-        assert!(manager.finish_terminal_result(&root, result, false, false));
+        assert!(
+            manager
+                .finish_terminal_result(&root, result, false, false)
+                .expect("durable worker operation")
+        );
         let completion = rx.try_recv().unwrap();
         let payload = sentinel(&completion);
         assert_eq!(payload["usage"]["own"]["total_tokens"], 10);
@@ -138,7 +142,11 @@ async fn completion_usage_recovery_restores_measured_lineage_without_recounting(
     let mut manager = SubAgentManager::new(base.clone(), 8).with_state_path(path.clone());
     let (root, _, grandchild, continued) = family(&mut manager);
     let result = terminal_result(&manager, &root);
-    assert!(manager.finish_terminal_result(&root, result, false, false));
+    assert!(
+        manager
+            .finish_terminal_result(&root, result, false, false)
+            .expect("durable worker operation")
+    );
     let before = receipt(&manager, &root);
     manager.persist_state_synchronously().unwrap();
     let mut loaded = SubAgentManager::new(base, 8).with_state_path(path);
@@ -340,7 +348,11 @@ async fn completion_usage_counts_real_manifest_only_root_fork() {
         .unwrap();
     let source = child(&mut guard, "source", None, Some(1));
     let completed = terminal_result(&guard, &source);
-    assert!(guard.finish_terminal_result(&source, completed, true, false));
+    assert!(
+        guard
+            .finish_terminal_result(&source, completed, true, false)
+            .expect("durable worker operation")
+    );
     let fork = guard
         .spawn_background_with_assignment_options(
             Arc::clone(&manager),

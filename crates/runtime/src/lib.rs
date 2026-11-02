@@ -40,6 +40,7 @@ pub mod prompt_zones;
 pub mod regex_cache;
 pub mod resource_telemetry;
 pub mod retry_status;
+pub mod runtime_control;
 pub mod runtime_log;
 pub mod runtime_policy;
 pub mod safe_label;

@@ -548,15 +548,14 @@ pub fn fleet_write_roots(task_spec: &FleetTaskSpec) -> Result<Vec<String>> {
             (".", path) | (path, ".") => path.to_string(),
             (root, path) => format!("{root}/{path}"),
         };
-        if !roots.contains(&claim_root) {
-            roots.push(claim_root);
-        }
+        roots.push(claim_root);
     }
     Ok(roots)
 }
 
 pub fn fleet_runtime_write_roots(task_spec: &FleetTaskSpec) -> Result<Vec<String>> {
     let mut roots = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for path in task_spec
         .workspace
         .as_ref()
@@ -565,7 +564,7 @@ pub fn fleet_runtime_write_roots(task_spec: &FleetTaskSpec) -> Result<Vec<String
     {
         let normalized =
             normalize_fleet_relative_path(path, &task_spec.id, "workspace.writable_paths")?;
-        if !roots.contains(&normalized) {
+        if seen.insert(normalized.clone()) {
             roots.push(normalized);
         }
     }

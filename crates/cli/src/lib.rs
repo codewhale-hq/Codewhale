@@ -15,7 +15,6 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_app_server::RuntimeControlFrontend;
 use codewhale_config::credentials::{
     clear_provider_api_key_from_config, provider_slot, set_provider_api_key,
 };
@@ -26,6 +25,7 @@ use codewhale_config::{
     classify_config_api_key_value, provider_base_url_is_official,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use codewhale_runtime::runtime_control::RuntimeControlFrontend;
 use codewhale_secrets::Secrets;
 use codewhale_telemetry::{
     self as telemetry, Counters, DurationBucket, Errors, Event, ExitClass, SessionSource, Surface,

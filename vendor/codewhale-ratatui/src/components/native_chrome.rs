@@ -85,7 +85,7 @@ pub struct WorkflowRun<'a> {
     pub succeeded: usize,
     pub failed: usize,
     pub cancelled: usize,
-    pub total: usize,
+    pub total: u64,
     pub elapsed: Option<Duration>,
     pub tokens: Option<u64>,
     pub queued: usize,
@@ -111,7 +111,7 @@ impl<'a> WorkflowRun<'a> {
         succeeded: usize,
         failed: usize,
         cancelled: usize,
-        total: usize,
+        total: u64,
     ) -> Self {
         self.succeeded = succeeded;
         self.failed = failed;
@@ -325,7 +325,7 @@ fn tokens(value: u64) -> String {
         value.to_string()
     }
 }
-fn bar_cells(succeeded: usize, failed: usize, total: usize) -> (usize, usize) {
+fn bar_cells(succeeded: usize, failed: usize, total: u64) -> (usize, usize) {
     if total == 0 {
         return (0, 0);
     }

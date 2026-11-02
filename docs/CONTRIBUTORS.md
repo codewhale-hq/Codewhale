@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
 - **[Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[Felixkw12](https://github.com/Felixkw12)** — Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[ddlw](https://github.com/ddlw)** — repaired clippy, rustfmt, extension-host imports and Windows DSH receipt bytes on main for the 0.10.3 batch ([#7108](https://github.com/codewhale-hq/Codewhale/pull/7108), [#7109](https://github.com/codewhale-hq/Codewhale/pull/7109)).

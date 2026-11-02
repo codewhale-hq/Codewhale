@@ -70,6 +70,10 @@ pub enum DebugAction {
         diff: String,
     },
     OpenContextInspector,
+    OpenUndoSelector,
+    UndoLatestRequest {
+        force: bool,
+    },
     SendMessage(String),
     SyncSession(SessionSyncPayload),
     /// Install and persist a conversation rollback; `/retry` resends its

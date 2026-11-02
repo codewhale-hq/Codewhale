@@ -789,18 +789,14 @@ pub struct TuiConfig {
     /// seconds. Omitted or `0` resolve to the default (1800); explicit
     /// values clamp to `10..=86_400`.
     pub stream_max_duration_secs: Option<u64>,
-    /// #6700: whole-request re-issues after a failed stream — a stream that
-    /// never opened (#6699), died before content, or dropped mid-stream.
-    /// Omitted resolves to the default (3); `0` disables them; values clamp
-    /// to `0..=10`.
+    /// Proven pre-dispatch stream-open retries. Omitted defaults to3;
+    /// `0` disables them and values clamp to `0..=10`.
     pub stream_max_resumes: Option<u32>,
-    /// #6700: in-stream re-requests while nothing has streamed yet (#103).
-    /// Omitted resolves to the default (2); `0` disables them; values clamp
-    /// to `0..=10`.
+    /// Inactive Core compatibility setting. Omitted defaults to2;
+    /// values remain parsed and clamped to `0..=10`.
     pub stream_max_transparent_retries: Option<u32>,
-    /// #6700: recoverable errors tolerated within one stream before it
-    /// ends. Omitted or `0` resolves to the default (5); other values clamp
-    /// to `1..=50`.
+    /// Inactive Core compatibility setting. Core ends on the first uncertain
+    /// stream error; omitted/zero defaults to5 and other values clamp to1..=50.
     pub stream_max_errors: Option<u32>,
     /// #6700: wait for SSE response headers, in seconds. Omitted or `0`
     /// fall back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then 45; values

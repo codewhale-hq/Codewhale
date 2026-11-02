@@ -314,13 +314,65 @@ async fn import_into_owner(
                 .await?
         }
     };
-    let mut session = SavedSession::import_foreign(
+    let recovery_dir = state.sessions_dir.clone();
+    let recovery_operation = operation.clone();
+    let recovery_runtime = Arc::clone(&runtime);
+    let recovered = history_owner_work(move || {
+        let Some(expected_digest) = recovery_operation.target_document_digest.as_ref() else {
+            return Ok(None);
+        };
+        let manager = SessionManager::new(recovery_dir)?;
+        let lease =
+            manager.reserve_session_for_external_write(&recovery_operation.receipt.session_id)?;
+        let saved = match manager.load_session_snapshot_bounded(
+            &recovery_operation.receipt.session_id,
+            MAX_CANONICAL_HISTORY_BYTES,
+        ) {
+            Ok(saved) => saved,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if saved_document_digest(&saved)? != *expected_digest {
+            return Ok(None);
+        }
+        recovery_runtime.verify_prepared_history_publication(&recovery_operation, &saved)?;
+        Ok(Some((saved, lease)))
+    })
+    .await?;
+    let target_merge = target.is_some();
+    let (session, _target_lease, operation) = if let Some((session, lease)) = recovered {
+        (session, lease, operation)
+    } else {
+        let publication_source = if target.is_none() {
+            let dir = state.sessions_dir.clone();
+            let id = operation.receipt.session_id.clone();
+            let captured_operation = operation.clone();
+            let source_runtime = Arc::clone(&runtime);
+            Some(
+                history_owner_work(move || {
+                    let manager = SessionManager::new(dir)?;
+                    source_runtime.capture_history_publication_source(
+                        &captured_operation,
+                        manager.expect_absent_session(&id)?,
+                    )
+                })
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut session = SavedSession::import_foreign(
         SessionImportContainer::new("legacy-state-sqlite".into(), &journal, None),
         thread.workspace.clone(),
         thread.model.clone(),
     )
     .map_err(anyhow::Error::msg)?;
-    session.metadata.id = operation.receipt.session_id.clone();
+    session.write_receipt = publication_source;
+        session.metadata.publication_id = session
+            .write_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.publication_id());
+        session.metadata.id = operation.receipt.session_id.clone();
     session.system_prompt.clone_from(&thread.system_prompt);
     session.metadata.created_at = operation.created_at;
     session.metadata.updated_at = operation.created_at;
@@ -339,7 +391,7 @@ async fn import_into_owner(
             !super::sessions::thread_detail_has_live_work(&detail),
             "canonical target has live work; retry the same import after settlement"
         );
-        let full = snapshot_in_owner(state.clone(), thread.id.clone())
+        let (full, source) = snapshot_in_owner(state.clone(), thread.id.clone())
             .await
             .map_err(|error| anyhow!(error.message))?;
         captured_target_document_digest = full.saved_document_digest;
@@ -348,6 +400,20 @@ async fn import_into_owner(
             "canonical target full document witness is absent"
         );
         let mut observed: SavedSession = serde_json::from_value(full.session)?;
+            let source_runtime = Arc::clone(&runtime);
+            let captured_operation = operation.clone();
+            let source =
+                source.ok_or_else(|| anyhow!("canonical target source was not admitted"))?;
+            observed.write_receipt = Some(
+                history_owner_work(move || {
+                    source_runtime.capture_history_publication_source(&captured_operation, source)
+                })
+                .await?,
+            );
+            observed.metadata.publication_id = observed
+                .write_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.publication_id());
         ensure!(
             observed.metadata.id == operation.receipt.session_id,
             "canonical target session changed before source merge"
@@ -394,9 +460,19 @@ async fn import_into_owner(
         serde_json::to_writer(&mut bound, &observed)?;
         session = observed;
     }
-    let target_merge = target.is_some();
+    let document_digest = saved_document_digest(&session)?;
+        let prepare_runtime = Arc::clone(&runtime);
+        let prepared_operation = operation.clone();
+        let bound_operation = history_owner_work(move || {
+            prepare_runtime.bind_history_operation_document(prepared_operation, &document_digest)
+        })
+        .await?;
+        let target_merge = target.is_some();
     let sessions_dir = state.sessions_dir.clone();
-    let (session, _target_lease) = history_owner_work(move || {
+    let verification_runtime = Arc::clone(&runtime);
+        let verification_operation = bound_operation.clone();
+        let (session, target_lease) = history_owner_work(move || {
+        let mut session = session;
         let manager = SessionManager::new(sessions_dir)?;
         let lease = manager.reserve_session_for_external_write(&session.metadata.id)?;
         match manager
@@ -413,25 +489,24 @@ async fn import_into_owner(
                     ) && observed.metadata.workspace == session.metadata.workspace,
                     "canonical target store binding changed before merge"
                 );
-                manager.save_session(&session)?;
+                let publication = manager.publish_session(&session)?;
+                session.adopt_publication(&publication);
                 return Ok((session, lease));
             }
             Ok(observed) => {
-                ensure!(
-                    observed.journal == session.journal
-                        && observed.metadata.runtime_store == session.metadata.runtime_store
-                        && observed.metadata.workspace == session.metadata.workspace,
-                    "reserved imported session diverged; recovery required"
-                );
+                verification_runtime.verify_prepared_history_publication(&verification_operation, &observed)?;
                 return Ok((observed, lease));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !target_merge => {}
             Err(error) => return Err(error.into()),
         }
-        manager.save_session(&session)?;
+        let publication = manager.publish_session(&session)?;
+        session.adopt_publication(&publication);
         Ok((session, lease))
     })
     .await?;
+        (session, target_lease, bound_operation)
+    };
     let detail = runtime.get_thread_detail(&thread.id).await?;
     ensure!(
         !super::sessions::thread_detail_has_live_work(&detail),
@@ -539,13 +614,19 @@ pub(super) async fn snapshot_thread_history(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<codewhale_protocol::CanonicalThreadSnapshot>, ApiError> {
     let _admission = state.runtime_threads.session_checkpoint_guard().await;
-    snapshot_in_owner(state, id).await.map(Json)
+    snapshot_in_owner(state, id).await.map(|(snapshot, _)| Json(snapshot))
 }
 
 async fn snapshot_in_owner(
     state: RuntimeApiState,
     id: String,
-) -> Result<codewhale_protocol::CanonicalThreadSnapshot, ApiError> {
+) -> Result<
+    (
+        codewhale_protocol::CanonicalThreadSnapshot,
+        Option<codewhale_engine::session_manager::SessionWriteReceipt>,
+    ),
+    ApiError,
+> {
     snapshot_in_runtime(&state.runtime_threads, &state.sessions_dir, id).await
 }
 
@@ -553,7 +634,13 @@ async fn snapshot_in_runtime(
     runtime: &Arc<RuntimeThreadManager>,
     sessions_dir: &Path,
     id: String,
-) -> Result<codewhale_protocol::CanonicalThreadSnapshot, ApiError> {
+) -> Result<
+    (
+        codewhale_protocol::CanonicalThreadSnapshot,
+        Option<codewhale_engine::session_manager::SessionWriteReceipt>,
+    ),
+    ApiError,
+> {
     let runtime = Arc::clone(runtime);
     let thread = runtime
         .get_thread(&id)
@@ -673,6 +760,7 @@ async fn snapshot_in_runtime(
         // result rather than truncating branches or returning a partial graph.
         let mut size = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
         serde_json::to_writer(&mut size, &session)?;
+        let source = session.write_receipt.clone();
         let response = codewhale_protocol::CanonicalThreadSnapshot {
             version: 1,
             data_dir: expected_binding.data_dir,
@@ -686,7 +774,7 @@ async fn snapshot_in_runtime(
         };
         let mut size = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
         serde_json::to_writer(&mut size, &response)?;
-        Ok(response)
+        Ok((response, source))
     })
     .await
     .map_err(|error| ApiError::conflict(error.to_string()))?;
@@ -937,6 +1025,7 @@ async fn settle_prepared_history_operation(
     let binding = runtime.session_store_binding();
     let expected = operation.clone();
     let selected_workspace = workspace.to_path_buf();
+    let verification_runtime = Arc::clone(runtime);
     let saved = history_owner_work(move || {
         let manager = SessionManager::new(dir)?;
         let lease = manager.reserve_session_for_external_write(&expected.receipt.session_id)?;
@@ -953,6 +1042,7 @@ async fn settle_prepared_history_operation(
         if expected.target_document_digest.as_ref() != Some(&saved_document_digest(&saved)?) {
             return Ok(None);
         }
+        verification_runtime.verify_prepared_history_publication(&expected, &saved)?;
         ensure!(
             saved.metadata.runtime_store.as_ref() == Some(&binding)
                 && saved.metadata.workspace == selected_workspace,
@@ -1141,7 +1231,7 @@ async fn mutate_in_owner(
                     !super::sessions::thread_detail_has_live_work(&detail),
                     "selected history has pending work; wait before resume or fork"
                 );
-                let snapshot =
+                let (snapshot, source) =
                     snapshot_in_runtime(&runtime, &sessions_dir, runtime_thread_id.clone())
                         .await
                         .map_err(|error| anyhow!(error.message))?;
@@ -1150,7 +1240,8 @@ async fn mutate_in_owner(
                     "selected full history changed before canonical admission"
                 );
                 source_disk_digest = snapshot.saved_document_digest;
-                let saved: SavedSession = serde_json::from_value(snapshot.session)?;
+                let mut saved: SavedSession = serde_json::from_value(snapshot.session)?;
+                saved.write_receipt = source;
                 let id = saved.metadata.id.clone();
                 let dir = sessions_dir.clone();
                 let expected = snapshot.session_goal_digest;
@@ -1264,7 +1355,7 @@ async fn mutate_in_owner(
                                 covered.is_some(),
                                 "saved holder checkpoint differs from the saved history; refresh history"
                             );
-                            let full =
+                            let (full, _) =
                                 snapshot_in_runtime(&runtime, &sessions_dir, thread.id.clone())
                                     .await
                                     .map_err(|error| anyhow!(error.message))?;
@@ -1535,6 +1626,50 @@ async fn mutate_in_owner(
             .await?;
     }
     let source_id = source.as_ref().map(|session| session.metadata.id.clone());
+    let publication_source = if source_id.as_ref() == Some(&operation.receipt.session_id) {
+        match source
+            .as_ref()
+            .and_then(|session| session.write_receipt.as_ref())
+        {
+            Some(source) => {
+                let source_runtime = Arc::clone(&runtime);
+                let captured_operation = operation.clone();
+                let source = source.clone();
+                history_owner_work(move || {
+                    source_runtime.capture_history_publication_source(&captured_operation, source)
+                })
+                .await?
+            }
+            None if source_disk_digest.is_none() => {
+                let dir = sessions_dir.clone();
+                let id = operation.receipt.session_id.clone();
+                let captured_operation = operation.clone();
+                let source_runtime = Arc::clone(&runtime);
+                history_owner_work(move || {
+                    let manager = SessionManager::new(dir)?;
+                    source_runtime.capture_history_publication_source(
+                        &captured_operation,
+                        manager.expect_absent_session(&id)?,
+                    )
+                })
+                .await?
+            }
+            None => bail!("canonical source lacks its admitted publication receipt"),
+        }
+    } else {
+        let dir = sessions_dir.clone();
+        let id = operation.receipt.session_id.clone();
+        let captured_operation = operation.clone();
+        let source_runtime = Arc::clone(&runtime);
+        history_owner_work(move || {
+            let manager = SessionManager::new(dir)?;
+            source_runtime.capture_history_publication_source(
+                &captured_operation,
+                manager.expect_absent_session(&id)?,
+            )
+        })
+        .await?
+    };
     let mut session = source.unwrap_or_else(|| {
         codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
             operation.receipt.session_id.clone(),
@@ -1546,6 +1681,8 @@ async fn mutate_in_owner(
             Some(&thread.mode),
         )
     });
+    session.metadata.publication_id = publication_source.publication_id();
+    session.write_receipt = Some(publication_source);
     session.metadata.id = operation.receipt.session_id.clone();
     if !is_resume {
         session.metadata.created_at = operation.created_at;
@@ -1578,11 +1715,13 @@ async fn mutate_in_owner(
     // Revalidate the exact source file immediately before target publication.
     // Both existing session leases are held until the target write settles.
     let dir = sessions_dir.clone();
-    let expected_journal = journal.clone();
     let source_goal_digest = session_goal_digest(&source_goal)?;
     let target_goal_digest = session_goal_digest(&target_goal)?;
     let target_id = session.metadata.id.clone();
+    let verification_runtime = Arc::clone(&runtime);
+    let verification_operation = operation.clone();
     let (session, _source_lease, _target_lease) = history_owner_work(move || {
+        let mut session = session;
         let manager = SessionManager::new(dir)?;
         let source_lease = source_id
             .as_ref()
@@ -1612,11 +1751,8 @@ async fn mutate_in_owner(
         }
         match manager.load_session_snapshot_bounded(&target_id, MAX_CANONICAL_HISTORY_BYTES) {
             Ok(observed) if source_id.as_ref() != Some(&target_id) => {
-                ensure!(
-                    observed.journal.as_ref() == Some(&expected_journal)
-                        && observed.metadata.runtime_store == session.metadata.runtime_store,
-                    "reserved canonical target changed; recovery required"
-                );
+                verification_runtime
+                    .verify_prepared_history_publication(&verification_operation, &observed)?;
                 ensure!(
                     session_goal_digest(&manager.load_session_goal(&target_id)?)?
                         == target_goal_digest,
@@ -1625,12 +1761,14 @@ async fn mutate_in_owner(
                 Ok((observed, source_lease, target_lease))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                manager.save_session(&session)?;
+                let publication = manager.publish_session(&session)?;
+                session.adopt_publication(&publication);
                 manager.save_session_goal(&target_id, target_goal.as_ref())?;
                 Ok((session, source_lease, target_lease))
             }
             Ok(_) => {
-                manager.save_session(&session)?;
+                let publication = manager.publish_session(&session)?;
+                session.adopt_publication(&publication);
                 manager.save_session_goal(&target_id, target_goal.as_ref())?;
                 Ok((session, source_lease, target_lease))
             }

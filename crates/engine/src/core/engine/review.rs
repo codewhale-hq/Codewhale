@@ -381,6 +381,10 @@ impl Engine {
         let observation = self.request_retry_observation();
         let transport_retries = observation.retries.clone();
         let mut pending = Some(super::turn_loop::PendingProviderRequestReceipt {
+            request_id: observation.request_id.clone(),
+            route: client.effective_route_envelope(&self.session.model, chrono::Utc::now()),
+            primary: true,
+            invoked: true,
             turn_id: turn.id.clone(),
             request_index: turn.stop_diagnostics.model_requests_started,
             prefix_check: serde_json::json!({

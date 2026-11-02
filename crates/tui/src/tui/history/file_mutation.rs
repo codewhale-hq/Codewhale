@@ -96,9 +96,9 @@ impl FileMutationReceipt {
             }
         }
 
-        let summaries = diff_render::summarize_diff(&display_diff);
-        let added = summaries.iter().map(|summary| summary.added).sum();
-        let deleted = summaries.iter().map(|summary| summary.deleted).sum();
+        let totals = diff_render::diff_totals(&display_diff);
+        let added = totals.added;
+        let deleted = totals.deleted;
         if files.is_empty() && exact_diff.trim().is_empty() {
             return None;
         }

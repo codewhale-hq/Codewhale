@@ -265,36 +265,42 @@ pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<St
         .timeout(RELEASE_METADATA_TIMEOUT)
         .build()
         .context("failed to build release check HTTP client")?;
-    let mut response = client
+    let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
         .with_context(|| format!("failed to fetch {description} from {url}"))?;
     let status = response.status();
-    let limit = update_body_limit(
-        status,
-        response.content_length(),
-        RELEASE_METADATA_MAX_BYTES,
-    )?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+    let bytes = read_http_response(response, RELEASE_METADATA_MAX_BYTES)
         .await
-        .with_context(|| format!("failed to read {description} response from {url}"))?
-    {
-        let remaining = limit + 1 - bytes.len();
-        bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
-        if bytes.len() > limit {
-            break;
-        }
-    }
-    let bytes = finish_update_body(bytes, status, limit)?;
+        .with_context(|| format!("failed to read {description} response from {url}"))?;
     let body = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         bail!("GitHub release request failed with HTTP {status}: {body}");
     }
     Ok(body.into_owned())
+}
+
+pub async fn read_http_response(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let status = response.status();
+    let limit = update_body_limit(status, response.content_length(), max_bytes)?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("failed to read HTTP response")?
+    {
+        let remaining = limit.saturating_add(1) - bytes.len();
+        bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+        if bytes.len() > limit {
+            break;
+        }
+    }
+    finish_update_body(bytes, status, limit)
 }
 
 fn update_body_limit(

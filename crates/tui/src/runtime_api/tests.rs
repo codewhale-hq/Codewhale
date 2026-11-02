@@ -183,6 +183,7 @@ async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_bu
         &config,
         workspace.clone(),
         RuntimeThreadManagerConfig {
+            mcp_auth_context: Default::default(),
             data_dir: temp.path().join("runtime"),
             task_data_dir: temp.path().join("tasks"),
             sessions_dir: None,
@@ -304,10 +305,16 @@ impl codewhale_engine::task_manager::TaskExecutor for MockExecutor {
 
 fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> SavedSession {
     SavedSession {
+        write_receipt: None,
+
         schema_version: 1,
         metadata: SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: "session-1".to_string(),
             title: "test session".to_string(),
+            title_is_custom: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             message_count: 1,
@@ -1313,6 +1320,7 @@ async fn build_test_server(
     // This fixture owns an explicit root and must never borrow that
     // other test's live store or contend for its process-owner lock.
     let manager_config = RuntimeThreadManagerConfig {
+        mcp_auth_context: Default::default(),
         data_dir: root.join("runtime/runtime"),
         task_data_dir: root.join("runtime"),
         sessions_dir: Some(sessions_dir.clone()),
@@ -1936,6 +1944,15 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
     let root = std::env::temp_dir().join(format!("codewhale-mcp-tools-api-{}", Uuid::new_v4()));
     let sessions_dir = root.join("sessions");
     fs::create_dir_all(&root)?;
+    let fixture_manager = Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+        codewhale_engine::extension_host::ExtensionHostOptions {
+            root: Some(root.join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let shutdown = RuntimeServerShutdown::default();
     let sentinel = root.join("mcp-spawned");
     fs::write(
         root.join("mcp.json"),
@@ -1956,7 +1973,18 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
     )?;
 
     let Some((addr, _runtime_threads, handle)) =
-        spawn_test_server_with_root(root.clone(), sessions_dir).await?
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            sessions_dir,
+            None,
+            false,
+            root.join("workspace"),
+            TestServerOverrides {
+                shutdown: Some(shutdown.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
     else {
         return Ok(());
     };
@@ -1994,7 +2022,10 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
         "explicit MCP connect should spawn configured stdio servers"
     );
 
+    fixture_manager.shutdown().await;
+    assert!(shutdown.drain(ci_scaled(Duration::from_secs(10))).await);
     handle.abort();
+    let _ = handle.await;
     Ok(())
 }
 
@@ -3088,6 +3119,10 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         },
         pending_request: None,
         status: AgentWorkerStatus::Completed,
+        prepared_generation: None,
+        prepared_previous_attempt_unsettled: false,
+        launch_admission_version: 1,
+        recovery_interrupted: false,
         created_at_ms: 1,
         updated_at_ms: 2,
         started_at_ms: Some(1),
@@ -3354,9 +3389,8 @@ async fn agent_run_cancel_refuses_a_run_owned_by_a_session_it_does_not_host() ->
     // A child parked on a question in another terminal session: in flight on
     // disk, but no engine in this runtime owns it.
     let mut record = {
-        let manager =
-            codewhale_engine::tools::subagent::new_shared_subagent_manager(workspace.clone(), 1);
-        let mut guard = manager.write().await;
+        let mut guard =
+            codewhale_engine::tools::subagent::SubAgentManager::new(workspace.clone(), 1);
         let id = guard.insert_test_running_agent("elsewhere", &workspace);
         guard.assign_test_session_owner(&id, "terminal-session");
         guard
@@ -3486,6 +3520,7 @@ async fn compatibility_stream_closes_losslessly_across_replay_live_handoff() -> 
         let _ = wait_for_overlap_release.await;
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_compat_handoff".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -3693,6 +3728,7 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
         harness
             .tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_compat_input".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -4168,6 +4204,7 @@ async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
                 Op::SendMessage(TurnSpec { .. }) => {
                     let _ = tx_event
                         .send(EngineEvent::TurnStarted {
+                            previous_source: None,
                             turn_id: "mock_lifecycle".to_string(),
                             created_at: chrono::Utc::now(),
                             route: None,
@@ -4564,6 +4601,7 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
 
     for event in [
         EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "lookup-fixture-engine-turn".into(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -4699,6 +4737,7 @@ async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_cursor".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -5631,6 +5670,7 @@ async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "engine_turn_api".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -6189,6 +6229,7 @@ async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_stream".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -7179,6 +7220,8 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         while let Some(op) = rx_op.recv().await {
             if let Op::GetSessionSnapshot { tx } = op {
                 let snapshot = codewhale_engine::core::ops::SessionSnapshot {
+                    source: None,
+
                     session_id: CONVERSATION_ID.to_string(),
                     messages: vec![Message {
                         role: Role::User,
@@ -8762,6 +8805,7 @@ async fn session_create_from_thread_rejects_active_turn() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_active_session_save".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -20017,7 +20061,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(768, 768, bytes).unwrap());
     let mut encoded = std::io::Cursor::new(Vec::new());
     image.write_to(&mut encoded, image::ImageFormat::Png)?;
-    let large = codewhale_protocol::runtime::RuntimeImageInput {
+    let large = codewhale_app_server_protocol::runtime::RuntimeImageInput {
         mime: "image/png".into(),
         data_base64: base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
     };
@@ -20045,6 +20089,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "image-http-fixture".into(),
             created_at: Utc::now(),
             route: None,
@@ -24069,6 +24114,15 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         .route("/two", axum::routing::post(fixture).with_state(two.clone()));
     let fixture_task = tokio::spawn(async move { axum::serve(listener, app).await });
     let root = tempfile::tempdir()?;
+    let fixture_manager = Arc::new(codewhale_engine::extension_host::ExtensionHostManager::new(
+        codewhale_engine::extension_host::ExtensionHostOptions {
+            root: Some(root.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let shutdown = RuntimeServerShutdown::default();
     fs::write(
         root.path().join("mcp.json"),
         json!({"servers":{
@@ -24078,10 +24132,19 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         }})
         .to_string(),
     )?;
-    let (addr, _, handle) =
-        spawn_test_server_with_root(root.path().to_owned(), root.path().join("sessions"))
-            .await?
-            .context("MCP management test requires loopback")?;
+    let (addr, _, handle) = spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+        root.path().to_owned(),
+        root.path().join("sessions"),
+        None,
+        false,
+        root.path().join("workspace"),
+        TestServerOverrides {
+            shutdown: Some(shutdown.clone()),
+            ..Default::default()
+        },
+    )
+    .await?
+    .context("MCP management test requires loopback")?;
     let client = codewhale_release::tls::reqwest_client();
     let base = format!("http://{addr}/v1/apps/mcp");
     let failed: Value = client
@@ -24214,8 +24277,12 @@ async fn mcp_management_selected_connection_and_retry_preserve_siblings() -> Res
         "malformed sources must not connect cached endpoints"
     );
     assert_eq!(two.load(Ordering::SeqCst), 1);
+    fixture_manager.shutdown().await;
+    assert!(shutdown.drain(ci_scaled(Duration::from_secs(10))).await);
     handle.abort();
+    let _ = handle.await;
     fixture_task.abort();
+    let _ = fixture_task.await;
     Ok(())
 }
 

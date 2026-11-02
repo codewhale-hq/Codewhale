@@ -476,7 +476,7 @@ impl ChildAuthority {
             }
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
-            codewhale_app_server::daemon_socket::owner_work(move || {
+            codewhale_runtime::runtime_control::owner_work(move || {
                 held.validate_write_scope(&owner, &paths)
                     .map_err(anyhow::Error::msg)
             })
@@ -513,7 +513,7 @@ impl ChildAuthority {
         {
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
-            let blocking_peers = codewhale_app_server::daemon_socket::owner_work(move || {
+            let blocking_peers = codewhale_runtime::runtime_control::owner_work(move || {
                 // A peer-free checkout still requires the exact held origin.
                 // The file/root checks stay on the bounded owner worker.
                 if let Some(claim) = held.shared_write_claim(&owner) {
@@ -1216,6 +1216,10 @@ impl ChildJob {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn provider_refused(&self, error: &anyhow::Error) {
+        if !provider_request_refusal_proven(error) {
+            self.response_received
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         if matches!(
             error.downcast_ref::<LlmError>(),
             Some(LlmError::RateLimited { .. })
@@ -1533,7 +1537,8 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<LlmError>(),
         Some(
-            LlmError::RateLimited { .. }
+            LlmError::ConnectError { .. }
+                | LlmError::RateLimited { .. }
                 | LlmError::QuotaExhausted(_)
                 | LlmError::AuthenticationError(_)
                 | LlmError::AuthorizationError(_)
@@ -2290,12 +2295,31 @@ impl ChildRequestRetries {
         runtime: &SubAgentRuntime,
         error: &anyhow::Error,
     ) -> Option<ChildRequestRecovery> {
-        if matches!(error.downcast_ref::<LlmError>(), Some(LlmError::Timeout(_))) {
+        let transmission = error.downcast_ref::<LlmError>().map_or(
+            crate::llm_client::RequestTransmission::OutcomeUnknown,
+            LlmError::transmission,
+        );
+        if transmission == crate::llm_client::RequestTransmission::OutcomeUnknown {
+            return Some(ChildRequestRecovery::Interrupted {
+                checkpoint_reason: "request_outcome_unknown",
+                message: format!(
+                    "Provider request outcome unknown; checkpoint preserved without automatic replay: {error:#}"
+                ),
+            });
+        }
+        if matches!(
+            error.downcast_ref::<LlmError>(),
+            Some(LlmError::ConnectError {
+                transient: true,
+                timed_out: true,
+                ..
+            })
+        ) {
             if self.timeouts >= SUBAGENT_API_TIMEOUT_MAX_RETRIES {
                 return Some(ChildRequestRecovery::Interrupted {
                     checkpoint_reason: "api_timeout",
                     message: format!(
-                        "API call timed out after {}ms on {} API attempt(s); checkpoint preserved for continuation",
+                        "Connection timed out before request dispatch after {}ms on {} attempt(s); checkpoint preserved for continuation",
                         runtime.step_api_timeout.as_millis(),
                         self.timeouts.saturating_add(1)
                     ),
@@ -2309,7 +2333,7 @@ impl ChildRequestRetries {
             return Some(ChildRequestRecovery::Retry {
                 delay,
                 note: format!(
-                    "API call timed out after {}ms; retrying API request {}/{} in {}ms",
+                    "Connection timed out before request dispatch after {}ms; retrying connection {}/{} in {}ms",
                     runtime.step_api_timeout.as_millis(),
                     self.timeouts,
                     SUBAGENT_API_TIMEOUT_MAX_RETRIES,
