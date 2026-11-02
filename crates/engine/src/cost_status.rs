@@ -1854,9 +1854,9 @@ pub fn restore_usage_source_ledger(
     });
 }
 
-/// Mark a deleted origin's response handled in its original live generation.
-/// This suppresses legacy mailbox fallback without putting deleted usage or
-/// even its fingerprint into the pending pool or a durable session snapshot.
+/// Mark a captured response settled or retired in its original live generation.
+/// This suppresses duplicate mailbox pricing without adding money or a routed
+/// usage record. Durable source membership belongs to the owning projection.
 pub fn acknowledge_retired_usage_source(scope: CostScopeToken, source_id: &str) {
     with_pending_state_mut(|state| {
         if state.generation == scope.0 {

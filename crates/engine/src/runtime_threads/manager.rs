@@ -2151,6 +2151,59 @@ pub(super) fn billed_prompt_tokens(usage: &Usage) -> u32 {
         .map_or(usage.input_tokens, |last| last.input_tokens)
 }
 
+fn accumulate_primary_runtime_usage_record(
+    totals: &mut UsageTotals,
+    buckets: &mut std::collections::BTreeMap<String, UsageBucket>,
+    group_by: UsageGroupBy,
+    route: Option<&EffectiveRouteEnvelope>,
+    usage: &Usage,
+    turn: &TurnRecord,
+    thread: &ThreadRecord,
+) {
+    if let Some(facts) = turn
+        .model_request_diagnostics
+        .filter(|facts| facts.primary_coverage_recorded)
+    {
+        for (count, reason) in [
+            (
+                facts.primary_usage_unknown,
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            ),
+            (
+                facts.primary_usage_missing,
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+            ),
+        ] {
+            if let Some(route) = route {
+                if count > 0 {
+                    accumulate_exact_runtime_usage_drop(
+                        totals,
+                        buckets,
+                        group_by,
+                        route,
+                        reason,
+                        turn,
+                        thread,
+                        u64::from(count),
+                    );
+                }
+            } else if count > 0 {
+                totals.unpriced_turns = totals.unpriced_turns.saturating_add(u64::from(count));
+                totals.cny_unpriced_turns =
+                    totals.cny_unpriced_turns.saturating_add(u64::from(count));
+                totals.unpriced_reasons.insert(reason.label().to_string());
+                totals
+                    .cny_unpriced_reasons
+                    .insert(reason.label().to_string());
+            }
+        }
+        if facts.primary_usage_reported == 0 && usage == &Usage::default() {
+            return;
+        }
+    }
+    accumulate_runtime_usage_record(totals, buckets, group_by, route, usage, turn, thread);
+}
+
 pub(super) fn accumulate_runtime_usage_record(
     totals: &mut UsageTotals,
     buckets: &mut std::collections::BTreeMap<String, UsageBucket>,
@@ -2326,6 +2379,7 @@ pub(super) fn accumulate_runtime_child_usage_record(
             crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
             turn,
             thread,
+            1,
         );
     } else {
         accumulate_runtime_usage_record(
@@ -2340,6 +2394,7 @@ pub(super) fn accumulate_runtime_child_usage_record(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn accumulate_exact_runtime_usage_drop(
     totals: &mut UsageTotals,
     buckets: &mut std::collections::BTreeMap<String, UsageBucket>,
@@ -2348,18 +2403,19 @@ pub(super) fn accumulate_exact_runtime_usage_drop(
     reason: crate::cost_status::RuntimeUsageMissingReason,
     turn: &TurnRecord,
     thread: &ThreadRecord,
+    count: u64,
 ) {
     let nonmetered = matches!(
         route.billing_mode,
         RouteBillingMode::Subscription | RouteBillingMode::Local
     );
-    totals.dropped_usage_records = totals.dropped_usage_records.saturating_add(1);
-    totals.turns = totals.turns.saturating_add(1);
+    totals.dropped_usage_records = totals.dropped_usage_records.saturating_add(count);
+    totals.turns = totals.turns.saturating_add(count);
     if nonmetered {
-        totals.nonmetered_turns = totals.nonmetered_turns.saturating_add(1);
+        totals.nonmetered_turns = totals.nonmetered_turns.saturating_add(count);
     } else {
-        totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
-        totals.cny_unpriced_turns = totals.cny_unpriced_turns.saturating_add(1);
+        totals.unpriced_turns = totals.unpriced_turns.saturating_add(count);
+        totals.cny_unpriced_turns = totals.cny_unpriced_turns.saturating_add(count);
         totals.unpriced_reasons.insert(reason.label().to_string());
         totals
             .cny_unpriced_reasons
@@ -2377,13 +2433,13 @@ pub(super) fn accumulate_exact_runtime_usage_drop(
         key,
         ..UsageBucket::default()
     });
-    bucket.dropped_usage_records = bucket.dropped_usage_records.saturating_add(1);
-    bucket.turns = bucket.turns.saturating_add(1);
+    bucket.dropped_usage_records = bucket.dropped_usage_records.saturating_add(count);
+    bucket.turns = bucket.turns.saturating_add(count);
     if nonmetered {
-        bucket.nonmetered_turns = bucket.nonmetered_turns.saturating_add(1);
+        bucket.nonmetered_turns = bucket.nonmetered_turns.saturating_add(count);
     } else {
-        bucket.unpriced_turns = bucket.unpriced_turns.saturating_add(1);
-        bucket.cny_unpriced_turns = bucket.cny_unpriced_turns.saturating_add(1);
+        bucket.unpriced_turns = bucket.unpriced_turns.saturating_add(count);
+        bucket.cny_unpriced_turns = bucket.cny_unpriced_turns.saturating_add(count);
         bucket.unpriced_reasons.insert(reason.label().to_string());
         bucket
             .cny_unpriced_reasons
@@ -7100,10 +7156,20 @@ impl RuntimeThreadManager {
                 let parent_dispatched_at = parent_route
                     .as_ref()
                     .map_or(turn.created_at, |route| route.dispatched_at);
-                if let Some(usage) = turn.effective_route_usage.as_ref().or(turn.usage.as_ref())
-                    && usage_timestamp_in_range(parent_dispatched_at, since, until)
+                if usage_timestamp_in_range(parent_dispatched_at, since, until)
+                    && (turn.effective_route_usage.is_some()
+                        || turn.usage.is_some()
+                        || turn
+                            .model_request_diagnostics
+                            .is_some_and(|facts| facts.primary_coverage_recorded))
                 {
-                    accumulate_runtime_usage_record(
+                    let absent = Usage::default();
+                    let usage = turn
+                        .effective_route_usage
+                        .as_ref()
+                        .or(turn.usage.as_ref())
+                        .unwrap_or(&absent);
+                    accumulate_primary_runtime_usage_record(
                         &mut totals,
                         &mut buckets,
                         group_by,
@@ -7152,6 +7218,7 @@ impl RuntimeThreadManager {
                             drop_record.reason,
                             turn,
                             thread,
+                            1,
                         );
                     }
                 }
@@ -7225,8 +7292,19 @@ impl RuntimeThreadManager {
             std::collections::BTreeMap::new();
         for turn in &turns {
             let parent_route = turn.effective_route_envelope();
-            if let Some(usage) = turn.effective_route_usage.as_ref().or(turn.usage.as_ref()) {
-                accumulate_runtime_usage_record(
+            if turn.effective_route_usage.is_some()
+                || turn.usage.is_some()
+                || turn
+                    .model_request_diagnostics
+                    .is_some_and(|facts| facts.primary_coverage_recorded)
+            {
+                let absent = Usage::default();
+                let usage = turn
+                    .effective_route_usage
+                    .as_ref()
+                    .or(turn.usage.as_ref())
+                    .unwrap_or(&absent);
+                accumulate_primary_runtime_usage_record(
                     &mut split.parent,
                     &mut buckets,
                     UsageGroupBy::Thread,
@@ -7255,6 +7333,7 @@ impl RuntimeThreadManager {
                     drop_record.reason,
                     turn,
                     &thread,
+                    1,
                 );
             }
             // Dropped fallback receipts are routed-child records, so the
@@ -14251,6 +14330,10 @@ impl RuntimeThreadManager {
         // latter; a prepared request is not evidence of delivery or a model
         // call, and the terminal counters intentionally exclude HTTP retries.
         let mut turn_model_request_diagnostics: Option<RuntimeTurnRequestDiagnostics> = None;
+        let mut primary_coverage_recorded = false;
+        let mut primary_usage_reported = 0_u32;
+        let mut primary_usage_unknown = 0_u32;
+        let mut primary_usage_missing = 0_u32;
         let mut turn_status: Option<RuntimeTurnStatus> = None;
         let mut turn_error: Option<String> = None;
         let mut saw_engine_activity = false;
@@ -15952,6 +16035,56 @@ impl RuntimeThreadManager {
                     .await?;
                 }
                 EngineEvent::ProviderRequestReceipt { receipt } => {
+                    if receipt["primary"].as_bool() == Some(true) {
+                        primary_coverage_recorded = true;
+                        let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                            serde_json::from_value::<crate::llm_client::ProviderUsageCoverage>(
+                                value,
+                            )
+                            .ok()
+                        });
+                        let reported = receipt["usage_reported"].as_bool() == Some(true);
+                        if reported {
+                            primary_usage_reported = primary_usage_reported.saturating_add(1);
+                        }
+                        if matches!(
+                            coverage,
+                            Some(
+                                crate::llm_client::ProviderUsageCoverage::Missing
+                                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+                            )
+                        ) {
+                            if receipt["outcome"] == "completed"
+                                || receipt["outcome"] == "review_response"
+                            {
+                                primary_usage_missing = primary_usage_missing.saturating_add(1);
+                            } else {
+                                primary_usage_unknown = primary_usage_unknown.saturating_add(1);
+                            }
+                        }
+                        let _turn_mutation = self.store.turn_mutation.lock();
+                        let mut turn = self.store.load_turn(&turn_id)?;
+                        let mut facts = turn.model_request_diagnostics.unwrap_or_else(|| {
+                            RuntimeTurnRequestDiagnostics::from(
+                                &crate::tool_inspection::TurnStopDiagnostics::default(),
+                            )
+                        });
+                        facts.primary_coverage_recorded = primary_coverage_recorded;
+                        facts.primary_usage_reported = primary_usage_reported;
+                        facts.primary_usage_unknown = primary_usage_unknown;
+                        facts.primary_usage_missing = primary_usage_missing;
+                        turn.model_request_diagnostics = Some(facts);
+                        if reported && let Some(source) = receipt["source_id"].as_str() {
+                            let fingerprint = routed_usage_source_fingerprint(source);
+                            if !turn.routed_usage_source_ids.contains(&fingerprint)
+                                && turn.routed_usage_source_ids.len()
+                                    < MAX_ROUTED_USAGE_RECORDS_PER_TURN
+                            {
+                                turn.routed_usage_source_ids.push(fingerprint);
+                            }
+                        }
+                        self.store.save_turn(&turn)?;
+                    }
                     if receipt["outcome"] == "steered"
                         || receipt["outcome"] == "steered_before_stream"
                     {
@@ -16019,6 +16152,10 @@ impl RuntimeThreadManager {
                             if !admitted_acp {
                                 facts.stop_reason = None;
                             }
+                            facts.primary_coverage_recorded = primary_coverage_recorded;
+                            facts.primary_usage_reported = primary_usage_reported;
+                            facts.primary_usage_unknown = primary_usage_unknown;
+                            facts.primary_usage_missing = primary_usage_missing;
                             turn_model_request_diagnostics = Some(facts);
                         }
                         // Keep the existing bounded request projection in the
@@ -16290,7 +16427,8 @@ impl RuntimeThreadManager {
                 .routed_usage_dropped_records
                 .saturating_add(background_residual)
                 .saturating_add(turn_routed_usage_dropped_records);
-            turn.model_request_diagnostics = turn_model_request_diagnostics;
+            turn.model_request_diagnostics =
+                turn_model_request_diagnostics.or(turn.model_request_diagnostics);
             turn.error = turn_error;
             // Item refs are final now. The workspace delta derives from the
             // pre/post-turn restore points recorded on this turn (every

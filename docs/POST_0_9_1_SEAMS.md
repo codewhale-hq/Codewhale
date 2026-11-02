@@ -30,20 +30,22 @@ streaming adapters open through it:
 - dual/H1-twin client selection (`client_for_policy`)
 - bounded response-header wait (`stream_open_timeout`, env override
   `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`)
-- one shared open function (`open_sse_response`): a classified H2 header
-  stall on the dual client retries exactly once on the HTTP/1.1 twin;
-  an H1-pinned request never retries; nothing retries once response
-  headers (and therefore any stream body) exist
-- H1 retry classification (`should_retry_with_h1`)
+- one shared open function (`open_sse_response`): only a proven transient
+  connection failure before dispatch can select the HTTP/1.1 twin; a header
+  stall or interrupted response remains unknown and cannot reissue inference
+- typed H1 retry classification (`is_stream_open_transport_failure`)
 - idle-timeout message format (`idle_timeout_message`, with
   bytes/age/last-chunk diagnostics)
 
 Wire-protocol request construction and stream decoding remain at the
 adapter edge (`chat.rs`, `anthropic.rs`, `responses.rs`): each adapter
 builds its own endpoint URL, headers, auth, and body inside the attempt
-closure it hands to `open_sse_response`. The pre-existing Responses
-provider retry loop (rate limit / transient upstream, `send_with_retry`)
-stays inside each open attempt, before any stream body exists.
+closure it hands to `open_sse_response`. The shared streaming retry loop
+(`send_retry_loop`) wraps stream opening; rate-limit backoff stays outside each
+response-header timer. It permits only ordinary rate limits or proven transient
+pre-dispatch connection failures. Both inference clients disable automatic redirects and reqwest
+protocol retries. Read-only catalog GETs select their bounded retry policy at
+their actual method owner.
 
 Remaining follow-up: collapsing further toward a piagent-style single
 StreamFn (shared decode loop) is still deferred.

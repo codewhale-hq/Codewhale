@@ -683,6 +683,14 @@ fn unanswered_call_result(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeTurnRequestDiagnostics {
+    #[serde(default)]
+    pub primary_coverage_recorded: bool,
+    #[serde(default)]
+    pub primary_usage_reported: u32,
+    #[serde(default)]
+    pub primary_usage_unknown: u32,
+    #[serde(default)]
+    pub primary_usage_missing: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<RuntimeTurnStopReason>,
     /// Parent streaming model-client calls, including stream retries.
@@ -716,6 +724,10 @@ pub enum RuntimeTurnStopReason {
 impl From<&crate::tool_inspection::TurnStopDiagnostics> for RuntimeTurnRequestDiagnostics {
     fn from(diagnostics: &crate::tool_inspection::TurnStopDiagnostics) -> Self {
         Self {
+            primary_coverage_recorded: false,
+            primary_usage_reported: 0,
+            primary_usage_unknown: 0,
+            primary_usage_missing: 0,
             stop_reason: diagnostics.reason.map(|reason| match reason {
                 crate::tool_inspection::TurnStopReason::ProviderNoToolCall => {
                     RuntimeTurnStopReason::ProviderNoToolCall
@@ -966,8 +978,8 @@ pub struct TurnRecord {
         serialize_with = "serialize_routed_usage_drop_records"
     )]
     pub routed_usage_drop_records: Vec<RuntimeUsageDropRecord>,
-    /// Fingerprints of provider-call identities already appended to this turn.
-    /// This durable ledger makes mailbox delivery, direct sinks, fallback
+    /// Fingerprints of provider-call identities already settled by this turn.
+    /// Primary membership adds no routed amount. This ledger makes mailbox, sink, fallback
     /// recovery, and process restart idempotent without persisting raw ids.
     #[serde(
         default,

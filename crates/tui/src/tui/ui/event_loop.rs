@@ -3621,6 +3621,7 @@ pub(crate) async fn run_event_loop(
                             .as_ref()
                             .and_then(|turn| turn.route.as_ref())
                             .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
+                            .filter(|_| parent_route_usage != codewhale_models::Usage::default())
                             .map(|route| route.audit(&parent_route_usage));
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             provider,
@@ -4792,6 +4793,50 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::ProviderRequestReceipt { receipt } => {
+                        if receipt["primary"].as_bool() == Some(true)
+                            && receipt["session_id"].as_str() == app.current_session_id.as_deref()
+                        {
+                            let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                                serde_json::from_value::<
+                                    codewhale_engine::llm_client::ProviderUsageCoverage,
+                                >(value)
+                                .ok()
+                            });
+                            if let Some(source) = receipt["source_id"].as_str() {
+                                if receipt["usage_reported"].as_bool() == Some(true) {
+                                    app.session.subagent_usage_sources.insert(
+                                        codewhale_engine::cost_status::usage_source_fingerprint(
+                                            source,
+                                        ),
+                                    );
+                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                        codewhale_engine::cost_status::scope_token(),
+                                        source,
+                                    );
+                                }
+                                if matches!(coverage, Some(codewhale_engine::llm_client::ProviderUsageCoverage::Missing | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete))
+                                    && let Some(route) = receipt.get("route").cloned().and_then(|value| serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value).ok())
+                                {
+                                    let reason = if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                                    } else {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                                    };
+                                    let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(&codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                                        source_id: source.to_string(), route, reason,
+                                    });
+                                    app.absorb_pending_background_cost(&pool);
+                                }
+                            }
+                            let leaf = app.session_journal.leaf_id.clone();
+                            app.session_journal.append(
+                                codewhale_runtime::session_tree::SessionEntryKind::System {
+                                    content: format!("Provider request receipt: {receipt}"),
+                                },
+                            );
+                            app.session_journal.leaf_id = leaf;
+                        }
+
                         if receipt["outcome"] == "steered"
                             || receipt["outcome"] == "steered_before_stream"
                         {

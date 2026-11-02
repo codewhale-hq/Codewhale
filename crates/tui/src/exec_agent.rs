@@ -797,7 +797,7 @@ pub(crate) async fn run_exec_agent(
     let mut reported_sandbox_contract = false;
 
     let mut active_turn_id = None;
-    let mut image_request_receipts = Vec::new();
+    let mut provider_request_receipts = Vec::new();
     let mut latest_session_id = loaded_session_id;
     let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
     let mut latest_system_prompt: Option<SystemPrompt> = None;
@@ -1154,17 +1154,31 @@ pub(crate) async fn run_exec_agent(
                 }
             }
             Event::ProviderRequestReceipt { receipt } => {
-                if receipt
+                let image_projection = receipt
                     .get("wire_observations")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(|observations| {
                         observations
                             .iter()
                             .any(|observation| observation.get("image_projection").is_some())
-                    })
-                {
+                    });
+                let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                    serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(
+                        value,
+                    )
+                    .ok()
+                });
+                let unknown_primary = receipt["primary"].as_bool() == Some(true)
+                    && matches!(
+                        coverage,
+                        Some(
+                            codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                                | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+                        )
+                    );
+                if image_projection || unknown_primary {
                     should_persist_session = true;
-                    image_request_receipts.push(receipt.clone());
+                    provider_request_receipts.push(receipt.clone());
                 }
                 if output_format == ExecOutputFormat::StreamJson {
                     emit_exec_stream_event(&ExecStreamEvent::ProviderRequestReceipt { receipt })?;
@@ -1306,7 +1320,7 @@ pub(crate) async fn run_exec_agent(
                                     .as_str()
                                 })),
                             manager.as_ref(),
-                            &image_request_receipts,
+                            &provider_request_receipts,
                             None,
                         )
                     });
@@ -1633,8 +1647,7 @@ pub(crate) async fn run_exec_agent(
         }
     }
 
-    // Drain the terminal receipt before either returning or taking the explicit
-    // retryable-failure process exit below. Outbox failures cannot change the
+    // Drain the terminal receipt before returning. Outbox failures cannot change the
     // authoritative turn outcome.
     if let Err(error) = lifecycle_outbox.flush(Duration::from_secs(2)).await {
         tracing::warn!(target: "lifecycle_outbox", %error, "exec lifecycle outbox did not drain before exit");
@@ -1650,20 +1663,6 @@ pub(crate) async fn run_exec_agent(
     if let Some(error) = summary.error.as_ref()
         && !error.trim().is_empty()
     {
-        // Distinguish retryable infrastructure failures (provider/transport,
-        // after all in-session retries are exhausted) from genuine task
-        // failures so supervisors and bench harnesses can tell them apart at
-        // the process level without parsing the stream. Genuine failures
-        // keep the historical `bail!` → exit 1 path.
-        let exit_code = exec_failure_exit_code(summary.error_category.as_deref());
-        // The final line always carries the message: automation greps it and
-        // a caller may keep only the last stderr line, even when the stream
-        // already printed the same error above.
-        if exit_code != 1 {
-            eprintln!("Error: exec turn failed: {error}");
-            let _ = io::stdout().flush();
-            std::process::exit(exit_code);
-        }
         bail!("exec turn failed: {error}");
     }
 

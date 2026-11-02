@@ -703,6 +703,7 @@
                 Duration::from_secs(5),
                 || client.http_client.get(format!("{}/models", server.uri())),
                 &ErrorBodyDisclosure::Full,
+                crate::llm_client::RetryOperation::ReadOnly,
             )
             .await
             .expect("caller-pinned total must not be overwritten by the envelope");

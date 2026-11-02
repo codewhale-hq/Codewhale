@@ -455,13 +455,8 @@ pub fn hard_cap_tool_result(
     content.push_str("\n[truncated: true]");
     content
 }
-/// Per-step API-call timeout retry budget. A `create_message` call that
-/// exceeds `step_api_timeout` is re-issued up to this many times (with
-/// exponential backoff) before the step is interrupted with a preserved
-/// checkpoint. Dogfooding showed a single 120s stall wiping out every child
-/// in a fan-out one by one even though the provider call was live-but-slow,
-/// so a timeout now gets the same retry dignity as a transient provider
-/// error (kimi-code comparison, FINISH-0.9.4 entry #40).
+/// Proven pre-dispatch connection timeout retry budget. A dispatched timeout
+/// retains an unknown outcome and checkpoint without automatic replay.
 const SUBAGENT_API_TIMEOUT_MAX_RETRIES: u32 = 5;
 /// Initial backoff for a timed-out per-step API call; doubles per retry and
 /// is capped at [`SUBAGENT_API_TIMEOUT_MAX_BACKOFF`].
@@ -472,9 +467,8 @@ const SUBAGENT_API_TIMEOUT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// children that all time out together does not re-fire in lockstep.
 const SUBAGENT_API_TIMEOUT_BACKOFF_JITTER_FACTOR: f64 = 0.2;
 /// Per-step LLM API call timeout. Each `create_message` request must complete
-/// within this window or the attempt is treated as timed out (and retried up
-/// to [`SUBAGENT_API_TIMEOUT_MAX_RETRIES`] times before interrupting the
-/// step). Prevents a single stuck API call from blocking the sub-agent
+/// within this window or the unknown dispatched outcome interrupts the step.
+/// Prevents a single stuck API call from blocking the sub-agent
 /// indefinitely.
 /// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
 /// now travels on `SubAgentRuntime::step_api_timeout` so users can override
@@ -18118,61 +18112,9 @@ fn retryable_subagent_provider_failure(
 }
 
 fn is_transient_subagent_provider_error(error: &anyhow::Error) -> bool {
-    // Durable account, model, and policy refusals outrank message text: a
-    // quota error mentioning "429" is not a transient rate limit. Retain the
-    // transport fallback for generic/parse errors and relay HTTP 400s, which
-    // can carry an upstream timeout rather than an invalid request.
-    let message = format!("{error:#}").to_ascii_lowercase();
-    if crate::llm_client::image_count_rejection(&message).is_some() {
-        return false;
-    }
-    match error.downcast_ref::<LlmError>() {
-        Some(
-            LlmError::QuotaExhausted(_)
-            | LlmError::AuthenticationError(_)
-            | LlmError::AuthorizationError(_)
-            | LlmError::ModelError(_)
-            | LlmError::ContentPolicyError(_)
-            | LlmError::ContextLengthError(_),
-        ) => return false,
-        Some(error) if error.is_retryable() => return true,
-        _ => {}
-    }
-
-    [
-        "did not receive response headers",
-        "response headers",
-        "stream request",
-        "request timed out",
-        "operation timed out",
-        "deadline has elapsed",
-        "connection reset",
-        "connection closed",
-        "connection aborted",
-        "temporarily unavailable",
-        "bad gateway",
-        "gateway timeout",
-        "service unavailable",
-        "rate limited",
-        "rate_limit",
-        "rate_limited",
-        "too many requests",
-        "429",
-        "502",
-        "503",
-        "504",
-        // Body/decode failures are transport-class: the provider accepted the
-        // request and died mid-response (a DeepSeek stream decode error killed
-        // a 141s scout with zero retries — morning-report issue #7). One
-        // same-prompt retry is cheap next to re-planning the child.
-        "error decoding response body",
-        "failed to read chat api response body",
-        "failed to parse chat api json",
-        "unexpected end of file",
-        "incomplete message",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    error
+        .downcast_ref::<LlmError>()
+        .is_some_and(LlmError::is_retryable)
 }
 
 fn record_agent_progress(
@@ -21833,7 +21775,9 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::RateLimited { .. }) => Some("rate_limited"),
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
-        Some(LlmError::NetworkError(_)) | Some(LlmError::Timeout(_)) => Some("network"),
+        Some(LlmError::NetworkError(_))
+        | Some(LlmError::ConnectError { .. })
+        | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {
             Some("auth")
         }

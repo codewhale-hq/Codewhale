@@ -1176,8 +1176,8 @@ pub struct SessionState {
     pub pending_turn_cache_write_tokens: u32,
     pub subagent_cost: f64,
     pub subagent_cost_cny: f64,
-    /// Redacted provider-response identities already accrued. The same
-    /// fingerprints are persisted by the session and worker projections.
+    /// Redacted provider-response identities settled by parent or routed owners.
+    /// Membership never adds a child amount; parent usage keeps its own pricing.
     pub subagent_usage_sources: HashSet<String>,
     pub missing_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,

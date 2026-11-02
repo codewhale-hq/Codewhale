@@ -3000,6 +3000,16 @@ false is unpriced. These receipts cover the parent model calls; child and
 compaction usage arrive through other paths. Summed per-call prices are
 therefore partial estimates, not the complete turn bill.
 
+`turn.provider_request` retains the captured route, logical request identity,
+bounded `physical_requests` identities, typed `transmission`, `coverage`, reported
+usage and outcome. An observed send or absent response headers do not prove
+provider acceptance or free work. Unknown primary outcomes remain unpriced in
+the turn diagnostics and usage totals; known primary usage stays in parent
+accounting. These receipts do not yet reconcile late cumulative primary usage.
+Inference automatically retries only an ordinary rate limit or a proven
+transient connection failure before dispatch. A later explicit user turn is a
+new request, not an automatic replay of an uncertain request.
+
 `turn.completed` carries the turn's authoritative cumulative token usage in
 `payload.turn.usage`, including routed work. It replaces the running token
 counts; it does not supply an authoritative last-turn cost. The thread totals

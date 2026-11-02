@@ -754,8 +754,8 @@ pub struct SessionCostSnapshot {
     /// credential, or a filesystem path.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub route_receipts: BTreeSet<String>,
-    /// Redacted provider-response identities already included in the live and
-    /// durable sub-agent totals. Worker records persist the same fingerprints.
+    /// Redacted provider-response identities already settled by their owning
+    /// parent or routed projection. Worker records persist the same fingerprints.
     ///
     /// Known limit (#6842): unbounded, ~70 bytes per background call. It is
     /// the replay-idempotency set for money (late-usage overlay and restored

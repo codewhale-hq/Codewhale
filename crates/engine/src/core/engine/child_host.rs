@@ -319,6 +319,17 @@ impl Engine {
                     .clone()
                     .unwrap_or_else(|| "Core child turn interrupted".into()),
             ),
+            (TurnOutcomeStatus::Failed, _, _)
+                if self
+                    .child_host
+                    .as_ref()
+                    .and_then(|state| state.request_stop_reason)
+                    == Some("request_outcome_unknown") =>
+            {
+                SubAgentStatus::Interrupted(error.clone().unwrap_or_else(|| {
+                    "provider request outcome unknown; checkpoint preserved".into()
+                }))
+            }
             (TurnOutcomeStatus::Failed, Some(reason), _)
                 if reason == super::dispatch::FLEET_NO_PROGRESS_STOP =>
             {

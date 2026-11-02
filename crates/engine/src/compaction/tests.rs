@@ -164,7 +164,7 @@ fn untyped_transient_and_deterministic_classification_remains_compatible() {
         "503 Service Unavailable",
         "network error: connection refused",
     ] {
-        assert!(is_transient_error(&anyhow::anyhow!(message)), "{message}");
+        assert!(!is_transient_error(&anyhow::anyhow!(message)), "{message}");
     }
     for message in [
         "401 Unauthorized: Invalid API key",
@@ -177,7 +177,7 @@ fn untyped_transient_and_deterministic_classification_remains_compatible() {
         classify_compaction_failure(&anyhow::anyhow!(
             "prompt is too long for this model's context window"
         )),
-        CompactionFailureKind::ContextOverflow
+        CompactionFailureKind::Deterministic
     );
 }
 

@@ -10,7 +10,7 @@ fn stream_read_scenario() {
 
         assert!(message.contains("Provider stream connection dropped"));
         assert!(message.contains("No output had streamed yet"));
-        assert!(message.contains("retry automatically"));
+        assert!(message.contains("will not replay it automatically"));
         assert!(message.contains("Stream read error: error decoding response body"));
     }
     // from stream_read_error_message_explains_no_replay_after_output
@@ -29,327 +29,6 @@ fn stream_read_scenario() {
             codewhale_error_taxonomy::ErrorCategory::Network
         );
     }
-}
-
-#[test]
-fn stream_retry_budget_caps_transparent_retries_at_two() {
-    // Case 4 from issue #103: after DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES attempts
-    // we stop trying transparently and let the outer error path surface.
-    // (The outer per-turn `stream_retry_attempts` retry is a separate layer
-    // and is still in effect at the whole-turn level.)
-    assert!(
-        super::should_transparently_retry_stream(
-            false,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES - 1,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-            false,
-        ),
-        "one short of the cap should still retry"
-    );
-    assert!(
-        !super::should_transparently_retry_stream(
-            false,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-            false,
-        ),
-        "at the cap, no further transparent retries"
-    );
-    assert!(
-        !super::should_transparently_retry_stream(
-            false,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES + 5,
-            super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-            false,
-        ),
-        "well past the cap, definitely no transparent retries"
-    );
-}
-
-// === #2990 sleep-resume policy ================================================
-
-#[test]
-fn sleep_gap_requires_wallclock_to_outrun_monotonic_clock() {
-    use std::time::Duration;
-    // No divergence: ordinary network failure, clocks agree.
-    assert!(
-        !super::sleep_gap_detected(Duration::from_secs(30), Duration::from_secs(30)),
-        "equal elapsed times must not register as a sleep gap"
-    );
-    // Divergence below the threshold: NTP slew / scheduling jitter.
-    assert!(
-        !super::sleep_gap_detected(Duration::from_secs(5), Duration::from_secs(14)),
-        "9s of divergence is below the 10s threshold"
-    );
-    // Divergence above the threshold: the host was suspended.
-    assert!(
-        super::sleep_gap_detected(Duration::from_secs(5), Duration::from_secs(16)),
-        "11s of divergence must register as a sleep gap"
-    );
-    // Wall clock went backwards (NTP step): saturating_sub → zero gap.
-    assert!(
-        !super::sleep_gap_detected(Duration::from_secs(60), Duration::from_secs(5)),
-        "wall clock behind monotonic must never register as a sleep gap"
-    );
-}
-
-#[test]
-fn sleep_resume_scenario() {
-    // Scenario consolidation of: sleep_resume_retries_even_after_content_streamed, sleep_resume_requires_a_detected_gap, sleep_resume_respects_budget_and_cancellation
-    // from sleep_resume_retries_even_after_content_streamed
-    {
-        // The whole point of #2990: unlike the #103 transparent retry, a
-        // detected sleep gap retries regardless of streamed content — the
-        // partial output predates the sleep and the user was not watching.
-        assert!(
-            super::should_resume_after_sleep(true, 0, super::DEFAULT_STREAM_MAX_RESUMES, false),
-            "detected sleep with full budget must resume"
-        );
-        assert!(
-            super::should_resume_after_sleep(
-                true,
-                super::DEFAULT_STREAM_MAX_RESUMES - 1,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "detected sleep one short of the budget must still resume"
-        );
-    }
-    // from sleep_resume_requires_a_detected_gap
-    {
-        // Without a sleep gap this layer stays out of the way entirely, so the
-        // deliberate no-retry-after-content policy for ordinary flakes (#103)
-        // is preserved.
-        assert!(
-            !super::should_resume_after_sleep(false, 0, super::DEFAULT_STREAM_MAX_RESUMES, false),
-            "no sleep gap → never resume via this layer"
-        );
-    }
-    // from sleep_resume_respects_budget_and_cancellation
-    {
-        assert!(
-            !super::should_resume_after_sleep(
-                true,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "budget exhausted → surface the failure instead of looping"
-        );
-        assert!(
-            !super::should_resume_after_sleep(true, 0, super::DEFAULT_STREAM_MAX_RESUMES, true),
-            "cancelled turn must not be resumed behind the user's back"
-        );
-    }
-}
-
-// === headless mid-stream network-drop resume (v0.9.4 Terminal-Bench P0) ======
-//
-// Terminal-Bench 2.1 on the 0.9.4 bundle forfeited tasks when the DeepSeek
-// stream dropped mid-response ("error decoding response body" after partial
-// content): the #103 policy surfaced the warning and failed the turn, and
-// `codewhale exec` exited 1. In a headless host no operator watches the
-// partial deltas and the fragment is never committed, so the turn loop now
-// re-issues the request instead (bounded by DEFAULT_STREAM_MAX_RESUMES), exactly
-// like the #2990 sleep-resume.
-
-#[test]
-fn network_drop_scenario() {
-    // Scenario consolidation of: network_drop_resume_only_fires_for_headless_hosts, network_drop_resume_requires_network_class_error, network_drop_resume_respects_budget_and_cancellation
-    // from network_drop_resume_only_fires_for_headless_hosts
-    {
-        assert!(
-            super::should_resume_after_network_drop(
-                true,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "headless host + network-class drop with budget must resume"
-        );
-        assert!(
-            !super::should_resume_after_network_drop(
-                false,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "interactive sessions keep the #103 surface-the-warning policy: \
-             the user saw the partial deltas and replay would render them twice"
-        );
-    }
-    // from network_drop_resume_requires_network_class_error
-    {
-        assert!(
-            !super::should_resume_after_network_drop(
-                true,
-                false,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "non-network failures (model/parse/auth) must never be replayed"
-        );
-    }
-    // from network_drop_resume_respects_budget_and_cancellation
-    {
-        assert!(
-            super::should_resume_after_network_drop(
-                true,
-                true,
-                super::DEFAULT_STREAM_MAX_RESUMES - 1,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false,
-            ),
-            "one short of the budget should still resume"
-        );
-        assert!(
-            !super::should_resume_after_network_drop(
-                true,
-                true,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "budget exhausted → surface the failure instead of looping"
-        );
-        assert!(
-            !super::should_resume_after_network_drop(
-                true,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                true
-            ),
-            "cancelled turn must not be resumed behind the operator's back"
-        );
-    }
-}
-
-// === interactive mid-stream network-drop resume (0.9.4; reworked 0.9.10) =========
-//
-// The interactive TUI used to fail the turn when a provider stream dropped
-// after partial output because the #103 policy treated any post-content error
-// as terminal. The model now preserves a visible partial reply as a committed
-// assistant message and re-issues the request. Since 0.9.10 the recovery is
-// typed engine-internal state (`StreamResume`): no synthetic `[runtime]` user
-// continuation message is appended, and a thinking-only drop preserves
-// nothing and never claims it did.
-
-#[test]
-fn interactive_network_scenario() {
-    // Scenario consolidation of: interactive_network_drop_resume_only_fires_for_interactive_hosts, interactive_network_drop_resume_requires_partial_content_and_no_tools, interactive_network_drop_resume_requires_network_class_error
-    // from interactive_network_drop_resume_only_fires_for_interactive_hosts
-    {
-        assert!(
-            super::should_resume_interactive_after_network_drop(
-                true,
-                true,
-                true,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "interactive TUI + partial text + no tools + budget must resume"
-        );
-        assert!(
-            !super::should_resume_interactive_after_network_drop(
-                false,
-                true,
-                true,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "headless hosts must use the headless resume path, not this one"
-        );
-    }
-    // from interactive_network_drop_resume_requires_partial_content_and_no_tools
-    {
-        assert!(
-            !super::should_resume_interactive_after_network_drop(
-                true,
-                true,
-                false,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "no streamed content → transparent retry or nothing-streamed path"
-        );
-        assert!(
-            !super::should_resume_interactive_after_network_drop(
-                true,
-                true,
-                true,
-                false,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "in-flight tool calls must never be resumed (side-effect duplication)"
-        );
-    }
-    // from interactive_network_drop_resume_requires_network_class_error
-    {
-        assert!(
-            !super::should_resume_interactive_after_network_drop(
-                true,
-                false,
-                true,
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_RESUMES,
-                false
-            ),
-            "non-network failures must surface normally"
-        );
-    }
-}
-
-#[test]
-fn interactive_network_drop_resume_respects_budget_and_cancellation() {
-    assert!(
-        super::should_resume_interactive_after_network_drop(
-            true,
-            true,
-            true,
-            true,
-            super::DEFAULT_STREAM_MAX_RESUMES - 1,
-            super::DEFAULT_STREAM_MAX_RESUMES,
-            false,
-        ),
-        "one short of the budget should still resume"
-    );
-    assert!(
-        !super::should_resume_interactive_after_network_drop(
-            true,
-            true,
-            true,
-            true,
-            super::DEFAULT_STREAM_MAX_RESUMES,
-            super::DEFAULT_STREAM_MAX_RESUMES,
-            false,
-        ),
-        "budget exhausted → surface the failure"
-    );
-    assert!(
-        !super::should_resume_interactive_after_network_drop(
-            true,
-            true,
-            true,
-            true,
-            0,
-            super::DEFAULT_STREAM_MAX_RESUMES,
-            true
-        ),
-        "cancelled turn must not resume"
-    );
 }
 
 /// Model client whose first `failures` streams emit partial content and then
@@ -607,14 +286,14 @@ async fn headless_turn_retries_mid_stream_network_drop_and_recovers() {
             _ => None,
         })
         .expect("terminal diagnostics through existing event authority");
-    assert_eq!(terminal.model_requests_started, 2);
-    assert_eq!(terminal.stream_resumes, 1);
+    assert_eq!(terminal.model_requests_started, 1);
+    assert_eq!(terminal.stream_resumes, 0);
     assert_eq!(terminal.transparent_stream_retries, 0);
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the dropped stream must be re-issued exactly once"
+        1,
+        "an admitted dropped stream must not be replayed"
     );
     let (status, error) = events
         .iter()
@@ -625,25 +304,24 @@ async fn headless_turn_retries_mid_stream_network_drop_and_recovers() {
         .expect("terminal TurnComplete");
     assert_eq!(
         *status,
-        TurnOutcomeStatus::Completed,
-        "a recovered retry must complete the turn: {error:?}"
+        TurnOutcomeStatus::Failed,
+        "an unknown dropped request must fail the turn: {error:?}"
     );
-    assert!(error.is_none(), "recovered turn must not report an error");
+    assert!(error.is_some(), "unknown outcome must remain visible");
     assert!(
-        events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
             Event::Status { message } if message.starts_with("Retry attempt: stream-resume 1/")
         )),
-        "the first actual resume must remain visible: {events:?}"
+        "an uncertain opened stream must not resume automatically: {events:?}"
     );
     assert!(
-        !events
+        events
             .iter()
             .any(|event| matches!(event, Event::Error { .. })),
-        "a transient drop that the retry recovers must not surface an error event: {events:?}"
+        "an unknown dropped response must surface its error: {events:?}"
     );
-    // The discarded fragment from the dropped attempt must never reach the
-    // transcript — only the retried turn's content is committed.
+    // The actual dropped fragment survives without a second provider request.
     let transcript_text = events
         .iter()
         .filter_map(|event| match event {
@@ -659,12 +337,12 @@ async fn headless_turn_retries_mid_stream_network_drop_and_recovers() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        transcript_text.contains("recovered after retry"),
-        "retried content must be committed: {transcript_text}"
+        !transcript_text.contains("recovered after retry"),
+        "no retried content may be committed: {transcript_text}"
     );
     assert!(
-        !transcript_text.contains("partial answer that must be discarded"),
-        "the dropped attempt's fragment must be discarded, not committed: {transcript_text}"
+        transcript_text.contains("partial answer that must be discarded"),
+        "the dropped attempt's fragment must be retained: {transcript_text}"
     );
 }
 
@@ -690,22 +368,22 @@ async fn terminal_diagnostics_count_transparent_stream_requests_without_extra_sn
     let surface = test_tool_surface(&engine, registry, None, AppMode::Agent);
     let mut turn = crate::core::turn::TurnContext::new(4);
     let (status, error) = engine.run_turn(&mut turn, surface, None, None).await;
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(status, TurnOutcomeStatus::Failed, "{error:?}");
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     let snapshot = turn
         .terminal_request_snapshot(status)
         .expect("terminal snapshot");
     let terminal = snapshot.terminal.expect("terminal facts");
-    assert_eq!(terminal.model_requests_started, 2);
-    assert_eq!(terminal.transparent_stream_retries, 1);
+    assert_eq!(terminal.model_requests_started, 1);
+    assert_eq!(terminal.transparent_stream_retries, 0);
     assert_eq!(terminal.stream_resumes, 0);
     assert_eq!(terminal.model_step_index, 0);
     let mut receiver = handle.rx_event.write().await;
     let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
-    assert!(events.iter().any(|event| matches!(event,
+    assert!(!events.iter().any(|event| matches!(event,
         Event::Status { message } if message.starts_with("Retry attempt: transparent-stream 1/")
     )));
-    assert!(events.iter().any(|event| matches!(event,
+    assert!(!events.iter().any(|event| matches!(event,
         Event::Status { message } if message == "Retry recovery: transparent stream recovered after 1 retries"
     )));
     let snapshots = events
@@ -767,16 +445,16 @@ async fn run_turn_with_stream_open_failures(
 async fn stream_open_failure_is_retried_through_the_resume_budget() {
     let (model, status, error, terminal, events) =
         run_turn_with_stream_open_failures(1, None, StreamOpenFailure::HeaderStall).await;
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert_eq!(status, TurnOutcomeStatus::Failed, "{error:?}");
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
+        1,
         "a request that never opened must be re-issued once"
     );
-    assert_eq!(terminal.model_requests_started, 2);
-    assert_eq!(terminal.stream_resumes, 1);
+    assert_eq!(terminal.model_requests_started, 1);
+    assert_eq!(terminal.stream_resumes, 0);
     assert!(
-        !events
+        events
             .iter()
             .any(|event| matches!(event, Event::Error { .. })),
         "a recovered open failure must not surface an error event: {events:?}"
@@ -790,10 +468,10 @@ async fn stream_open_failure_fails_the_turn_once_the_budget_is_spent() {
     assert_eq!(status, TurnOutcomeStatus::Failed);
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1 + super::DEFAULT_STREAM_MAX_RESUMES as usize,
+        1,
         "initial attempt plus the default resume budget, then the turn fails"
     );
-    assert_eq!(terminal.stream_resumes, super::DEFAULT_STREAM_MAX_RESUMES);
+    assert_eq!(terminal.stream_resumes, 0);
     assert!(
         error
             .as_deref()
@@ -835,17 +513,22 @@ async fn stream_open_failure_behind_adapter_context_is_retried() {
     ] {
         let (model, status, error, terminal, _events) =
             run_turn_with_stream_open_failures(1, None, open_failure).await;
+        let safe = matches!(open_failure, StreamOpenFailure::WrappedConnectError);
         assert_eq!(
             status,
-            TurnOutcomeStatus::Completed,
+            if safe {
+                TurnOutcomeStatus::Completed
+            } else {
+                TurnOutcomeStatus::Failed
+            },
             "{open_failure:?}: {error:?}"
         );
         assert_eq!(
             model.calls.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "{open_failure:?}: a wrapped transport failure must be re-issued"
+            if safe { 2 } else { 1 },
+            "only proven connect failure may be reissued"
         );
-        assert_eq!(terminal.stream_resumes, 1, "{open_failure:?}");
+        assert_eq!(terminal.stream_resumes, u32::from(safe), "{open_failure:?}");
     }
 }
 
@@ -1065,26 +748,28 @@ async fn transient_error_frame_with_no_content_is_retried_and_terminal_frame_is_
         canned::simple_text_turn("recovered answer"),
     ])
     .await;
-    assert_eq!(requests, 2, "the empty-upstream frame is re-issued once");
-    assert!(events.iter().any(|event| matches!(event,
+    assert_eq!(
+        requests, 1,
+        "an admitted error frame must not trigger another POST"
+    );
+    assert!(!events.iter().any(|event| matches!(event,
         Event::Status { message } if message.starts_with("Retry attempt: stream-resume 1/")
     )));
-    assert!(events.iter().any(|event| matches!(event,
+    assert!(!events.iter().any(|event| matches!(event,
         Event::Status { message } if message == "Retry recovery: stream recovered after 1 retries"
     )));
     assert!(
         events.iter().any(|event| matches!(
             event,
             Event::TurnComplete {
-                status: TurnOutcomeStatus::Completed,
-                error: None,
+                status: TurnOutcomeStatus::Failed,
                 ..
             }
         )),
         "a successful retry completes the turn"
     );
     assert!(
-        !events
+        events
             .iter()
             .any(|event| matches!(event, Event::Error { .. })),
         "a retried frame leaves no error card behind"
@@ -1121,10 +806,7 @@ async fn exhausted_transient_error_frame_posts_one_error_envelope() {
         }]
     };
     let (events, requests) = error_frame_turn_events((0..8).map(|_| frame()).collect()).await;
-    assert!(
-        (2..8).contains(&requests),
-        "the frame is retried within the budget, then given up on: {requests}"
-    );
+    assert_eq!(requests, 1, "an unknown error frame must not be replayed");
     let cards: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -1442,6 +1124,16 @@ async fn cancellation_after_terminal_usage_still_charges_the_turn() {
 async fn run_interactive_turn_with_flaky_network(
     failures: usize,
 ) -> (std::sync::Arc<FlakyNetworkDropModelClient>, Vec<Event>) {
+    let _environment = lock_test_env();
+    let workspace = tempdir().expect("owned stream recovery workspace");
+    let fixture_state = workspace.path().join(".codewhale");
+    fs::create_dir_all(&fixture_state).unwrap();
+    fs::write(
+        fixture_state.join("AGENTS.md"),
+        "Preserve the exact operator input.\n",
+    )
+    .unwrap();
+    let _state_home = EnvVarGuard::set("CODEWHALE_HOME", &fixture_state);
     let model = std::sync::Arc::new(FlakyNetworkDropModelClient {
         calls: std::sync::atomic::AtomicUsize::new(0),
         failures,
@@ -1456,9 +1148,11 @@ async fn run_interactive_turn_with_flaky_network(
         snapshots_enabled: false,
         subagents_enabled: false,
         terminal_chrome_enabled: true,
-        ..EngineConfig::default()
+        ..deterministic_engine_config(workspace.path())
     };
-    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    engine.instruction_settings.home = Some(workspace.path().to_path_buf());
+    engine.refresh_system_prompt();
     let run_task = tokio::spawn(engine.run());
 
     handle
@@ -1520,8 +1214,8 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
 
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the dropped stream must be re-issued exactly once"
+        1,
+        "an admitted dropped stream must not be replayed"
     );
     let (status, error) = events
         .iter()
@@ -1532,27 +1226,26 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
         .expect("terminal TurnComplete");
     assert_eq!(
         *status,
-        TurnOutcomeStatus::Completed,
-        "a recovered retry must complete the turn: {error:?}"
+        TurnOutcomeStatus::Failed,
+        "an unknown dropped request must fail the turn: {error:?}"
     );
-    assert!(error.is_none(), "recovered turn must not report an error");
+    assert!(error.is_some(), "unknown outcome must remain visible");
     assert!(
-        events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
             Event::Status { message } if message.starts_with("Retry attempt: stream-resume 1/")
         )),
-        "the first actual resume must remain visible: {events:?}"
+        "an uncertain opened stream must not resume automatically: {events:?}"
     );
     assert!(
-        !events
+        events
             .iter()
             .any(|event| matches!(event, Event::Error { .. })),
-        "a transient drop that the retry recovers must not surface an error event: {events:?}"
+        "an unknown dropped response must surface its error: {events:?}"
     );
 
-    // The visible fragment must survive as an assistant message, followed by
-    // the retried assistant content — and nothing else. The recovery is
-    // typed internal state, so no synthetic `[runtime]` user turn may appear.
+    // The visible fragment survives as interrupted assistant content without
+    // another provider request or a synthetic `[runtime]` user turn.
     let transcript = events
         .iter()
         .rev()
@@ -1569,7 +1262,7 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
                 ContentBlock::Text { text, .. } => !text.contains("[runtime]"),
                 _ => true,
             }),
-        "a retried turn must not insert a synthetic [runtime] user message: {transcript:?}"
+        "a failed turn must not insert a synthetic [runtime] user message: {transcript:?}"
     );
     assert_eq!(
         transcript
@@ -1579,13 +1272,13 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
         1,
         "the operator's own turn must be the only user message: {transcript:?}"
     );
-    let assistant_cells = transcript
+    let interrupted_assistant_cells = transcript
         .iter()
-        .filter(|message| message.role == "assistant")
+        .filter(|message| message.role == Role::InterruptedAssistant)
         .count();
     assert_eq!(
-        assistant_cells, 2,
-        "preserved fragment + one authoritative continuation: {transcript:?}"
+        interrupted_assistant_cells, 1,
+        "one preserved incomplete fragment: {transcript:?}"
     );
     let transcript_text = transcript
         .iter()
@@ -1602,8 +1295,8 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
     );
     assert_eq!(
         transcript_text.matches("recovered after retry").count(),
-        1,
-        "exactly one authoritative final answer, not a duplicate: {transcript_text}"
+        0,
+        "no automatic replacement answer: {transcript_text}"
     );
 }
 
@@ -1711,8 +1404,8 @@ impl crate::core::model_client::ModelClient for TransportRetryModelClient {
                     .attempts
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if attempt < self.failures {
-                    Err(crate::llm_client::LlmError::ServerError {
-                        status: 503,
+                    Err(crate::llm_client::LlmError::RateLimited {
+                        retry_after: None,
                         message: "RAW-ENGINE-RETRY-FAILURE".into(),
                     })
                 } else {
@@ -1844,8 +1537,8 @@ async fn full_retry_receipt_queue_cancellation_does_not_dispatch_an_extra_reques
                 || {
                     calls += 1;
                     async {
-                        Err::<(), _>(crate::llm_client::LlmError::ServerError {
-                            status: 503,
+                        Err::<(), _>(crate::llm_client::LlmError::RateLimited {
+                            retry_after: None,
                             message: "private".into(),
                         })
                     }

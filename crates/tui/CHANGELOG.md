@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Inference requests stop after uncertain delivery or an interrupted stream instead of silently sending another request. Automatic retries require an ordinary rate limit or a transient connection failure before dispatch. Redirects and HTTP protocol retries cannot bypass this policy; retained output and missing usage coverage remain visible. Terminal `exec` failures return exit 1; error categories no longer imply that repeating a saved command is safe.
+
 - MCP calls inside `execute_tools` expose a single bare JSON result directly through `content`. Rich or annotated results retain their envelopes, and oversized results keep the original raw size and spill receipt.
 
 - Session metadata reads stop at a bounded scan and report unreadable records without hiding healthy picker rows. Queued saves preserve durable renames, archive state and Runtime ownership under the session write lock; uncertain metadata refuses writes and cleanup. Persistence batches run off the async executor, and explicit placeholder-title renames retain their intent.

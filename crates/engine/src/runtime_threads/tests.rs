@@ -10009,6 +10009,10 @@ async fn monitor_persists_request_snapshots_and_matching_terminal_diagnostics() 
     assert_eq!(
         completed.model_request_diagnostics,
         Some(RuntimeTurnRequestDiagnostics {
+            primary_coverage_recorded: false,
+            primary_usage_reported: 0,
+            primary_usage_unknown: 0,
+            primary_usage_missing: 0,
             stop_reason: None,
             model_requests_started: 2,
             transport_retries: 3,
@@ -25331,6 +25335,10 @@ fn control_owner_capture_uses_held_lease_and_new_generation_after_restart() -> R
 #[test]
 fn ordinary_terminal_request_facts_omit_private_acp_stop_projection() {
     let facts = RuntimeTurnRequestDiagnostics {
+        primary_coverage_recorded: false,
+        primary_usage_reported: 0,
+        primary_usage_unknown: 0,
+        primary_usage_missing: 0,
         stop_reason: None,
         model_requests_started: 2,
         transport_retries: 0,

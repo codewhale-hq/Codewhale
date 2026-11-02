@@ -14517,28 +14517,6 @@ fn write_exec_stdout(text: &str) -> Result<()> {
     }
 }
 
-/// Process exit code `codewhale exec` uses when a turn ends on a retryable
-/// infrastructure failure (provider/transport) rather than a genuine task
-/// failure. 75 is `EX_TEMPFAIL` from sysexits.h — "temporary failure; the
-/// invocation is expected to succeed on retry" — so bench harnesses and
-/// supervisors can distinguish retryable infra exits from genuine task
-/// failures (exit 1) without parsing the stream-json metadata.
-const EXEC_EXIT_RETRYABLE_INFRA: i32 = 75; // EX_TEMPFAIL
-
-/// Map a terminal exec error category to the process exit code.
-///
-/// `network` / `timeout` mean the provider connection dropped or stalled
-/// after every in-session retry budget was exhausted: the task itself
-/// neither passed nor failed, and re-running the same command is safe.
-/// `rate_limit` is deliberately NOT mapped to the retryable code — the same
-/// category also covers quota exhaustion, which a blind retry would hammer.
-fn exec_failure_exit_code(error_category: Option<&str>) -> i32 {
-    match error_category {
-        Some("network" | "timeout") => EXEC_EXIT_RETRYABLE_INFRA,
-        _ => 1,
-    }
-}
-
 fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(event)?;
     if let Some(object) = value.as_object_mut() {
@@ -15278,7 +15256,7 @@ fn persist_exec_session(
     total_tokens: u64,
     turn_failure: Option<&str>,
     manager: &SessionManager,
-    image_request_receipts: &[serde_json::Value],
+    provider_request_receipts: &[serde_json::Value],
     checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
 ) -> Result<String> {
     let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
@@ -15325,16 +15303,85 @@ fn persist_exec_session(
             session_manager::SavedTurnOutcome::failed(error, messages.len()),
         );
     }
-    if !image_request_receipts.is_empty() {
+    if !provider_request_receipts.is_empty() {
         saved.ensure_journal();
         if let Some(journal) = saved.journal.as_mut() {
             let leaf = journal.leaf_id.clone();
-            for receipt in image_request_receipts {
+            for receipt in provider_request_receipts {
+                let label = if receipt
+                    .get("wire_observations")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|value| value.get("image_projection").is_some())
+                    }) {
+                    "Provider request image projection"
+                } else {
+                    "Provider request receipt"
+                };
                 journal.append(codewhale_runtime::session_tree::SessionEntryKind::System {
-                    content: format!("Provider request image projection: {receipt}"),
+                    content: format!("{label}: {receipt}"),
                 });
                 journal.leaf_id.clone_from(&leaf);
             }
+        }
+    }
+    for receipt in provider_request_receipts
+        .iter()
+        .filter(|receipt| receipt["primary"].as_bool() == Some(true))
+    {
+        let Some(source) = receipt["source_id"].as_str() else {
+            continue;
+        };
+        if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
+            );
+        }
+        let coverage = receipt.get("coverage").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
+                .ok()
+        });
+        if matches!(
+            coverage,
+            Some(
+                codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                    | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+                .ok()
+        }) {
+            let reason =
+                if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                } else {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                };
+            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                    source_id: source.to_string(),
+                    route,
+                    reason,
+                },
+            );
+            let cost = &mut saved.metadata.cost;
+            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
+                &mut cost.missing_usage_sources,
+                &mut cost.missing_usage_overflowed,
+                &mut cost.unpriced_turns,
+                &mut cost.cny_unpriced_turns,
+                &pool,
+            );
+            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
+            cost.cny_unpriced_turns = cost
+                .cny_unpriced_turns
+                .saturating_add(pool.cny_unpriced_turns);
+            cost.unpriced_reasons
+                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
+            cost.cny_unpriced_reasons
+                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
         }
     }
     saved.make_storage_compatible();

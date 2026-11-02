@@ -514,11 +514,9 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Stream-level retry budgets (#6700): whole-request resumes (also spent
-    /// by stream-open failures, #6699), in-stream transparent retries, and
-    /// the per-stream error streak. Resolved from `[tui].stream_max_resumes`,
-    /// `[tui].stream_max_transparent_retries` and `[tui].stream_max_errors`;
-    /// the defaults are the historical compiled-in values.
+    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// The parsed max_transparent_retries/max_errors values are inactive
+    /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
     /// `[tui].stream_open_timeout_secs`, then
@@ -11198,11 +11196,9 @@ use self::streaming::TOOL_CALL_START_MARKERS;
 #[cfg(test)]
 use self::streaming::filter_tool_call_delta;
 use self::streaming::{
-    ContentBlockKind, StreamResume, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
+    ContentBlockKind, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
     contains_fake_tool_wrapper, filter_tool_call_delta_with_state, flush_tool_call_delta_state,
-    should_resume_after_network_drop, should_resume_after_sleep,
-    should_resume_interactive_after_network_drop, should_transparently_retry_stream,
-    sleep_gap_detected, stream_read_error_user_message,
+    stream_read_error_user_message,
 };
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, ToolSurfacePolicy,

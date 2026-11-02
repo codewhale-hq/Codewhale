@@ -553,11 +553,11 @@ pub fn classify_worker_exit(exit_code: Option<i32>, stopped: bool) -> FleetWorke
         },
         Some(code) => FleetWorkerEventPayload::Failed {
             reason: format!("worker exited with code {code}"),
-            recoverable: true,
+            recoverable: false,
         },
         None => FleetWorkerEventPayload::Failed {
             reason: "worker exited without a status code".to_string(),
-            recoverable: true,
+            recoverable: false,
         },
     }
 }
@@ -1956,13 +1956,15 @@ mod tests {
             classify_worker_exit(Some(0), false),
             FleetWorkerEventPayload::Completed { .. }
         ));
-        assert!(matches!(
-            classify_worker_exit(Some(1), false),
-            FleetWorkerEventPayload::Failed {
-                recoverable: true,
-                ..
-            }
-        ));
+        for exit_code in [Some(1), Some(75), None] {
+            assert!(matches!(
+                classify_worker_exit(exit_code, false),
+                FleetWorkerEventPayload::Failed {
+                    recoverable: false,
+                    ..
+                }
+            ));
+        }
         assert!(matches!(
             classify_worker_exit(Some(0), true),
             FleetWorkerEventPayload::Cancelled { .. }

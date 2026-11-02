@@ -180,7 +180,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 
 **`duration_bucket`** ——来自 `app.session_started_at`（`crates/tui/src/tui/app.rs:1889`）的 `chrono` 差值。半开区间，单位秒：`lt_1m`（`d < 60`）、`1m_10m`（`60 ≤ d < 600`）、`10m_60m`（`600 ≤ d < 3600`）、`gt_60m`（`d ≥ 3600`）。
 
-**`exit_class`** —— `clean | signal | panic | error`。**来自显式的 `AtomicU8`，绝不来自退出码。** `RunTerminationReason::Canceled` 映射到退出码 130（`crates/engine/src/core/runtime_contract/termination.rs:53`），与信号任务使用同一个值（`crates/tui/src/lib.rs:682`，128+SIGINT），因此基于退出码的推导会把每次 Esc 取消的回合都报成信号。这个 atomic 由 panic hook（`crates/tui/src/lib.rs:1582`）、信号任务（`:678-696`，在 `std::process::exit` 之前）以及干净路径上的 `RunTerminationReason::is_success()`（`crates/engine/src/core/runtime_contract/termination.rs:44-46`）设置——其他情况为 `error`。**不要**使用 `exec_failure_exit_code`（`crates/tui/src/lib.rs:10432`）：它只知道 `{75, 1}`，会把需要审批的退出码（3）报成普通失败。
+**`exit_class`** —— `clean | signal | panic | error`。**来自显式的 `AtomicU8`，绝不来自退出码。** `RunTerminationReason::Canceled` 映射到退出码 130（`crates/engine/src/core/runtime_contract/termination.rs:53`），与信号任务使用同一个值（`crates/tui/src/lib.rs:682`，128+SIGINT），因此基于退出码的推导会把每次 Esc 取消的回合都报成信号。这个 atomic 由 panic hook（`crates/tui/src/lib.rs:1582`）、信号任务（`:678-696`，在 `std::process::exit` 之前）以及干净路径上的 `RunTerminationReason::is_success()`（`crates/engine/src/core/runtime_contract/termination.rs:44-46`）设置——其他情况为 `error`。退出码本身仍不足以分类：需要审批的退出（3）与 exec 终止失败（1）必须保留实际的终止分类。
 
 **`cold_start_bucket`** ——来自 `startup_trace::elapsed_ms()`，它直接读取 `PROCESS_START`，并且独立于启动摘要的缓冲区清空（`crates/runtime/src/startup_trace.rs:39-45`）。边界：`lt_250`、`250_1000`、`1000_3000`、`gte_3000`。非 TUI surface 上缺席。
 
