@@ -95,6 +95,7 @@ Codewhale 会写出文件、给你看 diff，然后询问 **APPROVAL: bash pytho
 | 你需要 | 原因 |
 |---|---|
 | Linux x86_64 或 arm64，或 macOS | 这些平台有预编译二进制。Linux 二进制是**静态**链接的（musl），没有 glibc 或 libdbus 依赖，可在任何发行版上运行。 |
+| 鸿蒙 PC | 在 Linux 子系统（融合开发引擎）里用 Linux ARM64 版，或为 `aarch64-unknown-linux-ohos` 原生构建并签名；见 [HarmonyOS 与 OpenHarmony](HarmonyOS.md)。 |
 | `curl`（或 `wget`）和 `sha256sum`（或 `shasum`） | 安装器用它们下载并校验。 |
 | 一个模型提供商的密钥，例如 [DeepSeek](https://platform.deepseek.com/api_keys) | 没有模型，Codewhale 什么用都没有。 |
 | `git`（推荐） | Codewhale 在 git 仓库里效果最好。 |
@@ -776,13 +777,14 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 
 ### 支持平台与发布资源
 
-[最新稳定版](https://github.com/codewhale-hq/CodeWhale/releases/latest)发布了 Linux x64/arm64、macOS x64/arm64、Windows x64/arm64 和 Android arm64 的资源。资源存在不等于平台已通过验收。下表描述的是当前源码树的平台与次要打包支持；`latest` 安装仍然选择已发布的版本。Android/Termux 为预览状态，等待真机 QA。Linux ARM64 自 v0.8.8 起可用。Linux RISC-V 预编译暂时暂停，因为锁定的 `rquickjs-sys` 依赖没有提供 `riscv64gc-unknown-linux-gnu` 绑定。
+[最新稳定版](https://github.com/codewhale-hq/CodeWhale/releases/latest)发布了 Linux x64/arm64、macOS x64/arm64、Windows x64/arm64 和 Android arm64 的资源；带 OpenHarmony 构建任务的版本还会发布原生 HarmonyOS/OpenHarmony arm64 压缩包。资源存在不等于平台已通过验收。下表描述的是当前源码树的平台与次要打包支持；`latest` 安装仍然选择已发布的版本。Android/Termux 为预览状态，等待真机 QA。Linux ARM64 自 v0.8.8 起可用。Linux RISC-V 预编译暂时暂停，因为锁定的 `rquickjs-sys` 依赖没有提供 `riscv64gc-unknown-linux-gnu` 绑定。
 
 | 平台 | 架构 | GitHub 发布资源 | npm install | `cargo install` |
 | ------------ | ------------ | ----------------------------------------------------- | :---------: | :-------------: |
 | Linux | x64 (x86_64) | `codewhale-linux-x64`, `codew-linux-x64` | ✅ | ✅ |
 | Linux | arm64 | `codewhale-linux-arm64`, `codew-linux-arm64` | ✅ | ✅ |
 | Android / Termux | arm64 (aarch64) | `codewhale-android-arm64.tar.gz`（v0.9.12 已发布；真机支持仍为预览） | ⚠️⁴ 预览版 | ⚠️⁴ 预览版 |
+| HarmonyOS / OpenHarmony（原生） | arm64 (aarch64) | `codewhale-ohos-arm64.tar.gz`（包内已自签名；仅在此项资源存在的版本中提供），否则从源码构建并签名 —— 见 [HarmonyOS](HarmonyOS.md) | ❌ | ❌ |
 | Linux | riscv64 | 暂时不支持，待上游绑定落地 | ❌¹ | ❌³ |
 | macOS | x64 | `codewhale-macos-x64`, `codew-macos-x64` | ✅ | ✅ |
 | macOS | arm64 (M 系列) | `codewhale-macos-arm64`, `codew-macos-arm64` | ✅ | ✅ |
@@ -798,6 +800,8 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 ⁴ 当前的 npm 包装器能识别 Android arm64，并解析匹配的 `codewhale` 和 `codew` Android 资源。npm 安装仅对 GitHub Release 已发布了这些匹配资源的包版本有效。在 #4236 和 #4242 跟踪的真机编译、启动、审批、文件工具与更新检查完成之前，Android/Termux 路径仍为预览。
 
 Android / Termux 与 Linux arm64 不是同一个目标。不要在 Termux 里安装 Linux 的 `codewhale-linux-arm64` 压缩包；当某个发布版或候选版发布了 Termux 专用的 Android 压缩包时请使用它，或在 Termux 内从源码构建。
+
+表中的这一行只指原生鸿蒙。在 Linux 子系统（融合开发引擎，一台 openEuler 虚拟机）里，用上面的 Linux ARM64 资源即可。
 
 当前 Linux 的 **x64 和 arm64** 资源都是**静态 musl 构建**。x64 发布路径自 v0.8.65 起使用 musl；v0.9.6 把同样的构建与静态启动检查扩展到了 arm64。这些二进制没有 glibc 依赖，可在匹配的架构上跨 Ubuntu、Debian、RHEL/CentOS 和 Alpine/musl 运行。SQLite 通过 `rusqlite` 内置，因此无需单独的 `libsqlite3` 运行时包。
 
