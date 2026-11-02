@@ -476,9 +476,19 @@ fn mcp_review_discloses_host_authority_and_names_without_secret_values() {
     assert!(review.contains("bearer_env=REMOTE\\_TOKEN"));
     assert!(review.contains("redirects=same-origin-only"));
     assert!(review.contains("Qualified skills: [none]"));
-    assert!(review.contains("#2 value=\"--mode=worker\""));
-    assert!(review.contains("#3 value=\"-e\""));
-    assert!(review.contains("#4 value=\"console.log('ready')\""));
+    for (position, expected) in [(2, "--mode=worker"), (3, "-e"), (4, "console.log('ready')")] {
+        let prefix = format!("#{position} value=");
+        let value = review
+            .split(prefix.as_str())
+            .nth(1)
+            .expect("reviewed argv position");
+        let actual = serde_json::Deserializer::from_str(value)
+            .into_iter::<String>()
+            .next()
+            .expect("reviewed JSON value")
+            .expect("lossless reviewed argv string");
+        assert_eq!(actual, expected);
+    }
     assert!(review.contains("oauth=disabled"));
 }
 

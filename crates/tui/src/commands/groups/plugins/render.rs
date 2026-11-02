@@ -275,11 +275,32 @@ fn render_review_argv_value(value: &str, context: ReviewTextContext) -> String {
     // whitespace, quotes, backslashes, and punctuation retain their exact
     // argv semantics without hiding arbitrary values behind redaction.
     let rendered = serde_json::to_string(value).expect("serializing a Rust string cannot fail");
-    if context == ReviewTextContext::Prose {
-        rendered.replace('&', "\\u0026")
-    } else {
-        rendered
+    if context != ReviewTextContext::Prose {
+        return rendered;
     }
+    let mut escaped = String::with_capacity(rendered.len());
+    let mut chars = rendered.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some(next @ ('\\' | '"')) => {
+                    let _ = write!(escaped, "\\u{:04x}", next as u32);
+                }
+                Some(next) => {
+                    escaped.push('\\');
+                    escaped.push(next);
+                }
+                None => escaped.push(ch),
+            }
+        } else if "&`*_[](){}#+-.!|~<>:".contains(ch)
+            || codewhale_sanitize::sanitize::is_bidi_control(ch)
+        {
+            let _ = write!(escaped, "\\u{:04x}", ch as u32);
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
 }
 
 fn render_review_values(values: &[String], context: ReviewTextContext) -> String {
