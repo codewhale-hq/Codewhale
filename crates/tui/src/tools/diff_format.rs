@@ -1,12 +1,13 @@
-//! Build unified-diff strings for tool-result metadata.
+//! Build unified text diffs for mutation evidence.
 //!
 //! `edit_file` and `write_file` capture the file contents before and after
 //! the mutation and stash a unified diff in the result `metadata` (under
 //! `mutation.diff`) for the TUI, which routes it through
 //! `diff_render::render_diff` with line numbers and coloured `+`/`-`
-//! gutters (#505). The model-facing `content` stays a one-line receipt —
-//! the model learns what changed from the edit echo (touched symbols and
-//! impacted callers), not from the diff.
+//! gutters (#505). Lowercase `edit` and `write` reuse that same diff in
+//! model-facing content when both snapshots are UTF-8 and the entire diff
+//! fits the inline cap. Otherwise they disclose omission and provide a
+//! revision-qualified read; metadata still carries the full text diff.
 
 use similar::TextDiff;
 

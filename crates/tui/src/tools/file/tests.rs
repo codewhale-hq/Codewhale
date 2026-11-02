@@ -631,6 +631,15 @@ fn contract_edit_fuzzy_normalization_preserves_untouched_lines() {
     assert_eq!(updated, "untouched line  \nShe said hello.\ntail  \n");
 }
 
+fn mutation_evidence(result: &ToolResult) -> Value {
+    result
+        .content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("read").is_some())
+        .expect("written snapshot and guarded read must reach the model")
+}
+
 #[tokio::test]
 async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     let temporary = tempfile::tempdir().expect("tempdir");
@@ -646,9 +655,10 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     )
     .await
     .expect("edit");
-    assert_eq!(
-        result.content,
-        "Successfully replaced 1 block(s) in doc.txt."
+    assert!(
+        result
+            .content
+            .starts_with("Successfully replaced 1 block(s) in doc.txt.")
     );
     assert_eq!(
         std::fs::read(&path).expect("updated"),
@@ -657,6 +667,17 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     // The receipt describes the bytes written (BOM and CRLF included), not
     // the edited text, so a turn artifact's revision matches the file read.
     let on_disk = std::fs::read(&path).expect("updated");
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "complete");
+    let diff = result.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("applied diff");
+    assert!(result.content.contains(diff), "model and TUI must agree");
+    assert!(diff.contains("+\u{FEFF}one\r\n+two\r\n"), "{diff}");
+    assert_eq!(
+        evidence["read"]["expected_revision"],
+        content_hash(&on_disk)
+    );
     assert_eq!(
         result.metadata.as_ref().expect("metadata")["mutation"]["files"],
         json!([{
@@ -688,6 +709,82 @@ async fn contract_write_receipt_carries_written_size_and_sha256() {
             "sha256": codewhale_runtime::hashing::sha256_hex(&on_disk),
         }])
     );
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "complete");
+    assert!(result.content.contains("+# Title\n"), "{}", result.content);
+    assert_eq!(evidence["read"]["path"], "notes/out.md");
+    let read = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect("the emitted reference must be directly usable");
+    assert!(read.content.starts_with("# Title\n"));
+    std::fs::write(temporary.path().join("notes/out.md"), "# Other\n")
+        .expect("same-size external edit");
+    let error = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect_err("written evidence must not authorize a stale snapshot");
+    assert!(error.to_string().contains("stale"), "{error}");
+}
+
+#[tokio::test]
+async fn contract_mutation_reports_normalized_rust_not_requested_text() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let path = temporary.path().join("reef.rs");
+    std::fs::write(&path, "fn reef() -> u32 {\n    1\n}\n").expect("fixture");
+    let context = ToolContext::new(temporary.path());
+    let result = super::super::file_tool::EditTool
+        .execute(
+            json!({"path": "reef.rs", "edits": [{"oldText": "    1", "newText": "    1+2"}]}),
+            &context,
+        )
+        .await
+        .expect("edit");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("normalized source"),
+        "fn reef() -> u32 {\n    1 + 2\n}\n"
+    );
+    assert!(
+        result.content.contains("+    1 + 2\n"),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("+    1+2\n"));
+    assert_eq!(mutation_evidence(&result)["diff"]["status"], "complete");
+}
+
+#[tokio::test]
+async fn contract_mutation_omits_an_oversized_diff_without_cutting_a_hunk() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+    let name = if cfg!(windows) {
+        "large reef.txt"
+    } else {
+        "large \"reef\".txt"
+    };
+    let result = super::super::file_tool::WriteTool
+        .execute(json!({"path": name, "content": "🦀".repeat(650)}), &context)
+        .await
+        .expect("write");
+    let evidence = mutation_evidence(&result);
+    let diff = result.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("full TUI diff retained");
+    assert!(diff.len() > 2048 && diff.chars().count() < 2048);
+    assert_eq!(evidence["diff"]["status"], "omitted");
+    assert_eq!(evidence["diff"]["bytes"], diff.len());
+    assert_eq!(evidence["diff"]["reason"], "inline_byte_limit");
+    assert!(!result.content.contains("--- a/"), "no partial diff");
+    assert!(!result.content.contains('🦀'), "no partial source");
+    assert_eq!(
+        evidence["read"]["path"], name,
+        "JSON-escaped path roundtrip"
+    );
+    let read = super::super::file_tool::ReadTool
+        .execute(evidence["read"].clone(), &context)
+        .await
+        .expect("omitted source is recoverable through native read");
+    assert!(read.content.starts_with(&"🦀".repeat(650)));
 }
 
 /// B6: bytes that are not UTF-8 survive an edit elsewhere in the file.
@@ -699,7 +796,7 @@ async fn contract_edit_keeps_non_utf8_bytes() {
     original.extend_from_slice(b"change me\n");
     std::fs::write(&path, &original).expect("fixture");
     let context = ToolContext::new(temporary.path());
-    EditFileTool::execute_contract_edits(
+    let result = EditFileTool::execute_contract_edits(
         json!({"path": "latin1.txt", "edits": [{"oldText": "change me", "newText": "changed"}]}),
         &context,
     )
@@ -709,6 +806,10 @@ async fn contract_edit_keeps_non_utf8_bytes() {
         std::fs::read(&path).expect("updated"),
         b"caf\xe9 \xff\xfe tail\nchanged\n".to_vec()
     );
+    let evidence = mutation_evidence(&result);
+    assert_eq!(evidence["diff"]["status"], "omitted");
+    assert_eq!(evidence["diff"]["reason"], "non_utf8_snapshot");
+    assert!(!result.content.contains("--- a/"));
 }
 
 /// A valid UTF-8 file may use the placeholder range itself (Nerd Font

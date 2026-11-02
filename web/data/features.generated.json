@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "b19e4547654c035cbca03576682e4a195ec4e6dd18282ae5e43065d47784697e"
+    "sha256": "8482ce9508e7a4c6905ac01b57269243226433a0084af68ced8a61961b47dd98"
   },
   "features": [
     {
@@ -1146,7 +1146,7 @@
     {
       "id": "source-navigation-echoes",
       "name": "Source navigation echoes",
-      "summary": "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging.",
+      "summary": "Symbol and neighbor navigation, focused Rust source, bounded mutation diffs, and revision-guarded reads and paging.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview",

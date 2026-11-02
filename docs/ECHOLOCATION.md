@@ -119,8 +119,30 @@ request bytes, tool order, and provider route.
   symbols the mutation touched (nearest declaration at or above each
   changed span, via the same `similar` diff that builds the unified
   diff, under a 100ms timeout) and the podmates linking the file.
-  The model-facing receipt is one line and the diff rides metadata
-  for the TUI, so the echo is how the model learns what its edit hit.
+  Lowercase tools also return written-snapshot evidence below; the echo
+  remains advisory change attribution, not a verified dependency graph.
+
+### Written-snapshot evidence
+
+Lowercase `write` and `edit` return a JSON line containing a `read` object
+(`path`, `expected_revision`) and a `diff` status. The revision hashes the exact
+bytes accepted by the atomic writer, including line endings and any Rust
+formatting, not the model's requested replacement. The object can be passed
+directly to lowercase `read`; a later change is refused by the existing guard.
+
+For UTF-8 snapshots, `diff.status = "complete"` includes the same applied text
+diff as `metadata.mutation.diff`, only when the **entire diff** fits 2048 bytes.
+Larger diffs use `status = "omitted"`, `reason = "inline_byte_limit"` and a byte
+count; non-UTF-8 preimages or written snapshots use `reason = "non_utf8_snapshot"`.
+No partial hunk is shown. The full text diff remains in TUI metadata, and the
+guarded read remains available in every case. The cap covers diff bytes, not
+the acknowledgement, JSON evidence or existing edit echo.
+
+Evidence is derived from the mutation's captured inputs and written bytes,
+without rereading disk or creating another observation store. Its KV-cache
+effect is append-only tool history; the pinned prompt and catalog do not change.
+It establishes a written snapshot, not later filesystem freshness, behavioral
+correctness or a measured reduction in agent reads.
 
 ## Languages
 

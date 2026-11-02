@@ -839,10 +839,13 @@ async fn primitive_edit_applies_disjoint_matches_against_original() {
         std::fs::read_to_string(tmp.path().join("doc.txt")).expect("read"),
         "ALPHA-LONG\nbeta\ng\n"
     );
-    assert_eq!(
-        result.content,
-        "Successfully replaced 2 block(s) in doc.txt."
+    assert!(
+        result
+            .content
+            .starts_with("Successfully replaced 2 block(s) in doc.txt.")
     );
+    assert!(result.content.contains("+ALPHA-LONG\n"));
+    assert!(result.content.contains("+g\n"));
 }
 
 #[tokio::test]

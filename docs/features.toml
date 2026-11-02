@@ -853,7 +853,7 @@ owner = "crates/runtime/src/prompt_zones.rs"
 [[feature]]
 id = "source-navigation-echoes"
 name = "Source navigation echoes"
-summary = "Source symbols, neighbors and change attribution, with focused Rust search bodies and snapshot-guarded reads and paging."
+summary = "Symbol and neighbor navigation, focused Rust source, bounded mutation diffs, and revision-guarded reads and paging."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
 since = "0.10.2"

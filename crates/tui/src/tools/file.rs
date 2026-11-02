@@ -727,6 +727,11 @@ pub(crate) fn mutation_file_entry(path: &str, outcome: &str, written: Option<&[u
     entry
 }
 
+/// Only whole UTF-8 diffs fit inline; this cap excludes the receipt and echo.
+const MUTATION_INLINE_DIFF_MAX_BYTES: usize = 2048;
+
+/// Append-only written-snapshot evidence; this makes no later-freshness claim
+/// and does not change the session-pinned prompt or tool catalog.
 #[allow(clippy::too_many_arguments)]
 async fn contract_mutation_result(
     context: &ToolContext,
@@ -735,16 +740,39 @@ async fn contract_mutation_result(
     before: &str,
     after: &str,
     written: &[u8],
+    before_is_utf8: bool,
     outcome: &str,
     summary: String,
 ) -> ToolResult {
+    let diff = make_unified_diff(requested_path, before, after);
+    let omitted_reason = if !before_is_utf8 || std::str::from_utf8(written).is_err() {
+        Some("non_utf8_snapshot")
+    } else if diff.len() > MUTATION_INLINE_DIFF_MAX_BYTES {
+        Some("inline_byte_limit")
+    } else {
+        None
+    };
+    let diff_evidence = match omitted_reason {
+        Some(reason) => json!({"status": "omitted", "reason": reason, "bytes": diff.len()}),
+        None => json!({"status": "complete", "bytes": diff.len()}),
+    };
+    // Hash the atomic writer's captured bytes, never a later disk observation.
+    let mut summary = format!(
+        "{summary}\n{}",
+        json!({
+            "read": {"path": requested_path, "expected_revision": content_hash(written)},
+            "diff": diff_evidence,
+        })
+    );
+    if omitted_reason.is_none() && !diff.is_empty() {
+        summary.push('\n');
+        summary.push_str(&diff);
+    }
     let paths = [file_path.to_path_buf()];
     let diagnostics = lsp_diagnostics_for_paths(context, &paths).await;
-    // Echolocation: the model-facing receipt is one line while the diff
-    // rides metadata for the TUI, so the echo tells the model what its
-    // edit hit (touched symbols) and what hears it (impacted callers).
+    // Echolocation adds advisory change attribution alongside the written
+    // snapshot; it does not establish a verified dependency graph.
     // Deterministic, hard-budgeted, None when there is nothing to say.
-    let mut summary = summary;
     let workspace = context.workspace.clone();
     let echo_path = file_path.to_path_buf();
     let echo_before = before.to_string();
@@ -770,7 +798,7 @@ async fn contract_mutation_result(
         "event": "file.mutation",
         "lsp_diagnostics": diagnostics,
         "mutation": {
-            "diff": make_unified_diff(requested_path, before, after),
+            "diff": diff,
             "files": [mutation_file_entry(requested_path, outcome, Some(written))],
             "renames": []
         }
@@ -1858,6 +1886,7 @@ impl WriteFileTool {
             prior_contents.as_ref(),
             &written,
             written.as_bytes(),
+            std::str::from_utf8(&prior_bytes).is_ok(),
             outcome,
             match kept_ending {
                 Some(ending) => format!(
@@ -2688,6 +2717,7 @@ impl EditFileTool {
             &raw,
             &final_content,
             &bytes,
+            !has_raw_bytes,
             "updated",
             format!(
                 "Successfully replaced {} block(s) in {path_str}.",
