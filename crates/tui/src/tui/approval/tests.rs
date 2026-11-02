@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::authority::get_tool_category;
+use codewhale_engine::core::authority::get_tool_category;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
@@ -839,7 +839,7 @@ fn ask_rule_save_preview_formats_shell_rule() {
 
     let preview = request.ask_rule_save_preview().expect("save preview");
     assert_eq!(preview.rule_count, 1);
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["run cargo test --workspace"]);
     assert_eq!(preview.omitted, 0);
 }
@@ -853,7 +853,7 @@ fn safe_shell_request_builds_exact_workspace_allow_rule() {
     assert!(request.can_save_allow_rule());
     assert_eq!(request.persistent_allow_rules, vec![expected]);
     let preview = request.allow_rule_save_preview().expect("allow preview");
-    assert_eq!(preview.summary(), "always allow");
+    assert_eq!(preview.summary(Locale::En), "always allow");
     assert_eq!(
         preview.entries,
         vec!["run exactly cargo test --workspace in /workspace"]
@@ -1029,7 +1029,7 @@ diff --git a/src/b.rs b/src/b.rs
     );
     assert!(request.can_save_ask_rule());
     let preview = request.ask_rule_save_preview().expect("save preview");
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["change src/a.rs", "change src/b.rs"]);
     assert_eq!(
         request.persistent_allow_rules,
@@ -1157,7 +1157,7 @@ fn ask_rule_save_preview_truncates_rule_list() {
 
     let preview = build_permission_rule_save_preview(&rules, 2).expect("save preview");
     assert_eq!(preview.rule_count, 4);
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["change src/a.rs", "change src/b.rs"]);
     assert_eq!(preview.omitted, 2);
 }
@@ -1188,8 +1188,6 @@ fn test_approval_view_navigation() {
     let mut view = ApprovalView::new(benign_request());
     assert_eq!(view.current_option(), ApprovalOption::Deny);
 
-    view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::Abort);
     view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_next();
@@ -1229,6 +1227,7 @@ fn benign_y_one_step_approves() {
 fn save_ask_rule_shortcut_approves_once_with_rule() {
     let mut view = ApprovalView::new(shell_request());
     render_lines(&view, 120, 40);
+    view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
 
     let action = view.handle_key(create_key_event(KeyCode::Char('s')));
     let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
@@ -1253,6 +1252,7 @@ fn save_file_ask_rule_shortcut_emits_file_rule() {
     // workspace-relative file rule for persistence.
     let mut view = ApprovalView::new(destructive_request());
     render_lines(&view, 120, 40);
+    view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
 
     let action = view.handle_key(create_key_event(KeyCode::Char('S')));
     let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
@@ -1296,13 +1296,20 @@ fn persistent_allow_option_approves_once_with_exact_repo_rule() {
     );
 }
 
-/// The save offers work only while the card shows what the rule covers:
+/// The `[2 / p]` save works only while the card shows what the rule covers:
 /// never before the first paint, never on a band too small for the save
-/// preview, never while collapsed to its banner.
+/// preview, never while collapsed to its banner. `s` works only once the
+/// details pager has listed what it saves.
 #[test]
 fn save_shortcuts_fail_closed_while_the_save_preview_is_off_screen() {
     let saves = |view: &mut ApprovalView| {
-        [KeyCode::Char('p'), KeyCode::Char('s')].map(|code| {
+        [
+            KeyCode::Char('p'),
+            KeyCode::Char('s'),
+            KeyCode::Char('a'),
+            KeyCode::Char('2'),
+        ]
+        .map(|code| {
             matches!(
                 view.clone().handle_key(create_key_event(code)),
                 ViewAction::EmitAndClose(ViewEvent::ApprovalDecision { .. })
@@ -1310,20 +1317,42 @@ fn save_shortcuts_fail_closed_while_the_save_preview_is_off_screen() {
         })
     };
     let mut view = ApprovalView::new(shell_request());
-    assert_eq!(saves(&mut view), [false, false], "before the first paint");
+    assert_eq!(
+        saves(&mut view),
+        [false, false, false, false],
+        "before the first paint"
+    );
 
     render_lines(&view, 120, 40);
-    assert_eq!(saves(&mut view), [true, true], "preview on screen");
+    assert_eq!(
+        saves(&mut view),
+        [true, false, false, true],
+        "preview on screen"
+    );
+    view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
+    assert_eq!(
+        saves(&mut view),
+        [true, true, true, true],
+        "details pager opened"
+    );
 
-    let lines = render_lines(&view, 40, 9).join("\n");
+    let lines = render_lines(&view, 40, 7).join("\n");
     assert!(!lines.contains("Save:"), "{lines}");
-    assert!(!lines.contains("[p]"), "{lines}");
-    assert_eq!(saves(&mut view), [false, false], "band too small: {lines}");
+    assert!(!lines.contains("[2 / p]"), "{lines}");
+    assert_eq!(
+        saves(&mut view),
+        [false, true, true, false],
+        "band too small: {lines}"
+    );
 
     render_lines(&view, 120, 40);
     view.handle_key(create_key_event(KeyCode::Tab));
     render_lines(&view, 120, 40);
-    assert_eq!(saves(&mut view), [false, false], "collapsed banner");
+    assert_eq!(
+        saves(&mut view),
+        [false, true, true, false],
+        "collapsed banner"
+    );
 }
 
 /// With the save offer hidden, arrow keys skip its row and a stale selection
@@ -1335,13 +1364,13 @@ fn hidden_save_offer_is_skipped_by_navigation_and_enter() {
     view.select_prev();
     assert_eq!(view.current_option(), ApprovalOption::AllowExactRepo);
 
-    render_lines(&view, 40, 9);
+    render_lines(&view, 40, 7);
     assert!(matches!(
         view.handle_key(create_key_event(KeyCode::Enter)),
         ViewAction::None
     ));
     view.select_prev();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::Deny);
 }
@@ -1434,19 +1463,17 @@ fn mouse_click_renders_and_approves_inline_option() {
 
 /// A tiny frame keeps every one-off action and its hitbox. Where it has no
 /// room for the save preview (most locales at 40x12) it withholds the
-/// persistent save (`[p]`, index 2): its hitbox is empty and nothing clicks
-/// it. Where it offers the save, the preview is on screen.
+/// persistent save (`[2 / p]`, index 1): its hitbox is empty and nothing
+/// clicks it. Where it offers the save, the preview is on screen.
 #[test]
 fn tiny_localized_approval_keeps_every_action_and_hitbox() {
     const WIDTH: u16 = 40;
     const HEIGHT: u16 = 12;
-    const PERSISTENT: usize = 2;
+    const PERSISTENT: usize = 1;
     let expected = [
         ReviewDecision::Approved,
-        ReviewDecision::ApprovedForSession,
         ReviewDecision::Approved,
         ReviewDecision::Denied,
-        ReviewDecision::Abort,
     ];
 
     for &locale in Locale::shipped() {
@@ -1471,7 +1498,14 @@ fn tiny_localized_approval_keeps_every_action_and_hitbox() {
             let offered = hitboxes[PERSISTENT] != ratatui::layout::Rect::default();
             let screen = terminal.backend().buffer().clone();
             let text: String = screen.content.iter().map(|cell| cell.symbol()).collect();
-            assert_eq!(offered, text.contains("Save:"), "{locale:?}:\n{text}");
+            let squeeze = |value: &str| -> String {
+                value.chars().filter(|ch| !ch.is_whitespace()).collect()
+            };
+            assert_eq!(
+                offered,
+                squeeze(&text).contains(&squeeze(&tr(locale, MessageId::ApprovalFieldSave))),
+                "{locale:?}:\n{text}"
+            );
             let shown: Vec<ratatui::layout::Rect> = hitboxes
                 .iter()
                 .enumerate()
@@ -1492,7 +1526,7 @@ fn tiny_localized_approval_keeps_every_action_and_hitbox() {
                         view.handle_key(create_key_event(KeyCode::Char('p'))),
                         ViewAction::None
                     ),
-                    "{locale:?}: [p] without its save preview"
+                    "{locale:?}: [2 / p] without its save preview"
                 );
                 continue;
             }
@@ -1572,15 +1606,16 @@ fn benign_esc_aborts() {
 fn test_approval_view_enter_uses_selected_option() {
     let mut view = ApprovalView::new(benign_request());
 
-    // The semantic default is Deny; navigate once to Abort and commit it.
+    // The semantic default is Deny; navigate once (wrapping) to Allow once
+    // and commit it.
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::Abort);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
     let action = view.handle_key(create_key_event(KeyCode::Enter));
     assert!(matches!(
         action,
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision: ReviewDecision::Abort,
+            decision: ReviewDecision::Approved,
             ..
         })
     ));
@@ -1597,13 +1632,13 @@ fn test_approval_view_navigation_keys() {
     assert_eq!(view.current_option(), ApprovalOption::Deny);
 
     view.handle_key(create_key_event(KeyCode::Down));
-    assert_eq!(view.current_option(), ApprovalOption::Abort);
-
-    view.handle_key(create_key_event(KeyCode::Char('j')));
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
+    view.handle_key(create_key_event(KeyCode::Char('j')));
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+
     view.handle_key(create_key_event(KeyCode::Char('k')));
-    assert_eq!(view.current_option(), ApprovalOption::Abort);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 }
 
 #[test]
@@ -1896,16 +1931,16 @@ fn destructive_enter_denies_by_default() {
 }
 
 #[test]
-fn destructive_navigation_then_enter_commits_highlighted_abort() {
+fn destructive_navigation_then_enter_commits_highlighted_option() {
     let mut view = ApprovalView::new(destructive_request());
 
     view.handle_key(create_key_event(KeyCode::Down));
-    assert_eq!(view.current_option(), ApprovalOption::Abort);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     let action = view.handle_key(create_key_event(KeyCode::Enter));
     assert!(matches!(
         action,
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision: ReviewDecision::Abort,
+            decision: ReviewDecision::Approved,
             ..
         })
     ));
@@ -1920,10 +1955,15 @@ fn destructive_unrelated_key_keeps_modal_open() {
 }
 
 #[test]
-fn destructive_a_first_press_approves_for_session() {
+fn destructive_a_requires_details_before_approving_for_session() {
     for code in [KeyCode::Char('a'), KeyCode::Char('A')] {
         let mut view = ApprovalView::new(destructive_request());
 
+        assert!(matches!(
+            view.handle_key(create_key_event(code)),
+            ViewAction::None
+        ));
+        view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
         let action = view.handle_key(create_key_event(code));
         assert!(
             matches!(
@@ -1998,7 +2038,7 @@ fn compact_rendered_text(lines: &[String]) -> String {
 }
 
 fn assert_approval_key_badges_visible(joined: &str) {
-    for badge in ["[1 / y]", "[2 / a]", "[3 / d / n]", "[Esc]"] {
+    for badge in ["[1 / y]", "[3 / d / n]", "Esc"] {
         assert!(
             joined.contains(badge),
             "missing key badge {badge}:\n{joined}"
@@ -2303,7 +2343,7 @@ fn render_elevated_zh_hans_is_calm_and_localized() {
 }
 
 #[test]
-fn approval_review_and_save_hints_stay_on_one_row_at_80_columns() {
+fn approval_review_and_stop_hints_stay_on_one_row_at_80_columns() {
     for &locale in Locale::shipped() {
         let view = ApprovalView::new_for_locale(destructive_request(), locale);
         let lines = render_lines(&view, 80, 40);
@@ -2320,8 +2360,8 @@ fn approval_review_and_save_hints_stay_on_one_row_at_80_columns() {
         );
         let controls = review_rows[0];
         assert!(
-            controls.contains("Esc") && controls.contains(" s "),
-            "review, abort, and save-rule hints wrapped for {locale:?}:\n{}",
+            controls.contains("Esc"),
+            "review and stop hints wrapped for {locale:?}:\n{}",
             lines.join("\n")
         );
     }
@@ -2633,7 +2673,7 @@ fn elevation_always_paints_every_option_including_the_safe_exit() {
                 );
             }
             assert!(
-                joined.contains(&format!("{}Abort", crate::tui::glyphs::SELECTION)),
+                joined.contains(&format!("{}Abort", codewhale_tui_kit::glyphs::SELECTION)),
                 "{w}x{h}: Abort needs a visible marker, not only a color change:\n{joined}"
             );
             for old_hint in ["[n]", "[w]", "[f]", "[a]"] {
@@ -3150,7 +3190,6 @@ fn delegated_work_cards_show_requested_authority_fields() {
 }
 
 fn native_band_expected_decisions(request: &ApprovalRequest) -> Vec<ReviewDecision> {
-    let mut decisions = vec![ReviewDecision::Approved, ReviewDecision::ApprovedForSession];
     if request.tool_name == "workflow" {
         return vec![
             ReviewDecision::Approved,
@@ -3158,14 +3197,12 @@ fn native_band_expected_decisions(request: &ApprovalRequest) -> Vec<ReviewDecisi
             ReviewDecision::Abort,
         ];
     }
-    if request.owner.is_none() && request.can_save_allow_rule() {
-        decisions.push(ReviewDecision::Approved);
-    }
-    decisions.push(ReviewDecision::Denied);
-    if request.owner.is_none() {
-        decisions.push(ReviewDecision::Abort);
-    }
-    decisions
+    let second = if request.owner.is_none() && request.can_save_allow_rule() {
+        ReviewDecision::Approved
+    } else {
+        ReviewDecision::ApprovedForSession
+    };
+    vec![ReviewDecision::Approved, second, ReviewDecision::Denied]
 }
 
 #[test]

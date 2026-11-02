@@ -33,14 +33,14 @@ use super::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     render_modal_footer,
 };
-use crate::automation_manager::{
+use crate::tui::app::App;
+use codewhale_engine::automation_manager::{
     AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
     SharedAutomationManager,
 };
-use crate::tui::app::App;
-use crate::tui::list_nav::wrap_index;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::list_nav::wrap_index;
 
 mod editor;
 use editor::{AutomationEditor, EditorAction};
@@ -833,7 +833,7 @@ impl ModalView for AutomationsView {
                 continue;
             }
             let text = format!("[{key} {}] ", tr(self.locale, label));
-            let width = u16::try_from(crate::tui::ui_text::text_display_width(&text))
+            let width = u16::try_from(codewhale_tui_kit::ui_text::text_display_width(&text))
                 .unwrap_or(u16::MAX)
                 .min(chunks[0].right().saturating_sub(x));
             let rect = Rect::new(
@@ -867,7 +867,7 @@ mod tests {
         AutomationRecord {
             destination_thread_id: None,
             schema_version: 1,
-            execution_scope: Some(crate::task_manager::test_execution_scope("test")),
+            execution_scope: Some(codewhale_engine::task_manager::test_execution_scope("test")),
             id: id.to_string(),
             name: format!("cwc daily {id}"),
             prompt: "patrol".to_string(),
@@ -994,8 +994,10 @@ mod tests {
         let _env = crate::test_support::lock_test_env();
         let root = tempfile::tempdir().unwrap();
         let manager = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::automation_manager::AutomationManager::open_for_test(root.path().join("store"))
-                .unwrap(),
+            codewhale_engine::automation_manager::AutomationManager::open_for_test(
+                root.path().join("store"),
+            )
+            .unwrap(),
         ));
         let mut view = AutomationsView::from_rows(Vec::new(), Locale::En);
         view.workspace = root.path().to_path_buf();

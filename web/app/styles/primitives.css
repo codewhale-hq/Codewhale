@@ -588,6 +588,17 @@ a.dir-row:hover .dir-action { color: var(--text); }
 .code .code-copy:focus-visible { box-shadow: var(--glow-focus); }
 .code .code-copy:hover { background: var(--hover); color: var(--text); }
 .code-copy[data-copied="true"] { color: var(--live); }
+@media (max-width: 30rem) {
+  .code pre.code-block { padding-right: 3rem; }
+  .code .code-copy-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
 
 /* ---------- plate ---------- */
 /* The install plate: a raised sheet that holds a choice, a command and its

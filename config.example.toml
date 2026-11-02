@@ -82,6 +82,7 @@ default_text_model = "deepseek-flash"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Thinking Mode (DeepSeek V4 reasoning effort)
 # ─────────────────────────────────────────────────────────────────────────────────
+# "auto"   — the route chooses per request (default)
 # "off"    — disables chain-of-thought (thinking.type = disabled)
 # "low"    — compat-maps to "high" server-side
 # "medium" — compat-maps to "high" server-side
@@ -91,7 +92,7 @@ default_text_model = "deepseek-flash"
 # Ctrl+T in the TUI cycles the reasoning tier. The header shows the current
 # tier as a ⚡ chip. (Shift+Tab cycles the permission posture — Ask /
 # Auto-Review / Full Access — not the reasoning tier.)
-reasoning_effort = "max"
+reasoning_effort = "auto"
 
 # NOTE: `show_thinking`, `thinking_default_expanded`, `thinking_preview_lines`,
 # `help_expand_groups`, `pin_last_prompt`, and `cost_currency` live in

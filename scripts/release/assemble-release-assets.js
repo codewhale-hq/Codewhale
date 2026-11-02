@@ -9,6 +9,7 @@ const {
   BUNDLE_ASSET_NAMES,
   BUNDLE_CHECKSUM_MANIFEST,
   CHECKSUM_MANIFEST,
+  CHECKSUM_SIGNATURE,
   checksummedReleaseAssetNames,
 } = require("../../npm/codewhale/scripts/artifacts");
 
@@ -103,7 +104,15 @@ async function verifyAssetDirectory(directory) {
 
   const catalog = await readHostCatalog(directory);
   const expected = allReleaseAssetNames(catalog);
-  assertExactNames(entries.map((entry) => entry.name), expected, "Release asset directory");
+  const signature = entries.find((entry) => entry.name === CHECKSUM_SIGNATURE);
+  if (signature && (await fs.stat(path.join(directory, CHECKSUM_SIGNATURE))).size > 1024) {
+    throw new Error(`${CHECKSUM_SIGNATURE} is larger than a detached signature`);
+  }
+  assertExactNames(
+    entries.map((entry) => entry.name).filter((name) => name !== CHECKSUM_SIGNATURE),
+    expected,
+    "Release asset directory",
+  );
   await assertManifest(directory, CHECKSUM_MANIFEST, checksummedReleaseAssetNames(catalog));
   await assertManifest(directory, BUNDLE_CHECKSUM_MANIFEST, BUNDLE_ASSET_NAMES);
   if (catalog) compiledHosts.verifyDirectory(directory, catalog);

@@ -434,7 +434,7 @@ printf '%s\n' \
 `capabilities` returns the advertised method families (`thread/*`, `app/*`,
 `prompt/*`) and the full method list; `thread/capabilities`,
 `app/capabilities`, and `prompt/capabilities` scope it per family. The method
-set is pinned by a drift test in `crates/app-server/src/lib.rs`, so SDK and
+set is pinned by a drift test in `crates/app-server/src/tests.rs`, so SDK and
 local integration clients can rely on it not changing silently.
 
 ### Daemon socket: `codewhale app-server --socket`
@@ -1101,7 +1101,7 @@ Sessions and threads answer the same `include_archived` / `archived_only` pair
 with the same meaning, and `search` is the same fuzzy match (title, id,
 workspace — substring, then subsequence) the TUI session picker and the workbar
 Sessions list use. All three surfaces run one projection
-(`crates/tui/src/session_projection.rs`), so a listing cannot differ between
+(`crates/engine/src/session_projection.rs`), so a listing cannot differ between
 the terminal and the dashboard.
 
 `GET /v1/sessions/summary` returns rows that are field-compatible with
@@ -1173,7 +1173,17 @@ and live state comes only from a resumed thread's SSE stream.
 - `GET /v1/threads/{id}`
 - `PATCH /v1/threads/{id}` (see body shape below)
 - `POST /v1/threads/{id}/resume`
-- `POST /v1/threads/{id}/fork`
+- `DELETE /v1/threads/{id}` — removes the thread with its turns, items,
+  events, goal and approval grants, and stops its cached engine. A thread
+  with a running turn, or one that an active automation or a pending
+  trigger delivers into, answers `409` naming them. The saved session bound to it is
+  deleted too unless another thread is bound to the same session or an open
+  terminal holds it; the answer
+  `{deleted, session_id?, session_deleted, session_kept?, session_error?}`
+  says which. Tasks, automations and child threads that name it keep the
+  stale id.
+- `POST /v1/threads/{id}/fork` (`POST /v1/threads` also accepts
+  `parent_thread_id` naming an existing thread)
 - `POST /v1/threads/{id}/read` — record the newest item a client has shown
   (body `{"item_id": "<item id>"}`; see "Read markers" below)
 - `GET /v1/threads/{id}/receipt` — what the thread did, one entry per action
@@ -1212,7 +1222,9 @@ title is unset, the latest turn's input summary — the displayed title). It
 does not scan turn or item bodies: `preview` is filled only after a match, so
 a dashboard keystroke is not a whole-store read per thread. Each item includes
 `id`, `title`, `preview`, `model`, `mode`, `archived`, `updated_at`,
-`latest_turn_id`, `latest_turn_status`, plus workspace metadata:
+`latest_turn_id`, `latest_turn_status`, `parent_thread_id` when the thread
+was forked from another (absent on threads forked before the field existed),
+plus workspace metadata:
 
 ```json
 {
@@ -2241,7 +2253,14 @@ also how a client sees model-spawned work.
   `POST /v1/git/unstage` same; `POST /v1/git/discard` `{ "paths": [...] }`
   (tracked paths only — no `all`, an untracked path fails closed);
   `POST /v1/git/commit` `{ "message", "all"? }`; stage, unstage, discard
-  and commit also take an optional `expect` (below); `POST /v1/git/push`
+  and commit also take an optional `expect` (below). Stage, unstage and
+  discard also take `patch`: hunks of the one path in `paths`, with file
+  headers `diff --git a/<path> b/<path>`, `--- a/<path>`, `+++ b/<path>`
+  naming that workspace-relative path. Stage applies them to the index,
+  unstage reverses them in the index, discard reverses them in the working
+  tree (`git apply [--cached] [--reverse]`). Renames, copies, mode changes,
+  creations, deletions and binary patches are refused, and a patch that no
+  longer applies fails with git's message and writes nothing. `POST /v1/git/push`
   `{ "remote"?, "set_upstream"? }` (`remote`, or `origin` when only
   `set_upstream` is given, must name a configured remote);
   `POST /v1/git/branch`
@@ -3261,7 +3280,7 @@ This validates that the app-server's event schema hasn't drifted from the
 documented contract. CI runs this on every push to `main` and on release tags.
 
 The app-server stdio control surface has its own drift guard — the advertised
-`capabilities` method set is pinned in `crates/app-server/src/lib.rs`:
+`capabilities` method set is pinned in `crates/app-server/src/tests.rs`:
 
 ```bash
 cargo test -p codewhale-app-server capabilities

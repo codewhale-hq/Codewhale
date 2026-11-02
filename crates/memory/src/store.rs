@@ -15,6 +15,67 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Whether this path's directory refuses the mode a file is created with *and*
+/// the one it is then asked for.
+///
+/// Some mounts synthesise mode bits instead of storing them: HarmonyOS hmdfs
+/// (the 2in1 user directory) reports a group-readable mode for every file an
+/// app creates, and `chmod` answers `EPERM` because that owner is not the
+/// calling process. There the mode says nothing about who can
+/// read the database, and refusing the store would leave the platform with no
+/// memory database at all. This creates one probe file at `0600` beside `path`,
+/// and — when the mode came back wider — asks the mount to narrow it and looks
+/// again. A default ACL or a setgid parent widens a new file on a filesystem
+/// that stores modes perfectly well; such a mount honours the second request
+/// and keeps the strict refusal, because its mode really does describe access.
+///
+/// Any failure to run the probe answers `false`, so a directory we cannot write
+/// to keeps the strict check rather than being reclassified as a mount limit.
+///
+/// The same rule, with the same reasoning, lives in
+/// `codewhale_config::private_directory::private_footing`; this crate has no
+/// dependency on it and the probe is a dozen lines, so it is repeated here
+/// rather than widening this crate's dependency graph.
+#[cfg(unix)]
+fn mount_ignores_unix_modes(path: &Path) -> bool {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return false;
+    };
+    let probe = parent.join(format!(
+        ".codewhale-mode-probe-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.subsec_nanos())
+    ));
+    let created = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&probe);
+    let Ok(file) = created else { return false };
+    let private = |file: &fs::File| {
+        file.metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o077 == 0)
+    };
+    let wider = file
+        .metadata()
+        .is_ok_and(|metadata| metadata.permissions().mode() & 0o077 != 0);
+    let refuses_narrowing = wider
+        && match file.set_permissions(fs::Permissions::from_mode(0o600)) {
+            Ok(()) => !private(&file),
+            Err(_) => true,
+        };
+    drop(file);
+    let _ = fs::remove_file(&probe);
+    refuses_narrowing
+}
+
 /// Nesting-safe transaction scope for `&self` methods. rusqlite's
 /// `unchecked_transaction` issues a literal `BEGIN`, which fails inside an
 /// already-open transaction; engine methods compose inside each other's
@@ -331,7 +392,7 @@ impl Store {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if meta.permissions().mode() & 0o077 != 0 {
+                    if meta.permissions().mode() & 0o077 != 0 && !mount_ignores_unix_modes(path) {
                         return Err(Error::Invalid(
                             "database permissions must exclude group and world access".into(),
                         ));

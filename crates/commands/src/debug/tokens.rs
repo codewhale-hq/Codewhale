@@ -29,7 +29,7 @@ const TOKENS_INFO: ContractInfo = ContractInfo {
 const COST_INFO: ContractInfo = ContractInfo {
     name: "cost",
     aliases: &[],
-    usage: "/cost",
+    usage: "/cost [details]",
     description_key: "cmd_cost_description",
 };
 const SYSTEM_INFO: ContractInfo = ContractInfo {
@@ -65,7 +65,7 @@ impl ContractRegisterCommand<CommandResult> for CostCmd {
         CommandHandler::Contextual {
             capabilities: CommandCapabilities::DEBUG_DIAGNOSTICS
                 .union(CommandCapabilities::PRESENTATION),
-            handler: |contexts, _| cost(contexts),
+            handler: cost,
         }
     }
 }
@@ -207,7 +207,7 @@ fn tokens_report(
 }
 
 /// Show session cost with the same coverage disclaimer as `/tokens`.
-pub fn cost(contexts: CommandContexts<'_>) -> CommandResult {
+pub fn cost(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
     let mut parts = contexts.into_parts();
     let Some(diagnostics) = parts.debug_diagnostics.as_deref_mut() else {
         return CommandResult::error(DIAGNOSTICS_UNAVAILABLE);
@@ -215,7 +215,25 @@ pub fn cost(contexts: CommandContexts<'_>) -> CommandResult {
     let Some(presentation) = parts.presentation.as_deref_mut() else {
         return CommandResult::error(PRESENTATION_UNAVAILABLE);
     };
-    match cost_report(&diagnostics.cost_projection(), presentation) {
+    let projection = diagnostics.cost_projection();
+    let details = arg.is_some_and(|arg| arg.trim().eq_ignore_ascii_case("details"));
+    let plan_only = projection.total == 0.0
+        && projection.priced_turns == 0
+        && projection.unpriced_turns == 0
+        && !projection.legacy_coverage_unknown
+        && !projection.user_declared_estimates
+        && !projection.route_receipts.is_empty()
+        && projection.route_receipts.iter().all(|receipt| {
+            receipt
+                .split_whitespace()
+                .any(|field| field == "billing_mode=subscription")
+        });
+    if plan_only && !details {
+        return CommandResult::message(
+            "Session Cost:\n ─────────────────────────────\n These routes use subscription billing. Codewhale does not know the amount charged by your provider.\n\n Run /cost details for the route receipts.".to_string(),
+        );
+    }
+    match cost_report(&projection, presentation) {
         Ok(report) => CommandResult::message(report),
         Err(error) => CommandResult::error(error),
     }

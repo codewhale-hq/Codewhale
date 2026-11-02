@@ -96,6 +96,11 @@ These binary shims are removed in **v0.9.0**. DeepSeek provider support, model
 IDs, `DEEPSEEK_*` environment variables, and legacy `~/.deepseek/` state
 fallbacks remain supported.
 
+A `deepseek` or `deepseek-tui` shim from those releases can still be on a
+machine (its warning still names v0.9.0). `codewhale doctor --installs` lists
+it with its owner's removal command, and `codewhale doctor --fix` moves stray
+backup copies of it to the recovery folder.
+
 ## Migrating in practice
 
 ### npm

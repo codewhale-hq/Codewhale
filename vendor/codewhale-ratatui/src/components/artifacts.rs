@@ -174,7 +174,7 @@ impl<'a> Artifact<'a> {
                     ..area
                 },
                 buf,
-                &Line::from(Span::styled(action, theme.fg(Role::Primary))),
+                &Line::from(Span::styled(action, theme.fg(Role::Accent))),
             );
         }
         if area.height < 2 {
@@ -390,7 +390,7 @@ impl Paint for ArtifactShelf<'_> {
                 buf.set_style(row_area, theme.bg(Role::Selected));
                 let marker = glyphs::pick(glyphs::SELECTION, theme.ascii());
                 let role = if self.focused {
-                    Role::Primary
+                    Role::Accent
                 } else {
                     Role::Muted
                 };

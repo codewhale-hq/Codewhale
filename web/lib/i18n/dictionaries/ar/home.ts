@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: لقطة طرفية تعرض المحادثة وحقل الرسالة وعناصر التحكم في الجلسة.",
   latestRelease: "أحدث إصدار {tag}",
   releaseUnavailable: "حالة الإصدار غير متاحة",
+  proofContributors: "{count} مساهمًا",
   currentSource: "المصدر",
   sourceCandidate: "غير منشور",
   publishedRelease: "منشور",

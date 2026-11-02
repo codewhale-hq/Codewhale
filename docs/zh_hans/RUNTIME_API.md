@@ -341,7 +341,7 @@ printf '%s\n' \
 `capabilities` 返回已声明的方法族（`thread/*`、`app/*`、
 `prompt/*`）以及完整的方法清单；`thread/capabilities`、
 `app/capabilities` 与 `prompt/capabilities` 则按族缩小范围。方法集合由
-`crates/app-server/src/lib.rs` 中的一个漂移测试钉住，因此 SDK 与本地集成客户端
+`crates/app-server/src/tests.rs` 中的一个漂移测试钉住，因此 SDK 与本地集成客户端
 可以依赖它不会悄悄变化。
 
 ### 兼容执行限制
@@ -892,7 +892,7 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 给出含义相同的响应，并且 `search` 与 TUI 会话选择器及任务面板（workbar）
 中的 Sessions 列表使用的是同一个模糊匹配（标题、id、
 工作区——先子串，再子序列）。三个表面运行同一套投影
-（`crates/tui/src/session_projection.rs`），因此列表在
+（`crates/engine/src/session_projection.rs`），因此列表在
 终端与仪表盘之间不可能有差异。
 
 `GET /v1/sessions/summary` 返回的行与
@@ -2672,7 +2672,7 @@ cargo test -p codewhale-protocol --test parity_protocol --locked
 CI 在每次推送到 `main` 时以及发布标签上都会运行它。
 
 app-server 的 stdio 控制表面有自己的漂移防护——所声明的
-`capabilities` 方法集合被钉在 `crates/app-server/src/lib.rs`：
+`capabilities` 方法集合被钉在 `crates/app-server/src/tests.rs`：
 
 ```bash
 cargo test -p codewhale-app-server capabilities

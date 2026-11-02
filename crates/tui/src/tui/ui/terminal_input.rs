@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event};
 
 const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const TERMINAL_INPUT_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const TERMINAL_INPUT_IDLE_AFTER: Duration = Duration::from_secs(5);
 const TERMINAL_INPUT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) const TERMINAL_INPUT_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const TERMINAL_INPUT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
@@ -186,6 +188,7 @@ impl TerminalInputPump {
             .name("codewhale-terminal-input".to_string())
             .spawn(move || {
                 let mut last_heartbeat = Instant::now();
+                let mut last_event = last_heartbeat;
                 while !thread_stop.load(Ordering::Acquire) {
                     if thread_paused.load(Ordering::Acquire) {
                         thread_paused_ack.store(true, Ordering::Release);
@@ -193,11 +196,17 @@ impl TerminalInputPump {
                         continue;
                     }
                     thread_paused_ack.store(false, Ordering::Release);
-                    match event::poll(TERMINAL_INPUT_POLL_INTERVAL) {
+                    let poll_interval = if last_event.elapsed() < TERMINAL_INPUT_IDLE_AFTER {
+                        TERMINAL_INPUT_POLL_INTERVAL
+                    } else {
+                        TERMINAL_INPUT_IDLE_POLL_INTERVAL
+                    };
+                    match event::poll(poll_interval) {
                         Ok(true) if thread_stop.load(Ordering::Acquire) => break,
                         Ok(true) => match event::read() {
                             Ok(event) => {
                                 last_heartbeat = Instant::now();
+                                last_event = last_heartbeat;
                                 let observed = ObservedTerminalEvent::new(event, last_heartbeat);
                                 if tx.send(TerminalInputMessage::Event(observed)).is_err() {
                                     break;

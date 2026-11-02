@@ -162,6 +162,7 @@ export interface HomeDict {
   /** "Latest release {tag}" */
   latestRelease: string;
   releaseUnavailable: string;
+  proofContributors: string;
   /** "Source" / "Unreleased" — prepended to `v{version}`. */
   currentSource: string;
   sourceCandidate: string;

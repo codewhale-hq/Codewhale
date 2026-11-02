@@ -23,7 +23,6 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
     centered_modal_area, render_modal_footer, render_modal_surface, render_panel_scroll_rail,
@@ -32,6 +31,7 @@ use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::StatusItem;
+use codewhale_tui_kit::menu_style;
 use unicode_width::UnicodeWidthStr;
 
 /// Picker state. We hold both the user's working selection AND the original
@@ -88,13 +88,13 @@ impl StatusPickerView {
             .collect()
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Vertical motions wrap at the ends for
     /// Prev/Next and clamp for paging and Home/End; the horizontal axis does
     /// not exist on this single-column checklist. The checklist fits on one
     /// screen, so a page is the whole list.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
-        let Some(next) = crate::tui::list_nav::apply(
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(
             self.cursor,
             self.rows.len(),
             self.rows.len().max(1),
@@ -147,7 +147,7 @@ impl ModalView for StatusPickerView {
         // Movement keys come from the shared vocabulary (#6290): `j`/`k`,
         // Home/End and the page keys mean here what they mean on every other
         // list. This match owns only the checklist's own verbs.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -183,10 +183,10 @@ impl ModalView for StatusPickerView {
     fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.apply_motion(crate::tui::list_nav::Motion::Prev);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Prev);
             }
             MouseEventKind::ScrollDown => {
-                self.apply_motion(crate::tui::list_nav::Motion::Next);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Next);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let clicked = self.row_hitboxes.borrow().iter().find_map(|(index, rect)| {
@@ -296,7 +296,7 @@ impl ModalView for StatusPickerView {
             } else {
                 Style::default().fg(palette::TEXT_DIM)
             };
-            let pointer = crate::tui::glyphs::selection_marker(is_cursor);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(is_cursor);
 
             if is_cursor {
                 let selected_style = menu_style::selected_row_style();
@@ -307,7 +307,7 @@ impl ModalView for StatusPickerView {
                 let label = item.label();
                 let hint = item.hint(self.locale);
                 let prefix = format!(" {pointer} {mark} {label}  (");
-                let truncated_hint = crate::tui::ui_text::semantic_truncate_between_affixes(
+                let truncated_hint = codewhale_tui_kit::ui_text::semantic_truncate_between_affixes(
                     &prefix,
                     hint.as_ref(),
                     ")",
@@ -359,7 +359,7 @@ fn status_row_text(
     width: usize,
 ) -> String {
     let prefix = format!(" {pointer} {mark} {}  (", item.label());
-    let mut text = crate::tui::ui_text::semantic_truncate_with_affixes(
+    let mut text = codewhale_tui_kit::ui_text::semantic_truncate_with_affixes(
         &prefix,
         item.hint(locale).as_ref(),
         ")",

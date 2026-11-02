@@ -156,7 +156,7 @@ impl FishSchool {
             };
             if open_water(at, buf, protected) {
                 let role = if member == 0 {
-                    Role::Primary
+                    Role::Accent
                 } else {
                     Role::Hint
                 };

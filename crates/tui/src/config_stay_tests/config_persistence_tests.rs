@@ -1,5 +1,5 @@
-use crate::route_preferences::persist_provider_selection;
 use codewhale_config::ProviderKind;
+use codewhale_engine::route_preferences::persist_provider_selection;
 
 use codewhale_runtime::config_persistence::*;
 
@@ -111,7 +111,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
         doc["providers"]["openai"]["model"].as_str(),
         Some("gpui-fixture")
     );
-    let switched = crate::plugins::providers::load_config(Some(path.clone()), None).unwrap();
+    let switched = codewhale_plugins::providers::load_config(Some(path.clone()), None).unwrap();
     assert_eq!(
         switched.active_provider_identity().unwrap().provider,
         ProviderKind::Openrouter
@@ -125,7 +125,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
     assert_ne!(switched.default_model(), "gpui-fixture");
 
     persist_provider_selection(Some(&path), &selection_identity(&path, "openai"), None).unwrap();
-    let returned = crate::plugins::providers::load_config(Some(path.clone()), None).unwrap();
+    let returned = codewhale_plugins::providers::load_config(Some(path.clone()), None).unwrap();
     assert_eq!(
         returned.active_provider_identity().unwrap().provider,
         ProviderKind::Openai
@@ -179,7 +179,7 @@ fn switching_provider_away_and_back_preserves_every_route_selection() {
                 doc["providers"]["deepseek"]["model"].as_str(),
                 Some("deepseek-v4-pro")
             );
-            let restored = crate::plugins::providers::load_config(Some(path.clone()), None)
+            let restored = codewhale_plugins::providers::load_config(Some(path.clone()), None)
                 .expect("saved provider switch must remain loadable");
             assert_eq!(
                 restored.active_provider_identity().unwrap().provider,
@@ -191,7 +191,7 @@ fn switching_provider_away_and_back_preserves_every_route_selection() {
             // it was stored on its own leaf or in the root fallback.
             persist_provider_selection(Some(&path), &selection_identity(&path, "zai"), None)
                 .unwrap();
-            let returned = crate::plugins::providers::load_config(Some(path.clone()), None)
+            let returned = codewhale_plugins::providers::load_config(Some(path.clone()), None)
                 .expect("switching back must remain loadable");
             assert_eq!(
                 returned.active_provider_identity().unwrap().provider,
@@ -234,12 +234,12 @@ fn a_bare_switch_relocates_a_root_alias_the_incoming_route_cannot_serve() {
         Some("ark-private-id"),
         "the displaced choice moves onto its own route's leaf, it is not dropped"
     );
-    crate::plugins::providers::load_config(Some(path.clone()), None)
+    codewhale_plugins::providers::load_config(Some(path.clone()), None)
         .expect("a bare provider switch must remain loadable");
 
     persist_provider_selection(Some(&path), &selection_identity(&path, "volcengine"), None)
         .unwrap();
-    let returned = crate::plugins::providers::load_config(Some(path.clone()), None)
+    let returned = codewhale_plugins::providers::load_config(Some(path.clone()), None)
         .expect("switching back must remain loadable");
     assert_eq!(
         returned.active_provider_identity().unwrap().provider,
@@ -258,12 +258,12 @@ fn bare_switch_from_legacy_custom_commits_a_loadable_config() {
     let path = home.path().join("config.toml");
     let original = "route_preferences_version = 1\nprovider = 'custom'\nbase_url = 'https://proxy.example.test/v1'\ndefault_text_model = 'proxy-wire-id'\n[providers.deepseek]\nbase_url = 'https://api.deepseek.com/beta'\n";
     fs::write(&path, original).unwrap();
-    crate::plugins::providers::load_config(Some(path.clone()), None).unwrap();
+    codewhale_plugins::providers::load_config(Some(path.clone()), None).unwrap();
     // The write moves the top-level route into `[providers.custom]`,
     // model included (#6394), so the custom model is no longer the
     // switch's only copy and a bare switch commits a loadable config.
     persist_provider_selection(Some(&path), &selection_identity(&path, "deepseek"), None).unwrap();
-    let switched = crate::plugins::providers::load_config(Some(path.clone()), None)
+    let switched = codewhale_plugins::providers::load_config(Some(path.clone()), None)
         .expect("a bare provider switch must remain loadable");
     assert_eq!(
         switched.active_provider_identity().unwrap().provider,
@@ -308,7 +308,7 @@ fn an_unnamed_custom_route_keeps_its_root_model_across_a_switch() {
         Some("proxy-wire-id"),
         "the custom route's only saved model must survive the switch"
     );
-    let restored = crate::plugins::providers::load_config(Some(path.clone()), None)
+    let restored = codewhale_plugins::providers::load_config(Some(path.clone()), None)
         .expect("the switched config must remain loadable");
     assert_eq!(restored.default_model(), "deepseek-v4-pro");
 
@@ -320,7 +320,7 @@ fn an_unnamed_custom_route_keeps_its_root_model_across_a_switch() {
         .replace("provider = 'deepseek'", "provider = 'custom'")
         .replace("provider = \"deepseek\"", "provider = 'custom'");
     fs::write(&path, returning).unwrap();
-    let returned = crate::plugins::providers::load_config(Some(path.clone()), None)
+    let returned = codewhale_plugins::providers::load_config(Some(path.clone()), None)
         .expect("returning to the custom route must remain loadable");
     assert_eq!(returned.default_model(), "proxy-wire-id");
 }

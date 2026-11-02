@@ -2,8 +2,8 @@
 
 Status: design + gap ledger (2026-08-15). Source of truth for Codewhale
 behavior is `docs/MODES.md`, `docs/AUTHORIZATION_ORDER.md`, and the code in
-`crates/tui/src/tui/auto_review.rs`, `crates/tui/src/core/engine/reviewer.rs`,
-and `crates/tui/src/core/engine/turn_loop.rs`. Statements about the other
+`crates/tui/src/tui/auto_review.rs`, `crates/engine/src/core/engine/reviewer.rs`,
+and `crates/engine/src/core/engine/turn_loop.rs`. Statements about the other
 two harnesses come from their public documentation as read on 2026-08-15 and
 are quoted, not inferred.
 

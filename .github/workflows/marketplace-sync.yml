@@ -23,7 +23,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re
-          snapshot = json.load(open('crates/tui/assets/first-party-marketplace.json'))
+          snapshot = json.load(open('crates/plugins/assets/first-party-marketplace.json'))
           revision = snapshot['revision']
           assert re.fullmatch(r'[0-9a-f]{40}', revision), 'Invalid marketplace revision'
           if os.environ['EVENT_NAME'] in ('schedule', 'workflow_dispatch'):

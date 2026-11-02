@@ -6,6 +6,12 @@
 use super::*;
 
 pub(crate) fn startup_version_check_source(config: &UpdateConfig) -> StartupVersionCheckSource {
+    if codewhale_release::autoupdate::resolve_mode(config.mode.as_deref(), config.check_for_updates)
+        .mode
+        == codewhale_release::autoupdate::UpdateMode::Off
+    {
+        return StartupVersionCheckSource::Disabled;
+    }
     resolve_version_check_source(config, codewhale_release::suppression_reason())
 }
 
@@ -58,9 +64,64 @@ pub(crate) fn spawn_startup_version_check(
     let current = env!("CARGO_PKG_VERSION").to_string();
     let cache_path = update_check_cache_path();
     let interval_hours = config.check_interval_hours;
+    let auto = codewhale_release::autoupdate::resolve_mode(
+        config.mode.as_deref(),
+        config.check_for_updates,
+    )
+    .mode
+        == codewhale_release::autoupdate::UpdateMode::Auto;
     Some(tokio::spawn(async move {
-        cached_version_hint(source, &current, cache_path.as_deref(), interval_hours).await
+        let mut notice =
+            cached_version_hint(source, &current, cache_path.as_deref(), interval_hours).await?;
+        if auto {
+            let latest = notice.latest.clone();
+            notice.staged = tokio::task::spawn_blocking(move || {
+                staged_or_start_staging(&latest, interval_hours)
+            })
+            .await
+            .ok()
+            .flatten();
+        }
+        Some(notice)
     }))
+}
+
+fn staged_or_start_staging(latest: &str, interval_hours: u64) -> Option<bool> {
+    use codewhale_release::autoupdate;
+    let home = codewhale_config::codewhale_home().ok()?;
+    if let Some(staged) = autoupdate::load_staged(&home)
+        && staged.version == latest
+    {
+        return Some(staged.signed);
+    }
+    let exe = std::env::current_exe().ok()?;
+    if !codewhale_release::InstallMethod::detect(&exe).supports_self_update()
+        || !matches!(
+            exe.file_stem().and_then(|stem| stem.to_str()),
+            Some("codewhale" | "codew")
+        )
+    {
+        return None;
+    }
+    let state = autoupdate::load_state(&home);
+    let retry_after = interval_hours.clamp(1, 24) * 3600;
+    if state.skip_version.as_deref() == Some(latest)
+        || (state.last_stage_version.as_deref() == Some(latest)
+            && codewhale_release::check::now_unix().saturating_sub(state.last_stage_attempt_unix)
+                < retry_after)
+    {
+        return None;
+    }
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["update", "--stage"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Err(error) = command.spawn() {
+        tracing::debug!(error = %error, "could not start background update staging");
+    }
+    None
 }
 
 /// Resolve the update notice, reaching for the network at most once per
@@ -89,14 +150,26 @@ pub(crate) async fn cached_version_hint(
 
     let latest_tag = latest_tag_from_startup_source(source).await;
 
-    // Only record a completed check. A network failure leaves the cache
-    // untouched so the next launch retries instead of caching an outage for a
-    // whole day.
     if let Some(path) = cache_path
         && latest_tag.is_some()
         && let Err(err) = codewhale_release::UpdateCheckCache::now(latest_tag.clone()).store(path)
     {
         tracing::debug!(error = %err, "failed to persist update-check cache");
+    }
+    if latest_tag.is_none()
+        && interval_hours > 1
+        && let Some(path) = cache_path
+        && let Some(previous) = codewhale_release::UpdateCheckCache::load(path)
+    {
+        let retry = codewhale_release::UpdateCheckCache {
+            checked_at_unix: now.saturating_sub(interval_hours.saturating_sub(1) * 3600),
+            latest_tag: previous.latest_tag.clone(),
+        };
+        let _ = retry.store(path);
+        return previous
+            .latest_tag
+            .as_deref()
+            .and_then(|tag| version_hint_from_latest_tag(tag, current));
     }
 
     latest_tag
@@ -210,6 +283,7 @@ pub(crate) fn version_hint_from_latest_tag(tag: &str, current: &str) -> Option<U
     Some(UpdateNotice {
         current: current.to_string(),
         latest: latest.to_string(),
+        staged: None,
     })
 }
 

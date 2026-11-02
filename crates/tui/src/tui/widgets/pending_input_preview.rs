@@ -18,10 +18,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use crate::tui::menu_style;
 use crate::tui::widgets::Renderable;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 /// Description of the keybinding the hint line at the bottom should advertise
 /// for the "edit last queued message" action.

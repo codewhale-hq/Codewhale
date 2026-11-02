@@ -2,7 +2,7 @@
 """Convert selected OpenCode or static DSH MCP data into a reviewable native plugin bundle.
 
 DeepSeek Harness bundle *packages* are imported natively: `/plugin import dsh <dir>`
-(crates/tui/src/plugins/install/dsh.rs). This script no longer converts them.
+(crates/plugins/src/install/dsh.rs). This script no longer converts them.
 
 This is an offline authoring tool, not a foreign plugin runtime or installer.
 The existing Codewhale /plugin install and hash-bound review remain authoritative.

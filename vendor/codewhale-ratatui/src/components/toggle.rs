@@ -166,7 +166,7 @@ impl Paint for Toggle<'_> {
         if left_room <= marker_w {
             return;
         }
-        buf.set_stringn(row.x, row.y, marker, marker_w, theme.fg(Role::Primary));
+        buf.set_stringn(row.x, row.y, marker, marker_w, theme.fg(Role::Accent));
         let label_style = if disabled {
             theme.fg(Role::Muted).add_modifier(Modifier::DIM)
         } else if self.focused {

@@ -203,7 +203,7 @@ and operate other apps. It stays off until you review its access and enable it
 | `codewhale` | The interactive terminal app |
 | `codewhale exec "…"` | One task without the interface. On its own it answers without using tools; `--auto` enables tools with Full Access by default, `--sandbox workspace-write` restricts them, and `--output-format stream-json` streams events as JSON |
 | `codewhale web` | A local web UI on `127.0.0.1` ([guide](docs/WEB.md)) |
-| `codewhale review --pr N` | An advisory review of a GitHub pull request. It posts nothing unless you add `--post`; the [GitHub Action](docs/GITHUB_ACTION.md) runs the same review in CI |
+| `codewhale review --pr N` | An advisory review of a GitHub pull request. The [GitHub bot setup](docs/GITHUB_ACTION.md#set-up-your-own-bot) generates a pinned workflow for automatic reviews and `@codewhale review`, using your own model key and optional App identity |
 | `codewhale app-server --http` | The [Runtime API](docs/RUNTIME_API.md), a local HTTP API for threads, events, approvals, and each turn's file changes |
 | `codewhale serve --acp` | The Agent Client Protocol over stdio, for editors such as Zed |
 

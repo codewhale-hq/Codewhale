@@ -58,7 +58,7 @@ describe("the horizon", () => {
   });
 
   it("paints the stage with the dark set in both appearances", () => {
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--kit-bioluminescence\);[^}]*color-scheme: dark;/);
+    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-accent\);[^}]*color-scheme: dark;/);
   });
 
   it("keeps the horizon visible in forced colours", () => {

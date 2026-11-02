@@ -511,6 +511,27 @@ fn doctor_text_probe_uses_a_legacy_key_without_migrating_it() {
         legacy_before,
         "doctor must not rewrite the legacy secret store"
     );
+
+    fs::write(&config, "").expect("write unconfigured route");
+    let output = diagnostic_command(&workspace, &home)
+        .args([
+            "--config",
+            config.to_str().expect("config path"),
+            "doctor",
+            "--probe-local",
+        ])
+        .env("CODEWHALE_DISABLE_LOCAL_OLLAMA_PROBE", "1")
+        .env("CODEWHALE_DISABLE_MODELS_DEV_FETCH", "1")
+        .env("CODEWHALE_DISABLE_CLOUD_FACTS", "1")
+        .env("CODEWHALE_NO_UPDATE_CHECK", "1")
+        .output()
+        .expect("run doctor with unconfigured route");
+    assert!(output.status.success(), "unconfigured doctor probe failed");
+    assert!(
+        !primary.exists(),
+        "credential inspection must not migrate the store"
+    );
+    assert_eq!(fs::read(&legacy).expect("legacy preserved"), legacy_before);
 }
 
 #[test]

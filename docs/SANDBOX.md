@@ -242,4 +242,4 @@ Denial attribution is intentionally conservative:
 - `crates/sandbox/src/bwrap.rs` — Linux wrapper and functional availability probe
 - `crates/sandbox/src/process_hardening.rs` — Linux parent-process hardening
 - `crates/sandbox/src/backend.rs` — external backend selection
-- `crates/tui/src/tools/diagnostics.rs` — machine-readable diagnostics
+- `crates/engine/src/tools/diagnostics.rs` — machine-readable diagnostics

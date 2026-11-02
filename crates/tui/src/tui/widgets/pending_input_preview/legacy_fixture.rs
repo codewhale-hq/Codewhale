@@ -19,10 +19,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::tui::menu_style;
 use crate::tui::widgets::Renderable;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 /// Per-item line cap before we collapse the rest into a `…` overflow row.
 const PREVIEW_LINE_LIMIT: usize = 3;
@@ -410,7 +410,7 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
 // draws. The old local copy used `unwrap_or(0)` and ignored tabs, so preview
 // word-wrap disagreed with the real layout on those inputs (#3924).
 fn display_width(s: &str) -> usize {
-    crate::tui::ui_text::text_display_width(s)
+    codewhale_tui_kit::ui_text::text_display_width(s)
 }
 
 // End frozen production counterpart. This module is included only in tests.

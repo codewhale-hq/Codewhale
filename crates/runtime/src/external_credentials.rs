@@ -229,10 +229,15 @@ pub(crate) fn open_secure_regular_file(path: &Path, require_owner_only: bool) ->
     if require_owner_only {
         use std::os::unix::fs::MetadataExt as _;
         // SAFETY: geteuid(2) dereferences no pointers.
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
-            || metadata.nlink() != 1
-        {
+        let public = metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0;
+        // A mount that reports ownership of its own (HarmonyOS hmdfs) makes
+        // both the owner and the mode meaningless as evidence, so a real
+        // disagreement is only a refusal when the mount can express the fields
+        // it is being judged on. Asking costs a probe, so it is asked only
+        // here — after the cheap comparison has already failed — and the
+        // single-link requirement, which the mount does store, always holds.
+        let ownership_unproven = public && !mount_cannot_express_ownership(path);
+        if ownership_unproven || metadata.nlink() != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Codewhale-owned credential file must be singly linked, owned by this user, and mode 0600 or stricter",
@@ -240,6 +245,24 @@ pub(crate) fn open_secure_regular_file(path: &Path, require_owner_only: bool) ->
         }
     }
     Ok(current)
+}
+
+/// Whether this path's filesystem reports an owner and mode of its own for
+/// every object, so neither can serve as evidence of who may read it.
+///
+/// HarmonyOS hmdfs (the 2in1 user directory) is that case: it reports the
+/// logged-in user's uid and a group-writable mode for objects the app creates,
+/// and `chmod` answers `EPERM` because that owner is not the caller. The guard
+/// is unprovable there for *every* caller, so
+/// refusing would make the feature unusable on the platform; what remains is
+/// the mount's own access control plus the single-link check.
+#[cfg(unix)]
+fn mount_cannot_express_ownership(path: &std::path::Path) -> bool {
+    let directory = path.parent().unwrap_or(path);
+    matches!(
+        codewhale_config::private_directory::mount_footing(directory),
+        codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+    )
 }
 
 #[cfg(windows)]

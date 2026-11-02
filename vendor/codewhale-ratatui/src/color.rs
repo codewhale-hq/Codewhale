@@ -214,7 +214,7 @@ pub(crate) fn prepared_ink(
     theme: &Theme,
 ) -> Style {
     if !theme.paints_grounds() {
-        return theme.fg(Role::Primary);
+        return theme.fg(Role::Accent);
     }
     let ground = resolvable_rgb(background)
         .map(|(r, g, b)| Color::Rgb(r, g, b))
@@ -233,7 +233,7 @@ pub(crate) fn prepared_ink(
         if contrast_ratio(result, ground).is_none_or(|ratio| ratio >= 3.0) {
             break;
         }
-        result = quantize(blend(theme.token(Role::Primary), base, step as f32 / 8.0));
+        result = quantize(blend(theme.token(Role::Accent), base, step as f32 / 8.0));
     }
     Style::default().fg(result)
 }

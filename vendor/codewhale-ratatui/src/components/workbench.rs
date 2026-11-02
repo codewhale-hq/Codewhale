@@ -186,7 +186,7 @@ impl Paint for WorkspaceFrame<'_> {
         let left = usize::from(header.width).saturating_sub(reserve);
         let mut spans = vec![Span::styled(
             text::truncate(brand, left, theme.ascii()).into_owned(),
-            theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+            theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
         )];
         if left > brand.len() + 3 {
             spans.push(Span::styled("  /  ", theme.fg(Role::BorderStrong)));
@@ -354,7 +354,7 @@ impl Paint for PaneHeader<'_> {
                 buf,
                 &Line::styled(
                     if theme.ascii() { ">" } else { "╸" },
-                    theme.fg(Role::Primary),
+                    theme.fg(Role::Accent),
                 ),
             );
         }

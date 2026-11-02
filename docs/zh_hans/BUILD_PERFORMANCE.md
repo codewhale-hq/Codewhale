@@ -408,7 +408,7 @@ crate，而且调用方今天也只通过单一模块路径使用它们）：
 | --- | --- | --- | --- |
 | `codewhale-glyphs` | `crates/tui/src/tui/glyphs.rs` | 常量表加纯函数；不依赖 crate 内部任何东西。 | `crate::tui::glyphs` |
 | `codewhale-i18n` | `crates/localization/src/lib.rs` + `crates/localization/locales/*.json` | `rust_i18n::i18n!` 宏会把全部 15 个语言包编译进承载它的那个 crate；搬出去之后，只改语言包不再重编 TUI。`MessageId` 是普通枚举。 | `crate::localization` |
-| `codewhale-mcp-transport` | `crates/tui/src/mcp/{sse,stdio,external_import}.rs` | 已经在和 `codewhale-mcp` 通信；与 tui 的唯一耦合点是 reviewed-launch 绑定。 | `crate::mcp` |
+| `codewhale-mcp-transport` | `crates/engine/src/mcp/{sse,stdio,external_import}.rs` | 已经在和 `codewhale-mcp` 通信；与 tui 的唯一耦合点是 reviewed-launch 绑定。 | `crate::mcp` |
 
 拆分规则：只做纯搬迁，在原路径上加 `pub use` re-export，不改行为，一个 PR
 一个 crate，每个 PR 都用上面的表来测量（冷构建、增量构建、增量测试构建、

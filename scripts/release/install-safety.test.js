@@ -11,7 +11,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const repo = path.resolve(__dirname, "../..");
-const bytes = '#!/bin/sh\necho executed >> "$INSTALL_TEST_EXECUTED"\necho "codewhale 0.9.11"\n';
+const bytes = '#!/bin/sh\necho "executed $*" >> "$INSTALL_TEST_EXECUTED"\necho "codewhale 0.9.11"\n';
 
 function executable(file, body) {
   fs.writeFileSync(file, body, { mode: 0o755 });
@@ -50,18 +50,23 @@ asset="$(basename "$url")"
 cp "$INSTALL_TEST_ASSETS/$asset" "$output"
 `);
   const destination = path.join(home, ".local", "bin");
-  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
+  fs.mkdirSync(destination, { recursive: true });
+  fs.chmodSync(destination, 0o755);
+  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CI: "1",
     CODEWHALE_VERSION: "v0.9.11", CODEWHALE_INSTALL_DIR: destination,
     PREFIX: path.dirname(destination), INSTALL_TEST_ASSETS: assets,
     INSTALL_TEST_EXECUTED: path.join(root, "executed"),
     INSTALL_TEST_DOWNLOADS: path.join(root, "downloads") };
-  for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION"]) delete env[key];
+  for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION", "CODEWHALE_HOME", "CODEWHALE_FORCE_REINSTALL", "CODEWHALE_INSTALL_COMPILED_HOST", "SHELL", "ZDOTDIR"]) delete env[key];
   function run() {
     const script = kind === "website" ? path.join(repo, "web/public/install.sh") : path.join(archive, "install.sh");
     return spawnSync(kind === "website" ? "sh" : "bash", [script], { env, encoding: "utf8", timeout: 10000 });
   }
   function prepare() { fs.mkdirSync(env.CODEWHALE_INSTALL_DIR, { recursive: true }); }
-  function untouched() { assert.equal(fs.existsSync(env.INSTALL_TEST_EXECUTED), false, "installers must not execute existing files or sudo"); }
+  function untouched() {
+    const runs = fs.existsSync(env.INSTALL_TEST_EXECUTED) ? fs.readFileSync(env.INSTALL_TEST_EXECUTED, "utf8").trim().split("\n") : [];
+    assert.ok(runs.every(line => line === "executed doctor --installs --brief"), `installers must not execute existing files or sudo: ${runs.join(", ")}`);
+  }
   return { root, home, bin, archive, assets, destination, env, run, prepare, untouched };
 }
 
@@ -84,7 +89,9 @@ ${hash}  codew
     assert.ok(result.stdout.includes(`"${fs.realpathSync(f.destination)}/codewhale" update`), result.stdout);
     if (kind === "website") {
       const downloads = fs.readFileSync(f.env.INSTALL_TEST_DOWNLOADS, "utf8").trim().split("\n");
-      assert.equal(downloads.length, 3);
+      assert.equal(downloads.length, 2);
+      assert.ok(downloads.some(url => url.endsWith("/codewhale-macos-arm64")));
+      assert.ok(!downloads.some(url => url.endsWith("/codew-macos-arm64")));
       assert.ok(downloads.every(url => url.startsWith("https://github.com/codewhale-hq/CodeWhale/releases/download/v0.9.11/")));
     }
     f.untouched();
@@ -102,7 +109,7 @@ ${hash}  codew
     f.untouched();
   });
 
-  test(`${kind}: refuses a newer existing binary without downgrading or executing it`, t => {
+  test(`${kind}: refuses a non-Codewhale file at the destination without executing it`, t => {
     const f = fixture(t, kind); f.prepare();
     const primary = path.join(f.destination, "codewhale");
     const newer = bytes.replace("0.9.11", "0.9.12");
@@ -110,7 +117,7 @@ ${hash}  codew
     const result = f.run();
     assert.notEqual(result.status, 0);
     assert.ok(result.stderr.includes(primary), result.stderr);
-    assert.match(result.stderr, /mktemp -d/);
+    assert.match(result.stderr, /fresh (directory|prefix)/);
     assert.equal(fs.readFileSync(primary, "utf8"), newer);
     assert.equal(fs.existsSync(path.join(f.destination, "codew")), false);
     f.untouched();
@@ -233,7 +240,7 @@ exec /bin/ln "$@"
 
 test("website: a checksum mismatch stops before any installation", t => {
   const f = fixture(t, "website");
-  fs.writeFileSync(path.join(f.assets, "codew-macos-arm64"), "tampered");
+  fs.writeFileSync(path.join(f.assets, "codewhale-macos-arm64"), "tampered");
   const result = f.run();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /checksum mismatch/);

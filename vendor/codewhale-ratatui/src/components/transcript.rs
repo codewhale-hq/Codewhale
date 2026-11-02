@@ -352,7 +352,7 @@ impl TranscriptSpanRole {
         match self {
             Self::Text | Self::Strong | Self::Emphasis => Role::Foreground,
             Self::Code | Self::Success => Role::Live,
-            Self::Link => Role::Primary,
+            Self::Link => Role::Accent,
             Self::Muted => Role::Muted,
             Self::Warning => Role::Attention,
         }
@@ -594,7 +594,7 @@ impl<'a> CodeBlock<'a> {
                 }
                 spans.push(Span::styled(
                     text::display_safe(&self.copy_label).into_owned(),
-                    theme.fg(Role::Primary),
+                    theme.fg(Role::Accent),
                 ));
             }
             out.push(Line::from(spans));
@@ -758,7 +758,7 @@ impl<'a> TranscriptBlock<'a> {
         match self {
             Self::Heading { level, text } => {
                 let style = match level {
-                    1 => theme.fg(Role::Primary).add_modifier(Modifier::BOLD),
+                    1 => theme.fg(Role::Accent).add_modifier(Modifier::BOLD),
                     2 => theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
                     _ => theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
                 };

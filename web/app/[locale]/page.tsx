@@ -35,8 +35,9 @@ const AVAILABILITY_TONES: StatusTone[] = ["ready", "ready", "idle", "idle"];
 /**
  * The whale-road homepage: the promise, capabilities and reading
  * sections sit on paper. The live v2 whale (the desktop app's own Director)
- * rests beside the hero, and the page ends in the sea with the install
- * command, running into the footer.
+ * rests on the top edge of a real terminal capture just under the promise,
+ * and the page ends in the sea with the install command, running into the
+ * footer.
  *
  * One memorable thing moves: the whale. It breathes, glances toward the
  * pointer, and performs its existing poses. Everything else is still.
@@ -75,7 +76,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
       />
 
       {/* PAPER — the promise, one primary action, the install command, and
-          the whale resting on the horizon. */}
+          the whale resting on the terminal below. */}
       <section className="home-hero" aria-labelledby="home-title">
         <div className="home-hero-inner">
           <div className="home-hero-copy">
@@ -105,8 +106,23 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         </div>
       </section>
 
+      <figure className="home-terminal figure">
+        <div className="figure-frame" dir="ltr">
+          <TerminalCapture
+            frame="home"
+            regionLabel={d.shotPreview}
+            label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
+          />
+        </div>
+        <figcaption className="figure-caption">
+          {TERMINAL_SCREENSHOT.version === publishedRelease?.version
+            ? `${d.shotPreview} · v${TERMINAL_SCREENSHOT.version}`
+            : `${d.shotPreview} · ${d.sourceCandidate} v${TERMINAL_SCREENSHOT.version}`}
+        </figcaption>
+      </figure>
+
       <div
-        className="home-release status-line"
+        className="home-proof"
         data-source-state={sourceIsPublished ? "published release" : "source candidate"}
         data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
       >
@@ -117,68 +133,11 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         </Status>
         <span>{`${sourceIsPublished ? d.currentSource : d.sourceCandidate} v${sourceVersion}`}</span>
         <span>{facts.license ?? "MIT"}</span>
+        <span>{fill(d.proofContributors, { count: facts.contributorCount })}</span>
       </div>
-
-      {showPromo && (
-        <section className="home-promo" aria-labelledby="home-promo-title">
-          <a href={PARTNER_PROMO.href} rel="sponsored" className="home-promo-card">
-            <span className="figure-frame">
-              <Image
-                src={PARTNER_PROMO.image.src}
-                alt={pickText(PARTNER_PROMO.image.alt, locale)}
-                width={PARTNER_PROMO.image.width}
-                height={PARTNER_PROMO.image.height}
-                unoptimized
-              />
-            </span>
-            <span className="home-promo-text">
-              <span className="home-promo-title" id="home-promo-title">{PARTNER_PROMO.title}</span>
-              <span className="home-promo-body">{pickText(PARTNER_PROMO.body, locale)}</span>
-              <span className="home-promo-body">{pickText(PARTNER_PROMO.disclosure, locale)}</span>
-              <span className="section-link">
-                {pickText(PARTNER_PROMO.cta, locale)}
-                <Icon name="external" />
-              </span>
-            </span>
-          </a>
-        </section>
-      )}
-
-      <figure className="home-terminal figure">
-        <div className="figure-frame" dir="ltr">
-          <TerminalCapture
-            frame="home"
-            regionLabel={d.shotPreview}
-            label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
-          />
-        </div>
-        <figcaption className="figure-caption">
-          {d.shotPreview} · {d.sourceCandidate} v{TERMINAL_SCREENSHOT.version}
-        </figcaption>
-      </figure>
 
       {/* PAPER — models, connections, and the getting-started path. */}
       <div className="home-body">
-        {showHighlights && (
-          <Section
-            id="home-release-highlights"
-            layout="split"
-            className="home-section"
-            title={fill(pickText(highlightsPublished ? RELEASE_HIGHLIGHTS.newHeading : RELEASE_HIGHLIGHTS.comingHeading, locale), { version: RELEASE_HIGHLIGHTS.version })}
-            scope={highlightsPublished ? undefined : pickText(RELEASE_HIGHLIGHTS.comingLede, locale)}
-            link={<Link href={`/${locale}/changelog`} className="section-link">{pickText(RELEASE_HIGHLIGHTS.changelogLink, locale)}</Link>}
-          >
-            <dl className="ruled-list">
-              {RELEASE_HIGHLIGHTS.items.map((item) => (
-                <div key={item.title}>
-                  <dt>{item.title}</dt>
-                  <dd>{pickText(item.body, locale)}</dd>
-                </div>
-              ))}
-            </dl>
-          </Section>
-        )}
-
         <Section
           id="home-capabilities"
           layout="split"
@@ -219,6 +178,31 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             ))}
           </dl>
         </Section>
+
+        {showPromo && (
+          <section className="home-section home-promo" aria-labelledby="home-promo-title">
+            <a href={PARTNER_PROMO.href} rel="sponsored" className="home-promo-card">
+              <span className="figure-frame">
+                <Image
+                  src={PARTNER_PROMO.image.src}
+                  alt={pickText(PARTNER_PROMO.image.alt, locale)}
+                  width={PARTNER_PROMO.image.width}
+                  height={PARTNER_PROMO.image.height}
+                  unoptimized
+                />
+              </span>
+              <span className="home-promo-text">
+                <span className="home-promo-title" id="home-promo-title">{PARTNER_PROMO.title}</span>
+                <span className="home-promo-body">{pickText(PARTNER_PROMO.body, locale)}</span>
+                <span className="home-promo-body">{pickText(PARTNER_PROMO.disclosure, locale)}</span>
+                <span className="section-link">
+                  {pickText(PARTNER_PROMO.cta, locale)}
+                  <Icon name="external" />
+                </span>
+              </span>
+            </a>
+          </section>
+        )}
 
         <Section
           id="home-surfaces"
@@ -283,6 +267,26 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </dl>
           <p className="section-scope mt-4">{d.availabilityNote}</p>
         </Section>
+
+        {showHighlights && (
+          <Section
+            id="home-release-highlights"
+            layout="split"
+            className="home-section"
+            title={fill(pickText(highlightsPublished ? RELEASE_HIGHLIGHTS.newHeading : RELEASE_HIGHLIGHTS.comingHeading, locale), { version: RELEASE_HIGHLIGHTS.version })}
+            scope={highlightsPublished ? undefined : pickText(RELEASE_HIGHLIGHTS.comingLede, locale)}
+            link={<Link href={`/${locale}/changelog`} className="section-link">{pickText(RELEASE_HIGHLIGHTS.changelogLink, locale)}</Link>}
+          >
+            <dl className="ruled-list">
+              {RELEASE_HIGHLIGHTS.items.map((item) => (
+                <div key={item.title}>
+                  <dt>{item.title}</dt>
+                  <dd>{pickText(item.body, locale)}</dd>
+                </div>
+              ))}
+            </dl>
+          </Section>
+        )}
 
         {/* COMMUNITY */}
         <section className="home-section" aria-labelledby="home-community">

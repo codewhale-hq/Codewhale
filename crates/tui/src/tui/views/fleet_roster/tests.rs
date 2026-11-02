@@ -78,7 +78,7 @@ fn selected_fleet_view() -> FleetRosterView {
     let mut view = view_with_overrides();
     view.selected_fleet = Some(SelectedFleetSummary {
         name: "Default".to_string(),
-        scope: crate::fleet::store::FleetScope::Personal,
+        scope: codewhale_engine::fleet::store::FleetScope::Personal,
     });
     view
 }
@@ -646,13 +646,14 @@ fn detail_pane_reports_shadowed_lower_layers() {
     // say so in the detail pane — the shadowed edit is no longer dropped
     // from every surface.
     let mut view = view_with_overrides();
-    view.shadowed.push(crate::fleet::roster::ShadowedProfile {
-        id: "reviewer".to_string(),
-        shadowed_origin: ProfileOrigin::Personal,
-        shadowed_source: PathBuf::from("/home/op/.codewhale/agents/reviewer.toml"),
-        winner_origin: ProfileOrigin::Workspace,
-        winner_source: PathBuf::from(".codewhale/agents/reviewer.toml"),
-    });
+    view.shadowed
+        .push(codewhale_engine::fleet::roster::ShadowedProfile {
+            id: "reviewer".to_string(),
+            shadowed_origin: ProfileOrigin::Personal,
+            shadowed_source: PathBuf::from("/home/op/.codewhale/agents/reviewer.toml"),
+            winner_origin: ProfileOrigin::Workspace,
+            winner_source: PathBuf::from(".codewhale/agents/reviewer.toml"),
+        });
     let reviewer = view.members.iter().find(|m| m.id == "reviewer").unwrap();
     let text = member_detail_lines_with_session(reviewer, None, &view.shadowed, view.locale)
         .iter()
@@ -685,13 +686,14 @@ fn roster_row_badges_personal_copy_ignored() {
     let rows = render_through_stack(
         || {
             let mut view = view_with_overrides();
-            view.shadowed.push(crate::fleet::roster::ShadowedProfile {
-                id: "reviewer".to_string(),
-                shadowed_origin: ProfileOrigin::Personal,
-                shadowed_source: PathBuf::from("/home/op/.codewhale/agents/reviewer.toml"),
-                winner_origin: ProfileOrigin::Workspace,
-                winner_source: PathBuf::from(".codewhale/agents/reviewer.toml"),
-            });
+            view.shadowed
+                .push(codewhale_engine::fleet::roster::ShadowedProfile {
+                    id: "reviewer".to_string(),
+                    shadowed_origin: ProfileOrigin::Personal,
+                    shadowed_source: PathBuf::from("/home/op/.codewhale/agents/reviewer.toml"),
+                    winner_origin: ProfileOrigin::Workspace,
+                    winner_source: PathBuf::from(".codewhale/agents/reviewer.toml"),
+                });
             view
         },
         120,

@@ -393,6 +393,166 @@ fn error_word_is_allowlisted(word: &str) -> bool {
     !looks_opaque(word)
 }
 
+const MAX_RECEIPT_FIELD_CHARS: usize = 96;
+
+pub fn safe_receipt_field(raw: &str) -> String {
+    let sanitized = sanitize_persisted_route_label(raw);
+    let mut out = String::with_capacity(raw.len().min(MAX_RECEIPT_FIELD_CHARS));
+    let mut previous_separator = false;
+    for ch in sanitized.chars() {
+        if out.chars().count() >= MAX_RECEIPT_FIELD_CHARS {
+            break;
+        }
+        let safe = if ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':' | '+') {
+            ch
+        } else {
+            '_'
+        };
+        let separator = safe == '_';
+        if separator && previous_separator {
+            continue;
+        }
+        out.push(safe);
+        previous_separator = separator;
+    }
+    if out.is_empty() { "-".to_string() } else { out }
+}
+
+pub fn sanitize_persisted_route_label(raw: &str) -> String {
+    const MAX_PERSISTED_ROUTE_LABEL_CHARS: usize = 256;
+    let value = raw.trim();
+    let lower = value.to_ascii_lowercase();
+
+    if value.is_empty() {
+        return "-".to_string();
+    }
+
+    // URLs are not route labels. Endpoints have a dedicated, validated hash
+    // field; persisting a URL here risks leaking userinfo, query credentials,
+    // or fragments through a custom provider/model name.
+    if value.contains("://") {
+        return "redacted-url".to_string();
+    }
+
+    let authorization_value = ["bearer ", "basic ", "digest ", "token ", "apikey "]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+        || lower.contains("authorization:")
+        || lower.contains("proxy-authorization:");
+    if authorization_value {
+        return "redacted-credential".to_string();
+    }
+
+    // Reject credential assignments regardless of common casing or separator:
+    // FOO_API_KEY=..., access-token:..., password = ....
+    for (index, ch) in value.char_indices() {
+        if !matches!(ch, '=' | ':') {
+            continue;
+        }
+        let name = lower[..index]
+            .trim()
+            .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '{' | '[' | ','));
+        let name = name.rsplit([' ', ',', ';']).next().unwrap_or(name);
+        let normalized = name.replace('-', "_");
+        if normalized.ends_with("api_key")
+            || normalized.ends_with("token")
+            || normalized.ends_with("secret")
+            || normalized.ends_with("password")
+            || normalized.ends_with("passwd")
+        {
+            return "redacted-credential".to_string();
+        }
+    }
+
+    // Common credential token prefixes. These are intentionally checked at
+    // word boundaries so model ids containing an incidental "sk" survive.
+    let credential_prefix = lower
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '=' | ':' | ',' | ';' | '"' | '\''))
+        .filter(|part| !part.is_empty())
+        .any(|part| {
+            [
+                "sk-",
+                "sk_",
+                "rk-",
+                "pk-",
+                "ghp_",
+                "gho_",
+                "ghu_",
+                "ghs_",
+                "github_pat_",
+                "hf_",
+                "glpat-",
+                "xoxb-",
+                "xoxp-",
+                "xoxa-",
+                "akia",
+                "aiza",
+                "eyj",
+            ]
+            .iter()
+            .any(|prefix| part.starts_with(prefix))
+        });
+    if credential_prefix {
+        return "redacted-credential".to_string();
+    }
+
+    let windows_absolute = value.as_bytes().get(1) == Some(&b':')
+        && value
+            .as_bytes()
+            .get(2)
+            .is_some_and(|separator| matches!(separator, b'/' | b'\\'));
+    let contains_local_root = [
+        "/users/",
+        "/volumes/",
+        "/home/",
+        "/private/",
+        "\\users\\",
+        "file://",
+        "/.ssh/",
+        "\\.ssh\\",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let looks_like_relative_path = value.contains('\\')
+        || lower.starts_with(".ssh/")
+        || lower.starts_with(".ssh\\")
+        || lower.split('/').any(|segment| {
+            matches!(
+                segment,
+                "." | ".."
+                    | ".ssh"
+                    | ".config"
+                    | "secrets"
+                    | "secret"
+                    | "credentials"
+                    | "credential"
+                    | "relative"
+                    | "workspace"
+                    | "tmp"
+            )
+        });
+    if std::path::Path::new(value).is_absolute()
+        || windows_absolute
+        || value.starts_with("~/")
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || contains_local_root
+        || looks_like_relative_path
+    {
+        return "redacted-local-path".to_string();
+    }
+    let bounded: String = value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_PERSISTED_ROUTE_LABEL_CHARS)
+        .collect();
+    if bounded.is_empty() {
+        "-".to_string()
+    } else {
+        bounded
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,165 +727,5 @@ mod tests {
         let safe = safe_error_text(&raw);
         assert!(safe.chars().count() <= MAX_ERROR_LEN + 1, "{}", safe.len());
         assert!(!safe.contains('\n'));
-    }
-}
-
-const MAX_RECEIPT_FIELD_CHARS: usize = 96;
-
-pub fn safe_receipt_field(raw: &str) -> String {
-    let sanitized = sanitize_persisted_route_label(raw);
-    let mut out = String::with_capacity(raw.len().min(MAX_RECEIPT_FIELD_CHARS));
-    let mut previous_separator = false;
-    for ch in sanitized.chars() {
-        if out.chars().count() >= MAX_RECEIPT_FIELD_CHARS {
-            break;
-        }
-        let safe = if ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':' | '+') {
-            ch
-        } else {
-            '_'
-        };
-        let separator = safe == '_';
-        if separator && previous_separator {
-            continue;
-        }
-        out.push(safe);
-        previous_separator = separator;
-    }
-    if out.is_empty() { "-".to_string() } else { out }
-}
-
-pub fn sanitize_persisted_route_label(raw: &str) -> String {
-    const MAX_PERSISTED_ROUTE_LABEL_CHARS: usize = 256;
-    let value = raw.trim();
-    let lower = value.to_ascii_lowercase();
-
-    if value.is_empty() {
-        return "-".to_string();
-    }
-
-    // URLs are not route labels. Endpoints have a dedicated, validated hash
-    // field; persisting a URL here risks leaking userinfo, query credentials,
-    // or fragments through a custom provider/model name.
-    if value.contains("://") {
-        return "redacted-url".to_string();
-    }
-
-    let authorization_value = ["bearer ", "basic ", "digest ", "token ", "apikey "]
-        .iter()
-        .any(|scheme| lower.starts_with(scheme))
-        || lower.contains("authorization:")
-        || lower.contains("proxy-authorization:");
-    if authorization_value {
-        return "redacted-credential".to_string();
-    }
-
-    // Reject credential assignments regardless of common casing or separator:
-    // FOO_API_KEY=..., access-token:..., password = ....
-    for (index, ch) in value.char_indices() {
-        if !matches!(ch, '=' | ':') {
-            continue;
-        }
-        let name = lower[..index]
-            .trim()
-            .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '{' | '[' | ','));
-        let name = name.rsplit([' ', ',', ';']).next().unwrap_or(name);
-        let normalized = name.replace('-', "_");
-        if normalized.ends_with("api_key")
-            || normalized.ends_with("token")
-            || normalized.ends_with("secret")
-            || normalized.ends_with("password")
-            || normalized.ends_with("passwd")
-        {
-            return "redacted-credential".to_string();
-        }
-    }
-
-    // Common credential token prefixes. These are intentionally checked at
-    // word boundaries so model ids containing an incidental "sk" survive.
-    let credential_prefix = lower
-        .split(|ch: char| ch.is_whitespace() || matches!(ch, '=' | ':' | ',' | ';' | '"' | '\''))
-        .filter(|part| !part.is_empty())
-        .any(|part| {
-            [
-                "sk-",
-                "sk_",
-                "rk-",
-                "pk-",
-                "ghp_",
-                "gho_",
-                "ghu_",
-                "ghs_",
-                "github_pat_",
-                "hf_",
-                "glpat-",
-                "xoxb-",
-                "xoxp-",
-                "xoxa-",
-                "akia",
-                "aiza",
-                "eyj",
-            ]
-            .iter()
-            .any(|prefix| part.starts_with(prefix))
-        });
-    if credential_prefix {
-        return "redacted-credential".to_string();
-    }
-
-    let windows_absolute = value.as_bytes().get(1) == Some(&b':')
-        && value
-            .as_bytes()
-            .get(2)
-            .is_some_and(|separator| matches!(separator, b'/' | b'\\'));
-    let contains_local_root = [
-        "/users/",
-        "/volumes/",
-        "/home/",
-        "/private/",
-        "\\users\\",
-        "file://",
-        "/.ssh/",
-        "\\.ssh\\",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-    let looks_like_relative_path = value.contains('\\')
-        || lower.starts_with(".ssh/")
-        || lower.starts_with(".ssh\\")
-        || lower.split('/').any(|segment| {
-            matches!(
-                segment,
-                "." | ".."
-                    | ".ssh"
-                    | ".config"
-                    | "secrets"
-                    | "secret"
-                    | "credentials"
-                    | "credential"
-                    | "relative"
-                    | "workspace"
-                    | "tmp"
-            )
-        });
-    if std::path::Path::new(value).is_absolute()
-        || windows_absolute
-        || value.starts_with("~/")
-        || value.starts_with("./")
-        || value.starts_with("../")
-        || contains_local_root
-        || looks_like_relative_path
-    {
-        return "redacted-local-path".to_string();
-    }
-    let bounded: String = value
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(MAX_PERSISTED_ROUTE_LABEL_CHARS)
-        .collect();
-    if bounded.is_empty() {
-        "-".to_string()
-    } else {
-        bounded
     }
 }

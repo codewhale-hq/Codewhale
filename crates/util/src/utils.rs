@@ -16,6 +16,7 @@ mod response_body;
 pub use response_body::read_response_body_capped;
 
 /// A writer that counts bytes written without storing them.
+#[derive(Default)]
 pub struct CountingWriter {
     count: usize,
 }
@@ -612,9 +613,12 @@ fn write_atomic_scoped(
         // executable bits of an existing workspace file before persisting.
         #[cfg(unix)]
         if let Some(mode) = existing_workspace_mode {
-            use std::os::unix::fs::PermissionsExt;
-            tmp.as_file()
-                .set_permissions(fs::Permissions::from_mode(mode))?;
+            // Restoring the access bits of the file this replaces. A mount that
+            // assigns modes itself (HarmonyOS hmdfs) returns EPERM for every
+            // `chmod`; `tighten_mode` tolerates only that, so the write lands
+            // and a real permission failure is still reported.
+            codewhale_config::private_directory::tighten_mode_of(tmp.as_file(), tmp.path(), mode)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
 
         tmp.as_file().sync_all()?;
@@ -897,10 +901,10 @@ where
 {
     let location = std::panic::Location::caller();
     #[cfg(any(test, feature = "test-support"))]
-    let env_ticket = codewhale_runtime::test_support::env_scope_ticket();
+    let env_ticket = crate::test_env_lock::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
-        let _membership = codewhale_runtime::test_support::join_env_scope(env_ticket);
+        let _membership = crate::test_env_lock::join_env_scope(env_ticket);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         if let Err(panic_info) = result {
             let msg = panic_message(&*panic_info);

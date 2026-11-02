@@ -1,21 +1,26 @@
-/* Generated from Codewhale GPUI design 1.1.2; sha256 433b18a41c526da0b5a1bbaa461c37feac987c7688fbe7de660acfbbdafa9bd5. Do not edit. */
+/* Generated from Codewhale GPUI design 2.3.0; sha256 9e74fb8f8fbfebb6b90a9740b324c56405277886e61273e2a0cb682797a8a6f9. Do not edit. */
 :root {
   --outside: #191a1c;
   --surface: #202123;
   --panel: #2a2b2e;
   --text: #efeeeb;
-  --muted: #c2c1bd;
+  --muted: #b8b8b4;
   --line: #3b3c3f;
-  --accent: #90b9ff;
-  --button: #90b9ff;
-  --button-text: #15243e;
+  --accent: #a9c0de;
+  --button: #e6e4df;
+  --button-text: #202123;
   --attention: #e8b077;
   --hover: #303134;
   --selected: #37393d;
   --live: #9ec7b2;
   --danger: #e39a90;
   --border-strong: #828386;
-  --selection: #90b9ff47;
+  --ocean-depth: #202123;
+  --diff-add: #22392f;
+  --diff-remove: #45302f;
+  --selection: #a9c0de47;
+  --elevation-popover: 0 4px 8px rgb(0 0 0 / 0.4);
+  --elevation-dialog: 0 12px 32px rgb(0 0 0 / 0.5);
   color-scheme: dark;
 }
 [data-theme="light"] {
@@ -23,18 +28,23 @@
   --surface: #faf8f5;
   --panel: #ffffff;
   --text: #28292b;
-  --muted: #535451;
+  --muted: #4f504d;
   --line: #d9d5cf;
-  --accent: #245bc7;
-  --button: #245bc7;
-  --button-text: #fbf5ee;
+  --accent: #425c82;
+  --button: #2e2f31;
+  --button-text: #faf8f5;
   --attention: #86520d;
   --hover: #e8e5e0;
   --selected: #dfdcd6;
   --live: #3a6352;
   --danger: #9e3f36;
   --border-strong: #807c76;
-  --selection: #245bc747;
+  --ocean-depth: #faf8f5;
+  --diff-add: #d2eadd;
+  --diff-remove: #f8e1dd;
+  --selection: #425c8247;
+  --elevation-popover: 0 4px 8px rgb(0 0 0 / 0.16);
+  --elevation-dialog: 0 12px 32px rgb(0 0 0 / 0.2);
   color-scheme: light;
 }
 :root {
@@ -49,6 +59,22 @@
   --radius-sheet: 14px;
   --focus-width: 2px;
   --focus-offset: 3px;
+  --motion-duration-state: 120ms;
+  --motion-duration-arrive: 180ms;
+  --motion-duration-exit: 120ms;
+  --motion-duration-panel: 340ms;
+  --motion-duration-linger: 1200ms;
+  --motion-loop-beat: 1200ms;
+  --motion-loop-breathe: 2400ms;
+  --motion-arrive-rise: 4px;
+  --motion-ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-panel: cubic-bezier(0.2, 0.1, 0.16, 1);
+  --glow-primary: 0 0 6px color-mix(in srgb, var(--accent) 12%, transparent);
+  --glow-live: 0 0 6px color-mix(in srgb, var(--live) 35%, transparent);
+  --glow-attention: 0 0 6px color-mix(in srgb, var(--attention) 40%, transparent);
+  --ombre-rise: #1e8fd8;
+  --ombre-deep: #0b48bb;
   --icon-stroke: 1.7;
   --font-family: "Shannon Sans";
   --font-fallbacks: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC";
@@ -58,4 +84,38 @@
   --font-prose-size: 17px;
   --font-heading-size: 17px;
   --font-title-size: 22px;
+  --type-caption-size: 12px;
+  --type-caption-line: 16px;
+  --type-caption-weight: 400;
+  --type-label-size: 13px;
+  --type-label-line: 18px;
+  --type-label-weight: 400;
+  --type-body-size: 14px;
+  --type-body-line: 22px;
+  --type-body-weight: 400;
+  --type-prose-size: 16px;
+  --type-prose-line: 26px;
+  --type-prose-weight: 400;
+  --type-heading-size: 17px;
+  --type-heading-line: 24px;
+  --type-heading-weight: 550;
+  --type-title-size: 22px;
+  --type-title-line: 28px;
+  --type-title-weight: 550;
+  --type-display-size: 28px;
+  --type-display-line: 34px;
+  --type-display-weight: 550;
+  --type-code-size: 13px;
+  --type-code-line: 20px;
+  --type-code-weight: 400;
+  --size-control: 28px;
+  --size-row: 30px;
+  --size-touch-target: 44px;
+  --size-icon: 16px;
+  --size-icon-large: 20px;
+  --size-sidebar: 248px;
+  --size-panel: 360px;
+  --breakpoint-compact: 720px;
+  --breakpoint-medium: 1024px;
+  --breakpoint-wide: 1440px;
 }

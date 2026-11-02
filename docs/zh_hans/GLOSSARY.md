@@ -34,7 +34,7 @@
 | Repository law | 仓库保护规则 | 儲存庫保護規則 | 保留源码中的 `repo_law` 等标识符。 |
 | Allow once | 仅允许本次 | 僅允許一次 | 审批选项。 |
 | Allow for this conversation | 在本次对话中允许 | 在本次對話中允許 | conversation 与 session 不混用。 |
-| Always allow in this repo | 在此仓库中始终允许 | 在此儲存庫中一律允許 | 不扩大到其他仓库。 |
+| Always for this command | 此命令始终允许 | 此命令一律允許 | 只保存这条命令，不扩大到其他仓库。 |
 | Don't allow | 不允许 | 不允許 | 拒绝是执行结果，不必作为按钮名称。 |
 | Stop | 停止 | 停止 | 不把停止回合误译为删除会话。 |
 

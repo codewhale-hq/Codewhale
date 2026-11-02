@@ -480,7 +480,7 @@ Contributor pull requests still merge as pull requests, as described in
 ## Project Structure
 
 Codewhale is a Cargo workspace with one Engine implementation in
-`crates/tui/src/core/engine/`. The public `codewhale` executable links the
+`crates/engine/src/core/engine/`. The public `codewhale` executable links the
 TUI/runtime library; interactive sessions, noninteractive runs and the Runtime
 API share that Engine.
 
@@ -556,7 +556,7 @@ A well-structured PR follows a consistent pattern. Recent exemplars include:
 - **#386** — `/init` command: new `crates/tui/src/commands/groups/project/init.rs` module, project-type detection,
   AGENTS.md generation, command registration in `commands/mod.rs`, localization strings.
 - **#389** — Inline LSP diagnostics: LSP subsystem in `crates/lsp/src/`, engine hooks in
-  `crates/tui/src/core/engine/lsp_hooks.rs`, config toggle, test coverage.
+  `crates/engine/src/core/engine/lsp_hooks.rs`, config toggle, test coverage.
 - **#387** — Self-update: new `crates/cli/src/update.rs` module, CLI subcommand registration,
   HTTP download + SHA256 verification + atomic binary replacement.
 - **#393** — `/share` session URL: new `crates/tui/src/commands/groups/project/share.rs`, HTML rendering,

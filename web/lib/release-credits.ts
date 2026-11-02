@@ -45,6 +45,19 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@aboimpinto",
   "@AdityaVG13",
   "@printf033",
+  "@isaacs",
+  "@Gabriel-Degret",
+  "@7jrxt42BxFZo4iAnN4CX",
+  "@Lstarsky0",
+  "@gaord",
+  "@SparkofSpike",
+  "@Aboysky",
+  "@ddlw",
+  "@laozidabo",
+  "@Ricardo-M-L",
+  "@luochen211",
+  "@gannp",
+  "@Felixkw12",
 ];
 
 /**

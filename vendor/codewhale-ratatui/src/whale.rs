@@ -487,11 +487,11 @@ impl Whale {
     /// elsewhere, the terminal's own ink without color.
     fn ink(theme: &Theme, row: u16, rows: u16) -> Style {
         if !theme.paints_grounds() {
-            return theme.fg(Role::Primary);
+            return theme.fg(Role::Accent);
         }
         let (top, bottom) = match theme.caps().appearance {
             crate::detect::Appearance::Light => (rgb(LOGO_TOP), rgb(LOGO_BOTTOM)),
-            _ => (theme.token(Role::Primary), rgb(LOGO_TOP)),
+            _ => (theme.token(Role::Accent), rgb(LOGO_TOP)),
         };
         let t = f32::from(row) / f32::from(rows.saturating_sub(1).max(1));
         let c = blend(bottom, top, t);
@@ -500,7 +500,7 @@ impl Whale {
             (_, Color::Rgb(r, g, b)) => {
                 Style::default().fg(Color::Indexed(rgb_to_ansi256(r, g, b)))
             }
-            _ => theme.fg(Role::Primary),
+            _ => theme.fg(Role::Accent),
         }
     }
 

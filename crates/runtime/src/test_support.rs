@@ -2,16 +2,23 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod test_env_lock;
-
-pub use test_env_lock::{
+pub use codewhale_util::test_env_lock::{
     EnvScopeMembership, EnvScopeTicket, TestEnvLock, current_env_scope_generation,
     current_thread_holds_test_env_lock, env_scope_ticket, join_env_scope, lock_test_env,
     with_test_env_lock, with_test_env_lock_if_uncontended,
 };
+
+/// Mark `workspace` trusted in the test's config, creating it first so the
+/// trust key is the canonical path. Repository-supplied commands and skills
+/// load only in a trusted workspace.
+pub fn trust_workspace(workspace: &Path) {
+    std::fs::create_dir_all(workspace).expect("create test workspace");
+    crate::config::save_workspace_trust(workspace).expect("trust test workspace");
+}
 
 /// Process-wide state root for unit tests that do not intentionally provide an
 /// explicit config/settings path.
@@ -228,8 +235,21 @@ fn unregister_guarded_env_key(key: &'static str) {
     }
 }
 
+static STATE_FROM_ENVIRONMENT: AtomicBool = AtomicBool::new(false);
+
+pub fn resolve_state_from_environment() {
+    STATE_FROM_ENVIRONMENT.store(true, Ordering::SeqCst);
+}
+
+pub fn state_from_environment() -> bool {
+    STATE_FROM_ENVIRONMENT.load(Ordering::SeqCst)
+}
+
 /// Whether some live [`EnvVarGuard`] currently covers `key`.
 pub fn env_var_currently_guarded(key: &str) -> bool {
+    if state_from_environment() {
+        return true;
+    }
     match guarded_env_keys().lock() {
         Ok(keys) => keys.contains_key(key),
         Err(poisoned) => poisoned.into_inner().contains_key(key),
@@ -248,6 +268,9 @@ pub fn env_var_currently_guarded(key: &str) -> bool {
 /// override variables or redirecting `HOME`/`USERPROFILE` through
 /// [`EnvVarGuard`].
 pub fn guarded_environment_provides_state_paths() -> bool {
+    if state_from_environment() {
+        return true;
+    }
     if !current_thread_holds_test_env_lock() {
         return false;
     }
@@ -283,6 +306,9 @@ pub fn guarded_environment_provides_state_paths() -> bool {
 /// is set, so a guarded `HOME` seals nothing while an unguarded
 /// `CODEWHALE_HOME` is in the ambient environment.
 pub fn home_is_sealed() -> bool {
+    if state_from_environment() {
+        return true;
+    }
     if !current_thread_holds_test_env_lock() {
         return false;
     }
@@ -493,6 +519,15 @@ pub fn read_shell_sentinel(path: &Path) -> String {
         .to_string()
 }
 
+/// Build a syntactically valid, non-secret JWT fixture without embedding a
+/// high-entropy token-shaped literal in Git history.
+pub fn future_test_jwt(label: &str) -> String {
+    use base64::Engine as _;
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":9999999999}"#);
+    format!("test.{payload}.{label}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,13 +584,4 @@ mod tests {
             "removing an override must not expose the developer's HOME"
         );
     }
-}
-
-/// Build a syntactically valid, non-secret JWT fixture without embedding a
-/// high-entropy token-shaped literal in Git history.
-pub fn future_test_jwt(label: &str) -> String {
-    use base64::Engine as _;
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":9999999999}"#);
-    format!("test.{payload}.{label}")
 }

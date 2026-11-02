@@ -226,7 +226,7 @@ impl<'a> AttentionItem<'a> {
                         .map(|line| {
                             Line::from(Span::styled(
                                 line,
-                                theme.fg(if selected { Role::Primary } else { Role::Muted }),
+                                theme.fg(if selected { Role::Accent } else { Role::Muted }),
                             ))
                         }),
                 );
@@ -289,7 +289,7 @@ impl<'a> AttentionItem<'a> {
                     "▏"
                 };
                 let rail = if selected && focused {
-                    Role::Primary
+                    Role::Accent
                 } else {
                     Role::BorderStrong
                 };

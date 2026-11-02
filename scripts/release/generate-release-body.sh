@@ -107,6 +107,7 @@ Each archive below contains the same runtime under the \`codewhale\` and
 | Linux x64 | \`codewhale-linux-x64.tar.gz\` | \`install.sh\` |
 | Linux ARM64 | \`codewhale-linux-arm64.tar.gz\` | \`install.sh\` |
 | Android ARM64 (Termux) | \`codewhale-android-arm64.tar.gz\` | \`install.sh\` |
+| HarmonyOS ARM64 (native) | \`codewhale-ohos-arm64.tar.gz\` | \`install.sh\` |
 | macOS x64 | \`codewhale-macos-x64.tar.gz\` | \`install.sh\` |
 | macOS ARM | \`codewhale-macos-arm64.tar.gz\` | \`install.sh\` |
 | Windows x64 (installer) | \`CodeWhaleSetup.exe\` | NSIS setup |

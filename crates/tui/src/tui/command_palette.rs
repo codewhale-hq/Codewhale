@@ -16,17 +16,17 @@ use ratatui::{
 };
 
 use crate::commands;
-use crate::skills;
-use crate::tools::spec::ApprovalRequirement;
-use crate::tools::spec::ToolCapability;
-use crate::tools::{ToolContext, ToolRegistryBuilder};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
+use codewhale_engine::tools::spec::ApprovalRequirement;
+use codewhale_engine::tools::spec::ToolCapability;
+use codewhale_engine::tools::{ToolContext, ToolRegistryBuilder};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_skills as skills;
+use codewhale_tui_kit::menu_style;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PaletteSection {
@@ -73,30 +73,30 @@ pub struct CommandPaletteView {
 pub fn build_entries(
     locale: Locale,
     skills_dir: &Path,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
 ) -> Vec<CommandPaletteEntry> {
     build_entries_with_plugins(
         locale,
         skills_dir,
-        skills_discovery_mode,
+        skills_config,
         workspace,
         mcp_config_path,
         mcp_snapshot,
-        &crate::plugins::PluginRegistry::empty(workspace),
+        &codewhale_plugins::PluginRegistry::empty(workspace),
     )
 }
 
 pub fn build_entries_with_plugins(
     locale: Locale,
     skills_dir: &Path,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
-    plugins: &crate::plugins::PluginRegistry,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
+    plugins: &codewhale_plugins::PluginRegistry,
 ) -> Vec<CommandPaletteEntry> {
     let mut entries = Vec::new();
     commands::user_registry::with_registry_for_plugins(plugins, |user_registry| {
@@ -166,13 +166,9 @@ pub fn build_entries_with_plugins(
         }
     });
 
-    let skills = skills::discover_for_workspace_and_dir_with_mode_and_plugins(
-        workspace,
-        skills_dir,
-        skills_discovery_mode,
-        Some(plugins),
-    )
-    .into_enabled();
+    let skills =
+        skills::discover_for_workspace(workspace, Some(skills_dir), skills_config, Some(plugins))
+            .into_enabled();
     for skill in skills
         .list()
         .iter()
@@ -197,7 +193,7 @@ pub fn build_entries_with_plugins(
         .with_shell_tools()
         .with_web_tools()
         .with_git_tools()
-        .with_user_input_tool(crate::tools::user_input::UserInputLimits::default())
+        .with_user_input_tool(codewhale_engine::tools::user_input::UserInputLimits::default())
         .with_patch_tools()
         .with_note_tool()
         .with_diagnostics_tool()
@@ -292,11 +288,11 @@ fn palette_description_for_unshadowed_aliases(
 fn build_mcp_entries(
     workspace: &Path,
     mcp_config_path: &Path,
-    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
-    plugins: &crate::plugins::PluginRegistry,
+    mcp_snapshot: Option<&codewhale_engine::mcp::McpManagerSnapshot>,
+    plugins: &codewhale_plugins::PluginRegistry,
 ) -> Vec<CommandPaletteEntry> {
     let owned_snapshot = if mcp_snapshot.is_none() {
-        crate::mcp::manager_snapshot_from_config_with_workspace_and_plugins(
+        codewhale_engine::mcp::manager_snapshot_from_config_with_workspace_and_plugins(
             mcp_config_path,
             workspace,
             false,
@@ -340,7 +336,10 @@ fn build_mcp_entries(
             description: format!(
                 "{} {} [{}] tools={} resources={} prompts={}",
                 server.transport,
-                crate::mcp::mcp_display_target(&server.transport, &server.command_or_url),
+                codewhale_engine::mcp::mcp_display_target(
+                    &server.transport,
+                    &server.command_or_url
+                ),
                 state,
                 server.tools.len(),
                 server.resources.len(),
@@ -448,8 +447,8 @@ fn build_mcp_entries(
 }
 
 fn format_mcp_server_details(
-    snapshot: &crate::mcp::McpManagerSnapshot,
-    server: &crate::mcp::McpServerSnapshot,
+    snapshot: &codewhale_engine::mcp::McpManagerSnapshot,
+    server: &codewhale_engine::mcp::McpServerSnapshot,
 ) -> String {
     let mut lines = vec![
         format!("Config: {}", snapshot.config_path.display()),
@@ -459,7 +458,7 @@ fn format_mcp_server_details(
         format!("Transport: {}", server.transport),
         format!(
             "Target: {}",
-            crate::mcp::mcp_display_target(&server.transport, &server.command_or_url)
+            codewhale_engine::mcp::mcp_display_target(&server.transport, &server.command_or_url)
         ),
         format!(
             "Timeouts: connect={}s execute={}s read={}s",
@@ -770,7 +769,8 @@ impl CommandPaletteView {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, self.filtered.len(), delta);
+        self.selected =
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.filtered.len(), delta);
         self.hovered.set(None);
     }
 
@@ -1000,20 +1000,23 @@ impl ModalView for CommandPaletteView {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
 
-                let pointer = crate::tui::glyphs::selection_marker(is_selected);
+                let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
                 // `{:<width$}` pads but never truncates, so a long label — every
                 // `mcp:server:tool` row — ran past the column and pushed the
                 // description off the card entirely. Truncate first, then pad, so
                 // the description column stays on one axis.
-                let label = crate::tui::ui_text::truncate_line_to_width(&entry.label, label_width);
+                let label =
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(&entry.label, label_width);
                 let mut line = format!("{pointer} {label:<label_width$}");
                 // The rows are drawn into `content`, which is the popup less its
                 // borders and padding — measuring against `popup_width` overstated
                 // the room by four columns.
                 let content_width = (popup_width as usize).saturating_sub(4);
                 let desc_capacity = content_width.saturating_sub(label_width + 4);
-                let desc =
-                    crate::tui::ui_text::truncate_line_to_width(&entry.description, desc_capacity);
+                let desc = codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    &entry.description,
+                    desc_capacity,
+                );
                 line.push_str("  ");
                 line.push_str(&desc);
                 entry_line_indices.push((lines.len(), absolute));
@@ -1353,7 +1356,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             configured_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
@@ -1397,7 +1400,10 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             workspace.join(".codewhale").join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+            &codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            },
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
@@ -1431,18 +1437,18 @@ mod tests {
             "---\nname: review\ndescription: reviewed plugin Skill\n---\nbody\n",
         )
         .expect("plugin Skill");
-        let config = crate::plugins::discovery::DiscoveryConfig {
+        let config = codewhale_plugins::discovery::DiscoveryConfig {
             workspace: workspace.clone(),
             user_plugins_dir: tmp.path().join("plugins"),
             workspace_plugins_dir: workspace.join(".codewhale/plugins"),
             builtin_plugin_dirs: Vec::new(),
             state_path: tmp.path().join("plugin-state/state.json"),
         };
-        let mut plugins = crate::plugins::discovery::discover_with_config(&config);
+        let mut plugins = codewhale_plugins::discovery::discover_with_config(&config);
         let entries_before = build_entries_with_plugins(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             &workspace,
             Path::new("mcp.json"),
             None,
@@ -1459,7 +1465,7 @@ mod tests {
         let entries_after = build_entries_with_plugins(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             &workspace,
             Path::new("mcp.json"),
             None,
@@ -1480,7 +1486,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1514,7 +1520,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1548,7 +1554,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1583,7 +1589,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1612,7 +1618,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1640,7 +1646,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1685,7 +1691,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1731,7 +1737,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1770,7 +1776,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1803,7 +1809,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1835,7 +1841,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             skills_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             tmp.path(),
             mcp_config_path.as_path(),
             None,
@@ -1906,7 +1912,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1944,7 +1950,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1966,7 +1972,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -2004,7 +2010,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             skills_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             tmp.path(),
             mcp_config_path.as_path(),
             None,
@@ -2081,12 +2087,12 @@ mod tests {
 
     #[test]
     fn command_palette_includes_mcp_discovery_and_failed_servers() {
-        let snapshot = crate::mcp::McpManagerSnapshot {
+        let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
             config_path: Path::new("mcp.json").to_path_buf(),
             config_exists: true,
             reload_required: false,
             servers: vec![
-                crate::mcp::McpServerSnapshot {
+                codewhale_engine::mcp::McpServerSnapshot {
                     name: "fs".to_string(),
                     enabled: true,
                     required: false,
@@ -2098,8 +2104,9 @@ mod tests {
                     connected: true,
                     error: None,
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
-                    tools: vec![crate::mcp::McpDiscoveredItem {
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
+                    tools: vec![codewhale_engine::mcp::McpDiscoveredItem {
                         name: "read".to_string(),
                         model_name: "mcp_fs_read".to_string(),
                         description: Some("Read files".to_string()),
@@ -2107,7 +2114,7 @@ mod tests {
                     resources: Vec::new(),
                     prompts: Vec::new(),
                 },
-                crate::mcp::McpServerSnapshot {
+                codewhale_engine::mcp::McpServerSnapshot {
                     name: "broken".to_string(),
                     enabled: true,
                     required: false,
@@ -2119,7 +2126,8 @@ mod tests {
                     connected: false,
                     error: Some("connect failed".to_string()),
                     auth_required: false,
-                    capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+                    capability_metadata:
+                        codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
                     tools: Vec::new(),
                     resources: Vec::new(),
                     prompts: Vec::new(),
@@ -2129,7 +2137,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -2161,11 +2169,11 @@ mod tests {
         // remaining gap from #197's acceptance list. Disabled servers must
         // appear in the palette with a `[disabled]` state tag so users can
         // see them without opening the MCP manager.
-        let snapshot = crate::mcp::McpManagerSnapshot {
+        let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
             config_path: Path::new("mcp.json").to_path_buf(),
             config_exists: true,
             reload_required: false,
-            servers: vec![crate::mcp::McpServerSnapshot {
+            servers: vec![codewhale_engine::mcp::McpServerSnapshot {
                 name: "muted".to_string(),
                 enabled: false,
                 required: false,
@@ -2177,7 +2185,8 @@ mod tests {
                 connected: false,
                 error: None,
                 auth_required: false,
-                capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+                capability_metadata:
+                    codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
                 tools: Vec::new(),
                 resources: Vec::new(),
                 prompts: Vec::new(),
@@ -2186,7 +2195,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -2351,7 +2360,7 @@ mod tests {
 
             // The selected row carries the charter pointer glyph.
             assert!(
-                text.contains(crate::tui::glyphs::SELECTION),
+                text.contains(codewhale_tui_kit::glyphs::SELECTION),
                 "{w}x{h}: selected row missing charter pointer"
             );
 

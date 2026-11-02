@@ -301,7 +301,7 @@ fn doctor(
     plugin: &mut dyn CommandPluginContext,
     fix: bool,
 ) -> CommandResult {
-    use crate::plugins::registry::gc;
+    use codewhale_plugins::registry::gc;
 
     let Some(state_path) = plugin.state_path() else {
         return CommandResult::error("Plugin registry has no persistence store; nothing to check");
@@ -419,7 +419,7 @@ fn list_bundles_and_legacy_tools(
     };
     append_diagnostics(presentation, &mut output, &plugin.registry_diagnostics());
     // Diagnostics and the stderr tail carry plugin-controlled text.
-    for line in crate::extension_host::status_report().lines() {
+    for line in codewhale_engine::extension_host::status_report().lines() {
         output.push('\n');
         output.push_str(&escape_review_text(line));
     }
@@ -474,13 +474,13 @@ fn show_bundle(
         }
     };
     let mut output = render::render_bundle_detail(presentation, &detail, true);
-    if let Some(report) = crate::extension_host::owner_report(&detail.id) {
+    if let Some(report) = codewhale_engine::extension_host::owner_report(&detail.id) {
         append_host_owner_report(presentation, &mut output, &report);
     }
     // What the user configured for the plugin is data its code will read, so
     // it is part of what `/plugin show` puts in front of them (keys only: a
     // value can be anything, including something they would rather not echo).
-    if let Some(summary) = crate::extension_host::plugin_config_summary(&detail.name) {
+    if let Some(summary) = codewhale_engine::extension_host::plugin_config_summary(&detail.name) {
         append_plugin_config_summary(&mut output, &detail.name, &summary);
     }
     CommandResult::message(output)
@@ -519,9 +519,9 @@ fn append_plugin_config_summary(
 fn append_host_owner_report(
     presentation: &dyn CommandPresentationContext,
     output: &mut String,
-    report: &crate::extension_host::OwnerReport,
+    report: &codewhale_engine::extension_host::OwnerReport,
 ) {
-    use crate::extension_host::registry::OwnerState;
+    use codewhale_engine::extension_host::registry::OwnerState;
 
     let (state_key, reason) = match &report.state {
         Some(OwnerState::Activating) => ("cmd_plugin_owner_activating", None),
@@ -809,7 +809,7 @@ fn rollback_hash_mismatch(
 ) -> CommandResult {
     let missing_destination = translate(presentation, "plugin_kimi_rollback_destination_missing");
     // File-level rollback removal crosses the boundary through the plugin
-    // facet (D1); the host adapter owns the `crate::plugins::install::uninstall`
+    // facet (D1); the host adapter owns the `codewhale_plugins::install::uninstall`
     // call.
     let rollback = installed_path
         .and_then(Path::parent)
@@ -914,7 +914,7 @@ fn uninstall_bundle(
 
 /// Read the active network policy for plugin downloads (host-side, D11).
 pub(crate) fn plugin_network_policy() -> codewhale_net::network_policy::NetworkPolicy {
-    crate::plugins::providers::load_config(None, None)
+    codewhale_plugins::providers::load_config(None, None)
         .unwrap_or_default()
         .network
         .map(codewhale_net::network_policy::NetworkPolicy::from)

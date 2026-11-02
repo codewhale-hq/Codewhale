@@ -125,7 +125,7 @@ fn tool_display_label_for_name(name: &str) -> String {
     if matches!(family, ToolFamily::Generic) {
         name.to_string()
     } else {
-        family_label(family).to_string()
+        family_label(family, Locale::En).to_string()
     }
 }
 
@@ -149,11 +149,11 @@ fn family_message_id(family: ToolFamily) -> codewhale_localization::MessageId {
 #[must_use]
 pub fn tool_activity_label_for_name(name: &str, locale: Locale) -> String {
     let family = tool_family_for_name(name);
-    let mid = family_message_id(family);
+    let label = family_label(family, locale);
     if matches!(family, ToolFamily::Generic) {
-        format!("{} {name}", codewhale_localization::tr(locale, mid))
+        format!("{label} {name}")
     } else {
-        codewhale_localization::tr(locale, mid).to_string()
+        label.into_owned()
     }
 }
 
@@ -293,23 +293,10 @@ pub fn family_glyph(family: ToolFamily) -> &'static str {
     }
 }
 
-/// The short verb label for a family — appears in card headers next to the
-/// glyph. Lowercased on purpose; the verb-glyph + label is the new card
-/// title vocabulary.
+/// The catalog-owned verb label for a family, shown beside its header glyph.
 #[must_use]
-pub fn family_label(family: ToolFamily) -> &'static str {
-    match family {
-        ToolFamily::Read => "read",
-        ToolFamily::Patch => "patch",
-        ToolFamily::Run => "run",
-        ToolFamily::Find => "find",
-        ToolFamily::Delegate => "agent",
-        ToolFamily::Fanout => "fanout",
-        ToolFamily::Rlm => "rlm",
-        ToolFamily::Verify => "verify",
-        ToolFamily::Think => "think",
-        ToolFamily::Generic => "tool",
-    }
+pub fn family_label(family: ToolFamily, locale: Locale) -> std::borrow::Cow<'static, str> {
+    codewhale_localization::tr(locale, family_message_id(family))
 }
 
 /// Position of a line within a multi-line card — drives the left-rail
@@ -507,7 +494,7 @@ mod tests {
                 "family {family:?} has empty glyph",
             );
             assert!(
-                !family_label(family).is_empty(),
+                !family_label(family, Locale::En).is_empty(),
                 "family {family:?} has empty label",
             );
         }

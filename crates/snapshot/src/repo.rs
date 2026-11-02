@@ -147,7 +147,7 @@ enum RestoreBackup<'a> {
     Existing(&'a SnapshotId),
 }
 
-/// Report of what [`SnapshotRepo::restore_paths`] did to one path.
+/// Report of what `SnapshotRepo::restore_paths` did to one path.
 #[derive(Debug, Clone)]
 pub struct PathRestoreOutcome {
     /// Workspace-relative path that was restored.
@@ -525,7 +525,7 @@ impl SnapshotRepo {
     /// into the side repo's index.
     ///
     /// Before committing, checks whether the snapshot directory exceeds
-    /// [`MAX_SNAPSHOT_SIZE_MB`] and prunes the oldest snapshots if it does.
+    /// `MAX_SNAPSHOT_SIZE_MB` and prunes the oldest snapshots if it does.
     ///
     /// Returns the snapshot's commit SHA.
     #[allow(dead_code)] // convenience entry kept for tests and legacy callers; production writes go through snapshot_with_session
@@ -2083,12 +2083,12 @@ impl SnapshotRepo {
         self.with_write_lock(|| self.prune_keep_last_n_locked(max_count, 1))
     }
 
-    /// [`Self::prune_keep_last_n`] for the prune that follows every snapshot:
+    /// `Self::prune_keep_last_n` for the prune that follows every snapshot:
     /// it waits until half a window of snapshots is due to go and drops them
     /// together. Rebuilding the survivor chain costs two git processes per
     /// survivor, and doing that after every snapshot past the cap put seconds
     /// in front of every later turn's provider request. The store then holds
-    /// at most half a window more than [`Self::prune_keep_last_n`] would keep.
+    /// at most half a window more than `Self::prune_keep_last_n` would keep.
     pub fn prune_keep_last_n_batched(&self, max_count: usize) -> io::Result<usize> {
         self.with_write_lock(|| self.prune_keep_last_n_locked(max_count, (max_count / 2).max(1)))
     }
@@ -2454,7 +2454,7 @@ pub fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> (String, bool)
 /// Production passes [`SIZE_WALK_MAX_ENTRIES`] for `max_entries`; it is
 /// a parameter only so the entry bound is reachable in a test without
 /// creating 200,000 inodes. It must not be threaded up through
-/// [`SnapshotRepo::open_or_init_with_cap`]: [`WorkspaceGate::describe`]
+/// [`SnapshotRepo::open_or_init_with_cap`]: `WorkspaceGate::describe`
 /// interpolates the constant into the user-facing message, so a weaker
 /// injected bound would report a number that did not trip.
 pub fn estimate_workspace_size_bounded(

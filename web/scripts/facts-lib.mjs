@@ -8,7 +8,7 @@
  *   - <repo>/crates/sandbox/src/lib.rs           → enforced sandbox markers
  * *   - <repo>/crates/config/assets/provider_descriptors.json → provider labels and default model
  *   - <repo>/npm/codewhale/package.json         → node engines
- *   - <repo>/crates/tui/src/tools/*.rs          → tool count (ToolSpec impls)
+ *   - <repo>/crates/engine/src/tools/*.rs          → tool count (ToolSpec impls)
  *   - <repo>/LICENSE                            → license
  *   - <repo>/web/data/latest-published-release.json → latest published release
  */
@@ -88,7 +88,7 @@ export function deriveModels() {
 }
 
 export function deriveToolCount() {
-  const dir = join(REPO_ROOT, "crates/tui/src/tools");
+  const dir = join(REPO_ROOT, "crates/engine/src/tools");
   if (!existsSync(dir)) return null;
   let count = 0;
   for (const f of readdirSync(dir)) {
@@ -160,7 +160,7 @@ export function deriveFeatures() {
     }
     ids.add(row.id);
     for (const [surface, state] of Object.entries(row.surfaces)) {
-      if (!["tui", "api", "web"].includes(surface) || !["stable", "partial", "preview", "none"].includes(state)) {
+      if (!["tui", "desktop", "web", "api"].includes(surface) || !["stable", "partial", "preview", "none"].includes(state)) {
         throw new Error(`invalid feature surface: ${row.id}/${surface}`);
       }
     }

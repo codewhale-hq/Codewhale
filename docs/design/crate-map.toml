@@ -1,0 +1,336 @@
+# codewhale-tui crate map (see docs/design/CRATE_MAP.md). runtime-wire is named app-server-protocol (founder, 2026-10-31).
+# Layers are a strict order chosen to minimise upward refs; no two crates on one layer share an edge.
+# Bands: runtime first, then hosts (thread host, runtime API, acp/mcp/exec hosts, relay, doctor), then TUI and commands, then cli (composition root).
+# command-contract, telemetry and tui-kit name EXISTING workspace crates that absorb dependency-free units.
+ceiling = 50000
+target = 10000
+
+# EXISTING crate: absorbs pure command and keybinding tables (506 lines)
+[crates.command-contract]
+layer = 1
+units = ["command_catalog", "keybinding_table"]
+
+# EXISTING crate: absorbs the telemetry notice (390 lines)
+[crates.telemetry]
+layer = 1
+units = ["telemetry_notice"]
+
+# MCP client pool and transports (13274 lines)
+[crates.mcp-pool]
+layer = 2
+units = ["mcp/*"]
+
+# live provider/model catalog and readiness (8320 lines)
+[crates.model-catalog]
+layer = 2
+units = ["provider_lake", "provider_catalog_live", "models_dev_live", "codex_model_cache", "model_inventory", "provider_readiness", "model_profile", "model_relevance", "reasoning_preference", "route_receipt"]
+
+# remote control protocol and pairing (leaf, no crate refs) (4934 lines)
+[crates.remote-control]
+layer = 2
+units = ["remote_control"]
+
+# usage metering, pricing and cost receipts (5991 lines)
+[crates.billing]
+layer = 3
+units = ["pricing", "route_billing", "cost_status", "scorecard"]
+
+# route resolution, budgets and tuning (2713 lines)
+[crates.route]
+layer = 3
+units = ["route_runtime", "route_budget", "route_preferences", "auto_reasoning", "request_tuning", "runtime_options"]
+
+# LlmClient trait and LlmError: the model-call contract (1945 lines)
+[crates.model-contract]
+layer = 4
+units = ["llm_client", "llm_error_envelope"]
+
+# tasks, automations, work graph, operate, todo and plan state (14454 lines)
+[crates.tasks]
+layer = 4
+units = ["task_manager", "automation_manager", "work_graph", "operate", "tools/todo", "tools/plan"]
+
+# CodewhaleClient dispatch, retry, provider wire adapters and auto-routing; ~20k because impl CodewhaleClient spans client, chat, anthropic, responses and system_one (20105 lines)
+[crates.model-client]
+layer = 5
+units = ["client/<self>", "client/wire", "client/stream_entry", "client/prepared", "client/role_placement", "client/system_one", "client/reasoning_effort", "client/deepseek_effort", "model_routing", "superfast", "turn_route_plan", "client/chat", "client/anthropic", "client/responses", "client/provider_native_search"]
+
+# fleet roster, profiles and member identity (9327 lines)
+[crates.fleet-roster]
+layer = 6
+units = ["fleet/*"]
+
+# local Ollama provider catalog (640 lines)
+[crates.provider-local]
+layer = 6
+units = ["client/ollama_catalog", "local_ollama"]
+
+# tool spec, envelopes, truncation, budgets and arg repair (logic-light contract) (4056 lines)
+[crates.tool-contract]
+layer = 6
+units = ["tools/<self>", "tools/spec", "tools/truncate", "tools/execution_envelope", "tools/arg_repair", "tools/tool_call_budget", "tools/large_output_router", "tools/activity"]
+
+# hook execution (3795 lines)
+[crates.hooks-host]
+layer = 7
+units = ["hooks"]
+
+# tool execution plumbing: handles, admission, result retrieval, harness, dynamic tools (2324 lines)
+[crates.tool-runtime]
+layer = 7
+units = ["tools/handle", "tools/resource_admission", "tools/tool_result_retrieval", "tools/harness", "tools/dynamic"]
+
+# shell and process tools (11853 lines)
+[crates.tools-shell]
+layer = 8
+units = ["tools/shell", "tools/shell_output", "tools/terminal_session", "tools/test_runner", "tools/cargo_failure_summary", "tools/dev_server_readiness", "tools/run_tool", "tools/rust_format", "tools/syntax_check", "tools/diagnostics", "tools/validate_data"]
+
+# file, search and media (image, vision, voice) tools (11488 lines)
+[crates.tools-fs]
+layer = 9
+units = ["tools/file", "tools/file_tool", "tools/file_search", "tools/search", "tools/apply_patch", "tools/read_media", "tools/image_ocr", "tools/pdf", "tools/pandoc", "tools/diff_format", "tools/revert_turn", "image_attach", "vision", "voice"]
+
+# prompt assembly, compaction and handoff (one BASE_PROMPT) (12802 lines)
+[crates.context]
+layer = 10
+units = ["prompts", "project_context", "project_context_cache", "compaction", "runtime_handoff", "request_manifest", "repo_law", "profile_constitution"]
+
+# planning, goal, todo and scheduling tools (5816 lines)
+[crates.tools-work]
+layer = 11
+units = ["tools/tasks", "tools/goal", "tools/automation", "tools/send_later", "tools/notify", "tools/session", "tools/user_input", "tools/tui_help", "tools/speech", "tools/project"]
+
+# approval authority, grants and approval log (6204 lines)
+[crates.authority]
+layer = 12
+units = ["core/authority", "approval_log", "tools/approval_cache", "tools/approval_summary"]
+
+# subagent tool, child records and lifecycle; ~23k because tools/subagent/mod.rs alone is 19.5k, split it by seam before going lower (22743 lines)
+[crates.agents]
+layer = 13
+units = ["tools/subagent/*"]
+
+# agent roster rows shared by runtime and views (399 lines)
+[crates.agent-roster]
+layer = 14
+units = ["agent_roster"]
+
+# in-process Op/Event surface, turn/session records and tool inspection DTOs (4230 lines)
+[crates.app-server-protocol]
+layer = 15
+units = ["core/<self>", "core/events", "core/ops", "core/turn", "core/session", "core/runtime_contract", "runtime_api/review", "tool_inspection"]
+
+# recursive language-model runtime (1439 lines)
+[crates.rlm]
+layer = 16
+units = ["rlm"]
+
+# the one session store, with export, peek, resume, reconcile, purge and receipts (18344 lines)
+[crates.session-store]
+layer = 16
+units = ["session_manager", "runtime_threads/<self>", "runtime_threads/manager/history", "runtime_threads/turn_artifacts", "session_projection", "session_secret_scrub", "usage_persistence", "todo_snapshot", "session_export", "session_peek", "session_resume", "session_reconcile", "purge", "receipts"]
+
+# review, verify and git/github tools (13268 lines)
+[crates.tools-review]
+layer = 16
+units = ["tools/review", "tools/review_core", "tools/review_host", "tools/review_hunks", "tools/review_pr", "tools/review_triage", "tools/verifier", "tools/verify", "tools/github", "tools/git", "tools/git_history", "tools/git_tool", "git_status"]
+
+# fleet manager, executor, scheduler and ledger (9690 lines)
+[crates.fleet-runtime]
+layer = 17
+units = ["fleet/manager", "fleet/executor", "fleet/host", "fleet/scheduler", "fleet/control", "fleet/ledger", "fleet/tailnet"]
+
+# codemode, rlm, lsp, mcp, plugin and memory tools (6086 lines)
+[crates.tools-ext]
+layer = 17
+units = ["tools/codemode", "tools/js_execution", "tools/fim", "tools/rlm", "tools/lsp", "tools/mcp_registry", "tools/runtime_mcp", "tools/plugin", "tools/request_plugin_install", "tools/skill", "tools/remember", "tools/native_memory"]
+
+# workflow tool (8061 lines)
+[crates.tools-workflow]
+layer = 17
+units = ["tools/workflow", "tools/workflow_plan_approval"]
+
+# engine-free turn helpers: tool catalog, streaming, heartbeat (4529 lines)
+[crates.turn-support]
+layer = 18
+units = ["core/engine/tool_catalog", "core/engine/reviewer", "core/engine/token_estimate_cache", "core/engine/tool_media", "core/engine/context", "core/engine/turn_heartbeat", "core/engine/tool_preparation", "core/engine/dispatch"]
+
+# extension host: registry, supervisor, extension MCP (18777 lines)
+[crates.extension-host]
+layer = 19
+units = ["extension_host/*"]
+
+# child coordination, child engine adapter and advisor (6043 lines)
+[crates.agents-coord]
+layer = 20
+units = ["tools/subagent/coord", "tools/subagent/engine", "tools/subagent/advisor"]
+
+# web, fetch and search tools (11246 lines)
+[crates.tools-web]
+layer = 20
+units = ["tools/web", "tools/web_run", "tools/web_search", "tools/web_tool", "tools/fetch_url", "tools/finance"]
+
+# the one turn loop (Engine::run_turn). Over 25k by necessity: 14 files carry inherent impl Engine blocks (turn_loop, child_host, rlm_host, tool_execution...) and Rust keeps inherent impls in the defining crate; engine-free helpers already peeled to turn-support (28477 lines)
+[crates.engine]
+layer = 21
+units = ["engine_root", "exec_events", "core/engine/*"]
+
+# runtime thread manager hosting engines, plus the protocol-parity cross-check (18311 lines)
+[crates.thread-host]
+layer = 22
+units = ["runtime_threads/manager/<self>", "core/protocol_parity"]
+
+# doctor checks and fixes (1384 lines)
+[crates.doctor]
+layer = 23
+units = ["doctor", "doctor_fix"]
+
+# runtime API handler groups (10630 lines)
+[crates.runtime-api-routes]
+layer = 23
+units = ["runtime_api/git", "runtime_api/thread_history", "runtime_api/sessions", "runtime_api/computer_display", "runtime_api/mobile", "runtime_api/plugins", "runtime_api/secrets", "runtime_api/workspace"]
+
+# runtime HTTP API core (18570 lines)
+[crates.runtime-api]
+layer = 24
+units = ["runtime_api/<self>", "runtime_api/auth", "runtime_api/listener", "runtime_api/avatars", "runtime_api/constitution", "runtime_api/context", "runtime_api/diagnostics", "runtime_api/jobs", "runtime_api/members", "runtime_api/memory_lens", "runtime_api/notification_delivery", "runtime_api/plans", "runtime_api/targets", "runtime_api/thread_delete", "runtime_api/voice", "runtime_api/web", "runtime_api/mcp_import", "runtime_api/lsp", "runtime_api/terminal", "runtime_api/turn_artifacts"]
+
+# acp, mcp server and exec hosts (4822 lines)
+[crates.hosts]
+layer = 25
+units = ["acp_server", "mcp_server", "exec_agent", "eval"]
+
+# runtime chat relay and remote setup (2949 lines)
+[crates.remote-relay]
+layer = 25
+units = ["runtime_chat_relay", "remote_setup"]
+
+# slash command registry and traits (2266 lines)
+[crates.commands-core]
+layer = 26
+units = ["commands/<self>", "commands/traits", "commands/user_commands", "commands/user_registry", "commands/discovery", "commands/groups/<self>"]
+
+# EXISTING crate: absorbs dependency-free terminal primitives (1886 lines)
+[crates.tui-kit]
+layer = 26
+units = ["tui/color_compat", "tui/motion", "tui/clipboard", "tui/frame_rate_limiter"]
+
+# terminal widgets and primitives (6055 lines)
+[crates.tui-chrome]
+layer = 27
+units = ["tui/focus_texture", "tui/hover_hit", "tui/hover_layer", "tui/format_helpers", "tui/selection", "tui/key_actions", "tui/key_shortcuts", "tui/shell_key_routing", "tui/tideline", "tui/vim_mode", "tui/paste", "tui/output_rows_cache", "tui/transcript_cache", "tui/composer_chrome", "tui/display_refresh", "tui/footer_ui", "tui/ocean", "tui/ambient_life"]
+
+# shared TUI widgets and cards, approval card included (9529 lines)
+[crates.tui-widgets]
+layer = 28
+units = ["tui/widgets", "tui/approval"]
+
+# TUI state records shared by app and views (2675 lines)
+[crates.tui-state]
+layer = 29
+units = ["tui/startup_defaults", "tui/session_boot", "composer_history", "tui/mention_completion", "tui/workspace_context", "tui/plan_handoff", "tui/pending_requests", "tui/session_metrics", "whats_new"]
+
+# transcript and history views (12911 lines)
+[crates.tui-transcript]
+layer = 29
+units = ["tui/history", "tui/transcript", "tui/live_transcript", "tui/active_cell", "tui/hot_tail", "tui/pager", "tui/redaction_gate", "tui/gate_receipts", "tui/backtrack"]
+
+# core modal views (11367 lines)
+[crates.tui-views]
+layer = 30
+units = ["tui/views/<self>", "tui/views/help", "tui/views/mode_picker", "tui/views/status_picker", "tui/views/route_save_prompt", "tui/views/router_setup", "tui/views/skills_manager", "tui/views/workflows_manager", "tui/whales"]
+
+# theme, settings, feedback, session and file pickers (4716 lines)
+[crates.tui-pickers]
+layer = 31
+units = ["tui/theme_picker", "tui/settings_picker", "tui/feedback_picker", "tui/session_picker", "tui/file_picker", "tui/file_tree"]
+
+# extension and automation views (4935 lines)
+[crates.tui-views-ext]
+layer = 31
+units = ["tui/views/extensions", "tui/views/automations", "tui/automation_panel"]
+
+# TUI app state (13284 lines)
+[crates.tui-app]
+layer = 32
+units = ["tui/app/*", "tui/<self>", "tui/footer_hints", "tui/behavioral_tips", "tui/plugin_suggestions"]
+
+# session commands (3864 lines)
+[crates.commands-session]
+layer = 33
+units = ["commands/groups/session", "commands/session_export_host", "commands/session_group", "commands/session_structcopy_host"]
+
+# provider and model pickers (10758 lines)
+[crates.tui-model-pickers]
+layer = 33
+units = ["tui/provider_picker", "tui/model_picker"]
+
+# tui side routing of jobs and tools (9118 lines)
+[crates.tui-routing]
+layer = 33
+units = ["tui/tool_routing", "tui/subagent_routing", "tui/automation_routing", "tui/shell_job_routing", "tui/mcp_routing", "tui/auto_router", "tui/context_inspector", "tui/notifications", "tui/control_socket", "tui/herdr", "tui/window_control", "tui/worktree_manager", "tui/persistence_actor"]
+
+# plugin, skill, memory, project, utility commands (7045 lines)
+[crates.commands-ext]
+layer = 34
+units = ["commands/groups/plugins", "commands/groups/skills", "commands/groups/memory", "commands/groups/project", "commands/groups/utility"]
+
+# fleet views (6079 lines)
+[crates.tui-views-fleet]
+layer = 34
+units = ["tui/views/fleet_detail", "tui/views/fleet_list", "tui/views/fleet_roster", "tui/views/fleet_setup"]
+
+# work surface, hotbar and agent rails (12919 lines)
+[crates.tui-work]
+layer = 34
+units = ["tui/work_surface", "tui/phase_strip", "tui/hotbar", "tui/sidebar", "tui/infoline", "tui/background_finished", "tui/background_indicator", "tui/agent_focus", "tui/agent_details", "tui/agent_roster", "tui/coordination_detail"]
+
+# setup, onboarding, startup and the DSH integration (renders with ratatui) (12091 lines)
+[crates.tui-setup]
+layer = 35
+units = ["tui/setup", "tui/onboarding", "tui/startup_input", "tui/launch_resume_confirm", "integrations"]
+
+# pet, underwater and ambient life (7016 lines)
+[crates.tui-ambient]
+layer = 36
+units = ["tui/pet_watch", "tui/underwater"]
+
+# config commands (7115 lines)
+[crates.commands-config]
+layer = 37
+units = ["commands/config_group", "commands/config_host", "commands/config_main_host", "commands/config_main_import_host", "commands/groups/config", "commands/debug_group"]
+
+# composer input, mentions and menus (9103 lines)
+[crates.tui-composer]
+layer = 37
+units = ["tui/file_mention", "tui/git_mention", "tui/file_frecency", "tui/file_picker_relevance", "tui/user_input", "tui/composer_ui", "tui/slash_menu", "tui/command_palette", "tui/context_menu", "tui/mouse_ui", "tui/external_editor", "tui/prompt_suggestion", "composer_stash"]
+
+# TUI frame rendering (5494 lines)
+[crates.tui-frame]
+layer = 38
+units = ["tui/ui/frame", "tui/ui/overlays", "tui/ui/activity_detail", "tui/ui/motion", "tui/streaming_thinking"]
+
+# TUI reducers and handlers (15064 lines)
+[crates.tui-reducer]
+layer = 38
+units = ["tui/ui/apply", "tui/ui/handlers", "tui/ui/dispatch", "tui/ui/dispatch_prepare", "tui/ui/session_state", "tui/ui/compaction_flow", "tui/ui/approval_routing", "tui/ui/task_projection", "tui/ui/provider_routes", "tui/ui/provider_setup", "tui/ui/remote_control_bridge"]
+
+# TUI event loop (12682 lines)
+[crates.tui-loop]
+layer = 39
+units = ["tui/ui/<self>", "tui/ui/event_loop", "tui/ui/terminal", "tui/ui/terminal_input", "tui/ui/fatal_signal_guard", "tui/ui/job_control_guard", "tui/ui/observer_hooks", "tui/ui/release_check", "tui/ui/feedback_host"]
+
+# core and navigation commands (6089 lines)
+[crates.commands-main]
+layer = 40
+units = ["commands/groups/core", "commands/core_navigation_host", "commands/core_navigation_voice_host"]
+
+# command contract dispatch (8617 lines)
+[crates.commands-contract]
+layer = 41
+units = ["commands/contract", "context_report"]
+
+# composition root: lib.rs and the central tool registry (wiring list) (16924 lines)
+[crates.cli]
+layer = 42
+units = ["<root>", "tools/registry"]

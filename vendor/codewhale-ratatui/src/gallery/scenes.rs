@@ -68,7 +68,7 @@ fn workspace(area: Rect, buf: &mut Buffer, theme: &Theme) {
         "You",
         "Build a beautiful workspace. Keep the receipts legible.",
     )
-    .role(Role::Primary);
+    .role(Role::Accent);
     let user_height = user.height(main.width, theme);
     user.paint(band(main, 3, user_height), buf, theme);
     let reply_top = 4 + user_height;
@@ -216,7 +216,7 @@ fn fleet(area: Rect, buf: &mut Buffer, theme: &Theme) {
         "You",
         "Build the workspace, review the interaction, and document the kit.",
     )
-    .role(Role::Primary)
+    .role(Role::Accent)
     .paint(band(main, 3, 3), buf, theme);
     let nodes = vec![
         TreeNode::new(State::Working, "Finish the terminal workspace").children([

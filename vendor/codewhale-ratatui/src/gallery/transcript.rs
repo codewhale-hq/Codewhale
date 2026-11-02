@@ -114,7 +114,7 @@ fn mounted(area: Rect, buf: &mut Buffer, theme: &Theme) {
         ),
         Line::styled(
             "Read the linked guide",
-            theme.fg(Role::Primary).add_modifier(Modifier::UNDERLINED),
+            theme.fg(Role::Accent).add_modifier(Modifier::UNDERLINED),
         ),
     ];
     let background = theme.bg(Role::Surface);

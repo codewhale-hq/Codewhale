@@ -65,7 +65,7 @@ fn posture_retains_every_host_ink_including_the_pinned_right_fact() {
             buf.area,
             Style::default()
                 .fg(crate::tui::infoline::source_theme(false)
-                    .color(codewhale_ratatui::Role::Primary)
+                    .color(codewhale_ratatui::Role::Accent)
                     .unwrap())
                 .bg(Color::Rgb(30, 40, 50))
                 .add_modifier(Modifier::ITALIC),

@@ -1061,7 +1061,7 @@ pub struct GoalConfig {
     /// Goals are unlimited by default; token/time budgets are telemetry only.
     ///
     /// `None` uses the built-in default
-    /// ([`codewhale_runtime::goal_loop::DEFAULT_MAX_GOAL_CONTINUATIONS`], currently `0`);
+    /// (`codewhale_runtime::goal_loop::DEFAULT_MAX_GOAL_CONTINUATIONS`, currently `0`);
     /// `0` disables the backstop entirely so only terminal status or user
     /// control ends the run.
     #[serde(default)]
@@ -1607,7 +1607,7 @@ pub struct AutoRouterConfig {
     #[serde(default)]
     pub thinking: Option<String>,
     /// Classifier call timeout in seconds. Defaults to
-    /// [`DEFAULT_AUTO_ROUTER_TIMEOUT_SECS`] (4); `0` means "use the default".
+    /// `DEFAULT_AUTO_ROUTER_TIMEOUT_SECS` (4); `0` means "use the default".
     /// Values above [`MAX_AUTO_ROUTER_TIMEOUT_SECS`] (300) are clamped so a
     /// hung local router cannot stall a turn indefinitely.
     #[serde(default)]
@@ -1683,6 +1683,8 @@ pub struct UpdateConfig {
     pub update_uri: Option<String>,
     #[serde(default = "default_update_show_whats_new")]
     pub show_whats_new: bool,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 fn default_update_show_whats_new() -> bool {
@@ -1696,6 +1698,7 @@ impl Default for UpdateConfig {
             check_interval_hours: default_update_check_interval_hours(),
             update_uri: None,
             show_whats_new: true,
+            mode: None,
         }
     }
 }
@@ -1927,8 +1930,8 @@ pub struct Config {
     pub legacy_model: Option<String>,
     #[serde(alias = "authMode")]
     pub auth_mode: Option<String>,
-    /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
-    /// Defaults to `"max"` at runtime if unset.
+    /// DeepSeek reasoning-effort tier: `"auto" | "off" | "low" | "medium" | "high" | "max"`.
+    /// Defaults to `"auto"` at runtime if unset.
     pub reasoning_effort: Option<String>,
     /// True only when compatibility migration inferred `reasoning_effort`
     /// from a retiring DeepSeek alias. This distinguishes that inferred value
@@ -2173,8 +2176,8 @@ pub struct Config {
 
     /// Community skill installer settings (#140). When absent, installer
     /// commands fall back to the bundled defaults
-    /// (`crate::skills::install::DEFAULT_REGISTRY_URL` +
-    /// `crate::skills::install::DEFAULT_MAX_SIZE_BYTES`).
+    /// (`codewhale_skill_install::install::DEFAULT_REGISTRY_URL` +
+    /// `codewhale_skill_install::install::DEFAULT_MAX_SIZE_BYTES`).
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
 
@@ -2576,11 +2579,17 @@ pub struct RuntimeApiConfig {
     pub cors_origins: Option<Vec<String>>,
 }
 
-/// `[skills]` table — knobs for the community-skill installer.
+/// `[skills]` table — discovery, ambient index and installer configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SkillsConfig {
+    #[serde(default)]
+    pub bundled: BundledSkillsConfig,
+    #[serde(default)]
+    pub listing_max_description_chars: Option<usize>,
+    #[serde(default)]
+    pub listing_budget_fraction: Option<f64>,
     /// Curated registry index. `/skill install <name>` looks up the spec here.
-    /// Defaults to `crate::skills::install::DEFAULT_REGISTRY_URL`.
+    /// Defaults to `codewhale_skill_install::install::DEFAULT_REGISTRY_URL`.
     #[serde(default)]
     pub registry_url: Option<String>,
     /// Per-skill maximum *uncompressed* size in bytes. Tarballs that exceed
@@ -2596,6 +2605,23 @@ pub struct SkillsConfig {
     /// Otherwise the flat root is visible only to compatible audit.
     #[serde(default)]
     pub flat_workspace_root: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BundledSkillsInstall {
+    #[default]
+    Auto,
+    All,
+    None,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct BundledSkillsConfig {
+    pub install: Option<BundledSkillsInstall>,
+    pub selected: Option<Vec<String>>,
+    pub disabled: Option<Vec<String>>,
+    pub explicit_only: Option<Vec<String>>,
 }
 
 impl SkillsConfig {
@@ -3685,7 +3711,7 @@ impl Config {
     }
 
     /// Classifier call timeout for `[auto.router]` in seconds. Defaults to
-    /// [`DEFAULT_AUTO_ROUTER_TIMEOUT_SECS`] (4); `0` means "use the default".
+    /// `DEFAULT_AUTO_ROUTER_TIMEOUT_SECS` (4); `0` means "use the default".
     /// Values above [`MAX_AUTO_ROUTER_TIMEOUT_SECS`] (300) are clamped so a
     /// hung local router cannot stall a turn indefinitely.
     #[must_use]
@@ -3975,6 +4001,22 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
+        if let Some(skills) = &self.skills {
+            if skills
+                .listing_max_description_chars
+                .is_some_and(|value| !(1..=40_000).contains(&value))
+            {
+                anyhow::bail!("[skills] listing_max_description_chars must be between 1 and 40000");
+            }
+            if skills
+                .listing_budget_fraction
+                .is_some_and(|value| !value.is_finite() || value <= 0.0 || value > 1.0)
+            {
+                anyhow::bail!(
+                    "[skills] listing_budget_fraction must be finite and greater than 0 and at most 1"
+                );
+            }
+        }
         if let Some(budget) = self.instruction_budget.as_ref() {
             budget
                 .validate()
@@ -5413,7 +5455,7 @@ impl Config {
     ///
     /// Step 3 is why this is identity-aware instead of a bare env read.
     /// `CODEWHALE_BASE_URL` is documented as "base URL for the active
-    /// provider", and [`apply_env_overrides`] writes it onto exactly one
+    /// provider", and `apply_env_overrides` writes it onto exactly one
     /// provider entry. Every cross-provider construction seam — a pinned
     /// subagent/fleet child, the per-turn auto-router, tool routing, a picker
     /// preview — works by cloning the session config and re-pointing
@@ -6549,20 +6591,14 @@ impl Config {
 
     #[must_use]
     pub fn bundled_skills_install_dir(&self) -> Option<PathBuf> {
-        if self.skills_dir.is_some() {
-            return None;
+        match self.skills_config().bundled.install.unwrap_or_default() {
+            BundledSkillsInstall::None => return None,
+            BundledSkillsInstall::All => return owned_skills_dir(),
+            BundledSkillsInstall::Auto if self.skills_dir.is_some() => return None,
+            BundledSkillsInstall::Auto => {}
         }
         let directory = default_skills_dir()?;
-        #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
-        if !crate::test_support::guarded_environment_provides_state_paths() {
-            return Some(directory);
-        }
-        let owned = match codewhale_home_dir().ok()? {
-            Some(home) => home.join("skills"),
-            None => codewhale_paths::user_home()?
-                .join(".codewhale")
-                .join("skills"),
-        };
+        let owned = owned_skills_dir()?;
         (directory == owned).then_some(directory)
     }
 
@@ -7665,7 +7701,9 @@ use paths::{
     default_skills_dir, env_config_path, expand_pathbuf, try_default_config_path,
     workspace_config_key,
 };
-pub use paths::{clipboard_images_dir, expand_path, home_config_path, is_home_config_path};
+pub use paths::{
+    clipboard_images_dir, expand_path, home_config_path, is_home_config_path, owned_skills_dir,
+};
 
 /// Activate facts only at accepted inference runtime settings boundaries.
 /// Identical settings preserve the shared ticket; readers track its generation.
@@ -9361,7 +9399,7 @@ fn deepseek_missing_key_message() -> &'static str {
         "  codewhale auth set --provider deepseek\n",
         "Get a key: https://platform.deepseek.com/api_keys\n",
         "Or export DEEPSEEK_API_KEY=<your-key> (this shell only).\n",
-        "zsh: ~/.zshrc is interactive only; use ~/.zshenv.\n",
+        "In zsh, ~/.zshrc is read only by interactive shells.\n",
         "Or set api_key in ~/.codewhale/config.toml.\n",
         "If you already use DeepSeek Harness, grant read-only access:\n",
         "  codewhale auth external-consent --provider deepseek --mode read-only"
@@ -10091,6 +10129,21 @@ fn merge_skills_config(
         (Some(base), None) => Some(base),
         (None, Some(override_cfg)) => Some(override_cfg),
         (Some(base), Some(override_cfg)) => Some(SkillsConfig {
+            bundled: BundledSkillsConfig {
+                install: override_cfg.bundled.install.or(base.bundled.install),
+                selected: override_cfg.bundled.selected.or(base.bundled.selected),
+                disabled: override_cfg.bundled.disabled.or(base.bundled.disabled),
+                explicit_only: override_cfg
+                    .bundled
+                    .explicit_only
+                    .or(base.bundled.explicit_only),
+            },
+            listing_max_description_chars: override_cfg
+                .listing_max_description_chars
+                .or(base.listing_max_description_chars),
+            listing_budget_fraction: override_cfg
+                .listing_budget_fraction
+                .or(base.listing_budget_fraction),
             registry_url: override_cfg.registry_url.or(base.registry_url),
             max_install_size_bytes: override_cfg
                 .max_install_size_bytes
@@ -10386,7 +10439,7 @@ impl Config {
 }
 
 /// Parse one `config.toml`-shaped layer (no profile applied) through
-/// [`parse_config_file`], so the legacy top-level keys are canonicalized.
+/// `parse_config_file`, so the legacy top-level keys are canonicalized.
 pub fn parse_config_base(contents: &str) -> std::result::Result<Config, toml::de::Error> {
     let parsed = parse_config_file(contents)?;
     let mut config = *parsed.base;
@@ -10913,7 +10966,8 @@ pub fn credential_secret_store() -> Option<codewhale_secrets::Secrets> {
     let explicit_backend = std::env::var_os("CODEWHALE_SECRET_BACKEND")
         .or_else(|| std::env::var_os("DEEPSEEK_SECRET_BACKEND"))
         .is_some_and(|value| !value.is_empty());
-    (isolated_home && explicit_backend).then(codewhale_secrets::Secrets::auto_detect)
+    (crate::test_support::state_from_environment() || (isolated_home && explicit_backend))
+        .then(codewhale_secrets::Secrets::auto_detect)
 }
 
 fn save_root_api_key_metadata_without_plaintext(config_path: &Path, table: &str) -> Result<()> {
@@ -10923,7 +10977,7 @@ fn save_root_api_key_metadata_without_plaintext(config_path: &Path, table: &str)
         // Saving a key never pins a model (see
         // `codewhale_config::credentials::prepare_provider_api_key_metadata`).
         if !doc.contains_key("reasoning_effort") {
-            crate::config_persistence::set_document_value(doc, &["reasoning_effort"], "max")?;
+            crate::config_persistence::set_document_value(doc, &["reasoning_effort"], "auto")?;
         }
         crate::config_persistence::unset_document_value(doc, &["api_key"])?;
         crate::config_persistence::unset_document_value(doc, &["providers", table, "api_key"])?;
@@ -10980,9 +11034,9 @@ auth_mode = "api_key"
 # default_text_model = "{DEFAULT_TEXT_MODEL}"
 
 # Thinking mode (DeepSeek V4 reasoning effort):
-# "off" | "low" | "medium" | "high" | "max"
+# "auto" | "off" | "low" | "medium" | "high" | "max"
 # Ctrl+T in the TUI (or /effort) cycles the active model's effort levels.
-reasoning_effort = "max"
+reasoning_effort = "auto"
 
 [providers.{table}]
 api_key = "{api_key}"
@@ -11251,7 +11305,7 @@ impl Config {
 /// and `/model` manager views (#3830). Shared by both pickers so "what shows
 /// up without browsing the full catalog" stays a single definition.
 /// Self-hosted providers (Ollama/Sglang/Vllm) report `has_key = true`
-/// unconditionally in [`codewhale_tui::provider_readiness::has_api_key_for`] since they don't require auth to
+/// unconditionally in `codewhale_tui::provider_readiness::has_api_key_for` since they don't require auth to
 /// route to — that's correct for routing, but wrong for "did the user set
 /// this up," so a self-hosted provider only qualifies via an explicit
 /// `[providers.<name>]` entry or being active, never via `has_key` alone
@@ -11949,8 +12003,9 @@ fn provider_secret_store_api_key_with_mode(
     // Secret-store regressions opt in with an isolated CODEWHALE_HOME and an
     // explicit backend, matching the secrets crate's own test discipline.
     #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
-    if !codewhale_paths::codewhale_home_is_explicit()
-        || std::env::var_os("CODEWHALE_SECRET_BACKEND").is_none()
+    if !crate::test_support::state_from_environment()
+        && (!codewhale_paths::codewhale_home_is_explicit()
+            || std::env::var_os("CODEWHALE_SECRET_BACKEND").is_none())
     {
         return None;
     }

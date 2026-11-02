@@ -204,7 +204,7 @@ fn keywords(line: &str) -> Vec<(Range<usize>, Role)> {
         let mut from = 0;
         while let Some(at) = line[from..].find(word) {
             let start = from + at;
-            out.push((start..start + word.len(), Role::Primary));
+            out.push((start..start + word.len(), Role::Accent));
             from = start + word.len();
         }
     }

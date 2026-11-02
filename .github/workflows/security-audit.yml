@@ -38,7 +38,7 @@ jobs:
           - { name: root, directory: . }
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
-          - { name: extension-host, directory: crates/tui/extension-host }
+          - { name: extension-host, directory: crates/engine/extension-host }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }
           - { name: telegram-bridge, directory: integrations/telegram-bridge }

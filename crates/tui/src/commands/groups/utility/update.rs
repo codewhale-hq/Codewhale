@@ -129,6 +129,9 @@ pub(super) fn resolve_updater(
 
 /// Instructions for an install this command must not update in place.
 pub(super) fn managed_install_message(method: InstallMethod) -> String {
+    if method == InstallMethod::DesktopApp {
+        return codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string();
+    }
     format!(
         "Codewhale was installed with {label}, which owns this binary.\n\
          {migration_help}\n\n\

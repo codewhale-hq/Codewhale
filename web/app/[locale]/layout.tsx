@@ -103,11 +103,9 @@ export default async function LocaleLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(siteJsonLd) }}
         />
-        {/* Site-wide theme, applied before paint so there is no flash. With
-            no pin, the stylesheet's `prefers-color-scheme` rules resolve the
-            OS appearance (and track it live); a stored "light" or "dark"
-            (`cw-theme`, see components/theme-toggle.tsx) pins the scheme.
-            "system", a legacy "auto", or no choice leaves it to the OS. */}
+        {/* Site-wide theme, applied before paint so there is no flash. The
+            site is light unless a stored "dark" (`cw-theme`, see
+            components/theme-toggle.tsx) pins the dark set. */}
         <script
           dangerouslySetInnerHTML={{
             __html:

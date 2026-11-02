@@ -390,7 +390,7 @@ impl StatefulWidget for PetMode<'_> {
             {
                 spans.push(Span::styled(
                     title.into_owned(),
-                    self.theme.fg(Role::Primary),
+                    self.theme.fg(Role::Accent),
                 ));
                 spans.push(Span::raw("   "));
             }
@@ -492,7 +492,7 @@ impl StatefulWidget for PetMode<'_> {
                 .style(if state.focus_agents {
                     self.theme.fg(Role::Muted)
                 } else {
-                    self.theme.fg(Role::Primary).add_modifier(Modifier::BOLD)
+                    self.theme.fg(Role::Accent).add_modifier(Modifier::BOLD)
                 })
                 .render(title_area, buf);
             // usize selection preserves arbitrarily long already-wrapped output.

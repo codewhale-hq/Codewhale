@@ -203,6 +203,7 @@
     "screenshotAlt": "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
     "latestRelease": "最新发布 {tag}",
     "releaseUnavailable": "发布状态暂不可用",
+    "proofContributors": "{count} 位贡献者",
     "currentSource": "源码",
     "sourceCandidate": "未发布",
     "publishedRelease": "已发布",
@@ -758,7 +759,7 @@
             "p": "`--set KEY=VALUE` 只在这一次启动中修改设置，不保存任何内容。它支持 `provider`、`model`、`verbosity`、`approval_policy`、`sandbox_mode` 和 `telemetry`，可以重复使用。"
           },
           {
-            "code": "codewhale --set model=deepseek-v4-pro --set sandbox_mode=read-only",
+            "code": "codewhale --set model=deepseek-flash --set sandbox_mode=read-only",
             "lang": "终端"
           }
         ]
@@ -1068,7 +1069,7 @@
         "note": "通过 HTTP 从你自己的应用或脚本驱动 Codewhale。"
       }
     ],
-    "sourceNote": "来源文档：docs/MCP.md、crates/tui/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。"
+    "sourceNote": "来源文档：docs/MCP.md、crates/engine/src/tools/codemode.rs · 修改时同步更新 docs-map.ts。"
   },
   "docs-modes": {
     "metaTitle": "设置模式与审批 · Codewhale 文档",

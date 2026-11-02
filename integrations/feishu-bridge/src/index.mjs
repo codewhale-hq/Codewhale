@@ -23,7 +23,7 @@ import {
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   readJsonSafe,
-  readSse,
+  readThreadEvents,
   ThreadStore as CoreThreadStore
 } from "../../bridge-core/src/lib.mjs";
 
@@ -95,7 +95,7 @@ void reattachActiveTurns().catch((error) => {
 
 async function handleIncomingMessage(event) {
   const identity = incomingIdentity(event);
-  if (!identity.chatId) return;
+  if (!identity.chatId || !identity.messageId) return;
 
   if (identity.messageType && identity.messageType !== "text") {
     await sendText(identity.chatId, "Only text messages are supported in this first bridge.");
@@ -110,33 +110,31 @@ async function handleIncomingMessage(event) {
   });
   if (!scoped.accepted) return;
 
-  if (identity.messageId && (await threadStore.recordMessage(identity.messageId))) {
-    return;
-  }
+  await threadStore.handleMessageOnce(identity.messageId, async () => {
+    if (identity.chatType !== "p2p" && !config.allowGroups) {
+      await sendText(
+        identity.chatId,
+        "Group chat control is disabled for this bridge. DM the bot, or set FEISHU_ALLOW_GROUPS=true and allowlist this chat."
+      );
+      return;
+    }
 
-  if (identity.chatType !== "p2p" && !config.allowGroups) {
-    await sendText(
-      identity.chatId,
-      "Group chat control is disabled for this bridge. DM the bot, or set FEISHU_ALLOW_GROUPS=true and allowlist this chat."
-    );
-    return;
-  }
+    if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
+      await sendText(identity.chatId, pairingRefusalText(identity));
+      return;
+    }
 
-  if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
-    await sendText(identity.chatId, pairingRefusalText(identity));
-    return;
-  }
+    // Only an admitted sender may change delivery/recovery provenance.
+    const { chatId, chatType, openId, unionId, userId } = identity;
+    await threadStore.patchChat(chatId, {
+      authorizedIdentity: { chatId, chatType, openId, unionId, userId },
+      replyToMessageId: identity.messageId,
+      updatedAt: new Date().toISOString()
+    });
 
-  // Only an admitted sender may change delivery/recovery provenance.
-  const { chatId, chatType, openId, unionId, userId } = identity;
-  await threadStore.patchChat(chatId, {
-    authorizedIdentity: { chatId, chatType, openId, unionId, userId },
-    ...(identity.messageId ? { replyToMessageId: identity.messageId } : {}),
-    updatedAt: new Date().toISOString()
-  });
-
-  const command = parseCommand(scoped.text);
-  await handleCommand(identity.chatId, command, identity);
+    const command = parseCommand(scoped.text);
+    await handleCommand(identity.chatId, command, identity);
+  }, () => sendText(identity.chatId, "The bridge was interrupted while handling this message. Check /status before sending it again."));
 }
 
 async function handleCommand(chatId, command, identity) {
@@ -276,13 +274,8 @@ async function runPrompt(chatId, prompt, identity) {
   });
   await sendText(chatId, `Started turn ${turnId || "(unknown)"}`);
 
-  try {
-    await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
-  } finally {
-    await threadStore.patchChat(chatId, {
-      activeTurnId: null,
-      updatedAt: new Date().toISOString()
-    });
+  if (await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq)) {
+    await threadStore.finishObservedTurn(chatId, state.threadId, turnId);
   }
 }
 
@@ -318,13 +311,8 @@ async function reattachActiveTurns() {
       chatId,
       `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
     );
-    try {
-      await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
-    } finally {
-      await threadStore.patchChat(chatId, {
-        activeTurnId: null,
-        updatedAt: new Date().toISOString()
-      });
+    if (await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq)) {
+      await threadStore.finishObservedTurn(chatId, state.threadId, turnId);
     }
   }
 }
@@ -349,13 +337,12 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
       throw new Error(compactRuntimeError(response.status, body));
     }
 
-    for await (const event of readSse(response)) {
-      if (!event.data) continue;
-      const record = JSON.parse(event.data);
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
       await threadStore.patchChat(chatId, { lastSeq: latestSeq });
 
-      if (turnId && record.turn_id && record.turn_id !== turnId) continue;
+      if (!turnId || record.turn_id !== turnId) continue;
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
@@ -394,21 +381,21 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
         } else {
           await sendText(chatId, responseText.trim() || "Turn completed.");
         }
-        return;
+        return true;
       }
 
       if (record.event === "turn.lifecycle") {
         const status = record.payload?.turn?.status || record.payload?.status;
         if (["failed", "canceled", "interrupted"].includes(status)) {
           await sendText(chatId, `Turn ${status}.`);
-          return;
+          return true;
         }
       }
     }
   } catch (error) {
     if (error.name === "AbortError") {
-      await sendText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return;
+      await sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+      return false;
     }
     throw error;
   } finally {

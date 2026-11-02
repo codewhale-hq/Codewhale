@@ -120,7 +120,7 @@ fn missing_diagnostics_facet_fails_before_any_action() {
         tokens::context(CommandContexts::empty(), None),
         tool_inspection::tools(CommandContexts::empty(), Some("invalid")),
         tokens::tokens(CommandContexts::empty()),
-        tokens::cost(CommandContexts::empty()),
+        tokens::cost(CommandContexts::empty(), None),
         cache::cache(CommandContexts::empty(), Some("warmup")),
     ] {
         assert!(result.is_error, "missing authority must be an error");
@@ -143,7 +143,10 @@ fn missing_presentation_is_not_an_implicit_host_fallback() {
     let mut fake = FakeDiagnostics::default();
     for result in [
         tokens::tokens(CommandContexts::empty().with_debug_diagnostics(&mut fake)),
-        tokens::cost(CommandContexts::empty().with_debug_diagnostics(&mut fake)),
+        tokens::cost(
+            CommandContexts::empty().with_debug_diagnostics(&mut fake),
+            None,
+        ),
         cache::cache(
             CommandContexts::empty().with_debug_diagnostics(&mut fake),
             Some("warmup"),

@@ -554,7 +554,7 @@ fn infoline_preserves_every_live_chrome_ink_and_untouched_host_style() {
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 40, 5));
         let existing = Style::default()
             .fg(super::source_theme(false)
-                .color(codewhale_ratatui::Role::Primary)
+                .color(codewhale_ratatui::Role::Accent)
                 .unwrap())
             .bg(Color::Rgb(30, 40, 50))
             .add_modifier(Modifier::ITALIC);

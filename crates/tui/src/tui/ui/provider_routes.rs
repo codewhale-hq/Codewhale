@@ -18,7 +18,7 @@ pub(crate) fn complete_trust_directory_onboarding(
     // reported a `DEEPSEEK_SESSION_ID`, and it has to keep meaning the same
     // session afterwards.
     app.hooks = app.hooks.rebind(
-        crate::hooks::config::load_with_project_and_plugins(
+        codewhale_engine::hooks::config::load_with_project_and_plugins(
             config.hooks_config(),
             &app.workspace,
             Some(app.plugin_registry.as_ref()),
@@ -190,7 +190,7 @@ pub(crate) async fn fetch_provider_balance(
     provider: ProviderKind,
     api_key: &str,
     base_url: &str,
-) -> Result<crate::pricing::BalanceInfo, String> {
+) -> Result<codewhale_engine::pricing::BalanceInfo, String> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err("no API key".to_string());
@@ -207,14 +207,14 @@ pub(crate) async fn fetch_provider_balance(
 async fn fetch_deepseek_user_balance(
     api_key: &str,
     base_url: &str,
-) -> Result<crate::pricing::BalanceInfo, String> {
+) -> Result<codewhale_engine::pricing::BalanceInfo, String> {
     let origin = base_url.trim_end_matches('/');
     let origin = origin
         .strip_suffix("/beta")
         .or_else(|| origin.strip_suffix("/v1"))
         .unwrap_or(origin);
     let url = format!("{origin}/user/balance");
-    let body: crate::pricing::BalanceResponse = balance_get_json(api_key, &url).await?;
+    let body: codewhale_engine::pricing::BalanceResponse = balance_get_json(api_key, &url).await?;
     body.balance_infos
         .into_iter()
         .next()
@@ -239,11 +239,11 @@ fn openrouter_remaining_credits(total_credits: f64, total_usage: f64) -> f64 {
 async fn fetch_openrouter_credits(
     api_key: &str,
     base_url: &str,
-) -> Result<crate::pricing::BalanceInfo, String> {
+) -> Result<codewhale_engine::pricing::BalanceInfo, String> {
     let url = format!("{}/credits", base_url.trim_end_matches('/'));
     let body: OpenRouterCreditsResponse = balance_get_json(api_key, &url).await?;
     let remaining = openrouter_remaining_credits(body.data.total_credits, body.data.total_usage);
-    Ok(crate::pricing::BalanceInfo {
+    Ok(codewhale_engine::pricing::BalanceInfo {
         currency: "USD".to_string(),
         total_balance: format!("{remaining:.2}"),
         topped_up_balance: format!("{:.2}", body.data.total_credits),
@@ -270,7 +270,7 @@ async fn fetch_siliconflow_user_info(
     api_key: &str,
     base_url: &str,
     provider: ProviderKind,
-) -> Result<crate::pricing::BalanceInfo, String> {
+) -> Result<codewhale_engine::pricing::BalanceInfo, String> {
     let url = format!("{}/user/info", base_url.trim_end_matches('/'));
     let body: SiliconFlowUserInfo = balance_get_json(api_key, &url).await?;
     let data = body
@@ -288,7 +288,7 @@ async fn fetch_siliconflow_user_info(
     } else {
         "USD"
     };
-    Ok(crate::pricing::BalanceInfo {
+    Ok(codewhale_engine::pricing::BalanceInfo {
         currency: currency.to_string(),
         total_balance: total.to_string(),
         topped_up_balance: data.charge_balance.unwrap_or_default(),
@@ -345,7 +345,7 @@ pub(crate) fn balance_cell_for_route(
     provider: ProviderKind,
     api_key: &str,
     base_url: &str,
-) -> std::sync::Arc<std::sync::Mutex<Option<crate::pricing::BalanceInfo>>> {
+) -> std::sync::Arc<std::sync::Mutex<Option<codewhale_engine::pricing::BalanceInfo>>> {
     use std::hash::{Hash, Hasher};
     let mut key_fingerprint = std::collections::hash_map::DefaultHasher::new();
     api_key.hash(&mut key_fingerprint);
@@ -402,10 +402,12 @@ pub(crate) fn schedule_balance_fetch(app: &mut App, api_key: &str, base_url: &st
 }
 
 #[cfg(test)]
-pub(crate) fn openrouter_credits_from_json(json: &str) -> Option<crate::pricing::BalanceInfo> {
+pub(crate) fn openrouter_credits_from_json(
+    json: &str,
+) -> Option<codewhale_engine::pricing::BalanceInfo> {
     let body: OpenRouterCreditsResponse = serde_json::from_str(json).ok()?;
     let remaining = openrouter_remaining_credits(body.data.total_credits, body.data.total_usage);
-    Some(crate::pricing::BalanceInfo {
+    Some(codewhale_engine::pricing::BalanceInfo {
         currency: "USD".to_string(),
         total_balance: format!("{remaining:.2}"),
         topped_up_balance: format!("{:.2}", body.data.total_credits),
@@ -442,7 +444,7 @@ pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
 }
 
 pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
-    use crate::client::CodewhaleClient;
+    use codewhale_engine::client::CodewhaleClient;
 
     let client = CodewhaleClient::new(config)?;
     let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
@@ -455,7 +457,7 @@ pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String
 pub(crate) fn resolve_cache_replay_route(
     app: &App,
     config: &Config,
-) -> Result<crate::route_runtime::ResolvedRuntimeRoute> {
+) -> Result<codewhale_engine::route_runtime::ResolvedRuntimeRoute> {
     let target = app.cache_replay_target().ok_or_else(|| {
         anyhow::anyhow!("Auto has no concrete route yet; send a turn before warming its cache")
     })?;
@@ -478,9 +480,11 @@ pub(crate) fn resolve_cache_replay_route(
     let route = resolve_runtime_route_for_identity(config, &identity, Some(&target.model))
         .map_err(anyhow::Error::msg)?;
     if let Some(previous_base_url) = target.base_url.as_deref() {
-        let previous_endpoint = crate::route_receipt::endpoint_identity(previous_base_url);
-        let current_endpoint =
-            crate::route_receipt::endpoint_identity(&route.candidate.endpoint().base_url);
+        let previous_endpoint =
+            codewhale_engine::route_receipt::endpoint_identity(previous_base_url);
+        let current_endpoint = codewhale_engine::route_receipt::endpoint_identity(
+            &route.candidate.endpoint().base_url,
+        );
         if previous_endpoint != current_endpoint {
             anyhow::bail!(
                 "the cache route endpoint changed since the last turn; send a new turn before warming"
@@ -508,6 +512,7 @@ pub(crate) fn rollback_provider_after_auth_failure(
         previous_route_limits,
         previous_route_base_url,
         previous_context_window_source,
+        previous_context_window,
         previous_context_window_override,
         previous_config,
         previous_onboarding,
@@ -524,8 +529,8 @@ pub(crate) fn rollback_provider_after_auth_failure(
         .filter(|identity| identity.provider == previous_provider);
     app.api_provider = previous_provider;
     app.billing_presentation = app.provider_identity.as_ref().map_or(
-        crate::route_billing::BillingPresentation::Unknown,
-        |identity| crate::route_billing::for_route(config, identity),
+        codewhale_engine::route_billing::BillingPresentation::Unknown,
+        |identity| codewhale_engine::route_billing::for_route(config, identity),
     );
 
     app.set_model_selection(previous_model.clone());
@@ -541,6 +546,7 @@ pub(crate) fn rollback_provider_after_auth_failure(
     app.active_route_limits = previous_route_limits;
     app.active_route_base_url = previous_route_base_url;
     app.active_context_window_source = previous_context_window_source;
+    app.active_context_window = previous_context_window;
     app.update_model_compaction_budget();
     app.clear_model_scoped_telemetry();
     app.offline_mode = false;
@@ -581,19 +587,20 @@ pub(crate) fn rollback_provider_after_auth_failure(
 pub(crate) fn validated_app_runtime_route(
     app: &App,
     config: &Config,
-) -> Result<crate::route_runtime::ValidatedRuntimeRoute, String> {
+) -> Result<codewhale_engine::route_runtime::ValidatedRuntimeRoute, String> {
     let (identity, scoped) = app_scoped_runtime_config(app, config)?;
     resolve_runtime_route_for_identity(&scoped, &identity, Some(&app.model))?.validate()
 }
 
 pub(crate) fn compaction_for_validated_route(
     app: &App,
-    route: &crate::route_runtime::ValidatedRuntimeRoute,
-) -> crate::compaction::CompactionConfig {
+    route: &codewhale_engine::route_runtime::ValidatedRuntimeRoute,
+) -> codewhale_engine::compaction::CompactionConfig {
     let mut config = app.compaction_config_for_route(
         route.identity.provider,
         &route.model,
-        crate::route_budget::known_route_limits(route.candidate.limits()),
+        codewhale_engine::route_budget::known_route_limits(route.candidate.limits()),
+        Some(route.context_window),
     );
     config.image_input = route.candidate.capabilities().image_input;
     config
@@ -601,13 +608,13 @@ pub(crate) fn compaction_for_validated_route(
 
 pub(crate) fn validated_profile_default_route(
     config: &Config,
-) -> Result<crate::route_runtime::ValidatedRuntimeRoute> {
+) -> Result<codewhale_engine::route_runtime::ValidatedRuntimeRoute> {
     let identity = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
     let model = config.default_model();
     resolve_runtime_route_for_identity(config, &identity, Some(&model))
-        .and_then(crate::route_runtime::ResolvedRuntimeRoute::validate)
+        .and_then(codewhale_engine::route_runtime::ResolvedRuntimeRoute::validate)
         .map_err(anyhow::Error::msg)
 }
 
@@ -617,7 +624,7 @@ pub(crate) fn reasoning_effort_receipt_for_route(
     endpoint_identity: &str,
     model: &str,
 ) -> EffectiveReasoningEffort {
-    crate::work_graph::constrained_effective_reasoning_for_route(
+    codewhale_engine::work_graph::constrained_effective_reasoning_for_route(
         tier.into(),
         provider,
         endpoint_identity,
@@ -663,6 +670,40 @@ pub(crate) async fn switch_provider(
     identity: codewhale_runtime::config::ProviderIdentity,
     model_override: Option<String>,
 ) -> bool {
+    switch_provider_inner(app, engine_handle, config, identity, model_override, None).await
+}
+
+pub(super) async fn switch_provider_with_ollama_probe(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    identity: codewhale_runtime::config::ProviderIdentity,
+    model: String,
+    endpoint: &str,
+    ticket: &codewhale_engine::provider_catalog_live::ProviderCatalogRefreshTicket,
+) -> bool {
+    switch_provider_inner(
+        app,
+        engine_handle,
+        config,
+        identity,
+        Some(model),
+        Some((endpoint, ticket)),
+    )
+    .await
+}
+
+async fn switch_provider_inner(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    identity: codewhale_runtime::config::ProviderIdentity,
+    model_override: Option<String>,
+    probe: Option<(
+        &str,
+        &codewhale_engine::provider_catalog_live::ProviderCatalogRefreshTicket,
+    )>,
+) -> bool {
     if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
         return false;
     }
@@ -684,6 +725,7 @@ pub(crate) async fn switch_provider(
         previous_route_limits: app.active_route_limits,
         previous_route_base_url: app.active_route_base_url.clone(),
         previous_context_window_source: app.active_context_window_source,
+        previous_context_window: app.active_context_window,
         previous_context_window_override: app.active_context_window_override,
         previous_config: previous_config.clone(),
         previous_onboarding: app.onboarding,
@@ -705,62 +747,73 @@ pub(crate) async fn switch_provider(
         config.default_text_model = None;
     }
 
-    crate::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
-    let resolved_route =
-        match resolve_runtime_route_for_identity(config, &identity, model_override.as_deref()) {
-            Ok(route) => route,
-            Err(reason) => {
-                app.pending_provider_switch = None;
-                // #3830: if the switch failed only because the target provider has
-                // no key or local runtime, hand off to /provider already focused
-                // on that provider's key prompt instead of dead-ending with an
-                // error the user has to translate into an action.
-                if !crate::provider_readiness::has_api_key_for(config, &identity)
-                    && app.view_stack.top_kind() != Some(ModalKind::ProviderPicker)
+    let resolution = if let Some((endpoint, _)) = probe {
+        if identity.provider != ProviderKind::Ollama
+            || identity.key.as_str() != "ollama"
+            || config.base_url_for_route(&identity) != endpoint
+        {
+            Err("The local model endpoint changed during discovery.".to_string())
+        } else {
+            resolve_runtime_route_for_identity(config, &identity, model_override.as_deref())
+        }
+    } else {
+        codewhale_engine::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
+        resolve_runtime_route_for_identity(config, &identity, model_override.as_deref())
+    };
+    let resolved_route = match resolution {
+        Ok(route) => route,
+        Err(reason) => {
+            app.pending_provider_switch = None;
+            // #3830: if the switch failed only because the target provider has
+            // no key or local runtime, hand off to /provider already focused
+            // on that provider's key prompt instead of dead-ending with an
+            // error the user has to translate into an action.
+            if !codewhale_engine::provider_readiness::has_api_key_for(config, &identity)
+                && app.view_stack.top_kind() != Some(ModalKind::ProviderPicker)
+            {
+                let runtime_status = query_provider_runtime_status(engine_handle).await;
+                if let Some(picker) =
+                    crate::tui::provider_picker::ProviderPickerView::new_for_missing_auth(
+                        previous_provider,
+                        &identity,
+                        config,
+                        runtime_status,
+                    )
+                    .map(|picker| {
+                        picker
+                            .with_locale(app.ui_locale)
+                            .with_provider_health(&app.provider_health)
+                    })
                 {
-                    let runtime_status = query_provider_runtime_status(engine_handle).await;
-                    if let Some(picker) =
-                        crate::tui::provider_picker::ProviderPickerView::new_for_missing_auth(
-                            previous_provider,
-                            &identity,
-                            config,
-                            runtime_status,
-                        )
-                        .map(|picker| {
-                            picker
-                                .with_locale(app.ui_locale)
-                                .with_provider_health(&app.provider_health)
-                        })
-                    {
-                        *config = previous_config;
-                        app.refresh_notification_settings(config);
-                        app.view_stack.push(picker);
-                        app.status_message = Some(format!(
-                            "{} needs a key or local runtime — enter one to switch.",
-                            identity
-                                .compatibility()
-                                .map(|row| row.label)
-                                .unwrap_or(identity.key.as_str())
-                        ));
-                        app.needs_redraw = true;
-                        return false;
-                    }
+                    *config = previous_config;
+                    app.refresh_notification_settings(config);
+                    app.view_stack.push(picker);
+                    app.status_message = Some(format!(
+                        "{} needs a key or local runtime — enter one to switch.",
+                        identity
+                            .compatibility()
+                            .map(|row| row.label)
+                            .unwrap_or(identity.key.as_str())
+                    ));
+                    app.needs_redraw = true;
+                    return false;
                 }
-                *config = previous_config;
-                app.refresh_notification_settings(config);
-                app.add_message(HistoryCell::System {
-                    content: format!(
-                        "Cannot switch to {}: {reason}\nProvider unchanged ({}).",
-                        requested_identity, previous_identity
-                    ),
-                });
-                app.status_message = Some(format!(
-                    "Route rejected before provider switch: {}.",
-                    target.as_str()
-                ));
-                return false;
             }
-        };
+            *config = previous_config;
+            app.refresh_notification_settings(config);
+            app.add_message(HistoryCell::System {
+                content: format!(
+                    "Cannot switch to {}: {reason}\nProvider unchanged ({}).",
+                    requested_identity, previous_identity
+                ),
+            });
+            app.status_message = Some(format!(
+                "Route rejected before provider switch: {}.",
+                target.as_str()
+            ));
+            return false;
+        }
+    };
     let validated_route = match resolved_route.validate() {
         Ok(route) => route,
         Err(err) => {
@@ -778,29 +831,51 @@ pub(crate) async fn switch_provider(
     };
     let target_identity_record = validated_route.identity.clone();
     let target_identity = target_identity_record.key.to_string();
-    let resolved_endpoint = validated_route.candidate.endpoint().base_url.clone();
+    let new_base_url = validated_route.candidate.endpoint().base_url.clone();
     let route_limits = validated_route.candidate.limits();
-    let context_window_source = validated_route.context_window.source;
+    let context_window = validated_route.context_window;
     let new_model = validated_route.model.clone();
-    *config = *validated_route.config;
+    let apply_route = || {
+        *config = *validated_route.config;
+        app.set_provider_identity_record(target_identity_record.clone());
+        app.set_model_selection(new_model.clone());
+        app.set_active_context_window_override(config, &target_identity_record);
+        app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window);
+    };
+    let applied = if let Some((endpoint, ticket)) = probe {
+        codewhale_engine::provider_catalog_live::with_current_route_ticket(
+            ticket,
+            ProviderKind::Ollama,
+            "ollama",
+            endpoint,
+            apply_route,
+        )
+    } else {
+        apply_route();
+        Some(())
+    };
+    if applied.is_none() {
+        app.pending_provider_switch = None;
+        *config = previous_config;
+        app.refresh_notification_settings(config);
+        return false;
+    }
     app.refresh_notification_settings(config);
-
-    let new_base_url = resolved_endpoint;
     let new_endpoint = display_base_url_host(&new_base_url);
     let cache_scope_changed = previous_provider != target
         || previous_identity != target_identity
         || previous_model != new_model;
-    app.set_provider_identity_record(target_identity_record.clone());
     // Launch computed "needs a key" for the launch provider. A switch to a
     // route that has its credential answers that, even when the user left the
     // picker with Esc first; otherwise the stale flag keeps the info line on
     // "model not connected" and keeps local-Ollama adoption armed against the
     // provider the user just chose. An auth-failure rollback restores it.
-    app.onboarding_needs_api_key = !crate::provider_readiness::has_api_key(config);
+    app.onboarding_needs_api_key = !codewhale_engine::provider_readiness::has_api_key(config);
     if !app.onboarding_needs_api_key {
         app.onboarding_missing_key_recovery = false;
     }
-    app.billing_presentation = crate::route_billing::for_route(config, &target_identity_record);
+    app.billing_presentation =
+        codewhale_engine::route_billing::for_route(config, &target_identity_record);
     app.max_subagents = config
         .max_subagents_for_provider(&target_identity_record)
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
@@ -810,10 +885,7 @@ pub(crate) async fn switch_provider(
         .filter(|chain| chain.providers().len() > 1);
     app.last_fallback_reason = None;
     app.model_ids_passthrough = config.model_ids_pass_through();
-    app.set_model_selection(new_model.clone());
     app.apply_provider_switch_reasoning_effort(target, &new_base_url, model_override.as_deref());
-    app.set_active_context_window_override(config, &target_identity_record);
-    app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window_source);
     if model_override.is_some() {
         app.provider_models
             .insert(target_identity.clone(), new_model.clone());
@@ -831,7 +903,7 @@ pub(crate) async fn switch_provider(
     // A successful in-session switch must refresh the same key-scoped live
     // catalog as startup. TelecomJS is currently the only provider using this
     // seam; failures preserve the existing/static rows.
-    crate::client::CodewhaleClient::spawn_active_provider_catalog_refresh(config);
+    codewhale_engine::client::CodewhaleClient::spawn_active_provider_catalog_refresh(config);
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -934,7 +1006,7 @@ pub(crate) async fn query_provider_runtime_status(
     .and_then(|result| result.ok())
 }
 
-pub(crate) fn mcp_reload_summary(snapshot: &crate::mcp::McpManagerSnapshot) -> String {
+pub(crate) fn mcp_reload_summary(snapshot: &codewhale_engine::mcp::McpManagerSnapshot) -> String {
     let connected = snapshot
         .servers
         .iter()
@@ -998,7 +1070,7 @@ pub(crate) fn mcp_server_diagnosis(app: &App, name: &str) -> String {
             &codewhale_config::persistence::redact_secrets(error),
         ));
     }
-    if crate::mcp::mcp_name_is_command_safe(name) {
+    if codewhale_engine::mcp::mcp_name_is_command_safe(name) {
         let command = if !server.enabled {
             format!("/mcp enable {name}")
         } else if server.auth_required {
@@ -1033,9 +1105,9 @@ pub(crate) fn mcp_ui_action_refreshes_discovery(action: &crate::tui::app::McpUiA
 pub(crate) fn mcp_external_import_status_text(
     workspace: &std::path::Path,
     mcp_path: &std::path::Path,
-    plugins: &crate::plugins::PluginRegistry,
+    plugins: &codewhale_plugins::PluginRegistry,
 ) -> String {
-    use crate::mcp::external_import::{ImportContext, preview_imports};
+    use codewhale_engine::mcp::external_import::{ImportContext, preview_imports};
     let result = ImportContext::new(workspace, mcp_path, plugins)
         .and_then(|context| preview_imports(&context));
     match result {
@@ -1084,11 +1156,11 @@ pub(crate) fn mcp_external_import_status_text(
 pub(crate) fn mcp_import_apply(
     workspace: &std::path::Path,
     mcp_path: &std::path::Path,
-    plugins: &crate::plugins::PluginRegistry,
+    plugins: &codewhale_plugins::PluginRegistry,
     token: &str,
     approve: bool,
 ) -> anyhow::Result<String> {
-    use crate::mcp::external_import::{
+    use codewhale_engine::mcp::external_import::{
         ImportContext, ImportDecision, apply_reviewed_import, parse_review_token,
     };
     let (id, hash, revision) = parse_review_token(token)?;
@@ -1151,7 +1223,7 @@ pub(crate) fn clear_active_provider_api_key_from_memory(
 
 pub(crate) fn record_provider_model_setup_progress(app: &mut App, config: &Config) {
     if let Err(err) = crate::tui::setup::record_provider_model_setup_state_for_app(app, config) {
-        let note = format!("Setup provider/model state was not saved: {err}");
+        let note = format!("Setup provider/model state was not saved: {err:#}");
         if let Some(status) = app.status_message.as_mut() {
             status.push_str(" · ");
             status.push_str(&note);
@@ -1190,18 +1262,18 @@ pub(crate) fn picker_provider_identity(
 
 pub(crate) fn provider_verification_error_category(
     reason: &str,
-) -> crate::error_taxonomy::ErrorCategory {
+) -> codewhale_error_taxonomy::ErrorCategory {
     let lower = reason.to_ascii_lowercase();
     if lower.contains("http 401") || lower.contains("status 401") {
-        crate::error_taxonomy::ErrorCategory::Authentication
+        codewhale_error_taxonomy::ErrorCategory::Authentication
     } else if lower.contains("http 403") || lower.contains("status 403") {
-        crate::error_taxonomy::ErrorCategory::Authorization
+        codewhale_error_taxonomy::ErrorCategory::Authorization
     } else if ["500", "502", "503", "504"]
         .iter()
         .any(|status| lower.contains(&format!("http {status}")))
     {
-        crate::error_taxonomy::ErrorCategory::Network
+        codewhale_error_taxonomy::ErrorCategory::Network
     } else {
-        crate::error_taxonomy::classify_error_message(reason)
+        codewhale_error_taxonomy::classify_error_message(reason)
     }
 }

@@ -14,6 +14,7 @@ boundary has held since v0.9.1):
 - `crates/notify` owns shared notification payload redaction, attention/category gates, sound policy, and local audio dispatch. TUI retains terminal sinks and native hosts retain banner submission.
 - `crates/util` owns shared string/path/atomic-write helpers, confined workspace file access, link and file-identity checks, bundle file readers, the `.git` name rule and the exclusive file lock.
 - `crates/dependencies` owns external-tool resolution and bounded subprocess probes (git, python, node, bun); `crates/snapshot` the pre/post-turn side-repo snapshots; `crates/lsp` the language-server client; `crates/repl` the Python REPL runtime and RLM context files.
+- `crates/plugins` owns plugin manifests, discovery, trust review, install and marketplace parsing. Its test-only constructors and policy guards sit behind a dev-dependency-only `test-support` feature; the DSH composition reviewer is registered by the TUI at startup.
 - `crates/skill-install` owns the community-skill installer (GitHub and tarball sources, the curated registry, bounded extraction, install and trust markers), the package content digest and the shared `SKILL.md` frontmatter reader. Its SSRF DNS pin and shortened timeouts are relaxed only under its dev-dependency-only `test-support` feature.
 
 <img src="assets/architecture.webp" alt="Codewhale architecture: clients reach the one turn loop, Engine::run_turn, through the CLI or the Runtime API; the engine uses crates/core to build requests, runs tools under approval and sandbox policy, routes to any provider through crates/config, and logs everything model-visible to the session store." width="1000">
@@ -142,8 +143,8 @@ rather than a traced write path.
 - **`crates/core`** - Provider-neutral request construction (`request.rs`),
   bounded context fragments, the tool-call parser, and thread/session types.
   It does **not** own the agent loop: the live turn loop is
-  `Engine::run_turn` in `crates/tui/src/core/engine/turn_loop.rs`, and
-  `crates/tui/src/core/` is a module inside the TUI crate, not this crate. A
+  `Engine::run_turn` in `crates/engine/src/core/engine/turn_loop.rs`, and
+  `crates/engine/src/core/` is a module inside the TUI crate, not this crate. A
   placeholder `engine/` tree here once suggested otherwise — it had no callers
   and emitted `TurnComplete` without contacting a model — and was removed in
   v0.9.11. The source guard follows resolved local phase calls and still
@@ -162,7 +163,7 @@ rather than a traced write path.
 - **`crates/hooks`** - Event sinks (stdout, JSONL file, webhook, Unix socket)
   for response, tool, job and approval lifecycle events, plus the opt-in
   lifecycle outbox. User-configured shell hooks that run commands around tool
-  calls are a separate system in `crates/tui/src/hooks.rs`.
+  calls are a separate system in `crates/engine/src/hooks.rs`.
 - **`crates/localization`** - Locale registry for user-facing UI chrome strings
   (`crates/localization/locales/*.json`); it never changes prompts or model
   output language.
@@ -284,7 +285,7 @@ drives turns through Chat Completions.
 ### Extension Systems
 
 - **`mcp.rs`** - Model Context Protocol client for external tool servers
-- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus audit and mutation (the installer lives in `crates/skill-install`)
+- **`skills/`** - Skill discovery and registry for local `SKILL.md` files, plus audit and mutation (the installer lives in `crates/skill-install`; plugin loading lives in `crates/plugins`)
 - **`hooks.rs`** - Pre/post execution hooks with conditions
 
 ### User Interface

@@ -9,10 +9,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::test_support::{EnvVarGuard, TestEnvLock, lock_test_env};
-use crate::tools::spec::ToolError;
-
-/// `CODEWHALE_CONFORMANCE_UPDATE=1` rewrites goldens from the current source.
-pub(super) const UPDATE_ENV: &str = "CODEWHALE_CONFORMANCE_UPDATE";
+pub(super) use codewhale_engine::test_support::{UPDATE_ENV, check_golden};
+use codewhale_engine::tools::spec::ToolError;
 
 pub(super) fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -52,44 +50,6 @@ pub(super) fn read_case(family: &str, name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
 }
 
-pub(super) fn update_mode() -> bool {
-    let requested = std::env::var(UPDATE_ENV).is_ok_and(|value| value == "1");
-    if requested && std::env::var_os("CI").is_some_and(|value| !value.is_empty()) {
-        panic!("{UPDATE_ENV}=1 is refused under CI: goldens are reviewed source, not build output");
-    }
-    requested
-}
-
-/// Compare `actual` with the golden at `path`; in update mode write it
-/// instead. Returns a failure description rather than panicking so a family
-/// can report every drifted case in one run.
-pub(crate) fn check_golden(path: &Path, actual: &str) -> Result<(), String> {
-    let update = update_mode();
-    let expected = std::fs::read_to_string(path).ok();
-    if expected.as_deref() == Some(actual) {
-        return Ok(());
-    }
-    if update {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create golden dir");
-        }
-        std::fs::write(path, actual).expect("write golden");
-        eprintln!("conformance: rewrote {}", path.display());
-        return Ok(());
-    }
-    let Some(expected) = expected else {
-        return Err(format!(
-            "missing golden {}; review the output and record it with {UPDATE_ENV}=1",
-            path.display()
-        ));
-    };
-    Err(format!(
-        "golden drift at {}\n{}\nIf this change is intended, re-record with {UPDATE_ENV}=1 and review the diff.",
-        path.display(),
-        first_difference(&expected, actual)
-    ))
-}
-
 /// A harness deadline is missing evidence, never a provider outcome or a
 /// recordable golden. Keep this boundary shared by every asynchronous family.
 pub(super) async fn complete_within<T>(
@@ -100,57 +60,6 @@ pub(super) async fn complete_within<T>(
     tokio::time::timeout(deadline, future)
         .await
         .map_err(|_| format!("harness timeout: {operation} did not complete within {deadline:?}"))
-}
-
-/// Line-oriented first difference with a little context — enough to see what
-/// moved without dumping a whole transcript into the failure.
-fn first_difference(expected: &str, actual: &str) -> String {
-    let expected_lines: Vec<&str> = expected.lines().collect();
-    let actual_lines: Vec<&str> = actual.lines().collect();
-    let index = expected_lines
-        .iter()
-        .zip(&actual_lines)
-        .position(|(left, right)| left != right)
-        .unwrap_or_else(|| expected_lines.len().min(actual_lines.len()));
-    let character = match (expected_lines.get(index), actual_lines.get(index)) {
-        (Some(left), Some(right)) => left
-            .chars()
-            .zip(right.chars())
-            .take_while(|(left, right)| left == right)
-            .count(),
-        _ => 0,
-    };
-    let start = character.saturating_sub(40);
-    let show = |lines: &[&str]| {
-        lines.get(index).map_or_else(
-            || "<end of file>".to_string(),
-            |line| {
-                let window: String = line.chars().skip(start).take(601).collect();
-                format!(
-                    "{}{}",
-                    if start == 0 { "" } else { "…" },
-                    truncate(&window, 600)
-                )
-            },
-        )
-    };
-    format!(
-        "first difference at line {}, character {} (expected {} lines, got {}):\n  expected: {}\n  actual:   {}",
-        index + 1,
-        character + 1,
-        expected_lines.len(),
-        actual_lines.len(),
-        show(&expected_lines),
-        show(&actual_lines)
-    )
-}
-
-fn truncate(line: &str, max: usize) -> String {
-    if line.chars().count() <= max {
-        return line.to_string();
-    }
-    let head: String = line.chars().take(max).collect();
-    format!("{head}…")
 }
 
 /// Rebuild every object with keys in sorted order. Used where map order is an

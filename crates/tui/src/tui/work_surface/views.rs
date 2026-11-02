@@ -4,8 +4,9 @@
 //! like a to-do or a sub-agent — a view is a subset of one row grammar, not
 //! a second widget system.
 
-use crate::agent_roster::format_tokens;
 use crate::tui::app::{App, SidebarRowAction};
+use codewhale_engine::agent_roster::format_tokens;
+use codewhale_localization::{MessageId, tr};
 
 use super::model::{RailPanel, WorkRow, WorkRowId, WorkTone};
 
@@ -55,7 +56,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     let mut out = Vec::new();
     let edited = edited_files(&activity);
     if !edited.is_empty() {
-        out.push(heading("files:edited", format!("Edited {}", edited.len())));
+        out.push(heading(
+            "files:edited",
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityEditedLabel),
+                edited.len()
+            ),
+        ));
         for (path, receipt) in &edited {
             let Some(receipt) = receipt else {
                 out.push(WorkRow {
@@ -66,7 +74,8 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 continue;
             };
             let across = if receipt.files.len() > 1 {
-                format!(" across {} files", receipt.files.len())
+                tr(activity.locale, MessageId::FileMutationAcrossFiles)
+                    .replace("{count}", &receipt.files.len().to_string())
             } else {
                 String::new()
             };
@@ -78,10 +87,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 tone: WorkTone::Success,
                 selectable: true,
                 primary_action: Some(SidebarRowAction::InspectWork {
-                    title: format!("File · {path}"),
+                    title: format!(
+                        "{} · {path}",
+                        tr(activity.locale, MessageId::ApprovalLabelFile)
+                    ),
                     body: super::model::settled_mutation_body(
                         std::slice::from_ref(*receipt),
                         activity.inline_diff_mode,
+                        activity.locale,
                     ),
                     stop_action: None,
                 }),
@@ -92,7 +105,11 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     if !activity.read.is_empty() {
         out.push(heading(
             "files:read",
-            format!("Read {}", activity.read.len()),
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityReadLabel),
+                activity.read.len()
+            ),
         ));
         for path in &activity.read {
             out.push(WorkRow {
@@ -124,7 +141,7 @@ pub(super) fn notepad_rows(app: &mut App) -> Vec<WorkRow> {
             WorkRow {
                 id: WorkRowId(format!("notes:{number}")),
                 mark: "▪",
-                label: crate::agent_roster::one_line(first_line.unwrap_or_default()),
+                label: codewhale_engine::agent_roster::one_line(first_line.unwrap_or_default()),
                 detail: format!("/note show {number}"),
                 tone: WorkTone::Live,
                 selectable: true,
@@ -152,7 +169,7 @@ fn heading(id: &str, label: String) -> WorkRow {
 
 /// The context view: the budget, not a fact list. Used/limit and the
 /// compaction threshold from the same snapshot the footer meter reads, a
-/// gauge, then the breakdown the accounting can already give per frame —
+/// gauge, the automatic threshold, then the breakdown available per frame —
 /// system prompt, tool schemas, conversation, tool output, files read — and
 /// the one action that exists as a command, `/compact`.
 pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
@@ -175,13 +192,13 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         id: WorkRowId("context:budget".to_string()),
         mark: "◔",
         label: format!(
-            "{} of {} · {}% · compacts at {threshold}%",
+            "{} of {} · {}%",
             format_tokens(used),
             format_tokens(u64::from(max)),
             percent.round() as u8
         ),
         detail: "/context for the full source map".to_string(),
-        tone: if percent >= f64::from(threshold) {
+        tone: if app.auto_compact && used >= app.compact_threshold as u64 {
             WorkTone::Attention
         } else {
             WorkTone::Live
@@ -191,13 +208,40 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         agent: None,
     }];
     out.push(fact("gauge", gauge(percent, 24), ""));
+    let mut automatic = if app.auto_compact && max > 0 {
+        let effective = (app.compact_threshold as f64 * 100.0 / f64::from(max))
+            .clamp(0.0, 100.0)
+            .round() as u8;
+        fact(
+            "automatic",
+            format!("auto ~{effective}% · target {threshold}%"),
+            "Current route; live token counts and other routes may differ",
+        )
+    } else if app.auto_compact {
+        fact(
+            "automatic",
+            format!("auto threshold unavailable · target {threshold}%"),
+            "The current route's context window is unavailable",
+        )
+    } else {
+        fact(
+            "automatic",
+            "automatic compaction off".to_string(),
+            "Use /compact to make room manually",
+        )
+    };
+    automatic.selectable = true;
+    automatic.primary_action = Some(SidebarRowAction::Command("/context".to_string()));
+    out.push(automatic);
 
     // Breakdown from what is already counted per frame: the system prompt
     // estimate the footer meter uses and the per-message token cache. No
     // text is re-scanned here; a message is tool output when every block in
     // it is a tool result.
-    let system_tokens =
-        crate::compaction::estimate_input_tokens_conservative(&[], app.system_prompt.as_ref());
+    let system_tokens = codewhale_engine::compaction::estimate_input_tokens_conservative(
+        &[],
+        app.system_prompt.as_ref(),
+    );
     let tools = app
         .session
         .last_tool_catalog
@@ -301,13 +345,16 @@ fn message_split(app: &App) -> (u64, u64, usize) {
 /// Before the first probe it says so; "not a git repository" only when the
 /// probe found none, and a git failure is named (#6565).
 pub(super) fn git_rows(app: &mut App) -> Vec<WorkRow> {
-    let out = git_rows_for(&crate::git_status::cached_status(), &app.workspace);
+    let out = git_rows_for(
+        &codewhale_engine::git_status::cached_status(),
+        &app.workspace,
+    );
     app.work_surface.latest_rows = out.clone();
     out
 }
 
 fn git_rows_for(
-    snap: &crate::git_status::GitStatusSnapshot,
+    snap: &codewhale_engine::git_status::GitStatusSnapshot,
     workspace: &std::path::Path,
 ) -> Vec<WorkRow> {
     let probed_here = snap.probed_workspace.as_deref() == Some(workspace);
@@ -333,7 +380,7 @@ fn note_row(id: &str, text: &str) -> WorkRow {
     }
 }
 
-fn git_state_rows(snap: &crate::git_status::GitStatusSnapshot) -> Vec<WorkRow> {
+fn git_state_rows(snap: &codewhale_engine::git_status::GitStatusSnapshot) -> Vec<WorkRow> {
     let mut out = Vec::new();
     let branch = match (snap.branch.as_deref(), snap.detached) {
         (Some(id), true) => format!("detached at {id}"),
@@ -522,7 +569,7 @@ pub(super) fn price_rows(app: &mut App) -> Vec<WorkRow> {
             agent: None,
         });
     }
-    if let Some(rate) = crate::pricing::model_rate_label(
+    if let Some(rate) = codewhale_engine::pricing::model_rate_label(
         app.api_provider,
         &app.model,
         app.cost_display_currency(app.cost_currency),
@@ -545,7 +592,7 @@ pub(super) fn price_rows(app: &mut App) -> Vec<WorkRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git_status::{
+    use codewhale_engine::git_status::{
         ChangeCounts, ChangedPath, GitStatusSnapshot, RecentCommit, WorktreeEntry,
     };
     use std::path::{Path, PathBuf};
@@ -695,7 +742,7 @@ mod tests {
 
     #[test]
     fn git_more_means_unlisted_paths() {
-        use crate::git_status::{MAX_CHANGED_PATHS, parse_porcelain_v2};
+        use codewhale_engine::git_status::{MAX_CHANGED_PATHS, parse_porcelain_v2};
         for count in [1, MAX_CHANGED_PATHS, MAX_CHANGED_PATHS + 1] {
             let mut raw = "# branch.head main\0".to_string();
             for index in 0..count {
@@ -722,8 +769,8 @@ mod tests {
     }
 
     fn record_file(app: &mut App, id: &str, action: &str, path: &str, diff: Option<String>) {
-        use crate::tools::spec::ToolResult;
         use crate::tui::tool_routing::{handle_tool_call_complete, handle_tool_call_started};
+        use codewhale_engine::tools::spec::ToolResult;
         let input = serde_json::json!({"action": action, "path": path, "content": "new"});
         handle_tool_call_started(app, id, "File", &input);
         let mut result = ToolResult::success("ok");
@@ -779,7 +826,7 @@ mod tests {
 
     #[test]
     fn failed_git_status_reports_the_error_in_the_view_and_composer() {
-        use crate::git_status::{context_line, probe_status};
+        use codewhale_engine::git_status::{context_line, probe_status};
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let init = std::process::Command::new("git")
@@ -809,8 +856,8 @@ mod tests {
 
     #[test]
     fn files_include_successful_writes_without_receipts() {
-        use crate::tools::spec::ToolResult;
         use crate::tui::tool_routing::{handle_tool_call_complete, handle_tool_call_started};
+        use codewhale_engine::tools::spec::ToolResult;
         let mut app = app();
         for (id, action, path) in [("write", "write", "new.rs"), ("edit", "edit", "edited.rs")] {
             let input = serde_json::json!({"action": action, "path": path, "content": "new"});

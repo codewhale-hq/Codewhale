@@ -5,7 +5,7 @@ import type { DocsAuthDict } from "../types";
  * ("Connect a provider"). Every command and lookup order is checked against
  * docs/INSTALL.md §8, docs/PROVIDERS.md (local models), and the CLI
  * definitions in crates/cli/src/lib.rs (`auth`, `login`) and
- * crates/cli/src/cloud.rs (`account`).
+ * crates/account-cli/src/lib.rs (`account`).
  */
 export const docsAuth: DocsAuthDict = {
   metaTitle: "Connect a provider · Codewhale Docs",

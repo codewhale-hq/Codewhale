@@ -784,7 +784,7 @@ impl<'a> SubagentView<'a> {
                     ),
                     self.theme
                         .fg(if selected {
-                            Role::Primary
+                            Role::Accent
                         } else {
                             Role::Foreground
                         })
@@ -863,7 +863,7 @@ impl<'a> SubagentView<'a> {
         let Some(agent) = state.agent(self.agents) else {
             return;
         };
-        self.line(area, 0, &agent.card.title, Role::Primary, buf);
+        self.line(area, 0, &agent.card.title, Role::Accent, buf);
         if area.height > 1 {
             row(
                 Rect::new(area.x, area.y + 1, area.width, 1),
@@ -930,7 +930,7 @@ impl<'a> SubagentView<'a> {
         } else {
             label.to_string()
         };
-        self.line(area, y, &title, Role::Primary, buf);
+        self.line(area, y, &title, Role::Accent, buf);
         y += 1;
         if y >= area.height {
             return;
@@ -1059,7 +1059,7 @@ impl StatefulWidget for SubagentView<'_> {
                 .bg(Role::Background)
                 .patch(self.theme.fg(Role::Foreground)),
         );
-        self.line(area, 0, &self.words.title, Role::Primary, buf);
+        self.line(area, 0, &self.words.title, Role::Accent, buf);
         let count = |status| {
             self.agents
                 .iter()
@@ -1114,7 +1114,7 @@ impl StatefulWidget for SubagentView<'_> {
                 area,
                 area.height - 2,
                 &actions.join("   "),
-                Role::Primary,
+                Role::Accent,
                 buf,
             );
         }

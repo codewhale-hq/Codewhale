@@ -3,9 +3,9 @@
 # produces different compiled binaries on Windows vs Linux/macOS.
 # Cover nested mode/approval/personality prompts — a top-level *.md glob alone
 # left modes/*.md on CRLF under Windows autocrlf and blew the agent token budget.
-crates/tui/src/prompts/**/*.md text eol=lf
-crates/tui/src/prompts/*.md text eol=lf
-crates/tui/src/prompts/*.txt text eol=lf
+crates/engine/src/prompts/**/*.md text eol=lf
+crates/engine/src/prompts/*.md text eol=lf
+crates/engine/src/prompts/*.txt text eol=lf
 
 # The rest of the include_str!() inputs. `* text=auto` below converts these to
 # CRLF on a Windows checkout, which is invisible for the ones that are only
@@ -58,11 +58,12 @@ scripts/fixtures/dsh-web-app/** text eol=lf
 # the generator's LF output (protocol/tests.rs), and its dist bundle is
 # include_bytes!()'d and digest-checked at launch; a CRLF Windows checkout
 # failed the former and would embed different bytes.
-crates/tui/extension-host/src/protocol.generated.ts text eol=lf
-crates/tui/extension-host/dist/** text eol=lf
+crates/engine/extension-host/src/protocol.generated.ts text eol=lf
+crates/engine/extension-host/dist/** text eol=lf
 # Reviewed extension-host fixtures carry exact source SHA-256 receipts.
 # A Windows checkout must not rewrite their admitted source closure to CRLF.
-crates/tui/tests/fixtures/extension_host/** text eol=lf
+crates/engine/tests/fixtures/extension_host/** text eol=lf
+crates/engine/extension-host/src/dsh/dsh-message-compat.js text eol=lf
 
 # Rustfmt writes LF; keep Rust sources stable across Windows/Linux/macOS.
 *.rs text eol=lf

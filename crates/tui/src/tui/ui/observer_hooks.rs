@@ -1,6 +1,6 @@
 //! Observer-hook projection: subagent and turn-end hook payload construction,
 //! preview bounding, and completion classification (TUI_MODULARIZATION.md
-//! slice 4). The executor lives in `crate::hooks`; this module builds the
+//! slice 4). The executor lives in `codewhale_engine::hooks`; this module builds the
 //! payloads the UI submits and classifies completion results for display.
 
 use super::*;
@@ -110,7 +110,7 @@ pub(super) fn execute_turn_end_observer_hook(
 
     let metadata = turn_end_observer_metadata(turn);
     let context = app.base_hook_context();
-    let payload = crate::hooks::turn_end_payload(TurnEndPayloadInput {
+    let payload = codewhale_engine::hooks::turn_end_payload(TurnEndPayloadInput {
         context: &context,
         created_at: metadata.created_at,
         model_backed: metadata.route.is_some(),
@@ -269,7 +269,7 @@ pub(super) fn execute_session_error_hook(app: &App, error: Option<&str>) {
 pub(super) struct TurnEndObserverMetadata<'a> {
     pub(super) turn_id: std::borrow::Cow<'a, str>,
     pub(super) created_at: chrono::DateTime<chrono::Utc>,
-    pub(super) route: Option<&'a crate::core::events::TurnRoute>,
+    pub(super) route: Option<&'a codewhale_engine::core::events::TurnRoute>,
 }
 
 pub(super) fn turn_end_observer_metadata(
@@ -405,8 +405,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn session_state_transitions_dispatch_real_ordered_payloads_without_duplicates() {
-        use crate::hooks::HookExecutor;
         use codewhale_config::hooks::{Hook, HooksConfig};
+        use codewhale_engine::hooks::HookExecutor;
         use std::path::{Path, PathBuf};
         use std::time::{Duration, Instant};
 
@@ -552,7 +552,8 @@ mv "$receipt" "$receipt.done"
             app.pending_user_input_prompt = (state == TurnState::Waiting).then(|| {
                 (
                     "hook-fixture-question".to_string(),
-                    crate::tools::user_input::UserInputRequest {
+                    codewhale_engine::tools::user_input::UserInputRequest {
+                        require_typed_answers: false,
                         questions: Vec::new(),
                     },
                 )
@@ -650,7 +651,8 @@ mv "$receipt" "$receipt.done"
 
         app.pending_user_input_prompt = Some((
             "q1".to_string(),
-            crate::tools::user_input::UserInputRequest {
+            codewhale_engine::tools::user_input::UserInputRequest {
+                require_typed_answers: false,
                 questions: Vec::new(),
             },
         ));

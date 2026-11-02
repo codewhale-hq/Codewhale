@@ -553,7 +553,7 @@ impl<R: ListRow> Paint for List<'_, R> {
             if state.selected {
                 buf.set_style(rect, theme.bg(Role::Selected));
                 if gutter > 0 {
-                    buf.set_string(rect.x, rect.y, marker, theme.fg(Role::Primary));
+                    buf.set_string(rect.x, rect.y, marker, theme.fg(Role::Accent));
                 }
             }
             row.paint_row(

@@ -24,11 +24,13 @@ name = "codewhale"
 path = "src/main.rs"
 
 [dependencies]
+codewhale-account-cli = { path = "../account-cli", version = "0.10.2" }
 codewhale-runtime = { path = "../runtime", version = "0.10.2" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 codewhale-tui = { path = "../tui", version = "0.10.2", default-features = false }
+codewhale-engine = { path = "../engine", version = "0.10.2" }
 codewhale-app-server = { path = "../app-server", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-lane = { path = "../lane", version = "0.10.2" }
@@ -54,7 +56,6 @@ rusty_alloc-api = { workspace = true, optional = true }
 sha2.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
-webbrowser = "1.0"
 zeroize = "1.8.2"
 
 [build-dependencies]

@@ -1,6 +1,6 @@
 //! Explicit motion modes with semantic (non-animated) fallbacks.
 
-use crate::tui::spinner::{BRAILLE_SPINNER_STILL_FRAME, LIVE_STATIC_MARKER};
+use codewhale_tui_kit::spinner::{BRAILLE_SPINNER_STILL_FRAME, LIVE_STATIC_MARKER};
 
 /// How the shell presents motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

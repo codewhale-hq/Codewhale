@@ -51,7 +51,7 @@ it does not remove child budgets or the headless host's deadline.
 
 This doc covers roles and individual worker controls. Use `workflow` to coordinate
 multiple assignments through the same worker runtime; see the per-role prompts in
-`crates/tui/src/tools/subagent/mod.rs` (`*_AGENT_INTRO`) and the in-line
+`crates/engine/src/tools/subagent/mod.rs` (`*_AGENT_INTRO`) and the in-line
 tool description.
 
 ## Role taxonomy
@@ -105,7 +105,7 @@ with the narrower side. Deny lists are unioned, so
 Resuming a saved worker intersects its saved posture with the current caller's
 posture again. This containment is pinned by
 `a_read_only_parents_delegation_never_widens_authority` in
-`crates/tui/src/fleet/exact.rs` tests.
+`crates/engine/src/fleet/exact.rs` tests.
 
 Inside the process, the resolved authority is one object —
 `ChildGrant` in `crates/agent-contract/src/worker_profile.rs`: `files`
@@ -130,7 +130,7 @@ one-line note in that worker's transcript (visible when it is focused) and
 an audit-log record. See `docs/MODES.md`.
 
 Each role's full system prompt lives in
-`crates/tui/src/tools/subagent/mod.rs` (search for
+`crates/engine/src/tools/subagent/mod.rs` (search for
 `*_AGENT_INTRO`). The prompt prefix loads automatically when the
 child agent boots; the parent's assignment prompt becomes the first
 turn's user message.
@@ -153,7 +153,7 @@ transcript.
 
 Forked state shows the parent's To-do snapshot — the sole Work surface, written
 by `todo_write`. The child's `<codewhale:fork_state>` block carries the bounded
-body rendered by `crates/tui/src/todo_snapshot.rs`, so a fork continues from the
+body rendered by `crates/engine/src/todo_snapshot.rs`, so a fork continues from the
 parent's real progress position rather than a paraphrase. That To-do section is
 resolved when the spawn happens, so a `todo_write` earlier in the same parent
 turn is included.
@@ -183,7 +183,7 @@ that child as its own delegate card.
 The durable Runtime ledger (projected through fleet task status) still owns
 lifecycle state. `update_plan` is no
 longer reachable by a model: `model_visible()` returns `false`
-(`crates/tui/src/tools/plan.rs:408-413`), so it is filtered out of the API tool
+(`crates/engine/src/tools/plan.rs:408-413`), so it is filtered out of the API tool
 list and never appears to a child. It survives only to replay older transcripts.
 Strategy that used to go there now goes in the response body, and lifecycle
 state goes in `todo_write`.
@@ -387,7 +387,7 @@ OUTPUT: VERDICT, EVIDENCE with file:line refs or PR refs, GAPS, NEXT.
 
 ```text
 QUESTION: Where is the child-agent prompt assembled?
-SCOPE: crates/tui/src/prompts*, crates/tui/src/tools/subagent/*.
+SCOPE: crates/engine/src/prompts*, crates/engine/src/tools/subagent/*.
 ALREADY_KNOWN: The model-facing launcher is only `agent`; do not look for removed lifecycle tools.
 EFFORT: quick
 STOP_CONDITION: Stop after identifying the prompt source files and the function that wraps assignment text.
@@ -1016,13 +1016,13 @@ also accepts older explicit `CHANGES:`,
 `Changed files:`, and `Files changed:` declarations. Evidence citations and
 paths under `RISKS` are not declarations of edits. The five-heading prompt
 contract is `SUBAGENT_OUTPUT_FORMAT` in
-`crates/tui/src/prompts/text.rs`. `prompt_documents_structured_subagent_briefs`
-in `crates/tui/src/prompts.rs` asserts every heading against it.
+`crates/engine/src/prompts/text.rs`. `prompt_documents_structured_subagent_briefs`
+in `crates/engine/src/prompts.rs` asserts every heading against it.
 
 Scouts are the carve-out (#5189 F5): they end with `### SUMMARY` and
 `### EVIDENCE` only (`SUBAGENT_SCOUT_OUTPUT_FORMAT` in
-`crates/tui/src/prompts/text.rs`). `FleetRole::system_prompt` in
-`crates/tui/src/tools/subagent/mod.rs` injects the scout contract for
+`crates/engine/src/prompts/text.rs`). `FleetRole::system_prompt` in
+`crates/engine/src/tools/subagent/mod.rs` injects the scout contract for
 `FleetRole::Scout` and the five-heading contract for every other role. A
 subagent test pins that scouts contain `## Output contract (scout)` and do
 not contain `### BLOCKERS`.
@@ -1039,7 +1039,7 @@ scout that discovers a project convention worth carrying across
 sessions, or a verifier that learns "this test is flaky".
 
 `remember` takes a `scope` of `global` or `workspace`
-(`crates/tui/src/tools/remember.rs`, schema enum plus scope handling) and
+(`crates/engine/src/tools/remember.rs`, schema enum plus scope handling) and
 writes through `NativeMemoryStore` to `~/.codewhale/memory/global/MEMORY.md`
 or `~/.codewhale/memory/workspace/<id>/MEMORY.md`. Writes do not go through
 the standard write-approval flow. The legacy single-file `memory.md` path was
@@ -1047,7 +1047,7 @@ removed in v0.9.4; see `docs/MEMORY.md` for the full layout.
 
 ## Implementation notes
 
-- Source: `crates/tui/src/tools/subagent/mod.rs`.
+- Source: `crates/engine/src/tools/subagent/mod.rs`.
 - Persisted state: `<workspace>/.codewhale/state/subagents.v1.json`. Schema
   version `1` (forward-compatible — new optional fields use
   `#[serde(default)]`).

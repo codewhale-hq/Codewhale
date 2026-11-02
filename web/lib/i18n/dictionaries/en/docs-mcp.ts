@@ -4,7 +4,7 @@ import type { DocsMcpDict } from "../types";
  * English reference dictionary for `app/[locale]/docs/mcp/page.tsx`
  * ("Connect tools with MCP"). Commands and flags are checked against
  * `McpCommand` in crates/tui/src/lib.rs and docs/MCP.md; the code-mode
- * section against crates/tui/src/tools/codemode.rs and
+ * section against crates/engine/src/tools/codemode.rs and
  * crates/runtime/src/features.rs (`code_mode`: Experimental stage, on by default).
  */
 export const docsMcp: DocsMcpDict = {
@@ -153,5 +153,5 @@ code_mode = false`,
     },
   ],
   sourceNote:
-    "Source documents: docs/MCP.md, crates/tui/src/tools/codemode.rs · Update docs-map.ts when changing.",
+    "Source documents: docs/MCP.md, crates/engine/src/tools/codemode.rs · Update docs-map.ts when changing.",
 };

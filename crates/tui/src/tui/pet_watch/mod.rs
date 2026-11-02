@@ -1,11 +1,11 @@
 //! Views of one durable local pet. Engine events are projected here once;
 //! the companion owns simulation, persistence and the sole audio output.
-use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::tui::{
     app::{App, StatusToastLevel},
     underwater::ShellPhase,
     views::ModalKind,
 };
+use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
 use codewhale_localization::{MessageId, tr};
 use codewhale_palette::{ChromeInk, chrome_style};
 use ratatui::{
@@ -345,23 +345,27 @@ fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
         // `waiting` flag on every tick.
         Event::ToolCallComplete {
             id,
-            result: Err(crate::tools::spec::ToolError::PermissionDenied { .. }),
+            result: Err(codewhale_engine::tools::spec::ToolError::PermissionDenied { .. }),
             ..
         } => json!({
             "event":"approval_resolved","id":id,"outcome":"denied"
         }),
         Event::ToolCallComplete {
             id,
-            result: Err(crate::tools::spec::ToolError::Cancelled { .. }),
+            result: Err(codewhale_engine::tools::spec::ToolError::Cancelled { .. }),
             ..
         } => json!({
             "event":"approval_resolved","id":id,"outcome":"cancelled"
+        }),
+        Event::UserInputClosed { id, outcome } => json!({
+            "event":"approval_resolved", "id":id,
+            "outcome":if matches!(outcome, codewhale_engine::core::events::UserInputClosedOutcome::Answered) { "approved" } else { "cancelled" }
         }),
         Event::AgentSpawned { id, .. } => json!({"event":"agent_spawned","id":id}),
         Event::AgentProgress { id, activity, .. } => json!({
             "event":"agent_progress",
             "id":id,
-            "worker_status":crate::core::protocol_parity::worker_status_str(activity.worker_status)
+            "worker_status":codewhale_engine::core::protocol_parity::worker_status_str(activity.worker_status)
         }),
         Event::AgentComplete { id, .. } => json!({"event":"agent_complete","id":id}),
         Event::ApprovalRequired { id, .. } | Event::UserInputRequired { id, .. } => json!({
@@ -789,7 +793,7 @@ fn render_tank(frame: &mut Frame, area: Rect, app: &mut App) {
 /// at the largest rung that fits. Static: it rests until the companion's own
 /// frames take over the tank.
 fn paint_resting_whale(frame: &mut Frame, area: Rect, style: Style) {
-    use crate::tui::mark::MarkSize;
+    use codewhale_tui_kit::mark::MarkSize;
     let tank_height = area.height.saturating_sub(1);
     let Some(size) = [MarkSize::Large, MarkSize::Small, MarkSize::Tiny]
         .into_iter()
@@ -830,7 +834,7 @@ fn cell_pixels() -> Option<(f64, f64)> {
         })
 }
 fn pixels_need(synchronized: bool) -> Option<MessageId> {
-    if !crate::tui::mark::kitty_graphics_supported() {
+    if !codewhale_tui_kit::mark::kitty_graphics_supported() {
         Some(MessageId::PetNeedsKittyGraphics)
     } else if !synchronized {
         Some(MessageId::PetNeedsSynchronizedOutput)
@@ -850,7 +854,7 @@ mod tests {
 
     #[test]
     fn work_completion_reveals_existing_answer_without_sending_text_to_owner() {
-        use crate::core::events::TurnOutcomeStatus;
+        use codewhale_engine::core::events::TurnOutcomeStatus;
         let mut app = crate::tui::test_support::test_app_with_options(
             crate::tui::test_support::test_tui_options("."),
         );
@@ -935,7 +939,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(
-            text.contains(crate::tui::mark::MarkSize::Large.rows()[3].trim()),
+            text.contains(codewhale_tui_kit::mark::MarkSize::Large.rows()[3].trim()),
             "the tank paints the resting whale: {text}"
         );
         assert!(
@@ -1221,8 +1225,8 @@ mod tests {
     /// Pin the wire shape the JS dispatches on, and keep child text off it.
     #[test]
     fn agent_events_forward_span_identity_without_child_text() {
-        use crate::core::events::AgentProgressEventMeta;
-        use crate::tools::subagent::{AgentWorkerStatus, SubAgentStatus};
+        use codewhale_engine::core::events::AgentProgressEventMeta;
+        use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentStatus};
 
         let spawned = metadata(
             &Event::AgentSpawned {

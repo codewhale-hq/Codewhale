@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
-use crate::artifacts::open_session_relative;
-use crate::artifacts::write_session_relative_immutable;
+use codewhale_runtime::artifacts::open_session_relative;
+use codewhale_runtime::artifacts::write_session_relative_immutable;
 use codewhale_util::files::{WorkspaceFile, same_file};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;

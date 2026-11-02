@@ -327,7 +327,7 @@ pub(crate) fn open_diff_pager(app: &mut App, title: String, diff: &str) {
     // A patch is file content. Keep the terminal-injection boundary
     // `PagerView::from_text` applies to every other pager body.
     let mut sanitized = String::with_capacity(diff.len());
-    crate::tui::osc8::strip_ansi_into(diff, &mut sanitized);
+    codewhale_tui_kit::osc8::strip_ansi_into(diff, &mut sanitized);
     app.view_stack.push(PagerView::from_diff(
         title,
         sanitized,
@@ -375,12 +375,27 @@ pub(crate) fn refresh_context_inspector_overlay(app: &mut App) {
 /// `ViewEvent::Backtrack*` so the main key dispatcher can advance the
 /// `BacktrackState` and apply the rewind on confirm.
 pub(crate) fn open_backtrack_overlay(app: &mut App) {
+    open_history_rewind_overlay(app, false);
+}
+
+pub(crate) fn open_undo_overlay(app: &mut App) {
+    open_history_rewind_overlay(app, true);
+}
+
+fn open_history_rewind_overlay(app: &mut App, undo: bool) {
+    app.undo_selection = undo;
     let mut overlay = LiveTranscriptOverlay::new();
     overlay.refresh_from_app(app);
     overlay.set_backtrack_preview(0);
+    if undo {
+        overlay.set_undo_selection();
+    }
     app.view_stack.push(overlay);
-    app.status_message =
-        Some("Backtrack: \u{2190}/\u{2192} step  Enter rewind  Esc cancel".to_string());
+    app.status_message = Some(if undo {
+        "Undo selection: ←/→ choose first request to undo  Enter restore files and conversation  Esc cancel".to_string()
+    } else {
+        "Backtrack: ←/→ step  Enter rewind  Esc cancel".to_string()
+    });
     app.needs_redraw = true;
 }
 
@@ -497,7 +512,7 @@ pub(crate) fn refresh_config_view_after_commit(app: &mut App, focus_key: &str, r
 pub(crate) fn refresh_skills_manager_if_open(
     app: &mut App,
     status: Option<String>,
-    focus: Option<&crate::skills::audit::AuditedSkillId>,
+    focus: Option<&codewhale_skills::audit::AuditedSkillId>,
 ) {
     if app.view_stack.top_kind() != Some(ModalKind::SkillsManager) {
         return;
@@ -548,9 +563,9 @@ pub(crate) fn push_approval_request_view(
         request.approval_grouping_key = approval_grouping_key.to_string();
     }
     // A child's gate never consults saved repo allow rules, so a child card
-    // must not offer "Always allow in this repo" — it would do nothing. The
+    // must not offer "Always for this command" — it would do nothing. The
     // card names its agent (approvals C1).
-    if crate::tools::subagent::SubAgentManager::is_child_approval_id(id) {
+    if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) {
         request.persistent_allow_rules.clear();
         if let Some(agent_id) = crate::tui::pending_requests::child_agent_id(id) {
             request.owner = Some(crate::tui::pending_requests::owner_for(app, agent_id));
@@ -559,7 +574,7 @@ pub(crate) fn push_approval_request_view(
         // The same edit runs without a card inside a git repository. Say why
         // this folder asks, so two folders behaving differently is explained
         // on the card. The engine already decided to ask; this only labels it.
-        request.asks_without_git = crate::core::authority::file_write_asks_without_git(
+        request.asks_without_git = codewhale_engine::core::authority::file_write_asks_without_git(
             app.mode,
             app.approval_mode,
             &app.workspace,
@@ -590,31 +605,29 @@ pub(crate) fn update_backtrack_overlay_selection(app: &mut App, selected_idx: us
     app.needs_redraw = true;
 }
 
-/// Apply the user's backtrack selection: trim `app.history` and
-/// `app.api_messages` so everything from the chosen user message onward
-/// is dropped, populate the composer with the dropped user text, close
-/// the overlay, and surface a status hint. The cycle counter is bumped
-/// so any persistent indices clear; the engine's in-flight context is
-/// re-synced via `Op::SyncSession` so the next turn starts fresh.
-/// Index in `api_messages` to truncate to for a backtrack of `depth` visible
-/// user prompts from the tail. Counts only messages that yield a
-/// `HistoryCell::User` (a real prompt), NOT tool-result messages which are
-/// also stored with `role == "user"`. Returns `None` if fewer than `depth`
-/// user prompts exist.
-pub(crate) fn backtrack_api_cut_index(api_messages: &[Message], depth: usize) -> Option<usize> {
-    let mut user_seen = 0usize;
-    for (idx, msg) in api_messages.iter().enumerate().rev() {
-        let yields_user = history_cells_from_message(msg)
-            .iter()
-            .any(|cell| matches!(cell, HistoryCell::User { .. }));
-        if yields_user {
-            if user_seen == depth {
-                return Some(idx);
-            }
-            user_seen += 1;
-        }
-    }
-    None
+pub(crate) fn backtrack_api_cut_index(app: &App, depth: usize) -> Option<usize> {
+    let selected = find_user_cell_index_from_tail(app, depth)?;
+    let HistoryCell::User { content: target } = &app.history[selected] else {
+        return None;
+    };
+    let same_prompt =
+        |cell: &HistoryCell| matches!(cell, HistoryCell::User { content } if content == target);
+    let earlier = app.history[..selected]
+        .iter()
+        .filter(|cell| same_prompt(cell))
+        .count();
+    let later = app.history[selected + 1..]
+        .iter()
+        .filter(|cell| same_prompt(cell))
+        .count();
+    let mut recorded = app.api_messages.iter().enumerate().filter(|(_, message)| {
+        !matches!(
+            codewhale_models::turn_classify::classify_user_turn_prompt(message),
+            codewhale_models::turn_classify::UserTurnPromptKind::NotPrompt
+        ) && history_cells_from_message(message).iter().any(same_prompt)
+    });
+    let (cut, _) = recorded.nth(earlier)?;
+    (recorded.count() == later).then_some(cut)
 }
 
 pub(crate) fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool {
@@ -629,7 +642,7 @@ pub(crate) fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirecti
         .min(line_meta.len().saturating_sub(1));
     let current_cell = line_meta
         .get(top)
-        .and_then(crate::tui::scrolling::TranscriptLineMeta::cell_line)
+        .and_then(codewhale_tui_kit::scrolling::TranscriptLineMeta::cell_line)
         .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index));
 
     let mut scan_indices = Vec::new();
@@ -687,7 +700,11 @@ pub(crate) fn open_pager_for_last_message(app: &mut App) -> bool {
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let text = history_cell_to_text(cell, width);
+    let text = if matches!(cell, HistoryCell::Tool(_)) {
+        crate::tui::history::text::history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text("Message", &text, width.saturating_sub(2));
     // When the last message is a completed assistant answer, expose the
     // clean answer-only payload via `a` (copy answer) — the rendered body

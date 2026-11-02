@@ -41,7 +41,8 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 - [LSP: PHP and custom language servers](LSP_PHP_CUSTOM.md)
 - [Runtime API and integration contract](RUNTIME_API.md)
 - [GitHub App setup](GITHUB_APP.md)
-- [DeepSeek Harness integration](INTEGRATIONS_DSH.md)
+- [DeepSeek Harness integration](INTEGRATIONS_DSH.md) and
+  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md)
 
 ## Safety and trust
 

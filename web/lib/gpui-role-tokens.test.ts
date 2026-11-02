@@ -3,8 +3,8 @@ import { resolveWhale } from "./whale-tokens";
 import { siteCss } from "./site-css";
 
 // The role layer (app/styles/tokens-roles.css): every role in every scheme,
-// inks from the Moda brand kit, the navy ocean grounds measured
-// against every ink at WCAG AA.
+// every value a tokens.json role, every ink measured against every
+// ground at WCAG AA.
 const CSS = siteCss();
 const ROLES = [
   "bg", "surface", "panel", "text", "muted", "line", "line-strong", "accent", "on-accent",
@@ -62,21 +62,20 @@ describe("role tokens", () => {
     expect(CSS).not.toMatch(/@media \(prefers-color-scheme: dark\)/);
   });
 
-  it("inks with the Moda brand kit in both appearances", () => {
-    const kit = (name: string) => hex(`var(--kit-${name})`);
-    const inks: Record<string, Record<string, string>> = {
-      light: { text: "ink", muted: "slate", accent: "signal-blue", ring: "signal-blue", live: "kelp-deep", attention: "amber", danger: "rust", "on-accent": "white" },
-      dark: { text: "foam", muted: "mist", accent: "bioluminescence", ring: "bioluminescence", live: "kelp", attention: "lantern", danger: "coral", "on-accent": "abyss" },
+  it("inks every role from the tokens.json set in both appearances", () => {
+    const inks: Record<string, string> = {
+      text: "text", muted: "text-muted", accent: "accent", ring: "accent", live: "live",
+      attention: "attention", danger: "danger", "on-accent": "on-primary",
+      bg: "bg", panel: "panel", surface: "sidebar", hover: "hover", selected: "list-active",
+      "brand-fill": "primary", "on-brand": "on-primary",
     };
-    for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()], ["dark", stage()]] as const) {
-      for (const [role, name] of Object.entries(inks[mode])) {
-        expect(scheme[role], `${mode}.${role}`).toBe(`var(--kit-${name})`);
-        expect(hex(scheme[role]), `${mode}.${role}`).toBe(kit(name));
+    for (const [mode, scheme, isStage] of [["light", light(), false], ["dark", pinnedDark(), false], ["dark", stage(), true]] as const) {
+      for (const [role, token] of Object.entries(inks)) {
+        if (isStage && role === "bg") continue;
+        expect(scheme[role], `${mode}.${role}`).toBe(`var(--gpui-${mode}-${token})`);
       }
     }
-    expect(hex(light().bg)).toBe(kit("warm-paper"));
-    expect(hex(light().panel)).toBe(kit("white"));
-    for (const role of GROUNDS) expect(pinnedDark()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
+    expect(stage().bg).toBe("var(--gpui-dark-ocean-depth)");
   });
 
   it("keeps every text ink at WCAG AA on every ground, in every scheme", () => {
@@ -94,44 +93,17 @@ describe("role tokens", () => {
     }
   });
 
-  it("puts white text on the logo gradient only where it clears 4.5:1", () => {
-    const fill = CSS.match(/--brand-fill:\s*linear-gradient\(([^;]+)\);/)?.[1] ?? "";
-    const stops = [...fill.matchAll(/#[0-9a-f]{6}|var\(--brand-[\w-]+\)/gi)].map((m) => hex(m[0]));
-    expect(stops.length).toBeGreaterThanOrEqual(2);
-    for (const stop of stops) expect(contrast("#ffffff", stop), stop).toBeGreaterThanOrEqual(4.5);
+  it("puts primary-foreground ink on every filled action at AA", () => {
+    for (const [name, scheme] of [["light", light()], ["dark", pinnedDark()], ["stage", stage()]] as const) {
+      expect(contrast(hex(scheme["on-brand"]), hex(scheme["brand-fill"])), `${name}: on-brand`).toBeGreaterThanOrEqual(4.5);
+    }
     expect(hex("var(--brand-deep)")).toBe("#0b48bb");
     expect(hex("var(--brand-light)")).toBe("#1e8fd8");
   });
 
-  function stops(token: string): string[] {
-    const ramp = CSS.match(new RegExp(`--${token}:\\s*linear-gradient\\(([^;]+)\\);`))?.[1] ?? "";
-    return [...ramp.matchAll(/#[0-9a-f]{6}|var\(--[\w-]+\)/gi)].map((m) => hex(m[0]));
-  }
-
-  it("keeps sea text readable on every stop of the sea ramps", () => {
-    for (const token of ["sea", "sea-band"]) {
-      const ramp = stops(token);
-      expect(ramp.length, token).toBeGreaterThanOrEqual(3);
-      for (const stop of ramp) {
-        expect(contrast(hex(stage().muted), stop), `${token}: muted on ${stop}`).toBeGreaterThanOrEqual(4.5);
-        expect(contrast(hex(stage().text), stop), `${token}: text on ${stop}`).toBeGreaterThanOrEqual(4.5);
-      }
-    }
-  });
-
-  it("keeps stage text readable over the deep tide stops", () => {
-    // The tide runs paper -> aqua -> logo light -> logo deep -> mid -> navy.
-    // Only its deep stops can carry stage text; the pale stops cannot.
-    const ramp = stops("tide");
-    const deep = ramp.indexOf(hex("var(--brand-deep)"));
-    const mid = ramp.indexOf(hex("var(--sea-mid)"));
-    expect(deep).toBeGreaterThan(0);
-    expect(mid).toBeGreaterThan(deep);
-    for (const stop of ramp.slice(deep)) {
-      expect(contrast(hex(stage().text), stop), `text on ${stop}`).toBeGreaterThanOrEqual(4.5);
-    }
-    for (const stop of ramp.slice(mid)) {
-      expect(contrast(hex(stage().muted), stop), `muted on ${stop}`).toBeGreaterThanOrEqual(4.5);
-    }
+  it("keeps stage text readable on the floor below the horizon", () => {
+    const floor = hex("var(--ocean-floor)");
+    expect(contrast(hex(stage().text), floor)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(hex(stage().muted), floor)).toBeGreaterThanOrEqual(4.5);
   });
 });

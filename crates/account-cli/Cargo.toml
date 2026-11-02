@@ -1,0 +1,27 @@
+[package]
+name = "codewhale-account-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codewhale account, cloud computer and dispatch commands for the CLI"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+console = "0.16.3"
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+webbrowser = "1.0"
+zeroize = "1.8.2"

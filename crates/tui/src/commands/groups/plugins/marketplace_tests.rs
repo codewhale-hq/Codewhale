@@ -25,7 +25,7 @@ fn create_test_app(root: &Path) -> (App, TempDir) {
         ..crate::tui::test_support::test_tui_options(root)
     };
     let config = Config::default();
-    let discovery = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv();
+    let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
     let registry = discovery.registry_for_workspace(root);
     let mut app = App::new_with_plugin_registry(options, &config, registry);
     app.ui_locale = Locale::En;

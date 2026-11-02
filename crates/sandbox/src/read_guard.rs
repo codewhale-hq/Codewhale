@@ -425,7 +425,7 @@ pub fn with_test_active_denylist<R>(list: ReadDenylist, callback: impl FnOnce() 
             *ACTIVE.write().unwrap() = self.0.take();
         }
     }
-    let previous = std::mem::replace(&mut *ACTIVE.write().unwrap(), Some(Arc::new(list)));
+    let previous = (*ACTIVE.write().unwrap()).replace(Arc::new(list));
     let _restore = RestoreActive(previous);
     callback()
 }
@@ -689,7 +689,7 @@ fn default_denied_subtrees() -> Vec<(PathBuf, &'static str, DenyScope)> {
 }
 
 fn runtime_daemon_socket_dirs() -> Vec<(PathBuf, &'static str, DenyScope)> {
-    use codewhale_app_server::daemon_socket::{SocketPathInputs, resolve_socket_path};
+    use codewhale_paths::daemon_socket::{SocketPathInputs, resolve_socket_path};
     let live = SocketPathInputs::from_environment(None).unwrap_or_else(|_| SocketPathInputs {
         xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|value| !value.is_empty())

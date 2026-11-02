@@ -348,7 +348,7 @@ fn safe_mounts(writable_roots: &[WritableRoot]) -> (Vec<PathBuf>, Vec<PathBuf>) 
         writable.insert(canonical_root.clone());
 
         for exception in &root.read_only_subpaths {
-            let Some(canonical_exception) = existing_directory(exception) else {
+            let Some(canonical_exception) = exception.canonicalize().ok() else {
                 continue;
             };
             if canonical_exception.starts_with(&canonical_root) {

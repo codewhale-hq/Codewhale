@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 pub use actor::{BATCH_MAX_BYTES, BATCH_MAX_EVENTS, FlushOutcome};
-pub use counters::{Counter, ErrorCounter, SessionCounters};
+pub use counters::{Counter, ErrorCounter, SessionCounters, TurnOutcome, TurnTokens};
 pub use decision::{
     EndpointError, TELEMETRY_DIR, TelemetryConsent, TelemetryDecision, decide, decide_in_home,
     load_setup_state_for_decision, load_setup_state_for_decision_at, re_decide, validate_endpoint,
@@ -58,7 +58,8 @@ pub use decision::{
 pub use envelope::reduce_panic_site;
 pub use event::{
     Arch, Batch, ColdStartBucket, Counters, DurationBucket, Errors, Event, ExitClass, InstallKind,
-    Libc, NOTICE_VERSION, Os, ProductCounters, SCHEMA_VERSION, SessionSource, Surface, TurnWall,
+    Libc, ModelCounters, NOTICE_VERSION, Os, ProductCounters, SCHEMA_VERSION, SessionSource,
+    Surface, TurnWall,
 };
 
 /// How long the shutdown flush may hold the process.

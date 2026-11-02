@@ -832,6 +832,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-account-cli"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "clap",
+ "codewhale-config",
+ "codewhale-release",
+ "codewhale-runtime",
+ "codewhale-secrets",
+ "console",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 1.1.6+spec-1.1.0",
+ "webbrowser",
+ "zeroize",
+]
+
+[[package]]
 name = "codewhale-agent"
 version = "0.10.2"
 dependencies = [
@@ -862,6 +882,7 @@ dependencies = [
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-release",
+ "codewhale-runtime",
  "codewhale-state",
  "reqwest",
  "rusqlite",
@@ -894,9 +915,11 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "codewhale-account-cli",
  "codewhale-app-server",
  "codewhale-build-support",
  "codewhale-config",
+ "codewhale-engine",
  "codewhale-execpolicy",
  "codewhale-lane",
  "codewhale-paths",
@@ -920,9 +943,8 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
- "webbrowser",
  "windows",
  "zeroize",
 ]
@@ -983,7 +1005,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
  "url",
@@ -1027,6 +1049,125 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-engine"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "codewhale-agent",
+ "codewhale-agent-contract",
+ "codewhale-build-support",
+ "codewhale-command-contract",
+ "codewhale-commands",
+ "codewhale-config",
+ "codewhale-core",
+ "codewhale-dependencies",
+ "codewhale-error-taxonomy",
+ "codewhale-execpolicy",
+ "codewhale-lane",
+ "codewhale-localization",
+ "codewhale-lsp",
+ "codewhale-mcp",
+ "codewhale-memory",
+ "codewhale-models",
+ "codewhale-net",
+ "codewhale-palette",
+ "codewhale-paths",
+ "codewhale-plugins",
+ "codewhale-protocol",
+ "codewhale-release",
+ "codewhale-repl",
+ "codewhale-runtime",
+ "codewhale-sandbox",
+ "codewhale-sanitize",
+ "codewhale-secrets",
+ "codewhale-skill-install",
+ "codewhale-skills",
+ "codewhale-snapshot",
+ "codewhale-telemetry",
+ "codewhale-tools",
+ "codewhale-util",
+ "codewhale-workflow",
+ "codewhale-workflow-js",
+ "crossterm",
+ "cucumber",
+ "dirs 7.0.0",
+ "encoding_rs",
+ "fd-lock",
+ "futures-util",
+ "globset",
+ "htmd",
+ "ignore",
+ "image",
+ "jsonschema",
+ "libc",
+ "liblzma",
+ "lru",
+ "oauth2",
+ "objc2",
+ "objc2-foundation",
+ "parking_lot",
+ "portable-pty",
+ "pretty_assertions",
+ "proc-macro2",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "ring",
+ "rio-vt",
+ "rmcp",
+ "rquickjs",
+ "rusqlite",
+ "rustls",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "shell-words",
+ "shellexpand",
+ "shlex 2.0.1",
+ "similar",
+ "syn 3.0.9",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tiny_http",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
+ "unicode-width",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wait-timeout",
+ "webbrowser",
+ "windows",
+ "windows-sys 0.61.2",
+ "wiremock",
+]
+
+[[package]]
+name = "codewhale-error-taxonomy"
+version = "0.10.2"
+dependencies = [
+ "codewhale-tools",
+ "serde",
+]
+
+[[package]]
 name = "codewhale-execpolicy"
 version = "0.10.2"
 dependencies = [
@@ -1036,7 +1177,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex 2.0.1",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -1108,6 +1249,7 @@ dependencies = [
 name = "codewhale-mcp"
 version = "0.10.2"
 dependencies = [
+ "serde",
  "serde_json",
  "tracing",
 ]
@@ -1131,6 +1273,7 @@ dependencies = [
 name = "codewhale-models"
 version = "0.10.2"
 dependencies = [
+ "chrono",
  "codewhale-config",
  "codewhale-core",
  "codewhale-sanitize",
@@ -1158,7 +1301,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
 ]
 
@@ -1192,7 +1335,48 @@ dependencies = [
 name = "codewhale-paths"
 version = "0.10.2"
 dependencies = [
+ "anyhow",
  "dirs 7.0.0",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "codewhale-plugins"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "codewhale-config",
+ "codewhale-mcp",
+ "codewhale-net",
+ "codewhale-runtime",
+ "codewhale-sanitize",
+ "codewhale-secrets",
+ "codewhale-skill-install",
+ "codewhale-util",
+ "fd-lock",
+ "flate2",
+ "libc",
+ "regex",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "webbrowser",
+ "windows",
+ "windows-sys 0.61.2",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -1236,8 +1420,9 @@ dependencies = [
 
 [[package]]
 name = "codewhale-ratatui"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
+ "codewhale-protocol",
  "crossterm",
  "libc",
  "ratatui",
@@ -1253,12 +1438,17 @@ name = "codewhale-release"
 version = "0.10.2"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
+ "codewhale-sanitize",
  "reqwest",
+ "ring",
  "rustls",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
+ "toml 1.1.6+spec-1.1.0",
  "webpki-roots",
 ]
 
@@ -1287,6 +1477,7 @@ dependencies = [
  "codewhale-command-contract",
  "codewhale-config",
  "codewhale-core",
+ "codewhale-error-taxonomy",
  "codewhale-execpolicy",
  "codewhale-lane",
  "codewhale-localization",
@@ -1297,10 +1488,12 @@ dependencies = [
  "codewhale-protocol",
  "codewhale-release",
  "codewhale-secrets",
+ "codewhale-util",
  "colored",
  "dirs 7.0.0",
  "fd-lock",
  "futures-util",
+ "ignore",
  "jsonwebtoken",
  "libc",
  "lru",
@@ -1317,9 +1510,10 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wait-timeout",
  "windows",
@@ -1334,7 +1528,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "codewhale-app-server",
  "codewhale-execpolicy",
  "codewhale-paths",
  "codewhale-release",
@@ -1391,6 +1584,7 @@ dependencies = [
  "codewhale-util",
  "flate2",
  "futures-util",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1400,6 +1594,28 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-skills"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-config",
+ "codewhale-localization",
+ "codewhale-net",
+ "codewhale-paths",
+ "codewhale-plugins",
+ "codewhale-runtime",
+ "codewhale-skill-install",
+ "codewhale-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "uuid",
 ]
 
 [[package]]
@@ -1494,6 +1710,8 @@ dependencies = [
  "codewhale-config",
  "codewhale-core",
  "codewhale-dependencies",
+ "codewhale-engine",
+ "codewhale-error-taxonomy",
  "codewhale-execpolicy",
  "codewhale-hooks",
  "codewhale-lane",
@@ -1506,6 +1724,7 @@ dependencies = [
  "codewhale-notify",
  "codewhale-palette",
  "codewhale-paths",
+ "codewhale-plugins",
  "codewhale-protocol",
  "codewhale-ratatui",
  "codewhale-release",
@@ -1515,9 +1734,11 @@ dependencies = [
  "codewhale-sanitize",
  "codewhale-secrets",
  "codewhale-skill-install",
+ "codewhale-skills",
  "codewhale-snapshot",
  "codewhale-telemetry",
  "codewhale-tools",
+ "codewhale-tui-kit",
  "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
@@ -1565,7 +1786,6 @@ dependencies = [
  "shlex 2.0.1",
  "similar",
  "syn 3.0.9",
- "syntect",
  "tar",
  "tempfile",
  "thiserror 2.0.21",
@@ -1573,7 +1793,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tower-http 0.7.1",
  "tracing",
@@ -1590,6 +1810,21 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock",
  "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-tui-kit"
+version = "0.10.2"
+dependencies = [
+ "codewhale-palette",
+ "codewhale-ratatui",
+ "codewhale-secrets",
+ "crossterm",
+ "ratatui",
+ "similar",
+ "syntect",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1628,7 +1863,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -2837,9 +3072,9 @@ dependencies = [
 
 [[package]]
 name = "htmd"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5a1c7113c831fec68cbd79cd8bf281a84e5b6943f51473dc266b0b88a6a017e"
+checksum = "efd66117e0b1eac329399e316f30b9530afcb7cfbd0df59a007023b6673a6c37"
 dependencies = [
  "html5ever",
  "markup5ever_rcdom",
@@ -3384,9 +3619,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.4.0"
+version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -3465,9 +3700,9 @@ dependencies = [
 
 [[package]]
 name = "liblzma"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fe0a34ca854fd4f20c07f696fc8675aec78f87d88d29f5e10257a7490a1b2e1"
+checksum = "aa980ea6744074a5b5e0ac6b164aca94fc970121869b3e78ae12a2b0097dbea7"
 dependencies = [
  "liblzma-sys",
 ]
@@ -6315,9 +6550,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
  "indexmap",
  "serde_core",

@@ -44,7 +44,7 @@ const TEST_MODEL: &str = "telemetry-contract-model";
 
 /// Sentinels planted through real inputs. None of these may appear in a batch.
 ///
-/// Deliberately low-entropy: `crates/tui/src/fleet/ledger.rs` notes that
+/// Deliberately low-entropy: `crates/engine/src/fleet/ledger.rs` notes that
 /// realistic-looking tokens trip secret scanning at push time.
 const SENTINEL_PROMPT: &str = "tc-prompt-sentinel-do-not-collect";
 const SENTINEL_FILENAME: &str = "tc-workspace-sentinel-file.txt";
@@ -774,8 +774,8 @@ async fn batch_contains_no_planted_sentinel() {
         "this test is only meaningful against a batch that was actually sent"
     );
     for batch in &batches {
-        assert_eq!(batch["schema_version"], 3);
-        assert_eq!(batch["notice_version"], 5);
+        assert_eq!(batch["schema_version"], 4);
+        assert_eq!(batch["notice_version"], 6);
         assert!(batch.get("consent_version").is_none());
     }
     let shown = SetupState::load_from(&fixture.setup_state_path()).expect("disclosure marker");

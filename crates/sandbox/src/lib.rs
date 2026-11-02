@@ -885,6 +885,9 @@ impl SandboxManager {
         let writable_roots = if self.readable_paths.is_some() {
             vec![policy::WritableRoot::new(spec.cwd.clone())]
         } else {
+            if matches!(spec.sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
+                let _ = std::fs::create_dir(spec.cwd.join(".codewhale"));
+            }
             spec.sandbox_policy.get_writable_roots(&spec.cwd)
         };
         let command = bwrap::build_bwrap_command_with_read_paths(

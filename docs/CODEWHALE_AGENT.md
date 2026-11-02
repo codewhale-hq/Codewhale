@@ -22,7 +22,7 @@ configured and authenticated MCP server or API integration.
 ## Rules that make it one identity
 
 - Every surface is I/O around the single `Engine::run_turn`
-  (`crates/tui/src/core/engine/turn_loop.rs`). No surface gets its own
+  (`crates/engine/src/core/engine/turn_loop.rs`). No surface gets its own
   engine or turn loop.
 - Every surface authenticates to the same Codewhale membership
   (`codewhale login` account session). Membership gates cloud agents;

@@ -1709,7 +1709,10 @@ async function run(options = {}) {
     !isQuietInstall(env)
   ) {
     process.stderr.write(
-      `codewhale: warning: installing ${paths.codewhale.asset}, the Linux build, which is untested on native HarmonyOS/OpenHarmony.\n` +
+      `codewhale: note: installing ${paths.codewhale.asset}, the native HarmonyOS/OpenHarmony build.\n` +
+        `It is code-signed, but a native HarmonyOS terminal (HiShell) is not a Linux shell:\n` +
+        `there is no git and no package manager, and the debugging shell (hdc shell) cannot\n` +
+        `execute it at all. details: docs/HarmonyOS.md\n` +
         `${openHarmonyDirections()}\n`,
     );
   }

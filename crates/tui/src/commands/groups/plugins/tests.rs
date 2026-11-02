@@ -25,10 +25,12 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
     append_host_owner_report(
         &Presentation(Locale::En),
         &mut output,
-        &crate::extension_host::OwnerReport {
-            state: Some(crate::extension_host::registry::OwnerState::Failed(
-                "\u{1b}[31m<script>".into(),
-            )),
+        &codewhale_engine::extension_host::OwnerReport {
+            state: Some(
+                codewhale_engine::extension_host::registry::OwnerState::Failed(
+                    "\u{1b}[31m<script>".into(),
+                ),
+            ),
             tools: vec!["[tool](https://example.invalid)".into()],
             diagnostics: vec!["\n# approved\u{202e}".into()],
         },
@@ -46,7 +48,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
     append_host_owner_report(
         &Presentation(Locale::ZhHans),
         &mut localized,
-        &crate::extension_host::OwnerReport {
+        &codewhale_engine::extension_host::OwnerReport {
             state: None,
             tools: vec![],
             diagnostics: vec![],
@@ -112,7 +114,7 @@ fn create_test_app(root: &Path) -> (App, TempDir) {
         __cw_config_init_0_value.tools = __cw_config_init_0_0;
         __cw_config_init_0_value
     };
-    let discovery = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv();
+    let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
     let registry = discovery.registry_for_workspace(root);
     let mut app = App::new_with_plugin_registry(options, &config, registry);
     app.ui_locale = Locale::En;
@@ -238,7 +240,7 @@ fn list_preserves_the_one_shot_on_disk_reload_nudge() {
         .message
         .unwrap();
     assert!(
-        first.contains(crate::plugins::PLUGIN_RELOAD_NUDGE),
+        first.contains(codewhale_plugins::PLUGIN_RELOAD_NUDGE),
         "{first}"
     );
 
@@ -246,7 +248,7 @@ fn list_preserves_the_one_shot_on_disk_reload_nudge() {
         .message
         .unwrap();
     assert!(
-        !second.contains(crate::plugins::PLUGIN_RELOAD_NUDGE),
+        !second.contains(codewhale_plugins::PLUGIN_RELOAD_NUDGE),
         "nudge must appear once per catalog stamp: {second}"
     );
 }
@@ -905,7 +907,7 @@ fn export_verb_writes_agent_plugins_bundle() {
     let bundle = root.path().join("exported/demo");
     let plugin_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("plugin.json")).unwrap()).unwrap();
-    crate::plugins::agent_plugin::validate_plugin_json(&plugin_json).unwrap();
+    codewhale_plugins::agent_plugin::validate_plugin_json(&plugin_json).unwrap();
     assert_eq!(plugin_json["name"], "demo");
     assert_eq!(plugin_json["description"], "Import spreadsheet data safely");
     assert!(bundle.join("skills/hello/SKILL.md").is_file());
@@ -996,7 +998,7 @@ fn doctor_reports_read_only_then_fix_retires_stale_records_with_a_backup() {
                 "review_history": [{
                     "content_hash": "c",
                     "capability_hash": "k",
-                    "reviewed_capabilities": crate::plugins::manifest::PluginInventory::default(),
+                    "reviewed_capabilities": codewhale_plugins::manifest::PluginInventory::default(),
                     "reviewed_at": "2026-01-01T00:00:00+00:00"
                 }]
             }

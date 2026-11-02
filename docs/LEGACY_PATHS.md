@@ -33,18 +33,21 @@ keep / deprecate / remove decision so the migration is auditable.
 
 ## The canonical resolver (use this for new code)
 
-State-dir resolution is consolidated in `crates/config/src/lib.rs`:
+State-dir APIs are exported by `codewhale-config`; their implementation is
+`crates/config/src/state_dirs.rs`, with root selection in `crates/paths/src/lib.rs`.
+The paths in this audit show defaults. `CODEWHALE_HOME` selects the primary
+home and prevents fallback outside that root.
 
-| Symbol | Line | Purpose |
-|---|---|---|
-| `CODEWHALE_APP_DIR` / `LEGACY_APP_DIR` | 5369 | re-exported from `crates/paths` (defined at `crates/paths/src/lib.rs` 13 / 16) |
-| `codewhale_home()` | 5375 | `~/.codewhale` |
-| `legacy_deepseek_home()` | 5392 | `~/.deepseek` (legacy) |
-| `resolve_state_dir(subdir)` | 5434 | **read** path: `~/.codewhale/<subdir>`, falling back to `~/.deepseek/<subdir>` when only the legacy dir exists |
-| `ensure_state_dir(subdir)` | 5458 | **write** path: always creates under `~/.codewhale/<subdir>` |
+| Symbol | Purpose |
+|---|---|
+| `CODEWHALE_APP_DIR` / `LEGACY_APP_DIR` | Default directory names from `codewhale-paths`. |
+| `codewhale_home()` | Selected primary home, defaulting to `~/.codewhale`. |
+| `legacy_deepseek_home()` | Selected legacy home, defaulting to `~/.deepseek`. |
+| `resolve_state_dir(subdir)` | Read the primary directory; fall back only if it is absent and no explicit primary home was selected. |
+| `ensure_state_dir(subdir)` | Write under the primary home; guarded migration can relocate owned legacy state and reports what moved. |
 
-Migration contract: read-with-fallback, write-to-new. This preserves the v0.8.44 migration for
-users who still have `~/.deepseek/` while steering all new writes to `~/.codewhale/`.
+Compatible harness roots are read-only discovery inputs, not owned migration
+or deletion targets.
 
 ## Per-path decisions
 
@@ -55,19 +58,19 @@ that actively migrates `~/.deepseek/` → `~/.codewhale/` on first run and a dep
 | Reference | Routed through `resolve_state_dir`? | Decision |
 |---|---|---|
 | `config::resolve_state_dir` / `ensure_state_dir` | n/a (the resolver itself) | keep — canonical |
-| `crates/tui/src/skills/mod.rs` (`~/.deepseek/skills`) | no — hardcoded | keep-as-fallback; route through resolver in a follow-up refactor |
-| `crates/tui/src/prompts.rs` (`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`) | no — explicit legacy const | keep — explicit legacy handoff fallback |
+| `crates/skills/src/roots.rs` (`~/.deepseek/skills`) | no — compatible-root enumeration | Keep read-only harness discovery; this is not an owned write target. |
+| `crates/engine/src/prompts.rs` (`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`) | no — explicit legacy const | keep — explicit legacy handoff fallback |
 | `crates/tui/src/workspace_trust.rs` | no — hardcoded | keep-as-fallback; follow-up |
-| `crates/tui/src/session_manager.rs` | no — hardcoded | keep-as-fallback; follow-up |
+| `crates/engine/src/session_manager.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/skill_state.rs` | no — hardcoded | keep-as-fallback; follow-up |
-| `crates/tui/src/tools/skill.rs` | no — hardcoded | keep-as-fallback; follow-up |
+| `crates/engine/src/tools/skill.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/snapshot/src/lib.rs` | no — hardcoded | keep-as-fallback; follow-up |
 | `crates/runtime/src/workspace_discovery.rs` | no — hardcoded | keep-as-fallback; follow-up |
 
-## Follow-up (separate, non-doc change — out of scope for #3068)
+## Follow-up source changes
 
-The optional consolidation the issue mentions — routing the hardcoded sites above through
-`resolve_state_dir`/`ensure_state_dir` instead of joining `.deepseek`/`.codewhale` by hand — is a
-small refactor that should land as its own PR with tests asserting read-fallback + write-to-new for
-each migrated site. It is intentionally kept out of this audit so the documentation can land safely
-on its own.
+The table retains the original audit with moved owners corrected. Verify each
+current caller before changing it. Reuse its existing issue and resolver;
+preserve explicit-home isolation, read fallback, ownership and recovery.
+Use existing focused checks. This document does not authorize moving or
+deleting another harness's roots.

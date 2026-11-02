@@ -220,7 +220,7 @@ fn export_is_discoverable_by_name_and_alias_in_palette_and_slash_completion() {
     let entries = command_palette::build_entries(
         Locale::En,
         &skills_dir,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        &Default::default(),
         workspace,
         &mcp_config,
         None,
@@ -536,10 +536,10 @@ fn portable_export_source_has_no_host_dependency() {
     for token in [
         "use crate::",
         "crate::tui",
-        "crate::client",
+        "codewhale_engine::client",
         "codewhale_runtime::config",
         "codewhale_snapshot",
-        "crate::session_manager",
+        "codewhale_engine::session_manager",
         "std::fs",
         "std::net",
         "std::process",

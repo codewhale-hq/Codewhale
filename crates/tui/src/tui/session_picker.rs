@@ -1,7 +1,7 @@
 //! Session resume picker view for the TUI.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -16,20 +16,20 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::session_manager::{
-    SavedSession, SessionListFilter, SessionManager, SessionMetadata, extract_title,
-    extract_user_prompt, strip_thinking_tags,
-};
-use crate::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, action_footer_lines, render_modal_footer, render_panel_scroll_rail,
     render_underwater_surface,
 };
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use codewhale_engine::session_manager::{
+    SavedSession, SessionListFilter, SessionManager, SessionMetadata, extract_title,
+    extract_user_prompt, strip_thinking_tags,
+};
+use codewhale_engine::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::Role;
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 fn section_block(title: &str) -> Block<'static> {
     Block::default()
@@ -98,7 +98,7 @@ struct PendingPreview {
 }
 
 /// One session-store listing, or why the store could not be listed.
-type SessionListing = Result<Vec<SessionMetadata>, String>;
+type SessionListing = Result<(Vec<SessionMetadata>, HashSet<String>, Option<String>), String>;
 
 /// The session-store listing running off the event loop (U08-09). The
 /// store's metadata scan grows with every saved session, so the picker opens
@@ -119,6 +119,7 @@ enum ListNotice<'a> {
 pub struct SessionPickerView {
     /// Every session loaded from disk. The picker filters from this set.
     sessions: Vec<SessionMetadata>,
+    recovery_sessions: HashSet<String>,
     /// The store listing still in flight, if any.
     pending_list: Option<PendingSessionList>,
     /// The store could not be listed. Shown instead of "no saved sessions",
@@ -205,10 +206,17 @@ impl SessionPickerView {
     /// Install a finished store listing. A failure is shown as a failure —
     /// never as an empty store — and the list stays empty.
     fn apply_session_list(&mut self, listed: SessionListing, select: Option<String>) {
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.pending_preview = None;
+        self.preview_cache = PreviewCache::default();
         match listed {
-            Ok(sessions) => {
+            Ok((sessions, recovery_sessions, warning)) => {
                 self.sessions = sessions;
+                self.recovery_sessions = recovery_sessions;
                 self.load_error = None;
+                self.status = warning.map(|error| {
+                    tr(self.locale, MessageId::SessionsLoadFailed).replace("{error}", &error)
+                });
                 self.apply_sort_and_filter();
                 if let Some(session_id) = select {
                     self.select_with_fallback(&session_id);
@@ -216,6 +224,7 @@ impl SessionPickerView {
             }
             Err(error) => {
                 self.sessions.clear();
+                self.recovery_sessions.clear();
                 self.load_error =
                     Some(tr(self.locale, MessageId::SessionsOpenFailed).replace("{error}", &error));
                 self.apply_sort_and_filter();
@@ -259,6 +268,7 @@ impl SessionPickerView {
     fn from_session_list(workspace: &Path, locale: Locale, sessions: Vec<SessionMetadata>) -> Self {
         let mut view = Self {
             sessions,
+            recovery_sessions: HashSet::new(),
             pending_list: None,
             load_error: None,
             filtered: Vec::new(),
@@ -365,7 +375,7 @@ impl SessionPickerView {
 
     /// The query this picker's current view represents.
     ///
-    /// Built here and handed to [`crate::session_projection::select_sessions`]
+    /// Built here and handed to [`codewhale_engine::session_projection::select_sessions`]
     /// so the picker's list is literally the same selection the rail and
     /// `/v1/sessions` compute — filter, workspace scope, fuzzy search, sort,
     /// and tie-breaks included. The picker used to own private copies of all
@@ -439,8 +449,16 @@ impl SessionPickerView {
     }
 
     fn apply_sort_and_filter(&mut self) {
-        let query = self.view_query();
-        self.filtered = crate::session_projection::select_sessions(&self.sessions, &query)
+        let mut query = self.view_query();
+        let mut sessions = self.sessions.clone();
+        if query.hide_empty_auto_created {
+            sessions.retain(|session| {
+                self.recovery_sessions.contains(&session.id)
+                    || !codewhale_engine::session_manager::is_empty_auto_created_session(session)
+            });
+            query.hide_empty_auto_created = false;
+        }
+        self.filtered = codewhale_engine::session_projection::select_sessions(&sessions, &query)
             .into_iter()
             .cloned()
             .collect();
@@ -453,17 +471,17 @@ impl SessionPickerView {
         self.refresh_preview();
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. `Prev`/`Next` wrap (existing behavior);
     /// paging and Home/End clamp — a paging key asks to travel, not to
     /// teleport. The horizontal axis has nowhere to go on this surface.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
         if self.filtered.is_empty() {
             return false;
         }
         let page = self.list_visible_rows.get().max(1);
         let Some(next) =
-            crate::tui::list_nav::apply(self.selected, self.filtered.len(), page, motion)
+            codewhale_tui_kit::list_nav::apply(self.selected, self.filtered.len(), page, motion)
         else {
             return false;
         };
@@ -488,10 +506,10 @@ impl SessionPickerView {
         self.ensure_selected_visible();
         self.refresh_preview();
         if let Some(session) = self.selected_session() {
-            self.status = Some(
-                tr(self.locale, MessageId::SessionsOpenedHistory)
-                    .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-            );
+            self.status = Some(tr(self.locale, MessageId::SessionsOpenedHistory).replace(
+                "{id}",
+                codewhale_engine::session_manager::truncate_id(&session.id),
+            ));
         }
         true
     }
@@ -624,16 +642,43 @@ impl SessionPickerView {
             return None;
         }
         self.sessions.retain(|s| s.id != session.id);
+        self.recovery_sessions.remove(&session.id);
         self.apply_sort_and_filter();
         self.refresh_preview();
-        self.status = Some(
-            tr(self.locale, MessageId::SessionsDeleted)
-                .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-        );
+        self.status = Some(tr(self.locale, MessageId::SessionsDeleted).replace(
+            "{id}",
+            codewhale_engine::session_manager::truncate_id(&session.id),
+        ));
         Some(ViewEvent::SessionDeleted {
             session_id: session.id,
             title: session.title,
         })
+    }
+
+    fn reserve_recovery_for_edit(
+        &mut self,
+        manager: &SessionManager,
+        session: &SessionMetadata,
+    ) -> std::io::Result<Option<codewhale_engine::session_manager::SessionLease>> {
+        let lease = if self.current_session_id.as_deref() == Some(session.id.as_str()) {
+            None
+        } else {
+            let lease = manager.reserve_session_for_external_write(&session.id)?;
+            manager.promote_interrupted_checkpoint(&session.id, Some(&session.workspace))?;
+            Some(lease)
+        };
+        let saved = manager.load_session(&session.id)?;
+        if !codewhale_engine::session_manager::workspace_scope_matches(
+            &saved.metadata.workspace,
+            &session.workspace,
+        ) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "session belongs to another workspace",
+            ));
+        }
+        self.recovery_sessions.remove(&session.id);
+        Ok(lease)
     }
 
     /// Archive or restore the selected session (#2934 / #4397).
@@ -659,11 +704,34 @@ impl SessionPickerView {
                 return ViewAction::None;
             }
         };
-        let archived = !session.archived;
+        let _lease = match self.reserve_recovery_for_edit(&manager, &session) {
+            Ok(lease) => lease,
+            Err(err) => {
+                self.status = Some(
+                    tr(self.locale, MessageId::SessionsArchiveFailed)
+                        .replace("{error}", &err.to_string()),
+                );
+                return ViewAction::None;
+            }
+        };
+        let archived = if _lease.is_some() {
+            match manager.load_session(&session.id) {
+                Ok(saved) => !saved.metadata.archived,
+                Err(err) => {
+                    self.status = Some(
+                        tr(self.locale, MessageId::SessionsArchiveFailed)
+                            .replace("{error}", &err.to_string()),
+                    );
+                    return ViewAction::None;
+                }
+            }
+        } else {
+            !session.archived
+        };
         let metadata = match manager.set_session_archived(
             &session.id,
             archived,
-            crate::session_manager::SessionMutator::Owner,
+            codewhale_engine::session_manager::SessionMutator::Owner,
         ) {
             Ok(metadata) => metadata,
             Err(err) => {
@@ -684,10 +752,10 @@ impl SessionPickerView {
         } else {
             MessageId::SessionsRestored
         };
-        self.status = Some(
-            tr(self.locale, message_id)
-                .replace("{id}", crate::session_manager::truncate_id(&session.id)),
-        );
+        self.status = Some(tr(self.locale, message_id).replace(
+            "{id}",
+            codewhale_engine::session_manager::truncate_id(&session.id),
+        ));
         ViewAction::Emit(ViewEvent::SessionArchived {
             metadata: Box::new(metadata),
         })
@@ -721,6 +789,16 @@ impl SessionPickerView {
                 self.status = Some(
                     tr(self.locale, MessageId::SessionsOpenFailed)
                         .replace("{error}", &e.to_string()),
+                );
+                return ViewAction::None;
+            }
+        };
+        let _lease = match self.reserve_recovery_for_edit(&manager, &session) {
+            Ok(lease) => lease,
+            Err(err) => {
+                self.status = Some(
+                    tr(self.locale, MessageId::SessionsRenameFailed)
+                        .replace("{error}", &err.to_string()),
                 );
                 return ViewAction::None;
             }
@@ -768,6 +846,7 @@ impl SessionPickerView {
             return;
         };
         let session_id = session.id.clone();
+        let workspace = session.workspace.clone();
 
         if let Some(lines) = self.preview_cache.get(&session_id) {
             self.current_preview = lines.clone();
@@ -780,7 +859,7 @@ impl SessionPickerView {
         // event loop on it. Outside a runtime (unit tests, headless callers)
         // there is no loop to stall, so load inline.
         if tokio::runtime::Handle::try_current().is_err() {
-            let load = load_preview(&session_id, self.locale);
+            let load = load_preview(&session_id, &workspace, self.locale);
             self.apply_preview_load(session_id, load);
             return;
         }
@@ -795,7 +874,7 @@ impl SessionPickerView {
         let locale = self.locale;
         let id = session_id.clone();
         codewhale_util::utils::spawn_blocking_supervised("session-picker-preview", move || {
-            let load = load_preview(&id, locale);
+            let load = load_preview(&id, &workspace, locale);
             if let Ok(mut guard) = slot.lock() {
                 *guard = Some(load);
             }
@@ -848,13 +927,13 @@ impl SessionPickerView {
 /// runtime is available.
 fn list_session_store() -> SessionListing {
     SessionManager::default_location()
-        .and_then(|manager| manager.list_sessions())
+        .and_then(|manager| manager.list_sessions_with_recovery())
         .map_err(|error| error.to_string())
 }
 
 /// Read one saved session and render its preview. Blocking; runs on the
 /// blocking pool when a runtime is available.
-fn load_preview(session_id: &str, locale: Locale) -> PreviewLoad {
+fn load_preview(session_id: &str, workspace: &Path, locale: Locale) -> PreviewLoad {
     let manager = match SessionManager::default_location() {
         Ok(manager) => manager,
         Err(_) => {
@@ -864,12 +943,42 @@ fn load_preview(session_id: &str, locale: Locale) -> PreviewLoad {
             };
         }
     };
-    match manager.load_session(session_id) {
-        Ok(saved) => PreviewLoad {
-            lines: build_preview_lines(&saved, locale),
-            cacheable: true,
-        },
-        Err(_) => PreviewLoad {
+    let saved = manager.load_session(session_id);
+    let loaded = match saved {
+        Ok(saved) if !manager.is_session_live_anywhere(session_id) => {
+            match manager.load_recovery_checkpoint(session_id) {
+                Ok(Some(checkpoint))
+                    if checkpoint.metadata.updated_at > saved.metadata.updated_at =>
+                {
+                    Ok(checkpoint)
+                }
+                _ => Ok(saved),
+            }
+        }
+        Ok(saved) => Ok(saved),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !manager.is_session_live_anywhere(session_id) =>
+        {
+            manager
+                .load_recovery_checkpoint(session_id)
+                .and_then(|checkpoint| checkpoint.ok_or(error))
+        }
+        Err(error) => Err(error),
+    };
+    match loaded {
+        Ok(saved)
+            if codewhale_engine::session_manager::workspace_scope_matches(
+                &saved.metadata.workspace,
+                workspace,
+            ) =>
+        {
+            PreviewLoad {
+                lines: build_preview_lines(&saved, locale),
+                cacheable: true,
+            }
+        }
+        _ => PreviewLoad {
             lines: vec![tr(locale, MessageId::SessionsPreviewFailed).into_owned()],
             cacheable: false,
         },
@@ -912,10 +1021,10 @@ impl ModalView for SessionPickerView {
         }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.apply_motion(crate::tui::list_nav::Motion::Prev);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Prev);
             }
             MouseEventKind::ScrollDown => {
-                self.apply_motion(crate::tui::list_nav::Motion::Next);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Next);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let clicked = self
@@ -928,6 +1037,7 @@ impl ModalView for SessionPickerView {
                         if let Some(session) = self.filtered.get(index) {
                             return ViewAction::EmitAndClose(ViewEvent::SessionSelected {
                                 session_id: session.id.clone(),
+                                workspace: session.workspace.clone(),
                             });
                         }
                     } else {
@@ -1041,7 +1151,7 @@ impl ModalView for SessionPickerView {
         }
         // Movement keys come from the shared vocabulary (#6290); this match
         // owns only the picker's own verbs.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -1092,6 +1202,7 @@ impl ModalView for SessionPickerView {
                 if let Some(session) = self.selected_session() {
                     ViewAction::EmitAndClose(ViewEvent::SessionSelected {
                         session_id: session.id.clone(),
+                        workspace: session.workspace.clone(),
                     })
                 } else {
                     ViewAction::None
@@ -1161,6 +1272,7 @@ impl ModalView for SessionPickerView {
                 self.status.as_deref(),
                 self.list_notice(),
                 self.current_session_id.as_deref(),
+                &self.recovery_sessions,
                 self.locale,
             );
             *self.last_row_hitboxes.borrow_mut() = (0..visible_rows)
@@ -1237,6 +1349,7 @@ impl ModalView for SessionPickerView {
             self.status.as_deref(),
             self.list_notice(),
             self.current_session_id.as_deref(),
+            &self.recovery_sessions,
             self.locale,
         );
         *self.last_row_hitboxes.borrow_mut() = (0..visible_rows)
@@ -1296,6 +1409,7 @@ fn build_list_lines(
     status: Option<&str>,
     notice: Option<ListNotice<'_>>,
     current_session_id: Option<&str>,
+    recovery_sessions: &HashSet<String>,
     locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -1372,6 +1486,13 @@ fn build_list_lines(
             "{prefix}{}",
             format_session_line(session, is_current, locale)
         );
+        if recovery_sessions.contains(&session.id) {
+            line = format!(
+                "{prefix}{} | {}",
+                tr(locale, MessageId::SubagentsRowStatusInterrupted),
+                format_session_line(session, is_current, locale)
+            );
+        }
         line = truncate(&line, width);
         let style = if idx == selected {
             menu_style::selected_row_style()
@@ -1411,10 +1532,14 @@ pub(super) fn format_message_count(count: usize, locale: Locale) -> String {
 
 fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Locale) -> String {
     let age = format_relative_time(&session.updated_at, locale);
-    let updated = crate::session_manager::format_session_updated_at(&session.updated_at, &age);
+    let updated =
+        codewhale_engine::session_manager::format_session_updated_at(&session.updated_at, &age);
     let raw_title = extract_title(&session.title);
     let title = if raw_title == "Session" {
-        truncate(crate::session_manager::truncate_id(&session.id), 32)
+        truncate(
+            codewhale_engine::session_manager::truncate_id(&session.id),
+            32,
+        )
     } else {
         truncate(raw_title, 32)
     };
@@ -1446,7 +1571,7 @@ fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Loca
     };
     format!(
         "{} | {} | {}{}{} | {} | {}",
-        crate::session_manager::truncate_id(&session.id),
+        codewhale_engine::session_manager::truncate_id(&session.id),
         title,
         message_count,
         current_label,
@@ -1478,7 +1603,7 @@ fn build_preview_lines(session: &SavedSession, locale: Locale) -> Vec<String> {
     for message in session
         .messages
         .iter()
-        .filter(|message| !crate::runtime_handoff::is_internal_runtime_handoff(message))
+        .filter(|message| !codewhale_engine::runtime_handoff::is_internal_runtime_handoff(message))
     {
         let text = message_text_for_history(message, locale);
         if text.trim().is_empty() {
@@ -1712,7 +1837,7 @@ mod tests {
             model_provider_id: None,
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
-            cost: crate::session_manager::SessionCostSnapshot::default(),
+            cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
             parent_session_id: None,
             forked_from_message_count: None,
             runtime_store: None,
@@ -1739,7 +1864,7 @@ mod tests {
     }
 
     fn saved_session_with_messages(messages: Vec<codewhale_models::Message>) -> SavedSession {
-        let mut session = crate::session_manager::create_saved_session(
+        let mut session = codewhale_engine::session_manager::create_saved_session(
             &messages,
             "deepseek-v4-pro",
             std::path::Path::new("/tmp"),
@@ -1754,6 +1879,7 @@ mod tests {
         let workspace_scope = scope.map(PathBuf::from);
         let mut view = SessionPickerView {
             sessions: sessions.clone(),
+            recovery_sessions: HashSet::new(),
             pending_list: None,
             load_error: None,
             filtered: sessions,
@@ -1884,6 +2010,23 @@ mod tests {
                 .title,
             "After"
         );
+        let mut recovery = saved.clone();
+        recovery.metadata.id = "recovery-rename".to_string();
+        manager.save_checkpoint(&recovery).expect("save checkpoint");
+        let mut view = picker_with(vec![recovery.metadata.clone()], None);
+        view.recovery_sessions.insert(recovery.metadata.id.clone());
+        assert!(matches!(
+            view.rename_selected("Recovered"),
+            ViewAction::Emit(ViewEvent::SessionRenamed { .. })
+        ));
+        assert_eq!(
+            manager
+                .load_session("recovery-rename")
+                .unwrap()
+                .metadata
+                .title,
+            "Recovered"
+        );
     }
 
     #[test]
@@ -1906,6 +2049,24 @@ mod tests {
             panic!("expected SessionArchived event");
         };
         assert!(metadata.archived);
+        let mut recovery = saved.clone();
+        recovery.metadata.id = "recovery-archive".to_string();
+        manager.save_checkpoint(&recovery).expect("save checkpoint");
+        let mut recovery_view = picker_with(vec![recovery.metadata.clone()], None);
+        recovery_view
+            .recovery_sessions
+            .insert(recovery.metadata.id.clone());
+        assert!(matches!(
+            recovery_view.toggle_archive_selected(),
+            ViewAction::Emit(ViewEvent::SessionArchived { .. })
+        ));
+        assert!(
+            manager
+                .load_session("recovery-archive")
+                .unwrap()
+                .metadata
+                .archived
+        );
         assert!(
             manager
                 .load_session("session-01")
@@ -1994,7 +2155,7 @@ mod tests {
 
     #[test]
     fn empty_auto_created_sessions_stay_out_of_the_default_view() {
-        let mut empty = test_session(0, crate::session_manager::DEFAULT_SESSION_TITLE);
+        let mut empty = test_session(0, codewhale_engine::session_manager::DEFAULT_SESSION_TITLE);
         empty.message_count = 0;
         let view = SessionPickerView::new_with_sessions(
             std::path::Path::new("/tmp"),
@@ -2019,7 +2180,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("workspace");
         let mut saved = saved_session_with_messages(vec![]);
         saved.metadata.id = "session-01".to_string();
-        saved.metadata.title = crate::session_manager::DEFAULT_SESSION_TITLE.to_string();
+        saved.metadata.title = codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string();
         saved.metadata.message_count = 0;
         saved.metadata.workspace.clone_from(&workspace);
         manager.save_session(&saved).expect("save session");
@@ -2058,6 +2219,7 @@ mod tests {
             None,
             None,
             Some("session-01"),
+            &HashSet::new(),
             Locale::En,
         );
         let row_for = |needle: &str| {
@@ -2101,7 +2263,7 @@ mod tests {
     #[test]
     fn preview_hides_internal_runtime_traffic() {
         let saved = saved_session_with_messages(vec![
-            crate::runtime_handoff::operate_contract_runtime_message(),
+            codewhale_engine::runtime_handoff::operate_contract_runtime_message(),
             text_message("user", "ship the release"),
             text_message("assistant", "on it"),
         ]);
@@ -2153,7 +2315,7 @@ mod tests {
             }],
         };
         let saved = saved_session_with_messages(vec![
-            crate::runtime_handoff::operate_contract_runtime_message(),
+            codewhale_engine::runtime_handoff::operate_contract_runtime_message(),
             thinking_only,
             text_message("user", "ship the release"),
             text_message("assistant", "on it"),
@@ -2331,6 +2493,7 @@ mod tests {
             None,
             None,
             None,
+            &HashSet::new(),
             Locale::En,
         );
 
@@ -2364,6 +2527,7 @@ mod tests {
             None,
             None,
             None,
+            &HashSet::new(),
             Locale::En,
         );
 
@@ -2397,7 +2561,8 @@ mod tests {
         view.selected = 1;
         view.ensure_selected_visible();
         view.current_preview = vec!["preview".to_string()];
-        let selected_id = crate::session_manager::truncate_id(&view.filtered[view.selected].id);
+        let selected_id =
+            codewhale_engine::session_manager::truncate_id(&view.filtered[view.selected].id);
         let area = Rect::new(0, 0, 120, 28);
         let mut buf = Buffer::empty(area);
 
@@ -2450,7 +2615,8 @@ mod tests {
             view.render(area, &mut buf);
 
             let dump = buffer_text(&buf, area);
-            let selected_id = crate::session_manager::truncate_id(&view.filtered[view.selected].id);
+            let selected_id =
+                codewhale_engine::session_manager::truncate_id(&view.filtered[view.selected].id);
             assert!(
                 row_containing(&buf, area, selected_id).is_some(),
                 "{label} should render the selected session row:\n{dump}"
@@ -2466,7 +2632,7 @@ mod tests {
             );
             for (y, idx) in hitboxes.iter() {
                 let row = buffer_row_text(&buf, area, *y);
-                let id = crate::session_manager::truncate_id(&view.filtered[*idx].id);
+                let id = codewhale_engine::session_manager::truncate_id(&view.filtered[*idx].id);
                 assert!(
                     row.contains(id),
                     "{label} hitbox at y={y} should map to session {id}; got {row:?}"
@@ -2571,6 +2737,7 @@ mod tests {
             None,
             None,
             None,
+            &HashSet::new(),
             Locale::En,
         );
 
@@ -2606,6 +2773,7 @@ mod tests {
             None,
             None,
             None,
+            &HashSet::new(),
             Locale::En,
         );
 
@@ -2640,6 +2808,7 @@ mod tests {
             None,
             None,
             None,
+            &HashSet::new(),
             Locale::En,
         );
 
@@ -2772,6 +2941,7 @@ mod tests {
 
         let mut view = SessionPickerView {
             sessions: sessions.clone(),
+            recovery_sessions: HashSet::new(),
             pending_list: None,
             load_error: None,
             filtered: sessions,
@@ -3042,6 +3212,7 @@ mod tests {
             None,
             view.list_notice(),
             None,
+            &HashSet::new(),
             Locale::En,
         );
         let text = lines

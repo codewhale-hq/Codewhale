@@ -37,7 +37,7 @@ WEB_FACTS_DRIFT = ROOT / "web" / "lib" / "facts-drift.ts"
 WEB_FACTS_GENERATED = ROOT / "web" / "lib" / "facts.generated.ts"
 README_MD = ROOT / "README.md"
 CONFIG_EXAMPLE_TOML = ROOT / "config.example.toml"
-TUI_PROVIDER_READINESS_RS = ROOT / "crates" / "tui" / "src" / "provider_readiness.rs"
+PROVIDER_READINESS_RS = ROOT / "crates" / "engine" / "src" / "provider_readiness.rs"
 TUI_LIB_RS = ROOT / "crates" / "tui" / "src" / "lib.rs"
 
 
@@ -159,7 +159,7 @@ def presentation_provider_ids() -> set[str]:
 
 def provider_tables(config_rs: str) -> set[str]:
     struct_start = require_index(
-        config_rs, "pub struct ProvidersToml", "crates/config/src/lib.rs"
+        config_rs, "pub struct ProvidersToml", "crates/config/src/provider_toml.rs"
     )
     struct_end = require_index(config_rs, "\n}", "ProvidersToml struct", struct_start)
     fields = re.findall(
@@ -219,9 +219,14 @@ def report_tui_catalog_contract(tui_config_rs: str) -> list[str]:
             errors.append(f"retired provider enum consumer: {path.relative_to(ROOT)}")
         if re.search(r"KIND_LOOKUP|FROM_KIND_LOOKUP|ProviderKind::from_kind\(", source):
             errors.append(f"retired provider ordinal bridge: {path.relative_to(ROOT)}")
-    for signature in ("pub(crate) fn active_provider_identity", "pub(crate) fn provider_identities", "pub(crate) fn resolve_provider_selection_identity", "pub(crate) fn verify_provider_identity"):
-        if signature not in tui_config_rs:
-            errors.append(f"missing canonical config identity boundary: {signature}")
+    for function_name in (
+        "active_provider_identity",
+        "provider_identities",
+        "resolve_provider_selection_identity",
+        "verify_provider_identity",
+    ):
+        if not re.search(rf"\bpub(?:\(crate\))?\s+fn\s+{function_name}\b", tui_config_rs):
+            errors.append(f"missing canonical config identity boundary: {function_name}")
     descriptor_source = read(ROOT / "crates/config/src/descriptors.rs")
     if "PROVIDER_COMPATIBILITY" not in descriptor_source or "pub fn compatibility_for_selector" not in descriptor_source:
         errors.append("released presentation identities must use the existing generated descriptor owner")
@@ -231,7 +236,7 @@ def report_tui_catalog_contract(tui_config_rs: str) -> list[str]:
 
 
 def report_tombstone_runtime_contract(
-    provider_kind_rs: str, tui_provider_readiness_rs: str, tui_lib_rs: str
+    provider_kind_rs: str, provider_readiness_rs: str, tui_lib_rs: str
 ) -> list[str]:
     """The tombstone must resolve under every legacy spelling and never read
     as a credentialed or advertised slot on a running-product surface."""
@@ -254,7 +259,7 @@ def report_tombstone_runtime_contract(
 
     if (
         "provider == ProviderKind::Antigravity"
-        not in tui_provider_readiness_rs
+        not in provider_readiness_rs
     ):
         errors.append(
             "provider_readiness::credential_state_for_provider must classify "
@@ -567,7 +572,7 @@ def provider_table_name(provider_id: str) -> str:
 
 def main() -> int:
     try:
-        config_rs = read(CONFIG_RS)
+        config_rs = "\n".join(read(path) for path in sorted(CONFIG_RS.parent.glob("*.rs")) if path.name != "tests.rs")
         provider_kind_rs = read(PROVIDER_KIND_RS)
         tui_config_rs = read(TUI_CONFIG_RS)
         agent_rs = read(AGENT_RS)
@@ -578,7 +583,7 @@ def main() -> int:
         web_facts_generated = read(WEB_FACTS_GENERATED)
         readme_md = read(README_MD)
         config_example_toml = read(CONFIG_EXAMPLE_TOML)
-        tui_provider_readiness_rs = read(TUI_PROVIDER_READINESS_RS)
+        provider_readiness_rs = read(PROVIDER_READINESS_RS)
         tui_lib_rs = read(TUI_LIB_RS)
 
         variant_to_id = provider_kind_ids(config_rs)
@@ -598,7 +603,7 @@ def main() -> int:
         errors += report_provider_kind_selector_contract(provider_kind_rs)
         errors += report_tui_catalog_contract(tui_config_rs)
         errors += report_tombstone_runtime_contract(
-            provider_kind_rs, tui_provider_readiness_rs, tui_lib_rs
+            provider_kind_rs, provider_readiness_rs, tui_lib_rs
         )
         errors += report_set(
             "legacy provider identities in ProviderKind::ALL",

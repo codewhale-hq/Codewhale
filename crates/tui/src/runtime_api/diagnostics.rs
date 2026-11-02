@@ -213,7 +213,7 @@ fn is_symlink_refusal(error: &std::io::Error) -> bool {
 /// entries so one listing covers every text log the runtime writes.
 fn log_sources() -> Vec<(PathBuf, Vec<PathBuf>)> {
     let mut sources = Vec::new();
-    if let Some(dir) = crate::runtime_log::log_directory() {
+    if let Some(dir) = codewhale_runtime::runtime_log::log_directory() {
         let mut singles = Vec::new();
         if let Ok(home) = codewhale_config::codewhale_home() {
             for name in ["audit.log", "audit.log.1"] {
@@ -308,7 +308,7 @@ pub(super) async fn read_log(
                 .map_err(|error| ApiError::internal(format!("home unavailable: {error}")))?;
             return read_named_window(&home, &name, query);
         }
-        let dir = crate::runtime_log::log_directory()
+        let dir = codewhale_runtime::runtime_log::log_directory()
             .ok_or_else(|| ApiError::not_found("no log directory"))?;
         read_named_window(&dir, &name, query)
     })

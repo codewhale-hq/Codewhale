@@ -42,7 +42,7 @@ for candidate in catalog["plugins"]:
     candidate["source"] = f"https://codeload.github.com/codewhale-hq/codewhale-plugin-marketplace/tar.gz/{revision}#path={relative}"
 snapshot = {"repository": REPOSITORY, "revision": revision, "catalog": catalog}
 rendered = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
-output = ROOT / "crates/tui/assets/first-party-marketplace.json"
+output = ROOT / "crates/plugins/assets/first-party-marketplace.json"
 if args.check:
     if not output.exists() or output.read_text() != rendered:
         raise SystemExit("First-party catalog drift: run python3 scripts/sync-marketplace.py, review, and rebuild.")

@@ -4,15 +4,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::markdown_render;
-use crate::tui::ui_text::CopyLineSeparator;
 use codewhale_palette as palette;
+use codewhale_tui_kit::markdown_render;
+use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 use super::{ASSISTANT_GLYPH, USER_GLYPH};
 
 pub(crate) struct RenderedTranscriptLine {
     pub line: Line<'static>,
-    pub links: Vec<crate::tui::osc8::LineLink>,
+    pub links: Vec<codewhale_tui_kit::osc8::LineLink>,
     pub copy_prefix_width: usize,
     pub copy_separator_after: CopyLineSeparator,
 }
@@ -106,7 +106,7 @@ pub(crate) fn update_streaming_message_render(
     palette_mode: palette::PaletteMode,
     verified_append: bool,
     lines: &mut Vec<Line<'static>>,
-    links: &mut Vec<Vec<crate::tui::osc8::LineLink>>,
+    links: &mut Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
     copy_separators: &mut Vec<CopyLineSeparator>,
     copy_prefix_widths: &mut Vec<usize>,
 ) -> usize {
@@ -346,4 +346,77 @@ pub(super) fn message_body_style() -> Style {
 
 pub(super) fn system_body_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED).italic()
+}
+
+/// Double the bare backslashes in a machine-generated note.
+///
+/// A note names paths, and a Windows path is littered with `\`. The markdown
+/// renderer honours CommonMark §2.4, where a backslash before ASCII punctuation
+/// is an escape: `\.` yields `.`, so `C:\Users\asus\.codewhale` rendered as
+/// `C:\Users\asus.codewhale` and the note pointed at a directory that does not
+/// exist. The renderer is right — a producer that wants a literal backslash
+/// escapes it — so plain note prose is escaped here, at the one place every note
+/// passes through.
+///
+/// Doubling is the whole fix: `\\` renders as `\`.
+///
+/// Three regions are left exactly as written, because the renderer already
+/// copies them verbatim and doubling inside one would *print* the extra
+/// backslash:
+///
+/// - a fenced block, closed only by a run at least as long as its opener;
+/// - a line carrying inline code (`` ` ``), a shape a note's third-party text
+///   (MCP guidance, extension prompts) brings with it;
+/// - a table row.
+///
+/// A line that is both prose and delimited keeps today's behavior rather than
+/// trading one wrong backslash for another.
+pub(super) fn escape_note_backslashes(content: &str) -> std::borrow::Cow<'_, str> {
+    if !content.contains('\\') {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let mut out = String::with_capacity(content.len() + 8);
+    let mut fence_len: Option<usize> = None;
+    for (index, line) in content.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let trimmed = line.trim_start();
+        let run = trimmed.chars().take_while(|ch| *ch == '`').count();
+        if let Some(open) = fence_len {
+            // The renderer closes a fence only on a closing run at least as
+            // long as the opener, so a shorter run inside one is code content.
+            if run >= open && trimmed[run..].trim().is_empty() {
+                fence_len = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if run >= 3 {
+            fence_len = Some(run);
+            out.push_str(line);
+            continue;
+        }
+        if carries_verbatim_inline_markdown(line) {
+            out.push_str(line);
+            continue;
+        }
+        for ch in line.chars() {
+            if ch == '\\' {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Whether the renderer will copy this line's inline markup verbatim, so a
+/// doubled backslash would reach the screen doubled.
+fn carries_verbatim_inline_markdown(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1 {
+        return true;
+    }
+    line.contains('`')
 }

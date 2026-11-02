@@ -3,8 +3,8 @@
 > **Repository copy.** This is the design as reviewed on 2026-09-25, copied from
 > the private release plan (`codewhale-ops/releases/0.10.1/plans-20260925/`) so
 > the code and its design live together. The "As built" sections below
-> record where the implementation (`crates/tui/extension-host/`,
-> `crates/tui/src/extension_host/`, behind `[features] extension_host`) differs
+> record where the implementation (`crates/engine/extension-host/`,
+> `crates/engine/src/extension_host/`, behind `[features] extension_host`) differs
 > from the text that follows. Where they disagree, the newest "As built"
 > section and the code are current; the rest is the plan for later phases.
 
@@ -459,7 +459,7 @@ Rust tests did not happen on this machine.
 
 ## As built: extension commands (2026-10-01)
 
-Phase 2's `command/run` landed in `crates/tui/src/extension_host/command.rs`,
+Phase 2's `command/run` landed in `crates/engine/src/extension_host/command.rs`,
 the registry, the protocol and the host's `src/shims/commands.ts`, mirroring
 how a tool flows: `registry/register` → owned entry (plugin id + generation,
 never-reused handle) → adapter → call → teardown.
@@ -495,8 +495,11 @@ never-reused handle) → adapter → call → teardown.
   `mark_failed`, `revoke_owner`, `forget_owner`, `host_exited` and
   `revoke_all` remove an owner's commands with its tools; a stale
   `unregister` is a no-op. Admission (`register_command`): DSH's grammar
-  (`^[a-z][a-z0-9_-]*$`, ≤ 64), refused if a built-in command or alias (or the
-  fixed `jihua`/`zidong`) answers to the name, or another plugin holds it;
+  (`^[a-z][a-z0-9_-]*$`, ≤ 64). If a built-in command or alias (including the
+  fixed `jihua`/`zidong`) answers to a plugin name, the plugin registration
+  receives a deterministic plugin-specific name; a built-in-tier collision or
+  an unavailable namespaced name is refused. Another plugin cannot take an
+  existing unscoped registration;
   descriptions ≤ 1 KiB and hints ≤ 256 bytes, single-line; 64 per owner, 256
   per host. Commands and tools are separate namespaces. The commands of the
   owners an engine's workspace snapshot desires, bound to the reviewed hash,
@@ -550,7 +553,7 @@ run for the Rust tests of this slice.
 ## As built: script tools lose self-approval and shadowing (2026-09-30)
 
 CURRENT_DECISIONS §26 D4 landed in Rust ahead of phase 4, so R1 below and
-D9 describe the old behaviour. In `crates/tui/src/tools/plugin.rs` and
+D9 describe the old behaviour. In `crates/engine/src/tools/plugin.rs` and
 `ToolRegistry::apply_overrides`: a script's `# approval: auto` is ignored and
 the tool gets the default a script with no `approval:` line gets (`Suggest`),
 reported in the runtime log and `/plugin tools`; a `[tools.overrides]`
@@ -941,18 +944,18 @@ Checked against `/private/tmp/cw-wt-6446` @ `8a835d7c4`, lane `feat/code-mode-mc
 
 ### 1.2 Where it lives in the repo
 
-The package goes at **`crates/tui/extension-host/`**, named `@codewhale/extension-host` with `private: true`. **It is not a root workspace member** (correction): npm ignores a member's own lockfile, and the host needs its own pinned lockfile, as `computer-use` has.
+The package goes at **`crates/engine/extension-host/`**, named `@codewhale/extension-host` with `private: true`. **It is not a root workspace member** (correction): npm ignores a member's own lockfile, and the host needs its own pinned lockfile, as `computer-use` has.
 
 **Why not `npm/extension-host`?** The bundle has to be `include_bytes!`-embedded by `codewhale-tui`. `builtin.rs` already puts Computer Use under `crates/tui/plugins/` so that the embed path stays inside the crate, which is what `cargo package` / `cargo install` need. The host follows the same precedent.
 
-**Root `package.json` change:** extend the `test` script the way `web` already is: `npm test --workspaces --if-present && npm --prefix crates/tui/extension-host test && npm --prefix web test`. The local gate then covers the host. **CI does not run root `npm test`** (R10). Phase 1 therefore adds an explicit step to the existing Node-22 JS job in `ci.yml`, next to the Computer Use suites: `(cd crates/tui/extension-host && npm ci && npm test && npm run build && git diff --exit-code dist)`.
+**Root `package.json` change:** extend the `test` script the way `web` already is: `npm test --workspaces --if-present && npm --prefix crates/engine/extension-host test && npm --prefix web test`. The local gate then covers the host. **CI does not run root `npm test`** (R10). Phase 1 therefore adds an explicit step to the existing Node-22 JS job in `ci.yml`, next to the Computer Use suites: `(cd crates/engine/extension-host && npm ci && npm test && npm run build && git diff --exit-code dist)`.
 
 **The tests run against the committed `dist/` bundle and `node:test` only, so `npm test` needs no install.** This keeps the same property the CU and bridge suites have ("npm test works without npm ci", `ci.yml:284-286`). Only the build and drift check need `npm ci`. The package keeps its own `package-lock.json` (as `computer-use` does), so the root lockfile, which carries `wrangler`, is not churned.
 
 **Layout:**
 
 ```
-crates/tui/extension-host/
+crates/engine/extension-host/
   package.json          engines.node "^22.19.0 || >=24.0.0"; build + test scripts
   src/main.ts           boot: framing, console rebinding, parent watchdog, crash attribution
   src/protocol.generated.ts  GENERATED from the Rust protocol types (constants, method table, params shapes, types)
@@ -965,7 +968,7 @@ crates/tui/extension-host/
   test/*.test.mjs                     node --test, importing dist/ only (no type stripping, no install)
 ```
 
-- **Committed build.** `dist/` is committed so that `cargo build` never needs Node or npm. CI runs `npm run build -w @codewhale/extension-host && git diff --exit-code crates/tui/extension-host/dist`. This is the same guarantee Computer Use gets today by shipping plain `.mjs`.
+- **Committed build.** `dist/` is committed so that `cargo build` never needs Node or npm. CI runs `npm run build -w @codewhale/extension-host && git diff --exit-code crates/engine/extension-host/dist`. This is the same guarantee Computer Use gets today by shipping plain `.mjs`.
 - **Dependencies are bundled** into the one file:
   - `@deepseek-ai/cordis` 4.0.x
   - `@deepseek-ai/schemastery`
@@ -1079,10 +1082,10 @@ Rust then respawns the host and replays activations from its own record of which
 
 ### 2.2 Types and versioning
 
-- **Rust serde types are the source of truth.** They go in `crates/tui/src/extension_host/protocol.rs`, not `crates/protocol`, because the host protocol is private to the engine process and the app-server has no reason to see it.
+- **Rust serde types are the source of truth.** They go in `crates/engine/src/extension_host/protocol.rs`, not `crates/protocol`, because the host protocol is private to the engine process and the app-server has no reason to see it.
   - Host → core types use `#[serde(deny_unknown_fields, tag = "kind")]`, because host output is untrusted input.
   - Core → host types are tolerant.
-- **Generated TypeScript.** `schemars` (already a `crates/tui` dependency, derived on the wire types under `cfg(test)`) reads each type's serde shape, and a Rust test (`crates/tui/src/extension_host/protocol/tests.rs`) renders `src/protocol.generated.ts` from it and from the Rust method table (`protocol::METHODS`): constants, error codes, the method table, every params shape the host validates, and the wire types. The file is committed and the test fails on drift (re-record with `CODEWHALE_CONFORMANCE_UPDATE=1`, then rebuild `dist/`); no npm generator is involved. Both sides still parse and round-trip the shared JSON fixture corpus (`crates/tui/tests/fixtures/extension_host/protocol/*.json`).
+- **Generated TypeScript.** `schemars` (already a `crates/engine` dependency, derived on the wire types under `cfg(test)`) reads each type's serde shape, and a Rust test (`crates/engine/src/extension_host/protocol/tests.rs`) renders `src/protocol.generated.ts` from it and from the Rust method table (`protocol::METHODS`): constants, error codes, the method table, every params shape the host validates, and the wire types. The file is committed and the test fails on drift (re-record with `CODEWHALE_CONFORMANCE_UPDATE=1`, then rebuild `dist/`); no npm generator is involved. Both sides still parse and round-trip the shared JSON fixture corpus (`crates/engine/tests/fixtures/extension_host/protocol/*.json`).
 - **Handshake:**
 
   ```
@@ -1487,7 +1490,7 @@ This follows "migrate the last consumer or do not start". Every phase's exit cri
 - **Hooks** would give Codewhale two hook executors (Rust shell, host JS) until the whole executor moves. So hooks wait for phase 4, where they move in one piece.
 - **Commands** need a new executable entry kind in `UserCommandRegistry` plus the `submit` round trip. Useful, but not load-bearing for any claim, so they are phase 2.
 
-**Exact phase-1 scope: Rust** (`crates/tui/src/extension_host/`, ~900 lines estimated):
+**Exact phase-1 scope: Rust** (`crates/engine/src/extension_host/`, ~900 lines estimated):
 
 | File | Contents |
 |---|---|
@@ -1502,7 +1505,7 @@ This follows "migrate the last consumer or do not start". Every phase's exit cri
 | `features.rs`, `config.example.toml` | The flag, and the `[extension_host] node` key. |
 | `dependencies.rs` | `resolve_node_at_least`. `resolve_node()` is left untouched. |
 
-**Exact phase-1 scope: TypeScript** (`crates/tui/extension-host/`, ~600 lines estimated plus vendored deps):
+**Exact phase-1 scope: TypeScript** (`crates/engine/extension-host/`, ~600 lines estimated plus vendored deps):
 
 | File | Contents |
 |---|---|
@@ -1514,16 +1517,16 @@ This follows "migrate the last consumer or do not start". Every phase's exit cri
 | `test/*.test.mjs` | Framing, the refusal list, the resolve hooks, owner teardown (reverse-order disposers, awaited async disposer). Tests run against `dist/`. |
 
 **Fixtures:**
-- `crates/tui/tests/fixtures/extension_host/dsh-workspace-deps/`: a `plugin.json` whose `extensions."net.codewhale".native` names `index.mjs`, a Cordis plugin that does `ctx.plugin(await import('./vendor/dsh-tool-workspace-dependencies/lib/index.js'), {source: './payload/runtime.json'})`. Alongside it, the published `lib/index.js` of `@deepseek-ai/dsh-tool-workspace-dependencies@0.1.7-alpha.2` (MIT) and a small payload. The plugin injects only `tools`, registers `load_workspace_dependencies`, and has an **async `ctx.effect` disposer** that awaits in-flight work (`src/index.ts:245-248`). With no `root` config it is read-only.
-- `crates/tui/tests/fixtures/extension_host/refuses-approval/`: `ctx.plugin` providing `approval`. It must FAIL activation.
+- `crates/engine/tests/fixtures/extension_host/dsh-workspace-deps/`: a `plugin.json` whose `extensions."net.codewhale".native` names `index.mjs`, a Cordis plugin that does `ctx.plugin(await import('./vendor/dsh-tool-workspace-dependencies/lib/index.js'), {source: './payload/runtime.json'})`. Alongside it, the published `lib/index.js` of `@deepseek-ai/dsh-tool-workspace-dependencies@0.1.7-alpha.2` (MIT) and a small payload. The plugin injects only `tools`, registers `load_workspace_dependencies`, and has an **async `ctx.effect` disposer** that awaits in-flight work (`src/index.ts:245-248`). With no `root` config it is read-only.
+- `crates/engine/tests/fixtures/extension_host/refuses-approval/`: `ctx.plugin` providing `approval`. It must FAIL activation.
 - The protocol conformance corpus (`*.json`), which both sides parse and round-trip.
 
 **CI** (`.github/workflows/ci.yml`):
-- In the existing Node-22 JS job: `cd crates/tui/extension-host && npm test`, then `npm ci && npm run build && git diff --exit-code dist`.
+- In the existing Node-22 JS job: `cd crates/engine/extension-host && npm test`, then `npm ci && npm run build && git diff --exit-code dist`.
 - In the Rust test job that runs the new integration test: `actions/setup-node` pinned to 22, so the real-bundle test **runs** on CI. It skips, with a printed reason, only when `CODEWHALE_EXT_HOST_TESTS` is unset *and* no suitable Node is found, which is the local case.
 
 **Acceptance (all run, with pass/fail counts in the commit message):**
-1. `npm test` passes (it now includes `npm --prefix crates/tui/extension-host test`), and `npm run check:web` passes.
+1. `npm test` passes (it now includes `npm --prefix crates/engine/extension-host test`), and `npm run check:web` passes.
 2. A Rust integration test spawns the real bundle under Node ≥22.19, installs the DSH fixture through the existing reviewed installer (`plugins/install`), reviews it, enables it, and drives one model-path call of `load_workspace_dependencies`. It asserts:
    - the tool is **deferred** and reachable through `tool_search`;
    - the approval request is raised (`Required`), and its text names `extension:dsh-workspace-deps`;
@@ -1678,17 +1681,17 @@ below are historical proposals unless that table leaves the choice open.
 - `crates/tui/src/plugins/{activation.rs:22,26-37,80-100, manifest.rs:35-59,254, agent_plugin.rs:649, builtin.rs:1-30, install/{dsh.rs,stage.rs}}`
 - `crates/runtime/src/features.rs`
 - `config.example.toml:1228`
-- `crates/tui/src/mcp.rs:536-575,753-756,2852-2865`
+- `crates/engine/src/mcp.rs:536-575,753-756,2852-2865`
 - `crates/dependencies/src/lib.rs:54-85,278-297` (`probe_executable`, single-probe `resolve_node`)
-- `crates/tui/src/tools/{plugin.rs:1-20,57-172, registry.rs:53-63,360-440, spec.rs:1436-1550, codemode.rs:193-238}` (main)
-- `crates/tui/src/core/engine.rs:4672,4895-4915,7360-7400`; `core/engine/{tool_catalog.rs:136-155, tool_preparation.rs:40-60, dispatch.rs:870-886}`
-- `crates/tui/src/mcp.rs:929-1000` (`ReviewedStdioLaunch`), `:1265-1274` (`approval_hint_for`); `mcp/oauth.rs:700-760`
+- `crates/engine/src/tools/{plugin.rs:1-20,57-172, registry.rs:53-63,360-440, spec.rs:1436-1550, codemode.rs:193-238}` (main)
+- `crates/engine/src/core/engine.rs:4672,4895-4915,7360-7400`; `core/engine/{tool_catalog.rs:136-155, tool_preparation.rs:40-60, dispatch.rs:870-886}`
+- `crates/engine/src/mcp.rs:929-1000` (`ReviewedStdioLaunch`), `:1265-1274` (`approval_hint_for`); `mcp/oauth.rs:700-760`
 - `crates/tui/src/plugins/{agent_plugin.rs:627-672,1646-1652, registry.rs:2205-2225, types.rs:230-240, manifest.rs:160-180,245-262,1676-1690}`
 - `crates/secrets/src/lib.rs:60-70`
 - `crates/core/src/lib.rs:24,902,914,1278-1285,2460`; `crates/app-server/src/lib.rs:376,394`; `docs/RUNTIME_API.md:55`
 - `crates/workflow-js/{Cargo.toml, src/lib.rs}` (code mode runs in-process QuickJS, which is untrusted model code and a separate runtime from the host by design)
-- `.github/workflows/{ci.yml:186-307, web.yml:13-40}`; `crates/tui/plugins/computer-use/{package.json, agent.mjs}`; `crates/tui/src/tools/subagent/mod.rs:2758,3204`
-- `crates/tui/src/hooks/{config.rs:27, executor.rs}`
+- `.github/workflows/{ci.yml:186-307, web.yml:13-40}`; `crates/tui/plugins/computer-use/{package.json, agent.mjs}`; `crates/engine/src/tools/subagent/mod.rs:2758,3204`
+- `crates/engine/src/hooks/{config.rs:27, executor.rs}`
 - `crates/tui/src/commands/{user_commands.rs, user_registry.rs:97}`
 - `crates/tools/src/lib.rs:386`
 - `crates/tui/plugins/computer-use/{package.json, plugin.json}`
@@ -1696,8 +1699,8 @@ below are historical proposals unless that table leaves the choice open.
 - `npm/{codewhale, runtime-sdk}/package.json`
 
 **Lane** (`feat/code-mode-mcp-6562`):
-- `crates/tui/src/tools/codemode.rs:200-243,250-282,502-556,1175`
-- `crates/tui/src/core/engine/turn_loop.rs:39,~4706-4790`
+- `crates/engine/src/tools/codemode.rs:200-243,250-282,502-556,1175`
+- `crates/engine/src/core/engine/turn_loop.rs:39,~4706-4790`
 
 **DSH** (`refs/dsh` @ `00102833`):
 - `packages/skill/tool-workspace-dependencies/{package.json, src/index.ts:237-277}`

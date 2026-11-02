@@ -487,7 +487,7 @@ at `c389f96bf3`. Bundle patch semantics were rechecked against DSH
 [`00102833df`](https://github.com/deepseek-ai/deepseek-harness/tree/00102833dfaee1da9f48a3a8eae9d34005a75218)
 (`0.1.7-alpha.2`); `scripts/fixtures/dsh-web-app` retains its real five-file package
 as pinned test data, not as an importable native plugin. The Rust tests in
-`crates/tui/src/plugins/install/dsh_tests.rs` load that package through the native
+`crates/tui/src/plugins_dsh_tests.rs` load that package through the native
 importer and assert that no row is promoted to a converted component; they run in
 the workspace `Test` job. The CI `Plugin conversion` job runs only
 `scripts/test_convert_plugin.py` (the OpenCode and static DSH MCP-entry converter)

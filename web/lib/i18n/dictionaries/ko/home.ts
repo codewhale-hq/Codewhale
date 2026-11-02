@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: 대화, 메시지 입력창, 세션 제어를 보여 주는 실제 터미널 캡처.",
   latestRelease: "최신 릴리스 {tag}",
   releaseUnavailable: "릴리스 상태를 확인할 수 없음",
+  proofContributors: "기여자 {count}명",
   currentSource: "소스",
   sourceCandidate: "미공개",
   publishedRelease: "공개됨",

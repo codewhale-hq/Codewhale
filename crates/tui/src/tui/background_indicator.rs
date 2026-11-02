@@ -157,7 +157,7 @@ fn collect_pending_work(app: &App) -> PendingWork {
     for agent in app.subagent_cache.iter().filter(|agent| {
         matches!(
             agent.status,
-            crate::tools::subagent::SubAgentStatus::Running
+            codewhale_engine::tools::subagent::SubAgentStatus::Running
         )
     }) {
         if !seen.insert(agent.agent_id.as_str()) {
@@ -458,8 +458,10 @@ mod tests {
 
     #[test]
     fn pending_agents_are_labelled_by_the_name_they_were_dispatched_under() {
-        use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus};
         use codewhale_agent_contract::role::FleetRole;
+        use codewhale_engine::tools::subagent::{
+            SubAgentAssignment, SubAgentResult, SubAgentStatus,
+        };
         let options = crate::tui::test_support::test_tui_options(std::path::PathBuf::from("."));
         let mut app = crate::tui::test_support::test_app_with_options(options);
         let running = |agent_id: &str, name: &str| SubAgentResult {
@@ -477,9 +479,9 @@ mod tests {
                 role: Some("builder".to_string()),
             },
             model: "test-model".to_string(),
-            nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                agent_id, "en",
-            )),
+            nickname: Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(agent_id, "en"),
+            ),
             status: SubAgentStatus::Running,
             worker_status: None,
             runtime_permissions: None,
@@ -505,7 +507,10 @@ mod tests {
 
         let work = pending_work_from_app(&app);
         let labels: Vec<&str> = work.items.iter().map(|item| item.label.as_str()).collect();
-        let whale = crate::tools::subagent::whale_name_for_id_in_locale("agent_plain_lane", "en");
+        let whale = codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+            "agent_plain_lane",
+            "en",
+        );
         assert_eq!(
             labels,
             ["triage·builder".to_string(), format!("{whale}·builder")]

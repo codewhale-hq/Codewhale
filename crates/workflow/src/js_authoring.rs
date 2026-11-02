@@ -681,7 +681,7 @@ workflow({
                         "fleets/stopship.toml",
                         "crates/cli/src/lib.rs",
                         "crates/workflow/src/role_resolve.rs",
-                        "crates/tui/src/tools/workflow/mod.rs",
+                        "crates/engine/src/tools/workflow/mod.rs",
                         "crates/lane/src/runtime.rs",
                     ],
                     "the scout grep must not include its own authored prompt"
@@ -696,7 +696,7 @@ workflow({
                 }
                 assert!(
                     leaf.prompt.contains(
-                        "`include` set exactly to [`fleets/stopship.toml`, `crates/cli/src/lib.rs`, `crates/workflow/src/role_resolve.rs`, `crates/tui/src/tools/workflow/mod.rs`, `crates/lane/src/runtime.rs`]"
+                        "`include` set exactly to [`fleets/stopship.toml`, `crates/cli/src/lib.rs`, `crates/workflow/src/role_resolve.rs`, `crates/engine/src/tools/workflow/mod.rs`, `crates/lane/src/runtime.rs`]"
                     ) && leaf.prompt.contains("Matches outside that exact include list do not count"),
                     "the grep_files search must constrain the actual tool input, not only file scope metadata"
                 );
@@ -728,7 +728,7 @@ workflow({
                     "fleets/stopship.toml",
                     "crates/cli/src/lib.rs",
                     "crates/workflow/src/role_resolve.rs",
-                    "crates/tui/src/tools/workflow/mod.rs",
+                    "crates/engine/src/tools/workflow/mod.rs",
                     "crates/lane/src/runtime.rs",
                 ],
                 "every acceptance role must carry the same promoted evidence boundary"

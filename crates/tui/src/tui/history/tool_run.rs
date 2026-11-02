@@ -1,6 +1,7 @@
 //! Tool-run grouping for transcript collapse.
 
 use super::{HistoryCell, ToolCell};
+use codewhale_localization::{Locale, MessageId, tr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRun {
@@ -256,58 +257,74 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
 }
 
 #[must_use]
-pub fn tool_run_summary(run: &ToolRun) -> String {
+pub fn tool_run_summary(run: &ToolRun, locale: Locale) -> String {
     let activity = &run.activity;
     let mut parts = Vec::new();
     if activity.files > 0 {
-        parts.push(counted(activity.files, "file", "files"));
+        parts.push(counted(
+            activity.files,
+            locale,
+            MessageId::ActivityFileOne,
+            MessageId::ActivityFileMany,
+        ));
     }
     if activity.searches > 0 {
-        parts.push(counted(activity.searches, "search", "searches"));
+        parts.push(counted(
+            activity.searches,
+            locale,
+            MessageId::ActivitySearchOne,
+            MessageId::ActivitySearchMany,
+        ));
     }
 
     let mut clauses = Vec::new();
     if !parts.is_empty() {
-        let mut explore_clause = format!("Explored {}", parts.join(", "));
+        let mut clause =
+            tr(locale, MessageId::ActivityExplored).replace("{items}", &parts.join(", "));
         if let Some(families) =
             activity_family_summary(run, &[ToolRunActivity::File, ToolRunActivity::Search])
         {
-            explore_clause.push_str(": ");
-            explore_clause.push_str(&families);
+            clause.push_str(": ");
+            clause.push_str(&families);
         }
-        clauses.push(explore_clause);
+        clauses.push(clause);
     }
     if activity.commands > 0 {
-        let mut command_clause =
-            format!("ran {}", counted(activity.commands, "command", "commands"));
+        let count = counted(
+            activity.commands,
+            locale,
+            MessageId::ActivityCommandOne,
+            MessageId::ActivityCommandMany,
+        );
+        let mut clause = tr(locale, MessageId::ActivityRan).replace("{items}", &count);
         if let Some(families) = activity_family_summary(run, &[ToolRunActivity::Command]) {
-            command_clause.push_str(": ");
-            command_clause.push_str(&families);
+            clause.push_str(": ");
+            clause.push_str(&families);
         }
-        clauses.push(command_clause);
+        clauses.push(clause);
     }
     if activity.edits > 0 {
-        clauses.push(format!(
-            "edited {}",
-            counted(activity.edits, "file", "files")
-        ));
+        let count = counted(
+            activity.edits,
+            locale,
+            MessageId::ActivityFileOne,
+            MessageId::ActivityFileMany,
+        );
+        clauses.push(tr(locale, MessageId::ActivityEdited).replace("{items}", &count));
     }
     if activity.delegates > 0 {
-        clauses.push(format!(
-            "delegated {}",
-            counted(activity.delegates, "task", "tasks")
-        ));
+        let count = counted(
+            activity.delegates,
+            locale,
+            MessageId::ActivityTaskOne,
+            MessageId::ActivityTaskMany,
+        );
+        clauses.push(tr(locale, MessageId::ActivityDelegated).replace("{items}", &count));
     }
-    if activity.metadata > 0 || activity.other > 0 {
-        clauses.push("updated metadata".to_string());
+    if activity.metadata > 0 || activity.other > 0 || clauses.is_empty() {
+        clauses.push(tr(locale, MessageId::ActivityUpdatedMetadata).into_owned());
     }
-
-    if clauses.is_empty() {
-        return "Updated metadata".to_string();
-    }
-
-    let summary = clauses.join(", ");
-    sentence_case_activity(summary)
+    sentence_case_activity(clauses.join(", "))
 }
 
 fn activity_family_summary(run: &ToolRun, activities: &[ToolRunActivity]) -> Option<String> {
@@ -322,12 +339,16 @@ fn activity_family_summary(run: &ToolRun, activities: &[ToolRunActivity]) -> Opt
     (!families.is_empty()).then(|| families.join(", "))
 }
 
-pub(super) fn counted(count: usize, singular: &str, plural: &str) -> String {
-    let noun = if count == 1 { singular } else { plural };
-    format!("{count} {noun}")
+pub(super) fn counted(
+    count: usize,
+    locale: Locale,
+    singular: MessageId,
+    plural: MessageId,
+) -> String {
+    tr(locale, if count == 1 { singular } else { plural }).replace("{count}", &count.to_string())
 }
 
-fn sentence_case_activity(text: String) -> String {
+pub(super) fn sentence_case_activity(text: String) -> String {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
         return text;

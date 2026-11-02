@@ -23,11 +23,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::plugins::recommend::{
-    PluginNextStep, load_marketplace_candidates, match_plugin_for_draft,
-};
 use crate::tui::app::{App, StatusToast, StatusToastKind, StatusToastLevel};
 use codewhale_localization::{MessageId, tr};
+use codewhale_plugins::recommend::{
+    PluginNextStep, load_marketplace_candidates, match_plugin_for_draft,
+};
 
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -135,7 +135,7 @@ impl App {
             return;
         }
         self.last_plugin_catalog_poll = Some(now);
-        if let Some(message) = crate::plugins::plugin_reload_nudge(
+        if let Some(message) = codewhale_plugins::plugin_reload_nudge(
             self.plugin_registry.as_ref(),
             &mut self.plugin_reload_nudge_stamp,
         ) {
@@ -327,7 +327,7 @@ mod tests {
             mcp_config_path: temp.path().join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(root.path())
         };
-        let discovery = crate::plugins::PluginDiscoveryContext::capture_pre_dotenv();
+        let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
         let registry = discovery.registry_for_workspace(root.path());
         let mut app = App::new_with_plugin_registry(options, &Config::default(), registry);
         app.ui_locale = Locale::En;
@@ -537,7 +537,7 @@ mod tests {
         restarted.surface_plugin_review_request("supabase", "/plugin trust supabase");
         assert!(!restarted.plugin_cta.phase.is_visible());
         assert!(
-            crate::plugins::recommend::lookup_reviewable_plugin(
+            codewhale_plugins::recommend::lookup_reviewable_plugin(
                 "supabase",
                 restarted.plugin_registry.as_ref(),
                 &[],

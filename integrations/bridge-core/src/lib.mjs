@@ -83,6 +83,7 @@ export class ThreadStore {
     this.data = { chats: {} };
     this.saveDirty = false;
     this.savePending = null;
+    this.handlingMessages = new Map();
     this.ensureShape();
   }
 
@@ -117,33 +118,46 @@ export class ThreadStore {
    * Claim one inbound message before acting on it. "new": handle it now (it
    * is recorded as in flight first, durably). "done": a finished duplicate.
    * "interrupted": an earlier process claimed it and stopped before
-   * completeMessage, so its effect is unknown; the caller reports that
-   * instead of running it again. Callers handle messages sequentially — a
-   * key still in flight in this process is not a restart.
+   * completeMessage. The caller reports the unknown outcome and completes
+   * the claim after the report succeeds.
    */
   async claimMessage(messageKey) {
     if (!messageKey || this.options.messageLimit <= 0) return "new";
     this.ensureShape();
     const inflight = this.data.inflight;
-    if (this.data.messages.includes(messageKey)) {
-      if (!Object.hasOwn(inflight, messageKey)) return "done";
-      delete inflight[messageKey];
-      await this.save();
-      return "interrupted";
+    if (Object.hasOwn(inflight, messageKey)) return "interrupted";
+    if (this.data.messages.includes(messageKey)) return "done";
+    if (Object.keys(inflight).length >= this.options.messageLimit) {
+      throw new Error("Too many unfinished bridge messages. Reconcile their outcomes before accepting more.");
     }
-    this.data.messages.push(messageKey);
-    this.data.messages = this.data.messages.slice(-this.options.messageLimit);
-    for (const key of Object.keys(inflight)) if (!this.data.messages.includes(key)) delete inflight[key];
-    inflight[messageKey] = new Date().toISOString();
+    this.data.inflight = { ...inflight, [messageKey]: new Date().toISOString() };
     await this.save();
     return "new";
   }
 
-  /** Mark a claimed message handled (whether it succeeded or failed in-process). */
+  /** Mark a claimed message handled after its action or interruption report finishes. */
   async completeMessage(messageKey) {
     if (!messageKey || !this.data.inflight || !Object.hasOwn(this.data.inflight, messageKey)) return;
     delete this.data.inflight[messageKey];
+    if (!this.data.messages.includes(messageKey)) {
+      this.data.messages.push(messageKey);
+      this.data.messages = this.data.messages.slice(-this.options.messageLimit);
+    }
     await this.save();
+  }
+
+  async handleMessageOnce(messageKey, handle, reportInterrupted) {
+    if (!messageKey || this.options.messageLimit <= 0) return handle();
+    if (this.handlingMessages.has(messageKey)) return this.handlingMessages.get(messageKey);
+    const pending = Promise.resolve().then(async () => {
+      const claim = await this.claimMessage(messageKey);
+      if (claim === "done") return;
+      if (claim === "interrupted") await reportInterrupted();
+      else await handle();
+      await this.completeMessage(messageKey);
+    }).finally(() => this.handlingMessages.delete(messageKey));
+    this.handlingMessages.set(messageKey, pending);
+    return pending;
   }
 
   async recordMessage(messageKey, chatId = null, patch = null) {
@@ -199,6 +213,13 @@ export class ThreadStore {
     this.data.chats[chatId] = { ...current, ...patch };
     await this.save();
     return this.data.chats[chatId];
+  }
+
+  async finishObservedTurn(chatId, threadId, turnId) {
+    const current = this.data.chats[chatId];
+    if (turnId && current?.threadId === threadId && current.activeTurnId === turnId) {
+      await this.patchChat(chatId, { activeTurnId: null, updatedAt: new Date().toISOString() });
+    }
   }
 
   /**
@@ -612,33 +633,98 @@ function updateCodeFenceState(openFence, text) {
   return current;
 }
 
-export async function readJsonSafe(response) {
-  const text = await response.text();
-  if (!text) return {};
+export async function readJsonSafe(response, { jsonOnly = false } = {}) {
+  const limit = response.ok ? 8 * 1024 * 1024 : 4096;
+  const oversized = () => {
+    if (response.ok) throw new Error("Runtime response exceeds the size limit");
+    return jsonOnly ? null : "Runtime error body exceeds the size limit";
+  };
+  if (Number(response.headers.get("content-length")) > limit) {
+    await response.body?.cancel().catch(() => {});
+    return oversized();
+  }
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  if (response.body) {
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > limit) return oversized();
+      text += decoder.decode(chunk, { stream: true });
+    }
+    text += decoder.decode();
+  }
+  if (!text) return jsonOnly ? null : {};
   try {
     return JSON.parse(text);
   } catch {
-    return text;
+    return jsonOnly ? null : text;
   }
 }
 
+const MAX_EVENT_BYTES = 2 * 1024 * 1024;
+
 export async function* readSse(response) {
-  const decoder = new TextDecoder();
-  let buffer = "";
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let line = Buffer.allocUnsafe(1024);
+  let length = 0, frameBytes = 0, afterCr = false;
+  let event = "", data = "", sawData = false;
+
   for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-      const raw = buffer.slice(0, boundary).replace(/\r/g, "");
-      buffer = buffer.slice(boundary + 2);
-      const event = { event: "", data: "" };
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event.event = line.slice(6).trim();
-        if (line.startsWith("data:")) event.data += line.slice(5).trim();
+    for (const byte of chunk) {
+      const pairedLf = afterCr && byte === 10;
+      afterCr = byte === 13;
+      if (pairedLf && frameBytes === 0) continue;
+      if (++frameBytes > MAX_EVENT_BYTES) throw new Error("Runtime event frame exceeds the size limit");
+      if (pairedLf) continue;
+      if (byte !== 10 && byte !== 13) {
+        if (length === line.length) {
+          const larger = Buffer.allocUnsafe(Math.min(MAX_EVENT_BYTES, line.length * 2));
+          line.copy(larger);
+          line = larger;
+        }
+        line[length++] = byte;
+        continue;
       }
-      yield event;
+      if (length === 0) {
+        if (sawData || event) yield { event, data };
+        event = "";
+        data = "";
+        sawData = false;
+        frameBytes = 0;
+        continue;
+      }
+      const field = decoder.decode(line.subarray(0, length));
+      length = 0;
+      const colon = field.indexOf(":");
+      const name = colon < 0 ? field : field.slice(0, colon);
+      const value = colon < 0 ? "" : field.slice(colon + (field[colon + 1] === " " ? 2 : 1));
+      if (name === "event") event = value;
+      if (name === "data") {
+        data += (sawData ? "\n" : "") + value;
+        sawData = true;
+      }
     }
   }
+  if (frameBytes) throw new Error("Runtime event stream ended inside a frame");
+}
+
+export async function* readThreadEvents(response, threadId) {
+  if (!threadId) throw new Error("Missing expected Runtime thread identity");
+  for await (const { data } of readSse(response)) {
+    if (!data) continue;
+    const record = JSON.parse(data);
+    if (record?.thread_id !== threadId || typeof record.event !== "string" || !record.event) {
+      throw new Error("Invalid Runtime event or thread identity");
+    }
+    if (record.event === "stream.end") {
+      yield record;
+      return;
+    }
+    if (!Number.isSafeInteger(record.seq) || record.seq < 0) throw new Error("Invalid Runtime event sequence");
+    yield record;
+  }
+  throw new Error("Runtime event stream ended before a terminal event");
 }
 
 export function createRuntimeClient({ runtimeUrl, runtimeToken, runtimeRequestTimeoutMs }) {

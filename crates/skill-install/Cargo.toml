@@ -22,6 +22,7 @@ flate2 = "1.1"
 futures-util = "0.3.31"
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
+regex = "1.11"
 serde_json.workspace = true
 sha2.workspace = true
 tar = "0.4"

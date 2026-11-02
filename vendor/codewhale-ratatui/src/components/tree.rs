@@ -550,7 +550,7 @@ impl Paint for WorkflowTree<'_> {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if self.state.is_some() {
                 let marker = glyphs::pick(glyphs::selection_marker(is_selected), ascii);
-                spans.push(Span::styled(format!("{marker} "), theme.fg(Role::Primary)));
+                spans.push(Span::styled(format!("{marker} "), theme.fg(Role::Accent)));
             }
             let guides = guide_cells(ascii, row, skip_of(row));
             if !guides.is_empty() {

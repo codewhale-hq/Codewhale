@@ -154,7 +154,7 @@ impl Paint for DotWhale<'_> {
             .min(usize::from(area.height)) as u16;
         let art_height = area.height.saturating_sub(label_height);
         if theme.ascii() || area.width < 12 || art_height < 4 || !self.valid() {
-            caption(&label, area, buf, theme.fg(Role::Primary));
+            caption(&label, area, buf, theme.fg(Role::Accent));
             return;
         }
         let width = f64::from(area.width) * 2.0;
@@ -215,7 +215,7 @@ impl Paint for DotWhale<'_> {
                 label_height,
             ),
             buf,
-            theme.fg(Role::Primary),
+            theme.fg(Role::Accent),
         );
     }
 }

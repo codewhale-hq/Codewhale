@@ -13,7 +13,7 @@ use crate::{
 
 fn message(area: Rect, buf: &mut Buffer, theme: &Theme) {
     let first = Message::native("Show every component in the README.")
-        .role(Role::Primary)
+        .role(Role::Accent)
         .marker(glyphs::USER);
     let first_height = first.height(area.width, theme).min(area.height);
     first.paint(

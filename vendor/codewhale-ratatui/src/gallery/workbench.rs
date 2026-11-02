@@ -9,7 +9,7 @@ pub(crate) fn context() -> ContextRibbon<'static> {
         ContextItem::new("", "workspace-polish").priority(2),
         ContextItem::new("", "Local / selected model")
             .priority(0)
-            .role(Role::Primary),
+            .role(Role::Accent),
         ContextItem::new("", "3 attachments").priority(1),
     ])
 }

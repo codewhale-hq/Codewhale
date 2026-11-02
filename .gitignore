@@ -181,3 +181,12 @@ orca-evidence/
 # Portable pet build entry points are source.
 !pet/**/*.sh
 !pet/verify.sh
+
+# Private keys and certificates never belong in the tree.
+*.pem
+*.key
+*.p12
+*.p8
+id_rsa*
+id_ed25519*
+!docs/cloud-facts/fixtures/test-only-signing-key.pem

@@ -205,5 +205,11 @@
     "@types/vscode": "1.96.0",
     "@vscode/vsce": "^4.0.0",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "@azure/identity": {
+      "@azure/msal-node": "^7.1.2"
+    },
+    "minimatch": "^11.0.1"
   }
 }

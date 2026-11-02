@@ -18,7 +18,7 @@ pub(super) struct StartMemberRequest {
     member_id: String,
     display_name: String,
     prompt: String,
-    fleet: crate::fleet::store::FleetFile,
+    fleet: codewhale_engine::fleet::store::FleetFile,
 }
 
 fn opaque(value: &str) -> bool {
@@ -62,8 +62,8 @@ pub(super) async fn start_thread_member(
         .map_err(map_thread_err)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     engine
-        .send(crate::core::ops::Op::StartFleetMember {
-            start: Box::new(crate::tools::subagent::FleetMemberStart {
+        .send(codewhale_engine::core::ops::Op::StartFleetMember {
+            start: Box::new(codewhale_engine::tools::subagent::FleetMemberStart {
                 operation_key: request.operation_key.clone(),
                 fleet: request.fleet,
                 member_id: request.member_id.clone(),

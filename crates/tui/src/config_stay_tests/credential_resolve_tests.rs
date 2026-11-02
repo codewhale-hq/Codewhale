@@ -66,7 +66,7 @@
 use codewhale_config::ProviderKind;
 use codewhale_runtime::config::*;
 
-use crate::provider_readiness::has_api_key_for;
+use codewhale_engine::provider_readiness::has_api_key_for;
 
 use crate::test_support::EnvVarGuard;
 

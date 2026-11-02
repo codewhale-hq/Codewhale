@@ -5,12 +5,13 @@
 use crate::daemon_client::UnavailablePublication;
 use crate::daemon_socket::{
     AuthorizedPeer, ConnectionTasks, DaemonShutdownHandle, DaemonSocketError, DaemonSocketOptions,
-    SocketPathInputs, connection_context, owner_work, run_authorized_connection, socket_owner_work,
+    connection_context, owner_work, run_authorized_connection, socket_owner_work,
 };
 use crate::{AppState, AppTransport, build_state_off_runtime};
 use anyhow::{Context as _, Result};
 use codewhale_config::private_directory::PrivateDirectory;
 use codewhale_config::windows_identity::{CurrentWindowsUser, OwnerOnlyAcl, WindowsPeerProcess};
+use codewhale_paths::daemon_socket::SocketPathInputs;
 use codewhale_protocol::RuntimeOwnerReceipt;
 use std::fs::File;
 use std::os::windows::io::AsRawHandle as _;
@@ -203,7 +204,11 @@ pub(crate) async fn bind_captured_owner(
     state: AppState,
     owner: RuntimeOwnerReceipt,
     recovery: Option<Arc<UnavailablePublication>>,
-) -> Result<DaemonSocket, DaemonSocketError> {
+) -> Result<Option<DaemonSocket>, DaemonSocketError> {
+    // The named-pipe endpoint is bounded by the ACL the process applies, which
+    // NTFS always stores, so there is nothing a filesystem can fail to express
+    // here and nothing to degrade: `Some` is the only reachable answer. The
+    // shape matches the Unix one so the caller has a single code path.
     bind(
         DaemonSocketOptions {
             socket_path: Some(owner.socket_path.clone()),
@@ -213,6 +218,7 @@ pub(crate) async fn bind_captured_owner(
         recovery,
     )
     .await
+    .map(Some)
 }
 async fn bind(
     options: DaemonSocketOptions,

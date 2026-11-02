@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: बातचीत, संदेश बॉक्स और सत्र नियंत्रण दिखाने वाला टर्मिनल कैप्चर।",
   latestRelease: "नवीनतम रिलीज़ {tag}",
   releaseUnavailable: "रिलीज़ स्थिति उपलब्ध नहीं",
+  proofContributors: "{count} योगदानकर्ता",
   currentSource: "सोर्स",
   sourceCandidate: "अप्रकाशित",
   publishedRelease: "प्रकाशित",

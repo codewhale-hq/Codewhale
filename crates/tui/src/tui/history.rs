@@ -8,16 +8,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::runtime_handoff::is_turn_metadata_block;
-use crate::tools::plan::PlanSnapshot;
-use crate::tools::review::ReviewOutput;
 use crate::tui::app::TranscriptSpacing;
-use crate::tui::diff_render;
 use crate::tui::motion::MotionMode;
-use crate::tui::ui_text::CopyLineSeparator;
-use codewhale_localization::Locale;
+use codewhale_engine::runtime_handoff::is_turn_metadata_block;
+use codewhale_engine::tools::plan::PlanSnapshot;
+use codewhale_engine::tools::review::ReviewOutput;
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 use codewhale_palette as palette;
+use codewhale_tui_kit::diff_render;
+use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 mod agent_activity;
 mod archived_context;
@@ -28,6 +28,7 @@ mod file_mutation;
 mod latex_render;
 mod message;
 mod plan;
+pub(crate) mod text;
 mod thinking;
 mod tool_output;
 mod tool_run;
@@ -51,15 +52,19 @@ use constants::{
 #[cfg(test)]
 use constants::{TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS};
 use message::{
-    RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
-    render_message, render_message_with_copy_metadata_for_palette, render_plain_message,
-    render_user_message, system_body_style, system_label_style, update_streaming_message_render,
-    user_body_style, user_label_style,
+    RenderedTranscriptLine, assistant_label_style_for, escape_note_backslashes,
+    hard_break_copy_lines, message_body_style, render_message,
+    render_message_with_copy_metadata_for_palette, render_plain_message, render_user_message,
+    system_body_style, system_label_style, update_streaming_message_render, user_body_style,
+    user_label_style,
 };
 #[cfg(test)]
 pub(super) use thinking::render_thinking_with_analysis;
 use thinking::{render_hidden_thinking_activity, render_thinking};
-use tool_output::{render_exec_output_mode, render_tool_output_mode, wrap_plain_line, wrap_text};
+use tool_output::{
+    for_each_wrapped_text, render_exec_output_mode, render_tool_output_mode, wrap_plain_line,
+    wrap_text,
+};
 
 #[cfg(test)]
 use agent_activity::extract_agent_id;
@@ -75,22 +80,22 @@ pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
 
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
+#[cfg(test)]
+pub use tool_output::OutputRow;
 pub(crate) use tool_output::output_looks_like_diff;
 pub use tool_output::{
-    OutputRow, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+    OutputProjection, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
 };
 
-/// Render mode controlling whether tool/thinking cells render their compact
-/// "live" form (with caps and collapsed reasoning) or their full transcript
-/// form (uncapped, suitable for the pager / clipboard / message export).
+/// Render mode controlling compact live, bounded transcript, or explicit source output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     /// Live in-stream view: thinking is collapsed to a summary, tool output is
     /// truncated with a visible details-pager affordance.
     Live,
-    /// Full transcript view: every line of reasoning and tool output is
-    /// emitted, no caps, no affordance.
+    /// Expanded transcript view with bounded tool-output display.
     Transcript,
+    Source,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +161,7 @@ pub enum HistoryCell {
     /// the user can prioritize at a glance.
     Error {
         message: String,
-        severity: crate::error_taxonomy::ErrorSeverity,
+        severity: codewhale_error_taxonomy::ErrorSeverity,
     },
     Thinking {
         content: String,
@@ -345,9 +350,9 @@ impl HistoryCell {
         width: u16,
         options: TranscriptRenderOptions,
         verified_append: bool,
-        cache: &mut crate::tui::markdown_render::IncrementalMarkdownRenderCache,
+        cache: &mut codewhale_tui_kit::markdown_render::IncrementalMarkdownRenderCache,
         lines: &mut Vec<Line<'static>>,
-        links: &mut Vec<Vec<crate::tui::osc8::LineLink>>,
+        links: &mut Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
         copy_separators: &mut Vec<CopyLineSeparator>,
         copy_prefix_widths: &mut Vec<usize>,
     ) -> Option<usize> {
@@ -363,7 +368,7 @@ impl HistoryCell {
             links.clear();
             copy_separators.clear();
             copy_prefix_widths.clear();
-            *cache = crate::tui::markdown_render::IncrementalMarkdownRenderCache::default();
+            *cache = codewhale_tui_kit::markdown_render::IncrementalMarkdownRenderCache::default();
             return Some(0);
         }
         let width = options.prose_width(width);
@@ -388,8 +393,8 @@ impl HistoryCell {
     /// `TranscriptRenderOptions`. Tool output is capped, but thinking is shown
     /// in full because callers using bare `lines()` historically expected the
     /// uncollapsed body. For the in-stream transcript view prefer
-    /// `lines_with_options`; for the pager / clipboard prefer
-    /// `transcript_lines`.
+    /// `lines_with_options`; expanded display uses `transcript_lines` and
+    /// explicit copying uses the source projection.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_user_message(content, width, false),
@@ -404,7 +409,7 @@ impl HistoryCell {
                 "Note",
                 system_label_style(),
                 system_body_style(),
-                content,
+                &escape_note_backslashes(content),
                 width,
             ),
             HistoryCell::Error { message, severity } => {
@@ -421,7 +426,7 @@ impl HistoryCell {
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
-                crate::tui::markdown_render::detected_palette_mode(),
+                codewhale_tui_kit::markdown_render::detected_palette_mode(),
             ),
         }
     }
@@ -579,11 +584,12 @@ impl HistoryCell {
             match options.motion_mode {
                 MotionMode::Reduced => apply_static_tool_markers(
                     &mut lines,
-                    crate::tui::spinner::BRAILLE_SPINNER_STILL_FRAME,
+                    codewhale_tui_kit::spinner::BRAILLE_SPINNER_STILL_FRAME,
                 ),
-                MotionMode::Still => {
-                    apply_static_tool_markers(&mut lines, crate::tui::spinner::LIVE_STATIC_MARKER)
-                }
+                MotionMode::Still => apply_static_tool_markers(
+                    &mut lines,
+                    codewhale_tui_kit::spinner::LIVE_STATIC_MARKER,
+                ),
                 MotionMode::Full => {}
             }
         }
@@ -634,7 +640,7 @@ impl HistoryCell {
                 "Note",
                 system_label_style(),
                 system_body_style(),
-                content,
+                &escape_note_backslashes(content),
                 width,
                 options.palette_mode,
             ),
@@ -687,14 +693,7 @@ impl HistoryCell {
         (lines, None)
     }
 
-    /// Render the cell in transcript mode: full content, no caps, no
-    /// visible details-pager affordances.
-    ///
-    /// Use this for full-detail pagers, clipboard exports, and any
-    /// surface that wants the complete body rather than the live summary.
-    /// For most variants (User / Assistant / System) this matches `lines()`;
-    /// `Thinking` and `Tool` are where the live and transcript surfaces
-    /// diverge.
+    /// Render the expanded transcript, including bounded tool-output previews.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_plain_message(
@@ -735,7 +734,7 @@ impl HistoryCell {
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
-                crate::tui::markdown_render::detected_palette_mode(),
+                codewhale_tui_kit::markdown_render::detected_palette_mode(),
             ),
         }
     }
@@ -745,7 +744,7 @@ impl HistoryCell {
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     // Model-facing Operate contract; the live receipt is the goal line.
-    if crate::runtime_handoff::is_operate_contract_message(msg) {
+    if codewhale_engine::runtime_handoff::is_operate_contract_message(msg) {
         return Vec::new();
     }
     if let Some(display) =
@@ -757,25 +756,27 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     }
     // MCP server guidance is third-party text the model was shown; keep it
     // auditable in the transcript rather than hiding it with other handoffs.
-    if let Some(guidance) = crate::runtime_handoff::mcp_server_instructions_display(msg) {
+    if let Some(guidance) = codewhale_engine::runtime_handoff::mcp_server_instructions_display(msg)
+    {
         return vec![HistoryCell::System {
             content: format!("MCP server guidance shown to the model:\n{guidance}"),
         }];
     }
-    if let Some(instructions) = crate::runtime_handoff::extension_prompt_contributions_display(msg)
+    if let Some(instructions) =
+        codewhale_engine::runtime_handoff::extension_prompt_contributions_display(msg)
     {
         return vec![HistoryCell::System {
             content: instructions.to_string(),
         }];
     }
     // Raw runtime handoffs have live tool/status receipts, not user cells.
-    if let Some(instructions) = crate::runtime_handoff::constitution_display(msg) {
+    if let Some(instructions) = codewhale_engine::runtime_handoff::constitution_display(msg) {
         return vec![HistoryCell::System {
             content: instructions.to_string(),
         }];
     }
     // Keep their model-facing payload intact and filter only the display.
-    if crate::runtime_handoff::is_internal_runtime_handoff(msg) {
+    if codewhale_engine::runtime_handoff::is_internal_runtime_handoff(msg) {
         return Vec::new();
     }
 
@@ -825,7 +826,7 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                             });
                         }
                     }
-                    "assistant" => {
+                    "assistant" | codewhale_models::INTERRUPTED_ASSISTANT_ROLE => {
                         if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
                             if !content.is_empty() {
                                 content.push('\n');
@@ -833,7 +834,13 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                             content.push_str(text);
                         } else {
                             cells.push(HistoryCell::Assistant {
-                                content: text.clone(),
+                                content: if msg.role == codewhale_models::INTERRUPTED_ASSISTANT_ROLE
+                                    && !text.starts_with("[interrupted]")
+                                {
+                                    format!("[interrupted] {text}")
+                                } else {
+                                    text.clone()
+                                },
                                 streaming: false,
                             });
                         }
@@ -981,9 +988,7 @@ impl ToolCell {
         self.render_with_locale(width, low_motion, RenderMode::Live, locale)
     }
 
-    /// Full-content rendering for the pager / clipboard. Tool output that
-    /// would be capped + suffixed with a details-pager hint in the live view
-    /// is emitted in full here.
+    /// Expanded rendering with bounded tool-output previews.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.transcript_lines_with_locale(width, Locale::En)
     }
@@ -997,6 +1002,10 @@ impl ToolCell {
         )
     }
 
+    pub(crate) fn source_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_with_locale(width, false, RenderMode::Source, Locale::En)
+    }
+
     fn render_with_locale(
         &self,
         width: u16,
@@ -1007,7 +1016,9 @@ impl ToolCell {
         match self {
             ToolCell::Exec(cell) => cell.render_with_locale(width, low_motion, mode, locale),
             ToolCell::Exploring(cell) => cell.render_with_locale(width, low_motion, mode, locale),
-            ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::PlanUpdate(cell) => {
+                cell.lines_with_motion_and_locale(width, low_motion, locale)
+            }
             ToolCell::PatchSummary(cell) => cell.render(
                 width,
                 low_motion,
@@ -1017,8 +1028,12 @@ impl ToolCell {
             ),
             ToolCell::Review(cell) => cell.render(width, low_motion, mode, locale),
             ToolCell::Mcp(cell) => cell.render(width, low_motion, mode, locale),
-            ToolCell::ViewImage(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::WebSearch(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::ViewImage(cell) => {
+                cell.lines_with_motion_and_locale(width, low_motion, locale)
+            }
+            ToolCell::WebSearch(cell) => {
+                cell.lines_with_motion_and_locale(width, low_motion, locale)
+            }
             ToolCell::Generic(cell) => {
                 cell.lines_with_mode_and_locale(width, low_motion, mode, locale)
             }
@@ -1116,40 +1131,51 @@ impl ExecCell {
         lines.push(render_tool_header_with_summary(
             "Shell",
             header_summary,
-            status_text.as_ref(),
+            if self.status == ToolStatus::Success || held_status.is_some() {
+                Some(status_text.as_ref())
+            } else {
+                None
+            },
             self.status,
             self.started_at,
             low_motion || held_status.is_some(),
+            locale,
         ));
 
         lines.extend(self.description_lines(width, locale));
 
-        if self.interaction.is_none()
+        if mode != RenderMode::Source
+            && self.interaction.is_none()
             && self.command.trim_end().lines().nth(1).is_some()
             && (self.is_foreground_shell_wait()
                 || (mode == RenderMode::Live && self.status == ToolStatus::Success))
         {
-            lines.extend(render_command_mode(&self.command, width, mode, false));
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
         }
 
         // A foreground shell wait stays a compact card — command, optional note,
         // spinner and running badge. Live output and artifact paths belong in the
         // Activity sidebar and `/jobs` detail surfaces.
-        if self.is_foreground_shell_wait() {
+        if self.is_foreground_shell_wait() && mode != RenderMode::Source {
             return wrap_card_rail(lines, self.status);
         }
 
         // Routine successes get a three-row glimpse (the opening row plus
-        // two closing rows) so they take less space in the live transcript. Failures
-        // keep their larger preview, and Transcript mode retains the full
-        // result for the pager and clipboard.
+        // two closing rows) so they take less space in the live transcript.
+        // Failures and expanded display keep a larger bounded preview.
         if mode == RenderMode::Live
             && self
                 .output
                 .as_deref()
                 .is_some_and(is_truncated_output_preview)
         {
-            lines.push(render_spillover_annotation(width));
+            lines.push(render_spillover_annotation(width, locale));
             return wrap_card_rail(lines, self.status);
         }
         if mode == RenderMode::Live && self.status == ToolStatus::Success {
@@ -1200,17 +1226,32 @@ impl ExecCell {
             ));
         }
 
+        if mode == RenderMode::Source {
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
+        }
         if let Some(interaction) = self.interaction.as_ref() {
             lines.extend(wrap_plain_line(
                 &format!("  {interaction}"),
                 Style::default().fg(palette::TEXT_MUTED),
                 width,
             ));
-        } else {
-            lines.extend(render_command_mode(&self.command, width, mode, false));
+        } else if mode != RenderMode::Source {
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
         }
 
-        if self.interaction.is_none() {
+        if self.interaction.is_none() || mode == RenderMode::Source {
             if let Some(output) = self.output.as_ref().or(self.live_output.as_ref()) {
                 lines.extend(render_exec_output_mode(
                     output,
@@ -1220,10 +1261,9 @@ impl ExecCell {
                     locale,
                     true,
                 ));
-            } else if self.status != ToolStatus::Running && mode == RenderMode::Transcript {
+            } else if self.status != ToolStatus::Running && mode != RenderMode::Live {
                 // #3031: Suppress "(no output)" in compact/Live mode;
-                // the success header is enough signal. Transcript still
-                // records it for exports/clipboard/pager.
+                // the success header is enough signal.
                 lines.push(Line::from(Span::styled(
                     "  (no output)",
                     Style::default().fg(palette::TEXT_MUTED).italic(),
@@ -1234,7 +1274,7 @@ impl ExecCell {
         if let Some(duration_ms) = self.duration_ms {
             // #3031: Suppress sub-second timing in compact mode.
             // Transcript mode always shows timing.
-            if mode == RenderMode::Transcript || duration_ms >= 1000 {
+            if mode != RenderMode::Live || duration_ms >= 1000 {
                 lines.extend(render_compact_kv(
                     "time",
                     &codewhale_command_contract::elapsed::format_elapsed_ms(duration_ms),
@@ -1272,6 +1312,7 @@ impl ExecCell {
                     width,
                     RenderMode::Live,
                     true,
+                    locale,
                 ));
             } else if description.is_some() {
                 let more = if multi_line_command { " \u{2026}" } else { "" };
@@ -1294,7 +1335,7 @@ impl ExecCell {
             .as_deref()
             .is_some_and(is_truncated_output_preview)
         {
-            lines.push(render_spillover_annotation(width));
+            lines.push(render_spillover_annotation(width, locale));
             return lines;
         }
         let output = self
@@ -1395,10 +1436,10 @@ impl ExecCell {
         let state = held.or_else(|| match self.status {
             ToolStatus::Success => None,
             ToolStatus::Running => Some(self.started_at.map_or_else(
-                || tool_status_label(ToolStatus::Running).to_string(),
-                |started| running_status_label_with_elapsed(started.elapsed().as_secs()),
+                || tool_status_label(ToolStatus::Running, locale).to_string(),
+                |started| running_status_label_with_elapsed(started.elapsed().as_secs(), locale),
             )),
-            status => Some(tool_status_label(status).to_string()),
+            status => Some(tool_status_label(status, locale).to_string()),
         });
         let mut suffix = Vec::new();
         if let Some(state) = state {
@@ -1415,7 +1456,8 @@ impl ExecCell {
             .saturating_sub(mark_width + suffix.iter().map(Span::width).sum::<usize>());
         let state_row = !suffix.is_empty()
             && inline_budget
-                < crate::tui::ui_text::text_display_width(&headline).min(CALM_HEADLINE_MIN_WIDTH);
+                < codewhale_tui_kit::ui_text::text_display_width(&headline)
+                    .min(CALM_HEADLINE_MIN_WIDTH);
         let budget = if state_row {
             usize::from(width).saturating_sub(mark_width)
         } else {
@@ -1459,13 +1501,13 @@ impl ExecCell {
             ),
             _ => self
                 .stale_elapsed_since_output_ms
-                .map(stale_shell_status_label),
+                .map(|ms| stale_shell_status_label(ms, locale)),
         }
     }
 
     fn description_text(&self) -> Option<String> {
         let mut plain = String::new();
-        crate::tui::osc8::strip_ansi_into(self.description.as_deref()?, &mut plain);
+        codewhale_tui_kit::osc8::strip_ansi_into(self.description.as_deref()?, &mut plain);
         normalize_header_summary(&plain)
     }
 
@@ -1574,10 +1616,10 @@ impl ExploringCell {
                     codewhale_localization::MessageId::ToolReceiptDone,
                 )
             } else {
-                Cow::Borrowed(tool_status_label(status))
+                tool_status_label(status, locale)
             }
         } else {
-            Cow::Borrowed("running")
+            tr(locale, MessageId::ToolReceiptRunning)
         };
         // Search-only exploration cards read with the `find` verb so a
         // completed grep renders `find done · Searching for …` instead of the
@@ -1587,10 +1629,15 @@ impl ExploringCell {
         let header = render_tool_header_with_family_and_summary(
             family,
             header_summary.as_deref(),
-            header_state.as_ref(),
+            if status == ToolStatus::Success {
+                Some(header_state.as_ref())
+            } else {
+                None
+            },
             status,
             None,
             low_motion,
+            locale,
         );
         let header_shows_label = !multi_entry
             && header_summary
@@ -1619,7 +1666,7 @@ impl ExploringCell {
                 let glyph = match e.status {
                     ToolStatus::Success | ToolStatus::Hydrated => "\u{25CF}",
                     ToolStatus::Warning => "!",
-                    ToolStatus::Stopped => crate::tui::glyphs::NEUTRAL,
+                    ToolStatus::Stopped => codewhale_tui_kit::glyphs::NEUTRAL,
                     ToolStatus::Running => "\u{25D0}",
                     ToolStatus::Failed => "\u{2715}",
                 };
@@ -1740,24 +1787,29 @@ impl PatchSummaryCell {
             .as_ref()
             .map(|receipt| {
                 if inline_diff_mode == codewhale_runtime::settings::InlineDiffMode::Off {
-                    receipt.outcome_label()
+                    receipt.outcome_label(locale)
                 } else {
-                    receipt.semantic_summary()
+                    receipt.semantic_summary(locale)
                 }
             })
             .unwrap_or_else(|| self.path.clone());
         lines.push(render_tool_header_with_summary(
             "File",
             Some(&header_summary),
-            tool_status_label(self.status),
+            None,
             self.status,
             None,
             low_motion,
+            locale,
         ));
         if self.status == ToolStatus::Success
             && let Some(receipt) = self.receipt.as_ref()
         {
-            lines.extend(receipt.render_inline(width, inline_diff_mode));
+            if mode == RenderMode::Source {
+                lines.push(Line::from(receipt.inspect_text(locale)));
+            } else {
+                lines.extend(receipt.render_inline(width, inline_diff_mode, locale));
+            }
         } else {
             lines.extend(render_compact_kv(
                 "file",
@@ -1806,10 +1858,11 @@ impl ReviewCell {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Review",
-            tool_status_label(self.status),
+            None,
             self.status,
             None,
             low_motion,
+            locale,
         ));
 
         if !self.target.trim().is_empty() {
@@ -1945,10 +1998,11 @@ impl McpToolCell {
         lines.push(render_tool_header_with_summary(
             "Tool",
             Some(&self.tool),
-            tool_status_label(self.status),
+            None,
             self.status,
             None,
             low_motion,
+            locale,
         ));
 
         if self.is_image {
@@ -1962,7 +2016,7 @@ impl McpToolCell {
 
         if let Some(content) = self.content.as_ref() {
             if mode == RenderMode::Live && is_truncated_output_preview(content) {
-                lines.push(render_spillover_annotation(width));
+                lines.push(render_spillover_annotation(width, locale));
                 return lines;
             }
             lines.extend(render_tool_output_mode(
@@ -1989,15 +2043,21 @@ pub struct ViewImageCell {
 
 impl ViewImageCell {
     /// Render the image view cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+    pub fn lines_with_motion_and_locale(
+        &self,
+        width: u16,
+        low_motion: bool,
+        locale: Locale,
+    ) -> Vec<Line<'static>> {
         let path = self.path.display().to_string();
         let header = render_tool_header_with_summary(
             "Image",
             Some(&path),
-            "done",
+            None,
             ToolStatus::Success,
             None,
             low_motion,
+            locale,
         );
         let header_shows_path = header_shows_in_full(&header, &path, usize::from(width));
         let mut lines = vec![header];
@@ -2021,15 +2081,26 @@ pub struct WebSearchCell {
 
 impl WebSearchCell {
     /// Render the web search cell into lines.
+    #[cfg(test)]
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        self.lines_with_motion_and_locale(width, low_motion, Locale::En)
+    }
+
+    pub fn lines_with_motion_and_locale(
+        &self,
+        width: u16,
+        low_motion: bool,
+        locale: Locale,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let header = render_tool_header_with_summary(
             "Search",
             Some(&self.query),
-            tool_status_label(self.status),
+            None,
             self.status,
             None,
             low_motion,
+            locale,
         );
         let header_shows_query = header_shows_in_full(&header, &self.query, usize::from(width));
         lines.push(header);
@@ -2107,7 +2178,7 @@ fn should_show_raw_tool_name(
     family: crate::tui::widgets::tool_card::ToolFamily,
     mode: RenderMode,
 ) -> bool {
-    matches!(mode, RenderMode::Transcript)
+    !matches!(mode, RenderMode::Live)
         || matches!(family, crate::tui::widgets::tool_card::ToolFamily::Generic)
         || name.starts_with("mcp_")
 }
@@ -2117,7 +2188,7 @@ impl GenericToolCell {
     ///
     /// `mode` controls multi-line output handling: `Live` caps at
     /// `TOOL_OUTPUT_LINE_LIMIT` rows with a "+N more" affordance;
-    /// `Transcript` emits the full output.
+    /// `Transcript` uses a larger bounded display projection.
     #[cfg(test)]
     pub fn lines_with_mode(
         &self,
@@ -2135,20 +2206,24 @@ impl GenericToolCell {
         mode: RenderMode,
         locale: Locale,
     ) -> Vec<Line<'static>> {
-        if self.name == "activity_group" {
-            return agent_activity::render_activity_group(self, width);
+        if mode != RenderMode::Source && self.name == "activity_group" {
+            return agent_activity::render_activity_group(self, width, locale);
         }
 
         // Issue #241: when the underlying tool is a checklist/todo update and
         // the output is parseable, render a purpose-built progress card
         // instead of dumping the JSON into the generic tool block.
-        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode, locale) {
+        if mode != RenderMode::Source
+            && let Some(lines) = self.try_render_as_checklist(width, low_motion, mode, locale)
+        {
             return lines;
         }
 
         // #4038 / #4122: purpose-built workflow run card (compact in live,
         // expanded in transcript) shared with the WorkflowPanel state machine.
-        if let Some(lines) = self.try_render_as_workflow(width, low_motion, mode, locale) {
+        if mode != RenderMode::Source
+            && let Some(lines) = self.try_render_as_workflow(width, low_motion, mode, locale)
+        {
             return lines;
         }
 
@@ -2157,9 +2232,9 @@ impl GenericToolCell {
         // Spawns therefore render nothing here in either mode — one visible
         // artifact per delegated unit. Inspection/join calls (peek/status/
         // wait) stay as a single compact line (#4112 dogfood A5).
-        if self.name == "agent" {
+        if mode != RenderMode::Source && self.name == "agent" {
             if agent_activity::is_agent_inspection(self) {
-                return agent_activity::render_agent_compact(self, low_motion);
+                return agent_activity::render_agent_compact(self, low_motion, locale);
             }
             // Spawn / start / run: suppress the generic tool card entirely.
             return Vec::new();
@@ -2169,7 +2244,8 @@ impl GenericToolCell {
         // fact: the catalog error. The full name:/args:/result: block turns
         // each model slip into a four-line card (dogfood A5) — collapse it
         // to a single header line in both render modes.
-        if self.status == ToolStatus::Failed
+        if mode != RenderMode::Source
+            && self.status == ToolStatus::Failed
             && let Some(output) = self.output.as_deref()
             && output.contains("is not available in the current tool catalog")
         {
@@ -2179,10 +2255,11 @@ impl GenericToolCell {
                 vec![render_tool_header_with_family_and_summary(
                     family,
                     Some(summary.as_str()),
-                    tool_status_label(self.status),
+                    None,
                     self.status,
                     None,
                     low_motion,
+                    locale,
                 )],
                 self.status,
             );
@@ -2208,13 +2285,17 @@ impl GenericToolCell {
                 let mut collapsed = vec![render_tool_header_with_family_and_summary(
                     family,
                     header_summary.as_deref(),
-                    &tool_receipt_label(family, self.status, self.output.as_deref(), locale),
+                    Some(
+                        tool_receipt_label(family, self.status, self.output.as_deref(), locale)
+                            .as_ref(),
+                    ),
                     self.status,
                     None,
                     low_motion,
+                    locale,
                 )];
                 if self.spillover_path.is_some() {
-                    collapsed.push(render_spillover_annotation(width));
+                    collapsed.push(render_spillover_annotation(width, locale));
                 }
                 return wrap_card_rail(collapsed, self.status);
             }
@@ -2233,10 +2314,11 @@ impl GenericToolCell {
         let header = render_tool_header_with_family_and_summary(
             family,
             header_summary.as_deref(),
-            &tool_receipt_label(family, self.status, self.output.as_deref(), locale),
+            Some(tool_receipt_label(family, self.status, self.output.as_deref(), locale).as_ref()),
             self.status,
             None,
             low_motion,
+            locale,
         );
         let header_has_args = self.input_summary.as_deref().is_some_and(|args| {
             header_repeats_args(&header, header_summary.as_deref(), args, usize::from(width))
@@ -2291,13 +2373,18 @@ impl GenericToolCell {
                 lines.push(render_tool_header_with_summary(
                     "Diff",
                     diff_summary.as_deref(),
-                    tool_status_label(self.status),
+                    None,
                     self.status,
                     None,
                     low_motion,
+                    locale,
                 ));
-                if matches!(mode, RenderMode::Live) {
-                    let limit = if self.status == ToolStatus::Failed {
+                if mode == RenderMode::Source {
+                    lines.push(Line::from(output.clone()));
+                } else {
+                    let limit = if mode == RenderMode::Transcript {
+                        512
+                    } else if self.status == ToolStatus::Failed {
                         TOOL_FAILURE_PREVIEW_LINES
                     } else {
                         TOOL_OUTPUT_LINE_LIMIT
@@ -2307,15 +2394,25 @@ impl GenericToolCell {
                     if rendered.omitted_rows > 0 {
                         let detail_hint =
                             crate::tui::key_shortcuts::tool_details_shortcut_action_hint("diff");
+                        let body = tr(locale, MessageId::FileMutationMoreDiff)
+                            .replace("{count}", &rendered.omitted_body_rows.to_string())
+                            .replace("{hint}", &detail_hint);
+                        let omitted = if rendered.omitted_summary_rows > 0 {
+                            format!(
+                                "{} {} · {body}",
+                                tr(locale, MessageId::ConfigChoiceDiffSummary),
+                                tr(locale, MessageId::ApprovalMoreLines)
+                                    .replace("{count}", &rendered.omitted_summary_rows.to_string())
+                                    .trim_start()
+                            )
+                        } else {
+                            body
+                        };
                         lines.push(details_affordance_line(
-                            &format!("+{} diff lines · {detail_hint}", rendered.omitted_rows),
+                            &omitted,
                             Style::default().fg(palette::TEXT_MUTED).italic(),
                         ));
                     }
-                } else {
-                    // Transcript/detail mode remains the exact-evidence path;
-                    // only the live frame is budgeted.
-                    lines.extend(diff_render::render_diff(output, width));
                 }
             } else {
                 let limit = if self.status == ToolStatus::Failed {
@@ -2327,7 +2424,7 @@ impl GenericToolCell {
             }
 
             if matches!(mode, RenderMode::Live) && self.spillover_path.is_some() {
-                lines.push(render_spillover_annotation(width));
+                lines.push(render_spillover_annotation(width, locale));
             }
         }
         wrap_card_rail(lines, self.status)
@@ -2377,6 +2474,7 @@ impl GenericToolCell {
             width,
             low_motion,
             mode,
+            locale,
         ))
     }
 
@@ -2414,10 +2512,11 @@ impl GenericToolCell {
             let mut lines = vec![render_tool_header_with_family_and_summary(
                 family,
                 None,
-                tool_status_label(self.status),
+                None,
                 self.status,
                 None,
                 low_motion,
+                locale,
             )];
             lines.extend(render_card_detail_line(
                 None,
@@ -2425,7 +2524,7 @@ impl GenericToolCell {
                 tool_value_style(),
                 width,
             ));
-            if matches!(mode, RenderMode::Transcript) {
+            if !matches!(mode, RenderMode::Live) {
                 lines.extend(render_tool_output_mode(
                     output,
                     width,
@@ -2454,10 +2553,11 @@ impl GenericToolCell {
             lines.push(render_tool_header_with_family_and_summary(
                 family,
                 Some(header.as_str()),
-                tool_status_label(self.status),
+                None,
                 self.status,
                 None,
                 low_motion,
+                locale,
             ));
             if let Some(runs) = runs {
                 for run in runs {
@@ -2510,11 +2610,13 @@ impl GenericToolCell {
             lines.push(render_tool_header_with_family_and_summary(
                 family,
                 Some(name.as_str()),
-                codewhale_localization::tr(
-                    locale,
-                    codewhale_localization::MessageId::WorkflowLineStarted,
-                )
-                .as_ref(),
+                Some(
+                    codewhale_localization::tr(
+                        locale,
+                        codewhale_localization::MessageId::WorkflowLineStarted,
+                    )
+                    .as_ref(),
+                ),
                 if owns_finish {
                     ToolStatus::Success
                 } else {
@@ -2522,6 +2624,7 @@ impl GenericToolCell {
                 },
                 None,
                 low_motion,
+                locale,
             ));
         }
         let finish = owns_finish.then(|| panel.finish_line()).flatten();
@@ -2540,10 +2643,11 @@ impl GenericToolCell {
         lines.push(render_tool_header_with_family_and_summary(
             family,
             Some(facts.as_str()),
-            &state,
+            Some(&state),
             finish_status,
             None,
             low_motion,
+            locale,
         ));
         if let Some(detail) = detail {
             // Why a run fell short is the one fact worth reading: its first
@@ -2553,7 +2657,7 @@ impl GenericToolCell {
                 detail
             } else {
                 let room = usize::from(width).saturating_sub(4).max(8);
-                crate::tui::ui_text::semantic_truncate(&detail, room)
+                codewhale_tui_kit::ui_text::semantic_truncate(&detail, room)
             };
             lines.extend(render_card_detail_line(
                 None,
@@ -2562,7 +2666,7 @@ impl GenericToolCell {
                 width,
             ));
         }
-        let expanded = matches!(mode, RenderMode::Transcript);
+        let expanded = !matches!(mode, RenderMode::Live);
         if expanded {
             let extras = WorkflowHistoryExtras {
                 result_summary: panel.result_summary.clone(),
@@ -2617,12 +2721,12 @@ fn workflow_call_error_reason(output: &str) -> Option<String> {
 /// retained internally and replaced by a bounded preview. The annotation
 /// stays calm and path-free: it only says the output was shortened and that
 /// the details shortcut opens the full retained output.
-fn render_spillover_annotation(width: u16) -> Line<'static> {
+fn render_spillover_annotation(width: u16, locale: Locale) -> Line<'static> {
     // Matches the model-facing preview footer (truncate.rs) and the existing
     // "Alt+V opens …" hint style (#3256): one quiet line, no handles or paths.
-    let affordance = format!(
-        "Output shortened \u{00B7} {}",
-        crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
+    let affordance = tr(locale, MessageId::ToolOutputShortened).replace(
+        "{key}",
+        &crate::tui::key_shortcuts::tool_details_shortcut_label(),
     );
     let room = usize::from(width)
         .saturating_sub(UnicodeWidthStr::width(TRANSCRIPT_RAIL))
@@ -2639,7 +2743,7 @@ fn render_spillover_annotation(width: u16) -> Line<'static> {
 /// sessions. Live cards collapse to the expand affordance for all of them.
 fn is_truncated_output_preview(content: &str) -> bool {
     content.contains(codewhale_tools::names::SPILLOVER_RECOVERY_HINT)
-        || content.contains(crate::tools::truncate::SPILLOVER_PREVIEW_HINT)
+        || content.contains(codewhale_engine::tools::truncate::SPILLOVER_PREVIEW_HINT)
         || content.trim_start().starts_with("[Exact evidence retained")
 }
 
@@ -2648,11 +2752,20 @@ fn render_command_mode(
     width: u16,
     mode: RenderMode,
     calm: bool,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    if mode == RenderMode::Source {
+        lines.push(render_card_detail_line_single(
+            Some("command"),
+            command,
+            tool_value_style(),
+        ));
+        return lines;
+    }
     let cap = match mode {
         RenderMode::Live => TOOL_COMMAND_LINE_LIMIT,
-        RenderMode::Transcript => usize::MAX,
+        RenderMode::Transcript | RenderMode::Source => 512,
     };
     let command = if calm {
         command.trim_start_matches("$ ")
@@ -2660,34 +2773,40 @@ fn render_command_mode(
         command
     };
     let wrap_width = width.saturating_sub(4).max(1) as usize;
-    for (count, chunk) in command
-        .lines()
-        .flat_map(|line| wrap_text(line, wrap_width))
-        .enumerate()
-    {
-        if count >= cap {
-            lines.push(details_affordance_line(
-                &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("command"),
-                Style::default().fg(palette::TEXT_MUTED),
-            ));
-            break;
-        }
-        if calm {
-            let prompt = if count == 0 { "$ " } else { "  " };
-            lines.extend(render_card_detail_line(
-                None,
-                &format!("{prompt}{chunk}"),
-                tool_value_style(),
-                width,
-            ));
-        } else {
-            lines.extend(render_card_detail_line(
-                if count == 0 { Some("command") } else { None },
-                chunk.as_str(),
-                tool_value_style(),
-                width,
-            ));
-        }
+    let mut count = 0usize;
+    for line in command.lines() {
+        for_each_wrapped_text(line, wrap_width, |chunk| {
+            if count < cap && chunk.len() > 4 * 1024 {
+                lines.push(render_spillover_annotation(width, locale));
+            } else if count < cap {
+                if calm {
+                    let prompt = if count == 0 { "$ " } else { "  " };
+                    lines.extend(render_card_detail_line(
+                        None,
+                        &format!("{prompt}{chunk}"),
+                        tool_value_style(),
+                        width,
+                    ));
+                } else {
+                    lines.extend(render_card_detail_line(
+                        if count == 0 { Some("command") } else { None },
+                        chunk,
+                        tool_value_style(),
+                        width,
+                    ));
+                }
+            }
+            count = count.saturating_add(1);
+        });
+    }
+    if count > cap {
+        lines.push(details_affordance_line(
+            &crate::tui::key_shortcuts::tool_details_shortcut_action_hint(&tr(
+                locale,
+                MessageId::ApprovalLabelCommand,
+            )),
+            Style::default().fg(palette::TEXT_MUTED),
+        ));
     }
     lines
 }
@@ -2846,7 +2965,7 @@ fn tool_copy_prefix_width(line: &Line<'static>, first_line: bool) -> usize {
     }
     let mark = status.trim_end();
     if first_line
-        && (mark == crate::tui::spinner::LIVE_STATIC_MARKER
+        && (mark == codewhale_tui_kit::spinner::LIVE_STATIC_MARKER
             || mark.chars().all(|ch| matches!(ch, '\u{2800}'..='\u{28FF}')))
     {
         return UnicodeWidthStr::width(status);
@@ -2916,13 +3035,15 @@ fn status_symbol(
 ) -> String {
     match status {
         ToolStatus::Running if family == crate::tui::widgets::tool_card::ToolFamily::Verify => {
-            crate::tui::spinner::verification_tick_frame(started_at, low_motion).to_string()
+            codewhale_tui_kit::spinner::verification_tick_frame(started_at, low_motion).to_string()
         }
         ToolStatus::Running => {
-            crate::tui::spinner::braille_spinner_frame(started_at, low_motion).to_string()
+            codewhale_tui_kit::spinner::braille_spinner_frame(started_at, low_motion).to_string()
         }
         ToolStatus::Success => TOOL_DONE_SYMBOL.to_string(),
-        ToolStatus::Hydrated | ToolStatus::Stopped => crate::tui::glyphs::NEUTRAL.to_string(),
+        ToolStatus::Hydrated | ToolStatus::Stopped => {
+            codewhale_tui_kit::glyphs::NEUTRAL.to_string()
+        }
         ToolStatus::Warning => "!".to_string(),
         ToolStatus::Failed => TOOL_FAILED_SYMBOL.to_string(),
     }
@@ -2943,14 +3064,14 @@ fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
 /// split a ZWJ or combining sequence (U04-m5); ASCII output is unchanged.
 fn truncate_text(text: &str, max_len: usize) -> String {
     use unicode_segmentation::UnicodeSegmentation;
-    if crate::tui::ui_text::text_display_width(text) <= max_len {
+    if codewhale_tui_kit::ui_text::text_display_width(text) <= max_len {
         return text.to_string();
     }
     let budget = max_len.saturating_sub(3);
     let mut out = String::new();
     let mut used = 0usize;
     for grapheme in text.graphemes(true) {
-        let width = crate::tui::ui_text::text_display_width(grapheme);
+        let width = codewhale_tui_kit::ui_text::text_display_width(grapheme);
         if used + width > budget {
             break;
         }
@@ -2964,34 +3085,34 @@ fn truncate_text(text: &str, max_len: usize) -> String {
 /// Label glyph for an error cell. `Critical`/`Error` get the loudest marker;
 /// `Warning` is softer; `Info` is neutral. Kept as ASCII so it survives any
 /// terminal font fallback.
-fn error_label_text(severity: crate::error_taxonomy::ErrorSeverity) -> &'static str {
+fn error_label_text(severity: codewhale_error_taxonomy::ErrorSeverity) -> &'static str {
     match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => "Error",
-        crate::error_taxonomy::ErrorSeverity::Warning => "Warn",
-        crate::error_taxonomy::ErrorSeverity::Info => "Info",
+        codewhale_error_taxonomy::ErrorSeverity::Critical
+        | codewhale_error_taxonomy::ErrorSeverity::Error => "Error",
+        codewhale_error_taxonomy::ErrorSeverity::Warning => "Warn",
+        codewhale_error_taxonomy::ErrorSeverity::Info => "Info",
     }
 }
 
 /// Label color for an error cell — drives the leading rail glyph.
-fn error_label_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
+fn error_label_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style {
     let color = match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
-        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
-        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_DIM,
+        codewhale_error_taxonomy::ErrorSeverity::Critical
+        | codewhale_error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
+        codewhale_error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
+        codewhale_error_taxonomy::ErrorSeverity::Info => palette::TEXT_DIM,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 /// Body color for an error cell — softer than the label so the rail draws
 /// the eye but the prose stays readable.
-fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
+fn error_body_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style {
     let color = match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
-        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
-        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_MUTED,
+        codewhale_error_taxonomy::ErrorSeverity::Critical
+        | codewhale_error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
+        codewhale_error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
+        codewhale_error_taxonomy::ErrorSeverity::Info => palette::TEXT_MUTED,
     };
     Style::default().fg(color)
 }
@@ -3004,7 +3125,7 @@ fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
 /// while preserving every character.
 fn render_error_message(
     message: &str,
-    severity: crate::error_taxonomy::ErrorSeverity,
+    severity: codewhale_error_taxonomy::ErrorSeverity,
     width: u16,
     show_full_error_affordance: bool,
 ) -> Vec<Line<'static>> {
@@ -3041,64 +3162,58 @@ fn render_error_message(
 
 fn render_tool_header(
     title: &str,
-    state: &str,
+    state: Option<&str>,
     status: ToolStatus,
     started_at: Option<Instant>,
     low_motion: bool,
+    locale: Locale,
 ) -> Line<'static> {
     let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
-    render_tool_header_with_family(family, state, status, started_at, low_motion)
+    render_tool_header_with_family_and_summary(
+        family, None, state, status, started_at, low_motion, locale,
+    )
 }
 
 fn render_tool_header_with_summary(
     title: &str,
     summary: Option<&str>,
-    state: &str,
+    state: Option<&str>,
     status: ToolStatus,
     started_at: Option<Instant>,
     low_motion: bool,
+    locale: Locale,
 ) -> Line<'static> {
     let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
     render_tool_header_with_family_and_summary(
-        family, summary, state, status, started_at, low_motion,
+        family, summary, state, status, started_at, low_motion, locale,
     )
 }
 
 /// Render a tool-card header with an explicit verb family. Lets callers
 /// (e.g. `GenericToolCell`) bypass the legacy title→family mapping when
 /// they already know the actual tool name.
-fn render_tool_header_with_family(
-    family: crate::tui::widgets::tool_card::ToolFamily,
-    state: &str,
-    status: ToolStatus,
-    started_at: Option<Instant>,
-    low_motion: bool,
-) -> Line<'static> {
-    render_tool_header_with_family_and_summary(family, None, state, status, started_at, low_motion)
-}
-
 fn render_tool_header_with_family_and_summary(
     family: crate::tui::widgets::tool_card::ToolFamily,
     summary: Option<&str>,
-    state: &str,
+    state: Option<&str>,
     status: ToolStatus,
     started_at: Option<Instant>,
     low_motion: bool,
+    locale: Locale,
 ) -> Line<'static> {
     // For long-running tools, append elapsed seconds so the user can see the
     // call isn't stuck. Threshold matches the eye's "did this hang?" reflex
     // — under 3s we stay quiet so quick reads/greps don't visually churn.
-    let state_owned: String = if state == "running"
-        && status == ToolStatus::Running
-        && let Some(started) = started_at
-    {
-        running_status_label_with_elapsed(started.elapsed().as_secs())
-    } else {
-        state.to_string()
+    let state_owned = match (state, status, started_at) {
+        (Some(state), _, _) => state.to_string(),
+        (None, ToolStatus::Running, Some(started)) => {
+            running_status_label_with_elapsed(started.elapsed().as_secs(), locale)
+        }
+        _ => tool_status_label(status, locale).into_owned(),
     };
 
     let glyph = crate::tui::widgets::tool_card::family_glyph(family);
-    let verb = crate::tui::widgets::tool_card::family_label(family);
+    let verb = crate::tui::widgets::tool_card::family_label(family, locale);
 
     let glyph_style = Style::default().fg(tool_glyph_color(status, family));
     let mut spans = vec![
@@ -3120,7 +3235,7 @@ fn render_tool_header_with_family_and_summary(
     // verb, the verb already carries the signal, so drop the redundant tail.
     if let Some(summary) = summary
         .and_then(normalize_header_summary)
-        .filter(|summary| !summary.eq_ignore_ascii_case(verb))
+        .filter(|summary| !summary.eq_ignore_ascii_case(verb.as_ref()))
     {
         spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         spans.push(Span::styled(
@@ -3134,7 +3249,7 @@ fn render_tool_header_with_family_and_summary(
 
 fn header_shows_in_full(header: &Line<'static>, summary: &str, available: usize) -> bool {
     normalize_header_summary(summary).is_none_or(|summary| {
-        crate::tui::ui_text::text_display_width(&summary) <= TOOL_HEADER_SUMMARY_LIMIT
+        codewhale_tui_kit::ui_text::text_display_width(&summary) <= TOOL_HEADER_SUMMARY_LIMIT
     }) && header.width() <= available
 }
 
@@ -3173,18 +3288,19 @@ fn normalize_header_summary(summary: &str) -> Option<String> {
 /// tools. Below 3s the badge is suppressed to avoid visual churn for tools
 /// that resolve in milliseconds; at 3s and beyond the badge appears and ticks
 /// every second the tool stays in flight.
-pub(crate) fn running_status_label_with_elapsed(elapsed_secs: u64) -> String {
+pub(crate) fn running_status_label_with_elapsed(elapsed_secs: u64, locale: Locale) -> String {
+    let state = tool_status_label(ToolStatus::Running, locale);
     if elapsed_secs < 3 {
-        "running".to_string()
+        state.into_owned()
     } else {
-        format!("running ({elapsed_secs}s)")
+        format!("{state} ({elapsed_secs}s)")
     }
 }
 
-pub(crate) fn stale_shell_status_label(elapsed_since_output_ms: u64) -> String {
-    format!(
-        "running · no output for {}",
-        codewhale_command_contract::elapsed::format_elapsed_ms(elapsed_since_output_ms)
+pub(crate) fn stale_shell_status_label(elapsed_since_output_ms: u64, locale: Locale) -> String {
+    tr(locale, MessageId::ToolReceiptQuiet).replace(
+        "{duration}",
+        &codewhale_command_contract::elapsed::format_elapsed_ms(elapsed_since_output_ms),
     )
 }
 
@@ -3220,55 +3336,6 @@ fn render_card_detail_line(
             ));
         }
         spans.push(Span::styled(part, value_style));
-        lines.push(Line::from(spans));
-    }
-    lines
-}
-
-/// `render_card_detail_line` for a row whose text carries its own SGR
-/// colours: every segment's style is patched over `value_style`, so the
-/// tool's colour wins where it set one and the cell's own ink (dim, state,
-/// file:line emphasis) shows through where it did not. `text` is the row's
-/// plain text (what the segments concatenate to); wrapping follows the same
-/// boundaries as the plain path.
-fn render_card_detail_line_styled(
-    label: Option<&str>,
-    text: &str,
-    segments: &[tool_output::StyledSegment],
-    value_style: Style,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let label_text = label.map(|text| format!("{text}:"));
-    let prefix_width = UnicodeWidthStr::width(TRANSCRIPT_RAIL)
-        + label_text.as_deref().map_or(0, UnicodeWidthStr::width)
-        + usize::from(label.is_some());
-    let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
-
-    let parts = wrap_text(text, content_width);
-    let split = tool_output::split_segments(segments, &parts);
-
-    let mut lines = Vec::new();
-    for (idx, part) in split.into_iter().enumerate() {
-        let mut spans = vec![Span::styled(
-            TRANSCRIPT_RAIL.to_string(),
-            Style::default().fg(palette::TEXT_DIM),
-        )];
-        if idx == 0 {
-            if let Some(label_text) = label_text.as_deref() {
-                spans.push(Span::styled(
-                    label_text.to_string(),
-                    tool_detail_label_style(),
-                ));
-                spans.push(Span::raw(" "));
-            }
-        } else if let Some(label_text) = label_text.as_deref() {
-            spans.push(Span::raw(
-                " ".repeat(UnicodeWidthStr::width(label_text) + 1),
-            ));
-        }
-        for (text, style) in part {
-            spans.push(Span::styled(text, value_style.patch(style)));
-        }
         lines.push(Line::from(spans));
     }
     lines
@@ -3366,15 +3433,18 @@ fn tool_glyph_color(
     tool_rail_color(status)
 }
 
-pub(crate) fn tool_status_label(status: ToolStatus) -> &'static str {
-    match status {
-        ToolStatus::Running => "running",
-        ToolStatus::Success => "done",
-        ToolStatus::Hydrated => "loaded, not run",
-        ToolStatus::Stopped => "stopped",
-        ToolStatus::Warning => "issue",
-        ToolStatus::Failed => "failed",
-    }
+pub(crate) fn tool_status_label(status: ToolStatus, locale: Locale) -> Cow<'static, str> {
+    tr(
+        locale,
+        match status {
+            ToolStatus::Running => MessageId::ToolReceiptRunning,
+            ToolStatus::Success => MessageId::ToolReceiptDone,
+            ToolStatus::Hydrated => MessageId::ToolReceiptHydrated,
+            ToolStatus::Stopped => MessageId::ToolReceiptStopped,
+            ToolStatus::Warning => MessageId::ToolReceiptIssue,
+            ToolStatus::Failed => MessageId::ToolReceiptFailed,
+        },
+    )
 }
 
 /// A finished read/find card can truthfully name how many rendered lines came
@@ -3388,7 +3458,7 @@ pub(crate) fn tool_receipt_label(
     locale: Locale,
 ) -> Cow<'static, str> {
     if status != ToolStatus::Success {
-        return Cow::Borrowed(tool_status_label(status));
+        return tool_status_label(status, locale);
     }
     use crate::tui::widgets::tool_card::ToolFamily;
     match family {
@@ -3619,31 +3689,38 @@ impl FileActivitySummary {
             && self.files_written == 0
     }
 
-    pub fn compact_display(&self) -> Vec<String> {
+    pub fn compact_display(&self, locale: Locale) -> Vec<String> {
         let mut parts = Vec::new();
-        if self.files_read > 0 {
-            parts.push(format!(
-                "Read {}",
-                tool_run::counted(self.files_read as usize, "file", "files")
-            ));
-        }
-        if self.dirs_listed > 0 {
-            parts.push(format!(
-                "Listed {}",
-                tool_run::counted(self.dirs_listed as usize, "directory", "directories")
-            ));
-        }
-        if self.patterns_searched > 0 {
-            parts.push(format!(
-                "Searched {}",
-                tool_run::counted(self.patterns_searched as usize, "pattern", "patterns")
-            ));
-        }
-        if self.files_written > 0 {
-            parts.push(format!(
-                "Wrote {}",
-                tool_run::counted(self.files_written as usize, "file", "files")
-            ));
+        for (count, clause, singular, plural) in [
+            (
+                self.files_read,
+                MessageId::ActivityRead,
+                MessageId::ActivityFileOne,
+                MessageId::ActivityFileMany,
+            ),
+            (
+                self.dirs_listed,
+                MessageId::ActivityListed,
+                MessageId::ActivityDirectoryOne,
+                MessageId::ActivityDirectoryMany,
+            ),
+            (
+                self.patterns_searched,
+                MessageId::ActivitySearched,
+                MessageId::ActivityPatternOne,
+                MessageId::ActivityPatternMany,
+            ),
+            (
+                self.files_written,
+                MessageId::ActivityWrote,
+                MessageId::ActivityFileOne,
+                MessageId::ActivityFileMany,
+            ),
+        ] {
+            if count > 0 {
+                let count = tool_run::counted(count as usize, locale, singular, plural);
+                parts.push(tr(locale, clause).replace("{items}", &count));
+            }
         }
         parts
     }

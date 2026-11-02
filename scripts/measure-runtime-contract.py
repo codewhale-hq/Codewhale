@@ -27,7 +27,7 @@ def metric_command(test_name: str) -> list[str]:
         "test",
         "--locked",
         "-p",
-        "codewhale-tui",
+        "codewhale-engine",
         "--lib",
         exact_test_name,
         "--",

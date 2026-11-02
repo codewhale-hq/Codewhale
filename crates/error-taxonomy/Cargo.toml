@@ -1,0 +1,18 @@
+[package]
+name = "codewhale-error-taxonomy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared error categories, severities, and envelopes for Codewhale"
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+codewhale-tools = { path = "../tools", version = "0.10.2" }
+serde.workspace = true

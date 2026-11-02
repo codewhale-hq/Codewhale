@@ -1,12 +1,11 @@
 //! Rendering for plan-update transcript cells.
 
+use codewhale_localization::Locale;
 use ratatui::text::Line;
 
-use crate::tools::plan::{PlanSnapshot, StepStatus};
+use codewhale_engine::tools::plan::{PlanSnapshot, StepStatus};
 
-use super::{
-    ToolStatus, render_compact_kv, render_tool_header, tool_status_label, tool_value_style,
-};
+use super::{ToolStatus, render_compact_kv, render_tool_header, tool_value_style};
 
 /// Cell for plan updates emitted by the plan tool.
 #[derive(Debug, Clone)]
@@ -17,14 +16,25 @@ pub struct PlanUpdateCell {
 
 impl PlanUpdateCell {
     /// Render the plan update cell into lines.
+    #[cfg(test)]
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        self.lines_with_motion_and_locale(width, low_motion, Locale::En)
+    }
+
+    pub fn lines_with_motion_and_locale(
+        &self,
+        width: u16,
+        low_motion: bool,
+        locale: Locale,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
             "Legacy plan",
-            tool_status_label(self.status),
+            None,
             self.status,
             None,
             low_motion,
+            locale,
         ));
 
         render_plan_snapshot_lines(&self.snapshot, &mut lines, width);

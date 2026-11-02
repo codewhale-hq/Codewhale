@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: captura del terminal amb la conversa, el camp de missatge i els controls de sessió.",
   latestRelease: "Última versió {tag}",
   releaseUnavailable: "Estat de la versió no disponible",
+  proofContributors: "{count} col·laboradors",
   currentSource: "Font",
   sourceCandidate: "Sense publicar",
   publishedRelease: "publicada",

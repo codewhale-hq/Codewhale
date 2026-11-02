@@ -1,6 +1,10 @@
 //! Compatibility control projection onto the already held canonical owner.
 //! SQLite supplies immutable migration input and committed alias receipts only.
 use super::*;
+use crate::bridge::acquire_live_runtime_bridge;
+use anyhow::{Context as _, bail};
+#[cfg(test)]
+use axum::Router;
 use codewhale_protocol::{
     CanonicalHistoryImportRequest, CanonicalHistoryOptions, CanonicalHistorySource,
     CanonicalThreadMutation, CanonicalThreadMutationRequest, CanonicalThreadOperationKind,

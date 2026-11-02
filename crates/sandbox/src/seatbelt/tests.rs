@@ -39,7 +39,7 @@ fn file_provider_extensions_intersect_each_workspace_root_and_exclusions() {
 
     for root_index in 0..=1 {
         let expected = format!(
-            r#"(require-all (extension "com.apple.app-sandbox.read-write") (subpath (param "WRITABLE_ROOT_{root_index}")) (require-not (subpath (param "WRITABLE_ROOT_{root_index}_RO_0"))))"#
+            r#"(require-all (extension "com.apple.app-sandbox.read-write") (subpath (param "WRITABLE_ROOT_{root_index}")) (require-not (subpath (param "WRITABLE_ROOT_{root_index}_RO_0")))"#
         );
         assert!(
             workspace_write.contains(&expected),

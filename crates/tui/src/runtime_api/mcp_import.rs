@@ -1,20 +1,20 @@
 //! Reviewed external MCP imports. Existing runtime bearer auth and body limits
 //! apply; preview/apply never spawn a process, connect, or echo credential values.
 use super::{ApiError, RuntimeApiState, mcp_expected_revision};
-use crate::mcp::external_import::{
-    ImportContext, ImportDecision, ImportPreview, ImportReceipt, apply_reviewed_import,
-    preview_imports,
-};
 use axum::{
     Json,
     extract::State,
     http::{HeaderMap, StatusCode},
 };
+use codewhale_engine::mcp::external_import::{
+    ImportContext, ImportDecision, ImportPreview, ImportReceipt, apply_reviewed_import,
+    preview_imports,
+};
 use serde::Deserialize;
 
 fn import_error(error: anyhow::Error) -> ApiError {
     ApiError {
-        status: if error.is::<crate::mcp::McpRevisionConflict>() {
+        status: if error.is::<codewhale_engine::mcp::McpRevisionConflict>() {
             StatusCode::PRECONDITION_FAILED
         } else {
             StatusCode::CONFLICT

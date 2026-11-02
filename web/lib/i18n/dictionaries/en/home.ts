@@ -17,6 +17,7 @@ export const home: HomeDict = {
 
   latestRelease: "Latest release {tag}",
   releaseUnavailable: "Release status unavailable",
+  proofContributors: "{count} contributors",
   currentSource: "Source",
   sourceCandidate: "Unreleased",
   publishedRelease: "released",

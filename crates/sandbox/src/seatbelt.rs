@@ -479,7 +479,15 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
 
         // Add parameters for read-only subpaths
         for (subpath_index, subpath) in root.read_only_subpaths.iter().enumerate() {
-            let canonical_subpath = subpath.canonicalize().unwrap_or_else(|_| subpath.clone());
+            let canonical_subpath = subpath.canonicalize().unwrap_or_else(|_| {
+                match (
+                    subpath.parent().map(Path::canonicalize),
+                    subpath.file_name(),
+                ) {
+                    (Some(Ok(parent)), Some(name)) => parent.join(name),
+                    _ => subpath.clone(),
+                }
+            });
             params.push((
                 format!("WRITABLE_ROOT_{index}_RO_{subpath_index}"),
                 canonical_subpath,

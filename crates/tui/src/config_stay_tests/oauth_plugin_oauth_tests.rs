@@ -7,9 +7,9 @@ use codewhale_runtime::oauth::*;
 
 #[test]
 fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocation() {
-    use crate::client::CodewhaleClient;
-    use crate::llm_client::LlmClient;
-    use crate::plugins::discovery::{DiscoveryConfig, discover_with_config};
+    use codewhale_engine::client::CodewhaleClient;
+    use codewhale_engine::llm_client::LlmClient;
+    use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
     use futures_util::StreamExt;
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -58,7 +58,7 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                 config.token_endpoint = format!("{issuer}/token");
                 let declared_base_url = format!("{issuer}/v1/");
                 let manifest = serde_json::json!({
-                    "$schema": crate::plugins::agent_plugin::PLUGIN_SCHEMA_URL,
+                    "$schema": codewhale_plugins::agent_plugin::PLUGIN_SCHEMA_URL,
                     "name":"provider-fixture", "version":"1.0.0",
                     "extensions":{"net.codewhale":{"providers":{"fixture-gateway":{
                         "base_url":declared_base_url, "model":"fixture-model", "models":["fixture-model"], "http_headers":{"X-Fixture-Route":"main"}, "oauth":config
@@ -83,8 +83,8 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                     __cw_config_init_0_value.http_headers = __cw_config_init_0_1;
                     __cw_config_init_0_value
                 };
-                crate::plugins::providers::apply_providers(&mut live, &registry).unwrap();
-                let auth_entry = crate::plugins::providers::plugin_auth_entry(
+                codewhale_plugins::providers::apply_providers(&mut live, &registry).unwrap();
+                let auth_entry = codewhale_plugins::providers::plugin_auth_entry(
                     &live,
                     "fixture-gateway",
                 )
@@ -96,8 +96,8 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                 let secrets = codewhale_secrets::Secrets::auto_detect();
                 let expired = serde_json::json!({"access_token":"private-expired-token", "refresh_token":"old-refresh", "expires_at":1});
                 secrets.set(&slot, &serde_json::to_string(&expired).unwrap()).unwrap();
-                assert!(crate::provider_readiness::has_api_key(&live));
-                assert!(crate::provider_readiness::has_api_key_for(&live, &live.active_provider_identity().unwrap()));
+                assert!(codewhale_engine::provider_readiness::has_api_key(&live));
+                assert!(codewhale_engine::provider_readiness::has_api_key_for(&live, &live.active_provider_identity().unwrap()));
                 (live, discovery, slot)
             }).await.unwrap();
             // Exercise the real async constructor with an already-expired
@@ -165,7 +165,7 @@ fn plugin_oauth_reviewed_provider_real_client_refresh_chat_catalog_and_revocatio
                 tokio::task::spawn_blocking(move || {
                 let mut registry = discover_with_config(&discovery);
                 registry.disable("provider-fixture").unwrap();
-                assert!(!crate::provider_readiness::has_api_key_for(&revoked_config, &revoked_config.active_provider_identity().unwrap()));
+                assert!(!codewhale_engine::provider_readiness::has_api_key_for(&revoked_config, &revoked_config.active_provider_identity().unwrap()));
                 // Private material can remain in secure storage; receipt revocation
                 // must still prevent reuse by an already constructed client.
                 assert!(codewhale_secrets::Secrets::auto_detect().get(&slot).unwrap().is_some());

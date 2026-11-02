@@ -1,0 +1,58 @@
+[package]
+name = "codewhale-plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plugin manifests, discovery, review, install and marketplace for Codewhale"
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["codewhale-runtime/test-support"]
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.23.1"
+chrono.workspace = true
+codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-mcp = { path = "../mcp", version = "0.10.2" }
+codewhale-net = { path = "../net", version = "0.10.2" }
+codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
+codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
+fd-lock = "4.0.4"
+flate2 = "1.1"
+regex = "1.11"
+reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
+semver.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+sha2.workspace = true
+tar = "0.4"
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+webbrowser = "1.0"
+yaml-rust2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+codewhale-config = { path = "../config", version = "0.10.2", features = ["schema", "test-support"] }
+codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support", "test-thread-scoped-state"] }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
+codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }

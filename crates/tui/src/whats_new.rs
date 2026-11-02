@@ -96,7 +96,8 @@ fn count_phrase(locale: Locale, count: usize, one: MessageId, many: MessageId) -
 
 #[must_use]
 pub fn release_notes_url(locale: Locale, version: Option<&str>) -> String {
-    let site_locale = crate::commands::groups::core::public_site_locale_segment(locale);
+    let site_locale =
+        codewhale_command_contract::navigation::public_site_locale_segment(locale.tag());
     match version {
         Some(version) => format!("https://codewhale.net/{site_locale}/changelog/{version}"),
         None => format!("https://codewhale.net/{site_locale}/changelog"),

@@ -7,8 +7,9 @@ release_base="${CODEWHALE_RELEASE_BASE_URL:-${DEEPSEEK_TUI_RELEASE_BASE_URL:-}}"
 
 usage() {
   cat <<'USAGE'
-Codewhale GitHub release installer for new macOS and Linux installations.
-For an existing direct install, run its codewhale update command.
+Codewhale GitHub release installer for macOS and Linux.
+It also upgrades an earlier Codewhale in the install directory; the old files
+move to ~/.codewhale/recovery and are kept for 30 days.
 
 Usage:
   curl -fsSL https://codewhale.net/install.sh | sh
@@ -17,8 +18,8 @@ Environment:
   CODEWHALE_INSTALL_DIR    Install directory. Default: $HOME/.local/bin
   CODEWHALE_VERSION        Release tag for a fresh directory. Default: latest
   CODEWHALE_FORCE_REINSTALL=1
-                           Replace differing codewhale/codew already in the install
-                           directory, keeping each old file beside it as .bak-<time>
+                           Also replace a codewhale/codew you own that is not a
+                           Codewhale release binary (moved to recovery, not deleted)
   CODEWHALE_RELEASE_BASE_URL
                            Custom release asset base URL ending in /download
   CODEWHALE_INSTALL_COMPILED_HOST=1
@@ -83,23 +84,27 @@ sha256_file() {
   fi
 }
 
+manifest_digest() {
+  asset="$1"
+  manifest="$2"
+  awk -v name="$asset" '
+    {
+      digest = tolower($1)
+      file = $2
+      sub(/^\*/, "", file)
+      if (file == name && digest ~ /^[0-9a-f]{64}$/) {
+        print digest
+        exit
+      }
+    }
+  ' "$manifest"
+}
+
 verify_asset() {
   asset="$1"
   file="$2"
   manifest="$3"
-  expected="$(
-    awk -v name="$asset" '
-      {
-        digest = tolower($1)
-        file = $2
-        sub(/^\*/, "", file)
-        if (file == name && digest ~ /^[0-9a-f]{64}$/) {
-          print digest
-          exit
-        }
-      }
-    ' "$manifest"
-  )"
+  expected="$(manifest_digest "$asset" "$manifest")"
   [ -n "$expected" ] || fail "checksum not found for $asset"
   actual="$(sha256_file "$file" | tr '[:upper:]' '[:lower:]')"
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $asset"
@@ -232,26 +237,87 @@ case "$install_dir" in
   /*) ;;
   *) fail "CODEWHALE_INSTALL_DIR must be an absolute path" ;;
 esac
+case "/$install_dir/" in
+  */./*|*/../*) fail "CODEWHALE_INSTALL_DIR must not contain . or .. path components" ;;
+esac
+while [ "$install_dir" != / ] && [ "${install_dir%/}" != "$install_dir" ]; do install_dir="${install_dir%/}"; done
 [ ! -L "$install_dir" ] || fail "install directory is a symlink: $install_dir; choose a fresh user directory"
-mkdir -p "$install_dir" || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
-install_dir="$(cd -P "$install_dir" && pwd)"
+preflight_dir="$install_dir"
+install_suffix=""
+while [ ! -d "$preflight_dir" ]; do
+  { [ ! -e "$preflight_dir" ] && [ ! -L "$preflight_dir" ]; } || fail "not a directory: $preflight_dir"
+  install_suffix="/$(basename "$preflight_dir")$install_suffix"
+  preflight_dir="$(dirname "$preflight_dir")"
+done
+preflight_dir="$(cd -P "$preflight_dir" && pwd)"
+install_dir="$preflight_dir$install_suffix"
 case "$install_dir/" in
-  /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*)
+  /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*|/opt/homebrew/bin/*|/usr/local/bin/*|/opt/local/bin/*)
     fail "refusing managed/system directory $install_dir; use a fresh user directory"
     ;;
 esac
-[ -w "$install_dir" ] || fail "$install_dir is not writable; choose a user directory (no sudo is used)"
-for cargo_receipt in "$install_dir/../.crates.toml" "$install_dir/../.crates2.json"; do
+if [ "$install_dir" = / ] || { [ -n "${HOME:-}" ] && [ "$install_dir" = "$(cd -P "$HOME" 2>/dev/null && pwd)" ]; }; then
+  fail "refusing $install_dir; use a fresh directory such as \$HOME/.local/bin"
+fi
+[ -O "$preflight_dir" ] && [ -w "$preflight_dir" ] || fail "$preflight_dir must be a writable directory owned by you (no sudo is used)"
+if [ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)" ]; then
+  fail "$preflight_dir is writable by its group or others; run chmod go-w '$preflight_dir' or choose a directory only you can write"
+fi
+for cargo_receipt in "$(dirname "$install_dir")/.crates.toml" "$(dirname "$install_dir")/.crates2.json"; do
   if [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; then
     fail "Cargo install metadata beside this directory; use a fresh directory instead"
   fi
 done
+
+(umask 077; mkdir -p "$install_dir") || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
+[ ! -L "$install_dir" ] || fail "install directory changed to a symlink: $install_dir"
+install_dir="$(cd -P "$install_dir" && pwd)"
 
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t codewhale-install)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 forced_backups="$tmpdir/.forced-backups"
 : > "$forced_backups"
+
+if [ -n "${CODEWHALE_HOME:-}" ]; then
+  case "$CODEWHALE_HOME" in
+    /*) recovery_root="$CODEWHALE_HOME/recovery" ;;
+    *) recovery_root="${HOME:-}/.codewhale/recovery" ;;
+  esac
+else
+  recovery_root="${HOME:-}/.codewhale/recovery"
+fi
+recovery_dir=""
+recovery_seq=0
+open_recovery() {
+  [ -z "$recovery_dir" ] || return 0
+  case "$recovery_root" in /*) ;; *) fail "HOME is not set; cannot keep the previous files" ;; esac
+  mkdir -p "$recovery_root" || fail "cannot create $recovery_root"
+  chmod 700 "$recovery_root" 2>/dev/null || true
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  candidate="$stamp"
+  attempt=1
+  while ! mkdir "$recovery_root/$candidate" 2>/dev/null; do
+    [ "$attempt" -lt 100 ] || fail "cannot create a recovery folder under $recovery_root"
+    candidate="$stamp-$attempt"
+    attempt=$((attempt + 1))
+  done
+  recovery_dir="$recovery_root/$candidate"
+}
+is_codewhale_binary() {
+  [ -f "$1" ] && [ ! -L "$1" ] && grep -aq -e 'codewhale-updater' -e 'deepseek-tui' "$1" 2>/dev/null
+}
+move_to_recovery() {
+  file="$1"
+  open_recovery
+  recovery_seq=$((recovery_seq + 1))
+  stored="$recovery_dir/$(printf '%03d' "$recovery_seq")-$(basename "$file")"
+  digest="$(sha256_file "$file" | tr '[:upper:]' '[:lower:]')"
+  size="$(wc -c < "$file" | tr -d ' ')"
+  mv "$file" "$stored" || fail "cannot move $file to the recovery folder; it was not replaced"
+  printf '%s\t%s\t%s\t%s\n' "$file" "$stored" "$digest" "$size" >> "$recovery_dir/manifest.tsv"
+  printf '%s\t%s\n' "$stored" "$file" >> "$forced_backups"
+}
 
 stage=""
 stage_dir=""
@@ -272,10 +338,10 @@ rollback_published() {
 }
 restore_forced_backups() {
   [ -f "$forced_backups" ] || return 0
-  while IFS= read -r backup; do
-    [ -n "$backup" ] || continue
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r backup destination; do
+    [ -n "$backup" ] && [ -n "$destination" ] || continue
     [ -e "$backup" ] || continue
-    destination="$(printf '%s' "$backup" | sed 's/\.bak-[0-9TZ]*\(-[0-9][0-9]*\)\{0,1\}$//')"
     if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
       mv "$backup" "$destination" && say "Restored $destination: this install did not complete." >&2
     fi
@@ -301,7 +367,15 @@ say "Install dir: $install_dir"
 
 download "$release_base/$manifest_asset" "$tmpdir/$manifest_asset"
 download "$release_base/$cli_asset" "$tmpdir/codewhale"
-download "$release_base/$shim_asset" "$tmpdir/codew"
+cli_digest="$(manifest_digest "$cli_asset" "$tmpdir/$manifest_asset")"
+shim_digest="$(manifest_digest "$shim_asset" "$tmpdir/$manifest_asset")"
+if [ -n "$cli_digest" ] && [ "$cli_digest" = "$shim_digest" ]; then
+  if ! ln "$tmpdir/codewhale" "$tmpdir/codew" 2>/dev/null; then
+    cp "$tmpdir/codewhale" "$tmpdir/codew"
+  fi
+else
+  download "$release_base/$shim_asset" "$tmpdir/codew"
+fi
 
 verify_asset "$cli_asset" "$tmpdir/codewhale" "$tmpdir/$manifest_asset"
 verify_asset "$shim_asset" "$tmpdir/codew" "$tmpdir/$manifest_asset"
@@ -322,32 +396,26 @@ check_destination() {
       destination_exists=1
       return
     fi
-    if [ "${CODEWHALE_FORCE_REINSTALL:-}" = 1 ] && [ ! -L "$destination" ] && [ -f "$destination" ]; then
-      backup="$destination.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-      suffix=1
-      while [ -e "$backup" ] || [ -L "$backup" ]; do
-        backup="$destination.bak-$(date -u +%Y%m%dT%H%M%SZ)-$suffix"
-        suffix=$((suffix + 1))
-      done
-      mv "$destination" "$backup" || fail "cannot move $destination aside; it was not replaced"
-      printf '%s\n' "$backup" >> "$forced_backups"
-      say "Replacing $destination (previous file kept at $backup)"
+    upgradable=0
+    if [ ! -L "$destination" ] && [ -f "$destination" ] && [ -O "$destination" ]; then
+      case "$(basename "$destination")" in
+        codewhale|codew) is_codewhale_binary "$destination" && upgradable=1 ;;
+        .codewhale-install.sha256) upgradable=1 ;;
+      esac
+      [ "${CODEWHALE_FORCE_REINSTALL:-}" != 1 ] || upgradable=1
+    fi
+    if [ "$upgradable" -eq 1 ]; then
+      move_to_recovery "$destination"
+      say "Upgrading $destination (previous file kept in $recovery_dir for 30 days)"
       return
     fi
     cat >&2 <<EOF
-codewhale install: refusing to replace existing $destination.
-It may be a newer build, another installation, or a symlink. No existing file was changed.
-For an existing direct Codewhale install, run its full path with 'update'.
-To replace it with this release and keep the previous file beside it:
+codewhale install: $destination is not a Codewhale release file this installer can upgrade
+(it is a symlink, belongs to another user, or is a different program). It was not changed.
+To install beside it, choose a fresh directory:
+  curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="\$HOME/.local/codewhale/bin" sh
+To move a regular file you own aside and install anyway (it goes to ~/.codewhale/recovery, not deleted):
   curl -fsSL https://codewhale.net/install.sh | CODEWHALE_FORCE_REINSTALL=1 sh
-To migrate safely from a package manager or mixed installation, create a fresh directory:
-  mkdir -p "\$HOME/.local"
-  codewhale_install_dir="\$(mktemp -d "\$HOME/.local/codewhale-release.XXXXXX")"
-  curl -fsSL https://codewhale.net/install.sh | CODEWHALE_INSTALL_DIR="\$codewhale_install_dir" sh
-  "\$codewhale_install_dir/codewhale" --version
-  export PATH="\$codewhale_install_dir:\$PATH"
-  hash -r
-  command -v codewhale codew
 EOF
     exit 1
   fi
@@ -388,9 +456,6 @@ for command_name in codewhale codew; do
   case "$command_digest" in *[!0-9a-f]*) fail "invalid command digest for $command_name" ;; esac
   printf '%s  %s\n' "$command_digest" "$command_name"
 done > "$tmpdir/$receipt_name"
-if [ -e "$install_dir/$receipt_name" ] || [ -L "$install_dir/$receipt_name" ]; then
-  [ ! -L "$install_dir/$receipt_name" ] && [ -f "$install_dir/$receipt_name" ] && cmp -s "$tmpdir/$receipt_name" "$install_dir/$receipt_name" || fail "existing command receipt differs; use this installation's updater or a fresh directory"
-fi
 check_destination "$install_dir/$receipt_name" "$tmpdir/$receipt_name" 644
 check_destination "$install_dir/codewhale" "$tmpdir/codewhale"
 check_destination "$install_dir/codew" "$tmpdir/codew"
@@ -436,9 +501,15 @@ say "Installed checksummed release commands:"
 say "  $install_dir/codewhale"
 say "  $install_dir/codew"
 
+if [ -n "$recovery_dir" ]; then
+  say "Previous files are kept in $recovery_dir for 30 days. Undo: \"$install_dir/codewhale\" doctor --restore $(basename "$recovery_dir")"
+fi
+"$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
+
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
+say "Updates install automatically; turn off with: codewhale config set update.mode notify"
 path_selected=1
 for command_name in codewhale codew; do
   resolved="$(command -v "$command_name" 2>/dev/null || true)"
@@ -496,7 +567,8 @@ if [ "$path_selected" -eq 0 ]; then
         *) profile=".profile" ;;
       esac
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
-      say "  echo 'export PATH=\"$path_dir:\$PATH\"' >> ~/$profile"
+      say "  printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH=\"$path_dir:\$PATH\"' '# <<< codewhale PATH <<<' >> ~/$profile"
+      say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
       say "Then run: . ~/$profile   (or open a new terminal)"
       say "Or for this shell only:"
       say "  export PATH=\"$path_dir:\$PATH\"; hash -r"

@@ -1,10 +1,22 @@
-//! Bounded, inert MCP server guidance shared by the active TUI transports.
+//! Bounded MCP server guidance and connection observations shared by the active transports.
 //!
 //! The legacy client pool and aggregating stdio proxy were removed in Phase 0.
 //! Client/session authority stays in the existing TUI MCP pool; native server
 //! mode uses its shared Rust tool registry through `serve --mcp`.
 
+pub mod config;
+
 use serde_json::Value;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModelServerStatus {
+    AuthorizationRequired,
+    Failed,
+    Connecting,
+    Unknown,
+    Connected,
+    Configured,
+}
 
 /// Upper bound, in bytes, on the `instructions` an MCP server may supply at
 /// `initialize`. Longer guidance is cut on a character boundary and ends with

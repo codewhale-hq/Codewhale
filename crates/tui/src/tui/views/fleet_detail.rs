@@ -3,7 +3,7 @@
 //! Row 0 is the Coordinator's own model; below it one row per member.
 //! Editing a Fleet edits that Fleet's file — never the live session route and
 //! never a global collection of role profiles. Every write goes through
-//! [`crate::fleet::store`] with an atomic save and a receipt naming the exact
+//! [`codewhale_engine::fleet::store`] with an atomic save and a receipt naming the exact
 //! file and scope.
 
 use std::cell::RefCell;
@@ -23,19 +23,19 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::fleet::store::{
-    FleetFile, FleetMember, FleetOperator, FleetScope, MemberCapability, load_fleet_in_scope,
-    save_fleet, set_selected,
-};
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::fleet::store::{
+    FleetFile, FleetMember, FleetOperator, FleetScope, MemberCapability, load_fleet_in_scope,
+    save_fleet, set_selected,
+};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 /// The built-in role vocabulary offered when adding a member, in a useful
 /// order. A Fleet member is a role; the user can name anything, these are the
@@ -74,7 +74,7 @@ pub enum FleetRouteTarget {
 pub struct FleetRouteSelection {
     pub provider: Option<String>,
     pub model: Option<String>,
-    pub reasoning: Option<crate::reasoning_preference::ReasoningEffort>,
+    pub reasoning: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
     pub allow_inherit: bool,
 }
 
@@ -227,7 +227,7 @@ impl FleetDetailView {
     /// session route. Called at open and after every route edit.
     fn refresh_scout_receipt(&mut self) {
         self.scout_receipt = self.fleet.has_scout().then(|| {
-            crate::fleet::scout::resolve_scout_route(
+            codewhale_engine::fleet::scout::resolve_scout_route(
                 self.fleet.member("scout"),
                 &self.session_provider,
                 &self.session_model,
@@ -489,7 +489,7 @@ impl FleetDetailView {
             provider,
             model,
             reasoning: reasoning.and_then(|value| {
-                crate::reasoning_preference::ReasoningEffort::parse_strict(value).ok()
+                codewhale_engine::reasoning_preference::ReasoningEffort::parse_strict(value).ok()
             }),
             allow_inherit,
         })
@@ -505,7 +505,7 @@ impl FleetDetailView {
         target: FleetRouteTarget,
         provider: Option<String>,
         model: Option<String>,
-        reasoning: Option<crate::reasoning_preference::ReasoningEffort>,
+        reasoning: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
     ) -> Result<String, String> {
         // A picker belongs to one editor instance and the exact saved file
         // it opened. Never recreate a removed file or overwrite newer edits.
@@ -645,7 +645,7 @@ impl FleetDetailView {
         }) else {
             return;
         };
-        let id = crate::fleet::members::unique_member_id(&self.fleet, role, "role");
+        let id = codewhale_engine::fleet::members::unique_member_id(&self.fleet, role, "role");
         self.fleet.members.push(FleetMember {
             id,
             display_name: None,
@@ -796,9 +796,9 @@ impl ModalView for FleetDetailView {
                 }
                 // Typing-safe set only: this step feeds `Char(c)` into
                 // `pick_query`, so a letter alias would eat the query (#6290).
-                _ if crate::tui::list_nav::motion_while_typing(&key)
+                _ if codewhale_tui_kit::list_nav::motion_while_typing(&key)
                     .and_then(|m| {
-                        crate::tui::list_nav::apply(
+                        codewhale_tui_kit::list_nav::apply(
                             self.pick_row,
                             self.filtered_routes().len(),
                             ROUTE_PICK_PAGE,
@@ -861,9 +861,9 @@ impl ModalView for FleetDetailView {
                 }
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
-                    _ if crate::tui::list_nav::motion(&key)
+                    _ if codewhale_tui_kit::list_nav::motion(&key)
                         .and_then(|m| {
-                            crate::tui::list_nav::apply(
+                            codewhale_tui_kit::list_nav::apply(
                                 self.selected,
                                 self.row_count(),
                                 DETAIL_PAGE,
@@ -1282,7 +1282,7 @@ fn build_route_rows(config: &Config) -> Vec<RouteRow> {
         model: None,
         roster_missing: false,
     }];
-    let health = crate::provider_readiness::ProviderReadinessSnapshot::default();
+    let health = codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default();
     let active = config.active_provider_identity().ok();
     let routes = super::fleet_setup::cross_provider_model_routes(config, active.as_ref(), &health);
     for (provider, model, readiness) in routes {
@@ -1291,9 +1291,9 @@ fn build_route_rows(config: &Config) -> Vec<RouteRow> {
             .blocked_reason()
             .map(|r| r.into_owned())
             .unwrap_or_else(|| readiness.label().into_owned());
-        let roster_missing =
-            crate::provider_catalog_live::pin_missing_from_fresh_roster(config, &provider, &model)
-                == Some(true);
+        let roster_missing = codewhale_engine::provider_catalog_live::pin_missing_from_fresh_roster(
+            config, &provider, &model,
+        ) == Some(true);
         rows.push(RouteRow {
             label: format!("{provider_label}/{model}"),
             summary: readiness_label,
@@ -1329,8 +1329,8 @@ fn reasoning_tiers_for_provider(provider: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::store::FleetFile;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_engine::fleet::store::FleetFile;
     use codewhale_runtime::config::Config;
 
     fn app_in(workspace: PathBuf) -> App {
@@ -1510,7 +1510,7 @@ mod tests {
                 FleetRouteTarget::Member(0),
                 Some("openai".to_string()),
                 Some("gpt-5.6".to_string()),
-                Some(crate::reasoning_preference::ReasoningEffort::High),
+                Some(codewhale_engine::reasoning_preference::ReasoningEffort::High),
             )
             .expect("saved");
         assert!(receipt.contains("openai/gpt-5.6"), "{receipt}");
@@ -1674,9 +1674,12 @@ mod tests {
             "{message}"
         );
         // The on-disk file now carries the new name.
-        let (loaded, _) =
-            crate::fleet::store::load_fleet_in_scope("New Name", FleetScope::Workspace, ws.path())
-                .expect("reload");
+        let (loaded, _) = codewhale_engine::fleet::store::load_fleet_in_scope(
+            "New Name",
+            FleetScope::Workspace,
+            ws.path(),
+        )
+        .expect("reload");
         assert_eq!(loaded.name, "New Name");
     }
 
@@ -2078,9 +2081,12 @@ mod tests {
             .to_string();
         assert!(message.contains(&expected_tail), "{message}");
 
-        let (loaded, _) =
-            crate::fleet::store::load_fleet_in_scope("Fleet C", FleetScope::Workspace, ws.path())
-                .expect("reload");
+        let (loaded, _) = codewhale_engine::fleet::store::load_fleet_in_scope(
+            "Fleet C",
+            FleetScope::Workspace,
+            ws.path(),
+        )
+        .expect("reload");
         let op = loaded.operator.expect("operator");
         assert_eq!(op.model, "deepseek-v4-pro");
         assert_eq!(op.reasoning.as_deref(), Some("high"));
@@ -2190,7 +2196,7 @@ model = "fixture-review-model"
         let (reloaded, _) =
             load_fleet_in_scope("Fleet D", FleetScope::Workspace, ws.path()).unwrap();
         assert_eq!(reloaded.members[..2], fleet.members);
-        let roster = crate::fleet::identity::roster_from_fleet(
+        let roster = codewhale_engine::fleet::identity::roster_from_fleet(
             &reloaded,
             FleetScope::Workspace,
             PathBuf::from("fleet-d.toml").as_path(),

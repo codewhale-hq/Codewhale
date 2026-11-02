@@ -1,8 +1,8 @@
 //! Exercise command dispatch, the actual UI apply path, Engine requests and disk.
 use super::*;
-use crate::core::engine::{Engine, EngineConfig};
-use crate::core::events::TurnOutcomeStatus;
-use crate::llm_client::mock::{MockLlmClient, canned};
+use codewhale_engine::core::engine::{Engine, EngineConfig};
+use codewhale_engine::core::events::TurnOutcomeStatus;
+use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
 use codewhale_models::{ContentBlock, Message};
 
 fn prompts(messages: &[Message]) -> Vec<String> {
@@ -52,7 +52,7 @@ async fn settled(app: &mut App, handle: &EngineHandle, answer: &str) {
     });
 }
 
-fn sync_snapshot(snapshot: &crate::core::ops::SessionSnapshot) -> Op {
+fn sync_snapshot(snapshot: &codewhale_engine::core::ops::SessionSnapshot) -> Op {
     Op::SyncSession {
         session_id: Some(snapshot.session_id.clone()),
         messages: snapshot.messages.clone(),
@@ -184,13 +184,13 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
         // Seed the Engine's typed compaction format, then consume the real
         // SessionUpdated projection. Current projections strip the legacy
         // system-prompt carrier; history must retain the checkpoint on undo.
-        let checkpoint_text = format!("{}\nRetained earlier facts", crate::compaction::SUMMARY_HEADER);
-        let checkpoint = crate::compaction::compaction_checkpoint_message(
+        let checkpoint_text = format!("{}\nRetained earlier facts", codewhale_engine::compaction::SUMMARY_HEADER);
+        let checkpoint = codewhale_engine::compaction::compaction_checkpoint_message(
             &SystemPrompt::Text(checkpoint_text.clone()),
         );
         let mut compacted = handle.get_session_snapshot().await.unwrap();
         let stable_prompt = compacted.system_prompt.as_ref()
-            .map(crate::compaction::summary_prompt_text).unwrap_or_default();
+            .map(codewhale_engine::compaction::summary_prompt_text).unwrap_or_default();
         compacted.messages.insert(0, checkpoint.clone());
         compacted.system_prompt = Some(SystemPrompt::Text(format!(
             "{stable_prompt}\n\n<!-- compaction-summary:begin -->\n{checkpoint_text}\n<!-- compaction-summary:end -->"
@@ -203,7 +203,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
                 break;
             }
         }
-        assert!(crate::compaction::extract_compaction_summary(app.system_prompt.as_ref()).is_none());
+        assert!(codewhale_engine::compaction::extract_compaction_summary(app.system_prompt.as_ref()).is_none());
         assert!(app.api_messages.contains(&checkpoint));
         let id = app.current_session_id.clone().unwrap();
         let old = build_session_snapshot(&mut app, &manager).unwrap();
@@ -340,7 +340,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             handle = real_handle;
             interleaving.await.unwrap();
             let current = handle.get_session_snapshot().await.unwrap();
-            let installed = crate::core::ops::SessionSnapshot {
+            let installed = codewhale_engine::core::ops::SessionSnapshot {
                 instruction_assembly: None,
                 ..newer.clone()
             };
@@ -362,7 +362,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             handle.send(sync_snapshot(&original)).await.unwrap();
             assert!(
                 handle.get_session_snapshot().await.unwrap()
-                    == crate::core::ops::SessionSnapshot {
+                    == codewhale_engine::core::ops::SessionSnapshot {
                         instruction_assembly: None,
                         ..original
                     }
@@ -534,9 +534,34 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
 
         // Portable save failure: block the canonical file with a directory.
         // Preserve the last durable snapshot as a sibling for inspection.
+        let before_failure = handle.get_session_snapshot().await.unwrap();
         std::fs::rename(&path, path.with_extension("before-failure")).unwrap();
         std::fs::create_dir(&path).unwrap();
+        app.input = "unrelated draft".into();
+        app.cursor_position = app.input.chars().count();
         let result = commands::execute("/retry", &mut app);
+        apply_command_result(
+            &mut terminal,
+            &mut app,
+            &mut handle,
+            &tasks,
+            &mut config,
+            result,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input, "unrelated draft");
+        assert!(app.queued_messages.is_empty());
+        assert!(app.history.iter().any(|cell| matches!(cell, HistoryCell::System { content } if content == "Retry prompt was not sent. Copy it from here to retry:\nkeep this")));
+        assert_eq!(mock.captured_requests().len(), 6);
+        handle.send(sync_snapshot(&before_failure)).await.unwrap();
+        assert_eq!(handle.get_session_snapshot().await.unwrap().messages, before_failure.messages);
+        app.set_api_messages(Arc::new(before_failure.messages));
+        app.push_history_cell(HistoryCell::User { content: "keep this".into() });
+        let loaded = commands::execute("/edit", &mut app);
+        assert!(!loaded.is_error, "{:?}", loaded.message);
+        let result = super::super::event_loop::edit_replacement_result(&mut app, "replacement after failed save")
+            .expect("a pending edit stages a replacement");
         apply_command_result(
             &mut terminal,
             &mut app,
@@ -563,6 +588,10 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             app.api_messages.as_slice() == [checkpoint.clone()],
             "acknowledged undo remains visible after save failure"
         );
+        assert_eq!(app.input, "replacement after failed save");
+        assert!(!app.edit_in_progress);
+        assert!(super::super::event_loop::edit_replacement_result(&mut app, "replacement after failed save").is_none());
+        assert!(app.status_toasts.back().unwrap().text.contains("Conversation was rewound"));
         assert!(
             handle
                 .get_session_snapshot()
@@ -611,16 +640,16 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
 /// composer. It must come back, with edit mode re-armed, not be lost.
 #[tokio::test]
 async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
-    use crate::task_manager::{
+    use codewhale_engine::task_manager::{
         TaskExecutionResult, TaskManagerConfig, TaskStatus, TaskTerminalReason,
     };
     struct Idle;
     #[async_trait::async_trait]
-    impl crate::task_manager::TaskExecutor for Idle {
+    impl codewhale_engine::task_manager::TaskExecutor for Idle {
         async fn execute(
             &self,
-            _: crate::task_manager::ExecutionTask,
-            _: tokio::sync::mpsc::Sender<crate::task_manager::TaskExecutionEvent>,
+            _: codewhale_engine::task_manager::ExecutionTask,
+            _: tokio::sync::mpsc::Sender<codewhale_engine::task_manager::TaskExecutionEvent>,
             _: tokio_util::sync::CancellationToken,
         ) -> TaskExecutionResult {
             TaskExecutionResult {
@@ -641,7 +670,7 @@ async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
             default_mode: "plan".into(),
             allow_shell: false,
             trust_mode: false,
-            execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+            execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
         },
         Arc::new(Idle),
     )

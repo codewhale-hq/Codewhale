@@ -85,7 +85,7 @@ pub struct WorkflowRun<'a> {
     pub succeeded: usize,
     pub failed: usize,
     pub cancelled: usize,
-    pub total: usize,
+    pub total: u64,
     pub elapsed: Option<Duration>,
     pub tokens: Option<u64>,
     pub queued: usize,
@@ -111,7 +111,7 @@ impl<'a> WorkflowRun<'a> {
         succeeded: usize,
         failed: usize,
         cancelled: usize,
-        total: usize,
+        total: u64,
     ) -> Self {
         self.succeeded = succeeded;
         self.failed = failed;
@@ -325,7 +325,7 @@ fn tokens(value: u64) -> String {
         value.to_string()
     }
 }
-fn bar_cells(succeeded: usize, failed: usize, total: usize) -> (usize, usize) {
+fn bar_cells(succeeded: usize, failed: usize, total: u64) -> (usize, usize) {
     if total == 0 {
         return (0, 0);
     }
@@ -752,7 +752,7 @@ impl<'a> NativeComposer<'a> {
             .unwrap_or_default();
         let role = |role| theme.map(|t| t.fg(role)).unwrap_or_default();
         let border = background.patch(role(if self.focused {
-            Role::Primary
+            Role::Accent
         } else {
             Role::Border
         }));
@@ -797,7 +797,7 @@ impl<'a> NativeComposer<'a> {
                             format!(" {} ", safe(hint)),
                             width.map(|width| width.saturating_sub(u16::from(panel) * 2)),
                         ),
-                        background.patch(role(Role::Primary)),
+                        background.patch(role(Role::Accent)),
                     )
                 }),
             quiet_hint: self
@@ -810,7 +810,7 @@ impl<'a> NativeComposer<'a> {
                             format!(" {} ", safe(hint)),
                             width.map(|width| width.saturating_sub(u16::from(panel) * 2)),
                         ),
-                        background.patch(role(Role::Primary)),
+                        background.patch(role(Role::Accent)),
                     )
                 }),
             styles: NativeComposerStyles {
@@ -819,7 +819,7 @@ impl<'a> NativeComposer<'a> {
                 quiet_border: background.patch(role(Role::Border)),
                 text: background.patch(role(Role::Foreground)),
                 selection: background.patch(role(Role::Foreground)),
-                prompt: background.patch(role(Role::Primary)),
+                prompt: background.patch(role(Role::Accent)),
                 submit: if self.can_submit {
                     submit.add_modifier(Modifier::BOLD)
                 } else {

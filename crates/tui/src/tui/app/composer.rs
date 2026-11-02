@@ -773,7 +773,7 @@ impl App {
         if self.input.trim_start().starts_with(['/', '!']) {
             return false;
         }
-        let Some(paths) = crate::image_attach::pasted_image_paths(text) else {
+        let Some(paths) = codewhale_engine::image_attach::pasted_image_paths(text) else {
             return false;
         };
         for path in &paths {
@@ -864,6 +864,7 @@ impl App {
             self.selected_attachment_index = None;
             return false;
         };
+        self.clear_input_history_navigation();
         let reference = references[index].clone();
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         let new_cursor_byte = if cursor_byte <= reference.start_byte {
@@ -1410,17 +1411,26 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Move the cursor to the end of the current logical line (vim `$`).
+    /// Move the cursor onto the last character of the current logical line
+    /// (vim `$`).
     pub fn vim_move_line_end(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk forward to the next newline or end-of-string.
-        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
-            || char_count(&text),
-            |rel| char_count(&text[..cursor_byte + rel]),
-        );
-        self.cursor_position = line_end_char;
-        self.needs_redraw = true;
+        self.move_cursor_line_end();
+        self.vim_step_off_line_end();
+    }
+
+    fn vim_step_off_line_end(&mut self) {
+        let cursor = self.cursor_position.min(char_count(&self.input));
+        let cursor_byte = byte_index_at_char(&self.input, cursor);
+        let line_start_byte = self.input[..cursor_byte]
+            .rfind('\n')
+            .map_or(0, |idx| idx + 1);
+        let on_line_end = self.input[cursor_byte..]
+            .chars()
+            .next()
+            .is_none_or(|ch| ch == '\n');
+        if on_line_end && cursor_byte > line_start_byte {
+            self.cursor_position = prev_grapheme_boundary(&self.input, cursor);
+        }
     }
 
     /// Move forward one word (vim `w`).  Skips over the current word then any
@@ -1437,26 +1447,28 @@ impl App {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn vim_delete_char_under_cursor(&mut self) {
+        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         let total = char_count(&self.input);
         if self.cursor_position >= total {
             return;
         }
         let pos = self.cursor_position;
+        if self.input[byte_index_at_char(&self.input, pos)..].starts_with('\n') {
+            return;
+        }
         // Grapheme-aware: `x` deletes the whole cluster under the cursor.
         let end = next_grapheme_boundary(&self.input, pos);
         remove_char_range(&mut self.input, pos, end);
         self.resync_command_line_claim();
-        // Keep cursor in bounds after deletion, on the last cluster's start.
-        let new_total = char_count(&self.input);
-        if self.cursor_position > 0 && self.cursor_position >= new_total {
-            self.cursor_position = prev_grapheme_boundary(&self.input, new_total);
-        }
+        // Keep cursor in bounds after deletion, on the line's last cluster's start.
+        self.vim_step_off_line_end();
         self.needs_redraw = true;
     }
 
     /// Delete the entire current logical line (vim `dd`).
     pub fn vim_delete_line(&mut self) {
+        self.clear_input_history_navigation();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
@@ -1492,7 +1504,10 @@ impl App {
     /// Enter insert mode after the cursor (vim `a`).
     pub fn vim_enter_append(&mut self) {
         let total = char_count(&self.input);
-        if self.cursor_position < total {
+        if self.cursor_position < total
+            && !self.input[byte_index_at_char(&self.input, self.cursor_position)..]
+                .starts_with('\n')
+        {
             // After the whole cluster under the cursor, not one scalar in.
             self.cursor_position = next_grapheme_boundary(&self.input, self.cursor_position);
         }
@@ -1503,7 +1518,7 @@ impl App {
     /// Open a new line below and enter insert mode (vim `o`).
     pub fn vim_open_line_below(&mut self) {
         // Move to end of line, then insert a newline.
-        self.vim_move_line_end();
+        self.move_cursor_line_end();
         self.insert_char('\n');
         self.vim_mode = VimMode::Insert;
     }
@@ -1749,7 +1764,8 @@ impl App {
         // keys, or the question written on the same line) still attaches.
         if !claimed_command
             && !self.input.trim_start().starts_with('!')
-            && let Some((path, rest)) = crate::image_attach::leading_dropped_image(&self.input)
+            && let Some((path, rest)) =
+                codewhale_engine::image_attach::leading_dropped_image(&self.input)
         {
             let reference = media_attachment_reference("image", &path, None);
             self.input = if rest.is_empty() {

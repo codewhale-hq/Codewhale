@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: sohbeti, mesaj alanını ve oturum kontrollerini gösteren terminal kaydı.",
   latestRelease: "En yeni sürüm {tag}",
   releaseUnavailable: "Sürüm durumu kullanılamıyor",
+  proofContributors: "{count} katkıda bulunan",
   currentSource: "Kaynak",
   sourceCandidate: "Yayımlanmadı",
   publishedRelease: "yayımlandı",

@@ -9,13 +9,12 @@
 
 use crate::tui::app::App;
 use crate::tui::footer_ui::one_line_summary;
+use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_text};
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, tool_status_label};
 use crate::tui::pager::{PagerPage, PagerView};
-use crate::tui::ui_text::{
-    history_cell_to_clipboard_text, history_cell_to_text, truncate_line_to_width,
-};
 use codewhale_localization::{MessageId, tr};
 use codewhale_snapshot::SnapshotRepo;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 fn selected_transcript_cell_index(app: &App) -> Option<usize> {
     if let Some(owner) = app.selection_owner_cell() {
@@ -275,108 +274,37 @@ pub(super) fn open_tool_details_pager(app: &mut App) -> bool {
     open_details_pager_for_cell(app, cell_index)
 }
 
-/// Build the trailing "Spillover" section for the tool-details pager
-/// (#500). Session artifact records are authoritative for every tool family
-/// (including specialized Bash and MCP cells); the historical generic-cell
-/// path is only a UI compatibility fallback. The pager deliberately keeps the
-/// backing path and operating-system error private: a detail surface may be
-/// captured or shared, and neither is useful evidence for the user.
-pub(super) fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
+pub(super) fn spillover_pager_reference(app: &App, cell_index: usize) -> Option<(String, String)> {
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell};
 
-    let cell = app.cell_at_virtual_index(cell_index)?;
-    let current_session = app.current_session_id.as_deref();
-    let session_artifact = app
+    let session_id = app
+        .current_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())?;
+    let artifact = app
         .tool_detail_record_for_cell(cell_index)
         .and_then(|detail| {
             app.session_artifacts.iter().find(|artifact| {
-                artifact.kind == crate::artifacts::ArtifactKind::ToolOutput
+                artifact.kind == codewhale_runtime::artifacts::ArtifactKind::ToolOutput
                     && artifact.tool_call_id == detail.tool_id
-                    && current_session == Some(artifact.session_id.as_str())
+                    && artifact.session_id == session_id
             })
         });
-    let legacy_path = match cell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            spillover_path: Some(path),
-            ..
-        })) => Some(path.clone()),
-        _ => None,
+    let reference = if let Some(artifact) = artifact {
+        artifact.storage_path.to_str()?
+    } else if let Some(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        spillover_path: Some(path),
+        ..
+    }))) = app.cell_at_virtual_index(cell_index)
+    {
+        path.to_str()?
+    } else {
+        return None;
     };
-    if session_artifact.is_none() && legacy_path.is_none() {
+    if reference.len() > codewhale_engine::tools::tool_result_retrieval::MAX_REFERENCE_BYTES {
         return None;
     }
-    let body = session_artifact
-        .and_then(read_owned_session_artifact)
-        .or_else(|| {
-            legacy_path.as_deref().and_then(|path| {
-                current_session.and_then(|session_id| read_owned_legacy_spillover(path, session_id))
-            })
-        })
-        .unwrap_or_else(|| "(retained output is unavailable)".to_string());
-    Some(format!("── Full output ──\n\n{body}"))
-}
-
-// Pager reads are bounded; larger artifacts remain on disk and the existing
-// unavailable-output state is shown. This is not a persistence size limit.
-const MAX_SESSION_ARTIFACT_DISPLAY_BYTES: u64 = 64 * 1024 * 1024;
-
-fn read_owned_session_artifact(artifact: &crate::artifacts::ArtifactRecord) -> Option<String> {
-    use std::io::Read;
-
-    if !artifact
-        .storage_path
-        .starts_with(crate::artifacts::ARTIFACTS_DIR_NAME)
-    {
-        return None;
-    }
-    let file = crate::artifacts::open_session_relative(
-        &artifact.session_id,
-        &artifact.storage_path,
-        false,
-    )
-    .ok()?
-    .open_file()
-    .ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_SESSION_ARTIFACT_DISPLAY_BYTES {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn read_owned_legacy_spillover(path: &std::path::Path, session_id: &str) -> Option<String> {
-    let root = crate::tools::truncate::spillover_root()?;
-    let path = canonical_owned_file(path, &root)?;
-    let ownership = crate::tools::truncate::read_legacy_spillover_ownership(&path).ok()?;
-    if ownership.origin_session != session_id {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    if ownership.size_bytes != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        || ownership.digest != codewhale_runtime::hashing::sha256_hex(&bytes)
-    {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn canonical_owned_file(
-    candidate: &std::path::Path,
-    root: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    if std::fs::symlink_metadata(candidate)
-        .ok()?
-        .file_type()
-        .is_symlink()
-    {
-        return None;
-    }
-    let root = root.canonicalize().ok()?;
-    let candidate = candidate.canonicalize().ok()?;
-    (candidate.is_file() && candidate.starts_with(root)).then_some(candidate)
+    Some((session_id.to_string(), reference.to_string()))
 }
 
 pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
@@ -392,25 +320,26 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
             std::string::ToString::to_string,
         );
 
-        // #500: when the tool result was spilled to disk, fold the full
-        // file content into the pager body so the user can see what was
-        // elided (the model only ever saw the head). The truncated head
-        // stays above as `Output:` so the user can compare what the
-        // model received against the full payload.
-        let spillover_section = spillover_pager_section(app, cell_index);
+        let retained = spillover_pager_reference(app, cell_index);
         let mutation_section = match app.cell_at_virtual_index(cell_index) {
-            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => cell
-                .receipt
-                .as_ref()
-                .map(|receipt| format!("── Exact File change ──\n{}", receipt.inspect_text())),
+            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => {
+                cell.receipt.as_ref().map(|receipt| {
+                    format!(
+                        "── {} ──\n{}",
+                        codewhale_localization::tr(
+                            app.ui_locale,
+                            codewhale_localization::MessageId::FileMutationExactHeading
+                        ),
+                        receipt.inspect_text(app.ui_locale)
+                    )
+                })
+            }
             _ => None,
         };
 
-        // Frame the body as leaf-level raw detail for the selected item. The
-        // Tool ID / Input / Output / spillover content below is unchanged — only
-        // the leading intro line is new, so existing raw-output visibility is
-        // preserved (#4105).
-        let trailing_sections = [mutation_section, spillover_section]
+        // Frame the recorded detail at leaf scope; retained bytes use the
+        // owned evidence page rather than being joined into this body.
+        let trailing_sections = [mutation_section]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -432,11 +361,15 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
             .last_transcript_area
             .map(|area| area.width)
             .unwrap_or(80);
-        app.view_stack.push(PagerView::from_text(
+        let mut pager = PagerView::from_text(
             format!("Raw detail — {}", detail.tool_name),
             &content,
             width.saturating_sub(2),
-        ));
+        );
+        if let Some((session, reference)) = retained {
+            pager = pager.with_owned_evidence(app.workspace.clone(), session, reference);
+        }
+        app.view_stack.push(pager);
         return true;
     }
 
@@ -460,13 +393,20 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let content = history_cell_to_text(cell, width);
+    let content = if matches!(cell, HistoryCell::Tool(_)) {
+        history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text(title, &content, width.saturating_sub(2));
     // A completed assistant cell gets a clean `a` (copy answer) action so
     // this raw-detail pager can hand over the answer text without the
     // glyph/label scaffolding that `c`/`y` (rendered body) would include.
     if let Some(answer) = completed_assistant_answer_text(cell, width) {
         pager = pager.with_copy_answer(answer);
+    }
+    if let Some((session, reference)) = spillover_pager_reference(app, cell_index) {
+        pager = pager.with_owned_evidence(app.workspace.clone(), session, reference);
     }
     app.view_stack.push(pager);
     true
@@ -496,7 +436,11 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let content = history_cell_to_text(cell, width);
+    let content = if matches!(cell, HistoryCell::Tool(_)) {
+        history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text(title, &content, width.saturating_sub(2));
     if let Some(answer) = completed_assistant_answer_text(cell, width) {
         pager = pager.with_copy_answer(answer);
@@ -1130,12 +1074,12 @@ fn turn_todo_lines(app: &App) -> Vec<String> {
     lines
 }
 
-fn todo_status_glyph(status: &crate::tools::todo::TodoStatus) -> &'static str {
+fn todo_status_glyph(status: &codewhale_engine::tools::todo::TodoStatus) -> &'static str {
     match status {
-        crate::tools::todo::TodoStatus::Completed => "[x]",
-        crate::tools::todo::TodoStatus::InProgress => "[~]",
-        crate::tools::todo::TodoStatus::Pending => "[ ]",
-        crate::tools::todo::TodoStatus::Cancelled => "[-]",
+        codewhale_engine::tools::todo::TodoStatus::Completed => "[x]",
+        codewhale_engine::tools::todo::TodoStatus::InProgress => "[~]",
+        codewhale_engine::tools::todo::TodoStatus::Pending => "[ ]",
+        codewhale_engine::tools::todo::TodoStatus::Cancelled => "[-]",
     }
 }
 
@@ -1174,12 +1118,14 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 let (kind, summary) = timeline_tool_summary(app, idx, tool);
                 let duration = tool_duration_for_activity(tool)
                     .map(codewhale_command_contract::elapsed::format_elapsed_ms);
-                let status = tool.status().map(tool_status_label);
+                let status = tool
+                    .status()
+                    .map(|status| tool_status_label(status, app.ui_locale));
                 let actions = timeline_cell_actions(app, idx, cell);
                 rows.push(timeline_row(
                     kind,
                     &summary,
-                    status,
+                    status.as_deref(),
                     duration.as_deref(),
                     &actions,
                 ));
@@ -1428,7 +1374,7 @@ fn turn_files_changed(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&patch.path, 60),
-                    tool_status_label(patch.status)
+                    tool_status_label(patch.status, app.ui_locale)
                 ));
             }
             _ => {}
@@ -1497,7 +1443,7 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&exec.command, 56),
-                    tool_status_label(exec.status)
+                    tool_status_label(exec.status, app.ui_locale)
                 ));
             }
             ToolCell::Review(review) => {
@@ -1507,7 +1453,10 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 } else {
                     format!("review {target}")
                 };
-                lines.push(format!("• {target} — {}", tool_status_label(review.status)));
+                lines.push(format!(
+                    "• {target} — {}",
+                    tool_status_label(review.status, app.ui_locale)
+                ));
             }
             _ => {}
         }
@@ -1621,30 +1570,32 @@ fn turn_route_lines(app: &App) -> Vec<String> {
 
     let chip = app.cumulative_usage_chip();
     match &chip {
-        crate::route_billing::UsageChip::Money(amount) => {
+        codewhale_engine::route_billing::UsageChip::Money(amount) => {
             lines.push(format!("Cost (session): {amount}"));
         }
-        crate::route_billing::UsageChip::PricedSubtotal { .. } => {
+        codewhale_engine::route_billing::UsageChip::PricedSubtotal { .. } => {
             lines.push(format!(
                 "Cost (session): {}",
-                crate::route_billing::format_usage_chip(&chip, app.ui_locale).unwrap_or_default()
+                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
+                    .unwrap_or_default()
             ));
         }
-        crate::route_billing::UsageChip::Allowance { label, used_pct } => {
+        codewhale_engine::route_billing::UsageChip::Allowance { label, used_pct } => {
             lines.push(match used_pct {
                 Some(pct) => format!("Usage plan: {label} ({pct:.0}% used)"),
                 None => format!("Usage plan: {label}"),
             });
         }
-        crate::route_billing::UsageChip::Local => {
+        codewhale_engine::route_billing::UsageChip::Local => {
             lines.push("Cost: local".to_string());
         }
-        crate::route_billing::UsageChip::Unknown(_) => {
+        codewhale_engine::route_billing::UsageChip::Unknown(_) => {
             lines.push(
-                crate::route_billing::format_usage_chip(&chip, app.ui_locale).unwrap_or_default(),
+                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
+                    .unwrap_or_default(),
             );
         }
-        crate::route_billing::UsageChip::Hidden => {}
+        codewhale_engine::route_billing::UsageChip::Hidden => {}
     }
 
     lines
@@ -1661,7 +1612,9 @@ enum ResultDetail {
 
 /// `/status` lines for the router behind an Auto receipt (#6525): the
 /// decision-model answer, its cost and latency, and a failing router.
-fn auto_router_receipt_lines(receipt: &crate::model_routing::AutoRouteReceipt) -> Vec<String> {
+fn auto_router_receipt_lines(
+    receipt: &codewhale_engine::model_routing::AutoRouteReceipt,
+) -> Vec<String> {
     let percent = |bp: u16| format!("{}%", (u32::from(bp) + 50) / 100);
     let mut lines = Vec::new();
     if let Some(decision) = receipt.decision.as_ref() {
@@ -1714,7 +1667,7 @@ fn cleaned_turn_text(text: &str, detail: ResultDetail, max_width: usize) -> Stri
     }
 
     let mut cleaned = String::with_capacity(text.len());
-    crate::tui::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
     cleaned.trim().to_string()
 }
 
@@ -1814,7 +1767,7 @@ mod tests {
         app.auto_model = true;
         app.last_effective_provider = Some(codewhale_config::ProviderKind::Deepseek);
         app.last_effective_model = Some("deepseek-v4-pro".to_string());
-        let decision = crate::model_routing::AutoRouteDecisionEvidence {
+        let decision = codewhale_models::auto_route_evidence::AutoRouteDecisionEvidence {
             choice: "strong".to_string(),
             probabilities_bp: [("fast".to_string(), 1800), ("strong".to_string(), 8200)]
                 .into_iter()
@@ -1827,18 +1780,18 @@ mod tests {
             latency_ms: 180,
             response_model: Some("typesafe/jev-1.13-20260917".to_string()),
         };
-        let receipt = crate::model_routing::AutoRouteReceipt {
-            tier: crate::model_routing::AutoRouteTier::Strong,
-            pair: crate::model_routing::AutoRoutePair {
+        let receipt = codewhale_engine::model_routing::AutoRouteReceipt {
+            tier: codewhale_engine::model_routing::AutoRouteTier::Strong,
+            pair: codewhale_engine::model_routing::AutoRoutePair {
                 strong: "deepseek-v4-pro".to_string(),
                 fast: Some("deepseek-v4-flash".to_string()),
             },
-            scope: crate::model_routing::AutoRouteScope::ActiveProvider,
-            data_path: crate::model_routing::AutoRouteDataPath::Decision {
-                route: crate::client::system_one::DecisionRouterRoute::Openrouter,
+            scope: codewhale_engine::model_routing::AutoRouteScope::ActiveProvider,
+            data_path: codewhale_engine::model_routing::AutoRouteDataPath::Decision {
+                route: codewhale_engine::client::system_one::DecisionRouterRoute::Openrouter,
                 model: "typesafe/jev-1.13".to_string(),
             },
-            reason: crate::model_routing::AutoRouteReason::ClassifierRecommendation,
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierRecommendation,
             decision: Some(decision),
             router_failure: None,
         };
@@ -1853,12 +1806,14 @@ mod tests {
         ));
         assert!(!joined.contains("failing"));
 
-        app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-            reason: crate::model_routing::AutoRouteReason::ClassifierFallback(
-                crate::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
+        app.last_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierFallback(
+                codewhale_engine::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
             ),
             decision: None,
-            router_failure: Some(crate::model_routing::AutoRouterFailure::Http { status: 402 }),
+            router_failure: Some(codewhale_engine::model_routing::AutoRouterFailure::Http {
+                status: 402,
+            }),
             ..receipt
         });
         let joined = turn_route_lines(&app).join("\n");
@@ -1875,9 +1830,9 @@ mod tests {
         app.last_effective_provider = Some(codewhale_config::ProviderKind::Zai);
         app.last_effective_model =
             Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string());
-        app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-            tier: crate::model_routing::AutoRouteTier::Fast,
-            pair: crate::model_routing::AutoRoutePair {
+        app.last_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+            tier: codewhale_engine::model_routing::AutoRouteTier::Fast,
+            pair: codewhale_engine::model_routing::AutoRoutePair {
                 strong: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
                     .to_string(),
                 fast: Some(
@@ -1885,13 +1840,13 @@ mod tests {
                         .to_string(),
                 ),
             },
-            scope: crate::model_routing::AutoRouteScope::RunnableProviders,
-            data_path: crate::model_routing::AutoRouteDataPath::Classifier {
+            scope: codewhale_engine::model_routing::AutoRouteScope::RunnableProviders,
+            data_path: codewhale_engine::model_routing::AutoRouteDataPath::Classifier {
                 provider: "deepseek".into(),
                 provider_kind: codewhale_config::ProviderKind::Deepseek,
                 model: "deepseek-v4-flash".to_string(),
             },
-            reason: crate::model_routing::AutoRouteReason::ClassifierRecommendation,
+            reason: codewhale_engine::model_routing::AutoRouteReason::ClassifierRecommendation,
             decision: None,
             router_failure: None,
         });
@@ -2163,51 +2118,83 @@ mod tests {
             );
         }
     }
-    struct PrivateArtifactRoot(Option<PathBuf>);
+    struct PrivateArtifactRoot {
+        sessions: Option<PathBuf>,
+        spillover: Option<PathBuf>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
     impl PrivateArtifactRoot {
         fn set(path: PathBuf) -> Self {
-            Self(crate::artifacts::set_test_artifact_sessions_root(Some(
-                path,
-            )))
+            let guard = codewhale_engine::tools::truncate::TEST_SPILLOVER_GUARD
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let spillover = codewhale_engine::tools::truncate::set_test_spillover_root(Some(
+                path.join("legacy"),
+            ));
+            Self {
+                sessions: codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(path)),
+                spillover,
+                _guard: guard,
+            }
         }
     }
     impl Drop for PrivateArtifactRoot {
         fn drop(&mut self) {
-            crate::artifacts::set_test_artifact_sessions_root(self.0.take());
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.sessions.take());
+            codewhale_engine::tools::truncate::set_test_spillover_root(self.spillover.take());
         }
     }
-    fn owned_artifact_fixture() -> crate::artifacts::ArtifactRecord {
-        crate::artifacts::record_tool_output_artifact(
-            "session-a",
-            "call-fixture",
-            "bash",
-            PathBuf::from("artifacts/mutable.txt"),
-            "fixture",
-        )
+    fn owned_artifact_fixture(reference: &str) -> Option<String> {
+        use crate::tui::views::{ModalView, ViewAction, ViewEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut pager = PagerView::from_text("fixture", "", 80).with_owned_evidence(
+                    PathBuf::from("."),
+                    "session-a".to_string(),
+                    reference.to_string(),
+                );
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while !matches!(pager.tick(), ViewAction::Redraw) {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("owned evidence pager did not finish");
+                match pager.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)) {
+                    ViewAction::Emit(ViewEvent::CopyToClipboard { text, .. }) => Some(text),
+                    _ => None,
+                }
+            })
     }
 
     #[test]
     fn owned_artifact_pager_reads_regular_exact_session_output() {
-        let _guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        let _guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let _root = PrivateArtifactRoot::set(temp.path().join("sessions"));
-        crate::artifacts::write_session_artifact("session-a", "mutable", "exact pager output")
-            .unwrap();
+        codewhale_runtime::artifacts::write_session_artifact(
+            "session-a",
+            "mutable",
+            "exact pager output",
+        )
+        .unwrap();
         assert_eq!(
-            read_owned_session_artifact(&owned_artifact_fixture()).as_deref(),
+            owned_artifact_fixture("artifacts/mutable.txt").as_deref(),
             Some("exact pager output")
         );
-        let mut malformed = owned_artifact_fixture();
-        malformed.storage_path = PathBuf::from("other/mutable.txt");
-        assert!(read_owned_session_artifact(&malformed).is_none());
+        assert!(owned_artifact_fixture("other/mutable.txt").is_none());
     }
 
     #[cfg(unix)]
     #[test]
     fn owned_artifact_pager_refuses_linked_session_parent() {
-        let _guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        let _guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let temp = tempfile::tempdir().unwrap();
@@ -2223,7 +2210,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(&outside, sessions.join("session-a")).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager accepted output from a linked outside session"
         );
     }
@@ -2231,7 +2218,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn owned_artifact_pager_refuses_hardlinked_outside_bytes() {
-        let _guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        let _guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let temp = tempfile::tempdir().unwrap();
@@ -2242,14 +2229,14 @@ mod tests {
         std::fs::write(&outside, b"outside-hardlink-synthetic").unwrap();
         std::fs::hard_link(&outside, sessions.join("session-a/artifacts/mutable.txt")).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager exposed outside hardlinked bytes"
         );
     }
 
     #[test]
     fn owned_artifact_pager_refuses_oversized_output_without_deleting_it() {
-        let _guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        let _guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let temp = tempfile::tempdir().unwrap();
@@ -2259,15 +2246,14 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("mutable.txt");
         let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1)
-            .unwrap();
+        file.set_len(512 * 1024 * 1024 + 1).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager allocated oversized session output"
         );
         assert_eq!(
             std::fs::metadata(path).unwrap().len(),
-            MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1
+            512 * 1024 * 1024 + 1
         );
     }
 }

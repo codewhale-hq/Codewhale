@@ -32,7 +32,7 @@ describe("design grammar contract", () => {
     expect(CSS).toMatch(/::selection \{ background: var\(--selection\); \}/);
     // The light ring on the dark stage would fall under 3:1, so the stage
     // re-declares it.
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--kit-bioluminescence\);/);
+    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-accent\);/);
   });
 
   it("paints every primary fill with the logo gradient and white text", () => {
@@ -67,7 +67,8 @@ describe("design grammar contract", () => {
   it("times motion with the spring tokens and stills it under reduced motion", () => {
     expect(CSS).not.toMatch(/\d+ms ease[,;]/);
     expect(CSS).not.toMatch(/cubic-bezier\(0\.25, 0\.46/);
-    expect(CSS).toMatch(/--ease-spring: cubic-bezier\(/);
+    expect(CSS).toMatch(/--ease-spring: var\(--gpui-easing-panel\);/);
+    expect(resolveWhale("var(--gpui-easing-panel)")).toMatch(/^cubic-bezier\(/);
     expect(CSS).toMatch(
       /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{\s*--dur-state: 0ms;\s*--dur-spring: 0ms;/,
     );

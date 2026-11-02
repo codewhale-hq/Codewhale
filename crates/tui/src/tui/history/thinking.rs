@@ -3,9 +3,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::tui::markdown_render;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::markdown_render;
 
 /// Reasoning header opener. Replaces the spinner glyph on thinking cells —
 /// reasoning is a slow exhale, not a tool spin.
@@ -322,21 +322,26 @@ fn streaming_preview_tail_source(body: &str, min_source_lines: usize) -> &str {
     // (byte offset, whether the boundary above this line is inside an open
     // fence). One entry per line; cheap next to the render it bounds.
     let mut lines: Vec<(usize, bool)> = Vec::new();
-    let mut open_fence_len: Option<usize> = None;
+    let mut open_fence: Option<(char, usize)> = None;
     let mut offset = 0usize;
     for piece in body.split_inclusive('\n') {
         let raw_line = piece
             .strip_suffix('\n')
             .map_or(piece, |line| line.strip_suffix('\r').unwrap_or(line));
-        lines.push((offset, open_fence_len.is_some()));
+        lines.push((offset, open_fence.is_some()));
         let trimmed = raw_line.trim_start();
-        let fence_len = trimmed.chars().take_while(|c| *c == '`').count();
+        let fence_char = if trimmed.starts_with('~') { '~' } else { '`' };
+        let fence_len = trimmed.chars().take_while(|c| *c == fence_char).count();
         if fence_len >= 3 {
-            match open_fence_len {
-                Some(open) if fence_len >= open && trimmed[fence_len..].trim().is_empty() => {
-                    open_fence_len = None;
+            match open_fence {
+                Some((open_char, open_len))
+                    if fence_char == open_char
+                        && fence_len >= open_len
+                        && trimmed[fence_len..].trim().is_empty() =>
+                {
+                    open_fence = None;
                 }
-                None => open_fence_len = Some(fence_len),
+                None => open_fence = Some((fence_char, fence_len)),
                 Some(_) => {}
             }
         }

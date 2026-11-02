@@ -260,13 +260,16 @@ release-candidate run with a green Parity job exists for the exact tag SHA
 validated. A missing receipt stops publication; do not move the tag to conceal
 it or use a different SHA's green run.
 It invokes the same reusable artifact workflow as the
-public release, building all seven targets (including Android arm64 and native
-Windows arm64), staging `codewhale` and `codew` (single binary), building the
-NSIS installer and nine platform archives, and validating the authoritative
-34-file inventory from `npm/codewhale/scripts/artifacts.js` (27 current
-artifacts and manifests plus seven compatibility-only `codewhale-tui-*`
+public release, building all eight targets (including Android arm64, native
+Windows arm64 and native HarmonyOS arm64), staging `codewhale` and `codew`
+(single binary), building the NSIS installer and ten platform archives, and
+validating the authoritative
+38-file inventory from `npm/codewhale/scripts/artifacts.js` (30 current
+artifacts and manifests plus eight compatibility-only `codewhale-tui-*`
 filenames containing the same compiled `codewhale` bytes for v0.9.4 update
-clients). It then installs
+clients). The HarmonyOS leg is the one target whose bytes are post-processed:
+the binary is self-signed before staging, because a device refuses to execute
+an unsigned ELF. It then installs
 the packed npm wrapper against those assembled local assets and exercises its
 delegated entrypoints. The resulting `codewhale-release-assets` bundle is a
 short-lived GitHub Actions artifact only.

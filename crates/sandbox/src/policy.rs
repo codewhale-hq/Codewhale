@@ -317,6 +317,7 @@ impl SandboxPolicy {
                 ..
             } => {
                 let mut roots: Vec<PathBuf> = writable_roots.clone();
+                let mut workspace_roots = roots.clone();
 
                 // Add the current working directory
                 if let Ok(canonical_cwd) = cwd.canonicalize() {
@@ -324,13 +325,17 @@ impl SandboxPolicy {
                 } else {
                     roots.push(cwd.to_path_buf());
                 }
+                workspace_roots.extend(roots.last().cloned());
 
                 // Git worktrees keep mutable metadata outside the worktree
                 // directory. Allow only the gitdir and commondir derived from
                 // a workspace `.git` pointer, preserving the workspace boundary
                 // for all other external paths.
+                let mut git_dir_roots = Vec::new();
                 for root in roots.clone() {
-                    roots.extend(resolve_git_worktree_writable_roots(&root));
+                    let git_dirs = resolve_git_worktree_writable_roots(&root);
+                    git_dir_roots.extend(git_dirs.iter().cloned());
+                    roots.extend(git_dirs);
                 }
 
                 // Add /tmp unless excluded
@@ -352,14 +357,27 @@ impl SandboxPolicy {
                     .map(|root| {
                         let mut read_only_subpaths = Vec::new();
 
-                        // Protect .codewhale/ and .deepseek/ directories from modification
+                        // Protect .codewhale/ and .deepseek/ from modification, and
+                        // the git hooks and config that later run or configure
+                        // commands outside the sandbox. A workspace root protects
+                        // .codewhale/ even before it exists.
+                        let workspace = workspace_roots.contains(&root);
                         let codewhale_dir = root.join(".codewhale");
-                        if codewhale_dir.is_dir() {
+                        if workspace || codewhale_dir.is_dir() {
                             read_only_subpaths.push(codewhale_dir);
                         }
                         let deepseek_dir = root.join(".deepseek");
                         if deepseek_dir.is_dir() {
                             read_only_subpaths.push(deepseek_dir);
+                        }
+                        let git_dir = if git_dir_roots.contains(&root) {
+                            root.clone()
+                        } else {
+                            root.join(".git")
+                        };
+                        if git_dir.is_dir() {
+                            read_only_subpaths.push(git_dir.join("hooks"));
+                            read_only_subpaths.push(git_dir.join("config"));
                         }
 
                         WritableRoot {

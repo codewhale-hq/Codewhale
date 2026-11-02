@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::event::{Counters, Errors, TurnWall};
+use crate::event::{Counters, Errors, Event, ModelCounters, TurnWall};
 
 /// One session's accumulated counts.
 #[derive(Debug, Default)]
@@ -38,6 +38,44 @@ pub struct SessionCounters {
     /// only: a `String` here would be the seam through which a customer's
     /// `[providers.<name>]` table key reaches the wire.
     providers: Mutex<Vec<&'static str>>,
+    models: Mutex<Vec<ModelSlot>>,
+    tools: Mutex<Vec<(&'static str, u32, u32)>>,
+}
+
+#[derive(Debug)]
+struct ModelSlot {
+    provider: &'static str,
+    model: String,
+    counters: ModelCounters,
+    turn_wall: TurnWall,
+}
+
+/// At most this many distinct provider and model pairs per session; later
+/// pairs are folded into the provider's `other` row.
+const MAX_MODEL_ROWS: usize = 16;
+
+/// How one model turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// Completed.
+    Ok,
+    /// Failed.
+    Failed,
+    /// Interrupted by the user or the runtime.
+    Interrupted,
+}
+
+/// Token counts for one model turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnTokens {
+    /// Input tokens, including cache reads.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Input tokens read from the prompt cache.
+    pub cache_read: u64,
+    /// Input tokens written to the prompt cache.
+    pub cache_write: u64,
 }
 
 /// Which counter to bump. A closed enum so a call site cannot invent a key.
@@ -115,6 +153,101 @@ impl SessionCounters {
             providers.push(name);
             providers.sort_unstable();
         }
+    }
+
+    /// Record one model turn: its provider, model, outcome, tokens and wall time.
+    pub fn record_model_turn(
+        &self,
+        provider: codewhale_config::ProviderKind,
+        model: &str,
+        outcome: TurnOutcome,
+        tokens: TurnTokens,
+        secs: u64,
+    ) {
+        let provider = provider.as_str();
+        let mut model = crate::event::reported_model_id(model);
+        let Ok(mut models) = self.models.lock() else {
+            return;
+        };
+        let known = models
+            .iter()
+            .any(|slot| slot.provider == provider && slot.model == model);
+        if !known && models.len() >= MAX_MODEL_ROWS {
+            model = "other".to_string();
+        }
+        let index = match models
+            .iter()
+            .position(|slot| slot.provider == provider && slot.model == model)
+        {
+            Some(index) => index,
+            None => {
+                models.push(ModelSlot {
+                    provider,
+                    model,
+                    counters: ModelCounters::default(),
+                    turn_wall: TurnWall::default(),
+                });
+                models.len() - 1
+            }
+        };
+        let slot = &mut models[index];
+        let counters = &mut slot.counters;
+        match outcome {
+            TurnOutcome::Ok => counters.turns_ok = counters.turns_ok.saturating_add(1),
+            TurnOutcome::Failed => counters.turns_failed = counters.turns_failed.saturating_add(1),
+            TurnOutcome::Interrupted => {
+                counters.turns_interrupted = counters.turns_interrupted.saturating_add(1);
+            }
+        }
+        counters.input_tokens = counters.input_tokens.saturating_add(tokens.input);
+        counters.output_tokens = counters.output_tokens.saturating_add(tokens.output);
+        counters.cache_read_tokens = counters.cache_read_tokens.saturating_add(tokens.cache_read);
+        counters.cache_write_tokens = counters
+            .cache_write_tokens
+            .saturating_add(tokens.cache_write);
+        slot.turn_wall.observe_secs(secs);
+    }
+
+    /// Record one tool call by name. `is_mcp` marks an MCP pool tool.
+    pub fn record_tool_call(&self, name: &str, is_mcp: bool, failed: bool) {
+        let tool = crate::event::reported_tool_name(name, is_mcp);
+        let Ok(mut tools) = self.tools.lock() else {
+            return;
+        };
+        let index = match tools.iter().position(|(known, _, _)| *known == tool) {
+            Some(index) => index,
+            None => {
+                tools.push((tool, 0, 0));
+                tools.len() - 1
+            }
+        };
+        let row = &mut tools[index];
+        row.1 = row.1.saturating_add(1);
+        if failed {
+            row.2 = row.2.saturating_add(1);
+        }
+    }
+
+    /// The `model_usage` and `tool_usage` events for this session so far.
+    #[must_use]
+    pub fn usage_events(&self) -> Vec<Event> {
+        let mut events = Vec::new();
+        if let Ok(models) = self.models.lock() {
+            events.extend(models.iter().map(|slot| Event::ModelUsage {
+                provider: slot.provider.to_string(),
+                model: slot.model.clone(),
+                counters: slot.counters,
+                turn_wall: slot.turn_wall,
+            }));
+        }
+        if let Ok(tools) = self.tools.lock() {
+            events.extend(tools.iter().map(|(tool, calls, errors)| Event::ToolUsage {
+                tool: (*tool).to_string(),
+                calls: *calls,
+                errors: *errors,
+            }));
+        }
+        events
     }
 
     /// Snapshot the feature counters.

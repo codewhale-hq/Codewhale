@@ -157,7 +157,7 @@ impl<'a> SettingRow<'a> {
         };
         let marker = glyphs::pick(glyphs::selection_marker(self.selected), theme.ascii());
         let mut spans = vec![
-            Span::styled(format!("{marker} "), theme.fg(Role::Primary)),
+            Span::styled(format!("{marker} "), theme.fg(Role::Accent)),
             Span::styled(text::display_safe(&self.label).into_owned(), label_style),
             Span::raw("  "),
             Span::styled(

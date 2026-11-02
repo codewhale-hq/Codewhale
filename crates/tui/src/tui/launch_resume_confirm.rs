@@ -159,7 +159,7 @@ impl ModalView for LaunchResumeConfirmView {
         let spare = body_height.saturating_sub(warning_height);
         let mut y = inner.y;
         if spare > 0 {
-            Paragraph::new(crate::tui::ui_text::truncate_line_to_width(
+            Paragraph::new(codewhale_tui_kit::ui_text::truncate_line_to_width(
                 &self.title,
                 usize::from(inner.width),
             ))
@@ -168,7 +168,7 @@ impl ModalView for LaunchResumeConfirmView {
             y += 1;
         }
         if spare > 1 {
-            Paragraph::new(crate::tui::ui_text::truncate_line_to_width(
+            Paragraph::new(codewhale_tui_kit::ui_text::truncate_line_to_width(
                 &self.detail,
                 usize::from(inner.width),
             ))
@@ -219,9 +219,9 @@ impl ModalView for LaunchResumeConfirmView {
                 label.into_owned()
             };
             let style = if self.selected == index {
-                crate::tui::menu_style::selected_row_style()
+                codewhale_tui_kit::menu_style::selected_row_style()
             } else if self.hovered == Some(index) {
-                crate::tui::menu_style::hovered_row_style().fg(palette::TEXT_PRIMARY)
+                codewhale_tui_kit::menu_style::hovered_row_style().fg(palette::TEXT_PRIMARY)
             } else {
                 Style::default()
                     .bg(palette::SURFACE_ELEVATED)

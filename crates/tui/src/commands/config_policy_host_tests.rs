@@ -101,7 +101,9 @@ fn config_policy_status_survives_unreadable_optional_config_without_rewriting_it
 
 #[test]
 fn config_policy_status_reports_saved_fleet_drift_without_rewriting_pins_or_files() {
-    use crate::fleet::store::{FleetFile, FleetOperator, FleetScope, save_fleet, set_selected};
+    use codewhale_engine::fleet::store::{
+        FleetFile, FleetOperator, FleetScope, save_fleet, set_selected,
+    };
     let _env = crate::test_support::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
     let mut app = crate::tui::test_support::test_app_with_options(

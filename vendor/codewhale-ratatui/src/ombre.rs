@@ -137,9 +137,9 @@ impl WaterPalette {
             WaterPalette::Graphite => return None,
             // The logo pair is the brand ombre in both appearances.
             WaterPalette::Ocean => (LOGO_TOP, LOGO_BOTTOM),
-            WaterPalette::Lagoon => (theme.token_hex(Role::Live), theme.token_hex(Role::Primary)),
+            WaterPalette::Lagoon => (theme.token_hex(Role::Live), theme.token_hex(Role::Accent)),
             WaterPalette::Dusk => (
-                theme.token_hex(Role::Primary),
+                theme.token_hex(Role::Accent),
                 theme.token_hex(Role::Attention),
             ),
             WaterPalette::Coral => (

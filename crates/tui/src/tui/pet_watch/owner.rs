@@ -306,12 +306,24 @@ pub fn serve(root: PathBuf, requested_port: u16) -> anyhow::Result<()> {
     std::fs::create_dir_all(&root)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::symlink_metadata(&root)?;
-        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        if !metadata.is_dir() {
+            anyhow::bail!("Pet directory must be a directory and cannot be a link");
+        }
+        // A mount that reports an owner of its own (HarmonyOS hmdfs) makes the
+        // uid comparison meaningless; the link refusal above still holds.
+        let ownership_proven = metadata.uid() == unsafe { libc::geteuid() }
+            || matches!(
+                codewhale_config::private_directory::mount_footing(&root),
+                codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+            );
+        if !ownership_proven {
             anyhow::bail!("Pet directory must belong to this user and cannot be a link");
         }
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        // `tighten_mode` keeps the refusal for a filesystem that stores modes
+        // and excuses only one that assigns its own.
+        codewhale_config::private_directory::tighten_mode(&root, 0o700)?;
     }
     let lock_path = WorkspaceFile::open_resolved_root(&root, Path::new("owner.lock"), true)?;
     let original = lock_path.open_update(true, false)?;

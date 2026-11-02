@@ -58,6 +58,7 @@ completely; only one of them erases anything.
 ```sh
 codewhale config set telemetry false     # opt out: stops collection and erases state
 CODEWHALE_TELEMETRY=0 codewhale          # kill switch: stops collection, erases nothing
+DO_NOT_TRACK=1 codewhale                 # the same kill switch, by the common convention
 codewhale --telemetry false              # the same kill switch, for one command
 ```
 
@@ -161,14 +162,17 @@ most once per flush point and never grows a queue.
 
 ## Event schema
 
-`SCHEMA_VERSION = 3`. `notice_version = 5` identifies the disclosed default-on
-policy; it does not assert human consent or that a notice was seen. The closed
+`SCHEMA_VERSION = 4`. `notice_version = 6` identifies the disclosed default-on
+policy; it does not assert human consent or that a notice was seen. Schema 4
+adds the `model_usage` and `tool_usage` events and the `ci` session source.
+Schema-3 batches with `notice_version = 5` are still accepted without them, which
+is what the web and desktop control-plane relay sends. The closed
 v2 contract still accepts only `consent_version = 4`, retaining its original
 explicit opt-in meaning. Fields cannot be mixed between versions. The unchanged
 v1 contract remains first-party only and **never sent to PostHog**; it refuses
 new fields, surfaces, and `product_usage` events.
 
- Every field is an integer, a boolean, or a **closed enum string**, except exactly three bounded strings: `app_version`, `git_sha`, `panic_site`. Each of the three has a written rule and a test pinning the rule. **There is no free-form string type in this schema, and no open-keyed map.** That is the property that makes red line 3 enforceable rather than aspirational.
+ Every field is an integer, a boolean, or a **closed enum string**, except exactly four bounded strings: `app_version`, `git_sha`, `panic_site`, and `model_usage.model`, which is closed against the bundled model catalog. Each of the four has a written rule and a check on the drain path. **There is no free-form string type in this schema, and no open-keyed map.** That is the property that makes red line 3 enforceable rather than aspirational.
 
 ### Batch envelope — sent on every POST
 
@@ -283,7 +287,10 @@ Emitted once when `state.json`'s `last_version` differs from `app_version`.
 { "event": "session_start", "source": "interactive" }
 ```
 
-`source` is `SessionSource` (`crates/state/src/lib.rs:34-41`) stringified by `session_source_to_str` (`:1909-1917`): `interactive | resume | fork | api | unknown`.
+`source` is `SessionSource` (`crates/state/src/lib.rs:34-41`) stringified by `session_source_to_str` (`:1909-1917`): `interactive | resume | fork | api | unknown | ci`.
+`ci` replaces the others whenever `CI` or `GITHUB_ACTIONS` is set to a true
+value, including the Codewhale GitHub Action, so automated runs are never
+counted as people. Only that boolean environment fact is read.
 
 ### Event: `session_end`
 
@@ -310,39 +317,39 @@ The workhorse. Everything a session accumulated ships here, once.
 
 **`duration_bucket`** — `chrono` delta from `app.session_started_at` (`crates/tui/src/tui/app.rs:1889`). Half-open, seconds: `lt_1m` (`d < 60`), `1m_10m` (`60 ≤ d < 600`), `10m_60m` (`600 ≤ d < 3600`), `gt_60m` (`d ≥ 3600`).
 
-**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/tui/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/tui/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Do **not** use `exec_failure_exit_code` (`crates/tui/src/lib.rs:10432`): it knows only `{75, 1}` and would report an approval-required exit (3) as a generic failure.
+**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Do **not** use `exec_failure_exit_code` (`crates/tui/src/lib.rs:10432`): it knows only `{75, 1}` and would report an approval-required exit (3) as a generic failure.
 
 **`cold_start_bucket`** — from `startup_trace::elapsed_ms()`, which reads `PROCESS_START` directly and is independent of the startup summary's buffer clear (`crates/runtime/src/startup_trace.rs:39-45`). Boundaries: `lt_250`, `250_1000`, `1000_3000`, `gte_3000`. Absent on non-TUI surfaces.
 
-**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/tui/src/lib.rs:10220`), or `PlannedTurnRoute.effective_provider_label` (`crates/tui/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **No model id is ever sent, for any provider** — `crates/runtime/src/safe_label.rs:11-15` documents that a model id can be a path, a URL, or a deployment id that is itself a credential.
+**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/tui/src/lib.rs:10220`), or `PlannedTurnRoute.effective_provider_label` (`crates/engine/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **No model id is ever sent, for any provider** — `crates/runtime/src/safe_label.rs:11-15` documents that a model id can be a path, a URL, or a deployment id that is itself a credential.
 
 **`counters`** — closed field set. Every bump happens at the **call site**, never inside a conditionally-entered handler:
 
 | field | source anchor |
 |---|---|
 | `turns` | `run_event_loop` in `crates/tui/src/tui/ui/event_loop.rs`, immediately before it calls `execute_turn_end_observer_hook`. Never inside that hook: its first statement is `if !app.hooks.has_hooks_for_event(HookEvent::TurnEnd) { return Ok(()); }` (`crates/tui/src/tui/ui/observer_hooks.rs`), and the natural future optimization hoists that check to the call site, silently zeroing the counter for every user without hooks. |
-| `tool_calls` | `execute_tool_with_lock` in `crates/tui/src/core/engine/tool_execution.rs` — surface-agnostic, fires for exec and CLI too |
-| `fleet_dispatch` | `create_queued_run_with_descriptor` in `crates/tui/src/fleet/manager.rs` — the single funnel that `create_run` and `create_queued_run` both land in; counting at either caller would double-count a plain `fleet run`. |
-| `workflow_run` | bumped in `WorkflowTool::execute` (`crates/tui/src/tools/workflow/mod.rs`) only after `parse_workflow_action` returns an `Ok(WorkflowAction)`, never from `input["action"]`. The JSON Schema `enum` in `WorkflowTool::input_schema` is what is published *to the model* — a declaration, not a guard; the real parse also accepts `spawn\|wait\|list\|inspect\|stop\|abort`, and its reject arm (`Invalid workflow action '…'`) embeds the model string verbatim, so a rejected action is never counted. |
+| `tool_calls` | `execute_tool_with_lock` in `crates/engine/src/core/engine/tool_execution.rs` — surface-agnostic, fires for exec and CLI too |
+| `fleet_dispatch` | `create_queued_run_with_descriptor` in `crates/engine/src/fleet/manager.rs` — the single funnel that `create_run` and `create_queued_run` both land in; counting at either caller would double-count a plain `fleet run`. |
+| `workflow_run` | bumped in `WorkflowTool::execute` (`crates/engine/src/tools/workflow/mod.rs`) only after `parse_workflow_action` returns an `Ok(WorkflowAction)`, never from `input["action"]`. The JSON Schema `enum` in `WorkflowTool::input_schema` is what is published *to the model* — a declaration, not a guard; the real parse also accepts `spawn\|wait\|list\|inspect\|stop\|abort`, and its reject arm (`Invalid workflow action '…'`) embeds the model string verbatim, so a rejected action is never counted. |
 | `subagent_spawn` | `apply_agent_spawned_status_and_observer` in `crates/tui/src/tui/ui/apply.rs` |
-| `mcp_server_connected` | bumped when a server snapshot's `.connected` is true, in `snapshot_from_config` (`crates/tui/src/mcp.rs`); never `name`, `command_or_url`, or `error` — server names are user-chosen and routinely internal infra |
-| `memory_search` | `tool_name == "memory_search"` (the tool registered in `crates/tui/src/tools/native_memory.rs`), counted at the same `execute_tool_with_lock` choke point |
-| `approval_modal_shown` | the `Event::ApprovalRequired` arm of `run_event_loop` (`crates/tui/src/tui/ui/event_loop.rs`; the event is defined in `crates/tui/src/core/events.rs`) |
-| `approval_auto_allowed` | `tool_ask_rule_decision_for_context` in `crates/tui/src/core/engine.rs`. Count only. Never `matched_rule`, `reason()`, the command, or argv — `auto_allow` patterns are user-authored command strings (`crates/execpolicy/src/command_safety.rs:35/309`) |
+| `mcp_server_connected` | bumped when a server snapshot's `.connected` is true, in `snapshot_from_config` (`crates/engine/src/mcp.rs`); never `name`, `command_or_url`, or `error` — server names are user-chosen and routinely internal infra |
+| `memory_search` | `tool_name == "memory_search"` (the tool registered in `crates/engine/src/tools/native_memory.rs`), counted at the same `execute_tool_with_lock` choke point |
+| `approval_modal_shown` | the `Event::ApprovalRequired` arm of `run_event_loop` (`crates/tui/src/tui/ui/event_loop.rs`; the event is defined in `crates/engine/src/core/events.rs`) |
+| `approval_auto_allowed` | `tool_ask_rule_decision_for_context` in `crates/engine/src/core/engine.rs`. Count only. Never `matched_rule`, `reason()`, the command, or argv — `auto_allow` patterns are user-authored command strings (`crates/execpolicy/src/command_safety.rs:35/309`) |
 | `command_palette_open` | the palette key path in `run_event_loop` (`crates/tui/src/tui/ui/event_loop.rs`) and `handle_context_menu_action` in `crates/tui/src/tui/mouse_ui.rs` |
 
 **`errors`** — closed field set. Every value is a **variant discriminant**, never `err.to_string()`:
 
 | field | source anchor |
 |---|---|
-| `auth_preflight_failed` | discriminant of `CredentialReadiness` (`crates/workflow/src/fleet_preflight.rs:37-58`) / `ProviderAuthClass` (`crates/tui/src/provider_readiness.rs:32`). Discriminant only — `Missing { detail }` carries free text |
-| `provider_http_4xx` | `status.as_u16() / 100 == 4`, captured at `crates/tui/src/client/chat.rs:595` and `:673` **before** the `bail!`. One row per field, because the doc-match test reads this table field for field |
+| `auth_preflight_failed` | discriminant of `CredentialReadiness` (`crates/workflow/src/fleet_preflight.rs:37-58`) / `ProviderAuthClass` (`crates/engine/src/provider_readiness.rs:32`). Discriminant only — `Missing { detail }` carries free text |
+| `provider_http_4xx` | `status.as_u16() / 100 == 4`, captured at `crates/engine/src/client/chat.rs:595` and `:673` **before** the `bail!`. One row per field, because the doc-match test reads this table field for field |
 | `provider_http_5xx` | `status.as_u16() / 100 == 5`, same capture points |
-| `tool_denied_by_policy` | the `permission_denied` arm of the 8-variant match at `crates/tui/src/core/engine/tool_execution.rs:512-531` |
+| `tool_denied_by_policy` | the `permission_denied` arm of the 8-variant match at `crates/engine/src/core/engine/tool_execution.rs:512-531` |
 | `tool_timeout` | the `timeout` arm, same match |
-| `network_error` | `retry_reason_label_and_human()`'s `&'static str` half, `crates/tui/src/client.rs:2659` |
+| `network_error` | `retry_reason_label_and_human()`'s `&'static str` half, `crates/engine/src/client.rs:2659` |
 
-Why discriminants and nothing else: `ToolError::PathEscape`'s `Display` *is* an absolute path (`crates/tools/src/lib.rs:61`); `fim.rs:48-50`'s `Display` *is* a literal source fragment the model emitted; `secrets/src/lib.rs:50`'s `Display` carries the secret store's absolute path; every `LlmError` variant carries the raw provider HTTP body verbatim (`crates/tui/src/llm_client/mod.rs:327`), and a 400 from a content filter routinely echoes the prompt.
+Why discriminants and nothing else: `ToolError::PathEscape`'s `Display` *is* an absolute path (`crates/tools/src/lib.rs:61`); `fim.rs:48-50`'s `Display` *is* a literal source fragment the model emitted; `secrets/src/lib.rs:50`'s `Display` carries the secret store's absolute path; every `LlmError` variant carries the raw provider HTTP body verbatim (`crates/engine/src/llm_client/mod.rs:327`), and a 400 from a content filter routinely echoes the prompt.
 
 **`turn_wall`** — a per-session histogram of counts, never per-turn events. `lt_5s`, `5_30s`, `30_120s`, `gte_120s`. Recorded by `observe_turn_secs` next to the `turns` bump in `run_event_loop`, which already has the turn duration in hand.
 
@@ -418,6 +425,65 @@ are aggregate latency values; `probes` and `probes_failed` count health probes.
 }
 ```
 
+### Event: `model_usage`
+
+One event per provider and model a session used, sent with `session_end`.
+It is how Codewhale decides which providers and models to support first, which
+to make defaults, and whether prompt caching is working.
+
+```jsonc
+{
+  "event": "model_usage",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "counters": {
+    "turns_ok": 12,
+    "turns_failed": 1,
+    "turns_interrupted": 0,
+    "input_tokens": 418230,
+    "output_tokens": 9120,
+    "cache_read_tokens": 380001,
+    "cache_write_tokens": 0
+  },
+  "turn_wall": { "lt_5s": 3, "5_30s": 8, "30_120s": 2, "gte_120s": 0 }
+}
+```
+
+`provider` follows the `providers` rule of `session_end`. `model` is the
+lowercased model id **only when it appears in the public model catalog bundled
+with Codewhale**; any other name (custom, local, fine-tuned or private models,
+and `[providers.<name>]` routes) is sent as `other`. Token counts are the
+provider's own usage numbers for the main conversation; `input_tokens` includes
+cache reads. Turn counts are by outcome, and `turn_wall` buckets each turn's
+wall time as `session_end` does. A session reports at most 16 provider and model
+pairs; later pairs are counted under `other`. No per-turn timeline is sent.
+
+### Event: `tool_usage`
+
+One event per tool a session called, sent with `session_end`. It is how
+Codewhale decides which built-in tools to invest in, fix or retire.
+
+```jsonc
+{ "event": "tool_usage", "tool": "read_file", "calls": 41, "errors": 2 }
+```
+
+`tool` is a first-party tool name from this closed list, `mcp` for any MCP
+server tool, or `other` for any other tool (plugins and configured tools):
+`agent`, `apply_patch`, `authenticate`, `bash`, `code_execution`, `create_goal`,
+`diagnostics`, `edit`, `edit_file`, `exec_shell`, `execute_tools`, `fetch_url`,
+`file_search`, `fim_edit`, `finance`, `get_goal`, `git_blame`, `git_commit_plan`,
+`git_diff`, `git_fetch`, `git_log`, `git_merge_tree`, `git_show`, `git_status`,
+`grep_files`, `handle_read`, `image_ocr`, `js_execution`, `list_dir`,
+`load_skill`, `lsp`, `memory_get`, `memory_search`, `note`, `notify`,
+`pandoc_convert`, `project_map`, `read`, `read_file`, `read_media`, `remember`,
+`request_plugin_install`, `request_user_input`, `retrieve_tool_result`,
+`revert_turn`, `review`, `rlm`, `run_tests`, `run_verifiers`, `session_get`,
+`session_search`, `start_mcp_server`, `task_create`, `task_shell_wait`,
+`todo_write`, `tool_search`, `update_goal`, `update_plan`, `validate_data`,
+`verify`, `wait_for_dev_server`, `web_search`, `workflow`, `write`, `write_file`.
+`errors` counts calls that returned an error, never the error text or the
+arguments.
+
 ### What the endpoint does — a shipping gate, not a footnote
 
 This section was a gate on configuring any non-loopback endpoint. The endpoint is now configured by default, so this is a description of a service that exists rather than a promise about one that might.
@@ -438,7 +504,7 @@ Batches are **IP-stripped at ingest**. No IP is stored, logged, or joined to `in
 **Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer.
 
 **Optional PostHog processor.** After first-party storage, an explicitly
-configured ingest may forward validated schema-v3 / notice-v5 batches and
+configured ingest may forward validated schema-v4 / notice-v6 and schema-v3 / notice-v5 batches and
 legacy schema-v2 / consent-v4 batches to
 PostHog's [batch capture API](https://posthog.com/docs/api/capture). The only
 permitted origins are `https://us.i.posthog.com` and `https://eu.i.posthog.com`.
@@ -446,8 +512,9 @@ Legacy v1 batches cannot reach that path. PostHog receives the same bounded
 envelope and event fields, the batch timestamp as its event timestamp, and
 `codewhale:<install_id>` as its anonymous `distinct_id`. Events are named
 `codewhale_install_or_upgrade`, `codewhale_session_start`,
-`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`, or
-`codewhale_operations_summary`.
+`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`,
+`codewhale_operations_summary`, `codewhale_model_usage`, or
+`codewhale_tool_usage`.
 `$process_person_profile = false`, `$geoip_disable = true`, and `$ip = null`
 are fixed transport controls. No request metadata, profile identification,
 SDK, autocapture, session replay, advertising, or work content is forwarded.
@@ -492,7 +559,7 @@ It prints the daily series, a 7-day trend over complete UTC days, the freshness 
 
 ### What is never collected — the public red-line list
 
-Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids of any kind; custom provider table names; MCP server names, commands, or URLs; approval rule text; error message bodies; panic message text; per-event timestamps; keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
+Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids that are not in Codewhale's bundled public model catalog (custom, local, fine-tuned or private model names are sent only as `other`); custom provider table names; MCP server names, commands, URLs, or tool names; plugin and configured tool names; approval rule text; error message bodies; panic message text; per-event timestamps; keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
 
 Two named traps for the implementer. `crates/state/src/lib.rs` persists `git_sha`, `git_branch`, `git_origin_url`, `cwd`, and `path` on the threads table (`:93, :399, :653`): a payload builder that accepts a `Thread` or `ThreadMeta` and derives `Serialize` breaches the contract in one line. **Never derive `Serialize` over an existing state type** — build every telemetry struct from scratch with explicit fields. And `crates/core/src/lib.rs:1389-1398` is the one place in the tree where the word `telemetry` sits inside a JSON object next to `prompt`, `base_url`, and `has_api_key`. It is the object someone will copy. Do not.
 

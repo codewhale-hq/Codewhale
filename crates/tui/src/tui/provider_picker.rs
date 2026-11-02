@@ -35,19 +35,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::core::ops::ProviderRuntimeStatus;
-use crate::model_profile::{
-    SupportState, resolved_capability_profile, resolved_capability_profile_for_route,
-};
-use crate::models_dev_live::{self, ModelsDevFreshness};
-use crate::provider_lake::{catalog_model_count_for_provider, catalog_offering_for_model};
-use crate::provider_readiness::{
-    CredentialState, ProviderReadinessSnapshot, ProviderRouteIdentity, ResolvedProviderReadiness,
-    credential_state_for_provider, route_identity_for_model,
-};
-use crate::reasoning_preference::ReasoningEffort;
-use crate::tui::list_nav::{self, Motion};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface, render_underwater_surface,
@@ -59,11 +46,26 @@ use codewhale_config::descriptors::{
 };
 use codewhale_config::provider::{CredentialAcquisition, WireFormat};
 use codewhale_config::route::{PricingSku, RequestProtocol};
+use codewhale_engine::core::ops::ProviderRuntimeStatus;
+use codewhale_engine::model_profile::{
+    SupportState, resolved_capability_profile, resolved_capability_profile_for_route,
+};
+use codewhale_engine::models_dev_live::{self, ModelsDevFreshness};
+use codewhale_engine::provider_lake::{
+    catalog_model_count_for_provider, catalog_offering_for_model,
+};
+use codewhale_engine::provider_readiness::{
+    CredentialState, ProviderReadinessSnapshot, ProviderRouteIdentity, ResolvedProviderReadiness,
+    credential_state_for_provider, route_identity_for_model,
+};
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::{
     Config, ProviderIdentity, base_url_uses_local_host, provider_is_configured,
 };
+use codewhale_tui_kit::list_nav::{self, Motion};
+use codewhale_tui_kit::menu_style;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -128,7 +130,7 @@ impl ProviderOffer {
             )
             .footer_chord,
         );
-        let label = crate::tui::ui_text::semantic_truncate(
+        let label = codewhale_tui_kit::ui_text::semantic_truncate(
             &tr(locale, MessageId::OrcaRouterOfferRecommended),
             usize::from(area.width)
                 .saturating_sub(unicode_width::UnicodeWidthStr::width(chord.as_ref()) + 3),
@@ -237,9 +239,9 @@ impl StepfunBillingRoute {
 fn stepfun_route_is_selectable(provider: ProviderKind, base_url: &str) -> bool {
     provider == ProviderKind::Stepfun
         && matches!(
-            crate::pricing::billing_surface_for_route(provider, Some(base_url)),
-            Some(crate::pricing::STEPFUN_PAYG_BILLING_SURFACE)
-                | Some(crate::pricing::STEPFUN_PLAN_BILLING_SURFACE)
+            codewhale_engine::pricing::billing_surface_for_route(provider, Some(base_url)),
+            Some(codewhale_engine::pricing::STEPFUN_PAYG_BILLING_SURFACE)
+                | Some(codewhale_engine::pricing::STEPFUN_PLAN_BILLING_SURFACE)
         )
 }
 
@@ -331,7 +333,7 @@ pub struct ProviderPickerView {
     last_choice_mouse_selected: Option<(Stage, char)>,
     /// Pointer hover positions. Advisory only — hover never moves the
     /// keyboard selection; it renders with the shared
-    /// [`crate::tui::menu_style::hovered_row_style`] primitive.
+    /// [`codewhale_tui_kit::menu_style::hovered_row_style`] primitive.
     hovered_list_idx: Option<usize>,
     hovered_model_idx: Option<usize>,
     hovered_consent_idx: Option<usize>,
@@ -359,7 +361,7 @@ pub struct ProviderDashboardRow {
     pub capabilities: ProviderCapabilityBadges,
     pub model_origin: ProviderModelOrigin,
     pub(crate) readiness: ResolvedProviderReadiness,
-    billing_presentation: crate::route_billing::BillingPresentation,
+    billing_presentation: codewhale_engine::route_billing::BillingPresentation,
     pub maturity: ProviderMaturity,
     pub messages: Vec<String>,
     external_credential_status: Option<codewhale_config::ExternalCredentialConsentStatus>,
@@ -733,7 +735,8 @@ impl ProviderDashboardRow {
                         configured.is_some_and(|entry| entry.model.is_some()),
                     ),
                     readiness: ResolvedProviderReadiness::Legacy,
-                    billing_presentation: crate::route_billing::BillingPresentation::Unknown,
+                    billing_presentation:
+                        codewhale_engine::route_billing::BillingPresentation::Unknown,
                     maturity: ProviderMaturity::for_provider(provider),
                     messages: vec![format!("provider admission failed: {error}")],
                     external_credential_status: None,
@@ -753,7 +756,7 @@ impl ProviderDashboardRow {
             .map(|row| row.label.to_string())
             .unwrap_or_else(|| format!("{provider_id} (custom)"));
         // Capture product presentation without activating an inactive row.
-        let billing_presentation = crate::route_billing::for_route(config, &identity);
+        let billing_presentation = codewhale_engine::route_billing::for_route(config, &identity);
         let configured = config.provider_config_for(&identity);
         let configured_base_url = configured
             .and_then(|entry| entry.base_url.as_deref())
@@ -895,7 +898,7 @@ impl ProviderDashboardRow {
             })
             .flatten();
         let route = if let Some(model) = declared_default {
-            crate::route_runtime::resolve_declared_model_candidate_with_wire_override(
+            codewhale_engine::route_runtime::resolve_declared_model_candidate_with_wire_override(
                 provider,
                 &provider_id,
                 model,
@@ -909,7 +912,7 @@ impl ProviderDashboardRow {
             // Browsing a provider is a snapshot projection, not execution
             // admission. Actual local requests still require an explicit tag
             // or a fresh endpoint-owned roster in resolve_runtime_route.
-            crate::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
+            codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
                 provider,
                 configured_model
                     .as_deref()
@@ -1027,13 +1030,14 @@ impl ProviderDashboardRow {
             capabilities.context_window_source = Some("user declared (unverified)".into());
             messages.push("Model metadata is user declared; availability and capabilities have not been verified.".into());
         }
-        let available_model_count = crate::provider_lake::configured_catalog_models_for_route(
-            config,
-            provider,
-            &provider_id,
-            &base_url,
-        )
-        .len();
+        let available_model_count =
+            codewhale_engine::provider_lake::configured_catalog_models_for_route(
+                config,
+                provider,
+                &provider_id,
+                &base_url,
+            )
+            .len();
         // "Snapshot missing" means the row has nothing but its default model.
         // A provider-level snapshot OR this route's own roster is enough to
         // show more, so judge the two sources together: reading only the
@@ -1736,7 +1740,9 @@ fn readiness_for(
     route_ok: bool,
     health: &ProviderReadinessSnapshot,
 ) -> ResolvedProviderReadiness {
-    crate::provider_readiness::resolve_with_identity(identity, credential, route_ok, health)
+    codewhale_engine::provider_readiness::resolve_with_identity(
+        identity, credential, route_ok, health,
+    )
 }
 
 /// Slice D: cost lives at the model level. Per-model $/mtok in/out projected
@@ -1748,8 +1754,10 @@ fn readiness_for(
 /// everything else is honestly unknown.
 fn configured_model_cost_label(config: &Config, row: &ProviderDashboardRow, model: &str) -> String {
     match row.billing_presentation {
-        crate::route_billing::BillingPresentation::Subscription(label) => return label.to_string(),
-        crate::route_billing::BillingPresentation::Local => return "local".to_string(),
+        codewhale_engine::route_billing::BillingPresentation::Subscription(label) => {
+            return label.to_string();
+        }
+        codewhale_engine::route_billing::BillingPresentation::Local => return "local".to_string(),
         _ => {}
     }
     if let Some(declared) = codewhale_runtime::config::configured_model_for_route(
@@ -1783,7 +1791,7 @@ fn model_cost_label(provider: ProviderKind, model: &str) -> String {
     // DeepSeek bills by time of day (`pricing_withheld` in
     // catalog_corrections.json), and live roster rows carry no price at all.
     // Ask pricing.rs before calling the price unknown, as `/model` does.
-    crate::pricing::model_rate_label(
+    codewhale_engine::pricing::model_rate_label(
         provider,
         model,
         codewhale_config::pricing::CostCurrency::Usd,
@@ -1801,7 +1809,7 @@ fn provider_pane_models(
     row: &ProviderDashboardRow,
     limit: usize,
 ) -> Vec<(String, String, bool)> {
-    let mut models = crate::provider_lake::configured_catalog_models_for_route(
+    let mut models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
         config,
         row.provider,
         &row.provider_id,
@@ -1918,7 +1926,7 @@ impl ProviderPickerView {
     /// typed input and pastes are accepted events but never stored.
     fn selected_plugin_provider(&self) -> Option<String> {
         let identity = self.selected_identity()?;
-        crate::plugins::providers::plugin_auth_entry(&self.route_config, identity.key.as_str())
+        codewhale_plugins::providers::plugin_auth_entry(&self.route_config, identity.key.as_str())
             .ok()
             .map(|_| identity.key.as_str().to_owned())
     }
@@ -2002,9 +2010,15 @@ impl ProviderPickerView {
             let active = active_identity
                 .as_ref()
                 .is_some_and(|identity| identity.key.as_str() == row.id);
-            let configured = config.providers.as_ref().is_some_and(|providers| {
-                codewhale_config::provider_config_table!(@read providers, row.id).is_some()
-            });
+            let configured = codewhale_runtime::config::provider_is_configured(
+                row.kind,
+                false,
+                false,
+                config.providers.as_ref().and_then(
+                    |providers| codewhale_config::provider_config_table!(@read providers, row.id),
+                ),
+                false,
+            );
             if active || configured {
                 rows.push(ProviderDashboardRow::from_config_with_provider_id(
                     row.kind,
@@ -2038,10 +2052,14 @@ impl ProviderPickerView {
             .position(|row| row.is_active)
             .or_else(|| rows.iter().position(|row| row.provider == active))
             .unwrap_or(0);
-        // Default to the configured-only view (#3830); if nothing is
-        // configured yet (a fresh install), open straight on the full
-        // catalog instead of an empty list with no obvious next step.
-        let view = if rows.iter().any(|row| row.is_configured) {
+        // Default to the configured-only view (#3830); if nothing beyond an
+        // adopted local runtime is configured yet (a fresh install), open
+        // straight on the full catalog so the cloud providers are visible.
+        let view = if rows.iter().any(|row| {
+            row.is_configured
+                && row.provider.provider().credential_help().acquisition
+                    != CredentialAcquisition::LocalOptional
+        }) {
             ProviderListView::Configured
         } else {
             ProviderListView::Catalog
@@ -2484,7 +2502,7 @@ impl ProviderPickerView {
         matches!(
             self.rows[self.selected_idx].readiness,
             ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 ..
             }
         )
@@ -2567,11 +2585,12 @@ impl ProviderPickerView {
     fn enter_stepfun_billing_route(&mut self) {
         // Preselect whatever the row already resolves to so re-running setup
         // on a configured Step Plan route does not default back to PAYG.
-        self.stepfun_billing_route = if crate::pricing::billing_surface_for_route(
+        self.stepfun_billing_route = if codewhale_engine::pricing::billing_surface_for_route(
             ProviderKind::Stepfun,
             Some(&self.rows[self.selected_idx].base_url),
-        ) == Some(crate::pricing::STEPFUN_PLAN_BILLING_SURFACE)
-        {
+        ) == Some(
+            codewhale_engine::pricing::STEPFUN_PLAN_BILLING_SURFACE,
+        ) {
             StepfunBillingRoute::StepPlan
         } else {
             StepfunBillingRoute::PayAsYouGo
@@ -2706,7 +2725,7 @@ impl ProviderPickerView {
             route.logical_model.clone()
         };
         let row = &self.rows[self.selected_idx];
-        let mut models = crate::provider_lake::configured_catalog_models_for_route(
+        let mut models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
             &self.route_config,
             provider,
             &row.provider_id,
@@ -3027,14 +3046,14 @@ impl ProviderPickerView {
             ProviderListView::Catalog => self.tr(MessageId::PickerActionConfigured),
             ProviderListView::Local => self.tr(MessageId::PickerActionBrowseAll),
         };
-        let action_label = crate::tui::ui_text::semantic_truncate(
+        let action_label = codewhale_tui_kit::ui_text::semantic_truncate(
             &view_action,
             usize::from(area.width.saturating_sub(20)),
         );
         let action_width = unicode_width::UnicodeWidthStr::width(action_label.as_str()) as u16;
         let show_action = !self.onboarding_mode && area.width >= 28 && area.height > 0;
         let title = if show_action {
-            crate::tui::ui_text::semantic_truncate(
+            codewhale_tui_kit::ui_text::semantic_truncate(
                 title.trim(),
                 usize::from(area.width.saturating_sub(action_width + 8)),
             )
@@ -3216,7 +3235,7 @@ impl ProviderPickerView {
         self.list_row_hitboxes.borrow_mut().clear();
         let name_column = filtered
             .iter()
-            .map(|(_, row)| crate::tui::ui_text::text_display_width(&row.display_name))
+            .map(|(_, row)| codewhale_tui_kit::ui_text::text_display_width(&row.display_name))
             .max()
             .unwrap_or(0);
         let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
@@ -3229,7 +3248,7 @@ impl ProviderPickerView {
             let is_selected = *idx == self.selected_idx;
             debug_assert_eq!(is_selected, pos == selected_pos);
             let is_active = row.is_active;
-            let arrow = crate::tui::glyphs::selection_marker(is_selected);
+            let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let active_dot = if is_active { " *" } else { "  " };
             let spacer_style = if is_selected {
                 menu_style::selected_row_bg_style()
@@ -3266,16 +3285,18 @@ impl ProviderPickerView {
             let full_hint = row.list_row_hint(self.view);
             let unpadded_prefix = format!(" {arrow} {}{active_dot}  ", row.display_name);
             let spare = usize::from(layout.list.width).saturating_sub(
-                crate::tui::ui_text::text_display_width(&unpadded_prefix)
-                    + crate::tui::ui_text::text_display_width(&full_hint),
+                codewhale_tui_kit::ui_text::text_display_width(&unpadded_prefix)
+                    + codewhale_tui_kit::ui_text::text_display_width(&full_hint),
             );
             let name_pad = " ".repeat(
                 name_column
-                    .saturating_sub(crate::tui::ui_text::text_display_width(&row.display_name))
+                    .saturating_sub(codewhale_tui_kit::ui_text::text_display_width(
+                        &row.display_name,
+                    ))
                     .min(spare),
             );
             let prefix = format!(" {arrow} {}{active_dot}{name_pad}  ", row.display_name);
-            let hint = crate::tui::ui_text::semantic_truncate_between_affixes(
+            let hint = codewhale_tui_kit::ui_text::semantic_truncate_between_affixes(
                 &prefix,
                 &full_hint,
                 "",
@@ -3360,7 +3381,7 @@ impl ProviderPickerView {
             area.width.saturating_sub(action_width + 1),
             1,
         );
-        Paragraph::new(crate::tui::ui_text::semantic_truncate(
+        Paragraph::new(codewhale_tui_kit::ui_text::semantic_truncate(
             &row.display_name,
             usize::from(title.width),
         ))
@@ -3482,7 +3503,7 @@ impl ProviderPickerView {
             let message = if full {
                 message.clone()
             } else {
-                crate::tui::ui_text::semantic_truncate(
+                codewhale_tui_kit::ui_text::semantic_truncate(
                     message,
                     usize::from(width.saturating_sub(2)),
                 )
@@ -3574,7 +3595,7 @@ impl ProviderPickerView {
         let pane_models = provider_pane_models(&self.route_config, row, 8);
         let name_budget = usize::from(width).saturating_sub(22).max(8);
         for (model, price, is_default) in &pane_models {
-            let name = crate::tui::ui_text::truncate_line_to_width(model, name_budget);
+            let name = codewhale_tui_kit::ui_text::truncate_line_to_width(model, name_budget);
             let mut spans = vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(name, Style::default().fg(palette::TEXT_PRIMARY)),
@@ -3591,7 +3612,7 @@ impl ProviderPickerView {
             }
             lines.push(Line::from(spans));
         }
-        let total_models = crate::provider_lake::configured_catalog_models_for_route(
+        let total_models = codewhale_engine::provider_lake::configured_catalog_models_for_route(
             &self.route_config,
             row.provider,
             &row.provider_id,
@@ -3974,7 +3995,7 @@ impl ProviderPickerView {
         for (slot, (choice, digit, label, detail)) in options.iter().enumerate() {
             let is_selected = selected == *choice;
             let is_hovered = self.hovered_consent_idx == Some(slot);
-            let marker = crate::tui::glyphs::selection_marker(is_selected);
+            let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let label_style = if is_selected {
                 menu_style::selected_row_style_with_fg(palette::WHALE_ACTION)
             } else if is_hovered {
@@ -4194,7 +4215,7 @@ impl ProviderPickerView {
         {
             let is_selected = idx == self.model_selected_idx;
             let is_hovered = self.hovered_model_idx == Some(idx);
-            let arrow = crate::tui::glyphs::selection_marker(is_selected);
+            let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let label_style = if is_selected {
                 menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
             } else if is_hovered {
@@ -4369,7 +4390,7 @@ impl ProviderPickerView {
                 };
                 Paragraph::new(format!(
                     "{} {key}. {label}",
-                    crate::tui::glyphs::selection_marker(selected == idx)
+                    codewhale_tui_kit::glyphs::selection_marker(selected == idx)
                 ))
                 .style(style)
                 .wrap(Wrap { trim: false })
@@ -4556,7 +4577,7 @@ impl ProviderPickerView {
         placeholder: &str,
     ) {
         let selected = self.custom_provider_field == field;
-        let marker = crate::tui::glyphs::selection_marker(selected);
+        let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
         let value = self.custom_form_field_value(field);
         let display = if value.is_empty() { placeholder } else { value };
         let value_style = if selected {
@@ -4576,7 +4597,7 @@ impl ProviderPickerView {
             Span::styled(" ", label_style),
             Span::styled(format!("{label}: "), label_style),
             Span::styled(
-                crate::tui::ui_text::truncate_line_to_width(
+                codewhale_tui_kit::ui_text::truncate_line_to_width(
                     display,
                     usize::from(area.width).saturating_sub(18),
                 ),
@@ -4591,7 +4612,7 @@ impl ProviderPickerView {
 
     /// Slice D two-pane pointer support: hover is advisory (it never moves
     /// the keyboard selection) and renders with the shared
-    /// [`crate::tui::menu_style::hovered_row_style`] primitive; click selects
+    /// [`codewhale_tui_kit::menu_style::hovered_row_style`] primitive; click selects
     /// and a second click activates, mirroring the model picker rhythm.
     fn list_hit_at(&self, mouse: MouseEvent) -> Option<usize> {
         let pos = Position::new(mouse.column, mouse.row);
@@ -4897,7 +4918,7 @@ impl ModalView for ProviderPickerView {
                 // type-ahead arm so `a`/`A` always toggles instead of
                 // seeking a provider whose name starts with "a".
                 KeyCode::Char(c)
-                    if key.modifiers.is_empty()
+                    if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
                         && self.query.is_empty()
                         && c.eq_ignore_ascii_case(&'a') =>
                 {
@@ -5693,8 +5714,8 @@ fn descriptor_dashboard_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_readiness::has_api_key_for;
     use crate::test_support::EnvVarGuard;
+    use codewhale_engine::provider_readiness::has_api_key_for;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     // Environment-mutating tests in this module hold the process-wide
@@ -5866,7 +5887,7 @@ mod tests {
             let text = render_text(&picker, width, 16);
             for (idx, line) in text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= usize::from(width),
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= usize::from(width),
                     "line {idx} overflows at {width}: {line:?}"
                 );
             }
@@ -6340,7 +6361,7 @@ mod tests {
             __cw_config_init_3_value
         };
         assert!(
-            !crate::provider_readiness::provider_is_configured_for_active(
+            !codewhale_engine::provider_readiness::provider_is_configured_for_active(
                 &config,
                 &(config).test_identity_for_kind(ProviderKind::Anthropic),
                 &(config).test_identity_for_kind(ProviderKind::Deepseek),
@@ -6980,7 +7001,7 @@ mod tests {
         let mut health = ProviderReadinessSnapshot::default();
         health.record_success(
             &config,
-            &crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+            &codewhale_engine::route_receipt::TurnRouteReceipt::for_test_fixture(
                 &config,
                 ProviderKind::Deepseek,
                 &row_model,
@@ -7003,7 +7024,7 @@ mod tests {
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
             &row_model,
-            crate::error_taxonomy::ErrorCategory::Authentication,
+            codewhale_error_taxonomy::ErrorCategory::Authentication,
             "credential rejected",
         );
         let failed =
@@ -7042,13 +7063,13 @@ mod tests {
         let mut health = ProviderReadinessSnapshot::default();
         health.record_failure(
             &config,
-            &crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+            &codewhale_engine::route_receipt::TurnRouteReceipt::for_test_fixture(
                 &config,
                 ProviderKind::Deepseek,
                 "model-the-turn-ran",
             ),
             "model-the-turn-ran",
-            &crate::error_taxonomy::ErrorEnvelope::fatal_auth(
+            &codewhale_error_taxonomy::ErrorEnvelope::fatal_auth(
                 "Authentication failed: invalid API key",
             ),
         );
@@ -7066,7 +7087,7 @@ mod tests {
             matches!(
                 readiness,
                 ResolvedProviderReadiness::SavedLastCheckFailed {
-                    category: crate::error_taxonomy::ErrorCategory::Authentication,
+                    category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                     ..
                 }
             ),
@@ -8660,7 +8681,7 @@ mod tests {
         .map(EnvVarGuard::remove)
         .collect();
         std::fs::write(&config_path, document).expect("config only");
-        let config = crate::plugins::providers::load_config(Some(config_path.clone()), None)
+        let config = codewhale_plugins::providers::load_config(Some(config_path.clone()), None)
             .expect("load route");
         let mut options = crate::tui::test_support::test_tui_options(home.path());
         options.config_path = Some(config_path);
@@ -8844,12 +8865,12 @@ mod tests {
 
         let rendered = render_text(&picker, 40, 12);
         assert!(
-            rendered.contains(crate::tui::glyphs::SELECTION),
+            rendered.contains(codewhale_tui_kit::glyphs::SELECTION),
             "{rendered}"
         );
         for (idx, line) in rendered.lines().enumerate() {
             assert!(
-                crate::tui::ui_text::text_display_width(line) <= 40,
+                codewhale_tui_kit::ui_text::text_display_width(line) <= 40,
                 "40x12 line {idx} clips: {line:?}\n{rendered}"
             );
         }
@@ -9460,7 +9481,7 @@ mod tests {
             );
             for (idx, line) in rendered.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} billing-route line {idx} overflows: {line:?}"
                 );
             }
@@ -9900,7 +9921,7 @@ mod tests {
             );
             for (idx, line) in model_text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} model pick line {idx} overflows: {line:?}"
                 );
             }
@@ -9925,7 +9946,7 @@ mod tests {
             );
             for (idx, line) in confirm_text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} confirm line {idx} overflows: {line:?}"
                 );
             }
@@ -10536,7 +10557,8 @@ mod tests {
             })
         ));
 
-        let inventory = crate::model_inventory::ModelInventory::from_config(&config).unwrap();
+        let inventory =
+            codewhale_engine::model_inventory::ModelInventory::from_config(&config).unwrap();
         assert!(
             inventory.candidates.iter().all(|candidate| !matches!(
                 candidate.provider,
@@ -10545,11 +10567,11 @@ mod tests {
             "dormant external-only routes must not reach auto-routing inventory"
         );
         assert_eq!(
-            crate::route_billing::for_route(
+            codewhale_engine::route_billing::for_route(
                 &config,
                 &(config).test_identity_for_kind(ProviderKind::Xai)
             ),
-            crate::route_billing::BillingPresentation::Metered
+            codewhale_engine::route_billing::BillingPresentation::Metered
         );
         assert_eq!(
             codewhale_runtime::external_credentials::side_effect_trap_counts(),

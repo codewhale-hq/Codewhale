@@ -183,8 +183,8 @@ fn missing_preference_defaults_on_without_inventing_acceptance() {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(batch["schema_version"], 3);
-        assert_eq!(batch["notice_version"], 5);
+        assert_eq!(batch["schema_version"], 4);
+        assert_eq!(batch["notice_version"], 6);
         assert!(batch.get("consent_version").is_none());
         let state = evidence.setup.expect("disclosure display marker");
         assert_eq!(

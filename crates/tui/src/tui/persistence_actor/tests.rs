@@ -116,7 +116,7 @@ fn backlog_session(workspace: &std::path::Path, index: usize) -> SavedSession {
             cache_control: None,
         }],
     }];
-    let mut session = crate::session_manager::create_saved_session_with_mode(
+    let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
         &messages,
         "measurement-model",
         workspace,
@@ -151,7 +151,6 @@ fn drain_retained_requests(receiver: &mut PersistRequestReceiver) -> (usize, usi
     let pending = receiver.take_pending();
     assert!(
         pending.checkpoints.is_empty()
-            && pending.checkpoint_clears.is_empty()
             && pending.completed_commits.is_empty()
             && pending.offline_queue.is_empty(),
         "backlog fixture retained an unexpected request variant"
@@ -159,13 +158,19 @@ fn drain_retained_requests(receiver: &mut PersistRequestReceiver) -> (usize, usi
     let mut retained_queued_requests = 0;
     let mut estimated_retained_payload_bytes = 0;
     for session in pending.sessions.values() {
+        let (PendingSession::Snapshot(session) | PendingSession::Completion(session)) = session;
         retained_queued_requests += 1;
         estimated_retained_payload_bytes += retained_session_payload_bytes(session);
     }
-    let applied_version = pending
-        .sessions
-        .get(BACKLOG_SESSION_ID)
-        .and_then(saved_session_version);
+    let applied_version =
+        pending
+            .sessions
+            .get(BACKLOG_SESSION_ID)
+            .and_then(|session| match session {
+                PendingSession::Snapshot(session) | PendingSession::Completion(session) => {
+                    saved_session_version(session)
+                }
+            });
     (
         retained_queued_requests,
         estimated_retained_payload_bytes,

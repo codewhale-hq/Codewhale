@@ -749,25 +749,25 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
             __cw_config_init_11_value
         };
         assert_eq!(
-            crate::provider_readiness::credential_state_for_provider(
+            codewhale_engine::provider_readiness::credential_state_for_provider(
                 &named_custom,
                 &(named_custom).test_identity_for_kind(codewhale_config::ProviderKind::Custom),
             ),
-            crate::provider_readiness::CredentialState::MissingKey
+            codewhale_engine::provider_readiness::CredentialState::MissingKey
         );
-        let readiness = crate::provider_readiness::resolve_for_model(
+        let readiness = codewhale_engine::provider_readiness::resolve_for_model(
             &named_custom,
             &(named_custom).test_identity_for_kind(codewhale_config::ProviderKind::Custom),
             "sentinel-model",
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
+            &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
         assert_eq!(
             readiness,
-            crate::provider_readiness::ResolvedProviderReadiness::MissingKey
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::MissingKey
         );
         assert!(!readiness.can_attempt());
         assert!(
-            crate::model_inventory::ModelInventory::from_config(&named_custom)
+            codewhale_engine::model_inventory::ModelInventory::from_config(&named_custom)
                 .unwrap()
                 .candidates
                 .iter()
@@ -789,11 +789,11 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
             __cw_config_init_12_value
         };
         assert_eq!(
-            crate::provider_readiness::credential_state_for_provider(
+            codewhale_engine::provider_readiness::credential_state_for_provider(
                 &xai,
                 &(xai).test_identity_for_kind(codewhale_config::ProviderKind::Xai),
             ),
-            crate::provider_readiness::CredentialState::MissingKey
+            codewhale_engine::provider_readiness::CredentialState::MissingKey
         );
 
         let mut xiaomi_providers = codewhale_runtime::config::ProvidersConfig::default();
@@ -805,11 +805,11 @@ fn sentinel_placeholders_never_become_attemptable_routes_or_metered_evidence() {
             __cw_config_init_13_value
         };
         assert_eq!(
-            crate::route_billing::for_route(
+            codewhale_engine::route_billing::for_route(
                 &xiaomi,
                 &(xiaomi).test_identity_for_kind(codewhale_config::ProviderKind::XiaomiMimo)
             ),
-            crate::route_billing::BillingPresentation::Subscription("MiMo token plan")
+            codewhale_engine::route_billing::BillingPresentation::Subscription("MiMo token plan")
         );
     }
 }
@@ -1017,7 +1017,7 @@ fn receipts_cli_parses_id_last_turn_and_format() {
         Some(crate::Commands::Receipts {
             last: true,
             id: None,
-            format: crate::receipts::ReceiptFormat::Json,
+            format: codewhale_engine::receipts::ReceiptFormat::Json,
             ..
         })
     ));
@@ -1025,7 +1025,7 @@ fn receipts_cli_parses_id_last_turn_and_format() {
         .expect("parse alias");
     assert!(matches!(
         cli.command,
-        Some(crate::Commands::Receipts { ref id, ref turn, format: crate::receipts::ReceiptFormat::Md, .. })
+        Some(crate::Commands::Receipts { ref id, ref turn, format: codewhale_engine::receipts::ReceiptFormat::Md, .. })
             if id.as_deref() == Some("thr_1") && turn.as_deref() == Some("turn_2")
     ));
     assert!(

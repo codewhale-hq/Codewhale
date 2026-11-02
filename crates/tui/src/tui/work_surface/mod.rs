@@ -85,10 +85,6 @@ mod tests {
     };
     use ratatui::{Terminal, backend::TestBackend};
 
-    use crate::tools::subagent::{
-        AgentWorkerStatus, MailboxMessage, SubAgentAssignment, SubAgentResult, SubAgentStatus,
-    };
-    use crate::tools::todo::TodoStatus;
     use crate::tui::app::{
         AgentCurrentActivity, AgentCurrentActivityStatus, App, SidebarRowAction, ToolDetailRecord,
         TuiOptions,
@@ -97,13 +93,17 @@ mod tests {
     use crate::tui::history::{
         FileMutationReceipt, GenericToolCell, HistoryCell, PatchSummaryCell, ToolCell, ToolStatus,
     };
-    use crate::work_graph::{
+    use codewhale_agent_contract::role::FleetRole;
+    use codewhale_config::ProviderKind;
+    use codewhale_engine::tools::subagent::{
+        AgentWorkerStatus, MailboxMessage, SubAgentAssignment, SubAgentResult, SubAgentStatus,
+    };
+    use codewhale_engine::tools::todo::TodoStatus;
+    use codewhale_engine::work_graph::{
         AcceptanceRequirement, ChangeCtx, EdgeKind, EvidenceKindTag, NodeKind, NodeState,
         OperationBinding, OperationOwnerSnapshot, OwnerState, Provenance, WorkEdge, WorkEdgeId,
         WorkGraph, WorkGraphChange, WorkNode, WorkNodeId,
     };
-    use codewhale_agent_contract::role::FleetRole;
-    use codewhale_config::ProviderKind;
     use codewhale_runtime::config::Config;
 
     const SESSION: &str = "work-surface-test";
@@ -159,7 +159,7 @@ mod tests {
         }
     }
 
-    fn operation_graph(state: NodeState) -> crate::work_graph::WorkGraphSnapshot {
+    fn operation_graph(state: NodeState) -> codewhale_engine::work_graph::WorkGraphSnapshot {
         let objective = WorkNodeId::derive(SESSION, "objective");
         let operation = WorkNodeId::derive(SESSION, "operation");
         let ctx = |now| ChangeCtx {
@@ -235,9 +235,9 @@ mod tests {
                 .apply(
                     WorkGraphChange::UpdateNode {
                         id: operation,
-                        patch: crate::work_graph::WorkNodePatch {
+                        patch: codewhale_engine::work_graph::WorkNodePatch {
                             state: Some(state),
-                            ..crate::work_graph::WorkNodePatch::default()
+                            ..codewhale_engine::work_graph::WorkNodePatch::default()
                         },
                     },
                     ctx(5),
@@ -247,7 +247,7 @@ mod tests {
         graph.into_snapshot()
     }
 
-    fn restore_graph(app: &mut App, graph: &crate::work_graph::WorkGraphSnapshot) {
+    fn restore_graph(app: &mut App, graph: &codewhale_engine::work_graph::WorkGraphSnapshot) {
         app.current_session_id = Some(SESSION.to_string());
         app.runtime_services
             .work
@@ -256,18 +256,18 @@ mod tests {
             .restore(
                 SESSION,
                 Some(graph),
-                &crate::work_graph::project_todos(graph),
-                &crate::work_graph::project_plan(graph),
+                &codewhale_engine::work_graph::project_todos(graph),
+                &codewhale_engine::work_graph::project_plan(graph),
             )
             .expect("restore graph");
     }
 
-    fn restore_saved_graph(app: &mut App, graph: &crate::work_graph::WorkGraphSnapshot) {
+    fn restore_saved_graph(app: &mut App, graph: &codewhale_engine::work_graph::WorkGraphSnapshot) {
         app.current_session_id = Some(SESSION.to_string());
-        let state = crate::session_manager::SessionWorkState {
+        let state = codewhale_engine::session_manager::SessionWorkState {
             graph: Some(graph.clone()),
-            todos: crate::work_graph::project_todos(graph),
-            plan: crate::work_graph::project_plan(graph),
+            todos: codewhale_engine::work_graph::project_todos(graph),
+            plan: codewhale_engine::work_graph::project_plan(graph),
         };
         app.restore_work_state(SESSION, std::path::Path::new("."), Some(&state))
             .expect("restore saved graph");
@@ -332,8 +332,8 @@ mod tests {
 
     #[test]
     fn coordination_projection_is_one_selectable_work_row_with_shared_details() {
-        use crate::tools::subagent::CoordinationDetailProjection;
-        use crate::tools::subagent::coord::{
+        use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+        use codewhale_engine::tools::subagent::coord::{
             CoordinationDetailMetrics, DecisionRecord, DecisionStatus,
         };
 
@@ -407,8 +407,10 @@ mod tests {
 
     #[test]
     fn empty_coordination_projection_does_not_create_work_chrome() {
-        use crate::tools::subagent::CoordinationDetailProjection;
-        use crate::tools::subagent::coord::{ContextProjectionReceipt, CoordinationDetailMetrics};
+        use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+        use codewhale_engine::tools::subagent::coord::{
+            ContextProjectionReceipt, CoordinationDetailMetrics,
+        };
 
         let mut app = app();
         app.coordination_detail = Some(CoordinationDetailProjection {
@@ -451,8 +453,10 @@ mod tests {
 
     #[test]
     fn nonempty_context_projection_remains_inspectable_work() {
-        use crate::tools::subagent::CoordinationDetailProjection;
-        use crate::tools::subagent::coord::{ContextProjectionReceipt, CoordinationDetailMetrics};
+        use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+        use codewhale_engine::tools::subagent::coord::{
+            ContextProjectionReceipt, CoordinationDetailMetrics,
+        };
 
         let mut app = app();
         app.coordination_detail = Some(CoordinationDetailProjection {
@@ -491,8 +495,8 @@ mod tests {
 
     #[test]
     fn current_blocked_contention_uses_attention_bucket_mark_and_tone() {
-        use crate::tools::subagent::CoordinationDetailProjection;
-        use crate::tools::subagent::coord::{
+        use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+        use codewhale_engine::tools::subagent::coord::{
             CoordinationDetailMetrics, PersistedWriteClaim, WriteContentionDisposition,
             WriteContentionReceipt, WriteScopeClaim,
         };
@@ -546,7 +550,7 @@ mod tests {
             .iter()
             .find(|row| row.id.0 == "coordination")
             .expect("blocked coordination Work row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert_eq!(row.tone, super::model::WorkTone::Attention);
         assert_eq!(row.detail, "0 decisions · 1 contentions · 0 reconciled");
     }
@@ -589,9 +593,9 @@ mod tests {
         }
 
         let text = render_text(&mut app, 80, 7);
-        let done = format!("1 · {} finished", crate::tui::glyphs::DONE);
-        let current = format!("2 · {} current", crate::tui::glyphs::SELECTION);
-        let next = format!("3 · {} next", crate::tui::glyphs::READY);
+        let done = format!("1 · {} finished", codewhale_tui_kit::glyphs::DONE);
+        let current = format!("2 · {} current", codewhale_tui_kit::glyphs::SELECTION);
+        let next = format!("3 · {} next", codewhale_tui_kit::glyphs::READY);
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert_eq!(text.matches("To-do ·").count(), 1, "{text:?}");
@@ -921,7 +925,10 @@ mod tests {
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert!(
-            text.contains(&format!("2 · {} current", crate::tui::glyphs::SELECTION)),
+            text.contains(&format!(
+                "2 · {} current",
+                codewhale_tui_kit::glyphs::SELECTION
+            )),
             "{text:?}"
         );
         assert_eq!(app.work_surface.hitboxes[0].row_y, 2);
@@ -1015,10 +1022,12 @@ mod tests {
                 role: Some("general".to_string()),
             },
             model: "test-model".to_string(),
-            nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                "agent_worker",
-                "en",
-            )),
+            nickname: Some(
+                codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                    "agent_worker",
+                    "en",
+                ),
+            ),
             status: SubAgentStatus::Running,
             worker_status: Some(AgentWorkerStatus::RunningTool),
             runtime_permissions: None,
@@ -1060,7 +1069,7 @@ mod tests {
         // (#36), and carries no `(+N)` while the agent is childless.
         assert_eq!(
             row.label,
-            crate::tools::subagent::whale_name_for_id_in_locale("agent_worker", "en")
+            codewhale_engine::tools::subagent::whale_name_for_id_in_locale("agent_worker", "en")
         );
         let facts = row.agent.as_ref().expect("agent row facts");
         assert_eq!(facts.role_label, "general");
@@ -1390,7 +1399,7 @@ mod tests {
         assert!(launched.contains("deepseek-v4-pro"), "{launched}");
         assert!(!launched.contains("tokens"), "{launched}");
 
-        let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+        let route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
             None,
             ProviderKind::Deepseek,
             ProviderKind::Deepseek.as_str(),
@@ -1849,12 +1858,12 @@ mod tests {
             ),
         );
         agent.worker_status = Some(AgentWorkerStatus::WaitingForUser);
-        agent.needs_input = Some(crate::tools::subagent::SubAgentNeedsInput {
+        agent.needs_input = Some(codewhale_engine::tools::subagent::SubAgentNeedsInput {
             question: format!(
                 "Resume this parked child with agent(action=\"start\", resume_from=\"{id}\")."
             ),
         });
-        agent.checkpoint = Some(crate::tools::subagent::SubAgentCheckpoint {
+        agent.checkpoint = Some(codewhale_engine::tools::subagent::SubAgentCheckpoint {
             checkpoint_id: format!("{id}:step:2"),
             agent_id: id.to_string(),
             continuation_handle: format!("agent:{id}:checkpoint"),
@@ -1879,7 +1888,7 @@ mod tests {
             SubAgentStatus::Running,
         );
         agent.worker_status = Some(AgentWorkerStatus::WaitingForUser);
-        agent.needs_input = Some(crate::tools::subagent::SubAgentNeedsInput {
+        agent.needs_input = Some(codewhale_engine::tools::subagent::SubAgentNeedsInput {
             question: "Which path should I use?".to_string(),
         });
         agent
@@ -2017,10 +2026,12 @@ mod tests {
                     role: Some("worker".to_string()),
                 },
                 model: "test-model".to_string(),
-                nickname: Some(crate::tools::subagent::whale_name_for_id_in_locale(
-                    "agent_converge",
-                    "en",
-                )),
+                nickname: Some(
+                    codewhale_engine::tools::subagent::whale_name_for_id_in_locale(
+                        "agent_converge",
+                        "en",
+                    ),
+                ),
                 status: SubAgentStatus::Running,
                 worker_status: Some(AgentWorkerStatus::Running),
                 runtime_permissions: None,
@@ -2306,6 +2317,10 @@ mod tests {
     #[test]
     fn context_view_renders_the_budget_in_a_side_rail() {
         let mut app = app();
+        let (_, max, _) = crate::tui::ui::context_usage_snapshot(&app).expect("context budget");
+        app.auto_compact = true;
+        app.auto_compact_threshold_percent = 80.0;
+        app.compact_threshold = usize::try_from(max / 2).expect("context window");
         app.work_surface.placement = super::WorkSurfacePlacement::Right;
         super::interaction::select_dock_panel(&mut app, super::RailPanel::Context);
         let area = ratatui::layout::Rect::new(0, 0, 100, 24);
@@ -2323,6 +2338,10 @@ mod tests {
             .expect("draw");
         let text = terminal_text(&terminal);
         assert!(text.contains(" of "), "budget row; got: {text}");
+        assert!(
+            text.contains("auto ~50%"),
+            "effective threshold; got: {text}"
+        );
         assert!(text.contains("compact now"), "compact door; got: {text}");
         assert!(
             app.work_surface
@@ -2331,6 +2350,29 @@ mod tests {
                 .any(|hit| hit.id.0 == "context:compact"),
             "the compact row is a hit target"
         );
+
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "auto ~50% · target 80%");
+        assert!(automatic.detail.contains("other routes may differ"));
+        app.compact_threshold = usize::try_from(max * 4 / 5).expect("context window");
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "auto ~80% · target 80%");
+        app.auto_compact = false;
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "automatic compaction off");
+        assert!(automatic.detail.contains("/compact"));
     }
 
     #[test]
@@ -2436,7 +2478,7 @@ mod tests {
 
     /// A durable failed operation, as a fleet agent task from a crashed or
     /// sibling instance leaves behind in the persisted graph (#4416).
-    fn durable_failed_operation_graph() -> crate::work_graph::WorkGraphSnapshot {
+    fn durable_failed_operation_graph() -> codewhale_engine::work_graph::WorkGraphSnapshot {
         let mut graph = WorkGraph::from_snapshot(operation_graph(NodeState::Failed));
         let operation = WorkNodeId::derive(SESSION, "operation");
         graph
@@ -2466,7 +2508,8 @@ mod tests {
     fn prior_instance_failed_rows_stay_out_of_the_default_listing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager =
-            crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
+            codewhale_engine::session_manager::SessionManager::new(dir.path().to_path_buf())
+                .expect("manager");
         manager
             .record_session_boot_owner(SESSION, "boot_other_instance")
             .expect("stamp other instance");
@@ -2508,9 +2551,13 @@ mod tests {
     fn current_instance_failed_rows_still_render_in_the_default_listing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager =
-            crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
+            codewhale_engine::session_manager::SessionManager::new(dir.path().to_path_buf())
+                .expect("manager");
         manager
-            .record_session_boot_owner(SESSION, crate::session_manager::current_session_boot_id())
+            .record_session_boot_owner(
+                SESSION,
+                codewhale_engine::session_manager::current_session_boot_id(),
+            )
             .expect("stamp current instance");
 
         let mut app = app();
@@ -2533,7 +2580,8 @@ mod tests {
     fn first_live_graph_after_empty_prior_restore_stays_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager =
-            crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
+            codewhale_engine::session_manager::SessionManager::new(dir.path().to_path_buf())
+                .expect("manager");
         manager
             .record_session_boot_owner(SESSION, "boot_other_instance")
             .expect("stamp other instance");
@@ -2562,12 +2610,12 @@ mod tests {
             .apply(
                 WorkGraphChange::UpdateNode {
                     id: operation,
-                    patch: crate::work_graph::WorkNodePatch {
+                    patch: codewhale_engine::work_graph::WorkNodePatch {
                         state: Some(NodeState::Completed),
                         acceptance: Some(vec![AcceptanceRequirement::EvidenceOfKind {
                             kind: EvidenceKindTag::ToolRun,
                         }]),
-                        ..crate::work_graph::WorkNodePatch::default()
+                        ..codewhale_engine::work_graph::WorkNodePatch::default()
                     },
                 },
                 ChangeCtx {
@@ -2591,7 +2639,7 @@ mod tests {
             .iter()
             .find(|row| row.selectable)
             .expect("operation row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert!(row.detail.contains("completed · evidence pending"));
         assert_ne!(row.mark, "✓");
         let Some(SidebarRowAction::InspectWork { body, .. }) = row.primary_action.as_ref() else {
@@ -2694,7 +2742,7 @@ mod tests {
     fn narrow_file_activity_prioritizes_the_canonical_aggregate_label() {
         let mut app = app();
         app.workspace = PathBuf::from("/workspace/project");
-        let result = crate::tools::spec::ToolResult::success("ok").with_metadata(
+        let result = codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(
             serde_json::json!({
                 "mutation": {
                     "diff": "--- a/update.rs\n+++ b/update.rs\n@@ -1 +1 @@\n-old\n+new\n--- /dev/null\n+++ b/create.rs\n@@ -0,0 +1 @@\n+created\n--- a/delete.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-deleted\n",

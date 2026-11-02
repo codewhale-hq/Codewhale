@@ -26,7 +26,7 @@ use ratatui::text::Line;
 #[derive(Debug, Clone)]
 pub(crate) struct CachedTranscriptLine {
     pub line: Line<'static>,
-    pub links: Vec<crate::tui::osc8::LineLink>,
+    pub links: Vec<codewhale_tui_kit::osc8::LineLink>,
 }
 
 /// Soft cap on the number of cached entries before insertion-order eviction

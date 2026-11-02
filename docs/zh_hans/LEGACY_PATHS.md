@@ -33,18 +33,19 @@ Codewhale 是从 DeepSeek-TUI 更名而来的。为了避免破坏已有安装�
 
 ## 规范解析器（新代码请用它）
 
-状态目录的解析统一在 `crates/config/src/lib.rs` 中：
+状态目录 API 由 `codewhale-config` 导出，实现在
+`crates/config/src/state_dirs.rs`；根目录选择由 `crates/paths/src/lib.rs` 负责。
+本文路径表示默认值；`CODEWHALE_HOME` 可以选择主目录，并禁止回退到该根目录之外。
 
-| 符号 | 行号 | 用途 |
-|---|---|---|
-| `CODEWHALE_APP_DIR` / `LEGACY_APP_DIR` | 5369 | 从 `crates/paths` 再导出（定义在 `crates/paths/src/lib.rs` 13 / 16） |
-| `codewhale_home()` | 5375 | `~/.codewhale` |
-| `legacy_deepseek_home()` | 5392 | `~/.deepseek`（旧版） |
-| `resolve_state_dir(subdir)` | 5434 | **读**路径：`~/.codewhale/<subdir>`，仅当只有旧版目录存在时回退到 `~/.deepseek/<subdir>` |
-| `ensure_state_dir(subdir)` | 5458 | **写**路径：始终在 `~/.codewhale/<subdir>` 下创建 |
+| 符号 | 用途 |
+|---|---|
+| `CODEWHALE_APP_DIR` / `LEGACY_APP_DIR` | `codewhale-paths` 定义的默认目录名。 |
+| `codewhale_home()` | 选定的主目录，默认是 `~/.codewhale`。 |
+| `legacy_deepseek_home()` | 选定的旧版主目录，默认是 `~/.deepseek`。 |
+| `resolve_state_dir(subdir)` | 读取主目录；仅在该目录不存在且未显式选择主目录时回退。 |
+| `ensure_state_dir(subdir)` | 在主目录下写入；受保护的迁移可以搬移产品自有的旧版状态，并报告变化。 |
 
-迁移契约：带回退地读，向新位置写。这为仍保有 `~/.deepseek/` 的用户保留了
-v0.8.44 的迁移，同时把所有新写入导向 `~/.codewhale/`。
+兼容其他工具的根目录只是只读发现输入，不是产品自有的迁移或删除目标。
 
 ## 逐路径决定
 
@@ -56,19 +57,17 @@ v0.8.44 的迁移，同时把所有新写入导向 `~/.codewhale/`。
 | 引用 | 是否经由 `resolve_state_dir` 路由？ | 决定 |
 |---|---|---|
 | `config::resolve_state_dir` / `ensure_state_dir` | 不适用（解析器本身） | 保留 —— 规范 |
-| `crates/tui/src/skills/mod.rs`（`~/.deepseek/skills`） | 否 —— 硬编码 | 保留为回退；在后续重构中改为经由解析器路由 |
-| `crates/tui/src/prompts.rs`（`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`） | 否 —— 显式旧版常量 | 保留 —— 显式的旧版交接回退 |
+| `crates/skills/src/roots.rs`（`~/.deepseek/skills`） | 否 —— 兼容根目录枚举 | 保留只读发现；这不是产品自有的写入目标。 |
+| `crates/engine/src/prompts.rs`（`LEGACY_HANDOFF_RELATIVE_PATH = ".deepseek/handoff.md"`） | 否 —— 显式旧版常量 | 保留 —— 显式的旧版交接回退 |
 | `crates/tui/src/workspace_trust.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
-| `crates/tui/src/session_manager.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
+| `crates/engine/src/session_manager.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/skill_state.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
-| `crates/tui/src/tools/skill.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
+| `crates/engine/src/tools/skill.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/snapshot/src/lib.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 | `crates/runtime/src/workspace_discovery.rs` | 否 —— 硬编码 | 保留为回退；后续处理 |
 
-## 后续工作（独立的非文档改动 —— 不在 #3068 范围内）
+## 后续源代码改动
 
-议题提到的可选统一工作 —— 把上面那些硬编码位置改为经由
-`resolve_state_dir`/`ensure_state_dir` 路由，而不是手工拼接
-`.deepseek`/`.codewhale` —— 是一处小型重构，应当作为独立的 PR 落地，
-并为每个迁移过的位置配上断言“读回退 + 写新位置”的测试。
-它被有意排除在本次审计之外，以便文档能单独安全落地。
+逐路径表保留原始审计记录，并修正已搬移的代码归属。迁移前核对当前调用方，
+复用现有议题和解析器，保留显式主目录隔离、读取回退、所有权及恢复保护。
+使用现有的针对性检查验证。本文不授权搬移或删除其他工具的根目录。

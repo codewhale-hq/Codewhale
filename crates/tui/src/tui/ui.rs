@@ -12,10 +12,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use anyhow::{Context, Result};
 use codewhale_config::AppMode;
 use codewhale_core::ContextReference;
+use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
 use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
@@ -46,35 +46,7 @@ use tracing;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
-use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
-use crate::client::{
-    CACHE_WARMUP_MAX_TOKENS, CacheWarmupKey, CodewhaleClient, PromptInspection,
-    build_cache_warmup_request, inspect_prompt_for_request,
-};
 use crate::commands;
-use crate::compaction::CompactionConfig;
-use crate::compaction::{estimate_input_tokens_conservative, estimate_tokens};
-use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
-use crate::core::events::Event as EngineEvent;
-use crate::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
-use crate::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
-use crate::llm_client::LlmClient;
-use crate::prompts;
-#[cfg(test)]
-use crate::route_runtime::resolve_runtime_route;
-use crate::route_runtime::resolve_runtime_route_for_identity;
-#[cfg(test)]
-use crate::session_manager::create_saved_session_with_id_and_mode;
-use crate::session_manager::{
-    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
-};
-use crate::task_manager::{
-    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
-};
-use crate::tools::goal::{GoalSnapshot, GoalStatus};
-use crate::tools::shell::{ShellJobSnapshot, ShellStatus};
-use crate::tools::spec::{RuntimeToolServices, ToolResult};
-use crate::tools::subagent::{MailboxMessage, SubAgentStatus, subagent_progress_tool_display_name};
 use crate::tui::auto_router;
 use crate::tui::clipboard::ClipboardContent;
 use crate::tui::color_compat::ColorCompatBackend;
@@ -83,7 +55,6 @@ use crate::tui::command_palette::{
 };
 use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::ContextInspectorView;
-use crate::tui::event_broker::EventBroker;
 use crate::tui::file_picker_relevance;
 use crate::tui::footer_ui::friendly_subagent_progress;
 use crate::tui::format_helpers;
@@ -96,11 +67,42 @@ use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
-use crate::tui::scrolling::TranscriptScroll;
-use crate::turn_route_plan::{PlannedTurnRoute, TurnRoutePlanRequest, plan_turn_route};
-use crate::work_graph::task_owner_snapshot;
 use codewhale_config::ProviderKind;
 use codewhale_config::hooks::HookEvent;
+use codewhale_engine::automation_manager::{
+    AutomationManager, AutomationSchedulerConfig, spawn_scheduler,
+};
+use codewhale_engine::client::{
+    CACHE_WARMUP_MAX_TOKENS, CacheWarmupKey, CodewhaleClient, PromptInspection,
+    build_cache_warmup_request, inspect_prompt_for_request,
+};
+use codewhale_engine::compaction::CompactionConfig;
+use codewhale_engine::compaction::{estimate_input_tokens_conservative, estimate_tokens};
+use codewhale_engine::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use codewhale_engine::core::events::Event as EngineEvent;
+use codewhale_engine::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
+use codewhale_engine::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
+use codewhale_engine::llm_client::LlmClient;
+use codewhale_engine::prompts;
+#[cfg(test)]
+use codewhale_engine::route_runtime::resolve_runtime_route;
+use codewhale_engine::route_runtime::resolve_runtime_route_for_identity;
+#[cfg(test)]
+use codewhale_engine::session_manager::create_saved_session_with_id_and_mode;
+use codewhale_engine::session_manager::{
+    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
+};
+use codewhale_engine::task_manager::{
+    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
+};
+use codewhale_engine::tools::goal::{GoalSnapshot, GoalStatus};
+use codewhale_engine::tools::shell::{ShellJobSnapshot, ShellStatus};
+use codewhale_engine::tools::spec::{RuntimeToolServices, ToolResult};
+use codewhale_engine::tools::subagent::{
+    MailboxMessage, SubAgentStatus, subagent_progress_tool_display_name,
+};
+use codewhale_engine::turn_route_plan::{PlannedTurnRoute, TurnRoutePlanRequest, plan_turn_route};
+use codewhale_engine::work_graph::task_owner_snapshot;
 use codewhale_localization::{MessageId, tr};
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use codewhale_palette as palette;
@@ -112,13 +114,15 @@ use codewhale_runtime::config::{
     persist_external_credential_consent_for_at, revoke_external_credential_consent_for_at,
 };
 use codewhale_runtime::settings::Settings;
+use codewhale_tui_kit::event_broker::EventBroker;
+use codewhale_tui_kit::scrolling::TranscriptScroll;
 // SelectionAutoscroll unused
+use crate::tui::history::text::history_cell_to_text;
 use crate::tui::motion::{FrameRequester, MotionMode};
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
-use crate::tui::streaming::StreamDisplayClock;
 use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
     apply_subagent_terminal_projection, format_task_list, handle_subagent_mailbox_for_turn,
@@ -133,13 +137,13 @@ use crate::tui::tool_routing::exploring_label;
 use crate::tui::tool_routing::{
     apply_owned_workflow_ui_event, handle_tool_call_complete, handle_tool_call_started,
 };
-use crate::tui::ui_text::history_cell_to_text;
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
 use crate::tui::vim_mode;
 use crate::tui::workspace_context;
+use codewhale_tui_kit::streaming::StreamDisplayClock;
 
-use crate::reasoning_preference::{EffectiveReasoningEffort, ReasoningEffort};
+use codewhale_engine::reasoning_preference::{EffectiveReasoningEffort, ReasoningEffort};
 
 use super::key_actions;
 
@@ -214,7 +218,7 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the whale-spout
 // braille pattern reads as continuous motion instead of teleport-frames.
-const UI_STATUS_ANIMATION_MS: u64 = crate::tui::spinner::BRAILLE_SPINNER_FRAME_MS;
+const UI_STATUS_ANIMATION_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 const UI_QUIET_STATUS_ANIMATION_MS: u64 = 1_000;
 /// Ambient fish, the idle-mark caustic, and the completion wake use a modest
 /// ~12.5fps clock by default. On measured high-Hz displays the adaptive probe
@@ -495,7 +499,7 @@ mod memory_quick_add_tests {
 fn spawn_tui_engine(
     app: &mut App,
     api_config: &Config,
-    mcp_handoff: Option<crate::mcp::McpHandoff>,
+    mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> EngineHandle {
     let handle = spawn_engine(
         build_engine_config(app, api_config),
@@ -514,7 +518,7 @@ fn spawn_tui_engine(
 async fn retire_tui_engine(
     app: &mut App,
     engine_handle: &EngineHandle,
-) -> Option<crate::mcp::McpHandoff> {
+) -> Option<codewhale_engine::mcp::McpHandoff> {
     let mcp_handoff = engine_handle.retire_mcp_for_handoff();
     let active = app
         .active_compaction
@@ -556,7 +560,7 @@ async fn replace_tui_engine(app: &mut App, api_config: &Config, engine_handle: &
 async fn spawn_tui_engine_with_session(
     app: &mut App,
     config: &Config,
-    mcp_handoff: Option<crate::mcp::McpHandoff>,
+    mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> Result<EngineHandle> {
     let handle = spawn_tui_engine(app, config, mcp_handoff);
     let restored = async {
@@ -601,13 +605,13 @@ fn configured_instruction_sources(config: &Config) -> Vec<prompts::InstructionSo
 /// not a reconstruction of them. Nothing is sent and no tool catalog is
 /// expanded; the preview is a pure read.
 fn preview_effective_base_prompt(app: &mut App, config: &Config) {
-    use crate::prompts::base_preview;
+    use codewhale_engine::prompts::base_preview;
 
     let prompt = build_app_system_prompt_with_goal(app, config, app.goal.objective.as_deref());
     let home = codewhale_config::codewhale_home().ok();
     let constitution_path = codewhale_config::UserConstitution::path().ok();
     let sources = base_preview::PreviewSources {
-        base_prompt: Some(crate::prompts::effective_base_prompt_source(
+        base_prompt: Some(codewhale_engine::prompts::effective_base_prompt_source(
             home.as_deref(),
         )),
         user_constitution_path: constitution_path.as_deref(),
@@ -621,7 +625,7 @@ fn preview_effective_base_prompt(app: &mut App, config: &Config) {
         .map(|area| area.width)
         .unwrap_or(80);
     app.view_stack.push(crate::tui::pager::PagerView::from_text(
-        crate::prompts::base_preview::PREVIEW_TITLE,
+        codewhale_engine::prompts::base_preview::PREVIEW_TITLE,
         &report,
         width.saturating_sub(2),
     ));
@@ -704,7 +708,7 @@ fn deliver_fleet_draft_result(
     model_label: String,
     picked_route: Option<(String, String)>,
     reasoning_effort: Option<String>,
-    outcome: Result<Box<crate::fleet::profile::FleetProfileDraft>, String>,
+    outcome: Result<Box<codewhale_engine::fleet::profile::FleetProfileDraft>, String>,
     locale: codewhale_localization::Locale,
 ) {
     match outcome {
@@ -807,10 +811,12 @@ fn active_turn_has_running_tool(app: &App) -> bool {
 /// with a 240-character preview, and that copy is what `SyncSession` sends
 /// back to the engine.
 fn tool_result_content_for_api_message(app: &App, name: &str, output: &ToolResult) -> String {
-    crate::core::engine::compact_tool_result_for_route(
-        app.api_provider,
-        &app.model,
-        app.active_route_limits,
+    let (provider, model, limits, window) = app.effective_budget_route();
+    codewhale_engine::core::engine::compact_tool_result_for_route_with_window(
+        provider,
+        model,
+        limits,
+        window.map(|window| window.tokens),
         name,
         output,
     )
@@ -828,7 +834,9 @@ pub(crate) struct UserDispatchOutcome {
     effective_provider_identity: String,
     effective_provider_label: String,
     effective_reasoning_effort: EffectiveReasoningEffort,
-    auto_selection: Option<crate::model_routing::AutoRouteSelection>,
+    auto_selection: Option<codewhale_engine::model_routing::AutoRouteSelection>,
+    route_limits: codewhale_config::route::RouteLimits,
+    context_window: codewhale_engine::route_runtime::ContextWindowResolution,
 }
 
 /// Tell the operator that an explicit "make this my default" request did not
@@ -1075,7 +1083,7 @@ pub(crate) struct SteerPausedSnapshot {
 fn use_bundled_constitution(app: &mut App, config: &Config) {
     let mut state = crate::tui::setup::load_setup_state_for_app(app, config);
     state.complete_constitution_checkpoint(
-        crate::prompts::CONSTITUTION_CHECKPOINT_VERSION,
+        codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION,
         codewhale_config::ConstitutionChoice::Bundled,
     );
     state.constitution_source = codewhale_config::ConstitutionSource::Bundled;
@@ -1086,7 +1094,7 @@ fn use_bundled_constitution(app: &mut App, config: &Config) {
         codewhale_config::StepEntry::new(
             codewhale_config::StepStatus::Verified,
             true,
-            crate::prompts::CONSTITUTION_CHECKPOINT_VERSION,
+            codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION,
         )
         .with_result("bundled/default constitution"),
     );
@@ -1244,7 +1252,7 @@ fn ignore_stale_stream_event_while_idle(event: &EngineEvent) -> bool {
 }
 
 /// `Ok` carries the `/models` roster the probe already downloaded, when it
-/// was one complete listing (see [`crate::client::verify_provider_api_key`]).
+/// was one complete listing (see [`codewhale_engine::client::verify_provider_api_key`]).
 type ProviderKeyVerification<'a> = Pin<
     Box<
         dyn Future<Output = Result<Option<codewhale_config::catalog::ProviderCatalogDelta>, String>>
@@ -1408,12 +1416,35 @@ pub(crate) enum StartupVersionCheckSource {
 pub(crate) struct UpdateNotice {
     current: String,
     latest: String,
+    staged: Option<bool>,
 }
 
 impl UpdateNotice {
     /// Short line for the transient status toast, naming the command that
     /// actually updates *this* install.
     fn toast_line(&self, install: InstallMethod) -> String {
+        match self.staged {
+            Some(true) => {
+                return format!(
+                    "v{latest} is downloaded and verified; it starts the next time you open Codewhale",
+                    latest = self.latest
+                );
+            }
+            Some(false) => {
+                return format!(
+                    "v{latest} is downloaded - run /update install to use it",
+                    latest = self.latest
+                );
+            }
+            None => {}
+        }
+        if install == InstallMethod::DesktopApp {
+            return format!(
+                "v{latest} available - use {command}",
+                latest = self.latest,
+                command = install.update_command()
+            );
+        }
         format!(
             "v{latest} available - run `{command}` and restart",
             latest = self.latest,
@@ -1421,11 +1452,15 @@ impl UpdateNotice {
         )
     }
 
-    /// Compact header chip label shown once the check has landed. Quiet by
+    /// Compact metrics-line label shown once the check has landed. Quiet by
     /// design: no action verb, no repetition — the toast and transcript
     /// notice carry the update instructions (#14).
     fn chip_label(&self) -> String {
-        format!("↑ v{latest}", latest = self.latest)
+        if self.staged == Some(true) {
+            format!("↑ v{latest} ready", latest = self.latest)
+        } else {
+            format!("↑ v{latest}", latest = self.latest)
+        }
     }
 
     /// Durable, actionable notice pushed into the transcript so it survives the
@@ -1437,7 +1472,15 @@ impl UpdateNotice {
     /// Homebrew or npm owns leaves the manager's metadata lying about what is
     /// on disk, and the next upgrade silently reverts the user.
     fn notice_block(&self, install: InstallMethod) -> String {
-        let action = if install.supports_self_update() {
+        let action = if self.staged == Some(true) {
+            "It is downloaded and verified, and starts the next time you open Codewhale. Turn this off with `codewhale config set update.mode notify`."
+                .to_string()
+        } else if self.staged == Some(false) {
+            "It is downloaded and its checksum verified. Releases are not signed yet, so it waits for your OK: run `/update install`, or say yes when Codewhale next starts."
+                .to_string()
+        } else if install == InstallMethod::DesktopApp {
+            codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string()
+        } else if install.supports_self_update() {
             "Run `/update install` here (preview it with a bare `/update`), or `codewhale update` in a shell, then restart Codewhale."
                 .to_string()
         } else {
@@ -1463,7 +1506,7 @@ mod activity_detail;
 #[cfg(test)]
 mod provider_key_validation_tests {
     use super::*;
-    use crate::core::engine::mock_engine_handle;
+    use codewhale_engine::core::engine::mock_engine_handle;
     use ratatui::{buffer::Buffer, layout::Rect};
     use tempfile::TempDir;
 
@@ -1666,27 +1709,27 @@ mod provider_key_validation_tests {
     fn provider_key_check_classifies_transport_failures_truthfully() {
         assert_eq!(
             provider_verification_error_category("connection refused"),
-            crate::error_taxonomy::ErrorCategory::Network
+            codewhale_error_taxonomy::ErrorCategory::Network
         );
         assert_eq!(
             provider_verification_error_category("request timed out"),
-            crate::error_taxonomy::ErrorCategory::Timeout
+            codewhale_error_taxonomy::ErrorCategory::Timeout
         );
         assert_eq!(
             provider_verification_error_category("HTTP 429 rate limit"),
-            crate::error_taxonomy::ErrorCategory::RateLimit
+            codewhale_error_taxonomy::ErrorCategory::RateLimit
         );
         assert_eq!(
             provider_verification_error_category("HTTP 401 unauthorized"),
-            crate::error_taxonomy::ErrorCategory::Authentication
+            codewhale_error_taxonomy::ErrorCategory::Authentication
         );
         assert_eq!(
             provider_verification_error_category("HTTP 403 forbidden"),
-            crate::error_taxonomy::ErrorCategory::Authorization
+            codewhale_error_taxonomy::ErrorCategory::Authorization
         );
         assert_eq!(
             provider_verification_error_category("HTTP 500 upstream failure"),
-            crate::error_taxonomy::ErrorCategory::Network
+            codewhale_error_taxonomy::ErrorCategory::Network
         );
     }
 
@@ -1701,14 +1744,14 @@ mod provider_key_validation_tests {
         struct Reset;
         impl Drop for Reset {
             fn drop(&mut self) {
-                crate::provider_catalog_live::reset_cache_for_test();
-                crate::provider_lake::clear_live_snapshot();
+                codewhale_engine::provider_catalog_live::reset_cache_for_test();
+                codewhale_engine::provider_lake::clear_live_snapshot();
             }
         }
         let _config_env = ConfigPathEnvGuard::new();
-        let _live = crate::provider_lake::lock_live_snapshot();
+        let _live = codewhale_engine::provider_lake::lock_live_snapshot();
         let _reset = Reset;
-        crate::provider_catalog_live::reset_cache_for_test();
+        codewhale_engine::provider_catalog_live::reset_cache_for_test();
         let mut app = create_test_app();
         let mut engine = mock_engine_handle();
         let mut config = Config::default();
@@ -1744,7 +1787,7 @@ mod provider_key_validation_tests {
                 .collect(),
         };
         assert_ne!(
-            crate::provider_lake::catalog_models_for_route(
+            codewhale_engine::provider_lake::catalog_models_for_route(
                 ProviderKind::Deepseek,
                 identity.key.as_str(),
                 &base_url,
@@ -1767,12 +1810,87 @@ mod provider_key_validation_tests {
 
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ProviderPicker));
         assert_eq!(
-            crate::provider_lake::catalog_models_for_route(
+            codewhale_engine::provider_lake::catalog_models_for_route(
                 ProviderKind::Deepseek,
                 identity.key.as_str(),
                 &base_url,
             ),
             served
+        );
+
+        let identity =
+            picker_provider_identity(&config, ProviderKind::Ollama, None).expect("Ollama identity");
+        let base_url = "http://127.0.0.1:11434/v1";
+        let fingerprint = base_url_fingerprint(base_url);
+        let make_roster = |ids: &[&str], fingerprint: &str| ProviderCatalogDelta {
+            provider: "ollama".into(),
+            base_url_fingerprint: fingerprint.to_string(),
+            fetched_at,
+            offerings: ids
+                .iter()
+                .map(|id| CatalogOffering {
+                    provider: "ollama".into(),
+                    wire_model_id: (*id).into(),
+                    endpoint_key: "chat".into(),
+                    source: CatalogSource::Live {
+                        base_url_fingerprint: fingerprint.to_string(),
+                        fetched_at,
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let mut native = make_roster(&["qwen3:4b"], &fingerprint);
+        native.offerings[0].default_for_provider = true;
+        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+            ProviderKind::Ollama,
+            identity.key.as_str(),
+            base_url,
+        );
+        assert_eq!(
+            codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, native),
+            Some(codewhale_config::catalog::CatalogStatus::Fresh)
+        );
+        let generic = make_roster(&["qwen3:4b", "nomic-embed-text:latest"], &fingerprint);
+        publish_verified_roster(&identity, base_url, Some(generic));
+        let cached = codewhale_engine::provider_catalog_live::cached_entry_for_route(
+            ProviderKind::Ollama,
+            identity.key.as_str(),
+            base_url,
+        )
+        .unwrap()
+        .expect("native Ollama roster remains available");
+        assert_eq!(
+            cached
+                .offerings
+                .iter()
+                .map(|row| row.wire_model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["qwen3:4b"]
+        );
+        let empty_base_url = "http://127.0.0.1:11435/v1";
+        assert!(
+            codewhale_engine::provider_catalog_live::cached_entry_for_route(
+                ProviderKind::Ollama,
+                identity.key.as_str(),
+                empty_base_url,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let generic = make_roster(
+            &["qwen3:4b", "nomic-embed-text:latest"],
+            &base_url_fingerprint(empty_base_url),
+        );
+        publish_verified_roster(&identity, empty_base_url, Some(generic));
+        assert!(
+            codewhale_engine::provider_catalog_live::cached_entry_for_route(
+                ProviderKind::Ollama,
+                identity.key.as_str(),
+                empty_base_url,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -1837,19 +1955,19 @@ mod provider_key_validation_tests {
         probed_config
             .set_provider_api_key_override(&probed_identity, Some("sk-verified".to_string()))
             .expect("temporary probe key");
-        let verified_route = crate::provider_readiness::route_identity_for_model(
+        let verified_route = codewhale_engine::provider_readiness::route_identity_for_model(
             &probed_config,
             &probed_identity,
             codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
-            crate::provider_readiness::resolve_with_identity(
+            codewhale_engine::provider_readiness::resolve_with_identity(
                 &verified_route,
-                crate::provider_readiness::CredentialState::Saved,
+                codewhale_engine::provider_readiness::CredentialState::Saved,
                 true,
                 &app.provider_health,
             ),
-            crate::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked,
             "the live connection probe must not be reported as model ready",
         );
 
@@ -1914,28 +2032,28 @@ mod provider_key_validation_tests {
             "test connection names reachability only: {:?}",
             app.status_toasts
         );
-        let verified_route = crate::provider_readiness::route_identity_for_model(
+        let verified_route = codewhale_engine::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
             codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
-            crate::provider_readiness::resolve_with_identity(
+            codewhale_engine::provider_readiness::resolve_with_identity(
                 &verified_route,
-                crate::provider_readiness::CredentialState::Saved,
+                codewhale_engine::provider_readiness::CredentialState::Saved,
                 true,
                 &app.provider_health,
             ),
-            crate::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked,
         );
         assert_ne!(
-            crate::provider_readiness::resolve_with_identity(
+            codewhale_engine::provider_readiness::resolve_with_identity(
                 &verified_route,
-                crate::provider_readiness::CredentialState::Saved,
+                codewhale_engine::provider_readiness::CredentialState::Saved,
                 true,
                 &app.provider_health,
             ),
-            crate::provider_readiness::ResolvedProviderReadiness::Ready,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::Ready,
         );
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ProviderPicker));
     }
@@ -1969,19 +2087,19 @@ mod provider_key_validation_tests {
             "{:?}",
             app.status_toasts
         );
-        let verified_route = crate::provider_readiness::route_identity_for_model(
+        let verified_route = codewhale_engine::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
             codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert_eq!(
-            crate::provider_readiness::resolve_with_identity(
+            codewhale_engine::provider_readiness::resolve_with_identity(
                 &verified_route,
-                crate::provider_readiness::CredentialState::MissingKey,
+                codewhale_engine::provider_readiness::CredentialState::MissingKey,
                 true,
                 &app.provider_health,
             ),
-            crate::provider_readiness::ResolvedProviderReadiness::MissingKey,
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::MissingKey,
         );
     }
 
@@ -2030,19 +2148,19 @@ mod provider_key_validation_tests {
                 .is_some_and(|memory| memory.catalog_view),
             "catalog browsing context must survive the probe"
         );
-        let verified_route = crate::provider_readiness::route_identity_for_model(
+        let verified_route = codewhale_engine::provider_readiness::route_identity_for_model(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Openrouter),
             codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_MODEL,
         );
         assert!(matches!(
-            crate::provider_readiness::resolve_with_identity(
+            codewhale_engine::provider_readiness::resolve_with_identity(
                 &verified_route,
-                crate::provider_readiness::CredentialState::Saved,
+                codewhale_engine::provider_readiness::CredentialState::Saved,
                 true,
                 &app.provider_health,
             ),
-            crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
+            codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         ));
     }
 
@@ -2514,8 +2632,9 @@ default_text_model = "legacy-model"
             custom["base_url"].as_str(),
             Some("http://127.0.0.1:18180/v1")
         );
-        let reloaded = crate::plugins::providers::load_config(Some(config_env.config_path()), None)
-            .expect("reload legacy");
+        let reloaded =
+            codewhale_plugins::providers::load_config(Some(config_env.config_path()), None)
+                .expect("reload legacy");
         assert!(reloaded.selects_literal_custom_provider());
         assert_eq!(
             reloaded
@@ -2551,8 +2670,9 @@ model = "model-b"
 "#,
         )
         .expect("seed coexistence config");
-        let config = crate::plugins::providers::load_config(Some(config_env.config_path()), None)
-            .expect("load config");
+        let config =
+            codewhale_plugins::providers::load_config(Some(config_env.config_path()), None)
+                .expect("load config");
         assert!(config.selects_literal_custom_provider());
         let identity = config
             .resolve_provider_identity("custom-b")
@@ -2587,7 +2707,7 @@ model = "model-b"
 /// time `TurnComplete` is handled, so it is not accepted as an input here.
 fn completed_turn_cost_route_receipt(
     completed_turn: Option<&crate::tui::app::ActiveTurnMetadata>,
-    audit: &crate::pricing::TurnCostAudit,
+    audit: &codewhale_engine::pricing::TurnCostAudit,
 ) -> Option<String> {
     let route = completed_turn?.route.as_ref()?;
     Some(route.cost_envelope()?.receipt(audit))

@@ -156,7 +156,7 @@ partial 区域设置在网站上还差的范围（下一波）：首页之外的
 | hreflang 备用链接覆盖每个有路由的区域设置 | `web/lib/page-meta.test.ts` | **Shipped**（#3091） |
 | 西里尔语言包保持字母纯净（不混入其他语言文案，ru≠uk） | `crates/localization/src/lib.rs` 里的 `cyrillic_packs_have_script_purity_and_no_mixed_language_fixtures` + `dictionaries.test.ts` | **Shipped**（#3092/#4791） |
 | 天城文在 40/60/80 列宽下按字素安全截断/折行 | `crates/localization/src/lib.rs` 里的 `truncate_to_width_never_splits_devanagari_clusters` + 宽度夹具 | **Shipped**（#4790） |
-| 新增 UI 区域设置不会改变模型可见的提示词字节 | `crates/tui/src/prompts.rs` 里的 `v092_locales_add_no_prompt_bookends_so_prompt_bytes_stay_stable` | **Shipped**（缓存稳定性契约） |
+| 新增 UI 区域设置不会改变模型可见的提示词字节 | `crates/engine/src/prompts.rs` 里的 `v092_locales_add_no_prompt_bookends_so_prompt_bytes_stay_stable` | **Shipped**（缓存稳定性契约） |
 | 已发布的区域设置都不会渲染出缺失消息标记 | `crates/localization/src/lib.rs` 里的 `no_shipped_locale_renders_a_missing_message_marker` | **Shipped** |
 
 ## 如何新增一个区域设置

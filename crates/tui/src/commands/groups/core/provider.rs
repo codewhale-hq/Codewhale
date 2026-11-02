@@ -112,6 +112,8 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
         .as_ref()
         .is_some_and(|identity| identity.key == selected_key)
         && model.is_none()
+        && !(target == ProviderKind::Ollama
+            && codewhale_runtime::config::is_unresolved_local_ollama_model(&app.model))
     {
         return CommandResult::message(format!("Already on provider: {}", selected_key));
     }
@@ -629,6 +631,18 @@ mod tests {
         let msg = result.message.expect("expected message");
         assert!(msg.contains("Already on provider"));
         assert!(result.action.is_none());
+        app.provider_identity = Some(
+            codewhale_runtime::config::Config::default()
+                .builtin_provider_identity(ProviderKind::Ollama)
+                .unwrap(),
+        );
+        app.model = "unknown".into();
+        assert!(matches!(
+            provider(&mut app, Some("ollama")).action,
+            Some(AppAction::SwitchProvider { model: None, .. })
+        ));
+        app.model = "qwen3:4b".into();
+        assert!(provider(&mut app, Some("ollama")).action.is_none());
     }
 
     #[test]
@@ -725,7 +739,8 @@ mod tests {
                             ),
                             codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT
                         );
-                        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::Max;
+                        app.reasoning_effort =
+                            codewhale_engine::reasoning_preference::ReasoningEffort::Max;
                         app.reasoning_effort_preference = None;
                         app.apply_provider_switch_reasoning_effort(
                             intrinsic,
@@ -735,9 +750,9 @@ mod tests {
                         assert_eq!(
                             app.reasoning_effort,
                             if alias == "deepseek-chat" {
-                                crate::reasoning_preference::ReasoningEffort::Off
+                                codewhale_engine::reasoning_preference::ReasoningEffort::Off
                             } else {
-                                crate::reasoning_preference::ReasoningEffort::High
+                                codewhale_engine::reasoning_preference::ReasoningEffort::High
                             },
                             "{provider:?} {alias}"
                         );
@@ -778,7 +793,7 @@ mod tests {
             ),
             "deepseek-reasoner"
         );
-        app.reasoning_effort = crate::reasoning_preference::ReasoningEffort::Max;
+        app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::Max;
         app.reasoning_effort_preference = None;
         app.apply_provider_switch_reasoning_effort(
             ProviderKind::Deepseek,
@@ -787,11 +802,12 @@ mod tests {
         );
         assert_eq!(
             app.reasoning_effort,
-            crate::reasoning_preference::ReasoningEffort::Max,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Max,
             "custom endpoint owns alias semantics"
         );
 
-        app.reasoning_effort_preference = Some(crate::reasoning_preference::ReasoningEffort::Max);
+        app.reasoning_effort_preference =
+            Some(codewhale_engine::reasoning_preference::ReasoningEffort::Max);
         app.apply_provider_switch_reasoning_effort(
             ProviderKind::Deepseek,
             codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
@@ -799,7 +815,7 @@ mod tests {
         );
         assert_eq!(
             app.reasoning_effort,
-            crate::reasoning_preference::ReasoningEffort::Max,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Max,
             "explicit effort must beat compatibility inference"
         );
     }

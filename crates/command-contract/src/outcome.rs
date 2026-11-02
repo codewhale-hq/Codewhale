@@ -70,12 +70,17 @@ pub enum DebugAction {
         diff: String,
     },
     OpenContextInspector,
+    OpenUndoSelector,
+    UndoLatestRequest {
+        force: bool,
+    },
     SendMessage(String),
     SyncSession(SessionSyncPayload),
     /// Install and persist a conversation rollback; `/retry` resends its
     /// input only after both succeed, replacing the removed exchange (#6788).
     ConversationUndo {
         sync: SessionSyncPayload,
+        restored_files: usize,
         retry_input: Option<String>,
     },
 }

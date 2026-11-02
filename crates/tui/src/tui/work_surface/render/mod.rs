@@ -24,9 +24,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::{App, SidebarHoverRow, SidebarHoverSection};
-use crate::tui::ui_text::truncate_line_to_width;
 use codewhale_localization::MessageId;
 use codewhale_palette::{ChromeInk, chrome_style};
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 use super::model::{
     DockTabHitbox, DockTabTarget, RailPanel, WorkHitbox, WorkRow, WorkSurfacePlacement, WorkTone,

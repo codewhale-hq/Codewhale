@@ -469,6 +469,7 @@ pub enum MetricKind {
     Goal,
     Workspace,
     GitBranch,
+    Update,
 }
 
 impl MetricKind {
@@ -482,7 +483,7 @@ impl MetricKind {
             Self::Rate | Self::Ttft | Self::Cost => 5,
             Self::OutputTokens | Self::BillingTier => 7,
             Self::Balance | Self::Workspace | Self::GitBranch => 4,
-            Self::Goal => 3,
+            Self::Goal | Self::Update => 3,
             Self::Model | Self::Context => 0,
         }
     }
@@ -621,7 +622,7 @@ impl<'a> MetricsLine<'a> {
         }
     }
 
-    /// Geometry for all surviving readings. Only model and context acquire
+    /// Geometry for all surviving readings. Model, context and update acquire
     /// hover styling; hosts choose which readings dispatch an action.
     /// Use the same clipped area as painting when the buffer is smaller.
     #[must_use]
@@ -694,8 +695,10 @@ impl Paint for MetricsLine<'_> {
                 put(area, buf, x, ITEM_JOIN, theme.fg(Role::Dim));
                 x += text::width(ITEM_JOIN);
             }
-            let hovered = matches!(segment.kind, MetricKind::Model | MetricKind::Context)
-                && self.hovered == Some(segment.kind);
+            let hovered = matches!(
+                segment.kind,
+                MetricKind::Model | MetricKind::Context | MetricKind::Update
+            ) && self.hovered == Some(segment.kind);
             let style = if hovered {
                 theme
                     .fg(segment.role)

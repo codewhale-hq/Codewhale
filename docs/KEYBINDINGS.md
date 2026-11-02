@@ -17,8 +17,8 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-C`             | Cancel current turn / dismiss modal / clear a non-empty draft (recoverable — see `Ctrl-Z`) / arm-then-confirm quit |
 | `Ctrl-B`             | Release the current shell wait so the turn can continue; foreground commands move into `/jobs`, and background tasks keep running. Use `/jobs` or `Bash` with `action: "wait"` to inspect output |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
-| `Tab`                | When the composer is empty, cycle TUI mode: Plan → Work → Operate → Plan |
-| `Shift+Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access. Live regardless of composer contents or whether a turn is running (suppressed only while a modal other than Config is open) |
+| `Tab`                | When the composer is empty, cycle TUI mode: Plan → Work → Operate → Plan. Works while a turn is running: the change applies at the agent's next step in the same turn, and the status line says so until it does |
+| `Shift+Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access. Live regardless of composer contents or whether a turn is running (suppressed only while a modal other than Config is open). During a turn the change applies at the agent's next step; a call you already approved runs only if the new posture is equal or broader. Model, thinking level and provider stay locked until the turn ends |
 | `Ctrl-T`             | Cycle reasoning effort for the active model. Walks the same ladder as `/model` and `/effort` (catalog or documented route dialect). Always-thinking models omit `off`; Grok 4.6 includes `xhigh`. |
 | `Ctrl-Shift-T`       | Toggle live transcript overlay (sticky-tail auto-scroll)                       |
 | `Ctrl-R`             | Open the resume-session picker                                 |
@@ -46,7 +46,7 @@ Editing the message you're about to send.
 |-----------------------------|---------------------------------------------------------|
 | `Enter`                     | Send when idle; queue while busy; with an empty composer, send the next queued follow-up now |
 | `Shift-Enter` / `Alt-Enter` / `Ctrl-J` | Insert a newline without sending (idle or busy) |
-| `Ctrl-Enter` / `Cmd-Enter`  | Send into the current turn; send normally when idle (when the terminal reports it distinctly) |
+| `Ctrl-Enter` / `Cmd-Enter`  | Steer: send into the current turn, closing the in-flight model request at once (reasoning, text or tool call) and continuing the same turn with your message; send normally when idle (when the terminal reports it distinctly). Text already shown is kept; unfinished reasoning and partial tool calls are discarded, never run. A second `Enter` within 500 ms of queueing a message while busy steers too |
 | `Ctrl-U`                    | Clear the whole draft (recoverable — see `Ctrl-Z`)      |
 | `Ctrl-Z`                    | Restore the cleared draft (only while the composer is empty) |
 | `Ctrl-C`                    | Clear the whole draft when no turn is running (recoverable — see `Ctrl-Z`) |

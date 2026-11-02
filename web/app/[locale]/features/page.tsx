@@ -32,7 +32,8 @@ export default async function FeaturesPage({ params }: { params: Promise<{ local
             <Status tone={TONES[feature.status]}>{t[feature.status]}</Status>
             {Object.entries(feature.surfaces).map(([surface, state]) => <Status key={surface} tone={TONES[state]}><bdi>{surface.toUpperCase()}</bdi>: {t[state]}</Status>)}
             {feature.flag && <code dir="ltr">{feature.flag}</code>}
-            {feature.since && (BUILD_FACTS.latestPublishedRelease && (compareVersions(feature.since, BUILD_FACTS.latestPublishedRelease.version) ?? 0) > 0
+            {feature.since === "unreleased" && <Status tone="idle">{getHome(locale).sourceCandidate}</Status>}
+            {feature.since && feature.since !== "unreleased" && (BUILD_FACTS.latestPublishedRelease && (compareVersions(feature.since, BUILD_FACTS.latestPublishedRelease.version) ?? 0) > 0
               ? <Status tone="idle">{getHome(locale).sourceCandidate} <bdi>v{feature.since}</bdi></Status>
               : <code dir="ltr">v{feature.since}</code>)}
           </div>

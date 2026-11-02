@@ -26,7 +26,7 @@ import {
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   readJsonSafe,
-  readSse
+  readThreadEvents
 } from "../../bridge-core/src/lib.mjs";
 
 /** Map of chatId -> latest pending approval info for natural-language approval. */
@@ -304,13 +304,8 @@ async function runPrompt(chatId, prompt, frame) {
   });
   await replyText(frame, `Started turn ${turnId || "(unknown)"}`);
 
-  try {
-    await streamTurnEvents(chatId, frame, state.threadId, turnId, sinceSeq);
-  } finally {
-    await threadStore.patchChat(chatId, {
-      activeTurnId: null,
-      updatedAt: new Date().toISOString()
-    });
+  if (await streamTurnEvents(chatId, frame, state.threadId, turnId, sinceSeq)) {
+    await threadStore.finishObservedTurn(chatId, state.threadId, turnId);
   }
 }
 
@@ -334,19 +329,12 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
       throw new Error(compactRuntimeError(response.status, body));
     }
 
-    for await (const event of readSse(response)) {
-      if (!event.data) continue;
-      let record;
-      try {
-        record = JSON.parse(event.data);
-      } catch (error) {
-        console.warn("Skipping malformed runtime SSE event:", publicBridgeError(error));
-        continue;
-      }
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
       await threadStore.patchChat(chatId, { lastSeq: latestSeq });
 
-      if (turnId && record.turn_id && record.turn_id !== turnId) continue;
+      if (!turnId || record.turn_id !== turnId) continue;
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
@@ -388,7 +376,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         const errorText = turn.error ? `\n${turn.error}` : "";
         const fallback = status === "completed" ? "Turn completed." : `Turn ${status}.${errorText}`;
         await client.replyStream(frame, streamId, responseText.trim() || fallback, true);
-        return;
+        return true;
       }
 
       if (record.event === "turn.lifecycle") {
@@ -397,14 +385,14 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         if (["failed", "canceled", "interrupted"].includes(status)) {
           const errorText = turn.error || record.payload?.error;
           await client.replyStream(frame, streamId, `Turn ${status}.${errorText ? `\n${errorText}` : ""}`, true);
-          return;
+          return true;
         }
       }
     }
   } catch (error) {
     if (error.name === "AbortError") {
-      await replyText(frame, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return;
+      await replyText(frame, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+      return false;
     }
     throw error;
   } finally {

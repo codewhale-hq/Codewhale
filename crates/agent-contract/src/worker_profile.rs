@@ -579,6 +579,69 @@ impl Default for WorkerRuntimeProfile {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildActivationIdentity {
+    pub owner_session_id: String,
+    pub session_boot_id: String,
+    pub public_child_id: String,
+    pub child_id: String,
+    pub run_id: String,
+    pub generation: u32,
+    pub initial_submission_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildActivationDelivery {
+    #[default]
+    Parent,
+    Caller,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrozenChildConfiguration {
+    pub persona: Option<String>,
+    pub denied_tools: Vec<String>,
+    pub delivery: ChildActivationDelivery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildInitialAdmission {
+    pub submission_id: String,
+    pub turn_id: String,
+    pub message_index: usize,
+    pub prefix_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChildActivationStopReason {
+    Completed,
+    Aborted,
+    Error,
+    MaxTokens,
+    Refusal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildActivationOutput {
+    pub transcript_message_index: usize,
+    pub content_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildActivationManifest {
+    pub identity: ChildActivationIdentity,
+    pub configuration: Option<FrozenChildConfiguration>,
+    pub admission: Option<ChildInitialAdmission>,
+    #[serde(default)]
+    pub output_captured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<ChildActivationStopReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<ChildActivationOutput>,
+}
+
 /// Unified pre-launch manifest for a child agent (#414).
 ///
 /// Everything needed to provision, launch, and resume a child — prompt, role,
@@ -586,6 +649,8 @@ impl Default for WorkerRuntimeProfile {
 /// from this single persisted record. No field is derived ad-hoc at launch time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChildLaunchManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ChildActivationManifest>,
     pub owner_session: String,
     pub child_id: String,
     pub profile: WorkerRuntimeProfile,

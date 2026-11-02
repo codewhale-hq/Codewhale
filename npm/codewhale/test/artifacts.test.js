@@ -20,22 +20,27 @@ function withMockedOs(platform, arch, fn) {
   }
 }
 
-test("openharmony x64 resolves to linux x64 binaries", () => {
-  withMockedOs("openharmony", "x64", () => {
-    const { detectBinaryNames } = require(ARTIFACTS_PATH);
-    const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-x64");
-    assert.equal(result.codew, "codew-linux-x64");
-    assert.equal(result.tui, undefined);
-  });
-});
-
-test("openharmony arm64 resolves to linux arm64 binaries", () => {
+// Native HarmonyOS used to receive the static Linux build as a best effort.
+// It has its own target now, so the Linux names must not come back: shipping a
+// glibc-less musl Linux binary to `openharmony` was the behaviour that made
+// `codewhale` fail to start with no explanation on the device.
+test("openharmony arm64 resolves to the native HarmonyOS assets", () => {
   withMockedOs("openharmony", "arm64", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-arm64");
-    assert.equal(result.codew, "codew-linux-arm64");
+    assert.equal(result.codewhale, "codewhale-ohos-arm64");
+    assert.equal(result.codew, "codew-ohos-arm64");
+  });
+});
+
+test("openharmony x64 has no asset and is pointed at a source build", () => {
+  withMockedOs("openharmony", "x64", () => {
+    const { detectBinaryNames } = require(ARTIFACTS_PATH);
+    assert.throws(
+      () => detectBinaryNames(),
+      /Unsupported architecture: x64 on platform openharmony/,
+      "only ARM64 is published for native HarmonyOS",
+    );
   });
 });
 

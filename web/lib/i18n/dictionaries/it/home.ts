@@ -15,6 +15,7 @@ export const home: HomeDict = {
     "Codewhale v{version}: una cattura del terminale con conversazione, campo del messaggio e controlli della sessione.",
   latestRelease: "Ultima release {tag}",
   releaseUnavailable: "Stato delle release non disponibile",
+  proofContributors: "{count} contributori",
   currentSource: "Sorgente",
   sourceCandidate: "Non rilasciata",
   publishedRelease: "rilasciata",
