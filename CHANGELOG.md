@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP calls inside `execute_tools` expose a single bare JSON result directly through `content`. Rich or annotated results retain their envelopes, and oversized results keep the original raw size and spill receipt.
+
 - Session metadata reads stop at a bounded scan and report unreadable records without hiding healthy picker rows. Queued saves preserve durable renames, archive state and Runtime ownership under the session write lock; uncertain metadata refuses writes and cleanup. Persistence batches run off the async executor, and explicit placeholder-title renames retain their intent.
 
 - Worker coordination serializes durable admissions across processes, preserves foreign workers and winning completion receipts, and fences stale checkpoints. Fleet restart reservations retain uncertain prior processes until exact teardown is confirmed; final output, usage and the receipt publish together without duplicate accounting on retry. Retained transcripts follow committed ownership.

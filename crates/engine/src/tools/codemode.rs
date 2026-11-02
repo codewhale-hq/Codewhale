@@ -139,8 +139,10 @@ pub fn execute_tools_tool_definition() -> Tool {
              the user decides, and a denied or refused call throws inside the program (catch \
              it to continue). Inside a program, tools.call('tool_search', {query}) returns \
              matching tool names with their input schemas without loading them into the \
-             conversation. Each result is {content, metadata, truncated}. When a result is \
-             cut, truncated names its full size and saved copy and content is the leading \
+             conversation. Each result is {content, metadata, truncated}. A bare single MCP \
+             JSON text block is parsed directly into content; mixed/rich blocks retain \
+             their MCP envelope. When a result is cut, truncated names its full size \
+             and saved copy and content is the leading \
              text of the raw output instead of parsed JSON, so check truncated before \
              reading fields. Not \
              available inside programs: agent, workflow, request_user_input, nested \
@@ -1092,9 +1094,28 @@ impl CodemodeInvoker {
         let metadata = result.metadata.clone().unwrap_or(Value::Null);
         let content = serde_json::from_str(&result.content)
             .unwrap_or_else(|_| Value::String(result.content.clone()));
-        let payload = json!({ "content": content, "metadata": metadata, "truncated": Value::Null });
+        let mut payload =
+            json!({ "content": content, "metadata": metadata, "truncated": Value::Null });
         let raw = payload.to_string();
         if raw.len() <= PER_CALL_RESULT_CAP_BYTES {
+            if McpPool::is_mcp_tool(name)
+                && let Some(envelope) = payload["content"].as_object()
+                && envelope
+                    .keys()
+                    .all(|key| key == "content" || key == "isError")
+                && envelope
+                    .get("isError")
+                    .is_none_or(|value| value == &Value::Bool(false))
+                && let Some(blocks) = envelope.get("content").and_then(Value::as_array)
+                && let [block] = blocks.as_slice()
+                && let Some(fields) = block.as_object()
+                && fields.keys().all(|key| key == "type" || key == "text")
+                && block.get("type").and_then(Value::as_str) == Some("text")
+                && let Some(text) = block.get("text").and_then(Value::as_str)
+                && let Ok(content) = serde_json::from_str::<Value>(text)
+            {
+                payload["content"] = content;
+            }
             return (payload, raw.len(), None);
         }
         let spill_path = spill(&self.spill_id(seq, name), &raw);
