@@ -1113,6 +1113,13 @@ metadata does not store a last message, and reading every transcript to
 synthesise one would make a list view an unbounded read. Full transcript
 preview lives in the TUI session picker, which reads one selected session.
 
+Metadata inspection reads at most 16 MiB from each regular session file. A
+resource refusal returns `413` with code `session_metadata_too_large` from
+catalog and lifecycle routes; the source remains unchanged. A catalog with
+unreadable records returns an error rather than an incomplete successful list.
+The terminal picker retains readable rows and reports its inspection warning.
+These limits cover metadata inspection, not full transcript loading.
+
 `PATCH /v1/sessions/{id}` renames and/or archives a saved session and returns a
 lifecycle receipt shaped like the thread patch receipt:
 

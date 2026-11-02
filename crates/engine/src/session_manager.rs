@@ -70,6 +70,56 @@ const CURRENT_SESSION_GOAL_SCHEMA_VERSION: u32 = 2;
 const MAX_SESSION_GOAL_OBJECTIVE_CHARS: usize = 8_192;
 const MAX_SESSION_GOAL_FILE_BYTES: u64 = 64 * 1_024;
 pub const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
+pub(crate) const SESSION_METADATA_READ_LIMIT: usize = 16 * 1024 * 1024;
+
+struct SessionWriteMetadata {
+    saved: Option<SessionMetadata>,
+    checkpoint: Option<SessionMetadata>,
+}
+
+#[derive(Default)]
+struct SessionCatalog {
+    records: Vec<(PathBuf, SessionMetadata)>,
+    failures: Vec<(PathBuf, io::Error)>,
+}
+
+impl SessionCatalog {
+    fn warning(&self) -> Option<String> {
+        self.failures.first().map(|(path, error)| {
+            format!(
+                "{} session record(s) could not be inspected; {}: {error}",
+                self.failures.len(),
+                path.display()
+            )
+        })
+    }
+
+    fn into_complete(self) -> io::Result<Vec<(PathBuf, SessionMetadata)>> {
+        if let Some((path, error)) = self.failures.into_iter().next() {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("session catalog is incomplete; {}: {error}", path.display()),
+            ));
+        }
+        Ok(self.records)
+    }
+}
+
+pub(crate) fn read_session_reference_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let file = open_private_read_file(path)?;
+    let mut bytes = Vec::new();
+    file.take(SESSION_METADATA_READ_LIMIT as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() == SESSION_METADATA_READ_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "session reference inspection exceeds 16 MiB; source left unchanged",
+        ));
+    }
+    Ok(bytes)
+}
+
 const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
 const LATE_USAGE_DIR: &str = ".late-usage";
 const CURRENT_LATE_USAGE_SCHEMA_VERSION: u32 = 1;
@@ -372,6 +422,8 @@ pub struct SessionMetadata {
     pub runtime_store: Option<crate::runtime_threads::RuntimeStoreBinding>,
     /// Human-readable title (derived from first message)
     pub title: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub title_is_custom: bool,
     /// When the session was created
     pub created_at: DateTime<Utc>,
     /// When the session was last updated
@@ -707,8 +759,8 @@ pub struct SessionCostSnapshot {
     ///
     /// Known limit (#6842): unbounded, ~70 bytes per background call. It is
     /// the replay-idempotency set for money (late-usage overlay and restored
-    /// dedupe), so it is never capped; `load_session_metadata` grows its read
-    /// to fit a large block instead of falling back to a whole-file read.
+    /// dedupe), so it is never capped; oversized metadata is refused without
+    /// changing these receipts or reading the full transcript.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub usage_source_fingerprints: BTreeSet<String>,
     #[serde(
@@ -1359,6 +1411,7 @@ impl SavedSession {
         let metadata = SessionMetadata {
             id: Uuid::new_v4().to_string(),
             title,
+            title_is_custom: false,
             created_at: now,
             updated_at: now,
             message_count: messages.len(),
@@ -1700,7 +1753,22 @@ impl SessionManager {
 
     /// Metadata of saved session `id`, read without loading its transcript.
     pub fn load_session_metadata_by_id(&self, id: &str) -> std::io::Result<SessionMetadata> {
-        Self::load_session_metadata(&self.validated_session_path(id)?)
+        let metadata = Self::load_session_metadata(&self.validated_session_path(id)?)?;
+        self.validate_metadata_id(id, metadata)
+    }
+
+    fn validate_metadata_id(
+        &self,
+        id: &str,
+        metadata: SessionMetadata,
+    ) -> io::Result<SessionMetadata> {
+        if metadata.id != self.validated_session_id(id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "saved session metadata names a different session id",
+            ));
+        }
+        Ok(metadata)
     }
 
     fn validated_session_path(&self, id: &str) -> std::io::Result<PathBuf> {
@@ -2411,7 +2479,15 @@ impl SessionManager {
     }
 
     fn apply_late_usage_to_metadata(&self, metadata: &mut SessionMetadata) {
-        let ledger = match self.load_late_usage(&metadata.id) {
+        let ledger = self.load_late_usage(&metadata.id);
+        Self::apply_late_usage_result(metadata, ledger);
+    }
+
+    fn apply_late_usage_result(
+        metadata: &mut SessionMetadata,
+        ledger: io::Result<LateUsageLedger>,
+    ) {
+        let ledger = match ledger {
             Ok(ledger) => ledger,
             Err(_) => {
                 // The transcript is independent of optional accounting data.
@@ -2582,34 +2658,87 @@ impl SessionManager {
         Ok(Some(goal))
     }
 
-    fn hydrate_recovered_runtime_binding(&self, session: &mut SavedSession) -> std::io::Result<()> {
-        // Compare under the session write lock. A stale process may neither
-        // resurrect a missing binding nor replace a different recovered owner.
-        // An adoptable empty store (#6207) counts as abandonable on either
-        // side, exactly like a missing one: there is no durable work to lose
-        // in either direction.
-        if let Some(incoming) = session.metadata.runtime_store.as_ref()
-            && let Ok(persisted) =
-                Self::load_session_metadata(&self.validated_session_path(&session.metadata.id)?)
-            && let Some(binding) = persisted.runtime_store
-            && incoming != &binding
-        {
-            let incoming_abandonable = incoming.is_missing_session_store().unwrap_or(false)
-                || incoming.is_adoptable_empty_store().unwrap_or(false);
-            if incoming_abandonable && binding.validate_existing_store().is_ok() {
-                session.metadata.runtime_store = Some(binding);
-            } else {
-                let persisted_abandonable = binding.is_missing_session_store().unwrap_or(false)
-                    || binding.is_adoptable_empty_store().unwrap_or(false);
-                if !persisted_abandonable {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Session Runtime ownership changed; reopen the session before saving",
-                    ));
-                }
-            }
+    fn hydrate_recovered_runtime_binding(&self, session: &mut SavedSession) -> io::Result<()> {
+        let persisted = self.load_session_write_metadata(&session.metadata.id)?;
+        Self::prepare_session_write(session, &persisted, false)
+    }
+
+    fn resolve_runtime_binding(
+        session: &mut SavedSession,
+        persisted: Option<&SessionMetadata>,
+    ) -> io::Result<()> {
+        let Some(binding) = persisted.and_then(|metadata| metadata.runtime_store.as_ref()) else {
+            return Ok(());
+        };
+        let Some(incoming) = session.metadata.runtime_store.as_ref() else {
+            session.metadata.runtime_store = Some(binding.clone());
+            return Ok(());
+        };
+        if incoming == binding {
+            return Ok(());
+        }
+        let incoming_abandonable = incoming.is_missing_session_store().unwrap_or(false)
+            || incoming.is_adoptable_empty_store().unwrap_or(false);
+        if incoming_abandonable && binding.validate_existing_store().is_ok() {
+            session.metadata.runtime_store = Some(binding.clone());
+            return Ok(());
+        }
+        let persisted_abandonable = binding.is_missing_session_store().unwrap_or(false)
+            || binding.is_adoptable_empty_store().unwrap_or(false);
+        if !persisted_abandonable {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Session Runtime ownership changed; reopen the session before saving",
+            ));
         }
         Ok(())
+    }
+
+    fn load_session_write_metadata(&self, id: &str) -> io::Result<SessionWriteMetadata> {
+        let saved = match self.load_session_metadata_by_id(id) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let checkpoint = match Self::load_checkpoint_metadata(&self.validated_checkpoint_path(id)?)
+        {
+            Ok(metadata) => Some(self.validate_metadata_id(id, metadata)?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        Ok(SessionWriteMetadata { saved, checkpoint })
+    }
+
+    fn prepare_session_write(
+        session: &mut SavedSession,
+        persisted: &SessionWriteMetadata,
+        preserve_lifecycle: bool,
+    ) -> io::Result<()> {
+        for metadata in persisted.saved.iter().chain(persisted.checkpoint.iter()) {
+            Self::resolve_runtime_binding(session, Some(metadata))?;
+        }
+        if preserve_lifecycle
+            && let Some(metadata) = persisted.saved.as_ref().or(persisted.checkpoint.as_ref())
+        {
+            Self::preserve_lifecycle(&mut session.metadata, metadata);
+        }
+        Ok(())
+    }
+
+    fn preserve_lifecycle(metadata: &mut SessionMetadata, persisted: &SessionMetadata) {
+        if persisted.title_is_custom
+            || persisted.title != DEFAULT_SESSION_TITLE
+            || persisted.message_count != 0
+        {
+            metadata.title.clone_from(&persisted.title);
+        }
+        metadata.title_is_custom = persisted.title_is_custom;
+        metadata.archived = persisted.archived;
+        metadata.created_at = persisted.created_at;
+        metadata
+            .parent_session_id
+            .clone_from(&persisted.parent_session_id);
+        metadata.forked_from_message_count = persisted.forked_from_message_count;
     }
 
     /// Save a session to disk using atomic write (temp file + fsync + rename).
@@ -2623,7 +2752,7 @@ impl SessionManager {
 
     /// Save a session to disk, consuming it.
     pub fn save_session_owned(&self, session: SavedSession) -> std::io::Result<PathBuf> {
-        self.save_session_inner(session, JournalPrune::Keep)
+        self.save_session_inner(session, JournalPrune::Keep, false)
     }
 
     /// The autosave path (#6842): like [`Self::save_session_owned`], but when
@@ -2635,7 +2764,23 @@ impl SessionManager {
     /// be written nothing is pruned. Runs on the persistence actor
     /// (`tui/persistence_actor.rs` `flush_inner`), never the UI loop.
     pub fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
-        self.save_session_inner(session, JournalPrune::Excess)
+        self.save_session_inner(session, JournalPrune::Excess, true)
+    }
+
+    pub fn commit_completed_session(&self, session: SavedSession) -> io::Result<io::Result<()>> {
+        let session_id = session.metadata.id.clone();
+        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
+        let clear = self
+            .with_session_write_admission(&session_id, || {
+                let persisted = self.load_session_write_metadata(&session_id)?;
+                self.write_session_admitted(session, JournalPrune::Excess, true, &persisted)?;
+                Ok(self.clear_session_checkpoint_admitted(&session_id))
+            })?
+            .ok_or_else(Self::retired_session_write_error)?;
+        if let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode)) {
+            tracing::warn!(session_id = %session_id, %error, "completion was committed but retention could not be inspected");
+        }
+        Ok(clear)
     }
 
     /// Make a saved document whose file exceeds the full-history transport
@@ -2679,7 +2824,7 @@ impl SessionManager {
             projected.make_storage_compatible();
             Ok((size(&projected)?, size(&projected.transport_form())?))
         };
-        let mut session = self.load_session_snapshot_with_limit(id, None)?;
+        let mut session = self.load_session_snapshot_with_limit(id, None, false)?;
         let loaded = size(&session.transport_form())?;
         let (mut whole, mut carried) = project(&session)?;
         let mut pruned_operations = false;
@@ -2721,7 +2866,7 @@ impl SessionManager {
         if whole > limit && carried > limit {
             return Ok(Some((carried, pruned_operations)));
         }
-        self.save_session_inner(session, JournalPrune::AllOffBranch)?;
+        self.save_session_inner(session, JournalPrune::AllOffBranch, true)?;
         Ok(None)
     }
 
@@ -2729,71 +2874,95 @@ impl SessionManager {
         &self,
         session: SavedSession,
         prune: JournalPrune,
-    ) -> std::io::Result<PathBuf> {
+        preserve_lifecycle: bool,
+    ) -> io::Result<PathBuf> {
         let session_id = session.metadata.id.clone();
         let exec_mode = session.metadata.mode.as_deref() == Some("exec");
         let path = self.validated_session_path(&session_id)?;
-        // Not a `move` closure: `session` is consumed inside, so inference
-        // captures it by value while `path` and `session_id` stay borrowed for
-        // the caller to use after the write.
         self.with_session_write_admission(&session_id, || {
-            let already_persisted = path.exists()
-                || self
-                    .validated_checkpoint_path(&session_id)
-                    .is_ok_and(|checkpoint| checkpoint.exists());
-
-            // Still the pre-hydration value, and still before write_atomic.
-            self.archive_before_first_graph_write(&session, &path)?;
-
-            let mut durable_session = session;
-            let archived = match prune {
-                JournalPrune::Keep => Vec::new(),
-                JournalPrune::Excess => {
-                    let (threshold, retained) = if fs::symlink_metadata(&path).is_ok_and(|meta| {
-                        meta.len() > codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES as u64
-                    }) {
-                        (0, 0)
-                    } else {
-                        (JOURNAL_PRUNE_DEAD_THRESHOLD, JOURNAL_RETAINED_DEAD_ENTRIES)
-                    };
-                    self.archive_dead_journal_entries(&mut durable_session, threshold, retained)
-                        .unwrap_or_else(|error| {
-                            tracing::warn!(
-                                %session_id,
-                                %error,
-                                "journal archive step failed; keeping the full journal"
-                            );
-                            Vec::new()
-                        })
-                }
-                JournalPrune::AllOffBranch => {
-                    self.archive_dead_journal_entries(&mut durable_session, 0, 0)?
-                }
-            };
-            self.hydrate_recovered_runtime_binding(&mut durable_session)?;
-            self.hydrate_approval_receipts(&mut durable_session)?;
-            let content = serialize_saved_session(durable_session)?;
-
-            // Atomic write via write_atomic (NamedTempFile + fsync + persist)
-            write_atomic(&path, content.as_bytes())?;
-            self.stamp_session_boot_owner_for_new_record(&session_id, already_persisted);
-            if !archived.is_empty() {
-                archived_journal_ids()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entry(session_id.clone())
-                    .or_default()
-                    .extend(archived);
-            }
-            Ok(())
+            let persisted = self.load_session_write_metadata(&session_id)?;
+            self.write_session_admitted(session, prune, preserve_lifecycle, &persisted)
         })?
         .ok_or_else(Self::retired_session_write_error)?;
-
-        // Cleanup may delete sessions, so release this session's lifecycle
-        // lock first instead of recursively acquiring it during cleanup.
         self.cleanup_old_sessions_for_mode(None, Some(exec_mode))?;
-
         Ok(path)
+    }
+
+    fn write_session_admitted(
+        &self,
+        mut session: SavedSession,
+        prune: JournalPrune,
+        preserve_lifecycle: bool,
+        persisted: &SessionWriteMetadata,
+    ) -> io::Result<SessionMetadata> {
+        let session_id = session.metadata.id.clone();
+        let path = self.validated_session_path(&session_id)?;
+        Self::prepare_session_write(&mut session, persisted, preserve_lifecycle)?;
+        let already_persisted =
+            path.exists() || self.validated_checkpoint_path(&session_id)?.exists();
+        self.archive_before_first_graph_write(&session, &path)?;
+        let archived = match prune {
+            JournalPrune::Keep => Vec::new(),
+            JournalPrune::Excess => {
+                let (threshold, retained) = if fs::symlink_metadata(&path).is_ok_and(|meta| {
+                    meta.len() > codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES as u64
+                }) {
+                    (0, 0)
+                } else {
+                    (JOURNAL_PRUNE_DEAD_THRESHOLD, JOURNAL_RETAINED_DEAD_ENTRIES)
+                };
+                self.archive_dead_journal_entries(&mut session, threshold, retained)
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%session_id, %error, "journal archive step failed; keeping the full journal");
+                        Vec::new()
+                    })
+            }
+            JournalPrune::AllOffBranch => self.archive_dead_journal_entries(&mut session, 0, 0)?,
+        };
+        self.hydrate_approval_receipts(&mut session)?;
+        let metadata = session.metadata.clone();
+        let content = serialize_saved_session(session)?;
+        write_atomic(&path, content.as_bytes())?;
+        self.stamp_session_boot_owner_for_new_record(&session_id, already_persisted);
+        if !archived.is_empty() {
+            archived_journal_ids()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(session_id)
+                .or_default()
+                .extend(archived);
+        }
+        Ok(metadata)
+    }
+
+    fn mutate_session_lifecycle(
+        &self,
+        id: &str,
+        mutator: SessionMutator,
+        mutate: impl FnOnce(&mut SessionMetadata) -> bool,
+    ) -> io::Result<SessionMetadata> {
+        let _lease = (mutator == SessionMutator::External)
+            .then(|| self.reserve_session_for_external_write(id))
+            .transpose()?;
+        let (metadata, changed) = self
+            .with_session_write_admission(id, || {
+                let persisted = self.load_session_write_metadata(id)?;
+                let mut session = self.load_session_snapshot_with_limit(id, None, true)?;
+                repair_recovered_session(&mut session);
+                if !mutate(&mut session.metadata) {
+                    return Ok((session.metadata, false));
+                }
+                self.write_session_admitted(session, JournalPrune::Keep, false, &persisted)
+                    .map(|metadata| (metadata, true))
+            })?
+            .ok_or_else(Self::retired_session_write_error)?;
+        if changed {
+            self.cleanup_old_sessions_for_mode(
+                None,
+                Some(metadata.mode.as_deref() == Some("exec")),
+            )?;
+        }
+        Ok(metadata)
     }
 
     /// Save a crash-recovery checkpoint for in-flight turns.
@@ -2810,12 +2979,13 @@ impl SessionManager {
         let session_id = session.metadata.id.clone();
         let path = self.validated_checkpoint_path(&session_id)?;
         self.with_session_write_admission(&session_id, || {
+            let persisted = self.load_session_write_metadata(&session_id)?;
+            let mut durable_session = session;
+            Self::prepare_session_write(&mut durable_session, &persisted, true)?;
             let session_path = self.validated_session_path(&session_id)?;
-            self.archive_before_first_graph_write(&session, &session_path)?;
+            self.archive_before_first_graph_write(&durable_session, &session_path)?;
             fs::create_dir_all(self.checkpoints_dir())?;
             let already_persisted = path.exists() || session_path.exists();
-            let mut durable_session = session;
-            self.hydrate_recovered_runtime_binding(&mut durable_session)?;
             self.hydrate_approval_receipts(&mut durable_session)?;
             let content = serialize_saved_session(durable_session)?;
             write_atomic(&path, content.as_bytes())?;
@@ -3166,7 +3336,12 @@ impl SessionManager {
         Ok(())
     }
 
-    fn read_checkpoint_file(&self, path: &Path) -> std::io::Result<Option<SavedSession>> {
+    fn read_checkpoint_file(
+        &self,
+        path: &Path,
+        expected_id: Option<&str>,
+        admission_held: bool,
+    ) -> io::Result<Option<SavedSession>> {
         use std::io::Read as _;
         let mut file = match open_private_read_file(path) {
             Ok(file) => file,
@@ -3186,41 +3361,53 @@ impl SessionManager {
                 ),
             ));
         }
+        if expected_id.is_some_and(|id| session.metadata.id != id.trim()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checkpoint identity mismatch",
+            ));
+        }
         if let Some(journal) = &session.journal {
             validate_saved_journal(journal)?;
         }
         // A crash after retirement but before checkpoint removal must not
         // offer the deleted origin for recovery. Optional accounting damage
         // still permits recovery and is projected as incomplete below.
-        if self
-            .with_session_read_lock(&session.metadata.id, Self::late_usage_is_deleted)
-            .unwrap_or(false)
-        {
+        let retired = if admission_held {
+            let (late_path, _) = self.late_usage_paths(&session.metadata.id)?;
+            Self::late_usage_is_deleted(&late_path)
+        } else {
+            self.with_session_read_lock(&session.metadata.id, Self::late_usage_is_deleted)
+        };
+        if retired.unwrap_or(false) {
             return Ok(None);
         }
         session.system_prompt = strip_legacy_truncation_note(session.system_prompt);
         self.hydrate_approval_receipts(&mut session)?;
-        self.apply_late_usage_to_metadata(&mut session.metadata);
+        if admission_held {
+            let (late_path, _) = self.late_usage_paths(&session.metadata.id)?;
+            Self::apply_late_usage_result(
+                &mut session.metadata,
+                Self::load_late_usage_unlocked(&late_path),
+            );
+        } else {
+            self.apply_late_usage_to_metadata(&mut session.metadata);
+        }
         Ok(Some(session))
     }
 
     /// Load a specific session's crash-recovery checkpoint if present.
-    pub fn load_session_checkpoint(
+    pub fn load_session_checkpoint(&self, session_id: &str) -> io::Result<Option<SavedSession>> {
+        self.load_session_checkpoint_inner(session_id, false)
+    }
+
+    fn load_session_checkpoint_inner(
         &self,
         session_id: &str,
-    ) -> std::io::Result<Option<SavedSession>> {
+        admission_held: bool,
+    ) -> io::Result<Option<SavedSession>> {
         let path = self.validated_checkpoint_path(session_id)?;
-        let session = self.read_checkpoint_file(&path)?;
-        if session
-            .as_ref()
-            .is_some_and(|session| session.metadata.id != session_id)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "checkpoint identity mismatch",
-            ));
-        }
-        Ok(session)
+        self.read_checkpoint_file(&path, Some(session_id), admission_held)
     }
 
     pub fn load_recovery_checkpoint(
@@ -3228,7 +3415,7 @@ impl SessionManager {
         session_id: &str,
     ) -> std::io::Result<Option<SavedSession>> {
         Ok(self
-            .recovery_checkpoint_with_source(session_id, true)?
+            .recovery_checkpoint_with_source(session_id, true, false)?
             .map(|(session, _)| session))
     }
 
@@ -3236,12 +3423,17 @@ impl SessionManager {
         &self,
         session_id: &str,
         allow_damaged_current: bool,
+        admission_held: bool,
     ) -> std::io::Result<Option<(SavedSession, bool)>> {
         self.validated_checkpoint_path(session_id)?;
-        let current = self.load_session_checkpoint(session_id);
+        let current = self.load_session_checkpoint_inner(session_id, admission_held);
         let legacy = match self.legacy_checkpoint_origin() {
             Ok(Some(origin)) if origin == session_id => self
-                .load_legacy_checkpoint()
+                .read_checkpoint_file(
+                    &self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE),
+                    Some(session_id),
+                    admission_held,
+                )
                 .unwrap_or_else(|error| {
                     tracing::warn!(%error, "legacy checkpoint could not be read; preserving it");
                     None
@@ -3281,7 +3473,7 @@ impl SessionManager {
     /// present. Compatibility read only — this release no longer writes it.
     pub fn load_legacy_checkpoint(&self) -> std::io::Result<Option<SavedSession>> {
         let path = self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE);
-        self.read_checkpoint_file(&path)
+        self.read_checkpoint_file(&path, None, false)
     }
 
     pub fn legacy_checkpoint_origin(&self) -> io::Result<Option<String>> {
@@ -3295,12 +3487,19 @@ impl SessionManager {
 
     /// Clear one session's crash-recovery checkpoint. Scoped: this can never
     /// remove another session's checkpoint file or the legacy slot.
-    pub fn clear_session_checkpoint(&self, session_id: &str) -> std::io::Result<()> {
-        let path = self.validated_checkpoint_path(session_id)?;
-        if path.exists() {
-            fs::remove_file(path)?;
+    pub fn clear_session_checkpoint(&self, session_id: &str) -> io::Result<()> {
+        self.with_session_write_admission(session_id, || {
+            self.clear_session_checkpoint_admitted(session_id)
+        })
+        .map(|_| ())
+    }
+
+    fn clear_session_checkpoint_admitted(&self, session_id: &str) -> io::Result<()> {
+        match fs::remove_file(self.validated_checkpoint_path(session_id)?) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
         }
-        Ok(())
     }
 
     /// Enumerate all crash-recovery checkpoint files (per-session files plus
@@ -3317,7 +3516,7 @@ impl SessionManager {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if !path.is_file() || path.extension().is_none_or(|ext| ext != "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -3336,9 +3535,7 @@ impl SessionManager {
                 }
                 CheckpointSource::Session(session_id)
             };
-            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
-                continue;
-            };
+            let modified = fs::symlink_metadata(&path)?.modified()?;
             refs.push(CheckpointRef {
                 source,
                 path,
@@ -3372,7 +3569,7 @@ impl SessionManager {
         // Newest-first already; a checkpoint file only survives a session
         // that never reached a settled save.
         for checkpoint in self.list_checkpoints().ok()? {
-            let CheckpointSource::Session(id) = checkpoint.source else {
+            let CheckpointSource::Session(id) = &checkpoint.source else {
                 continue;
             };
             // A checkpoint another running session is still refreshing is
@@ -3385,20 +3582,21 @@ impl SessionManager {
             }
             // One malformed id or unreadable record must not hide a later
             // valid checkpoint — skip and keep scanning.
-            let Ok(path) = self.validated_session_path(&id) else {
-                continue;
-            };
-            let metadata = match Self::load_session_metadata(&path) {
+            let metadata = match self.load_session_metadata_by_id(id) {
                 Ok(metadata) => Ok(metadata),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => self
-                    .load_recovery_checkpoint(&id)
-                    .and_then(|checkpoint| checkpoint.map(|session| session.metadata).ok_or(error)),
+                    .checkpoint_metadata(&checkpoint)
+                    .and_then(|checkpoint| checkpoint.ok_or(error)),
                 Err(error) => Err(error),
             };
-            if let Ok(meta) = metadata
-                && workspace_scope_matches(&meta.workspace, workspace)
-            {
-                return Some(meta);
+            match metadata {
+                Ok(meta) if workspace_scope_matches(&meta.workspace, workspace) => {
+                    return Some(meta);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(session_id = %id, %error, "interrupted session could not be inspected; source retained")
+                }
             }
         }
         None
@@ -3564,7 +3762,7 @@ impl SessionManager {
     /// durable session while an engine may still be executing a tool call.
     /// A dangling `tool_use` is not proof of a crashed process in that state.
     pub fn load_session_snapshot(&self, id: &str) -> std::io::Result<SavedSession> {
-        self.load_session_snapshot_with_limit(id, None)
+        self.load_session_snapshot_with_limit(id, None, false)
     }
 
     /// The same protected session parser with an explicit transport byte ceiling.
@@ -3576,13 +3774,14 @@ impl SessionManager {
         id: &str,
         limit: usize,
     ) -> io::Result<SavedSession> {
-        self.load_session_snapshot_with_limit(id, Some(limit))
+        self.load_session_snapshot_with_limit(id, Some(limit), false)
     }
 
     fn load_session_snapshot_with_limit(
         &self,
         id: &str,
         limit: Option<usize>,
+        admission_held: bool,
     ) -> io::Result<SavedSession> {
         use std::io::Read;
         let path = self.validated_session_path(id)?;
@@ -3675,7 +3874,15 @@ impl SessionManager {
         }
         session.ensure_journal();
         self.hydrate_approval_receipts(&mut session)?;
-        self.apply_late_usage_to_metadata(&mut session.metadata);
+        if admission_held {
+            let (late_path, _) = self.late_usage_paths(id)?;
+            Self::apply_late_usage_result(
+                &mut session.metadata,
+                Self::load_late_usage_unlocked(&late_path),
+            );
+        } else {
+            self.apply_late_usage_to_metadata(&mut session.metadata);
+        }
         if let Some(limit) = limit.filter(|_| oversized)
             && serde_json::to_vec(&session.transport_form())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -3696,17 +3903,20 @@ impl SessionManager {
     /// The returned repair remains in memory until the caller persists
     /// `recovery.session`. Keeping persistence explicit lets embedding hosts
     /// serialize recovery with their own transcript mutation lock.
-    pub fn recover_session_for_resume(&self, id: &str) -> std::io::Result<SessionRecovery> {
-        let mut session = self.load_session_snapshot(id)?;
-        let repair = repair_recovered_session(&mut session);
+    pub fn recover_session_for_resume(&self, id: &str) -> io::Result<SessionRecovery> {
+        self.load_session_snapshot(id)
+            .map(Self::repair_resume_snapshot)
+    }
 
-        Ok(SessionRecovery {
+    fn repair_resume_snapshot(mut session: SavedSession) -> SessionRecovery {
+        let repair = repair_recovered_session(&mut session);
+        SessionRecovery {
             session,
             changed: !repair.is_empty(),
             repaired_call_count: repair.repaired_call_ids.len(),
             duplicate_result_count: repair.duplicate_result_ids.len(),
             orphan_result_count: repair.orphan_result_ids.len(),
-        })
+        }
     }
 
     /// Load, repair, and durably persist a session being resumed.
@@ -3717,7 +3927,7 @@ impl SessionManager {
     /// in-memory session is still returned — a failed write-back must not
     /// strand the resume.
     pub fn resume_session(&self, id: &str) -> std::io::Result<SessionRecovery> {
-        let recovery = self.recover_session_for_resume(id)?;
+        let recovery = self.resume_session_inner(id, None)?;
         // A resume is where a repaired history becomes durable, so the repair
         // counts are the dated record of what the conversation lost or had put
         // back. They name counts, never message bodies.
@@ -3732,20 +3942,63 @@ impl SessionManager {
                 "messages": recovery.session.messages.len(),
             }),
         );
-        Ok(self.persist_resumed_repair(recovery))
+        Ok(recovery)
     }
 
-    fn persist_resumed_repair(&self, recovery: SessionRecovery) -> SessionRecovery {
-        if recovery.changed
-            && let Err(error) = self.save_session(&recovery.session)
-        {
-            tracing::warn!(
-                session_id = %recovery.session.metadata.id,
-                %error,
-                "repaired session history could not be persisted; the repair will re-run on the next load"
-            );
+    fn resume_session_inner(
+        &self,
+        id: &str,
+        workspace: Option<&Path>,
+    ) -> io::Result<SessionRecovery> {
+        let check_workspace = |session: &SavedSession| -> io::Result<()> {
+            if workspace.is_some_and(|workspace| {
+                !workspace_scope_matches(&session.metadata.workspace, workspace)
+            }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "session belongs to another workspace",
+                ));
+            }
+            Ok(())
+        };
+        let mut recovered = None;
+        let mut admission_entered = false;
+        let publication = self.with_session_write_admission(id, || {
+            admission_entered = true;
+            let session = self.load_session_snapshot_with_limit(id, None, true)?;
+            check_workspace(&session)?;
+            let recovery = Self::repair_resume_snapshot(session);
+            let candidate = recovery.changed.then(|| recovery.session.clone());
+            recovered = Some(recovery);
+            let Some(candidate) = candidate else {
+                return Ok(None);
+            };
+            let persisted = self.load_session_write_metadata(id)?;
+            self.write_session_admitted(candidate, JournalPrune::Keep, true, &persisted)
+                .map(|metadata| Some(metadata.mode.as_deref() == Some("exec")))
+        });
+        match publication {
+            Ok(Some(Some(exec_mode))) => {
+                if let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode)) {
+                    tracing::warn!(session_id = %id, %error, "repaired session was committed but retention could not be inspected");
+                }
+            }
+            Ok(Some(None)) => {}
+            Ok(None) => return Err(Self::retired_session_write_error()),
+            Err(error) if recovered.is_some() => {
+                tracing::warn!(session_id = %id, error_kind = ?error.kind(), %error, "repaired session history could not be persisted; the repair will re-run on the next load");
+            }
+            Err(error) if !admission_entered => {
+                let recovery = self.recover_session_for_resume(id)?;
+                check_workspace(&recovery.session)?;
+                tracing::warn!(session_id = %id, error_kind = ?error.kind(), %error, "session write admission failed; recovered history was left in memory without publication");
+                return Ok(recovery);
+            }
+            Err(error) => return Err(error),
         }
-        recovery
+        recovered.ok_or_else(|| {
+            io::Error::other("session recovery completed without a captured history")
+        })
     }
 
     /// [`Self::resume_session`] for a surface that will own and autosave the
@@ -3769,20 +4022,8 @@ impl SessionManager {
         workspace: Option<&Path>,
     ) -> std::io::Result<(SessionRecovery, SessionLease)> {
         let lease = self.reserve_session_for_attach(id)?;
-        let stale_checkpoint = self.promote_interrupted_checkpoint(id, workspace)?;
-        let recovery = self.recover_session_for_resume(id)?;
-        if workspace.is_some_and(|workspace| {
-            !workspace_scope_matches(&recovery.session.metadata.workspace, workspace)
-        }) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "session belongs to another workspace",
-            ));
-        }
-        let recovery = self.persist_resumed_repair(recovery);
-        if stale_checkpoint {
-            let _ = self.clear_session_checkpoint(id);
-        }
+        self.promote_interrupted_checkpoint(id, workspace)?;
+        let recovery = self.resume_session_inner(id, workspace)?;
         Ok((recovery, lease))
     }
 
@@ -3790,60 +4031,56 @@ impl SessionManager {
     /// checkpoint is the newer of the two (or there is no document yet), then
     /// consume it. Callers hold the session's attach lease. A stale checkpoint
     /// never replaces a newer document; an unreadable document and a failed
-    /// save leave both files as they were. Only a document about to be
-    /// replaced is read in full; otherwise the comparison reads its metadata.
-    /// Returns true when the checkpoint is stale: it is left for the caller to
-    /// clear once the full document has been read.
+    /// save leave both files as they were. The saved document is verified in
+    /// full before its checkpoint is consumed under the same write admission.
     pub fn promote_interrupted_checkpoint(
         &self,
         id: &str,
         workspace: Option<&Path>,
-    ) -> io::Result<bool> {
-        let Some((checkpoint, legacy)) = self.recovery_checkpoint_with_source(id, false)? else {
-            return Ok(false);
-        };
-        if workspace.is_some_and(|workspace| {
-            !workspace_scope_matches(&checkpoint.metadata.workspace, workspace)
-        }) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "checkpoint belongs to another workspace",
-            ));
-        }
-        let saved_metadata = self.load_session_metadata_by_id(id);
-        if let (Some(workspace), Ok(saved)) = (workspace, &saved_metadata)
-            && !workspace_scope_matches(&saved.workspace, workspace)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "saved session belongs to another workspace",
-            ));
-        }
-        match saved_metadata {
-            Ok(saved) if saved.updated_at >= checkpoint.metadata.updated_at => return Ok(!legacy),
-            Ok(_) => {
-                self.load_session_snapshot(id)?;
-                let mut promoted = checkpoint;
-                self.merge_persisted_lifecycle(&mut promoted.metadata);
-                self.save_session(&promoted)?;
+    ) -> io::Result<()> {
+        let published_mode = self.with_session_write_admission(id, || {
+            let Some((mut checkpoint, legacy)) = self.recovery_checkpoint_with_source(id, false, true)? else {
+                return Ok(None);
+            };
+            let persisted = self.load_session_write_metadata(id)?;
+            if workspace.is_some_and(|workspace| !workspace_scope_matches(&checkpoint.metadata.workspace, workspace)) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "checkpoint belongs to another workspace"));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let path = self.validated_session_path(id)?;
-                if !matches!(fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "session destination is not vacant",
-                    ));
+            if let (Some(workspace), Some(saved)) = (workspace, persisted.saved.as_ref())
+                && !workspace_scope_matches(&saved.workspace, workspace)
+            {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "saved session belongs to another workspace"));
+            }
+            Self::prepare_session_write(&mut checkpoint, &persisted, true)?;
+            let published = if let Some(saved) = persisted.saved.as_ref() {
+                let mut saved_session = self.load_session_snapshot_with_limit(id, None, true)?;
+                if saved.updated_at >= checkpoint.metadata.updated_at {
+                    let previous_binding = saved_session.metadata.runtime_store.clone();
+                    Self::prepare_session_write(&mut saved_session, &persisted, true)?;
+                    if saved_session.metadata.runtime_store != previous_binding {
+                        Some(self.write_session_admitted(saved_session, JournalPrune::Keep, true, &persisted)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(self.write_session_admitted(checkpoint, JournalPrune::Keep, true, &persisted)?)
                 }
-                self.save_session(&checkpoint)?;
+            } else {
+                let path = self.validated_session_path(id)?;
+                if !matches!(fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound) {
+                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "session destination is not vacant"));
+                }
+                Some(self.write_session_admitted(checkpoint, JournalPrune::Keep, true, &persisted)?)
+            };
+            if !legacy {
+                self.clear_session_checkpoint_admitted(id)?;
             }
-            Err(error) => return Err(error),
+            Ok(published.map(|metadata| metadata.mode.as_deref() == Some("exec")))
+        })?.ok_or_else(Self::retired_session_write_error)?;
+        if let Some(exec_mode) = published_mode {
+            self.cleanup_old_sessions_for_mode(None, Some(exec_mode))?;
         }
-        if !legacy {
-            self.clear_session_checkpoint(id)?;
-        }
-        Ok(false)
+        Ok(())
     }
 
     /// [`Self::attach_session`] with a partial-ID prefix.
@@ -3872,18 +4109,21 @@ impl SessionManager {
                 .map(|(recovery, lease)| (recovery.session, lease));
         }
         let lease = self.reserve_session_for_attach(&parsed.metadata.id)?;
-        if let Ok(saved) = self.load_session_metadata_by_id(&parsed.metadata.id)
-            && saved.updated_at > parsed.metadata.updated_at
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "session {} has a newer saved record than {}; continue it with `/resume {}`, or move that record aside before loading this older copy",
-                    parsed.metadata.id,
-                    path.display(),
-                    parsed.metadata.id
-                ),
-            ));
+        match self.load_session_metadata_by_id(&parsed.metadata.id) {
+            Ok(saved) if saved.updated_at > parsed.metadata.updated_at => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "session {} has a newer saved record than {}; continue it with `/resume {}`, or move that record aside before loading this older copy",
+                        parsed.metadata.id,
+                        path.display(),
+                        parsed.metadata.id
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         let mut session = parsed;
         if let Some(journal) = session.journal.as_ref() {
@@ -3955,9 +4195,7 @@ impl SessionManager {
             let id = match &checkpoint.source {
                 CheckpointSource::Session(id) => Some(id.clone()),
                 CheckpointSource::Legacy => self
-                    .checkpoint_metadata(&checkpoint)
-                    .ok()
-                    .flatten()
+                    .checkpoint_metadata(&checkpoint)?
                     .map(|metadata| metadata.id),
             };
             if let Some(id) = id.filter(|id| id.starts_with(prefix)) {
@@ -4003,7 +4241,16 @@ impl SessionManager {
         std::collections::HashSet<String>,
         Option<String>,
     )> {
-        let mut sessions = self.list_sessions()?;
+        let catalog = self.scan_session_records()?;
+        let mut warning = catalog.warning();
+        let mut sessions: Vec<_> = catalog
+            .records
+            .into_iter()
+            .map(|(_, mut metadata)| {
+                self.apply_late_usage_to_metadata(&mut metadata);
+                metadata
+            })
+            .collect();
         let mut positions: std::collections::HashMap<String, usize> = sessions
             .iter()
             .enumerate()
@@ -4011,9 +4258,12 @@ impl SessionManager {
             .collect();
         let saved: std::collections::HashSet<String> = positions.keys().cloned().collect();
         let mut recovery = std::collections::HashSet::new();
-        let (checkpoints, mut warning) = match self.list_checkpoints() {
-            Ok(checkpoints) => (checkpoints, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
+        let checkpoints = match self.list_checkpoints() {
+            Ok(checkpoints) => checkpoints,
+            Err(error) => {
+                warning.get_or_insert_with(|| error.to_string());
+                Vec::new()
+            }
         };
         for checkpoint in checkpoints {
             if let CheckpointSource::Session(id) = &checkpoint.source
@@ -4043,6 +4293,7 @@ impl SessionManager {
                     recovery.insert(id.clone());
                     let mut metadata = metadata;
                     metadata.title = existing.title.clone();
+                    metadata.title_is_custom = existing.title_is_custom;
                     metadata.archived = existing.archived;
                     metadata.created_at = existing.created_at;
                     metadata.parent_session_id = existing.parent_session_id.clone();
@@ -4092,54 +4343,46 @@ impl SessionManager {
     }
 
     fn load_checkpoint_metadata(path: &Path) -> io::Result<SessionMetadata> {
-        use std::io::Read as _;
-        const CHUNK: usize = 64 * 1024;
-        const LIMIT: usize = 16 * 1024 * 1024;
-        let mut file = open_private_read_file(path)?;
-        let mut bytes = Vec::with_capacity(CHUNK);
-        let mut target = CHUNK;
-        while bytes.len() < LIMIT {
-            let count = file
-                .by_ref()
-                .take((target - bytes.len()) as u64)
-                .read_to_end(&mut bytes)?;
-            if count == 0 {
-                break;
-            }
-            if let Some(mut metadata) = extract_top_level_metadata(&bytes) {
-                apply_legacy_title_recovery(&mut metadata, &bytes);
-                return Ok(metadata);
-            }
-            target = (target * 2).min(LIMIT);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "checkpoint metadata could not be read within the limit",
-        ))
+        Self::load_session_metadata(path)
     }
 
     /// [`Self::list_sessions`] without the late-usage cost overlay, keeping
     /// the file each record was read from.
     /// A record's file is not always `<id>.json`: early builds wrote
     /// `session_<timestamp>.json`, and retention must address those by path.
-    fn list_session_records(&self) -> std::io::Result<Vec<(PathBuf, SessionMetadata)>> {
-        let mut sessions = Vec::new();
+    fn list_session_records(&self) -> io::Result<Vec<(PathBuf, SessionMetadata)>> {
+        self.scan_session_records()?.into_complete()
+    }
 
+    fn scan_session_records(&self) -> io::Result<SessionCatalog> {
+        let mut catalog = SessionCatalog::default();
         for entry in fs::read_dir(&self.sessions_dir)? {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    catalog.failures.push((self.sessions_dir.clone(), error));
+                    continue;
+                }
+            };
             let path = entry.path();
-
-            if path.extension().is_some_and(|ext| ext == "json")
-                && let Ok(session) = Self::load_session_metadata(&path)
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if path.extension().is_none_or(|ext| ext != "json")
+                || stem == SESSION_BOOT_OWNERS_STEM
+                || !codewhale_runtime::artifacts::is_valid_session_id(stem)
             {
-                sessions.push((path, session));
+                continue;
+            }
+            match Self::load_session_metadata(&path) {
+                Ok(metadata) => catalog.records.push((path, metadata)),
+                Err(error) => catalog.failures.push((path, error)),
             }
         }
-
-        // Sort by updated_at descending (most recent first)
-        sessions.sort_by_key(|(_, s)| std::cmp::Reverse(s.updated_at));
-
-        Ok(sessions)
+        catalog
+            .records
+            .sort_by_key(|(_, metadata)| std::cmp::Reverse(metadata.updated_at));
+        Ok(catalog)
     }
 
     /// Set the durable archive flag on a saved session and return the
@@ -4156,50 +4399,13 @@ impl SessionManager {
         archived: bool,
         mutator: SessionMutator,
     ) -> std::io::Result<SessionMetadata> {
-        let _lease = (mutator == SessionMutator::External)
-            .then(|| self.reserve_session_for_external_write(id))
-            .transpose()?;
-        let mut session = self.load_session(id)?;
-        if session.metadata.archived == archived {
-            return Ok(session.metadata);
-        }
-        session.metadata.archived = archived;
-        self.save_session(&session)?;
-        Ok(session.metadata)
-    }
-
-    /// Re-read the durable lifecycle fields for `metadata` from disk.
-    ///
-    /// This is the autosave-survival guard. A TUI autosave rebuilds the whole
-    /// session document from in-memory `App` state; any lifecycle field it
-    /// carries from a stale cache would silently revert a rename or archive
-    /// that landed in between — including one applied by the picker earlier in
-    /// the same event loop, or by `/rename` while a snapshot was already
-    /// queued.
-    ///
-    /// So rather than trusting any cache, the writer re-reads the persisted
-    /// values immediately before writing. `title`, `archived`, `created_at`,
-    /// and fork lineage are *lifecycle* state owned by the file, not
-    /// conversation state owned by the running turn. Reading them back costs
-    /// one bounded metadata-prefix read.
-    ///
-    /// Returns `true` when an existing record was found and merged. A missing
-    /// record is not an error: the first save of a new session has nothing to
-    /// merge from.
-    pub fn merge_persisted_lifecycle(&self, metadata: &mut SessionMetadata) -> bool {
-        let Ok(path) = self.validated_session_path(&metadata.id) else {
-            return false;
-        };
-        let Ok(persisted) = Self::load_session_metadata(&path) else {
-            return false;
-        };
-        metadata.title = persisted.title;
-        metadata.archived = persisted.archived;
-        metadata.created_at = persisted.created_at;
-        metadata.parent_session_id = persisted.parent_session_id;
-        metadata.forked_from_message_count = persisted.forked_from_message_count;
-        metadata.runtime_store = persisted.runtime_store;
-        true
+        self.mutate_session_lifecycle(id, mutator, |metadata| {
+            if metadata.archived == archived {
+                return false;
+            }
+            metadata.archived = archived;
+            true
+        })
     }
 
     /// Rename a saved session and return the resulting metadata.
@@ -4214,78 +4420,66 @@ impl SessionManager {
         mutator: SessionMutator,
     ) -> std::io::Result<SessionMetadata> {
         let title = normalize_session_title(title)?;
-        let _lease = (mutator == SessionMutator::External)
-            .then(|| self.reserve_session_for_external_write(id))
-            .transpose()?;
-        let mut session = self.load_session(id)?;
-        if session.metadata.title == title {
-            return Ok(session.metadata);
-        }
-        session.metadata.title = title;
-        self.save_session(&session)?;
-        Ok(session.metadata)
+        self.mutate_session_lifecycle(id, mutator, |metadata| {
+            if metadata.title == title && metadata.title_is_custom {
+                return false;
+            }
+            metadata.title = title;
+            metadata.title_is_custom = true;
+            true
+        })
     }
 
-    /// Load only the metadata from a session file.
-    ///
-    /// Optimization for #337: previously this called
-    /// `serde_json::from_reader` which forces serde to scan every token in
-    /// the file just to validate JSON structure — including the
-    /// (potentially many MB of) `messages` and `tool_log` arrays we're
-    /// going to discard. For a user with hundreds of long sessions, a
-    /// single `list_sessions()` call could chew through tens of MB of
-    /// JSON per startup.
-    ///
-    /// We now read at most 64 KB up front and string-extract the
-    /// top-level `metadata` object, which is invariably tiny (~500 B)
-    /// and appears before any large `messages`/`tool_log` payload. We
-    /// fall back to a full-file read only if the prefix doesn't yield a
-    /// parseable metadata block (e.g. an oddly-formatted legacy file).
-    pub fn load_session_metadata(path: &Path) -> std::io::Result<SessionMetadata> {
-        use std::io::Read;
+    /// Load only the metadata from a session file within a bounded prefix.
+    pub fn load_session_metadata(path: &Path) -> io::Result<SessionMetadata> {
+        use std::io::Read as _;
 
         const PREFIX_BYTES: usize = 64 * 1024;
-        let mut file = fs::File::open(path)?;
-        let mut buf = Vec::with_capacity(PREFIX_BYTES);
-        file.by_ref()
-            .take(PREFIX_BYTES as u64)
-            .read_to_end(&mut buf)?;
-
-        if let Some(mut metadata) = extract_top_level_metadata(&buf) {
-            apply_legacy_title_recovery(&mut metadata, &buf);
-            return Ok(metadata);
-        }
-
-        // Metadata wasn't extractable from the prefix: usually a `metadata`
-        // block longer than 64 KB (a long-lived session's usage fingerprints,
-        // #6842), rarely unusual key ordering. Grow the read geometrically
-        // until the block closes, so the cost tracks the metadata's size
-        // rather than the transcript's; only past `GROWN_PREFIX_LIMIT` (or
-        // for a document that really lacks the block) read everything.
-        const GROWN_PREFIX_LIMIT: usize = 16 * 1024 * 1024;
-        let mut limit = PREFIX_BYTES;
-        while buf.len() == limit && limit < GROWN_PREFIX_LIMIT {
-            let next = (limit * 2).min(GROWN_PREFIX_LIMIT);
-            file.by_ref()
-                .take((next - limit) as u64)
-                .read_to_end(&mut buf)?;
-            limit = next;
-            if let Some(mut metadata) = extract_top_level_metadata(&buf) {
-                apply_legacy_title_recovery(&mut metadata, &buf);
+        let mut file = open_private_read_file(path)?;
+        let mut bytes = Vec::with_capacity(PREFIX_BYTES);
+        let mut target = PREFIX_BYTES;
+        loop {
+            let requested = target - bytes.len();
+            let count = file
+                .by_ref()
+                .take(requested as u64)
+                .read_to_end(&mut bytes)?;
+            let text = utf8_prefix(&bytes);
+            const SCHEMA_KEY: &[u8] = b"\"schema_version\"";
+            if let Some(offset) = find_json_key(text.as_bytes(), SCHEMA_KEY)
+                && let Some(value) = text[offset + SCHEMA_KEY.len()..]
+                    .trim_start()
+                    .strip_prefix(':')
+                && let Some(Ok(version)) = serde_json::Deserializer::from_str(value)
+                    .into_iter::<u64>()
+                    .next()
+                && version > u64::from(CURRENT_SESSION_SCHEMA_VERSION)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Session schema v{version} is newer than supported v{CURRENT_SESSION_SCHEMA_VERSION}; source retained"
+                    ),
+                ));
+            }
+            if let Some(mut metadata) = extract_top_level_metadata(&bytes) {
+                apply_legacy_title_recovery(&mut metadata, &bytes);
                 return Ok(metadata);
             }
+            if count < requested {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session file missing parseable `metadata` block",
+                ));
+            }
+            if target == SESSION_METADATA_READ_LIMIT {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "session metadata could not be read within the 16 MiB inspection limit; the file was left unchanged",
+                ));
+            }
+            target = (target * 2).min(SESSION_METADATA_READ_LIMIT);
         }
-        let mut rest = Vec::new();
-        file.read_to_end(&mut rest)?;
-        buf.extend_from_slice(&rest);
-        let mut metadata = extract_top_level_metadata(&buf).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "session file missing parseable `metadata` block",
-            )
-        })?;
-        apply_legacy_title_recovery(&mut metadata, &buf);
-        Ok(metadata)
     }
 
     /// Whether `remove_session` has anything of `id`'s to act on: its
@@ -4430,9 +4624,11 @@ impl SessionManager {
         // The store this document is bound to is named by its binding, not by
         // its id: a host store usually sits under another conversation's
         // directory. Read it before the document is gone (#6144 P2).
-        let bound_store = Self::load_session_metadata(&path)
-            .ok()
-            .and_then(|metadata| metadata.runtime_store);
+        let bound_store = match self.load_session_metadata_by_id(id) {
+            Ok(metadata) => metadata.runtime_store,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         self.save_session_goal(id, None)?;
         // Publish the tombstone before removing data. A crash or a delayed
         // callback can no longer re-create this session's accounting. The
@@ -4564,7 +4760,12 @@ impl SessionManager {
         keep: Option<&str>,
         exec_mode: Option<bool>,
     ) -> std::io::Result<()> {
-        let records = self.list_session_records()?;
+        let catalog = self.scan_session_records()?;
+        if let Some(warning) = catalog.warning() {
+            tracing::warn!(target: "session", %warning, "retention left sessions untouched because the catalog is incomplete");
+            return Ok(());
+        }
+        let records = catalog.records;
 
         // What retention owes each class (#6136/#6137): archived records are
         // already outside the cap; empty auto-created stubs are junk the
@@ -4846,7 +5047,8 @@ pub fn workspace_scope_matches(saved_workspace: &Path, current_workspace: &Path)
 }
 
 pub fn is_empty_auto_created_session(session: &SessionMetadata) -> bool {
-    session.message_count == 0
+    !session.title_is_custom
+        && session.message_count == 0
         && session
             .title
             .trim()
@@ -5132,6 +5334,7 @@ fn create_saved_session_inner(
         metadata: SessionMetadata {
             id,
             title,
+            title_is_custom: false,
             created_at: now,
             updated_at: now,
             message_count: messages.len(),
@@ -5239,20 +5442,51 @@ fn strip_legacy_truncation_note(system_prompt: Option<String>) -> Option<String>
 /// string literal. Brace/string-aware so a key name quoted inside an earlier
 /// message body is never matched.
 fn find_json_key(bytes: &[u8], key: &[u8]) -> Option<usize> {
+    if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        != Some(b'{')
+    {
+        return None;
+    }
     let mut idx = 0usize;
+    let mut depth = 0usize;
     let mut in_string = false;
     let mut escape = false;
     while idx < bytes.len() {
         let c = bytes[idx];
-        if escape {
-            escape = false;
-        } else if c == b'\\' {
-            escape = true;
-        } else if c == b'"' {
-            if !in_string && bytes[idx..].starts_with(key) {
-                return Some(idx);
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_string = false;
             }
-            in_string = !in_string;
+        } else {
+            match c {
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                b'"' => {
+                    if depth == 1 && bytes[idx..].starts_with(key) {
+                        let mut after = idx + key.len();
+                        while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+                            after += 1;
+                        }
+                        if bytes.get(after) == Some(&b':') {
+                            return Some(idx);
+                        }
+                    }
+                    in_string = true;
+                }
+                _ => {}
+            }
         }
         idx += 1;
     }
@@ -5424,7 +5658,7 @@ fn apply_legacy_title_recovery(metadata: &mut SessionMetadata, buf: &[u8]) {
     // Cost gate, never the rename decision: an envelope title always opens
     // with `<`, so this keeps #337's bounded-parse win for ordinary titles.
     // Whether to rewrite is `recovered_legacy_title`'s proven provenance.
-    if !metadata.title.starts_with('<') {
+    if metadata.title_is_custom || !metadata.title.starts_with('<') {
         return;
     }
     let (messages, complete) = extract_leading_messages(buf, LEGACY_TITLE_SCAN_MESSAGES);

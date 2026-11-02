@@ -309,6 +309,7 @@ fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> Sav
         metadata: SessionMetadata {
             id: "session-1".to_string(),
             title: "test session".to_string(),
+            title_is_custom: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             message_count: 1,

@@ -502,23 +502,30 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             .map_err(|error| format!("could not open sessions directory: {error}"))?;
         let mut session = crate::tui::ui::build_session_snapshot(&mut app, &manager)?;
         let work_owner = app.current_session_id.clone();
-        // Snapshots are journal-only (#6214 T3); this path serializes
-        // directly instead of through `save_session`, so rehydrate the
-        // `messages` projection first — otherwise the file loses history.
+        // Snapshots are journal-only (#6214 T3); exports need the legacy
+        // `messages` projection too.
         session.make_storage_compatible();
         let queue_transition =
             crate::tui::ui::prepare_offline_queue_transition(&app, &session.metadata.id)?;
         // C01-09: an explicit path may replace a saved session (a re-save),
         // never an arbitrary file. Whatever exists there must read as one.
-        if let Some(path) = explicit_save_path.as_deref()
-            && path.symlink_metadata().is_ok()
-            && codewhale_engine::session_manager::SessionManager::load_session_metadata(path)
-                .is_err()
-        {
-            return Err(format!(
-                "Refusing to overwrite {}: it is not a saved Codewhale session. Choose a new path, or move that file first.",
-                path.display()
-            ));
+        if let Some(path) = explicit_save_path.as_deref() {
+            match path.symlink_metadata() {
+                Ok(_) => {
+                    if let Err(error) =
+                        codewhale_engine::session_manager::SessionManager::load_session_metadata(
+                            path,
+                        )
+                    {
+                        return Err(format!(
+                            "Refusing to overwrite {}: the existing session could not be inspected ({error}). Choose a new path, or move that file first.",
+                            path.display()
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("Could not inspect {}: {error}", path.display())),
+            }
         }
         let in_place = explicit_save_path.is_none();
         let save_path = explicit_save_path.unwrap_or_else(|| {
@@ -534,15 +541,22 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
 
         match std::fs::create_dir_all(&sessions_dir) {
             Ok(()) => {
-                let json = match if in_place {
-                    serde_json::to_string(&session)
+                let managed =
+                    in_place || manager.owns_session_path(&session.metadata.id, &save_path);
+                let result = if managed {
+                    manager.save_session_bounded(session.clone()).and_then(|_| {
+                        session.metadata =
+                            manager.load_session_metadata_by_id(&session.metadata.id)?;
+                        Ok(())
+                    })
                 } else {
-                    serde_json::to_string_pretty(&session)
-                } {
-                    Ok(j) => j,
-                    Err(e) => return Err(format!("Failed to serialize session: {e}")),
+                    let json = match serde_json::to_string_pretty(&session) {
+                        Ok(json) => json,
+                        Err(error) => return Err(format!("Failed to serialize session: {error}")),
+                    };
+                    codewhale_util::utils::write_atomic(&save_path, json.as_bytes())
                 };
-                match codewhale_util::utils::write_atomic(&save_path, json.as_bytes()) {
+                match result {
                     Ok(()) => {
                         crate::tui::ui::install_offline_queue_transition(
                             &mut app,
@@ -590,7 +604,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         let mut parent = crate::tui::ui::build_session_snapshot(&mut app, &manager)?;
         let work_owner = app.current_session_id.clone();
         parent.make_storage_compatible();
-        if let Err(err) = manager.save_session(&parent) {
+        if let Err(err) = manager.save_session_bounded(parent.clone()) {
             return Err(format!("Failed to save parent session: {err}"));
         }
 
@@ -1265,6 +1279,7 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
         session.metadata.mode = Some(app.mode.as_setting().to_string());
         app.sync_cost_to_metadata(&mut session.metadata);
         session.metadata.title = new_title.to_string();
+        session.metadata.title_is_custom = true;
 
         match manager.save_session(&session) {
             Ok(_) => {

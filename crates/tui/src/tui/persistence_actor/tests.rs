@@ -125,7 +125,8 @@ fn backlog_session(workspace: &std::path::Path, index: usize) -> SavedSession {
         Some("agent"),
     );
     session.metadata.id = BACKLOG_SESSION_ID.to_string();
-    session.metadata.title = format!("Persistence backlog version {index:04}");
+    session.metadata.title = "Persistence backlog".to_string();
+    session.metadata.total_tokens = index as u64;
     session
 }
 
@@ -136,11 +137,7 @@ fn retained_session_payload_bytes(session: &SavedSession) -> usize {
 }
 
 fn saved_session_version(session: &SavedSession) -> Option<usize> {
-    session
-        .metadata
-        .title
-        .strip_prefix("Persistence backlog version ")
-        .and_then(|value| value.parse::<usize>().ok())
+    usize::try_from(session.metadata.total_tokens).ok()
 }
 
 /// Measure what the seam still owns for a consumer that has never polled:

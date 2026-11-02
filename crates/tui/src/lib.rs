@@ -9547,7 +9547,10 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
     } else {
         let (sessions, interrupted, warning) = manager.list_sessions_with_recovery()?;
         if let Some(warning) = warning {
-            eprintln!("Some interrupted sessions could not be listed: {warning}");
+            eprintln!("Some sessions could not be listed: {warning}");
+            if sessions.is_empty() {
+                anyhow::bail!("Session listing is incomplete: {warning}");
+            }
         }
         (sessions, interrupted)
     };
@@ -10204,11 +10207,8 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        let stale_checkpoint = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
+        manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
-        if stale_checkpoint {
-            let _ = manager.clear_session_checkpoint(&id);
-        }
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
         // that snapshot to a different saved project. Match the same physical/
@@ -13276,14 +13276,11 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
         }
     };
 
-    let stale_checkpoint =
-        match manager.promote_interrupted_checkpoint(&session_id, Some(launch_workspace)) {
-            Ok(stale) => stale,
-            Err(error) => {
-                eprintln!("Interrupted session was preserved but could not be resumed: {error}");
-                return None;
-            }
-        };
+    if let Err(error) = manager.promote_interrupted_checkpoint(&session_id, Some(launch_workspace))
+    {
+        eprintln!("Interrupted session was preserved but could not be resumed: {error}");
+        return None;
+    }
     let recovered = match manager.load_session(&session_id) {
         Ok(recovered) => recovered,
         Err(error) => {
@@ -13295,10 +13292,6 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
         eprintln!("Interrupted session was preserved but belongs to another workspace.");
         return None;
     }
-    if stale_checkpoint {
-        let _ = manager.clear_session_checkpoint(&session_id);
-    }
-
     let age_str = checkpoint_age_label(best.age);
     eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
 

@@ -9504,6 +9504,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
         metadata: codewhale_engine::session_manager::SessionMetadata {
             id: uuid::Uuid::new_v4().to_string(),
             title: "resume recovery".to_string(),
+            title_is_custom: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             message_count: messages.len(),

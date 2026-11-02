@@ -348,6 +348,7 @@ mod tests {
         SessionMetadata {
             id: id.to_string(),
             title: title.to_string(),
+            title_is_custom: false,
             created_at: ts,
             updated_at: ts,
             message_count: title.len(),

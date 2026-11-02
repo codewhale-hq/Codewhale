@@ -160,9 +160,7 @@ pub(super) async fn list_sessions(
     tokio::task::spawn_blocking(move || {
         let manager = SessionManager::new(state.sessions_dir)
             .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-        let all = manager
-            .list_sessions()
-            .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
+        let all = manager.list_sessions().map_err(map_session_list_err)?;
         // This route keeps returning full `SessionMetadata` for compatibility;
         // `/v1/sessions/summary` is the projected shape. Membership *and* order
         // come from the shared projection so the two routes never disagree.
@@ -190,9 +188,7 @@ pub(super) async fn list_sessions_summary(
     tokio::task::spawn_blocking(move || {
         let manager = SessionManager::new(state.sessions_dir)
             .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-        let all = manager
-            .list_sessions()
-            .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
+        let all = manager.list_sessions().map_err(map_session_list_err)?;
         Ok::<_, ApiError>(project_sessions(&all, &projection, None))
     })
     .await
@@ -602,6 +598,7 @@ pub(super) async fn create_session_from_thread(
         session_title_override(req.title.as_deref(), detail.thread.title.as_deref())
     {
         session.metadata.title = title;
+        session.metadata.title_is_custom = true;
     }
     let title = session.metadata.title.clone();
     let message_count = session.metadata.message_count;
@@ -1111,9 +1108,21 @@ pub(super) fn session_to_detail(session: SavedSession) -> SessionDetailResponse 
     }
 }
 
+fn map_session_list_err(err: std::io::Error) -> ApiError {
+    if err.kind() == std::io::ErrorKind::FileTooLarge {
+        map_session_err("catalog", err, "list")
+    } else {
+        ApiError::internal(format!("Failed to list sessions: {err}"))
+    }
+}
+
 pub(super) fn map_session_err(id: &str, err: std::io::Error, action: &str) -> ApiError {
     match err.kind() {
         std::io::ErrorKind::NotFound => ApiError::not_found(format!("Session '{id}' not found")),
+        std::io::ErrorKind::FileTooLarge => ApiError {
+            code: Some("session_metadata_too_large"),
+            ..ApiError::payload_too_large(format!("Failed to {action} session '{id}': {err}"))
+        },
         std::io::ErrorKind::InvalidData => {
             ApiError::bad_request(format!("Failed to parse session '{id}': {err}"))
         }

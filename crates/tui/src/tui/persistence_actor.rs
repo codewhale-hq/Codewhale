@@ -12,7 +12,7 @@
 //!
 //! ## Design
 //!
-//! - **One dedicated tokio task** owns disk I/O. The UI only sends requests;
+//! - **One dedicated tokio task** orders owned blocking batches. The UI only sends requests;
 //!   keystrokes never wait for writes.
 //! - **Latest-wins coalescing per session**: when multiple `SaveCheckpoint`,
 //!   `SessionSnapshot`, or offline-queue requests pile up before the actor's
@@ -493,6 +493,7 @@ pub fn spawn_persistence_actor(
 ) -> (PersistActorHandle, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = persistence_request_channel();
     let handle = PersistActorHandle { tx };
+    let manager = Arc::new(manager);
 
     let task = spawn_supervised(
         "persistence-actor",
@@ -500,43 +501,70 @@ pub fn spawn_persistence_actor(
         async move {
             let mut unreported = FlushReport::default();
 
-            // Flush pending work, log new failures, and fold the cycle's
-            // results into the unreported accumulator.
-            fn flush_cycle(
-                manager: &SessionManager,
-                pending: &mut PendingState,
+            async fn flush_cycle(
+                manager: &Arc<SessionManager>,
+                mut pending: PendingState,
                 unreported: &mut FlushReport,
                 health: &SessionSaveHealth,
             ) {
-                let cycle = flush_inner(manager, pending, health);
-                unreported.merge(cycle);
+                let session_ids: Vec<_> = pending
+                    .sessions
+                    .keys()
+                    .chain(pending.completed_commits.keys())
+                    .cloned()
+                    .collect();
+                let manager = manager.clone();
+                let worker_health = health.clone();
+                let cycle = codewhale_runtime::runtime_control::owner_work(move || {
+                    Ok(flush_inner(&manager, &mut pending, &worker_health))
+                })
+                .await;
+                match cycle {
+                    Ok(cycle) => unreported.merge(cycle),
+                    Err(error) => {
+                        tracing::warn!(target: "persistence", %error, "owned persistence batch failed");
+                        for session_id in session_ids {
+                            health.record::<()>(
+                                &session_id,
+                                &Err(std::io::Error::other(error.to_string())),
+                            );
+                        }
+                        unreported.merge(FlushReport {
+                            completed: 0,
+                            failures: vec![(
+                                "persistence-worker".to_string(),
+                                std::io::ErrorKind::Other,
+                            )],
+                        });
+                    }
+                }
             }
 
             // Work is coalesced at send time into the shared pending state;
             // every command handler takes whatever has accumulated and
             // flushes it outside the sender lock.
             while let Some(command) = rx.recv().await {
-                let mut pending = rx.take_pending();
+                let pending = rx.take_pending();
                 match command {
                     ActorCommand::WorkReady => {
                         if !pending.is_empty() {
-                            flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                            flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         }
                     }
                     ActorCommand::FlushAndReport { reply } => {
-                        flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                        flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         let _ = reply.send(std::mem::take(&mut unreported));
                     }
                     ActorCommand::Shutdown => {
-                        flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+                        flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
                         return;
                     }
                 }
             }
             // Every sender is gone — final flush and exit. Each absorb
             // guarantees a queued WorkReady, so this is normally empty.
-            let mut pending = rx.take_pending();
-            flush_cycle(&manager, &mut pending, &mut unreported, &rx.health);
+            let pending = rx.take_pending();
+            flush_cycle(&manager, pending, &mut unreported, &rx.health).await;
         },
     );
 
@@ -730,21 +758,14 @@ fn flush_inner(
         let session = match pending_session {
             PendingSession::Snapshot(session) | PendingSession::Completion(session) => session,
         };
-        let commit_result = manager.save_session_bounded(session);
+        let commit_result = manager.commit_completed_session(session);
         health.record(&session_id, &commit_result);
-        let save_succeeded = commit_result.is_ok();
-        record(
-            format!("completed-commit:{session_id}"),
-            commit_result.map(|_| ()),
-        );
-        if save_succeeded {
-            // Only the committed session's own checkpoint is cleared, and
-            // only because its snapshot safely landed. A failure above
-            // retains the checkpoint as the sole recovery record.
-            record(
-                format!("clear-checkpoint:{session_id}"),
-                manager.clear_session_checkpoint(&session_id),
-            );
+        match commit_result {
+            Ok(clear) => {
+                record(format!("completed-commit:{session_id}"), Ok(()));
+                record(format!("clear-checkpoint:{session_id}"), clear);
+            }
+            Err(error) => record(format!("completed-commit:{session_id}"), Err(error)),
         }
     }
     for (session_id, session) in std::mem::take(&mut pending.checkpoints) {
@@ -1159,8 +1180,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
-        std::fs::write(sessions_dir.join("checkpoints"), b"not a directory")
-            .expect("block checkpoints dir");
+        let checkpoint_blocker = sessions_dir.join("checkpoints");
+        std::fs::write(&checkpoint_blocker, b"not a directory").expect("block checkpoints dir");
         let session = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
@@ -1195,6 +1216,17 @@ mod tests {
         );
 
         std::fs::remove_dir(&blocker).expect("unblock");
+        handle.try_send(PersistRequest::SessionSnapshot(session.clone()));
+        flush(&handle).await.expect("flush");
+        assert_eq!(
+            handle
+                .session_save_health()
+                .failing
+                .as_ref()
+                .map(|(id, _)| id.as_str()),
+            Some(session_id.as_str())
+        );
+        std::fs::remove_file(&checkpoint_blocker).expect("unblock checkpoint inspection");
         handle.try_send(PersistRequest::SessionSnapshot(session));
         flush(&handle).await.expect("flush");
         let healed = handle.session_save_health();
@@ -1248,19 +1280,26 @@ mod tests {
         task.await.expect("persistence actor join");
     }
 
-    /// Pre-write a crash-recovery checkpoint file for `session_id` directly,
-    /// so completion-commit tests can assert on its survival without needing
-    /// a prior in-flight turn.
+    /// Pre-write a crash-recovery checkpoint through its real writer so
+    /// completion-commit tests can assert on valid recovery evidence without
+    /// needing a prior in-flight turn.
     fn seed_checkpoint_file(
         sessions_dir: &std::path::Path,
         session_id: &str,
     ) -> std::path::PathBuf {
-        let path = sessions_dir
-            .join("checkpoints")
-            .join(format!("{session_id}.json"));
-        std::fs::create_dir_all(path.parent().expect("checkpoints parent")).expect("mkdir");
-        std::fs::write(&path, "{}").expect("seed checkpoint file");
-        path
+        let manager = SessionManager::new(sessions_dir.to_path_buf()).expect("checkpoint manager");
+        let session = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
+            session_id.to_string(),
+            &[],
+            "deepseek-v4-pro",
+            sessions_dir.parent().expect("fixture workspace"),
+            0,
+            None,
+            Some("agent"),
+        );
+        manager
+            .save_checkpoint_owned(session)
+            .expect("seed checkpoint file")
     }
 
     /// Deterministically fail session-file saves only: a directory at the
@@ -1384,8 +1423,7 @@ mod tests {
         let committed_id = committed.metadata.id.clone();
         let inflight_id = inflight.metadata.id.clone();
         let committed_checkpoint = seed_checkpoint_file(&sessions_dir, &committed_id);
-        // The concurrent session's checkpoint must carry a loadable body, so
-        // seed it through the real manager instead of a placeholder file.
+        // The concurrent session's checkpoint must carry a loadable body too.
         let inflight_checkpoint = verification_manager
             .save_checkpoint(&inflight)
             .expect("seed the concurrent session's checkpoint");
@@ -1458,6 +1496,7 @@ mod tests {
             Some("agent"),
         );
         completed.metadata.title = "Completed turn".to_string();
+        completed.metadata.total_tokens = 7;
         let mut inflight = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
@@ -1470,6 +1509,7 @@ mod tests {
         // checkpoint arrives while the previous completion is still queued.
         inflight.metadata.id = completed.metadata.id.clone();
         inflight.metadata.title = "Next turn in progress".to_string();
+        inflight.metadata.total_tokens = 11;
         let session_id = completed.metadata.id.clone();
         let verification_manager = SessionManager::new(sessions_dir.clone()).expect("manager");
         let (handle, task) = spawn_persistence_actor(manager);
@@ -1502,11 +1542,13 @@ mod tests {
             .load_session(&session_id)
             .expect("completed turn document must survive coalescing");
         assert_eq!(saved.metadata.title, "Completed turn");
+        assert_eq!(saved.metadata.total_tokens, 7);
         let recovery = verification_manager
             .load_session_checkpoint(&session_id)
             .expect("read in-flight checkpoint")
             .expect("in-flight checkpoint must survive");
-        assert_eq!(recovery.metadata.title, "Next turn in progress");
+        assert_eq!(recovery.metadata.title, "Completed turn");
+        assert_eq!(recovery.metadata.total_tokens, 11);
         assert!(
             report.completed >= 2,
             "both the completed document and newer checkpoint must be counted, got: {report:?}"

@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Session metadata reads stop at a bounded scan and report unreadable records without hiding healthy picker rows. Queued saves preserve durable renames, archive state and Runtime ownership under the session write lock; uncertain metadata refuses writes and cleanup. Persistence batches run off the async executor, and explicit placeholder-title renames retain their intent.
+
 - Worker coordination serializes durable admissions across processes, preserves foreign workers and winning completion receipts, and fences stale checkpoints. Fleet restart reservations retain uncertain prior processes until exact teardown is confirmed; final output, usage and the receipt publish together without duplicate accounting on retry. Retained transcripts follow committed ownership.
 
 - JSONPath projections bound path length, traversal steps and intermediate matches before cloning results. Direct fetches share the same parser and enforce one aggregate serialized-field budget; oversized selections refuse with narrower-selection guidance.

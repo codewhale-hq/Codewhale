@@ -1312,68 +1312,32 @@ pub(crate) fn build_session_snapshot(
             .clone_from(&cached.parent_session_id);
         session.metadata.forked_from_message_count = cached.forked_from_message_count;
         session.metadata.archived = cached.archived;
+        session.metadata.title.clone_from(&cached.title);
+        session.metadata.title_is_custom = cached.title_is_custom;
         session
             .metadata
             .runtime_store
             .clone_from(&cached.runtime_store);
     }
-    // The cache above is a hint; disk is the authority for lifecycle state.
-    // Re-reading here is what makes "an archive or rename cannot be reverted
-    // by autosave" true regardless of which surface applied it or when
-    // (#2934 / #4397). One bounded metadata-prefix read, not a transcript scan.
-    let merged = manager.merge_persisted_lifecycle(&mut session.metadata);
     if let Some(binding) = app
         .runtime_services
         .task_manager
         .as_ref()
         .and_then(|tasks| tasks.session_store_binding())
     {
-        if session
-            .metadata
-            .runtime_store
-            .as_ref()
-            .is_some_and(|saved| {
-                saved != &binding && !saved.is_missing_session_store().unwrap_or(false)
-            })
-        {
-            return Err(
-                "session snapshot refused to replace its saved Runtime store ownership".into(),
-            );
-        }
         session.metadata.runtime_store = Some(binding);
     }
-    // Title resolution, in priority order:
-    // 1. Disk, when the session already exists (#2934/#4397: a rename applied
-    //    through the session manager is persisted and must survive autosave).
-    // 2. The in-memory cache, when there is no disk record for the session
-    //    yet. (The session picker normally persists renames to disk first via
-    //    `rename_selected`; this branch covers sessions that have never been
-    //    saved, where the cache is the only title source.)
-    // 3. The title computed from the conversation (first user message).
-    //    The cache is NOT a candidate on its own: it is only refreshed at the
-    //    end of this function, so a snapshot taken before any user message
-    //    pins it to the `DEFAULT_SESSION_TITLE` placeholder, and restoring it
-    //    would prevent every later title update (the bug this block fixes).
-    if !merged
-        && let Some(cached) = app.current_session_metadata.as_ref()
-        && cached.id == session.metadata.id
-    {
-        session.metadata.title.clone_from(&cached.title);
-    }
-    if session.metadata.title == codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
+    if !session.metadata.title_is_custom
+        && session.metadata.title == codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
         && computed_title != codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
     {
-        // The placeholder survived from an earlier snapshot; the conversation
-        // now has a real first user message, so let the computed title win.
-        // Known edge: a session deliberately renamed to the literal
-        // placeholder title is treated the same way and yields to the
-        // computed title on the next snapshot.
         session.metadata.title = computed_title;
     }
     if let Some(cached) = app.current_session_metadata.as_mut()
         && cached.id == session.metadata.id
     {
         cached.title.clone_from(&session.metadata.title);
+        cached.title_is_custom = session.metadata.title_is_custom;
         cached.archived = session.metadata.archived;
     }
     session

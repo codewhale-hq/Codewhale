@@ -12,6 +12,7 @@
             metadata: SessionMetadata {
                 id: id.to_string(),
                 title: format!("session-{id}"),
+                title_is_custom: false,
                 created_at: updated_at,
                 updated_at,
                 message_count: 1,
@@ -56,6 +57,7 @@
             metadata: SessionMetadata {
                 id: id.to_string(),
                 title: DEFAULT_SESSION_TITLE.to_string(),
+                title_is_custom: false,
                 created_at: updated_at,
                 updated_at,
                 message_count: 0,
