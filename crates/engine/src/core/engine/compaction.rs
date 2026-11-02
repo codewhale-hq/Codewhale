@@ -69,7 +69,9 @@ impl Engine {
         let _ = self
             .send_event(Event::CompactionStarted {
                 previous_source,
-                id, auto, message,
+                id,
+                auto,
+                message,
             })
             .await;
     }
@@ -342,10 +344,13 @@ impl Engine {
         self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::compaction(
             id.clone(),
         ));
-        self.emit_compaction_started(id.clone(), false, "Making room…".to_string(),
+        self.emit_compaction_started(
+            id.clone(),
+            false,
+            "Making room…".to_string(),
             previous_source,
         )
-            .await;
+        .await;
         if let Err(err) = self.install_resolved_runtime_route(route) {
             let message =
                 format!("Cannot compact context because its provider route is not ready: {err}");
@@ -718,10 +723,13 @@ impl Engine {
             let compaction_cancel = self
                 .claim_compaction(&compaction_id)
                 .expect("a fresh automatic compaction id cannot be pre-canceled");
-            self.emit_compaction_started(compaction_id.clone(), true, "Making room…".to_string(),
+            self.emit_compaction_started(
+                compaction_id.clone(),
+                true,
+                "Making room…".to_string(),
                 self.session.snapshot_source.clone(),
             )
-                .await;
+            .await;
             let auto_messages_before = self.session.messages.len();
             let auto_tokens_before = self.estimated_input_tokens();
             let turn_cancel = self.cancel_token.clone();
@@ -945,10 +953,13 @@ impl Engine {
             .emergency_compaction_attempts
             .saturating_add(1);
         let start_message = format!("Making room now ({reason})");
-        self.emit_compaction_started(id.clone(), true, start_message,
+        self.emit_compaction_started(
+            id.clone(),
+            true,
+            start_message,
             self.session.snapshot_source.clone(),
         )
-            .await;
+        .await;
         let Some(compaction_cancel) = self.claim_compaction(&id) else {
             self.emit_compaction_cancelled(
                 id,

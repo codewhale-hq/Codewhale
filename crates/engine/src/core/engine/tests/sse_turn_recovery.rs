@@ -363,7 +363,10 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
         );
         if let Event::SessionUpdated {
             source: _,
-            session_id, .. } = event {
+            session_id,
+            ..
+        } = event
+        {
             assert_eq!(session_id, SESSION_ID);
         }
     }
