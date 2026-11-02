@@ -31,6 +31,10 @@ const HANDLE_STORE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_CHARS: usize = 12_000;
 const HARD_MAX_CHARS: usize = 50_000;
 const REPR_PREVIEW_CHARS: usize = 160;
+pub(super) const JSONPATH_MAX_PATH_BYTES: usize = 4096;
+pub(super) const JSONPATH_MAX_BYTES: usize = 1024 * 1024;
+const JSONPATH_MAX_MATCHES: usize = 1024;
+const JSONPATH_MAX_STEPS: usize = 128;
 
 pub type SharedHandleStore = Arc<Mutex<HandleStore>>;
 
@@ -311,7 +315,8 @@ impl ToolSpec for HandleReadTool {
                 },
                 "jsonpath": {
                     "type": "string",
-                    "description": "Small JSONPath subset: $, .field, [index], [*], and ['field']."
+                    "maxLength": JSONPATH_MAX_PATH_BYTES,
+                    "description": "Small JSONPath subset: $, .field, [index], [*], and ['field']. Refuses paths over 4096 bytes, over 128 steps, over 1024 intermediate matches, or results over 1 MiB; narrow the path on refusal."
                 },
                 "introspect": {
                     "type": "boolean",
@@ -488,6 +493,11 @@ fn parse_projection(input: &Value) -> Result<Projection, ToolError> {
         if path.is_empty() {
             return Err(ToolError::invalid_input(
                 "handle_read: jsonpath must not be empty",
+            ));
+        }
+        if path.len() > JSONPATH_MAX_PATH_BYTES {
+            return Err(ToolError::invalid_input(
+                "handle_read: JSONPath exceeds 4096 bytes",
             ));
         }
         return Ok(Projection::JsonPath(path.to_string()));
@@ -735,13 +745,29 @@ fn record_text(record: &HandleRecord) -> std::borrow::Cow<'_, str> {
 }
 
 pub fn query_jsonpath(root: &Value, path: &str) -> Result<Vec<Value>, String> {
+    query_jsonpath_bounded(root, path, JSONPATH_MAX_BYTES).map(|(values, _)| values)
+}
+
+pub(super) fn query_jsonpath_bounded(
+    root: &Value,
+    path: &str,
+    max_bytes: usize,
+) -> Result<(Vec<Value>, usize), String> {
+    if path.len() > JSONPATH_MAX_PATH_BYTES {
+        return Err("jsonpath exceeds 4096 bytes".to_string());
+    }
     if !path.starts_with('$') {
         return Err("jsonpath must start with `$`".to_string());
     }
     let mut idx = 1usize;
     let bytes = path.as_bytes();
     let mut current = vec![root];
+    let mut steps = 0usize;
     while idx < bytes.len() {
+        steps += 1;
+        if steps > JSONPATH_MAX_STEPS {
+            return Err("jsonpath exceeds 128 steps; use a narrower projection".to_string());
+        }
         match bytes[idx] {
             b'.' => {
                 idx += 1;
@@ -780,16 +806,35 @@ pub fn query_jsonpath(root: &Value, path: &str) -> Result<Vec<Value>, String> {
             }
         }
     }
-    Ok(current.into_iter().cloned().collect())
+    let mut counter = codewhale_util::utils::CountingWriter::new();
+    serde_json::to_writer(&mut counter, &current)
+        .map_err(|error| format!("jsonpath result measurement failed: {error}"))?;
+    let max_bytes = max_bytes.min(JSONPATH_MAX_BYTES);
+    if counter.count() > max_bytes {
+        return Err(format!(
+            "jsonpath result exceeds the {max_bytes}-byte projection budget; use a narrower projection"
+        ));
+    }
+    Ok((current.into_iter().cloned().collect(), counter.count()))
 }
 
 fn apply_bracket_token<'a>(values: Vec<&'a Value>, token: &str) -> Result<Vec<&'a Value>, String> {
     if token == "*" {
         let mut out = Vec::new();
+        let mut push = |item: &'a Value| -> Result<(), String> {
+            if out.len() == JSONPATH_MAX_MATCHES {
+                return Err(
+                    "jsonpath exceeds 1024 intermediate matches; use a narrower projection"
+                        .to_string(),
+                );
+            }
+            out.push(item);
+            Ok(())
+        };
         for value in values {
             match value {
-                Value::Array(items) => out.extend(items),
-                Value::Object(map) => out.extend(map.values()),
+                Value::Array(items) => items.iter().try_for_each(&mut push)?,
+                Value::Object(map) => map.values().try_for_each(&mut push)?,
                 _ => {}
             }
         }

@@ -7,7 +7,7 @@
 //! (`format = "markdown"`); pass `format = "raw"` to keep the bytes intact
 //! when the model wants to do its own parsing.
 
-use super::handle::query_jsonpath;
+use super::handle::{JSONPATH_MAX_BYTES, JSONPATH_MAX_PATH_BYTES, query_jsonpath_bounded};
 use super::pdf::PdfTextCommand;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 const FETCH_ACCEPT: &str = "text/html,text/markdown,text/plain,application/json,application/pdf,image/*,audio/*,video/*,*/*;q=0.5";
+const MAX_JSON_FIELDS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -132,8 +133,9 @@ impl ToolSpec for FetchUrlTool {
                 },
                 "fields": {
                     "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional JSONPath projections for JSON responses. Supports $, .field, [index], [*], and ['field']; returns matches under `fields`."
+                    "maxItems": MAX_JSON_FIELDS,
+                    "items": { "type": "string", "maxLength": JSONPATH_MAX_PATH_BYTES },
+                    "description": "Optional JSONPath projections for JSON responses. Supports $, .field, [index], [*], and ['field']; returns matches under `fields`. At most 32 paths of 4096 bytes each, 128 steps and 1024 intermediate matches per path, and 1 MiB of aggregate projected fields; narrow the selection on refusal."
                 }
             },
             "required": ["url"]
@@ -515,6 +517,11 @@ fn parse_fields(input: &Value) -> Result<Vec<String>, ToolError> {
     let Some(values) = values.as_array() else {
         return Err(ToolError::invalid_input("`fields` must be an array"));
     };
+    if values.len() > MAX_JSON_FIELDS {
+        return Err(ToolError::invalid_input(
+            "`fields` accepts at most 32 paths",
+        ));
+    }
     let mut fields = Vec::new();
     for value in values {
         let Some(field) = value.as_str() else {
@@ -523,7 +530,12 @@ fn parse_fields(input: &Value) -> Result<Vec<String>, ToolError> {
             ));
         };
         let field = field.trim();
-        if !field.is_empty() {
+        if field.len() > JSONPATH_MAX_PATH_BYTES {
+            return Err(ToolError::invalid_input(
+                "`fields` JSONPath exceeds 4096 bytes",
+            ));
+        }
+        if !field.is_empty() && !fields.iter().any(|existing| existing == field) {
             fields.push(field.to_string());
         }
     }
@@ -547,10 +559,30 @@ fn project_json_fields(
         ToolError::execution_failed(format!("response body is not valid JSON for `fields`: {e}"))
     })?;
     let mut out = BTreeMap::new();
+    let mut projected_bytes = 2usize;
     for field in fields {
-        let matches = query_jsonpath(&body_json, field).map_err(|e| {
-            ToolError::invalid_input(format!("invalid JSONPath `{field}` in `fields`: {e}"))
+        if out.contains_key(field) {
+            continue;
+        }
+        let mut counter = codewhale_util::utils::CountingWriter::new();
+        serde_json::to_writer(&mut counter, field).map_err(|error| {
+            ToolError::execution_failed(format!("JSON projection measurement failed: {error}"))
         })?;
+        projected_bytes = projected_bytes
+            .saturating_add(counter.count())
+            .saturating_add(1 + usize::from(!out.is_empty()));
+        let remaining = JSONPATH_MAX_BYTES
+            .checked_sub(projected_bytes)
+            .ok_or_else(|| {
+                ToolError::invalid_input(
+                    "`fields` projection exceeds 1 MiB; request fewer or narrower fields",
+                )
+            })?;
+        let (matches, bytes) =
+            query_jsonpath_bounded(&body_json, field, remaining).map_err(|e| {
+                ToolError::invalid_input(format!("invalid JSONPath `{field}` in `fields`: {e}"))
+            })?;
+        projected_bytes = projected_bytes.saturating_add(bytes);
         out.insert(field.clone(), matches);
     }
     Ok(Some(out))
