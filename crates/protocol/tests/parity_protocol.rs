@@ -1,8 +1,10 @@
+use codewhale_app_server_protocol::runtime::{
+    RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope,
+};
 use codewhale_protocol::{
     AppRequest, EventFrame, ThreadGoal, ThreadGoalProgressParams, ThreadGoalSetParams,
     ThreadGoalStatus, ThreadListParams, ThreadRequest, ThreadResumeParams, ToolOutput,
     UserInputAnswerEvent, UserInputOptionEvent, UserInputQuestionEvent, UserInputRequestEvent,
-    runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope},
 };
 use serde_json::{Value, json};
 

@@ -861,7 +861,7 @@ impl WorkflowPanel {
                     let id = value
                         .get("child_ids")
                         .and_then(Value::as_array)
-                        .and_then(|ids| ids.get(i as usize))
+                        .and_then(|ids| ids.get(i))
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .unwrap_or_else(|| format!("child-{i}"));
