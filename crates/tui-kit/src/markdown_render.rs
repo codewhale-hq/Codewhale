@@ -1882,7 +1882,7 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
                 // Keeping the same visible label and metadata in both modes
                 // prevents toggling OSC 8 from reflowing the transcript.
                 out.push(InlineToken::new(
-                    text.to_string(),
+                    decode_html_references(text),
                     link_style,
                     normalized_link_target(url),
                 ));
@@ -1901,15 +1901,12 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
                 .unwrap_or(rest.len());
             let token = &rest[..token_end];
             let url_end = trailing_url_end(token);
-            let url = &token[..url_end];
-            out.push(InlineToken::new(
-                url.to_string(),
-                link_style,
-                normalized_http_link_target(url),
-            ));
+            let url = decode_html_references(&token[..url_end]);
+            let target = normalized_http_link_target(&url);
+            out.push(InlineToken::new(url, link_style, target));
             if url_end < token_end {
                 out.push(InlineToken::new(
-                    token[url_end..].to_string(),
+                    decode_html_references(&token[url_end..]),
                     base_style,
                     None,
                 ));
@@ -1935,7 +1932,11 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             // succeeds. Clamp rather than reuse `next` so a future change to
             // `find_next_marker` cannot slice out of bounds here.
             .unwrap_or(rest.len());
-        out.push(InlineToken::new(rest[..next].to_string(), base_style, None));
+        out.push(InlineToken::new(
+            decode_html_references(&rest[..next]),
+            base_style,
+            None,
+        ));
         rest = &rest[next..];
     }
     out
@@ -1946,7 +1947,8 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
 /// path-shaped text: that linkifies identifiers and version strings, and points
 /// at files that do not exist.
 fn normalized_link_target(target: &str) -> Option<String> {
-    normalized_http_link_target(target).or_else(|| normalized_file_link_target(target))
+    let target = decode_html_references(target);
+    normalized_http_link_target(&target).or_else(|| normalized_file_link_target(&target))
 }
 
 /// A destination that is already an absolute path, with or without the `file:`
@@ -1997,6 +1999,19 @@ fn trailing_url_end(candidate: &str) -> usize {
     let mut end = candidate.len();
     while end > 0 {
         let remaining = &candidate[..end];
+        if let Some(start) = remaining
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .rev()
+            .take(10)
+            .find_map(|(index, byte)| (*byte == b'&').then_some(index))
+            && html_character_reference(&remaining[start..])
+                .is_some_and(|(_, len)| start + len == end)
+        {
+            end = start;
+            continue;
+        }
         let Some(ch) = remaining.chars().next_back() else {
             break;
         };
@@ -2021,6 +2036,58 @@ fn has_unmatched_closing_delimiter(candidate: &str, closing: char) -> bool {
     };
     candidate.chars().filter(|ch| *ch == closing).count()
         > candidate.chars().filter(|ch| *ch == opening).count()
+}
+
+fn html_character_reference(source: &str) -> Option<(char, usize)> {
+    let end = source.bytes().take(10).position(|byte| byte == b';')?;
+    let name = source.get(..end)?.strip_prefix('&')?;
+    let ch = match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{00A0}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "hellip" => '\u{2026}',
+        _ => {
+            let number = name.strip_prefix('#')?;
+            let (digits, radix) = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => (hex, 16),
+                None => (number, 10),
+            };
+            if !digits.chars().all(|digit| digit.is_digit(radix)) {
+                return None;
+            }
+            char::from_u32(u32::from_str_radix(digits, radix).ok()?).filter(|ch| {
+                !ch.is_control()
+                    && codewhale_secrets::sanitize::hidden_chars(ch.encode_utf8(&mut [0; 4]))
+                        .is_empty()
+            })?
+        }
+    };
+    Some((ch, end + 1))
+}
+
+fn decode_html_references(text: &str) -> String {
+    let mut decoded = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        decoded.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let (ch, len) = html_character_reference(rest).unwrap_or(('&', 1));
+        decoded.push(ch);
+        rest = &rest[len..];
+    }
+    decoded.push_str(rest);
+    decoded
 }
 
 fn closing_backtick_run(body: &str, ticks: usize) -> Option<usize> {

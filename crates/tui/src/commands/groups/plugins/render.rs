@@ -24,6 +24,7 @@ pub(super) fn render_bundle_detail(
     presentation: &mut dyn CommandPresentationContext,
     detail: &PluginDetail,
     include_hashes: bool,
+    context: ReviewTextContext,
 ) -> String {
     let unsupported = if detail.unsupported_labels.is_empty() {
         "none".to_string()
@@ -53,27 +54,27 @@ pub(super) fn render_bundle_detail(
         .translate(
             "cmd_plugin_bundle_detail",
             &[
-                ("name", &escape_review_text(&detail.name)),
-                ("id", &escape_review_text(&detail.id)),
-                ("version", &escape_review_text(&detail.version)),
+                ("name", &escape_review_text(&detail.name, context)),
+                ("id", &escape_review_text(&detail.id, context)),
+                ("version", &escape_review_text(&detail.version, context)),
                 ("origin", &detail.origin),
                 ("scope", &detail.scope),
                 ("state", &detail.state_label),
                 ("trust", &detail.trust_status),
                 ("inventory", &detail.inventory_summary),
-                ("permissions", &render_permissions(detail)),
-                ("mcp", &render_mcp_inventory(detail)),
+                ("permissions", &render_permissions(detail, context)),
+                ("mcp", &render_mcp_inventory(detail, context)),
                 ("unsupported", &unsupported),
                 ("content_hash", content_hash),
                 ("capability_hash", capability_hash),
-                ("path", &escape_review_path(&detail.canonical_root)),
+                ("path", &escape_review_path(&detail.canonical_root, context)),
             ],
         )
         .unwrap_or_default();
     let skills = detail
         .skills
         .iter()
-        .map(|skill| escape_review_text(skill))
+        .map(|skill| escape_review_text(skill, context))
         .collect::<Vec<_>>();
     let _ = write!(
         output,
@@ -90,7 +91,7 @@ pub(super) fn render_bundle_detail(
             "LSP, native, filesystem-roots, and lifecycle-mutation stay inventoried and inactive."
         }
     );
-    append_diagnostics(presentation, &mut output, &detail.diagnostics);
+    append_diagnostics(presentation, &mut output, &detail.diagnostics, context);
     output
 }
 
@@ -110,14 +111,14 @@ fn display_component_labels(labels: &[String]) -> String {
         .join(", ")
 }
 
-fn render_permissions(detail: &PluginDetail) -> String {
+fn render_permissions(detail: &PluginDetail, context: ReviewTextContext) -> String {
     let filesystem = if detail.filesystem_roots.is_empty() {
         "none".to_string()
     } else {
         detail
             .filesystem_roots
             .iter()
-            .map(|value| escape_review_text(value))
+            .map(|value| escape_review_text(value, context))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -127,7 +128,7 @@ fn render_permissions(detail: &PluginDetail) -> String {
         detail
             .network_hosts
             .iter()
-            .map(|value| escape_review_text(value))
+            .map(|value| escape_review_text(value, context))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -145,19 +146,19 @@ fn render_permissions(detail: &PluginDetail) -> String {
     )
 }
 
-fn render_mcp_inventory(detail: &PluginDetail) -> String {
+fn render_mcp_inventory(detail: &PluginDetail, context: ReviewTextContext) -> String {
     if detail.mcp_servers.is_empty() {
         return "none".to_string();
     }
     detail
         .mcp_servers
         .iter()
-        .map(render_mcp_server)
+        .map(|server| render_mcp_server(server, context))
         .collect::<Vec<_>>()
         .join("; ")
 }
 
-fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
+fn render_mcp_server(server: &PluginMcpServerDetail, context: ReviewTextContext) -> String {
     let enabled = if server.enabled {
         "configured-on"
     } else {
@@ -174,8 +175,8 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
                     .unwrap_or("invalid");
                 format!(
                     "{} <- {}",
-                    escape_review_text(destination),
-                    escape_review_text(source)
+                    escape_review_text(destination, context),
+                    escape_review_text(source, context)
                 )
             })
             .collect::<Vec<_>>();
@@ -183,13 +184,13 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
         let cwd = server
             .cwd
             .as_deref()
-            .map(escape_review_path)
+            .map(|value| escape_review_path(value, context))
             .unwrap_or_else(|| "plugin-root".to_string());
-        let argv = render_review_argv(server, &server.argv);
+        let argv = render_review_argv(&server.argv, context);
         format!(
             "{}: transport=stdio command={} argv=[{}] cwd={cwd} env=[{}] timeouts={} required={} enabled_tools=[{}] disabled_tools=[{}] host-user-filesystem/network-authority {enabled}",
-            escape_review_text(&server.name),
-            escape_review_text(command),
+            escape_review_text(&server.name, context),
+            escape_review_text(command, context),
             argv.join(", "),
             if env_provenance.is_empty() {
                 "none".to_string()
@@ -198,13 +199,13 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
             },
             render_mcp_timeouts(server),
             server.required,
-            render_review_values(&server.enabled_tools),
-            render_review_values(&server.disabled_tools),
+            render_review_values(&server.enabled_tools, context),
+            render_review_values(&server.disabled_tools, context),
         )
     } else if let Some(url) = server.url.as_deref() {
         let endpoint = reqwest::Url::parse(url)
             .ok()
-            .map(|url| escape_review_text(url.as_str()))
+            .map(|url| escape_review_text(url.as_str(), context))
             .unwrap_or_else(|| "invalid-url".to_string());
         let mut env_headers = server
             .env_headers
@@ -212,8 +213,8 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
             .map(|(header, source)| {
                 format!(
                     "{} <- {}",
-                    escape_review_text(header),
-                    escape_review_text(source)
+                    escape_review_text(header, context),
+                    escape_review_text(source, context)
                 )
             })
             .collect::<Vec<_>>();
@@ -221,13 +222,13 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
         let bearer = server
             .bearer_token_env_var
             .as_deref()
-            .map(escape_review_text)
+            .map(|value| escape_review_text(value, context))
             .unwrap_or_else(|| "none".to_string());
         let transport = transport_label(&server.transport);
         format!(
             "{}: transport={} endpoint={} redirects=same-origin-only env_headers=[{}] bearer_env={} oauth=disabled timeouts={} required={} enabled_tools=[{}] disabled_tools=[{}] {enabled}",
-            escape_review_text(&server.name),
-            escape_review_text(transport),
+            escape_review_text(&server.name, context),
+            escape_review_text(transport, context),
             endpoint,
             if env_headers.is_empty() {
                 "none".to_string()
@@ -237,11 +238,11 @@ fn render_mcp_server(server: &PluginMcpServerDetail) -> String {
             bearer,
             render_mcp_timeouts(server),
             server.required,
-            render_review_values(&server.enabled_tools),
-            render_review_values(&server.disabled_tools),
+            render_review_values(&server.enabled_tools, context),
+            render_review_values(&server.disabled_tools, context),
         )
     } else {
-        format!("{}: invalid", server.name)
+        format!("{}: invalid", escape_review_text(&server.name, context))
     }
 }
 
@@ -255,46 +256,39 @@ fn transport_label(
     }
 }
 
-fn render_review_argv(server: &PluginMcpServerDetail, arguments: &[String]) -> Vec<String> {
-    // Portable argv rendering: plugin-path classification requires the
-    // canonical root, which is carried in the detail. Keep the exact
-    // semantics of the legacy renderer.
-    let root = &server.cwd.clone().unwrap_or_default();
+fn render_review_argv(arguments: &[String], context: ReviewTextContext) -> Vec<String> {
     arguments
         .iter()
         .enumerate()
         .map(|(index, argument)| {
             let position = index + 1;
-            let candidate = root.join(argument);
-            if candidate.exists()
-                && candidate
-                    .canonicalize()
-                    .is_ok_and(|path| path.starts_with(root))
-            {
-                return format!(
-                    "#{position} plugin-path={}",
-                    render_review_argv_value(argument)
-                );
-            }
-            format!("#{position} value={}", render_review_argv_value(argument))
+            format!(
+                "#{position} value={}",
+                render_review_argv_value(argument, context)
+            )
         })
         .collect()
 }
 
-fn render_review_argv_value(value: &str) -> String {
+fn render_review_argv_value(value: &str, context: ReviewTextContext) -> String {
     // JSON string syntax is a lossless, unambiguous terminal representation:
     // whitespace, quotes, backslashes, and punctuation retain their exact
     // argv semantics without hiding arbitrary values behind redaction.
-    serde_json::to_string(value).expect("serializing a Rust string cannot fail")
+    let rendered = serde_json::to_string(value).expect("serializing a Rust string cannot fail");
+    if context == ReviewTextContext::Prose {
+        rendered.replace('&', "\\u0026")
+    } else {
+        rendered
+    }
 }
 
-fn render_review_values(values: &[String]) -> String {
+fn render_review_values(values: &[String], context: ReviewTextContext) -> String {
     if values.is_empty() {
         return "none".to_string();
     }
     values
         .iter()
-        .map(|value| escape_review_text(value))
+        .map(|value| escape_review_text(value, context))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -314,35 +308,49 @@ fn render_mcp_timeouts(server: &PluginMcpServerDetail) -> String {
     )
 }
 
-pub(crate) fn escape_review_path(path: &Path) -> String {
-    escape_review_text(&path.to_string_lossy())
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewTextContext {
+    Prose,
+    InlineCode,
+    Plain,
 }
 
-pub(crate) fn escape_review_text(value: &str) -> String {
+pub(crate) fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    escape_review_text(&path.to_string_lossy(), context)
+}
+
+pub(crate) fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
-        if ch.is_control() || codewhale_sanitize::sanitize::is_bidi_control(ch) {
+        if ch.is_control()
+            || codewhale_sanitize::sanitize::is_bidi_control(ch)
+            || (context == ReviewTextContext::InlineCode && ch == '`')
+        {
             let _ = write!(escaped, "\\u{{{:x}}}", ch as u32);
-        } else if matches!(
-            ch,
-            '\\' | '`'
-                | '*'
-                | '_'
-                | '{'
-                | '}'
-                | '['
-                | ']'
-                | '<'
-                | '>'
-                | '('
-                | ')'
-                | '#'
-                | '+'
-                | '-'
-                | '.'
-                | '!'
-                | '|'
-        ) {
+        } else if context == ReviewTextContext::Prose && ch == '&' {
+            escaped.push_str("&amp;");
+        } else if context == ReviewTextContext::Prose
+            && matches!(
+                ch,
+                '\\' | '`'
+                    | '*'
+                    | '_'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '#'
+                    | '+'
+                    | '-'
+                    | '.'
+                    | '!'
+                    | '|'
+            )
+        {
             escaped.push('\\');
             escaped.push(ch);
         } else {
@@ -417,8 +425,8 @@ pub(super) fn render_gc_report(
                 out,
                 "  {}{gate} {}: {}",
                 item.kind.label(),
-                escape_review_text(&item.target),
-                escape_review_text(&item.reason)
+                escape_review_text(&item.target, ReviewTextContext::Prose),
+                escape_review_text(&item.reason, ReviewTextContext::Prose)
             );
         }
         if report.items.len() > SHOWN {
@@ -428,17 +436,29 @@ pub(super) fn render_gc_report(
     if !report.kept.is_empty() {
         let _ = writeln!(out, "\nKept ({}):", report.kept.len());
         for line in report.kept.iter().take(10) {
-            let _ = writeln!(out, "  {}", escape_review_text(line));
+            let _ = writeln!(
+                out,
+                "  {}",
+                escape_review_text(line, ReviewTextContext::Prose)
+            );
         }
         if report.kept.len() > 10 {
             let _ = writeln!(out, "  ... and {} more", report.kept.len() - 10);
         }
     }
     for note in &report.notes {
-        let _ = writeln!(out, "\nNote: {}", escape_review_text(note));
+        let _ = writeln!(
+            out,
+            "\nNote: {}",
+            escape_review_text(note, ReviewTextContext::Prose)
+        );
     }
     for failure in &report.failures {
-        let _ = writeln!(out, "\nCould not remove {}", escape_review_text(failure));
+        let _ = writeln!(
+            out,
+            "\nCould not remove {}",
+            escape_review_text(failure, ReviewTextContext::Prose)
+        );
     }
     if fixed {
         if !report.items.is_empty() {

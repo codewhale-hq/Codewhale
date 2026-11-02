@@ -52,6 +52,7 @@ pub(crate) mod render;
 mod tests;
 
 use legacy::legacy_tools;
+use render::ReviewTextContext;
 
 pub struct PluginsCommands;
 
@@ -228,13 +229,21 @@ fn list_dismissals(plugin: &dyn CommandPluginContext) -> CommandResult {
     if !dismissals.persisted.is_empty() {
         output.push_str("  Don't suggest again (kept across sessions):\n");
         for name in &dismissals.persisted {
-            let _ = writeln!(output, "    {}", escape_review_text(name));
+            let _ = writeln!(
+                output,
+                "    {}",
+                escape_review_text(name, ReviewTextContext::Prose)
+            );
         }
     }
     if !dismissals.session.is_empty() {
         output.push_str("  This session only:\n");
         for name in &dismissals.session {
-            let _ = writeln!(output, "    {}", escape_review_text(name));
+            let _ = writeln!(
+                output,
+                "    {}",
+                escape_review_text(name, ReviewTextContext::Prose)
+            );
         }
     }
     output.push_str(
@@ -249,7 +258,7 @@ fn reset_dismissals(plugin: &mut dyn CommandPluginContext, name: Option<&str>) -
         Ok(cleared) if cleared.is_empty() => CommandResult::message(match name {
             Some(name) => format!(
                 "`{}` was not hidden from suggestions.",
-                escape_review_text(name)
+                escape_review_text(name, ReviewTextContext::InlineCode)
             ),
             None => "No plugins were hidden from suggestions.".to_string(),
         }),
@@ -257,7 +266,7 @@ fn reset_dismissals(plugin: &mut dyn CommandPluginContext, name: Option<&str>) -
             "Suggestions may offer {} again.",
             cleared
                 .iter()
-                .map(|name| escape_review_text(name))
+                .map(|name| escape_review_text(name, ReviewTextContext::Prose))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -361,24 +370,27 @@ fn suggest_bundles(
     if suggestions.is_empty() {
         return CommandResult::message(format!(
             "No installed or catalog plugin matched `{}`.\n\nInstall a reviewed bundle with /plugin install <source>, or add a catalog with /plugin marketplace add. Nothing was installed, trusted, or enabled.",
-            escape_review_text(task)
+            escape_review_text(task, ReviewTextContext::InlineCode)
         ));
     }
-    let mut output = format!("Suggested plugins for `{}`:\n", escape_review_text(task));
+    let mut output = format!(
+        "Suggested plugins for `{}`:\n",
+        escape_review_text(task, ReviewTextContext::InlineCode)
+    );
     output.push_str("─────────────────────────────\n");
     for suggestion in suggestions {
         let why = suggestion
             .why
             .iter()
-            .map(|term| escape_review_text(term))
+            .map(|term| escape_review_text(term, ReviewTextContext::Prose))
             .collect::<Vec<_>>()
             .join(", ");
         let _ = writeln!(
             output,
             "  {} — {} · {}",
-            escape_review_text(&suggestion.name),
+            escape_review_text(&suggestion.name, ReviewTextContext::Prose),
             suggestion.state_label,
-            escape_review_text(&suggestion.description)
+            escape_review_text(&suggestion.description, ReviewTextContext::Prose)
         );
         let _ = writeln!(output, "    Why: {why}");
         let _ = writeln!(output, "    {}", suggestion.next_step);
@@ -406,22 +418,27 @@ fn list_bundles_and_legacy_tools(
             let _ = writeln!(
                 output,
                 "• {} — {}\n  {} · {} · compatibility={} · {}\n  {}",
-                escape_review_text(&summary.name),
+                escape_review_text(&summary.name, ReviewTextContext::Prose),
                 summary.state_label,
                 summary.scope,
                 summary.trust_status,
                 summary.compatibility,
                 summary.inventory,
-                escape_review_text(&summary.id)
+                escape_review_text(&summary.id, ReviewTextContext::Prose)
             );
         }
         output
     };
-    append_diagnostics(presentation, &mut output, &plugin.registry_diagnostics());
+    append_diagnostics(
+        presentation,
+        &mut output,
+        &plugin.registry_diagnostics(),
+        ReviewTextContext::Prose,
+    );
     // Diagnostics and the stderr tail carry plugin-controlled text.
     for line in codewhale_engine::extension_host::status_report().lines() {
         output.push('\n');
-        output.push_str(&escape_review_text(line));
+        output.push_str(&escape_review_text(line, ReviewTextContext::Prose));
     }
 
     if let Ok(Some(scan)) = plugin.legacy_scan() {
@@ -442,12 +459,17 @@ fn list_bundles_and_legacy_tools(
             let _ = writeln!(
                 output,
                 "• {} — {}\n  {}",
-                escape_review_text(&tool.name),
-                escape_review_text(&tool.description),
-                escape_review_path(&tool.path)
+                escape_review_text(&tool.name, ReviewTextContext::Prose),
+                escape_review_text(&tool.description, ReviewTextContext::Prose),
+                escape_review_path(&tool.path, ReviewTextContext::Prose)
             );
         }
-        append_diagnostics(presentation, &mut output, &scan.diagnostics);
+        append_diagnostics(
+            presentation,
+            &mut output,
+            &scan.diagnostics,
+            ReviewTextContext::Prose,
+        );
     }
 
     if let Some(nudge) = plugin.reload_nudge() {
@@ -473,7 +495,8 @@ fn show_bundle(
             );
         }
     };
-    let mut output = render::render_bundle_detail(presentation, &detail, true);
+    let mut output =
+        render::render_bundle_detail(presentation, &detail, true, ReviewTextContext::Prose);
     if let Some(report) = codewhale_engine::extension_host::owner_report(&detail.id) {
         append_host_owner_report(presentation, &mut output, &report);
     }
@@ -493,12 +516,12 @@ fn append_plugin_config_summary(
     plugin_name: &str,
     summary: &Result<Vec<String>, String>,
 ) {
-    let name = escape_review_text(plugin_name);
+    let name = escape_review_text(plugin_name, ReviewTextContext::Prose);
     match summary {
         Ok(keys) => {
             let keys = keys
                 .iter()
-                .map(|key| escape_review_text(key))
+                .map(|key| escape_review_text(key, ReviewTextContext::Prose))
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = write!(
@@ -510,7 +533,7 @@ fn append_plugin_config_summary(
             let _ = write!(
                 output,
                 "\n  config from [plugins.\"{name}\".config] is refused: {}",
-                escape_review_text(reason)
+                escape_review_text(reason, ReviewTextContext::Prose)
             );
         }
     }
@@ -531,7 +554,7 @@ fn append_host_owner_report(
         Some(OwnerState::Revoked) => ("cmd_plugin_owner_revoked", None),
         None => ("cmd_plugin_owner_inactive", None),
     };
-    let reason = reason.map(|value| escape_review_text(value));
+    let reason = reason.map(|value| escape_review_text(value, ReviewTextContext::Prose));
     let replacements = reason
         .as_deref()
         .map(|value| vec![("reason", value)])
@@ -542,7 +565,7 @@ fn append_host_owner_report(
     let tools = report
         .tools
         .iter()
-        .map(|name| escape_review_text(name))
+        .map(|name| escape_review_text(name, ReviewTextContext::Prose))
         .collect::<Vec<_>>();
     let tool_names = if tools.is_empty() {
         "—".to_string()
@@ -563,7 +586,11 @@ fn append_host_owner_report(
             .unwrap_or_default(),
     );
     for line in &report.diagnostics {
-        let _ = write!(output, "\n  · {}", escape_review_text(line));
+        let _ = write!(
+            output,
+            "\n  · {}",
+            escape_review_text(line, ReviewTextContext::Prose)
+        );
     }
 }
 
@@ -597,14 +624,14 @@ fn export_bundle(
         Ok(receipt) => {
             let mut output = format!(
                 "Exported `{}` as an Agent Plugins v1.0.0 bundle:\n  {}\n",
-                escape_review_text(&receipt.exported_name),
-                escape_review_path(&receipt.target),
+                escape_review_text(&receipt.exported_name, ReviewTextContext::InlineCode),
+                escape_review_path(&receipt.target, ReviewTextContext::Prose),
             );
             if let Some(display_name) = &receipt.display_name {
                 let _ = writeln!(
                     output,
                     "  Published under a slugified name; `{}` is preserved as the display name.",
-                    escape_review_text(display_name)
+                    escape_review_text(display_name, ReviewTextContext::InlineCode)
                 );
             }
             let _ = writeln!(
@@ -627,8 +654,8 @@ fn export_bundle(
         }
         Err(error) => CommandResult::error(format!(
             "Export of `{}` failed: {}",
-            escape_review_text(selector),
-            escape_review_text(&error)
+            escape_review_text(selector, ReviewTextContext::InlineCode),
+            escape_review_text(&error, ReviewTextContext::Prose)
         )),
     }
 }
@@ -648,14 +675,16 @@ fn review_bundle(
             );
         }
     };
-    let mut output = render::render_bundle_detail(presentation, &detail, true);
-    let content = output.clone();
+    let mut output =
+        render::render_bundle_detail(presentation, &detail, true, ReviewTextContext::Prose);
+    let content =
+        render::render_bundle_detail(presentation, &detail, true, ReviewTextContext::Plain);
     let command = format!("/plugin trust {} {}", detail.name, review_token(&detail));
     let _ = writeln!(output, "\n{command}");
     CommandResult::with_message_and_action(
         output,
         AppAction::OpenCommandReview {
-            title: escape_review_text(&detail.name),
+            title: escape_review_text(&detail.name, ReviewTextContext::Plain),
             content,
             command,
         },
@@ -693,7 +722,12 @@ fn validate_bundles(
                     if invalid { "invalid" } else { "valid" },
                     detail.inventory_summary
                 );
-                append_diagnostics(presentation, &mut output, &detail.diagnostics);
+                append_diagnostics(
+                    presentation,
+                    &mut output,
+                    &detail.diagnostics,
+                    ReviewTextContext::Prose,
+                );
             }
             Err(_) => {
                 return CommandResult::error(
@@ -711,7 +745,12 @@ fn validate_bundles(
                 summary.name, summary.state_label, summary.inventory
             );
         }
-        append_diagnostics(presentation, &mut output, &plugin.registry_diagnostics());
+        append_diagnostics(
+            presentation,
+            &mut output,
+            &plugin.registry_diagnostics(),
+            ReviewTextContext::Prose,
+        );
     }
     if output.is_empty() {
         output.push_str(if plugin.validation_is_clean() {
@@ -820,10 +859,10 @@ fn rollback_hash_mismatch(
                 .map_err(anyhow::Error::msg)
         });
     let actual = actual
-        .map(escape_review_text)
+        .map(|value| escape_review_text(value, ReviewTextContext::Prose))
         .unwrap_or_else(|| translate(presentation, "plugin_kimi_hash_unavailable"));
-    let name = escape_review_text(name);
-    let expected = escape_review_text(expected);
+    let name = escape_review_text(name, ReviewTextContext::InlineCode);
+    let expected = escape_review_text(expected, ReviewTextContext::Prose);
     match rollback {
         Ok(()) => CommandResult::error(
             presentation
@@ -838,9 +877,9 @@ fn rollback_hash_mismatch(
                 .unwrap_or_default(),
         ),
         Err(error) => {
-            let error_text = escape_review_text(&format!("{error:#}"));
+            let error_text = escape_review_text(&format!("{error:#}"), ReviewTextContext::Prose);
             let path_text = installed_path
-                .map(escape_review_path)
+                .map(|value| escape_review_path(value, ReviewTextContext::Prose))
                 .unwrap_or_else(|| translate(presentation, "plugin_kimi_user_plugin_directory"));
             CommandResult {
                 message: Some(
@@ -1006,6 +1045,7 @@ pub(super) fn append_diagnostics(
     presentation: &mut dyn CommandPresentationContext,
     output: &mut String,
     diagnostics: &[codewhale_command_contract::facets::PluginDiagnostic],
+    context: ReviewTextContext,
 ) {
     if diagnostics.is_empty() {
         return;
@@ -1030,21 +1070,21 @@ pub(super) fn append_diagnostics(
         let path = diagnostic
             .path
             .as_deref()
-            .map(|path| format!(" ({})", escape_review_path(path)))
+            .map(|path| format!(" ({})", escape_review_path(path, context)))
             .unwrap_or_default();
         let _ = writeln!(
             output,
             "• {level} [{}]: {}{path}",
             diagnostic.code,
-            escape_review_text(&diagnostic.message)
+            escape_review_text(&diagnostic.message, context)
         );
     }
 }
 
-pub(super) fn escape_review_path(path: &Path) -> String {
-    render::escape_review_path(path)
+pub(super) fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    render::escape_review_path(path, context)
 }
 
-pub(super) fn escape_review_text(value: &str) -> String {
-    render::escape_review_text(value)
+pub(super) fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
+    render::escape_review_text(value, context)
 }

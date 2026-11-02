@@ -160,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown character references:** ordinary prose renders valid references once, while inline code, plugin approval text and argv retain their literal values. Long URL punctuation stays linear to scan. Thanks [@Lstarsky0](https://github.com/Lstarsky0) for the report and original fix ([#7192](https://github.com/codewhale-hq/Codewhale/pull/7192)).
 - Managed Fleet validates overlapping write roots with a component-sorted scan and deduplicates roots once. Large valid request bodies no longer spend quadratic CPU before admission; existing write-scope refusals and execution limits remain in force (#6554).
 - MCP transports, connection pools and child Engines retain the owning host credential context for placeholders, headers, bearer tokens and OAuth setup. Missing injected values never fall back to process secrets. Reviewed plugins keep their captured environment authority, whose Debug output now masks values. Durable OAuth token custody and full subprocess isolation remain separate work (#5637).
 - Python REPL drains stderr while code runs, retains at most 64 KiB of diagnostics and reports omitted bytes, so noisy code cannot block request completion (#6554).

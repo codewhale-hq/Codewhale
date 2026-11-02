@@ -27,6 +27,7 @@
 //! helpers remain production-dead until the first slice migrates (FEAT-018+),
 //! so this transitional module keeps a bounded dead-code allow.
 
+use crate::commands::groups::plugins::render::ReviewTextContext;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -3927,8 +3928,11 @@ fn scan_managed_plugins_portable(
             });
         }
         Err(error) => {
-            let root_text = escape_review_text(&configured_root.display().to_string());
-            let error_text = escape_review_text(&error.to_string());
+            let root_text = escape_review_text(
+                &configured_root.display().to_string(),
+                ReviewTextContext::Prose,
+            );
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             return Err(tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiRootInspectFailed,
@@ -3938,7 +3942,10 @@ fn scan_managed_plugins_portable(
         }
     };
     if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
-        let root_text = escape_review_text(&configured_root.display().to_string());
+        let root_text = escape_review_text(
+            &configured_root.display().to_string(),
+            ReviewTextContext::Prose,
+        );
         return Err(tr(
             codewhale_localization::Locale::En,
             codewhale_localization::MessageId::PluginKimiRootMustBeDirectory,
@@ -3946,8 +3953,11 @@ fn scan_managed_plugins_portable(
         .replace("{root}", &root_text));
     }
     let canonical_root = configured_root.canonicalize().map_err(|error| {
-        let root_text = escape_review_text(&configured_root.display().to_string());
-        let error_text = escape_review_text(&error.to_string());
+        let root_text = escape_review_text(
+            &configured_root.display().to_string(),
+            ReviewTextContext::Prose,
+        );
+        let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
         tr(
             codewhale_localization::Locale::En,
             codewhale_localization::MessageId::PluginKimiRootCanonicalizeFailed,
@@ -3957,8 +3967,11 @@ fn scan_managed_plugins_portable(
     })?;
     let mut entries = fs::read_dir(&canonical_root)
         .map_err(|error| {
-            let root_text = escape_review_text(&canonical_root.display().to_string());
-            let error_text = escape_review_text(&error.to_string());
+            let root_text = escape_review_text(
+                &canonical_root.display().to_string(),
+                ReviewTextContext::Prose,
+            );
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiRootListFailed,
@@ -3968,7 +3981,7 @@ fn scan_managed_plugins_portable(
         })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| {
-            let error_text = escape_review_text(&error.to_string());
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiEntryReadFailed,
@@ -3992,8 +4005,9 @@ fn scan_managed_plugins_portable(
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let error_text = escape_review_text(&error.to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4006,7 +4020,7 @@ fn scan_managed_plugins_portable(
             }
         };
         if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
-            let path_text = escape_review_path(&path);
+            let path_text = escape_review_path(&path, ReviewTextContext::Prose);
             rejected.push(
                 tr(
                     codewhale_localization::Locale::En,
@@ -4022,8 +4036,12 @@ fn scan_managed_plugins_portable(
         let canonical_path = match path.canonicalize() {
             Ok(path) if path.parent() == Some(canonical_root.as_path()) => path,
             Ok(canonical_path) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let canonical_text = escape_review_text(&canonical_path.display().to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let canonical_text = escape_review_text(
+                    &canonical_path.display().to_string(),
+                    ReviewTextContext::Prose,
+                );
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4035,8 +4053,9 @@ fn scan_managed_plugins_portable(
                 continue;
             }
             Err(error) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let error_text = escape_review_text(&error.to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4074,13 +4093,13 @@ fn scan_managed_plugins_portable(
 }
 
 /// Escape review text exactly like the plugin render helpers (FEAT-020 D2).
-fn escape_review_text(value: &str) -> String {
-    crate::commands::groups::plugins::render::escape_review_text(value)
+fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
+    crate::commands::groups::plugins::render::escape_review_text(value, context)
 }
 
 /// Escape a review path exactly like the plugin render helpers (FEAT-020 D2).
-fn escape_review_path(path: &Path) -> String {
-    crate::commands::groups::plugins::render::escape_review_path(path)
+fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    crate::commands::groups::plugins::render::escape_review_path(path, context)
 }
 
 impl CommandPluginContext for PluginAdapter<'_> {
@@ -4656,8 +4675,8 @@ impl CommandPluginContext for PluginAdapter<'_> {
                 .to_string()
         })?;
         let state = store.load()?;
-        let catalog_text = escape_review_text(catalog);
-        let candidate_text = escape_review_text(candidate);
+        let catalog_text = escape_review_text(catalog, ReviewTextContext::InlineCode);
+        let candidate_text = escape_review_text(candidate, ReviewTextContext::InlineCode);
         let entry = state.get(catalog).cloned().ok_or_else(|| {
             format!("No marketplace named `{catalog_text}`. Use /plugin marketplace list.")
         })?;
@@ -4689,7 +4708,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                             codewhale_command_contract::facets::PluginMutationOutcome::NoChange,
                     });
                 }
-                return Err(escape_review_text(&reason));
+                return Err(escape_review_text(&reason, ReviewTextContext::Prose));
             }
             codewhale_plugins::marketplace::document::CatalogInstallResolution::Unsupported {
                 reason,
@@ -4699,7 +4718,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     .unwrap_or(reason);
                 return Err(format!(
                     "Candidate `{candidate_text}` cannot be installed by Codewhale: {}",
-                    escape_review_text(&localized)
+                    escape_review_text(&localized, ReviewTextContext::Prose)
                 ));
             }
             codewhale_plugins::marketplace::document::CatalogInstallResolution::HasErrors {
@@ -4707,7 +4726,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
             } => {
                 return Err(format!(
                     "Candidate `{candidate_text}` has parse errors and cannot be installed:\n{}",
-                    escape_review_text(&diagnostics)
+                    escape_review_text(&diagnostics, ReviewTextContext::Prose)
                 ));
             }
         };
