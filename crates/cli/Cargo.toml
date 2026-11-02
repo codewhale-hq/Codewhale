@@ -30,6 +30,7 @@ anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 codewhale-tui = { path = "../tui", version = "0.10.2", default-features = false }
+codewhale-engine = { path = "../engine", version = "0.10.2" }
 codewhale-app-server = { path = "../app-server", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
 codewhale-lane = { path = "../lane", version = "0.10.2" }

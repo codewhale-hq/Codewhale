@@ -107,7 +107,7 @@ fn mixed_supported_and_unsupported_components_activate_only_supported_surfaces()
     assert!(plugin.component_active(PluginActivationCapability::Hooks));
     assert!(!plugin.component_active(PluginActivationCapability::Lsp));
 
-    let skills = crate::skills::discover_from_directories_with_plugins(
+    let skills = codewhale_skills::discover_from_directories_with_plugins(
         Vec::<PathBuf>::new(),
         Some(&registry),
     );
@@ -131,7 +131,7 @@ fn mixed_bundle_revocation_and_trust_changes_deactivate_supported_surfaces() {
     assert!(!revoked.trusted());
     assert!(!revoked.active());
     assert_eq!(revoked.compatibility(), PluginCompatibility::Partial);
-    let skills = crate::skills::discover_from_directories_with_plugins(
+    let skills = codewhale_skills::discover_from_directories_with_plugins(
         Vec::<PathBuf>::new(),
         Some(&registry),
     );
@@ -158,7 +158,7 @@ fn mixed_bundle_revocation_and_trust_changes_deactivate_supported_surfaces() {
     assert_eq!(plugin.trust_status, PluginTrustStatus::ContentChanged);
     assert!(plugin.enabled);
     assert!(!plugin.active());
-    let skills = crate::skills::discover_from_directories_with_plugins(
+    let skills = codewhale_skills::discover_from_directories_with_plugins(
         Vec::<PathBuf>::new(),
         Some(&changed),
     );
@@ -212,7 +212,7 @@ fn legacy_trust_receipts_fail_closed_as_needs_review_under_v3() {
         assert!(!plugin.trusted());
         assert!(!plugin.active());
         assert!(restarted.authority_for("demo").is_some());
-        let skills = crate::skills::discover_from_directories_with_plugins(
+        let skills = codewhale_skills::discover_from_directories_with_plugins(
             Vec::<PathBuf>::new(),
             Some(&restarted),
         );
@@ -244,10 +244,14 @@ fn workspace_scoped_registries_do_not_cross_load_skills() {
     right.trust("demo").unwrap();
     right.enable("demo").unwrap();
 
-    let left_skills =
-        crate::skills::discover_from_directories_with_plugins(Vec::<PathBuf>::new(), Some(&left));
-    let right_skills =
-        crate::skills::discover_from_directories_with_plugins(Vec::<PathBuf>::new(), Some(&right));
+    let left_skills = codewhale_skills::discover_from_directories_with_plugins(
+        Vec::<PathBuf>::new(),
+        Some(&left),
+    );
+    let right_skills = codewhale_skills::discover_from_directories_with_plugins(
+        Vec::<PathBuf>::new(),
+        Some(&right),
+    );
     assert_eq!(left_skills.get("demo:only").unwrap().body, "left body");
     assert_eq!(right_skills.get("demo:only").unwrap().body, "right body");
     assert_ne!(left.workspace(), right.workspace());
@@ -301,6 +305,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// installed against a stale review or keep its trust.
 #[test]
 fn dsh_packages_import_through_the_reviewed_install_and_update_flow() {
+    codewhale_engine::extension_host::install_ports();
     let tmp = tempfile::tempdir().unwrap();
     let _home = codewhale_runtime::test_support::SealedHome::at(tmp.path());
     let config = config(tmp.path());

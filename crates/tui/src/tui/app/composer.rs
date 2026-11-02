@@ -773,7 +773,7 @@ impl App {
         if self.input.trim_start().starts_with(['/', '!']) {
             return false;
         }
-        let Some(paths) = crate::image_attach::pasted_image_paths(text) else {
+        let Some(paths) = codewhale_engine::image_attach::pasted_image_paths(text) else {
             return false;
         };
         for path in &paths {
@@ -864,6 +864,7 @@ impl App {
             self.selected_attachment_index = None;
             return false;
         };
+        self.clear_input_history_navigation();
         let reference = references[index].clone();
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         let new_cursor_byte = if cursor_byte <= reference.start_byte {
@@ -1446,6 +1447,7 @@ impl App {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn vim_delete_char_under_cursor(&mut self) {
+        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         let total = char_count(&self.input);
         if self.cursor_position >= total {
@@ -1466,6 +1468,7 @@ impl App {
 
     /// Delete the entire current logical line (vim `dd`).
     pub fn vim_delete_line(&mut self) {
+        self.clear_input_history_navigation();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
@@ -1761,7 +1764,8 @@ impl App {
         // keys, or the question written on the same line) still attaches.
         if !claimed_command
             && !self.input.trim_start().starts_with('!')
-            && let Some((path, rest)) = crate::image_attach::leading_dropped_image(&self.input)
+            && let Some((path, rest)) =
+                codewhale_engine::image_attach::leading_dropped_image(&self.input)
         {
             let reference = media_attachment_reference("image", &path, None);
             self.input = if rest.is_empty() {

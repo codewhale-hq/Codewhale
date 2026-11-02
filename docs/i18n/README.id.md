@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -214,7 +214,7 @@ Anda meninjau aksesnya dan mengaktifkannya
 | `codewhale` | Aplikasi terminal interaktif |
 | `codewhale exec "…"` | Satu tugas tanpa antarmuka. Tanpa flag tambahan, ia menjawab tanpa memakai alat; `--auto` mengaktifkan alat dengan Akses penuh secara default, `--sandbox workspace-write` membatasinya, dan `--output-format stream-json` men-streaming event sebagai JSON |
 | `codewhale web` | UI web lokal di `127.0.0.1` ([panduan](../WEB.md)) |
-| `codewhale review --pr N` | Tinjauan yang bersifat saran untuk pull request GitHub. Ia tidak memposting apa pun kecuali Anda menambahkan `--post`; [GitHub Action](../GITHUB_ACTION.md) menjalankan tinjauan yang sama di CI |
+| `codewhale review --pr N` | Tinjauan yang bersifat saran untuk pull request GitHub. [Penyiapan bot GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) menghasilkan workflow dengan versi dipasangi pin untuk tinjauan otomatis dan `@codewhale review`, memakai kunci modelmu sendiri dan identitas App opsional |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md), API HTTP lokal untuk thread, event, persetujuan, dan perubahan berkas setiap giliran |
 | `codewhale serve --acp` | Agent Client Protocol melalui stdio, untuk editor seperti Zed |
 

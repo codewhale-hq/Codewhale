@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  admitTurn, decideApproval, parseQuestionAnswers, questionText, readSse, splitMessage
+  admitTurn, decideApproval, parseQuestionAnswers, questionText, readThreadEvents, splitMessage
 } from "../../bridge-core/src/lib.mjs";
 
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -281,10 +281,12 @@ export class DingTalkBridge {
         if (!state.active) return;
         const response = await this.runtimeFetch(`/v1/threads/${encodeURIComponent(state.threadId)}/events?since_seq=${state.active.seq}`, this.abort.signal);
         if (!response.ok) throw new Error("Engine event stream unavailable");
-        for await (const event of readSse(response)) {
+        for await (const record of readThreadEvents(response, state.threadId)) {
           if (this.closed) return;
-          let record;
-          try { record = JSON.parse(event.data); } catch { continue; }
+          if (record.event === "stream.end") {
+            if (record.retryable === false) return;
+            break;
+          }
           await this.consume(chatId, record);
           if (!(await this.store.getChat(chatId)).active) return;
         }

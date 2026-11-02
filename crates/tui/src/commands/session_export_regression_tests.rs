@@ -20,11 +20,11 @@ use codewhale_command_contract::facets::{
 };
 use codewhale_command_contract::handler::CommandCapabilities;
 
-use crate::error_taxonomy::ErrorSeverity;
 use crate::test_support::{EnvVarGuard, TestEnvLock};
 use crate::tui::app::{App, TuiOptions};
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::HistoryCell;
+use codewhale_error_taxonomy::ErrorSeverity;
 use codewhale_models::{ContentBlock, ImageUrlContent, Message, Role, ToolCaller};
 use codewhale_runtime::config::Config;
 use codewhale_snapshot::SnapshotRepo;
@@ -1048,7 +1048,7 @@ fn command_clipboard_export_preserves_structure_and_redacts_secrets() {
         let mut todos = app.todos.try_lock().expect("todos lock");
         todos.add(
             "export projection".to_string(),
-            crate::tools::todo::TodoStatus::InProgress,
+            codewhale_engine::tools::todo::TodoStatus::InProgress,
         );
     }
     app.cycle_effort();

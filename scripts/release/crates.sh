@@ -5,9 +5,10 @@ release_crates=(
   codewhale-build-support
   codewhale-mcp
   codewhale-paths
+  codewhale-app-server-protocol
   codewhale-protocol
-  codewhale-release
   codewhale-sanitize
+  codewhale-release
   codewhale-secrets
   codewhale-state
   codewhale-workflow
@@ -15,6 +16,7 @@ release_crates=(
   codewhale-execpolicy
   codewhale-hooks
   codewhale-tools
+  codewhale-error-taxonomy
   codewhale-config
   codewhale-agent-contract
   codewhale-cloud-facts
@@ -34,22 +36,27 @@ release_crates=(
   codewhale-palette
   # Scoped memory store; tui's native memory backend. No workspace deps.
   codewhale-memory
+  # Shared helpers used by runtime, snapshot, plugins, skills, lsp, tui and
+  # dependencies, so it must publish before all of them.
+  codewhale-util
   # Headless runtime split out of the TUI (docs/design/TUI_DECONSTRUCTION.md).
-  # Depends on config, core, memory and models; the published tui depends on
-  # it, so it publishes after those and before tui.
+  # Depends on config, core, memory, models and util; the published tui depends
+  # on it, so it publishes after those and before tui.
   codewhale-runtime
   codewhale-net
   codewhale-notify
   codewhale-app-server
   codewhale-account-cli
   codewhale-sandbox
-  codewhale-util
   codewhale-dependencies
   codewhale-snapshot
   codewhale-lsp
   codewhale-repl
   codewhale-skill-install
   codewhale-plugins
+  codewhale-skills
+  codewhale-tui-kit
+  codewhale-engine
   codewhale-tui
   codewhale-cli
 )

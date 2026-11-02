@@ -1069,7 +1069,7 @@
         "note": "Drive Codewhale from your own app or script over HTTP."
       }
     ],
-    "sourceNote": "Source documents: docs/MCP.md, crates/tui/src/tools/codemode.rs · Update docs-map.ts when changing."
+    "sourceNote": "Source documents: docs/MCP.md, crates/engine/src/tools/codemode.rs · Update docs-map.ts when changing."
   },
   "docs-modes": {
     "metaTitle": "Set modes and approvals · Codewhale Docs",

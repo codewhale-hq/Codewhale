@@ -1,6 +1,6 @@
 /**
- * The exclusive hold on one community-agent draft while a maintainer action
- * (post or discard) runs.
+ * The exclusive hold on one community-agent draft while it is saved,
+ * posted or discarded.
  *
  * The `DraftClaimLock` Durable Object (exported from `worker.ts`, one instance
  * per draft identity via `idFromName`) runs `applyDraftLock` against its own
@@ -18,6 +18,7 @@ export interface PostAttempt { at: string; identity: string }
 
 export type DraftLockRequest =
   | { op: "post-status" }
+  | { op: "remember-draft"; token: string; revision: string }
   | { op: "remember-post"; token: string; attempt: PostAttempt }
   | { op: "forget-post"; token: string }
   | { op: "claim"; token: string; action: DraftLockAction; leaseMs: number }
@@ -29,7 +30,7 @@ export type DraftLockRequest =
   | { op: "release"; token: string; holdMs: number };
 
 export type DraftLockResponse =
-  | { ok: true; attempt?: PostAttempt }
+  | { ok: true; attempt?: PostAttempt; revision?: string }
   | { ok: false; holder: DraftLockAction };
 
 /** The subset of `DurableObjectStorage` the lock uses. */
@@ -59,6 +60,12 @@ export async function applyDraftLock(
   const lease = await storage.get<Lease>(LEASE_KEY);
   const live = lease && lease.expiresAt > now ? lease : undefined;
 
+  if (req.op === "remember-draft") {
+    if (live?.action !== "generate" || live.token !== req.token) throw new Error("draft generation claim expired");
+    if (!/^[0-9a-f]{64}$/.test(req.revision)) throw new Error("invalid draft revision");
+    await storage.put("draft-revision", req.revision);
+    return { ok: true };
+  }
   if (req.op === "remember-post" || req.op === "forget-post") {
     if (!live || live.token !== req.token) throw new Error("post claim expired");
     if (req.op === "remember-post") {
@@ -73,12 +80,13 @@ export async function applyDraftLock(
   }
   if (req.op === "claim") {
     if (live && live.token !== req.token) return { ok: false, holder: live.action };
+    const revision = req.action === "generate" ? undefined : await storage.get<string>("draft-revision");
     await storage.put<Lease>(LEASE_KEY, {
       token: req.token,
       action: req.action,
       expiresAt: now + Math.max(0, req.leaseMs),
     });
-    return { ok: true };
+    return revision ? { ok: true, revision } : { ok: true };
   }
 
   // Release: only the holder's own token can release, so a request whose
@@ -106,4 +114,29 @@ export interface DraftClaimLockNamespace {
 /** Opaque `DurableObjectId`. */
 export interface DraftClaimLockId {
   toString(): string;
+}
+
+export async function withGenerationLease<T extends { ok?: unknown }>(
+  namespace: DraftClaimLockNamespace,
+  task: string,
+  generate: () => Promise<T>,
+): Promise<T | "busy" | "unavailable"> {
+  let lock: DraftClaimLockStub;
+  const token = `generate:${crypto.randomUUID()}`;
+  try {
+    lock = namespace.get(namespace.idFromName(`draft-generation:${task}`));
+    const held = await lock.act({ op: "claim", token, action: "generate", leaseMs: 45 * 60 * 1000 });
+    if (!held.ok) return "busy";
+  } catch {
+    return "unavailable";
+  }
+  let completed = false;
+  try {
+    const result = await generate();
+    completed = result.ok === true;
+    return result;
+  } finally {
+    // A release failure leaves the durable lease in place until its expiry.
+    await lock.act({ op: "release", token, holdMs: completed ? 120_000 : 0 }).catch(() => undefined);
+  }
 }

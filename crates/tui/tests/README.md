@@ -39,7 +39,7 @@ The shared helpers in `crates/tui/tests/support/` (`qa_harness`, `llm_client`) a
 
 ## Mock LLM client (`integration::integration_mock_llm`)
 
-`crates/tui/src/llm_client/mock.rs` provides a `MockLlmClient` that implements
+`crates/engine/src/llm_client/mock.rs` provides a `MockLlmClient` that implements
 the `LlmClient` trait by replaying queue-driven canned responses and capturing
 every outgoing `MessageRequest`. Tests mock at the **trait boundary** — never
 at the `reqwest` HTTP layer — because the trait is the durable abstraction the

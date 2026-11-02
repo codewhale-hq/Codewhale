@@ -3,7 +3,7 @@
 use crate::commands::CommandResult;
 use crate::commands::groups::core::navigation::voice::VOICE_INFO;
 use crate::tui::app::App;
-use crate::voice::{
+use codewhale_engine::voice::{
     is_available, record_audio, resolve_asr_choice, split_send_suffix, transcribe_selected,
 };
 use codewhale_localization::{MessageId, tr};
@@ -56,7 +56,7 @@ pub async fn capture_and_transcribe(
     }
     // C01-10: the credential check follows the ASR backend that will run,
     // not the chat provider. Local Whisper and Groq need no provider key, so
-    // resolve it lazily — the same contract as `crate::voice::dictate_once`
+    // resolve it lazily — the same contract as `codewhale_engine::voice::dictate_once`
     // — and only refuse before recording when provider ASR is the backend.
     let provider_key = || {
         config

@@ -108,16 +108,17 @@ use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
 };
 use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
-use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
+use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_text};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::tideline::InteractionAction;
-use crate::tui::ui_text::{
-    history_cell_to_clipboard_text, history_cell_to_text, line_to_plain, slice_visible_columns,
-    text_display_width, text_visible_width, truncate_line_to_width,
-};
 use crate::tui::views::{ContextMenuAction, HelpView, ModalKind, ViewEvent};
 use codewhale_localization::MessageId;
 use codewhale_models::{ContentBlock, Message};
+use codewhale_tui_kit::scrolling::{ScrollDirection, TranscriptScroll};
+use codewhale_tui_kit::ui_text::{
+    line_to_plain, slice_visible_columns, text_display_width, text_visible_width,
+    truncate_line_to_width,
+};
 
 // These functions will need to be imported from ui.rs or we can just import crate::tui::ui::*.
 use crate::tui::ui::{
@@ -980,7 +981,7 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
 }
 
 pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option<String> {
-    use crate::tools::handle::{HandleValue, VarHandle};
+    use codewhale_engine::tools::handle::{HandleValue, VarHandle};
 
     let lookup = VarHandle {
         kind: "var_handle".to_string(),
@@ -1010,7 +1011,10 @@ pub(crate) fn resolve_agent_transcript_text(app: &App, agent_id: &str) -> Option
     // no process-local handle (for example after restart), the validated
     // artifact remains the durable source of truth.
     if let Ok(display) =
-        crate::tools::subagent::load_subagent_transcript_display_artifact(&app.workspace, agent_id)
+        codewhale_engine::tools::subagent::load_subagent_transcript_display_artifact(
+            &app.workspace,
+            agent_id,
+        )
     {
         let matches_resident_count = payload.as_ref().is_none_or(|resident| {
             resident
@@ -1572,7 +1576,7 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
                 agent.agent_id == agent_id
                     && matches!(
                         agent.status,
-                        crate::tools::subagent::SubAgentStatus::Running
+                        codewhale_engine::tools::subagent::SubAgentStatus::Running
                     )
             });
             if running {
@@ -1670,7 +1674,8 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
 
 /// The workspace file a right-click on a transcript cell points at: the first
 /// `path:line` on the clicked line, else a bare path there at line 1, else
-/// the same search over the cell. All must be
+/// the same search over its displayed preview; hidden references are not
+/// enumerated for this click. All must be
 /// regular files inside the workspace, reached without links
 /// (`history::workspace_file`); `open_file_in_editor` checks again.
 fn context_menu_file_reference(
@@ -1794,7 +1799,7 @@ pub(crate) fn apply_context_menu_action(
                 build_command_palette_entries(
                     app.ui_locale,
                     &app.skills_dir,
-                    app.skills_discovery_mode,
+                    &app.skills_config,
                     &app.workspace,
                     &app.mcp_config_path,
                     app.mcp_snapshot.as_ref(),
@@ -3260,7 +3265,7 @@ mod tests {
             .transcript_cache
             .lines()
             .iter()
-            .position(|line| crate::tui::ui_text::line_to_plain(line).contains(needle))
+            .position(|line| codewhale_tui_kit::ui_text::line_to_plain(line).contains(needle))
             .expect("rendered line");
         u16::try_from(index).unwrap()
     }
@@ -3635,12 +3640,13 @@ mod tests {
                 }],
             },
         ];
-        let artifact = crate::tools::subagent::write_subagent_transcript_artifact_for_test(
-            tmp.path(),
-            agent_id,
-            &messages,
-        )
-        .expect("write complete worker transcript");
+        let artifact =
+            codewhale_engine::tools::subagent::write_subagent_transcript_artifact_for_test(
+                tmp.path(),
+                agent_id,
+                &messages,
+            )
+            .expect("write complete worker transcript");
         assert!(
             std::fs::metadata(artifact)
                 .expect("artifact metadata")

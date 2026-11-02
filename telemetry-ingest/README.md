@@ -146,15 +146,17 @@ take the next free slot.
 | `blob12` | `duration_bucket` (`session_end` only) |
 | `blob13` | `exit_class` (`session_end` only) |
 | `blob14` | `cold_start_bucket` (`session_end` only; `''` on surfaces that do not measure it) |
-| `blob15` | `providers`, comma-joined, already sorted and deduplicated |
-| `blob16` | `panic_site` (`panic` only) — a `crates/…` path or the literal `<dep>` |
+| `blob15` | `providers`, comma-joined, already sorted and deduplicated; the one `provider` on `model_usage` |
+| `blob16` | `panic_site` (`panic`) — a `crates/…` path or the literal `<dep>`; `model` (`model_usage`); `tool` (`tool_usage`) |
 | `blob17` | `sent_at` — the *batch* timestamp. Events carry none. |
 | `blob18` | `aggregate_counters` — closed JSON counts, for `product_usage` or `operations_summary` |
 | `blob19` | `schema_version` |
-| `blob20` | `privacy_version`: notice5 for v3, consent4 for v2, empty for v1; `blob19` keeps their meanings distinct |
+| `blob20` | `privacy_version`: notice6 for v4, notice5 for v3, consent4 for v2, empty for v1; `blob19` keeps their meanings distinct |
 | `double1..10` | `counters`: `turns`, `tool_calls`, `fleet_dispatch`, `workflow_run`, `subagent_spawn`, `mcp_server_connected`, `memory_search`, `approval_modal_shown`, `approval_auto_allowed`, `command_palette_open` |
 | `double11..16` | `errors`: `auth_preflight_failed`, `provider_http_4xx`, `provider_http_5xx`, `tool_denied_by_policy`, `tool_timeout`, `network_error` |
 | `double17..20` | `turn_wall`: `lt_5s`, `5_30s`, `30_120s`, `gte_120s` |
+| `double1..11` on `model_usage` | `turns_ok`, `turns_failed`, `turns_interrupted`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, then `turn_wall` `lt_5s`, `5_30s`, `30_120s`, `gte_120s` |
+| `double1..2` on `tool_usage` | `calls`, `errors` |
 
 Columns not relevant to an event are `''` / `0`. `tty` is a blob because the 20
 doubles are exactly used by the three numeric structs — Analytics Engine's

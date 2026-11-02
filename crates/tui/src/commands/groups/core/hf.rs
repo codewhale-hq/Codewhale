@@ -96,7 +96,7 @@ fn hf_mcp(app: &mut App, action: Option<&str>) -> CommandResult {
 }
 
 fn hf_mcp_status(app: &App) -> CommandResult {
-    match crate::mcp::load_config(&app.mcp_config_path) {
+    match codewhale_engine::mcp::load_config(&app.mcp_config_path) {
         Ok(config) => {
             if let Some(server_name) = configured_hf_mcp_server(&config) {
                 CommandResult::message(format!(

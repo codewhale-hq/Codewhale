@@ -511,16 +511,18 @@ Codewhale keeps these records on your machine, under `~/.codewhale/`:
   in their event log. A call that ran without asking (Full Access, an allow
   rule, a remembered grant) has no approval record; the posture each turn
   ran under is saved with the turn.
-- **Undo points.** Workspace snapshots let you go back. `/undo` takes back
-  your last request in one step: every file it changed, plus the request and
-  its reply. It works in every access mode and lists the files it put back.
-  If one of those files changed after the request, `/undo` changes nothing
-  and says which file. If a request was cut off before Codewhale recorded
-  where its changes end, `/undo` says so; `/undo force` undoes it anyway,
-  including edits made to those files since it started. `/restore` rolls the
-  whole folder back to a point you pick, overwriting later edits, so it
-  needs `/trust on` or Full Access. Esc Esc rewinds the conversation only;
-  `/restore` afterwards rolls the files back.
+- **Undo points.** `/undo` takes back your last request and its proven file
+  changes. `/undo select` lets you choose the first request to undo along with
+  all later requests, with visible checking, restoring and saving progress.
+  Neither command changes your access mode. File reversal requires the
+  request's own recorded tool executions, complete restore points and files
+  that still match what those executions left. Missing or incomplete records,
+  including older sessions or turns run with snapshots disabled, cause a
+  refusal that preserves the files and conversation. `/undo force` cannot
+  bypass these checks. A request with no file-writing work can rewind only its
+  conversation. Esc Esc also rewinds the conversation only. `/restore` selects
+  an explicit workspace snapshot and can overwrite later edits; it requires
+  `/trust on` or Full Access.
 - **Security events.** `audit.log` records credential changes, hook
   environment key names, compaction passes, the terminal's approval
   routing, and Auto-Review verdicts. It is not a list of what a session did.
@@ -783,6 +785,10 @@ available. A dropped connection keeps local input locked until the last web
 lease expires so two controllers never race. Every folder you enroll from one
 terminal shares a single stable device id, so the web app lists one computer
 per machine rather than one per session.
+
+If remote control fails, the reason remains in the current terminal transcript
+and TUI log after the error toast expires. The footer then shows `/rc status`;
+run it to inspect the failure and whether retrying must wait for a prior lease.
 
 > Note (2026-09-14): the hosted web app at app.codewhale.net sunsets in phases
 > under the 2026-09-14 product-client decision; the native GPUI desktop app

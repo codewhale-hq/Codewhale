@@ -3,7 +3,7 @@ use crate::provider_kind::ProviderKind;
 /// Ordered primary-plus-fallback provider list for future provider routing.
 ///
 /// The helper is intentionally dormant: constructing or parsing a chain does
-/// not change [`ConfigToml::resolve_runtime_options`].
+/// not change `ConfigToml::resolve_runtime_options`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderChain {
     providers: Vec<ProviderKind>,

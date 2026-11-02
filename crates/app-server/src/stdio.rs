@@ -8,7 +8,7 @@ use crate::{
 };
 use anyhow::Context as _;
 use anyhow::Result;
-use codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
+use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
 use codewhale_protocol::{
     AppRequest, PromptRequest, ThreadGoalClearParams, ThreadGoalGetParams, ThreadGoalSetParams,
     ThreadRequest, ThreadResponse,
@@ -20,11 +20,26 @@ use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
+#[derive(Debug, thiserror::Error)]
+pub enum FrameRefusal {
+    #[error("control frame exceeds the 8 MiB transport limit")]
+    TooLarge,
+    #[error("control frame is not UTF-8")]
+    InvalidUtf8,
+}
+
+pub fn is_frame_refusal(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<FrameRefusal>())
+}
+
 /// Cancellation-safe, allocation-bounded newline framing shared by every
 /// local control transport. Consumed partial bytes remain owned by the reader.
 pub struct BoundedLines<R> {
     reader: R,
     pub(crate) pending: Vec<u8>,
+    discarding: bool,
 }
 
 impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
@@ -32,6 +47,7 @@ impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
         Self {
             reader,
             pending: Vec::new(),
+            discarding: false,
         }
     }
 
@@ -42,29 +58,41 @@ impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
         loop {
             let available = self.reader.fill_buf().await?;
             if available.is_empty() {
+                self.discarding = false;
                 if self.pending.is_empty() {
                     return Ok(None);
                 }
                 if self.pending.len() > MAX_RUNTIME_IMAGE_BODY_BYTES {
+                    self.pending.clear();
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "control request exceeds the 8 MiB transport limit",
+                        FrameRefusal::TooLarge,
                     ));
                 }
                 let bytes = std::mem::take(&mut self.pending);
                 return String::from_utf8(bytes).map(Some).map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "control frame is not UTF-8",
-                    )
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::InvalidUtf8)
                 });
             }
+            let available = &available[..available.len().min(8192)];
             let newline = available.iter().position(|&byte| byte == b'\n');
             let count = newline.unwrap_or(available.len());
+            if self.discarding {
+                self.reader.consume(count + usize::from(newline.is_some()));
+                if newline.is_some() {
+                    self.discarding = false;
+                } else {
+                    tokio::task::yield_now().await;
+                }
+                continue;
+            }
             if count > (MAX_RUNTIME_IMAGE_BODY_BYTES + 1).saturating_sub(self.pending.len()) {
+                self.pending.clear();
+                self.reader.consume(count + usize::from(newline.is_some()));
+                self.discarding = newline.is_none();
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "control request exceeds the 8 MiB transport limit",
+                    FrameRefusal::TooLarge,
                 ));
             }
             // Do not let Vec's geometric growth double an almost-full frame.
@@ -74,9 +102,11 @@ impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
             if self.pending.len() > MAX_RUNTIME_IMAGE_BODY_BYTES
                 && self.pending.last() != Some(&b'\r')
             {
+                self.pending.clear();
+                self.discarding = newline.is_none();
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "control request exceeds the 8 MiB transport limit",
+                    FrameRefusal::TooLarge,
                 ));
             }
             if newline.is_some() {
@@ -85,10 +115,7 @@ impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
                 }
                 let bytes = std::mem::take(&mut self.pending);
                 return String::from_utf8(bytes).map(Some).map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "control frame is not UTF-8",
-                    )
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::InvalidUtf8)
                 });
             }
         }
@@ -214,7 +241,10 @@ where
                     return Ok(StdioLoopExit::Shutdown);
                 }
             }
-            Err(err) => {
+            Err(mut err) => {
+                if let Some(error) = err.transport_error.take() {
+                    return Err(error);
+                }
                 write_stdio_line(&mut writer, &jsonrpc_error(id, err)).await?;
             }
         }
@@ -379,14 +409,92 @@ pub(crate) fn is_control_detach(request: &JsonRpcRequest) -> bool {
             .is_some_and(serde_json::Map::is_empty)
 }
 
+#[derive(Default)]
+struct ControlFrameBuffer {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+impl std::io::Write for ControlFrameBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_RUNTIME_IMAGE_BODY_BYTES.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                FrameRefusal::TooLarge,
+            ));
+        }
+        let needed = self.bytes.len() + bytes.len();
+        if needed > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(needed)
+                .min(MAX_RUNTIME_IMAGE_BODY_BYTES);
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub fn serialize_control_frame(value: &Value) -> std::io::Result<Vec<u8>> {
+    let mut output = ControlFrameBuffer::default();
+    if let Err(error) = serde_json::to_writer(&mut output, value) {
+        return Err(if output.exceeded {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::TooLarge)
+        } else {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+        });
+    }
+    Ok(output.bytes)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("control transport write failed; pending outcomes may be uncertain: {0}")]
+struct ControlWriteFailure(#[source] std::io::Error);
+
+pub fn is_control_write_failure(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|source| source.is::<ControlWriteFailure>())
+}
+
+pub async fn write_control_line<W: AsyncWrite + Unpin + ?Sized>(
+    writer: &mut W,
+    body: &[u8],
+) -> Result<()> {
+    if body.len() > MAX_RUNTIME_IMAGE_BODY_BYTES {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::InvalidData, FrameRefusal::TooLarge).into(),
+        );
+    }
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        writer.write_all(body).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "control transport write did not settle within 30 seconds",
+        ))
+    });
+    result.map_err(|error| ControlWriteFailure(error).into())
+}
+
 pub(crate) async fn write_stdio_line<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: &Value,
 ) -> Result<()> {
-    writer.write_all(&serde_json::to_vec(response)?).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
-    Ok(())
+    let frame = serialize_control_frame(response)?;
+    write_control_line(writer, &frame).await
 }
 
 pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
@@ -515,10 +623,7 @@ pub(crate) async fn emit_stdio_event<W: AsyncWrite + Unpin>(
     writer: &mut W,
     event: Value,
 ) -> Result<()> {
-    writer.write_all(&serde_json::to_vec(&event)?).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
-    Ok(())
+    write_stdio_line(writer, &event).await
 }
 
 #[cfg(test)]

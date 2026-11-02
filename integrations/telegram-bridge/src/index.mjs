@@ -33,7 +33,7 @@ import {
   parseQuestionAnswers,
   createRuntimeClient,
   readJsonSafe,
-  readSse,
+  readThreadEvents,
   ThreadStore as CoreThreadStore,
   ApprovalOwnershipError,
   decideApproval as decideRuntimeApproval,
@@ -672,12 +672,11 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       throw new Error(compactRuntimeError(response.status, body));
     }
 
-    for await (const event of readSse(response)) {
-      if (!event.data) continue;
-      const record = JSON.parse(event.data);
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
 
-      if (turnId && record.turn_id && record.turn_id !== turnId) continue;
+      if (!turnId || record.turn_id !== turnId) continue;
       const lifecycleStatus =
         record.event === "turn.lifecycle"
           ? record.payload?.turn?.status || record.payload?.status

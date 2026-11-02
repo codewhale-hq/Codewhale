@@ -182,11 +182,11 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   });
 
   it.each([
-    ["/bin/zsh", "Linux", `echo 'export PATH="INSTALL:$PATH"' >> ~/.zshrc`, ". ~/.zshrc"],
-    ["/bin/bash", "Linux", `echo 'export PATH="INSTALL:$PATH"' >> ~/.bashrc`, ". ~/.bashrc"],
-    ["/bin/bash", "Darwin", `echo 'export PATH="INSTALL:$PATH"' >> ~/.bash_profile`, ". ~/.bash_profile"],
+    ["/bin/zsh", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`, ". ~/.zshrc"],
+    ["/bin/bash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc`, ". ~/.bashrc"],
+    ["/bin/bash", "Darwin", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bash_profile`, ". ~/.bash_profile"],
     ["/usr/bin/fish", "Linux", `fish_add_path "INSTALL"`, "this fish shell"],
-    ["/bin/dash", "Linux", `echo 'export PATH="INSTALL:$PATH"' >> ~/.profile`, ". ~/.profile"],
+    ["/bin/dash", "Linux", `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="INSTALL:$PATH"' '# <<< codewhale PATH <<<' >> ~/.profile`, ". ~/.profile"],
   ] as const)(
     "prints the persistent PATH line for %s on %s without editing a profile",
     (shell, os, persist, reload) => {
@@ -204,7 +204,7 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
 
   it.skipIf(!existsSync("/bin/dash"))("the printed profile and reload commands work in dash", () => {
     const { installDir, result } = installFixture(false, { shell: "/bin/dash", os: "Linux" });
-    const persist = result.stdout.split("\n").find((line) => line.trim().startsWith("echo 'export PATH="));
+    const persist = result.stdout.split("\n").find((line) => line.trim().startsWith("printf '%s\\n' '# >>> codewhale PATH >>>'"));
     const reload = result.stdout.match(/Then run: (.+?)   \(or open a new terminal\)/)?.[1];
     expect(persist).toBeDefined();
     expect(reload).toBeDefined();
@@ -221,7 +221,9 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   it("writes the default directory as $HOME/.local/bin in the persistent line", () => {
     const { result } = installFixture(false, { installUnderHome: true });
 
-    expect(result.stdout).toContain(`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc`);
+    expect(result.stdout).toContain(
+      `printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc`,
+    );
   });
 
   it.each([
@@ -231,7 +233,7 @@ describe.skipIf(process.platform === "win32")("public installer compatibility co
   ] as const)("keeps macOS login bash reading %j by naming %s", (homeFiles, profile) => {
     const { result } = installFixture(false, { shell: "/bin/bash", os: "Darwin", homeFiles: [...homeFiles] });
 
-    expect(result.stdout).toContain(`:$PATH"' >> ${profile}\n`);
+    expect(result.stdout).toContain(`'# <<< codewhale PATH <<<' >> ${profile}\n`);
   });
 
   it.each(["/bin/tcsh", "/usr/bin/nu"])("prints no POSIX line for the unrecognised shell %s", (shell) => {

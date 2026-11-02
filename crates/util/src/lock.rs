@@ -17,6 +17,28 @@ pub fn is_contention(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::WouldBlock || matches!(error.raw_os_error(), Some(32 | 33))
 }
 
+/// Whether a failed advisory lock means the filesystem has none at all, as
+/// opposed to a lock that is genuinely held by someone else.
+///
+/// `EWOULDBLOCK` is deliberately absent: a held lock must still wait or fail
+/// rather than fall back. The rest are the mount saying "no locking here" —
+/// HarmonyOS hmdfs answers `EPERM` for `flock` and `fcntl(F_SETLK)` on every
+/// file, and FUSE and some network mounts answer the same way.
+///
+/// A caller that degrades instead of failing must still refuse when
+/// [`is_contention`] is true; the two predicates are disjoint by construction.
+#[cfg(unix)]
+pub fn advisory_locking_unavailable(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EPERM)
+            | Some(libc::EACCES)
+            | Some(libc::ENOTSUP)
+            | Some(libc::EINVAL)
+            | Some(libc::ENOSYS)
+    )
+}
+
 pub fn try_lock_exclusive(file: &File) -> io::Result<()> {
     #[cfg(unix)]
     {

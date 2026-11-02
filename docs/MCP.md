@@ -649,14 +649,30 @@ force. General searches do not boot all optional servers. Only actual
 revoked servers do not acquire fabricated tools. Narrow a broad search by
 server name when more than eight configured servers match.
 
-So that a plain question can reach a server the user never names, each turn
-tells the model which configured servers it may load: one short runtime note
-in session history listing the enabled, allowed server names (at most 24) and
-asking it to `tool_search` a name before searching files or reporting that no
-tool exists. The note is appended to history, never to the cached system
-prompt, and is repeated only when the list changes or a compaction dropped
-it. It carries names only — no server is started and no schema is loaded
-until the model searches. Disabled or denied servers are never named.
+Before a model request, one bounded runtime note records the current connection
+observations for permitted servers. It uses fixed states: `configured` (no
+connection outcome recorded), `connecting`, `failed`, `authorization_required`,
+`unknown` and `connected`. Failures and authorization needs are listed first;
+at most 24 names are shown, with 64 characters per name and an omission count.
+Names are inert data. Raw errors, commands, URLs and credentials are excluded.
+
+The note supersedes earlier snapshots and lives in session history, after the
+cached system prompt. Unchanged observations are recorded once and are recorded
+again if compaction removes them. No server is started or schema loaded by this
+observation. When `tool_search` is available, the model can search a permitted
+configured name to obtain actual tools or retry a relevant connection. Without
+it, only servers identified by their actually exposed MCP tools are included.
+Disabled servers and servers outside the current discovery ceiling are omitted.
+`connected` means a current authorized transport was observed; it does not
+promise available schemas, tool permissions or a successful call.
+
+The same nonblocking capture supplies server guidance. A busy pool, changed
+configuration source or removed scope withdraws old guidance and status instead
+of replaying stale success. Restore withdraws saved MCP notes until the live
+runtime observes the current pool. Child, RLM, ACP and isolated hosts do not
+acquire new discovery authority from these notes. Observations happen at request
+boundaries; this is not continuous monitoring or semantic verification of server
+claims. The existing MCP manager owns configuration and authorization recovery.
 
 `codewhale mcp connect`, `validate`, and `tools` inspect their own process's
 pool. They do not attach transports to a running TUI or exec session. Use

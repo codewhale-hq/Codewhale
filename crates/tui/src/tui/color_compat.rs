@@ -216,8 +216,8 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         // between an open and the next close links to that open's target,
         // so each region's cells must be bracketed by their OWN open/close
         // pair — never batched.
-        let mut frame_links = crate::tui::osc8::take_frame_links();
-        if frame_links.is_empty() || !crate::tui::osc8::enabled() {
+        let mut frame_links = codewhale_tui_kit::osc8::take_frame_links();
+        if frame_links.is_empty() || !codewhale_tui_kit::osc8::enabled() {
             self.inner
                 .draw(adapted.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
             return Ok(());
@@ -245,10 +245,10 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
             }
             let run = &adapted[run_start..idx];
             if let Some(region_idx) = current_region {
-                crate::tui::osc8::write_osc8_open(self, &frame_links[region_idx].target)?;
+                codewhale_tui_kit::osc8::write_osc8_open(self, &frame_links[region_idx].target)?;
                 self.inner
                     .draw(run.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
-                crate::tui::osc8::write_osc8_close(self)?;
+                codewhale_tui_kit::osc8::write_osc8_close(self)?;
             } else {
                 self.inner
                     .draw(run.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
@@ -321,7 +321,7 @@ impl RenderDebugLog {
             return None;
         }
 
-        let log_dir = crate::runtime_log::log_directory()?;
+        let log_dir = codewhale_runtime::runtime_log::log_directory()?;
         if let Err(err) = fs::create_dir_all(&log_dir) {
             tracing::debug!(?err, "failed to create TUI render debug log directory");
             return None;
@@ -382,12 +382,12 @@ pub(crate) fn adapt_cell_symbol_for_ascii(cell: &mut Cell) {
     // working/verifying frame to one glyph.
     let mut chars = cell.symbol().chars();
     if let (Some(ch), None) = (chars.next(), chars.next())
-        && let Some(replacement) = crate::tui::glyphs::braille_ascii_fallback(ch)
+        && let Some(replacement) = codewhale_tui_kit::glyphs::braille_ascii_fallback(ch)
     {
         cell.set_symbol(replacement);
         return;
     }
-    if let Some(replacement) = crate::tui::glyphs::ascii_fallback(cell.symbol()) {
+    if let Some(replacement) = codewhale_tui_kit::glyphs::ascii_fallback(cell.symbol()) {
         cell.set_symbol(replacement);
     }
 }
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn osc8_open_close_bracket_only_their_region_cells() {
-        use crate::tui::osc8::LinkRegion;
+        use codewhale_tui_kit::osc8::LinkRegion;
 
         // Baseline: identical cells, no link regions.
         let baseline_writer = SharedWriter::default();
@@ -1070,7 +1070,7 @@ mod tests {
         let baseline_out = String::from_utf8_lossy(&baseline_capture.borrow()).to_string();
 
         // Linked render: columns 2..=3 ("CD") carry one link region.
-        crate::tui::osc8::set_frame_links(vec![LinkRegion {
+        codewhale_tui_kit::osc8::set_frame_links(vec![LinkRegion {
             row: 0,
             col_start: 2,
             col_end: 3,
@@ -1106,9 +1106,9 @@ mod tests {
 
         // Visible glyph stream is unchanged by link insertion.
         let mut baseline_visible = String::new();
-        crate::tui::osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
+        codewhale_tui_kit::osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
-        crate::tui::osc8::strip_ansi_into(&out, &mut linked_visible);
+        codewhale_tui_kit::osc8::strip_ansi_into(&out, &mut linked_visible);
         assert_eq!(
             baseline_visible, linked_visible,
             "link emission must not move or alter visible cells"
@@ -1117,9 +1117,9 @@ mod tests {
 
     #[test]
     fn osc8_two_regions_link_to_their_own_targets() {
-        use crate::tui::osc8::LinkRegion;
+        use codewhale_tui_kit::osc8::LinkRegion;
 
-        crate::tui::osc8::set_frame_links(vec![
+        codewhale_tui_kit::osc8::set_frame_links(vec![
             LinkRegion {
                 row: 0,
                 col_start: 0,
@@ -1170,7 +1170,7 @@ mod tests {
     /// altering the visible byte stream.
     #[test]
     fn osc8_metadata_feeds_backend_for_every_wrapped_url_chunk() {
-        use crate::tui::{markdown_render, osc8};
+        use codewhale_tui_kit::{markdown_render, osc8};
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         use ratatui::style::Style;

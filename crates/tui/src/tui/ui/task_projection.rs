@@ -67,7 +67,10 @@ pub(super) async fn refresh_active_task_panel(
             }
             let word = tr(app.ui_locale, word);
             let summary = match task.duration_ms {
-                Some(ms) => format!("{word} · {}", crate::agent_roster::format_duration(ms)),
+                Some(ms) => format!(
+                    "{word} · {}",
+                    codewhale_engine::agent_roster::format_duration(ms)
+                ),
                 None => word.to_string(),
             };
             let summary = match task.error.as_deref().map(str::trim) {
@@ -188,7 +191,7 @@ pub(super) async fn refresh_active_task_panel(
 pub(super) fn project_shell_jobs(
     app: &mut App,
     entries: &mut Vec<TaskPanelEntry>,
-    jobs: &[crate::tools::shell::ShellJobSnapshot],
+    jobs: &[codewhale_engine::tools::shell::ShellJobSnapshot],
 ) -> bool {
     // #6565: every terminal status is a completion a person should hear
     // about (a failed, killed or timed-out shell used to vanish silently),
@@ -229,7 +232,7 @@ pub(super) fn project_shell_jobs(
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
-    let shell_entry = |job: &crate::tools::shell::ShellJobSnapshot| TaskPanelEntry {
+    let shell_entry = |job: &codewhale_engine::tools::shell::ShellJobSnapshot| TaskPanelEntry {
         id: job.id.clone(),
         status: shell_status_token(&job.status).to_string(),
         prompt_summary: format!("shell: {}", job.command),
@@ -252,7 +255,11 @@ pub(super) fn project_shell_jobs(
     entries.extend(
         jobs.iter()
             .filter(|job| {
-                job.background && matches!(job.status, crate::tools::shell::ShellStatus::Running)
+                job.background
+                    && matches!(
+                        job.status,
+                        codewhale_engine::tools::shell::ShellStatus::Running
+                    )
             })
             .map(shell_entry),
     );
@@ -263,7 +270,11 @@ pub(super) fn project_shell_jobs(
             .iter()
             .filter_map(|id| jobs.iter().find(|job| &job.id == id))
             .filter(|job| {
-                job.background && !matches!(job.status, crate::tools::shell::ShellStatus::Running)
+                job.background
+                    && !matches!(
+                        job.status,
+                        codewhale_engine::tools::shell::ShellStatus::Running
+                    )
             })
             .map(shell_entry),
     );
@@ -271,8 +282,10 @@ pub(super) fn project_shell_jobs(
 }
 
 /// The wire token a shell status shows as in the task panel.
-pub(crate) fn shell_status_token(status: &crate::tools::shell::ShellStatus) -> &'static str {
-    use crate::tools::shell::ShellStatus;
+pub(crate) fn shell_status_token(
+    status: &codewhale_engine::tools::shell::ShellStatus,
+) -> &'static str {
+    use codewhale_engine::tools::shell::ShellStatus;
     match status {
         ShellStatus::Running => "running",
         ShellStatus::Completed => "completed",
@@ -286,13 +299,13 @@ pub(crate) fn shell_status_token(status: &crate::tools::shell::ShellStatus) -> &
 /// `exit 0 · 12s`, `failed · exit 2`, `killed`, `timed out`.
 pub(crate) fn shell_outcome(
     locale: Locale,
-    job: &crate::tools::shell::ShellJobSnapshot,
+    job: &codewhale_engine::tools::shell::ShellJobSnapshot,
 ) -> (FinishedOutcome, String) {
-    use crate::tools::shell::ShellStatus;
+    use codewhale_engine::tools::shell::ShellStatus;
     let exit = job
         .exit_code
         .map(|code| tr(locale, MessageId::BackgroundExitCode).replace("{code}", &code.to_string()));
-    let took = crate::agent_roster::format_duration(job.elapsed_ms);
+    let took = codewhale_engine::agent_roster::format_duration(job.elapsed_ms);
     match job.status {
         ShellStatus::Completed | ShellStatus::Running => (
             FinishedOutcome::Done,
@@ -329,12 +342,17 @@ pub(crate) fn shell_outcome(
 /// legacy snapshots without it are history, never new completion receipts.
 pub(super) fn newly_terminal<'a>(
     notified_ids: &mut HashSet<String>,
-    jobs: &'a [crate::tools::shell::ShellJobSnapshot],
+    jobs: &'a [codewhale_engine::tools::shell::ShellJobSnapshot],
     session_started_at: chrono::DateTime<chrono::Utc>,
-) -> Vec<&'a crate::tools::shell::ShellJobSnapshot> {
+) -> Vec<&'a codewhale_engine::tools::shell::ShellJobSnapshot> {
     jobs.iter()
         .filter(|job| job.background && job.finished_at.is_some_and(|at| at >= session_started_at))
-        .filter(|job| !matches!(job.status, crate::tools::shell::ShellStatus::Running))
+        .filter(|job| {
+            !matches!(
+                job.status,
+                codewhale_engine::tools::shell::ShellStatus::Running
+            )
+        })
         .filter(|job| notified_ids.insert(job.id.clone()))
         .collect()
 }
@@ -626,7 +644,8 @@ pub(super) fn shell_exec_live_update(
     let next_live = shell_job_live_output(job).or_else(|| exec.live_output.clone());
     let finalized = !matches!(job.status, ShellStatus::Running);
     let quiet_after_ms =
-        u64::try_from(crate::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis()).unwrap_or(u64::MAX);
+        u64::try_from(codewhale_engine::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis())
+            .unwrap_or(u64::MAX);
     let stale_elapsed_since_output_ms = if matches!(job.status, ShellStatus::Running) {
         job.elapsed_since_output_ms
             .filter(|elapsed| *elapsed >= quiet_after_ms)

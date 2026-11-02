@@ -159,7 +159,10 @@ fn main() {
             "unknown compatible wire"
         );
         assert!(
-            matches!(text(row, "discovery"), "models_endpoint" | "none"),
+            matches!(
+                text(row, "discovery"),
+                "models_endpoint" | "public_models_endpoint" | "none"
+            ),
             "unknown discovery"
         );
         if row.get("aliases").is_some() {

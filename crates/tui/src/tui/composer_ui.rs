@@ -57,24 +57,25 @@ const SLASH_MENU_PAGE: usize = 10;
 pub(crate) fn move_slash_menu_selection(
     app: &mut App,
     entry_count: usize,
-    motion: crate::tui::list_nav::Motion,
+    motion: codewhale_tui_kit::list_nav::Motion,
 ) {
     if entry_count == 0 {
         return;
     }
     let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
-    if let Some(next) = crate::tui::list_nav::apply(selected, entry_count, SLASH_MENU_PAGE, motion)
+    if let Some(next) =
+        codewhale_tui_kit::list_nav::apply(selected, entry_count, SLASH_MENU_PAGE, motion)
     {
         app.slash_menu_selected = next;
     }
 }
 
 pub(crate) fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
-    move_slash_menu_selection(app, entry_count, crate::tui::list_nav::Motion::Prev);
+    move_slash_menu_selection(app, entry_count, codewhale_tui_kit::list_nav::Motion::Prev);
 }
 
 pub(crate) fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
-    move_slash_menu_selection(app, entry_count, crate::tui::list_nav::Motion::Next);
+    move_slash_menu_selection(app, entry_count, codewhale_tui_kit::list_nav::Motion::Next);
 }
 
 pub(crate) fn handle_composer_history_arrow(

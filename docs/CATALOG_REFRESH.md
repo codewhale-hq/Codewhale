@@ -73,10 +73,10 @@ Key code:
 
 | Piece | Path | Role |
 |---|---|---|
-| Live fetch + cache | `crates/tui/src/models_dev_live.rs` | Background refresh, TTL, atomic write, freshness status |
+| Live fetch + cache | `crates/engine/src/models_dev_live.rs` | Background refresh, TTL, atomic write, freshness status |
 | Schema / parse | `crates/config/src/models_dev.rs` | Network-free Models.dev JSON shape |
 | Compile + provenance | `crates/config/src/catalog.rs` | Ordered sources, independent price provenance, policy deny, id normalization |
-| Provider lake merge | `crates/tui/src/provider_lake.rs` | Shared catalog projection with exact route-scoped provider authority |
+| Provider lake merge | `crates/engine/src/provider_lake.rs` | Shared catalog projection with exact route-scoped provider authority |
 | Offline seed asset | `crates/config/assets/models_dev.bundled.json` | Compact offline fallback only (`_meta.role` says so) |
 | Codewhale corrections | `crates/config/assets/catalog_corrections.json` | Field patches applied to every Models.dev row (`crates/config/src/catalog/corrections.rs`) |
 | Validation script | `scripts/catalog_models_dev.py` | Secret-free fetch/validate dry-run (#4117) |
@@ -113,7 +113,7 @@ That dispatches `AppAction::RefreshModelsDevCatalog` (async; does not block
 the composer). When admitted cloud-facts settings are enabled, it also requests
 a cloud refresh; hard-disable and trust-key checks still apply. Implementation lives under
 `crates/tui/src/commands/groups/core/core.rs` and
-`crates/tui/src/models_dev_live.rs`.
+`crates/engine/src/models_dev_live.rs`.
 
 ### Env knobs (tests / dogfood / offline)
 

@@ -18,13 +18,15 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::todo_snapshot::{TodoCardProjection, card_omission_line, card_todo_projection};
-use crate::tools::subagent::MailboxMessage;
-use crate::tools::todo::TodoListSnapshot;
-use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph};
 use codewhale_agent_contract::role::public_role_label;
+use codewhale_engine::todo_snapshot::{
+    TodoCardProjection, card_omission_line, card_todo_projection,
+};
+use codewhale_engine::tools::subagent::MailboxMessage;
+use codewhale_engine::tools::todo::TodoListSnapshot;
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 use unicode_width::UnicodeWidthStr;
 
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries
@@ -187,7 +189,7 @@ impl DelegateCard {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
         let content_width = usize::from(width);
         let role = public_role_label(&self.agent_type);
-        let short_id = crate::session_manager::truncate_id(&self.agent_id).to_string();
+        let short_id = codewhale_engine::session_manager::truncate_id(&self.agent_id).to_string();
         let detail = if self.status.is_terminal() {
             String::new()
         } else if let Some(action) = self.actions.last() {
@@ -311,6 +313,7 @@ pub struct WorkerSlot {
     /// Stable logical worker key. Stays tied to the worker slot even after a
     /// concrete sub-agent id exists.
     pub worker_id: String,
+    is_placeholder: bool,
     /// Concrete agent id once spawned; placeholders use the worker id.
     pub agent_id: String,
     pub status: AgentLifecycle,
@@ -322,6 +325,7 @@ impl WorkerSlot {
         let worker_id = worker_id.into();
         Self {
             agent_id: worker_id.clone(),
+            is_placeholder: false,
             worker_id,
             status,
         }
@@ -358,8 +362,10 @@ impl FanoutCard {
         S: Into<String>,
     {
         for id in ids {
-            self.workers
-                .push(WorkerSlot::new(id.into(), AgentLifecycle::Pending));
+            self.workers.push(WorkerSlot {
+                is_placeholder: true,
+                ..WorkerSlot::new(id, AgentLifecycle::Pending)
+            });
         }
         self
     }
@@ -368,45 +374,28 @@ impl FanoutCard {
     /// changed and the card should be redrawn. A settled worker is final: a
     /// delayed envelope for it never reopens or re-settles the slot.
     pub fn upsert_worker(&mut self, agent_id: &str, status: AgentLifecycle) -> bool {
-        if let Some(slot) = self
+        let slot_index = self
             .workers
-            .iter_mut()
-            .find(|s| s.agent_id == agent_id || s.worker_id == agent_id)
-        {
-            if slot.status.is_terminal() || (slot.agent_id == agent_id && slot.status == status) {
+            .iter()
+            .position(|slot| slot.agent_id == agent_id)
+            .or_else(|| self.workers.iter().position(|slot| slot.is_placeholder));
+        if let Some(index) = slot_index {
+            let slot = &mut self.workers[index];
+            if slot.status.is_terminal()
+                || (!slot.is_placeholder
+                    && (slot.status == status || status == AgentLifecycle::Pending))
+            {
                 return false;
             }
-            slot.agent_id = agent_id.to_string();
+            if slot.is_placeholder {
+                slot.agent_id = agent_id.to_owned();
+                slot.is_placeholder = false;
+            }
             slot.status = status;
-            true
         } else {
             self.workers.push(WorkerSlot::new(agent_id, status));
-            true
         }
-    }
-
-    /// Attach a real agent id to the first pending placeholder slot. Fanout
-    /// cards are seeded from task ids before child agents exist; when a child
-    /// starts, this keeps the dot count stable instead of appending a second
-    /// circle for the same unit of work.
-    pub fn claim_pending_worker(&mut self, agent_id: &str, status: AgentLifecycle) -> bool {
-        if let Some(slot) = self.workers.iter_mut().find(|s| s.agent_id == agent_id) {
-            if slot.status.is_terminal() || slot.status == status {
-                return false;
-            }
-            slot.status = status;
-            return true;
-        }
-        if let Some(slot) = self
-            .workers
-            .iter_mut()
-            .find(|s| matches!(s.status, AgentLifecycle::Pending))
-        {
-            slot.agent_id = agent_id.to_string();
-            slot.status = status;
-            return true;
-        }
-        self.upsert_worker(agent_id, status)
+        true
     }
 
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -707,11 +696,9 @@ fn is_low_signal_progress(status: &str) -> bool {
 pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
     let id = msg.agent_id();
     match msg {
-        MailboxMessage::Started { .. } => card.claim_pending_worker(id, AgentLifecycle::Running),
-        MailboxMessage::Progress { .. } => card.claim_pending_worker(id, AgentLifecycle::Running),
-        MailboxMessage::ToolCallStarted { .. } => {
-            card.claim_pending_worker(id, AgentLifecycle::Running)
-        }
+        MailboxMessage::Started { .. }
+        | MailboxMessage::Progress { .. }
+        | MailboxMessage::ToolCallStarted { .. } => card.upsert_worker(id, AgentLifecycle::Running),
         MailboxMessage::ToolCallCompleted { .. } => true,
         MailboxMessage::Completed { .. } => card.upsert_worker(id, AgentLifecycle::Completed),
         MailboxMessage::Failed { .. } => card.upsert_worker(id, AgentLifecycle::Failed),
@@ -1134,7 +1121,7 @@ mod tests {
 
     // === #4810: a child's own To-do on its own card ===
 
-    use crate::tools::todo::{TodoItem, TodoStatus};
+    use codewhale_engine::tools::todo::{TodoItem, TodoStatus};
 
     fn todo(items: &[(u32, &str, TodoStatus)], in_progress_id: Option<u32>) -> TodoListSnapshot {
         let items: Vec<TodoItem> = items
@@ -1332,11 +1319,11 @@ mod tests {
         let projection = card.todo_projection().expect("projection");
         assert_eq!(
             projection.items.len(),
-            crate::todo_snapshot::MAX_CARD_ITEM_LINES
+            codewhale_engine::todo_snapshot::MAX_CARD_ITEM_LINES
         );
         assert_eq!(
             projection.omitted,
-            9 - crate::todo_snapshot::MAX_CARD_ITEM_LINES
+            9 - codewhale_engine::todo_snapshot::MAX_CARD_ITEM_LINES
         );
         assert!(
             projection

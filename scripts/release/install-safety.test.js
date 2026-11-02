@@ -50,12 +50,14 @@ asset="$(basename "$url")"
 cp "$INSTALL_TEST_ASSETS/$asset" "$output"
 `);
   const destination = path.join(home, ".local", "bin");
-  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
+  fs.mkdirSync(destination, { recursive: true });
+  fs.chmodSync(destination, 0o755);
+  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CI: "1",
     CODEWHALE_VERSION: "v0.9.11", CODEWHALE_INSTALL_DIR: destination,
     PREFIX: path.dirname(destination), INSTALL_TEST_ASSETS: assets,
     INSTALL_TEST_EXECUTED: path.join(root, "executed"),
     INSTALL_TEST_DOWNLOADS: path.join(root, "downloads") };
-  for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION"]) delete env[key];
+  for (const key of ["CODEWHALE_RELEASE_BASE_URL", "DEEPSEEK_TUI_RELEASE_BASE_URL", "CODEWHALE_SKIP_GLIBC_CHECK", "DEEPSEEK_TUI_SKIP_GLIBC_CHECK", "DEEPSEEK_SKIP_GLIBC_CHECK", "TERMUX_VERSION", "CODEWHALE_HOME", "CODEWHALE_FORCE_REINSTALL", "CODEWHALE_INSTALL_COMPILED_HOST", "SHELL", "ZDOTDIR"]) delete env[key];
   function run() {
     const script = kind === "website" ? path.join(repo, "web/public/install.sh") : path.join(archive, "install.sh");
     return spawnSync(kind === "website" ? "sh" : "bash", [script], { env, encoding: "utf8", timeout: 10000 });

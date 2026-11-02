@@ -1,7 +1,7 @@
 //! The background writer.
 //!
-//! One dedicated OS thread behind an unbounded `mpsc`. `record()` is a
-//! non-blocking `send` and a hard no-op when the process is not armed;
+//! One dedicated OS thread behind a bounded `mpsc`. `record()` is a
+//! non-blocking `try_send` and a hard no-op when the process is not armed;
 //! everything the thread does is wrapped in `catch_unwind`, so a panic inside
 //! telemetry costs telemetry and nothing else.
 //!
@@ -13,8 +13,10 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::time::{Duration, Instant};
 
 use crate::buffer;
 use crate::client::{self, SendOutcome};
@@ -67,24 +69,54 @@ pub(crate) struct Context {
 /// A handle to the writer thread.
 #[derive(Debug)]
 pub(crate) struct Handle {
-    tx: Sender<Message>,
+    tx: SyncSender<Message>,
+    pending: Arc<AtomicUsize>,
+    closing: AtomicBool,
 }
 
 impl Handle {
     /// Start the writer thread.
     pub(crate) fn spawn(context: Context) -> Self {
-        let (tx, rx) = channel::<Message>();
+        let (tx, rx) = sync_channel::<Message>(buffer::MAX_EVENTS + 1);
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = pending.clone();
         // A detached thread: nothing joins it, and the process exiting while it
         // is mid-write is exactly the case the torn-line tolerance covers.
         let _ = std::thread::Builder::new()
             .name("codewhale-telemetry".to_string())
-            .spawn(move || run(&context, &rx));
-        Self { tx }
+            .spawn(move || run(&context, &rx, &worker_pending));
+        Self {
+            tx,
+            pending,
+            closing: AtomicBool::new(false),
+        }
     }
 
-    /// Queue an event. Never blocks, never errors upward.
+    /// Queue an event without blocking; drop it when full, closing or closed.
     pub(crate) fn record(&self, event: Event) {
-        let _ = self.tx.send(Message::Event(Box::new(event)));
+        if self.closing.load(Ordering::Acquire) {
+            return;
+        }
+        let mut pending = self.pending.load(Ordering::Acquire);
+        loop {
+            if pending >= buffer::MAX_EVENTS {
+                return;
+            }
+            match self.pending.compare_exchange_weak(
+                pending,
+                pending + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => pending = current,
+            }
+        }
+        if self.closing.load(Ordering::Acquire)
+            || self.tx.try_send(Message::Event(Box::new(event))).is_err()
+        {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 
     /// Ask for a final flush and stop the thread.
@@ -100,8 +132,11 @@ impl Handle {
     /// acknowledges — even on panic — so the only way out without an outcome
     /// is a writer that is already gone, which fails open as `TimedOut`.
     pub(crate) fn persist_local(&self) -> FlushOutcome {
+        if self.closing.swap(true, Ordering::AcqRel) {
+            return FlushOutcome::TimedOut;
+        }
         let (ack_tx, ack_rx) = sync_channel::<FlushOutcome>(1);
-        if self.tx.send(Message::PersistLocal(ack_tx)).is_err() {
+        if self.tx.try_send(Message::PersistLocal(ack_tx)).is_err() {
             return FlushOutcome::TimedOut;
         }
         ack_rx.recv().unwrap_or(FlushOutcome::TimedOut)
@@ -112,11 +147,15 @@ impl Handle {
         deadline: Duration,
         build: impl FnOnce(SyncSender<FlushOutcome>) -> Message,
     ) -> FlushOutcome {
-        let (ack_tx, ack_rx) = sync_channel::<FlushOutcome>(1);
-        if self.tx.send(build(ack_tx)).is_err() {
+        let started = Instant::now();
+        if self.closing.swap(true, Ordering::AcqRel) {
             return FlushOutcome::TimedOut;
         }
-        match ack_rx.recv_timeout(deadline) {
+        let (ack_tx, ack_rx) = sync_channel::<FlushOutcome>(1);
+        if self.tx.try_send(build(ack_tx)).is_err() {
+            return FlushOutcome::TimedOut;
+        }
+        match ack_rx.recv_timeout(deadline.saturating_sub(started.elapsed())) {
             Ok(outcome) => outcome,
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                 FlushOutcome::TimedOut
@@ -125,13 +164,14 @@ impl Handle {
     }
 }
 
-fn run(context: &Context, rx: &Receiver<Message>) {
+fn run(context: &Context, rx: &Receiver<Message>, pending: &AtomicUsize) {
     while let Ok(message) = rx.recv() {
         // Telemetry never takes the process with it. The hook has already been
         // installed by the time this thread exists, so a panic here is caught,
         // dropped, and the loop continues.
         let result = catch_unwind(AssertUnwindSafe(|| match message {
             Message::Event(event) => {
+                pending.fetch_sub(1, Ordering::AcqRel);
                 append(context, &event);
                 None
             }
@@ -296,8 +336,12 @@ mod tests {
     fn local_persistence_joins_the_writer_without_a_deadline() {
         // The caller blocks on a mock writer that answers on its own
         // schedule: no sleep, no timing assertion, no race with the clock.
-        let (tx, rx) = channel();
-        let handle = Handle { tx };
+        let (tx, rx) = sync_channel(buffer::MAX_EVENTS + 1);
+        let handle = Handle {
+            tx,
+            pending: Arc::new(AtomicUsize::new(0)),
+            closing: AtomicBool::new(false),
+        };
         handle.record(Event::SessionStart {
             source: crate::SessionSource::Unknown,
         });
@@ -320,9 +364,13 @@ mod tests {
         // The writer thread exits after a persist or shutdown request; a
         // second caller must fail open, not hang on a dead receiver. Send
         // fails deterministically here, so no timing assertion is needed.
-        let (tx, rx) = channel::<Message>();
+        let (tx, rx) = sync_channel::<Message>(buffer::MAX_EVENTS + 1);
         drop(rx);
-        let handle = Handle { tx };
+        let handle = Handle {
+            tx,
+            pending: Arc::new(AtomicUsize::new(0)),
+            closing: AtomicBool::new(false),
+        };
         assert_eq!(handle.persist_local(), FlushOutcome::TimedOut);
     }
 }

@@ -17,10 +17,10 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tui::menu_style;
 use crate::tui::ocean;
 use crate::tui::views::{ContextMenuAction, ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 #[derive(Debug, Clone)]
 pub struct ContextMenuEntry {
@@ -170,7 +170,8 @@ impl ContextMenuView {
 
     fn move_selection(&mut self, delta: isize) {
         self.armed = None;
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, self.entries.len(), delta);
+        self.selected =
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.entries.len(), delta);
     }
 
     /// Run entry `idx`, or arm it when it needs confirming. `confirm` is false

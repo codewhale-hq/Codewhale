@@ -12,9 +12,6 @@ use super::task_projection::{
     shell_exec_live_update,
 };
 use super::*;
-use crate::core::engine::mock_engine_handle;
-use crate::core::ops::TurnSpec;
-use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::ToolDetailRecord;
 use crate::tui::file_mention::{
@@ -32,15 +29,18 @@ use crate::tui::provider_picker::ProviderPickerView;
 use crate::tui::shell_key_routing::{
     Focus, SHELL_BINDINGS, ShellBindingId, is_permission_cycle_shortcut,
 };
-use crate::tui::ui_text::{line_to_plain, truncate_line_to_width};
 use crate::tui::views::ConfigView;
 use crate::tui::views::{HelpView, ModalView, ViewAction};
-use crate::working_set::Workspace;
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::{
     DEFAULT_OPENROUTER_MODEL, DEFAULT_TEXT_MODEL, DEFAULT_ZAI_MODEL,
 };
+use codewhale_engine::core::engine::mock_engine_handle;
+use codewhale_engine::core::ops::TurnSpec;
+use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+use codewhale_runtime::working_set::Workspace;
+use codewhale_tui_kit::ui_text::{line_to_plain, truncate_line_to_width};
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Terminal,
@@ -65,8 +65,8 @@ mod runtime_store_binding;
 
 #[test]
 fn failed_engine_channel_settles_classifier_batch_once() {
-    let _cost_scope = crate::cost_status::test_scope();
-    let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+    let _cost_scope = codewhale_engine::cost_status::test_scope();
+    let route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
         "deepseek",
@@ -74,11 +74,11 @@ fn failed_engine_channel_settles_classifier_batch_once() {
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         chrono::Utc::now(),
     );
-    let batch = crate::cost_status::RuntimeUsageBatch {
+    let batch = codewhale_engine::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![crate::cost_status::RuntimeUsageRecord {
+        records: vec![codewhale_engine::cost_status::RuntimeUsageRecord {
             source_id: "auto-router:dispatch-usage".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+            usage: codewhale_engine::cost_status::EffectiveRouteUsage {
                 route: route.clone(),
                 usage: codewhale_models::Usage {
                     input_tokens: 6,
@@ -87,8 +87,8 @@ fn failed_engine_channel_settles_classifier_batch_once() {
                 },
             },
         }],
-        drop_records: vec![crate::cost_status::RuntimeUsageDropRecord {
-            reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+        drop_records: vec![codewhale_engine::cost_status::RuntimeUsageDropRecord {
+            reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "auto-router:dispatch-drop".to_string(),
             route,
         }],
@@ -97,11 +97,11 @@ fn failed_engine_channel_settles_classifier_batch_once() {
 
     for _ in 0..2 {
         drop(super::dispatch::UnacceptedDispatchUsage {
-            scope: crate::cost_status::scope_token(),
+            scope: codewhale_engine::cost_status::scope_token(),
             batch: Some(batch.clone()),
         });
     }
-    let pending = crate::cost_status::drain();
+    let pending = codewhale_engine::cost_status::drain();
     assert_eq!(pending.usage_source_fingerprints.len(), 2);
 }
 
@@ -663,7 +663,7 @@ async fn runtime_chat_queues_local_composer_input_without_starting_a_second_turn
 }
 
 #[tokio::test]
-async fn stale_remote_control_turn_never_cancels_the_current_engine_turn() {
+async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     let mut app = create_test_app();
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
@@ -685,13 +685,130 @@ async fn stale_remote_control_turn_never_cancels_the_current_engine_turn() {
         !mock.cancel_token.is_cancelled(),
         "a delayed command for an older turn must not cancel the current provider lifecycle"
     );
+
+    for (event, previous_status, reason) in [
+        (
+            crate::remote_control::RemoteEvent::FailedPreLease(
+                "fixture enrollment rejected: accessToken = fixture_remote_secret".to_string(),
+            ),
+            "Remote control: connecting",
+            "fixture enrollment rejected",
+        ),
+        (
+            crate::remote_control::RemoteEvent::Failed("fixture relay disconnected".to_string()),
+            "Remote control: connected",
+            "fixture relay disconnected",
+        ),
+    ] {
+        let mut app = create_test_app();
+        app.ui_locale = codewhale_localization::Locale::En;
+        app.launch.visible = true;
+        app.status_message = Some(previous_status.to_string());
+        app.status_toasts.clear();
+        app.sticky_status = Some(StatusToast::new(
+            previous_status,
+            StatusToastLevel::Warning,
+            None,
+        ));
+        if matches!(&event, crate::remote_control::RemoteEvent::Failed(_)) {
+            let phase = crate::tui::underwater::ShellPhase::from_app(&app);
+            assert_eq!(
+                app.active_status_toast(phase)
+                    .expect("prior remote status")
+                    .text,
+                previous_status
+            );
+            app.remote_control
+                .force_mirror_connected_for_tests("run_fixture", "turn_current");
+        }
+        app.remote_control.queue_remote_event_for_tests(event);
+
+        drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.remote_control.status(),
+            crate::remote_control::Status::Failed
+        );
+        assert!(app.remote_control.status_line().contains(reason));
+        assert!(app.status_message.is_none());
+        let phase = crate::tui::underwater::ShellPhase::from_app(&app);
+        let toast = app
+            .active_status_toast(phase)
+            .expect("remote failure toast");
+        assert_eq!(toast.level, StatusToastLevel::Error);
+        assert!(toast.text.contains(reason), "{}", toast.text);
+        assert!(!toast.text.contains(previous_status), "{}", toast.text);
+        assert!(
+            !toast.text.contains("fixture_remote_secret"),
+            "{}",
+            toast.text
+        );
+        assert!(toast.ttl_ms.is_some());
+        assert!(app.history.iter().any(|cell| matches!(
+            cell,
+            HistoryCell::System { content }
+                if content.contains(reason) && !content.contains("fixture_remote_secret")
+        )));
+
+        app.sticky_status
+            .as_mut()
+            .expect("remote failure sticky")
+            .created_at = Instant::now() - Duration::from_secs(20);
+        assert!(app.active_status_toast(phase).is_none());
+        for locale in [
+            codewhale_localization::Locale::En,
+            codewhale_localization::Locale::ZhHans,
+            codewhale_localization::Locale::De,
+        ] {
+            app.ui_locale = locale;
+            let narrow = if app.sandbox_backend.is_some() {
+                40
+            } else {
+                80
+            };
+            for width in [narrow, 80] {
+                let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, width);
+                let (text, ink) = facts.right.expect("remote failure footer");
+                assert!(text.starts_with("/rc status"), "{locale:?} {width}: {text}");
+                assert_eq!(ink, codewhale_palette::ChromeInk::Failure);
+            }
+        }
+        assert!(app.history.iter().any(|cell| matches!(
+            cell,
+            HistoryCell::System { content } if content.contains(reason)
+        )));
+    }
+
+    let mut app = create_test_app();
+    app.ui_locale = codewhale_localization::Locale::En;
+    app.launch.visible = true;
+    app.status_message = None;
+    app.status_toasts.clear();
+    app.sticky_status = None;
+    app.remote_control
+        .record_start_failure("fixture start rejected: accessToken = fixture_remote_secret");
+    let status = app.remote_control.status_line();
+    assert!(status.contains("fixture start rejected"), "{status}");
+    assert!(!status.contains("fixture_remote_secret"), "{status}");
+    let narrow = if app.sandbox_backend.is_some() {
+        40
+    } else {
+        80
+    };
+    let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, narrow);
+    let (text, ink) = facts.right.expect("synchronous failure footer");
+    assert!(text.starts_with("/rc status"), "{text}");
+    assert_eq!(ink, codewhale_palette::ChromeInk::Failure);
+    assert!(!mock.cancel_token.is_cancelled());
 }
 
 fn test_mailbox_route(
     provider: ProviderKind,
     model: &str,
-) -> crate::cost_status::EffectiveRouteEnvelope {
-    crate::cost_status::EffectiveRouteEnvelope::capture(
+) -> codewhale_engine::cost_status::EffectiveRouteEnvelope {
+    codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
         None,
         provider,
         provider.as_str(),
@@ -702,7 +819,7 @@ fn test_mailbox_route(
 }
 
 fn served_endpoint_fingerprint() -> Option<String> {
-    crate::cost_status::endpoint_fingerprint("https://api.deepseek.com/v1")
+    codewhale_engine::cost_status::endpoint_fingerprint("https://api.deepseek.com/v1")
 }
 
 #[test]
@@ -712,38 +829,40 @@ fn completed_turn_cost_receipt_uses_the_captured_effective_route() {
         output_tokens: 100,
         ..Default::default()
     };
-    let audit = crate::pricing::audit_turn_cost_for_route_at(
+    let audit = codewhale_engine::pricing::audit_turn_cost_for_route_at(
         ProviderKind::Deepseek,
         "deepseek-v4-flash",
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
+        Some(codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
         &usage,
         chrono::Utc::now(),
     );
     let completed = crate::tui::app::ActiveTurnMetadata {
         turn_id: "completed-deepseek".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Deepseek,
             provider_identity: "deepseek-cn".to_string(),
             model: "deepseek-v4-flash".to_string(),
             auto_model: false,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 // A real fingerprint, produced by the production hasher. A
                 // receipt fails closed on anything that is not one, so a
                 // hand-written placeholder here would have tested nothing.
                 endpoint_fingerprint: served_endpoint_fingerprint(),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: ProviderKind::Deepseek
                 .provider()
                 .default_base_url()
                 .to_string(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
@@ -796,14 +915,14 @@ fn runtime_store_failure_event_becomes_a_toast_naming_the_file_and_remedy() {
     // operator now sees the record, the file, the cause, and what to do.
     let mut app = focus_test_app();
     let path = "/tmp/runtime/items/item_bad.json";
-    let record = crate::runtime_threads::RuntimeEventRecord {
+    let record = codewhale_engine::runtime_threads::RuntimeEventRecord {
         schema_version: 1,
         seq: 3,
         timestamp: chrono::Utc::now(),
         thread_id: "thr_1".to_string(),
         turn_id: Some("turn_1".to_string()),
         item_id: Some("item_bad".to_string()),
-        event: crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT.to_string(),
+        event: codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT.to_string(),
         payload: serde_json::json!({
             "operation": "parse",
             "record_kind": "item",
@@ -1420,16 +1539,15 @@ fn canonical_background_bash_keeps_live_task_identity_for_follow_up_actions() {
             "background": true
         }),
     );
-    let running = Ok(
-        crate::tools::spec::ToolResult::success("Background task started: shell-42").with_metadata(
-            serde_json::json!({
-                "status": "Running",
-                "task_id": "shell-42",
-                "command": "cargo test --workspace",
-                "duration_ms": 25_u64
-            }),
-        ),
-    );
+    let running = Ok(codewhale_engine::tools::spec::ToolResult::success(
+        "Background task started: shell-42",
+    )
+    .with_metadata(serde_json::json!({
+        "status": "Running",
+        "task_id": "shell-42",
+        "command": "cargo test --workspace",
+        "duration_ms": 25_u64
+    })));
     handle_tool_call_complete(&mut app, "bash-background", "Bash", &running);
 
     let active = app.active_cell.as_ref().expect("active cell");
@@ -1527,7 +1645,7 @@ fn canonical_file_mutations_attach_receipts_only_to_successful_outcomes() {
                 &mut app,
                 &id,
                 "File",
-                &Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
+                &Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(
                     serde_json::json!({
                         "mutation": {
                             "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
@@ -1549,7 +1667,10 @@ fn canonical_file_mutations_attach_receipts_only_to_successful_outcomes() {
             );
             assert!(cell.receipt.is_some(), "{approval_mode:?} File.{action}");
             assert_eq!(
-                cell.receipt.as_ref().unwrap().outcome_label(),
+                cell.receipt
+                    .as_ref()
+                    .unwrap()
+                    .outcome_label(codewhale_localization::Locale::En),
                 "Updated src/lib.rs",
                 "{approval_mode:?} File.{action}"
             );
@@ -1568,15 +1689,14 @@ fn canonical_file_mutations_attach_receipts_only_to_successful_outcomes() {
         "file-write-failed",
         "File",
         &Ok(
-            crate::tools::spec::ToolResult::error("cancelled before mutation").with_metadata(
-                serde_json::json!({
+            codewhale_engine::tools::spec::ToolResult::error("cancelled before mutation")
+                .with_metadata(serde_json::json!({
                     "mutation": {
                         "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+FORGED\n",
                         "files": [{ "path": "src/lib.rs", "outcome": "updated" }],
                         "renames": []
                     }
-                }),
-            ),
+                })),
         ),
     );
     let active = failed.active_cell.as_ref().expect("active cell");
@@ -1832,7 +1952,9 @@ fn transcript_navigation_does_not_capture_keys_for_other_modals() {
 }
 
 fn scroll_test_question_view() -> UserInputView {
-    use crate::tools::user_input::{UserInputOption, UserInputQuestion, UserInputRequest};
+    use codewhale_engine::tools::user_input::{
+        UserInputOption, UserInputQuestion, UserInputRequest,
+    };
 
     UserInputView::new(
         "question-scroll",
@@ -2070,7 +2192,7 @@ fn closing_work_inspector_pager_clears_opened_row_owner() {
     let mut app = create_test_app();
     app.todos.try_lock().expect("To-do state").add(
         "Inspect me".to_string(),
-        crate::tools::todo::TodoStatus::InProgress,
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
     );
     let _ = render_underwater_test_app(&mut app, 100, 32);
     let _ = crate::tui::work_surface::handle_key(
@@ -2096,8 +2218,8 @@ fn closing_work_inspector_pager_clears_opened_row_owner() {
 
 #[test]
 fn coordination_event_projection_is_retained_as_typed_app_state() {
-    use crate::tools::subagent::CoordinationDetailProjection;
-    use crate::tools::subagent::coord::{
+    use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+    use codewhale_engine::tools::subagent::coord::{
         CoordinationDetailMetrics, DecisionRecord, DecisionStatus,
     };
 
@@ -2144,8 +2266,8 @@ fn coordination_event_projection_is_retained_as_typed_app_state() {
 /// strip; a genuinely different process still warns.
 #[test]
 fn coordination_handover_within_this_process_does_not_toast() {
-    use crate::tools::subagent::CoordinationDetailProjection;
-    use crate::tools::subagent::coord::CoordinationDetailMetrics;
+    use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+    use codewhale_engine::tools::subagent::coord::CoordinationDetailMetrics;
 
     let base = CoordinationDetailProjection {
         schema_version: 1,
@@ -2173,7 +2295,7 @@ fn coordination_handover_within_this_process_does_not_toast() {
         CoordinationDetailProjection {
             process_lock_note: Some(format!(
                 "{} for /ws: lock is busy",
-                crate::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER
+                codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER
             )),
             ..base.clone()
         },
@@ -2816,8 +2938,10 @@ fn plain_mcp_show_refreshes_discovery_counts() {
 
 #[tokio::test]
 async fn mcp_show_while_turn_running_serves_cached_snapshot_without_engine_roundtrip() {
-    use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
     use crate::tui::app::McpUiAction;
+    use codewhale_engine::mcp::{
+        McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+    };
 
     let mut app = create_test_app();
     app.is_loading = true;
@@ -2909,7 +3033,7 @@ async fn mcp_mutations_while_turn_running_defer_the_live_pool_refresh() {
 
     let temp = tempfile::tempdir().expect("temporary MCP home");
     let path = temp.path().join("mcp.json");
-    crate::mcp::add_server_config(
+    codewhale_engine::mcp::add_server_config(
         &path,
         "fixture".to_string(),
         Some("fixture-mcp".to_string()),
@@ -2918,7 +3042,7 @@ async fn mcp_mutations_while_turn_running_defer_the_live_pool_refresh() {
         None,
     )
     .expect("seed MCP server");
-    crate::mcp::set_server_enabled(&path, "fixture", false).expect("disable MCP server");
+    codewhale_engine::mcp::set_server_enabled(&path, "fixture", false).expect("disable MCP server");
 
     let mut app = create_test_app();
     app.mcp_config_path = path.clone();
@@ -2942,7 +3066,7 @@ async fn mcp_mutations_while_turn_running_defer_the_live_pool_refresh() {
         "the live-pool reload op must not be sent while a turn owns the engine"
     );
     assert!(
-        crate::mcp::load_config(&app.mcp_config_path)
+        codewhale_engine::mcp::load_config(&app.mcp_config_path)
             .expect("persisted MCP config")
             .servers
             .get("fixture")
@@ -2968,8 +3092,8 @@ fn mcp_retry_snapshot_row(
     error: Option<&str>,
     auth_required: bool,
     tools: usize,
-) -> crate::mcp::McpServerSnapshot {
-    crate::mcp::McpServerSnapshot {
+) -> codewhale_engine::mcp::McpServerSnapshot {
+    codewhale_engine::mcp::McpServerSnapshot {
         name: name.into(),
         enabled: true,
         required: false,
@@ -2982,12 +3106,12 @@ fn mcp_retry_snapshot_row(
         error: error.map(str::to_string),
         auth_required,
         capability_metadata: if connected {
-            crate::mcp::McpServerCapabilityMetadata::LegacyFallback
+            codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback
         } else {
-            crate::mcp::McpServerCapabilityMetadata::NotObserved
+            codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved
         },
         tools: (0..tools)
-            .map(|index| crate::mcp::McpDiscoveredItem {
+            .map(|index| codewhale_engine::mcp::McpDiscoveredItem {
                 name: format!("tool{index}"),
                 model_name: format!("mcp_{name}_tool{index}"),
                 description: None,
@@ -3002,9 +3126,9 @@ fn mcp_retry_snapshot_row(
 /// UI until the outcome is delivered.
 async fn answer_mcp_retry(
     app: &mut App,
-    mock: &mut crate::core::engine::MockEngineHandle,
+    mock: &mut codewhale_engine::core::engine::MockEngineHandle,
     expected: &str,
-    row: crate::mcp::McpServerSnapshot,
+    row: codewhale_engine::mcp::McpServerSnapshot,
 ) {
     let op = tokio::time::timeout(Duration::from_secs(2), mock.rx_op.recv())
         .await
@@ -3016,8 +3140,8 @@ async fn answer_mcp_retry(
     assert_eq!(name, expected);
     let sender = tx.lock().unwrap().take().expect("retry reply sender");
     sender
-        .send(Ok(crate::core::ops::McpManagerUpdate {
-            snapshot: crate::mcp::McpManagerSnapshot {
+        .send(Ok(codewhale_engine::core::ops::McpManagerUpdate {
+            snapshot: codewhale_engine::mcp::McpManagerSnapshot {
                 config_path: PathBuf::from("mcp.json"),
                 config_exists: true,
                 reload_required: false,
@@ -3193,7 +3317,7 @@ async fn mcp_login_stalled_discovery_is_cancellable_and_repeat_clicks_keep_one_o
     let mut app = create_test_app();
     app.workspace = temp.path().to_path_buf();
     app.mcp_config_path = temp.path().join("mcp.json");
-    crate::mcp::add_server_config(
+    codewhale_engine::mcp::add_server_config(
         &app.mcp_config_path,
         "stalled".to_string(),
         None,
@@ -3347,7 +3471,7 @@ async fn mcp_login_background_handshake_preserves_network_default_deny() {
     let mut app = create_test_app();
     app.workspace = temp.path().to_path_buf();
     app.mcp_config_path = temp.path().join("mcp.json");
-    crate::mcp::add_server_config(
+    codewhale_engine::mcp::add_server_config(
         &app.mcp_config_path,
         "denied".to_string(),
         None,
@@ -3398,8 +3522,10 @@ async fn mcp_login_background_handshake_preserves_network_default_deny() {
 
 #[tokio::test]
 async fn mcp_diagnose_reports_selected_last_observed_error_without_discovery() {
-    use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
     use crate::tui::app::McpUiAction;
+    use codewhale_engine::mcp::{
+        McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+    };
 
     let mut app = create_test_app();
     app.mcp_snapshot = Some(McpManagerSnapshot {
@@ -3453,12 +3579,12 @@ async fn mcp_diagnose_reports_selected_last_observed_error_without_discovery() {
 
 #[tokio::test]
 async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
-    use crate::mcp::{McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::McpUiAction;
+    use codewhale_engine::mcp::{McpManagerSnapshot, McpServerSnapshot};
 
     let temp = tempfile::tempdir().expect("temporary MCP home");
     let path = temp.path().join("mcp.json");
-    crate::mcp::add_server_config(
+    codewhale_engine::mcp::add_server_config(
         &path,
         "fixture".to_string(),
         Some("fixture-mcp".to_string()),
@@ -3467,7 +3593,7 @@ async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
         None,
     )
     .expect("seed MCP server");
-    crate::mcp::set_server_enabled(&path, "fixture", false).expect("disable MCP server");
+    codewhale_engine::mcp::set_server_enabled(&path, "fixture", false).expect("disable MCP server");
 
     let mut app = create_test_app();
     app.mcp_config_path = path.clone();
@@ -3490,7 +3616,7 @@ async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
             connected: true,
             error: None,
             auth_required: false,
-            capability_metadata: crate::mcp::McpServerCapabilityMetadata::LegacyFallback,
+            capability_metadata: codewhale_engine::mcp::McpServerCapabilityMetadata::LegacyFallback,
             tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
@@ -3503,7 +3629,7 @@ async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
                 assert_eq!(config_path, path);
                 let sender = tx.lock().unwrap().take().expect("reload reply sender");
                 sender
-                    .send(Ok(crate::core::ops::McpManagerUpdate {
+                    .send(Ok(codewhale_engine::core::ops::McpManagerUpdate {
                         snapshot: response_snapshot,
                         generation: 7,
                     }))
@@ -3523,7 +3649,7 @@ async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
     tokio::join!(action, respond);
 
     assert!(
-        crate::mcp::load_config(&app.mcp_config_path)
+        codewhale_engine::mcp::load_config(&app.mcp_config_path)
             .expect("reload persisted MCP config")
             .servers
             .get("fixture")
@@ -3557,8 +3683,8 @@ async fn mcp_enable_persists_and_applies_the_live_tool_pool_in_one_action() {
 
 #[tokio::test]
 async fn mcp_reload_failure_keeps_pending_state_and_live_snapshot() {
-    use crate::mcp::McpManagerSnapshot;
     use crate::tui::app::McpUiAction;
+    use codewhale_engine::mcp::McpManagerSnapshot;
 
     let mut app = create_test_app();
     app.mcp_reload_required = true;
@@ -6275,7 +6401,8 @@ fn app_system_prompt_includes_configured_instructions() {
         __cw_config_init_4_value
     };
 
-    let prompt = crate::prompts::system_prompt_flat_text(&build_app_system_prompt(&app, &config));
+    let prompt =
+        codewhale_engine::prompts::system_prompt_flat_text(&build_app_system_prompt(&app, &config));
 
     assert!(prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
     assert!(prompt.contains(r#"<instructions source="extra-instructions.md">"#));
@@ -6393,11 +6520,11 @@ fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
         .expect("baseline composer area");
 
     let mut failed = app();
-    failed.mcp_snapshot = Some(crate::mcp::McpManagerSnapshot {
+    failed.mcp_snapshot = Some(codewhale_engine::mcp::McpManagerSnapshot {
         config_path: PathBuf::from("mcp.json"),
         config_exists: true,
         reload_required: false,
-        servers: vec![crate::mcp::McpServerSnapshot {
+        servers: vec![codewhale_engine::mcp::McpServerSnapshot {
             name: "alpha".to_string(),
             enabled: true,
             required: false,
@@ -6409,7 +6536,7 @@ fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
             read_timeout: 5,
             connected: false,
             error: Some("protocol negotiation timed out".to_string()),
-            capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+            capability_metadata: codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
             tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
@@ -6444,8 +6571,8 @@ fn footer_summary_separates_connected_need_login_and_failed() {
         connected: bool,
         auth_required: bool,
         error: Option<&str>,
-    ) -> crate::mcp::McpServerSnapshot {
-        crate::mcp::McpServerSnapshot {
+    ) -> codewhale_engine::mcp::McpServerSnapshot {
+        codewhale_engine::mcp::McpServerSnapshot {
             name: name.to_string(),
             enabled: true,
             required: false,
@@ -6457,7 +6584,7 @@ fn footer_summary_separates_connected_need_login_and_failed() {
             read_timeout: 5,
             connected,
             error: error.map(str::to_string),
-            capability_metadata: crate::mcp::McpServerCapabilityMetadata::NotObserved,
+            capability_metadata: codewhale_engine::mcp::McpServerCapabilityMetadata::NotObserved,
             tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
@@ -6468,7 +6595,7 @@ fn footer_summary_separates_connected_need_login_and_failed() {
     app.onboarding_workspace_trust_gate = false;
     app.onboarding = OnboardingState::None;
     app.launch.visible = false;
-    app.mcp_snapshot = Some(crate::mcp::McpManagerSnapshot {
+    app.mcp_snapshot = Some(codewhale_engine::mcp::McpManagerSnapshot {
         config_path: PathBuf::from("mcp.json"),
         config_exists: true,
         reload_required: false,
@@ -7128,7 +7255,7 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
     app.history = vec![
         HistoryCell::Error {
             message: "selected error".into(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
         running_exec_cell(),
     ];
@@ -7253,7 +7380,7 @@ fn advertised_reasoning_space_dispatches_after_first_char_paste_hold() {
     );
     assert!(flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_flush_delay()
     ));
     assert_eq!(
         app.cell_folds.get(&0),
@@ -7302,7 +7429,7 @@ fn raw_paste_beginning_with_space_preserves_payload_over_reasoning_action() {
     );
     assert!(flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
             + Duration::from_millis(2),
     ));
     assert_eq!(app.input, " x");
@@ -7352,7 +7479,7 @@ fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     app.view_stack.push(HelpView::new());
     let flushed = flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_flush_delay(),
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_flush_delay(),
     );
     assert!(
         !flushed,
@@ -7401,7 +7528,7 @@ fn active_raw_paste_keeps_space_as_payload_over_reasoning_action() {
         "an in-flight raw paste must not trigger transcript actions"
     );
     assert!(app.flush_paste_burst_if_due(
-        now + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
             + Duration::from_millis(2)
     ));
     assert_eq!(app.input, "a ");
@@ -7834,7 +7961,7 @@ fn error_or_interruption_transfers_reasoning_ownership_truthfully() {
         interrupted,
         HistoryCell::Error {
             message: "provider disconnected".to_string(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
     ];
     app.resync_history_revisions();
@@ -7940,7 +8067,7 @@ async fn session_denied_cache_auto_deny_explains_the_cached_rejection() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Denied {
+        Some(codewhale_engine::core::engine::MockApprovalEvent::Denied {
             id: "tool-retry".to_string(),
         })
     );
@@ -8022,11 +8149,11 @@ async fn session_denied_cache_notice_preserves_active_tool_index() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Denied {
+        Some(codewhale_engine::core::engine::MockApprovalEvent::Denied {
             id: tool_id.to_string(),
         })
     );
-    let denied_result = Ok(crate::tools::spec::ToolResult::error(
+    let denied_result = Ok(codewhale_engine::tools::spec::ToolResult::error(
         "request denied by cached approval",
     ));
     handle_tool_call_complete(&mut app, tool_id, tool_name, &denied_result);
@@ -8100,12 +8227,12 @@ async fn session_denied_cache_notice_preserves_parallel_tool_indices() {
     assert_eq!(app.tool_cells.get("tool-denied"), Some(&denied_index));
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Denied {
+        Some(codewhale_engine::core::engine::MockApprovalEvent::Denied {
             id: "tool-denied".to_string(),
         })
     );
 
-    let denied_result = Ok(crate::tools::spec::ToolResult::error(
+    let denied_result = Ok(codewhale_engine::tools::spec::ToolResult::error(
         "request denied by cached approval",
     ));
     handle_tool_call_complete(&mut app, "tool-denied", "exec_shell", &denied_result);
@@ -8186,7 +8313,7 @@ async fn session_denied_cache_notice_renders_host_scope_in_zh_hans() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Denied {
+        Some(codewhale_engine::core::engine::MockApprovalEvent::Denied {
             id: "fetch-retry".to_string(),
         })
     );
@@ -8233,8 +8360,8 @@ fn session_denied_notice_explains_cached_decision_and_recovery() {
 
 #[tokio::test]
 async fn cached_denial_explanation_survives_tool_completion_and_done_render() {
-    use crate::core::engine::MockApprovalEvent;
-    use crate::tools::spec::ToolError;
+    use codewhale_engine::core::engine::MockApprovalEvent;
+    use codewhale_engine::tools::spec::ToolError;
     use ratatui::{Terminal, backend::TestBackend};
 
     let mut app = create_test_app();
@@ -8364,7 +8491,7 @@ fn session_approved_cache_does_not_promote_tool_name_grants_to_whole_tool() {
 
 #[test]
 fn auto_review_force_prompt_fails_closed_without_a_modal() {
-    use crate::core::authority::ApprovalRequestDisposition;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
     let mut app = create_test_app();
     app.approval_mode = ApprovalMode::Auto;
 
@@ -8383,7 +8510,7 @@ fn auto_review_force_prompt_fails_closed_without_a_modal() {
 
 #[test]
 fn forced_approval_prompt_bypasses_session_approval_shortcut() {
-    use crate::core::authority::ApprovalRequestDisposition;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
     app.approval_mode = ApprovalMode::Suggest;
@@ -8406,7 +8533,7 @@ fn forced_approval_prompt_bypasses_session_approval_shortcut() {
 
 #[test]
 fn full_access_auto_approves_requests_while_auto_review_holds_without_a_modal() {
-    use crate::core::authority::ApprovalRequestDisposition;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
     let mut app = create_test_app();
     app.approval_mode = ApprovalMode::Auto;
     assert_eq!(
@@ -8471,13 +8598,13 @@ fn full_access_auto_approves_requests_while_auto_review_holds_without_a_modal() 
 
 #[test]
 fn child_session_grant_auto_approves_next_child_call() {
-    use crate::core::authority::ApprovalRequestDisposition;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
     app.approval_mode = ApprovalMode::Suggest;
     let input = serde_json::json!({"command": "cargo test -p demo"});
     let (child_exact, child_grouping) =
-        crate::tools::subagent::child_approval_keys("agent_a", "exec_shell", &input);
+        codewhale_engine::tools::subagent::child_approval_keys("agent_a", "exec_shell", &input);
 
     // The card stores the engine's agent-scoped grouping key, not its own.
     push_approval_request_view(
@@ -8513,7 +8640,7 @@ fn child_session_grant_auto_approves_next_child_call() {
     app.approval_session_approved.insert(approval_grouping_key);
 
     // The child's next call in the same family runs without a card.
-    let (next_exact, next_grouping) = crate::tools::subagent::child_approval_keys(
+    let (next_exact, next_grouping) = codewhale_engine::tools::subagent::child_approval_keys(
         "agent_a",
         "exec_shell",
         &serde_json::json!({"command": "cargo test -p demo --lib"}),
@@ -8525,7 +8652,8 @@ fn child_session_grant_auto_approves_next_child_call() {
     );
     // The parent's own call in that family still asks.
     let parent_grouping =
-        crate::tools::approval_cache::build_approval_grouping_key("exec_shell", &input).0;
+        codewhale_engine::tools::approval_cache::build_approval_grouping_key("exec_shell", &input)
+            .0;
     assert_eq!(
         resolve_ui_approval_disposition(&app, "exec_shell", &parent_grouping, "key", false),
         ApprovalRequestDisposition::Prompt
@@ -8579,7 +8707,7 @@ fn child_approval_card_hides_always_allow_in_repo() {
         assert_eq!(
             matches!(action, ViewAction::EmitAndClose(_)),
             expect_repo_rule,
-            "only the parent card offers Always allow in this repo"
+            "only the parent card offers Always for this command"
         );
     }
 }
@@ -8691,7 +8819,7 @@ fn setup_checkpoint_waits_for_onboarding_and_skip_flag() {
         .expect("setup state");
     assert_eq!(
         state.constitution_checkpoint_completed_for.as_deref(),
-        Some(crate::prompts::CONSTITUTION_CHECKPOINT_VERSION)
+        Some(codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION)
     );
     assert_eq!(
         state.constitution_choice,
@@ -8733,7 +8861,7 @@ fn setup_runtime_preset_apply_persists_settings_config_and_state() {
         codewhale_config::StepEntry::new(
             codewhale_config::StepStatus::Verified,
             true,
-            crate::prompts::CONSTITUTION_CHECKPOINT_VERSION,
+            codewhale_engine::prompts::CONSTITUTION_CHECKPOINT_VERSION,
         )
         .with_result(preset.result_summary()),
     );
@@ -9309,24 +9437,24 @@ fn tool_result_api_content_is_the_engine_model_view() {
     // to swap anything over 12,000 characters for a 240-character receipt
     // that told the model to open a tool details view it cannot open.
     let app = App::new(create_test_options(), &Config::default());
-    let budget = crate::route_budget::route_inline_char_budget_for_route(
+    let budget = codewhale_engine::route_budget::route_inline_char_budget_for_route(
         app.api_provider,
         &app.model,
         app.active_route_limits,
     );
     let line = "LIVE_RAW_SENTINEL\n";
     let within = line.repeat((budget - 1) / line.len());
-    let output = crate::tools::spec::ToolResult::success(within.clone());
+    let output = codewhale_engine::tools::spec::ToolResult::success(within.clone());
     let content = tool_result_content_for_api_message(&app, "exec_shell", &output);
     assert_eq!(content, within.trim());
     assert!(!content.contains("[TOOL_OUTPUT_RECEIPT]"));
 
     let over = line.repeat(budget / line.len() + 100);
-    let output = crate::tools::spec::ToolResult::success(over);
+    let output = codewhale_engine::tools::spec::ToolResult::success(over);
     let content = tool_result_content_for_api_message(&app, "exec_shell", &output);
     assert_eq!(
         content,
-        crate::core::engine::compact_tool_result_for_route(
+        codewhale_engine::core::engine::compact_tool_result_for_route(
             app.api_provider,
             &app.model,
             app.active_route_limits,
@@ -9372,10 +9500,16 @@ fn authoritative_user_message(text: &str) -> Message {
 
 fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
     SavedSession {
+        write_receipt: None,
+
         schema_version: 1,
-        metadata: crate::session_manager::SessionMetadata {
+        metadata: codewhale_engine::session_manager::SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: uuid::Uuid::new_v4().to_string(),
             title: "resume recovery".to_string(),
+            title_is_custom: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             message_count: messages.len(),
@@ -9385,7 +9519,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             model_provider_id: None,
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
-            cost: crate::session_manager::SessionCostSnapshot::default(),
+            cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
             parent_session_id: None,
             forked_from_message_count: None,
             runtime_store: None,
@@ -9731,11 +9865,9 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
     app.session.session_cost_cny = 9.13;
     app.session.subagent_cost = 0.75;
     app.session.subagent_cost_cny = 5.48;
-    app.session
-        .subagent_usage_sources
-        .insert(crate::cost_status::usage_source_fingerprint(
-            "response-test",
-        ));
+    app.session.subagent_usage_sources.insert(
+        codewhale_engine::cost_status::usage_source_fingerprint("response-test"),
+    );
     app.session.displayed_cost_high_water = 2.0;
     app.session.displayed_cost_high_water_cny = 14.61;
     app.session.last_prompt_tokens = Some(120);
@@ -9800,7 +9932,7 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
 /// to recognize that shape rather than trust it (#4318).
 #[test]
 fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
-    let _cost_scope = crate::cost_status::test_scope();
+    let _cost_scope = codewhale_engine::cost_status::test_scope();
     let mut app = create_test_app();
     // Live state from the session being replaced.
     app.session.cost_priced_turns = 9;
@@ -9819,7 +9951,7 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
     app.session.cost_coverage_unknown_legacy = true;
 
     let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
-    session.metadata.cost = crate::session_manager::SessionCostSnapshot {
+    session.metadata.cost = codewhale_engine::session_manager::SessionCostSnapshot {
         session_cost_usd: 2.5,
         subagent_cost_usd: 1.25,
         priced_turns: 2,
@@ -9832,12 +9964,12 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
         pricing_provenances: ["models_dev_bundled".to_string()].into(),
         route_receipts: ["provider=deepseek identity=deepseek model=deepseek-v4-flash".to_string()]
             .into(),
-        usage_source_fingerprints: [crate::cost_status::usage_source_fingerprint(
+        usage_source_fingerprints: [codewhale_engine::cost_status::usage_source_fingerprint(
             "subagent:agent-reload:step:1:response:late",
         )]
         .into(),
         coverage_recorded: true,
-        ..crate::session_manager::SessionCostSnapshot::default()
+        ..codewhale_engine::session_manager::SessionCostSnapshot::default()
     };
 
     apply_loaded_session(&mut app, &mut Config::default(), &session).expect("restore session");
@@ -9865,19 +9997,19 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
             .cloned()
             .collect()
     );
-    assert!(crate::cost_status::usage_source_seen(
+    assert!(codewhale_engine::cost_status::usage_source_seen(
         "subagent:agent-reload:step:1:response:late"
     ));
     let replay_owner = "interactive:reloaded-session:turn-replay";
-    crate::cost_status::register_interactive_runtime_usage_sink(
+    codewhale_engine::cost_status::register_interactive_runtime_usage_sink(
         replay_owner,
-        crate::cost_status::scope_token(),
+        codewhale_engine::cost_status::scope_token(),
     );
-    crate::cost_status::report_effective_route_for_runtime(
-        crate::cost_status::scope_token(),
+    codewhale_engine::cost_status::report_effective_route_for_runtime(
+        codewhale_engine::cost_status::scope_token(),
         Some(replay_owner),
         "subagent:agent-reload:step:1:response:late",
-        &crate::cost_status::EffectiveRouteEnvelope::capture(
+        &codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
             None,
             ProviderKind::Anthropic,
             "anthropic-direct",
@@ -9891,9 +10023,9 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
             ..Usage::default()
         },
     );
-    crate::cost_status::finish_runtime_usage_owner(replay_owner);
+    codewhale_engine::cost_status::finish_runtime_usage_owner(replay_owner);
     assert!(
-        crate::cost_status::drain().is_empty(),
+        codewhale_engine::cost_status::drain().is_empty(),
         "a re-delivered provider response must remain deduped after reload"
     );
     assert_eq!(app.session.cost_route_receipts.len(), 1);
@@ -10654,7 +10786,7 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_string();
     let compaction = app.compaction_config();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     apply_model_and_compaction_update(
         &engine.handle,
@@ -10665,7 +10797,7 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
     .await;
 
     match engine.rx_op.recv().await.expect("set model op") {
-        crate::core::ops::Op::SetModel {
+        codewhale_engine::core::ops::Op::SetModel {
             model,
             mode,
             route_limits: _,
@@ -10677,7 +10809,7 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
     }
 
     match engine.rx_op.recv().await.expect("set compaction op") {
-        crate::core::ops::Op::SetCompaction { config } => {
+        codewhale_engine::core::ops::Op::SetCompaction { config } => {
             assert_eq!(config.model, "deepseek-v4-flash");
         }
         other => panic!("expected SetCompaction, got {other:?}"),
@@ -10688,7 +10820,7 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
 async fn mode_change_update_notifies_engine() {
     let mut app = create_test_app();
     let _ = app.set_mode(AppMode::Plan);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     assert!(
         apply_yolo_compat_update(
@@ -10700,7 +10832,7 @@ async fn mode_change_update_notifies_engine() {
     );
 
     match engine.rx_op.recv().await.expect("change mode op") {
-        crate::core::ops::Op::ChangeMode {
+        codewhale_engine::core::ops::Op::ChangeMode {
             mode,
             allow_shell,
             trust_mode,
@@ -10728,7 +10860,7 @@ async fn mode_change_update_sends_restored_agent_policy() {
     app.trust_mode = false;
     app.approval_mode = ApprovalMode::Never;
     let _ = app.set_mode(AppMode::Plan);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     assert!(
         apply_mode_update(
@@ -10741,7 +10873,7 @@ async fn mode_change_update_sends_restored_agent_policy() {
     );
 
     match engine.rx_op.recv().await.expect("change mode op") {
-        crate::core::ops::Op::ChangeMode {
+        codewhale_engine::core::ops::Op::ChangeMode {
             mode,
             allow_shell,
             trust_mode,
@@ -10795,7 +10927,7 @@ async fn operate_entry_preserves_live_custom_identity_and_auto_over_startup_rout
         );
         let mut config = operate_tui_route_config();
         config.fleet_operator_route_applied = true;
-        let manager = crate::automation_manager::AutomationManager::open_for_test(
+        let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
             root.path().join("automations"),
         )
         .expect("manager");
@@ -10815,17 +10947,18 @@ async fn operate_entry_preserves_live_custom_identity_and_auto_over_startup_rout
         let record = automations
             .lock()
             .await
-            .get_automation(crate::operate::OPERATE_KEEPALIVE_ID)
+            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
             .expect("keepalive installed");
         assert_eq!(record.model.as_deref(), Some(selected));
         assert_eq!(record.model_provider.as_deref(), Some("custom"));
         assert_eq!(record.model_provider_id.as_deref(), Some("openai"));
         assert_eq!(record.auto_approve, Some(false));
-        let operation = crate::operate::OperationStore::open(root.path().join("operate"))
-            .expect("store")
-            .load()
-            .expect("load")
-            .expect("operation");
+        let operation =
+            codewhale_engine::operate::OperationStore::open(root.path().join("operate"))
+                .expect("store")
+                .load()
+                .expect("load")
+                .expect("operation");
         assert_eq!(operation.lead_operator.model, selected);
         assert!(
             operation
@@ -10855,15 +10988,16 @@ async fn operate_rejected_attach_does_not_reactivate_saved_keepalive() {
     let operate_dir = root.path().join("operate");
     let _operate = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", &operate_dir);
     let config = operate_tui_route_config();
-    let manager = crate::automation_manager::AutomationManager::open_for_test(
+    let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
         root.path().join("automations"),
     )
     .expect("manager");
-    crate::operate::upsert_keepalive(&manager, root.path(), true, &config, None).expect("upsert");
-    crate::operate::pause_keepalive(&manager).expect("pause");
+    codewhale_engine::operate::upsert_keepalive(&manager, root.path(), true, &config, None)
+        .expect("upsert");
+    codewhale_engine::operate::pause_keepalive(&manager).expect("pause");
     let before = serde_json::to_value(
         manager
-            .get_automation(crate::operate::OPERATE_KEEPALIVE_ID)
+            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
             .expect("record"),
     )
     .expect("json");
@@ -10881,12 +11015,12 @@ async fn operate_rejected_attach_does_not_reactivate_saved_keepalive() {
     let record = automations
         .lock()
         .await
-        .get_automation(crate::operate::OPERATE_KEEPALIVE_ID)
+        .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
         .expect("saved keepalive");
     assert_eq!(serde_json::to_value(&record).expect("json"), before);
     assert_eq!(
         record.status,
-        crate::automation_manager::AutomationStatus::Paused
+        codewhale_engine::automation_manager::AutomationStatus::Paused
     );
     assert!(record.next_run_at.is_none());
     assert_eq!(
@@ -10903,8 +11037,8 @@ async fn operate_mode_entry_attaches_to_recorded_operation() {
     let _operate_dir = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", dir.path());
     // Pre-record a planned operation: entering Operate must attach to it
     // (same id) instead of minting a fresh record that resets spend and plan.
-    let store = crate::operate::OperationStore::open(dir.path()).expect("store");
-    let recorded = crate::operate::start_operation(
+    let store = codewhale_engine::operate::OperationStore::open(dir.path()).expect("store");
+    let recorded = codewhale_engine::operate::start_operation(
         &store,
         dir.path(),
         Some("Steady ops".into()),
@@ -10919,10 +11053,12 @@ async fn operate_mode_entry_attaches_to_recorded_operation() {
 
     let mut app = create_test_app();
     app.runtime_services.automations = Some(Arc::new(tokio::sync::Mutex::new(
-        crate::automation_manager::AutomationManager::open_for_test(dir.path().join("automations"))
-            .expect("automations"),
+        codewhale_engine::automation_manager::AutomationManager::open_for_test(
+            dir.path().join("automations"),
+        )
+        .expect("automations"),
     )));
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     assert!(
         apply_mode_update(
             &mut app,
@@ -11112,9 +11248,9 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
     app.onboarding_needs_api_key = true;
     app.view_stack
         .push(ProviderPickerView::new(ProviderKind::Deepseek, &config));
-    let endpoint_v1 = crate::local_ollama::ollama_v1_base_url(&config);
-    let catalog = crate::local_ollama::LiveLocalOllamaCatalog {
-        ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+    let endpoint_v1 = codewhale_engine::local_ollama::ollama_v1_base_url(&config);
+    let catalog = codewhale_engine::local_ollama::LiveLocalOllamaCatalog {
+        ticket: codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             ProviderKind::Ollama,
             "ollama",
             &endpoint_v1,
@@ -11136,7 +11272,7 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
     assert_ne!(app.api_provider, ProviderKind::Ollama);
 
     let stale = catalog.clone();
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
         ProviderKind::Ollama,
         "ollama",
         &catalog.endpoint_v1,
@@ -11149,7 +11285,7 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
     )
     .await;
     assert_ne!(app.api_provider, ProviderKind::Ollama);
-    let catalog = crate::local_ollama::LiveLocalOllamaCatalog { ticket, ..catalog };
+    let catalog = codewhale_engine::local_ollama::LiveLocalOllamaCatalog { ticket, ..catalog };
 
     super::event_loop::adopt_live_local_ollama_catalog(
         &mut app,
@@ -11258,9 +11394,9 @@ async fn first_run_route_keeps_explicit_choice_when_credentials_are_missing() {
             &mut app,
             &mut engine.handle,
             &mut config,
-            crate::local_ollama::LiveLocalOllamaCatalog {
+            codewhale_engine::local_ollama::LiveLocalOllamaCatalog {
                 endpoint_v1: "http://127.0.0.1:11434/v1".into(),
-                ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+                ticket: codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
                     ProviderKind::Ollama,
                     "ollama",
                     "http://127.0.0.1:11434/v1",
@@ -11347,10 +11483,10 @@ fn first_run_route_env_guards() -> Vec<crate::test_support::EnvVarGuard> {
     .collect()
 }
 
-fn first_run_route_catalog() -> crate::local_ollama::LiveLocalOllamaCatalog {
-    let endpoint_v1 = crate::local_ollama::ollama_v1_base_url(&Config::default());
-    crate::local_ollama::LiveLocalOllamaCatalog {
-        ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+fn first_run_route_catalog() -> codewhale_engine::local_ollama::LiveLocalOllamaCatalog {
+    let endpoint_v1 = codewhale_engine::local_ollama::ollama_v1_base_url(&Config::default());
+    codewhale_engine::local_ollama::LiveLocalOllamaCatalog {
+        ticket: codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             ProviderKind::Ollama,
             "ollama",
             &endpoint_v1,
@@ -12686,7 +12822,7 @@ async fn auto_dispatch_keeps_last_and_pending_receipts_aligned() {
         app.last_auto_route_receipt
             .as_ref()
             .map(|receipt| receipt.tier),
-        Some(crate::model_routing::AutoRouteTier::Strong)
+        Some(codewhale_engine::model_routing::AutoRouteTier::Strong)
     );
     // GLM-5.3 publishes its own low/high/max ladder (#6612), so the Low
     // preference reaches the wire as Low instead of being raised to High.
@@ -12765,8 +12901,12 @@ async fn paused_dispatch_at_compaction_threshold_enqueues_one_atomic_send() {
     app.auto_compact_threshold_percent = 10.0;
     app.api_messages =
         std::sync::Arc::new(vec![text_message("assistant", &"context ".repeat(240_000))]);
-    let planned_compaction =
-        app.compaction_config_for_route(app.api_provider, &app.model, app.active_route_limits);
+    let planned_compaction = app.compaction_config_for_route(
+        app.api_provider,
+        &app.model,
+        app.active_route_limits,
+        app.active_context_window,
+    );
     let fixture_used =
         estimated_context_tokens(&app).expect("fixture context estimate should be available");
     assert!(
@@ -12819,7 +12959,8 @@ async fn real_engine_client_preflight_failure_leaves_dispatch_state_atomic() {
     let mut app = create_test_app();
     app.set_provider_identity(ProviderKind::Custom, "lm-studio");
     app.set_model_selection("local-model".to_string());
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
 
     let err = dispatch_user_message(
         &mut app,
@@ -12908,7 +13049,8 @@ async fn immediate_submit_custom_provider_preflight_restores_exact_message() {
         .handle_composer_enter(true)
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
 
     submit_or_steer_message(
         &mut app,
@@ -12977,7 +13119,8 @@ async fn remote_preflight_failure_releases_the_account_owned_run() {
     app.remote_control
         .activate_prompt("run_remote_fixture", "turn_remote_fixture")
         .unwrap();
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
 
     dispatch_user_message(
         &mut app,
@@ -13021,7 +13164,8 @@ async fn immediate_submit_custom_provider_missing_key_preflight_shows_auth_next_
         .handle_composer_enter(true)
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
 
     submit_or_steer_message(
         &mut app,
@@ -13277,7 +13421,8 @@ async fn failed_real_preflight_preserves_paused_command_state_and_engine_gate() 
     app.goal.tokens_used = 7;
     app.goal.time_used_seconds = 11;
     app.goal.continuation_count = 2;
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
     handle.set_paused(true);
 
     dispatch_user_message(
@@ -13411,16 +13556,20 @@ fn auto_routed_turn_compaction_uses_selected_route_not_stale_app_route() {
         .expect("resolve auto-selected route")
         .validate()
         .expect("preflight auto-selected route");
-    let route_limits = crate::route_budget::known_route_limits(route.candidate.limits());
+    let route_limits = codewhale_engine::route_budget::known_route_limits(route.candidate.limits());
 
-    let compaction =
-        app.compaction_config_for_route(route.identity.provider, &route.model, route_limits);
+    let compaction = app.compaction_config_for_route(
+        route.identity.provider,
+        &route.model,
+        route_limits,
+        Some(route.context_window),
+    );
 
     assert_eq!(compaction.model, "vendor/model-b");
     assert_eq!(compaction.effective_context_window, Some(196_000));
     assert_eq!(
         compaction.token_threshold,
-        crate::route_budget::compaction_threshold_for_route_at_percent(
+        codewhale_engine::route_budget::compaction_threshold_for_route_at_percent(
             ProviderKind::Openrouter,
             "vendor/model-b",
             route_limits,
@@ -13429,13 +13578,13 @@ fn auto_routed_turn_compaction_uses_selected_route_not_stale_app_route() {
     );
     assert_ne!(compaction, app.compaction_config());
 
-    let pre_send_compact = crate::core::ops::Op::CompactContext {
+    let pre_send_compact = codewhale_engine::core::ops::Op::CompactContext {
         id: "compact-test".into(),
         route: Box::new(route.into_resolved()),
         compaction: Box::new(compaction.clone()),
     };
     match pre_send_compact {
-        crate::core::ops::Op::CompactContext {
+        codewhale_engine::core::ops::Op::CompactContext {
             route, compaction, ..
         } => {
             assert_eq!(route.identity.provider, ProviderKind::Openrouter);
@@ -13486,7 +13635,7 @@ fn manual_compaction_queues_once_after_active_turn_without_blocking() {
         Some("Making room is queued — it runs after this turn.")
     );
     match engine.rx_op.try_recv().expect("one queued compact op") {
-        crate::core::ops::Op::CompactContext { compaction, .. } => {
+        codewhale_engine::core::ops::Op::CompactContext { compaction, .. } => {
             assert_eq!(
                 compaction.focus.as_deref(),
                 Some("preserve verification evidence")
@@ -13512,7 +13661,7 @@ fn full_engine_mailbox_defers_manual_compaction_and_flushes_once_drained() {
     for _ in 0..32 {
         engine
             .handle
-            .try_send(crate::core::ops::Op::ListSubAgents)
+            .try_send(codewhale_engine::core::ops::Op::ListSubAgents)
             .expect("fill mock engine mailbox");
     }
 
@@ -13541,7 +13690,7 @@ fn full_engine_mailbox_defers_manual_compaction_and_flushes_once_drained() {
     // with its original focus, behind the ops that were already queued.
     assert!(matches!(
         engine.rx_op.try_recv(),
-        Ok(crate::core::ops::Op::ListSubAgents)
+        Ok(codewhale_engine::core::ops::Op::ListSubAgents)
     ));
     flush_deferred_manual_compaction(&mut app, &config, &engine.handle);
     assert!(app.deferred_manual_compaction.is_none());
@@ -13549,11 +13698,11 @@ fn full_engine_mailbox_defers_manual_compaction_and_flushes_once_drained() {
     for _ in 0..31 {
         assert!(matches!(
             engine.rx_op.try_recv(),
-            Ok(crate::core::ops::Op::ListSubAgents)
+            Ok(codewhale_engine::core::ops::Op::ListSubAgents)
         ));
     }
     match engine.rx_op.try_recv().expect("one deferred compact op") {
-        crate::core::ops::Op::CompactContext { compaction, .. } => {
+        codewhale_engine::core::ops::Op::CompactContext { compaction, .. } => {
             assert_eq!(
                 compaction.focus.as_deref(),
                 Some("preserve verification evidence")
@@ -13712,8 +13861,9 @@ fn context_override_drives_compaction_meter_and_preflight_budget() {
     };
     let route = resolve_runtime_route(&config, ProviderKind::Moonshot, Some("kimi-k3"))
         .expect("resolve configured 256K route");
-    let override_limits = crate::route_budget::known_route_limits(route.candidate.limits())
-        .expect("configured route limits");
+    let override_limits =
+        codewhale_engine::route_budget::known_route_limits(route.candidate.limits())
+            .expect("configured route limits");
     assert_eq!(
         config.context_window_for_provider_config(
             &config.test_identity_for_kind(ProviderKind::Moonshot)
@@ -13727,14 +13877,15 @@ fn context_override_drives_compaction_meter_and_preflight_budget() {
     app.auto_model = false;
     app.auto_compact_threshold_percent = 80.0;
     app.active_route_limits = Some(override_limits);
-    app.active_context_window_source = crate::route_runtime::ContextWindowSource::Configured;
+    app.active_context_window_source =
+        codewhale_engine::route_runtime::ContextWindowSource::Configured;
     app.update_model_compaction_budget();
 
     let compaction = app.compaction_config();
     assert_eq!(compaction.effective_context_window, Some(262_144));
     assert_eq!(
         compaction.token_threshold,
-        crate::route_budget::compaction_threshold_for_route_at_percent(
+        codewhale_engine::route_budget::compaction_threshold_for_route_at_percent(
             ProviderKind::Moonshot,
             "kimi-k3",
             Some(override_limits),
@@ -13743,7 +13894,7 @@ fn context_override_drives_compaction_meter_and_preflight_budget() {
     );
     assert!(
         compaction.token_threshold
-            < crate::route_budget::compaction_threshold_for_route_at_percent(
+            < codewhale_engine::route_budget::compaction_threshold_for_route_at_percent(
                 ProviderKind::Moonshot,
                 "kimi-k3",
                 None,
@@ -13761,16 +13912,20 @@ fn context_override_drives_compaction_meter_and_preflight_budget() {
     let (_, meter_window, _) = context_usage_snapshot(&app).expect("context meter");
     assert_eq!(meter_window, 262_144);
 
-    let override_budget = crate::route_budget::route_context_budget(
+    let override_budget = codewhale_engine::route_budget::route_context_budget(
         ProviderKind::Moonshot,
         "kimi-k3",
         Some(override_limits),
         0,
     )
     .expect("override preflight budget");
-    let catalog_budget =
-        crate::route_budget::route_context_budget(ProviderKind::Moonshot, "kimi-k3", None, 0)
-            .expect("catalog preflight budget");
+    let catalog_budget = codewhale_engine::route_budget::route_context_budget(
+        ProviderKind::Moonshot,
+        "kimi-k3",
+        None,
+        0,
+    )
+    .expect("catalog preflight budget");
     assert_eq!(override_budget.window_tokens, 262_144);
     assert!(override_budget.input_budget_ceiling < catalog_budget.input_budget_ceiling);
 }
@@ -13787,11 +13942,12 @@ fn compaction_trigger_meter_and_ladder_share_the_resolved_window() {
     app.model = "qwen3-32b-256k".to_string();
     app.auto_model = false;
     app.active_route_limits = None;
-    app.active_context_window_source = crate::route_runtime::ContextWindowSource::NameSuffixHint;
+    app.active_context_window_source =
+        codewhale_engine::route_runtime::ContextWindowSource::NameSuffixHint;
     app.update_model_compaction_budget();
 
     // Every budget surface resolves the same number from the same chokepoint.
-    let ladder = crate::route_runtime::resolve_context_window(
+    let ladder = codewhale_engine::route_runtime::resolve_context_window(
         ProviderKind::Custom,
         "qwen3-32b-256k",
         None,
@@ -13801,14 +13957,14 @@ fn compaction_trigger_meter_and_ladder_share_the_resolved_window() {
     assert_eq!(ladder.tokens, 256_000);
     assert_eq!(
         ladder.source,
-        crate::route_runtime::ContextWindowSource::NameSuffixHint
+        codewhale_engine::route_runtime::ContextWindowSource::NameSuffixHint
     );
 
     let compaction = app.compaction_config();
     assert_eq!(compaction.effective_context_window, Some(ladder.tokens));
     assert_eq!(
         compaction.token_threshold,
-        crate::route_budget::compaction_threshold_for_route_at_percent(
+        codewhale_engine::route_budget::compaction_threshold_for_route_at_percent(
             ProviderKind::Custom,
             "qwen3-32b-256k",
             None,
@@ -13851,7 +14007,7 @@ fn configure_single_message_submit_hook(app: &mut App, dir: &TempDir, command: S
 
 #[cfg(not(windows))]
 fn configure_message_submit_hooks(app: &mut App, dir: &TempDir, commands: Vec<String>) {
-    app.hooks = crate::hooks::HookExecutor::new(
+    app.hooks = codewhale_engine::hooks::HookExecutor::new(
         codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: commands
@@ -13887,7 +14043,7 @@ printf '%s\n' '{"text":"off-loop replacement"}'
     let (completion_tx, mut completion_rx) =
         tokio::sync::mpsc::channel::<crate::tui::app::DispatchApplyFn>(2);
     app.dispatch_completion_tx = Some(completion_tx);
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let config = Config::default();
 
     let started = std::time::Instant::now();
@@ -13945,7 +14101,7 @@ async fn live_steer_crosses_message_submit_transform_exactly_once() {
     let mut app = create_test_app();
     app.is_loading = true;
     configure_single_message_submit_hook(&mut app, &dir, replace);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     attempt_steer_with_queue_fallback(
         &mut app,
@@ -13994,7 +14150,7 @@ async fn a_steer_settles_even_though_the_engine_stored_it_trimmed() {
     let session = super::event_loop::ensure_runtime_session_id(&mut app);
     app.api_messages = std::sync::Arc::new(vec![text_message("user", "original request")]);
     app.is_loading = true;
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     attempt_steer_with_queue_fallback(
         &mut app,
@@ -14017,10 +14173,14 @@ async fn a_steer_settles_even_though_the_engine_stored_it_trimmed() {
     let workspace = app.workspace.clone();
     // The engine's record carries the trimmed form, which is what
     // `turn_loop` stores for a committed steer.
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: session,
             messages: std::sync::Arc::new(vec![
@@ -14061,7 +14221,7 @@ async fn steer_becomes_the_newest_transcript_entry_only_when_the_engine_records_
         streaming: false,
     });
     app.is_loading = true;
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     attempt_steer_with_queue_fallback(
         &mut app,
@@ -14096,10 +14256,14 @@ async fn steer_becomes_the_newest_transcript_entry_only_when_the_engine_records_
     app.is_loading = false;
     let model = app.model.clone();
     let workspace = app.workspace.clone();
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: session,
             messages: std::sync::Arc::new(vec![
@@ -14135,7 +14299,7 @@ async fn steer_becomes_the_newest_transcript_entry_only_when_the_engine_records_
 async fn steer_the_turn_never_accepted_is_reported_not_left_in_the_transcript() {
     let mut app = create_test_app();
     app.is_loading = true;
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     attempt_steer_with_queue_fallback(
         &mut app,
@@ -14189,7 +14353,7 @@ async fn denied_steer_restores_queued_draft_and_keeps_active_turn() {
     let mut app = create_test_app();
     app.is_loading = true;
     configure_single_message_submit_hook(&mut app, &dir, deny);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let message = QueuedMessage::new("preserve edited draft".to_string(), None);
 
     attempt_steer_with_queue_fallback(
@@ -14224,7 +14388,7 @@ async fn lost_strict_message_submit_executor_keeps_dispatch_atomic_and_recoverab
         "unused because dispatch loss is injected",
     );
     strict.continue_on_error = false;
-    app.hooks = crate::hooks::HookExecutor::new(
+    app.hooks = codewhale_engine::hooks::HookExecutor::new(
         codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: vec![strict],
@@ -14233,7 +14397,7 @@ async fn lost_strict_message_submit_executor_keeps_dispatch_atomic_and_recoverab
         app.workspace.clone(),
     );
     app.hooks.inject_message_submit_executor_loss_for_test();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let (completion_tx, mut completion_rx) =
         tokio::sync::mpsc::channel::<crate::tui::app::DispatchApplyFn>(2);
     app.dispatch_completion_tx = Some(completion_tx);
@@ -14268,7 +14432,7 @@ async fn lost_strict_message_submit_executor_keeps_dispatch_atomic_and_recoverab
 
     // The failed gate leaves no poisoned dispatch state: a later ordinary
     // message can start and reaches the engine exactly once.
-    app.hooks = crate::hooks::HookExecutor::disabled();
+    app.hooks = codewhale_engine::hooks::HookExecutor::disabled();
     dispatch_user_message(
         &mut app,
         &Config::default(),
@@ -14284,7 +14448,7 @@ async fn lost_strict_message_submit_executor_keeps_dispatch_atomic_and_recoverab
             .expect("production completion mailbox closed");
     apply_dispatch(&mut app, &engine.handle, &Config::default()).expect("apply recovery dispatch");
     match engine.rx_op.recv().await.expect("recovery SendMessage") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "recover now");
         }
         other => panic!("expected SendMessage, got {other:?}"),
@@ -14330,13 +14494,13 @@ async fn reserved_dispatch_waits_for_ui_acceptance_before_engine_op() {
     assert!(app.pending_turn_route.is_some());
     assert!(matches!(
         engine.rx_op.try_recv(),
-        Ok(crate::core::ops::Op::SendMessage (TurnSpec { content, provenance: UserInputProvenance::ExternalUser, .. }))
+        Ok(codewhale_engine::core::ops::Op::SendMessage (TurnSpec { content, provenance: UserInputProvenance::ExternalUser, .. }))
             if content == "preserve Engine lifecycle"
     ));
     assert!(engine.rx_op.try_recv().is_err(), "one Engine admission");
     assert!(rx.try_recv().is_err(), "no late reset callback remains");
 
-    use crate::extension_host::tests::{FixturePlugins, node_for_tests};
+    use codewhale_engine::extension_host::test_support::{FixturePlugins, node_for_tests};
     let Some(node) = node_for_tests("reserved_dispatch_extension_command") else {
         return;
     };
@@ -14344,14 +14508,16 @@ async fn reserved_dispatch_waits_for_ui_acceptance_before_engine_op() {
     let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["ext-commands"]).await;
     let manager = fixture.manager(node);
-    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+    let _manager =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&manager));
     let attachment = manager.attach(fixture.registry());
     attachment.set_identity(Some("extension-dispatch".into()), None);
     attachment.sync().await.unwrap();
-    let entry = crate::extension_host::live_commands_for_plugins(&attachment.plugin_view())
-        .into_iter()
-        .find(|entry| entry.registration.name == "ext-ask")
-        .unwrap();
+    let entry =
+        codewhale_engine::extension_host::live_commands_for_plugins(&attachment.plugin_view())
+            .into_iter()
+            .find(|entry| entry.registration.name == "ext-ask")
+            .unwrap();
     let mut command_message = QueuedMessage::new("Inspect @private.env; continue".into(), None);
     command_message.extension_command = Some((entry.reference(), "extension-dispatch".into()));
     assert!(queued_ui_to_session(&command_message).is_err());
@@ -14407,7 +14573,7 @@ async fn reserved_dispatch_waits_for_ui_acceptance_before_engine_op() {
     assert!(engine.rx_op.try_recv().is_err());
     apply(&mut app, &engine.handle, &config).unwrap();
     assert!(
-        matches!(engine.rx_op.try_recv(), Ok(crate::core::ops::Op::SendMessage(TurnSpec {
+        matches!(engine.rx_op.try_recv(), Ok(codewhale_engine::core::ops::Op::SendMessage(TurnSpec {
         content, provenance: UserInputProvenance::Runtime, goal_objective, goal_token_budget: Some(1234), ..
     })) if content == command_message.display && goal_objective.as_deref() == Some("Owner goal"))
     );
@@ -14478,12 +14644,12 @@ async fn reserved_dispatch_waits_for_ui_acceptance_before_engine_op() {
 
 #[tokio::test]
 async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn() {
-    use crate::core::engine::{Engine, EngineConfig};
-    use crate::core::events::TurnOutcomeStatus;
-    use crate::core::ops::Op;
-    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_engine::core::engine::{Engine, EngineConfig};
+    use codewhale_engine::core::events::TurnOutcomeStatus;
+    use codewhale_engine::core::ops::Op;
+    use codewhale_engine::llm_client::mock::{MockLlmClient, canned};
 
-    async fn snapshot(handle: &EngineHandle) -> crate::core::ops::SessionSnapshot {
+    async fn snapshot(handle: &EngineHandle) -> codewhale_engine::core::ops::SessionSnapshot {
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle
             .send(Op::GetSessionSnapshot {
@@ -14583,7 +14749,7 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
         assert_eq!(terminal.last_response_tool_calls_suppressed, Some(0));
         assert_eq!(
             terminal.reason,
-            Some(crate::tool_inspection::TurnStopReason::ProviderNoToolCall)
+            Some(codewhale_engine::tool_inspection::TurnStopReason::ProviderNoToolCall)
         );
         let saved = snapshot(&handle).await;
         let saved_messages = serde_json::to_string(&saved.messages).unwrap();
@@ -14648,7 +14814,9 @@ async fn reserved_dispatch_cancel_before_acceptance_keeps_prompt_and_next_dispat
             apply(&mut app, &engine.handle, &config).expect("next dispatch");
             assert!(matches!(
                 engine.rx_op.try_recv(),
-                Ok(crate::core::ops::Op::SendMessage(TurnSpec { .. }))
+                Ok(codewhale_engine::core::ops::Op::SendMessage(
+                    TurnSpec { .. }
+                ))
             ));
             assert!(engine.rx_op.try_recv().is_err());
         }
@@ -14662,7 +14830,7 @@ async fn reserved_dispatch_cancel_before_acceptance_keeps_prompt_and_next_dispat
     while engine
         .handle
         .tx_op
-        .try_send(crate::core::ops::Op::Shutdown)
+        .try_send(codewhale_engine::core::ops::Op::Shutdown)
         .is_ok()
     {}
     start_user_dispatch(
@@ -14707,7 +14875,9 @@ async fn reserved_dispatch_cancel_before_acceptance_keeps_prompt_and_next_dispat
     apply(&mut app, &engine.handle, &config).expect("next dispatch accepted");
     assert!(matches!(
         engine.rx_op.try_recv(),
-        Ok(crate::core::ops::Op::SendMessage(TurnSpec { .. }))
+        Ok(codewhale_engine::core::ops::Op::SendMessage(
+            TurnSpec { .. }
+        ))
     ));
 }
 
@@ -14725,7 +14895,7 @@ async fn failed_dispatch_after_local_cancel_retires_suppression() {
         .expect("prepare dispatch");
         mark_active_turn_cancelled_locally(&mut app);
         if replaced_session {
-            let _ = crate::cost_status::close_current_scope();
+            let _ = codewhale_engine::cost_status::close_current_scope();
             app.input = "replacement draft".to_string();
         }
         let apply = build_dispatch_error_closure(
@@ -14840,7 +15010,7 @@ async fn reserved_dispatch_replaced_engine_or_session_leaves_current_state_untou
         assert!(origin.handle.is_cancelled());
         assert!(app.suppress_stream_events_until_turn_complete);
         if !replace_engine {
-            let _ = crate::cost_status::close_current_scope();
+            let _ = codewhale_engine::cost_status::close_current_scope();
         }
         app.api_messages = std::sync::Arc::new(vec![text_message("user", "replacement session")]);
         app.input = "new draft".to_string();
@@ -14887,7 +15057,7 @@ async fn reserved_dispatch_replaced_engine_or_session_leaves_current_state_untou
         };
         assert!(matches!(
             next_op,
-            Ok(crate::core::ops::Op::SendMessage (TurnSpec { content, .. }))
+            Ok(codewhale_engine::core::ops::Op::SendMessage (TurnSpec { content, .. }))
                 if content == "new session request"
         ));
     }
@@ -14896,7 +15066,7 @@ async fn reserved_dispatch_replaced_engine_or_session_leaves_current_state_untou
 #[tokio::test]
 async fn full_dispatch_completion_mailbox_restores_message_without_stuck_dispatch() {
     let mut app = create_test_app();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let (completion_tx, _completion_rx) =
         tokio::sync::mpsc::channel::<crate::tui::app::DispatchApplyFn>(1);
     completion_tx
@@ -14927,7 +15097,7 @@ async fn full_dispatch_completion_mailbox_restores_message_without_stuck_dispatc
 #[tokio::test]
 async fn closed_dispatch_completion_mailbox_restores_message_without_stuck_dispatch() {
     let mut app = create_test_app();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let (completion_tx, completion_rx) =
         tokio::sync::mpsc::channel::<crate::tui::app::DispatchApplyFn>(1);
     drop(completion_rx);
@@ -14956,7 +15126,7 @@ async fn closed_dispatch_completion_mailbox_restores_message_without_stuck_dispa
 #[test]
 fn subagent_event_handlers_preserve_dispatch_failures_as_separate_toasts() {
     let mut app = create_test_app();
-    app.hooks = crate::hooks::HookExecutor::new(
+    app.hooks = codewhale_engine::hooks::HookExecutor::new(
         codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: vec![
@@ -14996,7 +15166,7 @@ fn subagent_event_handlers_preserve_dispatch_failures_as_separate_toasts() {
         &mut app,
         "agent-test",
         "finished cleanly",
-        &crate::tools::subagent::SubAgentStatus::Completed,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
     );
     assert!(app.status_toasts.iter().any(|toast| {
         toast.level == StatusToastLevel::Success
@@ -15028,7 +15198,7 @@ printf '%s\n' '{"text":"after timeout"}'
 "#,
     );
     let mut app = create_test_app();
-    app.hooks = crate::hooks::HookExecutor::new(
+    app.hooks = codewhale_engine::hooks::HookExecutor::new(
         codewhale_config::hooks::HooksConfig {
             enabled: true,
             hooks: vec![
@@ -15047,7 +15217,7 @@ printf '%s\n' '{"text":"after timeout"}'
         },
         dir.path().to_path_buf(),
     );
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let config = Config::default();
 
     dispatch_user_message(
@@ -15064,7 +15234,7 @@ printf '%s\n' '{"text":"after timeout"}'
         Some("hook timed out after 1s")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "after timeout");
         }
         other => panic!("expected SendMessage, got {other:?}"),
@@ -15092,7 +15262,7 @@ printf '%s\n' '{"text":"after soft failure"}'
     );
     let mut app = create_test_app();
     configure_message_submit_hooks(&mut app, &dir, vec![failing, replacing]);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let config = Config::default();
 
     dispatch_user_message(
@@ -15109,7 +15279,7 @@ printf '%s\n' '{"text":"after soft failure"}'
         Some("message_submit hook exited with code 9")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "after soft failure");
         }
         other => panic!("expected SendMessage, got {other:?}"),
@@ -15185,7 +15355,7 @@ printf '%s\n' '{"text":"[hooked] hello"}'
     );
     let mut app = create_test_app();
     configure_single_message_submit_hook(&mut app, &dir, command);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let config = Config::default();
 
     dispatch_user_message(
@@ -15208,7 +15378,7 @@ printf '%s\n' '{"text":"[hooked] hello"}'
         ContentBlock::Text { text, .. } if text == "[hooked] hello"
     ));
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "[hooked] hello");
         }
         other => panic!("expected SendMessage, got {other:?}"),
@@ -15229,7 +15399,7 @@ exit 2
     );
     let mut app = create_test_app();
     configure_single_message_submit_hook(&mut app, &dir, command);
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let config = Config::default();
 
     dispatch_user_message(
@@ -15315,7 +15485,7 @@ async fn dispatch_non_resume_message_preserves_paused_command_state() {
     assert!(app.goal.objective.is_none());
     assert!(!engine.handle.is_paused());
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec {
             profile_constitution: None,
             content,
             goal_objective,
@@ -15357,7 +15527,7 @@ async fn dispatch_resume_message_restores_paused_command_goal() {
     );
     assert!(!engine.handle.is_paused());
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec {
             profile_constitution: None,
             content,
             goal_objective,
@@ -15407,7 +15577,7 @@ async fn dispatch_user_message_keeps_auto_review_separate_from_bypass() {
         .expect("spawned dispatch should deliver Op within timeout")
         .expect("send message op");
     match op {
-        crate::core::ops::Op::SendMessage(TurnSpec {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec {
             mode,
             auto_approve,
             approval_mode,
@@ -15425,47 +15595,54 @@ async fn dispatch_user_message_keeps_auto_review_separate_from_bypass() {
 fn pending_goal_control_waits_for_authoritative_receipt() {
     let mut app = create_test_app();
     app.goal.objective = Some("Ship the release".to_string());
-    app.goal.status = crate::tools::goal::GoalStatus::Active;
-    let paused = crate::tools::goal::GoalSnapshot {
+    app.goal.status = codewhale_engine::tools::goal::GoalStatus::Active;
+    let paused = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release".to_string()),
         status: "paused".to_string(),
-        pause_reason: Some(crate::tools::goal::GoalPauseReason::User),
+        pause_reason: Some(codewhale_engine::tools::goal::GoalPauseReason::User),
         elapsed_seconds: Some(3),
         ..Default::default()
     };
-    app.last_known_goal_state = crate::session_manager::SessionGoalState::from_runtime(&paused)
-        .expect("valid paused target");
+    app.last_known_goal_state =
+        codewhale_engine::session_manager::SessionGoalState::from_runtime(&paused)
+            .expect("valid paused target");
     app.pending_goal_controls
         .push_back(crate::tui::app::PendingGoalControl {
             goal_id: None,
             intent: crate::tui::app::GoalControlIntent::SetStatus {
-                status: crate::tools::goal::GoalStatus::Paused,
+                status: codewhale_engine::tools::goal::GoalStatus::Paused,
                 clear: false,
             },
             dispatched: true,
         });
 
-    let before_receipt = crate::tools::goal::GoalSnapshot {
+    let before_receipt = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release".to_string()),
         status: "active".to_string(),
         elapsed_seconds: Some(2),
         ..Default::default()
     };
     assert!(!apply_goal_snapshot_to_app(&mut app, &before_receipt));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Active
+    );
     assert_eq!(app.pending_goal_controls.len(), 1);
     assert_eq!(
         app.last_known_goal_state.as_ref().map(|goal| goal.status),
-        Some(crate::session_manager::SessionGoalStatus::Paused),
+        Some(codewhale_engine::session_manager::SessionGoalStatus::Paused),
         "an intermediate runtime update must not overwrite the durable accepted target"
     );
 
     assert!(apply_goal_snapshot_to_app(&mut app, &paused));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Paused);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Paused
+    );
     assert!(app.pending_goal_controls.is_empty());
     assert_eq!(
         app.last_known_goal_state.as_ref().map(|goal| goal.status),
-        Some(crate::session_manager::SessionGoalStatus::Paused)
+        Some(codewhale_engine::session_manager::SessionGoalStatus::Paused)
     );
 }
 
@@ -15474,11 +15651,11 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
     let mut app = create_test_app();
     app.goal.objective = Some("Ship the release lane".to_string());
     app.goal.token_budget = Some(10_000);
-    app.goal.status = crate::tools::goal::GoalStatus::Active;
+    app.goal.status = codewhale_engine::tools::goal::GoalStatus::Active;
     let started_at = Instant::now();
     app.goal.started_at = Some(started_at);
 
-    let completed = crate::tools::goal::GoalSnapshot {
+    let completed = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "complete".to_string(),
         token_budget: Some(10_000),
@@ -15489,7 +15666,7 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
         evidence: Some("focused tests passed".to_string()),
         blocker: None,
         pause_reason: None,
-        completion_verification: Some(crate::tools::goal::GoalCompletionVerification {
+        completion_verification: Some(codewhale_engine::tools::goal::GoalCompletionVerification {
             status: "passed".to_string(),
             check: "cargo test".to_string(),
             summary: "focused tests passed".to_string(),
@@ -15504,7 +15681,10 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
     assert_eq!(app.goal.tokens_used, 12_345);
     assert_eq!(app.goal.time_used_seconds, 12);
     assert_eq!(app.goal.continuation_count, 2);
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Complete);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Complete
+    );
     assert_eq!(app.goal.started_at, Some(started_at));
     // A completed goal must freeze the elapsed timer (regression for the bug
     // where the sidebar kept ticking "completed in {elapsed}" forever).
@@ -15513,7 +15693,7 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
         "terminal verdict should set finished_at so the timer freezes"
     );
 
-    let blocked = crate::tools::goal::GoalSnapshot {
+    let blocked = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Different objective".to_string()),
         status: "blocked".to_string(),
         token_budget: None,
@@ -15534,7 +15714,10 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
     assert_eq!(app.goal.tokens_used, 12_345);
     assert_eq!(app.goal.time_used_seconds, 13);
     assert_eq!(app.goal.continuation_count, 3);
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Blocked);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Blocked
+    );
     assert!(app.goal.started_at.is_some());
     assert!(
         app.goal.finished_at.is_some(),
@@ -15545,7 +15728,7 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
 #[test]
 fn apply_goal_snapshot_prints_a_receipt_when_the_runtime_sets_a_new_goal() {
     let mut app = create_test_app();
-    let snapshot = crate::tools::goal::GoalSnapshot {
+    let snapshot = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("make the tests pass".to_string()),
         status: "active".to_string(),
         token_budget: None,
@@ -15607,10 +15790,10 @@ fn apply_goal_snapshot_prints_a_receipt_when_the_runtime_sets_a_new_goal() {
 #[test]
 fn apply_goal_snapshot_prints_one_receipt_per_progress_report() {
     let mut app = create_test_app();
-    let snapshot = crate::tools::goal::GoalSnapshot {
+    let snapshot = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("make the tests pass".to_string()),
         status: "active".to_string(),
-        progress: Some(crate::tools::goal::GoalProgressReport {
+        progress: Some(codewhale_engine::tools::goal::GoalProgressReport {
             percent: 12,
             now: Some("implementing the composer slice".to_string()),
             next: Some("screenshot-verify desktop/mobile".to_string()),
@@ -15642,7 +15825,7 @@ fn apply_goal_snapshot_prints_one_receipt_per_progress_report() {
     // The identical report does not reprint; a new percent does.
     assert!(!apply_goal_snapshot_to_app(&mut app, &snapshot));
     let mut advanced = snapshot.clone();
-    advanced.progress = Some(crate::tools::goal::GoalProgressReport {
+    advanced.progress = Some(codewhale_engine::tools::goal::GoalProgressReport {
         percent: 34,
         now: None,
         next: None,
@@ -15661,7 +15844,7 @@ fn apply_goal_snapshot_prints_one_receipt_per_progress_report() {
 #[test]
 fn canonical_goal_clear_wins_after_stale_active_snapshot() {
     let mut app = create_test_app();
-    let stale_active = crate::tools::goal::GoalSnapshot {
+    let stale_active = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Goal cleared while the prior turn finished".to_string()),
         status: "active".to_string(),
         token_budget: Some(10_000),
@@ -15680,7 +15863,7 @@ fn canonical_goal_clear_wins_after_stale_active_snapshot() {
 
     // SetGoalStatus(clear) is processed after the prior turn's active update.
     // Its canonical empty snapshot must be observable and win the replay.
-    let cleared = crate::tools::goal::GoalSnapshot {
+    let cleared = codewhale_engine::tools::goal::GoalSnapshot {
         objective: None,
         status: "none".to_string(),
         token_budget: None,
@@ -15702,7 +15885,10 @@ fn canonical_goal_clear_wins_after_stale_active_snapshot() {
     assert_eq!(app.goal.continuation_count, 0);
     assert!(app.goal.started_at.is_none());
     assert!(app.goal.finished_at.is_none());
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Active
+    );
     assert!(
         !apply_goal_snapshot_to_app(&mut app, &cleared),
         "replaying the same clear receipt must be idempotent"
@@ -15711,7 +15897,7 @@ fn canonical_goal_clear_wins_after_stale_active_snapshot() {
     // Only the exact empty/none pair is a clear. A malformed objective-less
     // active update must not erase subsequently visible goal state.
     assert!(apply_goal_snapshot_to_app(&mut app, &stale_active));
-    let malformed = crate::tools::goal::GoalSnapshot {
+    let malformed = codewhale_engine::tools::goal::GoalSnapshot {
         status: "active".to_string(),
         ..cleared
     };
@@ -15726,11 +15912,11 @@ fn canonical_goal_clear_wins_after_stale_active_snapshot() {
 fn apply_goal_snapshot_resume_clears_frozen_timer() {
     let mut app = create_test_app();
     app.goal.objective = Some("Ship the release lane".to_string());
-    app.goal.status = crate::tools::goal::GoalStatus::Active;
+    app.goal.status = codewhale_engine::tools::goal::GoalStatus::Active;
     app.goal.started_at = Some(Instant::now());
 
     // First, mark the goal complete — finished_at gets set.
-    let completed = crate::tools::goal::GoalSnapshot {
+    let completed = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "complete".to_string(),
         token_budget: None,
@@ -15741,7 +15927,7 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
         evidence: Some("done".to_string()),
         blocker: None,
         pause_reason: None,
-        completion_verification: Some(crate::tools::goal::GoalCompletionVerification {
+        completion_verification: Some(codewhale_engine::tools::goal::GoalCompletionVerification {
             status: "passed".to_string(),
             check: "cargo test".to_string(),
             summary: "ok".to_string(),
@@ -15750,12 +15936,15 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
         ..Default::default()
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &completed));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Complete);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Complete
+    );
     assert!(app.goal.finished_at.is_some());
 
     // Now a later snapshot reports the goal active again (resume). The frozen
     // timer must clear so the sidebar starts ticking once more.
-    let resumed = crate::tools::goal::GoalSnapshot {
+    let resumed = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "active".to_string(),
         token_budget: None,
@@ -15770,7 +15959,10 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
         ..Default::default()
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &resumed));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Active
+    );
     assert!(
         app.goal.finished_at.is_none(),
         "resume should re-arm the elapsed timer"
@@ -15781,11 +15973,11 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
 fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
     let mut app = create_test_app();
     app.goal.objective = Some("Ship the release lane".to_string());
-    app.goal.status = crate::tools::goal::GoalStatus::Active;
+    app.goal.status = codewhale_engine::tools::goal::GoalStatus::Active;
     app.goal.started_at = Some(Instant::now());
 
     // Pause the goal — the timer freezes.
-    let paused = crate::tools::goal::GoalSnapshot {
+    let paused = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "paused".to_string(),
         token_budget: None,
@@ -15795,15 +15987,18 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         elapsed_seconds: Some(10),
         evidence: None,
         blocker: None,
-        pause_reason: Some(crate::tools::goal::GoalPauseReason::User),
+        pause_reason: Some(codewhale_engine::tools::goal::GoalPauseReason::User),
         completion_verification: None,
         ..Default::default()
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &paused));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Paused);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Paused
+    );
     assert_eq!(
         app.goal.pause_reason,
-        Some(crate::tools::goal::GoalPauseReason::User)
+        Some(codewhale_engine::tools::goal::GoalPauseReason::User)
     );
     let frozen_at = app
         .goal
@@ -15813,7 +16008,7 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
     // Usage keeps accruing while paused (record_goal_usage_for_turn runs on
     // every turn), so a later snapshot arrives with bumped usage but the goal
     // still paused. The frozen timer must NOT silently re-arm.
-    let paused_with_usage = crate::tools::goal::GoalSnapshot {
+    let paused_with_usage = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "paused".to_string(),
         token_budget: None,
@@ -15823,12 +16018,15 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         elapsed_seconds: Some(25),
         evidence: None,
         blocker: None,
-        pause_reason: Some(crate::tools::goal::GoalPauseReason::User),
+        pause_reason: Some(codewhale_engine::tools::goal::GoalPauseReason::User),
         completion_verification: None,
         ..Default::default()
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &paused_with_usage));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Paused);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Paused
+    );
     assert_eq!(
         app.goal.finished_at,
         Some(frozen_at),
@@ -15836,7 +16034,7 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
     );
 
     // Explicit resume still re-arms.
-    let resumed = crate::tools::goal::GoalSnapshot {
+    let resumed = codewhale_engine::tools::goal::GoalSnapshot {
         objective: Some("Ship the release lane".to_string()),
         status: "active".to_string(),
         token_budget: None,
@@ -15851,7 +16049,10 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         ..Default::default()
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &resumed));
-    assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+    assert_eq!(
+        app.goal.status,
+        codewhale_engine::tools::goal::GoalStatus::Active
+    );
     assert_eq!(app.goal.pause_reason, None);
     assert!(
         app.goal.finished_at.is_none(),
@@ -16014,7 +16215,7 @@ fn turn_liveness_keeps_max_duration_exec_shell_wait_alive_with_heartbeat() {
     // watchdog and falsely made the UI idle while the engine still owned the
     // turn.
     const EXEC_SHELL_WAIT_MAX: Duration =
-        Duration::from_millis(crate::tools::shell::EXEC_SHELL_WAIT_MAX_TIMEOUT_MS);
+        Duration::from_millis(codewhale_engine::tools::shell::EXEC_SHELL_WAIT_MAX_TIMEOUT_MS);
     assert_eq!(TOOL_HANG_WATCHDOG_TIMEOUT, EXEC_SHELL_WAIT_MAX);
 
     let mut app = create_test_app();
@@ -16054,11 +16255,11 @@ fn turn_liveness_keeps_max_duration_exec_shell_wait_alive_with_heartbeat() {
 }
 
 fn stall_heartbeat(
-    phase: crate::core::engine::turn_heartbeat::TurnPhase,
+    phase: codewhale_engine::core::engine::turn_heartbeat::TurnPhase,
     bound: Option<Duration>,
     stall: Option<codewhale_runtime::stall_report::StallReport>,
-) -> crate::core::engine::turn_heartbeat::HeartbeatSnapshot {
-    crate::core::engine::turn_heartbeat::HeartbeatSnapshot {
+) -> codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot {
+    codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot {
         phase,
         since_progress: Duration::from_secs(1),
         bound,
@@ -16107,7 +16308,7 @@ fn stall_ui_watchdog_bound_is_decoupled_from_chunk_timeout() {
 
 #[test]
 fn turn_liveness_defers_to_engine_heartbeat_for_quiet_model_waits() {
-    use crate::core::engine::turn_heartbeat::TurnPhase;
+    use codewhale_engine::core::engine::turn_heartbeat::TurnPhase;
     let quiet_turn = || {
         let mut app = create_test_app();
         let started_at = Instant::now();
@@ -16161,7 +16362,7 @@ fn turn_liveness_defers_to_engine_heartbeat_for_quiet_model_waits() {
 
 #[test]
 fn stall_engine_report_shows_phase_and_held_queue() {
-    use crate::core::engine::turn_heartbeat::TurnPhase;
+    use codewhale_engine::core::engine::turn_heartbeat::TurnPhase;
     let mut app = create_test_app();
     app.is_loading = true;
     app.runtime_turn_status = Some("in_progress".to_string());
@@ -16173,7 +16374,7 @@ fn stall_engine_report_shows_phase_and_held_queue() {
         Some(stall_report("while streaming the model response")),
     );
 
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     reconcile_turn_liveness_supervised(&mut app, Instant::now(), &stalled, &engine.handle);
     reconcile_turn_liveness_supervised(&mut app, Instant::now(), &stalled, &engine.handle);
 
@@ -16191,7 +16392,7 @@ fn stall_engine_report_shows_phase_and_held_queue() {
 /// live regardless of elapsed time while they report progress.
 #[test]
 fn stall_prior_session_subagent_is_suspect_but_long_running_child_is_live() {
-    use crate::core::engine::turn_heartbeat::TurnPhase;
+    use codewhale_engine::core::engine::turn_heartbeat::TurnPhase;
     use codewhale_runtime::stall_report::set_test_stall_record_dir;
     let dir = tempfile::tempdir().expect("tempdir");
     set_test_stall_record_dir(Some(dir.path().to_path_buf()));
@@ -16208,7 +16409,7 @@ fn stall_prior_session_subagent_is_suspect_but_long_running_child_is_live() {
     app.turn_last_activity_at = Some(last_activity);
     let mut ghost = make_subagent(
         "agent_ghost",
-        crate::tools::subagent::SubAgentStatus::Running,
+        codewhale_engine::tools::subagent::SubAgentStatus::Running,
     );
     ghost.from_prior_session = true;
     ghost.started_at = Some(now);
@@ -16220,7 +16421,7 @@ fn stall_prior_session_subagent_is_suspect_but_long_running_child_is_live() {
         vec!["agent_ghost".to_string()]
     );
     assert_eq!(live_running_agent_count(&app, now), 0);
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     assert!(!engine.handle.is_cancelled());
     assert!(reconcile_turn_liveness_supervised(
         &mut app,
@@ -16256,7 +16457,7 @@ fn stall_prior_session_subagent_is_suspect_but_long_running_child_is_live() {
     app.turn_last_activity_at = Some(last_activity);
     let mut fresh = make_subagent(
         "agent_fresh",
-        crate::tools::subagent::SubAgentStatus::Running,
+        codewhale_engine::tools::subagent::SubAgentStatus::Running,
     );
     fresh.started_at = now.checked_sub(Duration::from_secs(2 * 60 * 60));
     assert!(fresh.started_at.is_some());
@@ -16266,7 +16467,7 @@ fn stall_prior_session_subagent_is_suspect_but_long_running_child_is_live() {
         .or_default()
         .last_progress_at = Some(now);
     assert_eq!(live_running_agent_count(&app, now), 1);
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     assert!(!reconcile_turn_liveness_supervised(
         &mut app,
         now,
@@ -16407,14 +16608,14 @@ fn turn_liveness_preserves_pending_user_input_beyond_tool_timeout() {
         app.turn_last_activity_at = Some(started_at);
         app.pending_user_input_prompt = Some((
             "question-1".into(),
-            crate::tools::user_input::UserInputRequest {
+            codewhale_engine::tools::user_input::UserInputRequest {
                 require_typed_answers: false,
                 questions: Vec::new(),
             },
         ));
         app.view_stack.push(UserInputView::new(
             "question-1",
-            crate::tools::user_input::UserInputRequest {
+            codewhale_engine::tools::user_input::UserInputRequest {
                 require_typed_answers: false,
                 questions: Vec::new(),
             },
@@ -16469,7 +16670,7 @@ fn turn_liveness_preserves_pending_user_input_beyond_tool_timeout() {
 }
 
 fn install_pending_question(app: &mut App, id: &str) {
-    let request = crate::tools::user_input::UserInputRequest {
+    let request = codewhale_engine::tools::user_input::UserInputRequest {
         require_typed_answers: false,
         questions: Vec::new(),
     };
@@ -16502,7 +16703,7 @@ fn user_input_timeout_retires_only_matching_question_even_when_completion_is_fil
         id: "input-timeout".into(),
         model_call: None,
         name: "request_user_input".into(),
-        result: Err(crate::tools::spec::ToolError::Timeout { seconds: 1 }),
+        result: Err(codewhale_engine::tools::spec::ToolError::Timeout { seconds: 1 }),
     };
     assert!(suppress_engine_event_after_local_cancel(&completion));
     observe_human_request_settlement(&mut app, &completion);
@@ -16526,7 +16727,7 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
         id: id.into(),
         model_call: None,
         name: "execute_tools".into(),
-        result: Err(crate::tools::spec::ToolError::Timeout { seconds: 1 }),
+        result: Err(codewhale_engine::tools::spec::ToolError::Timeout { seconds: 1 }),
     };
     // Neither a previous request nor a wrapping call's different id owns it.
     observe_human_request_settlement(&mut app, &completion("input-old"));
@@ -16535,7 +16736,7 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
         &mut app,
         &EngineEvent::UserInputClosed {
             id: "input-old".into(),
-            outcome: crate::core::events::UserInputClosedOutcome::Cancelled,
+            outcome: codewhale_engine::core::events::UserInputClosedOutcome::Cancelled,
         },
     );
     apply_user_input_submission_result(&mut app, "input-old", Ok(()));
@@ -16556,7 +16757,7 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
             usage: Usage::default(),
             parent_route_usage: Usage::default(),
             routed_usage_dropped_records: 0,
-            status: crate::core::events::TurnOutcomeStatus::Interrupted,
+            status: codewhale_engine::core::events::TurnOutcomeStatus::Interrupted,
             error: None,
             tool_catalog: None,
             base_url: None,
@@ -16569,7 +16770,7 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
         &mut app,
         &EngineEvent::UserInputClosed {
             id: "input-new".into(),
-            outcome: crate::core::events::UserInputClosedOutcome::Answered,
+            outcome: codewhale_engine::core::events::UserInputClosedOutcome::Answered,
         },
     );
     assert!(app.pending_user_input_prompt.is_none());
@@ -16604,9 +16805,11 @@ fn user_input_turn_end_cancel_and_disconnect_retire_question_views() {
                     parent_route_usage: Usage::default(),
                     routed_usage_dropped_records: 0,
                     status: match boundary {
-                        "completed" => crate::core::events::TurnOutcomeStatus::Completed,
-                        "interrupted" => crate::core::events::TurnOutcomeStatus::Interrupted,
-                        _ => crate::core::events::TurnOutcomeStatus::Failed,
+                        "completed" => codewhale_engine::core::events::TurnOutcomeStatus::Completed,
+                        "interrupted" => {
+                            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                        }
+                        _ => codewhale_engine::core::events::TurnOutcomeStatus::Failed,
                     },
                     error: None,
                     tool_catalog: None,
@@ -16690,22 +16893,24 @@ fn turn_liveness_recovers_stalled_in_progress_turn() {
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "stale-turn-id".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Openai,
             provider_identity: "openai".to_string(),
             model: "gpt-5.5".to_string(),
             auto_model: false,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: Some("openai-endpoint".to_string()),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
@@ -16743,22 +16948,24 @@ fn engine_event_disconnect_recovers_live_turn_immediately() {
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "turn_dead".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Openai,
             provider_identity: "openai".to_string(),
             model: "gpt-5.5".to_string(),
             auto_model: false,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: Some("openai-endpoint".to_string()),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
@@ -16820,22 +17027,24 @@ fn engine_event_disconnect_cleans_cancelled_turn_metadata() {
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "cancelled-turn".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Openai,
             provider_identity: "openai".to_string(),
             model: "gpt-5.5".to_string(),
             auto_model: false,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: Some("openai-endpoint".to_string()),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
@@ -16884,7 +17093,8 @@ async fn auto_preview_stops_before_the_provider_backed_route_planner() {
     app.auto_model = true;
     app.model = "auto".to_string();
     let config = Config::default();
-    let (_engine, handle) = crate::core::engine::Engine::new(EngineConfig::default(), &config);
+    let (_engine, handle) =
+        codewhale_engine::core::engine::Engine::new(EngineConfig::default(), &config);
 
     let inputs = build_preview_request_inputs(
         &app,
@@ -16897,7 +17107,7 @@ async fn auto_preview_stops_before_the_provider_backed_route_planner() {
     assert!(inputs.next_turn.is_none());
     assert!(matches!(
         inputs.unresolved,
-        crate::core::engine::preview::PreviewUnresolved::AutoRouteClassificationNotExecuted
+        codewhale_engine::core::engine::preview::PreviewUnresolved::AutoRouteClassificationNotExecuted
     ));
 }
 
@@ -17291,10 +17501,10 @@ fn rail_command_reports_off_without_claiming_visibility() {
 fn shell_job(
     id: &str,
     command: &str,
-    status: crate::tools::shell::ShellStatus,
+    status: codewhale_engine::tools::shell::ShellStatus,
     exit_code: Option<i64>,
-) -> crate::tools::shell::ShellJobSnapshot {
-    crate::tools::shell::ShellJobSnapshot {
+) -> codewhale_engine::tools::shell::ShellJobSnapshot {
+    codewhale_engine::tools::shell::ShellJobSnapshot {
         id: id.to_string(),
         job_id: id.to_string(),
         command: command.to_string(),
@@ -17322,8 +17532,8 @@ fn shell_job(
 
 #[test]
 fn every_terminal_shell_status_is_a_completion_with_its_exit_facts() {
-    use crate::tools::shell::ShellStatus;
     use crate::tui::background_finished::FinishedOutcome;
+    use codewhale_engine::tools::shell::ShellStatus;
     // #6565: only `Completed` used to count; a failed, killed or timed-out
     // shell produced no signal at all.
     let mut notified = HashSet::from(["shell_old".to_string()]);
@@ -17450,9 +17660,9 @@ fn ctrl_x_jobs_prefill_falls_through_outside_tasks_sidebar_shell_jobs() {
 
 fn make_subagent(
     id: &str,
-    status: crate::tools::subagent::SubAgentStatus,
-) -> crate::tools::subagent::SubAgentResult {
-    crate::tools::subagent::SubAgentResult {
+    status: codewhale_engine::tools::subagent::SubAgentStatus,
+) -> codewhale_engine::tools::subagent::SubAgentResult {
+    codewhale_engine::tools::subagent::SubAgentResult {
         usage: None,
         name: id.to_string(),
         agent_id: id.to_string(),
@@ -17461,7 +17671,7 @@ fn make_subagent(
         workspace: None,
         git_branch: None,
         agent_type: codewhale_agent_contract::role::FleetRole::Worker,
-        assignment: crate::tools::subagent::SubAgentAssignment {
+        assignment: codewhale_engine::tools::subagent::SubAgentAssignment {
             native_preset: None,
             objective: format!("objective-{id}"),
             role: Some("worker".to_string()),
@@ -17489,11 +17699,17 @@ fn make_subagent(
 #[test]
 fn sort_subagents_orders_running_before_terminal_statuses() {
     let mut agents = vec![
-        make_subagent("agent_c", crate::tools::subagent::SubAgentStatus::Completed),
-        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent(
+            "agent_c",
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
+        ),
+        make_subagent(
+            "agent_a",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
         make_subagent(
             "agent_b",
-            crate::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
+            codewhale_engine::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
         ),
     ];
 
@@ -17567,7 +17783,7 @@ fn subagent_completion_status_reads_summary_fallbacks() {
 
 #[test]
 fn agent_complete_toast_is_truthful_and_localized_for_cancelled_workers() {
-    let cancelled = crate::tools::subagent::SubAgentStatus::Cancelled;
+    let cancelled = codewhale_engine::tools::subagent::SubAgentStatus::Cancelled;
     let mut app = create_test_app();
     app.ui_locale = codewhale_localization::Locale::Ja;
     apply_agent_complete_status_and_observer(&mut app, "agent_x", "worker result", &cancelled);
@@ -17587,17 +17803,20 @@ fn agent_complete_toast_is_truthful_and_localized_for_cancelled_workers() {
 
 #[test]
 fn subagent_terminal_projection_from_mailbox_maps_terminal_messages() {
-    let completed = crate::tools::subagent::MailboxMessage::Completed {
+    let completed = codewhale_engine::tools::subagent::MailboxMessage::Completed {
         agent_id: "agent_done".to_string(),
         summary: "all set".to_string(),
     };
     let (agent_id, status, result) =
         subagent_terminal_projection_from_mailbox(&completed).expect("completed projection");
     assert_eq!(agent_id, "agent_done");
-    assert_eq!(status, crate::tools::subagent::SubAgentStatus::Completed);
+    assert_eq!(
+        status,
+        codewhale_engine::tools::subagent::SubAgentStatus::Completed
+    );
     assert_eq!(result.as_deref(), Some("all set"));
 
-    let failed = crate::tools::subagent::MailboxMessage::Failed {
+    let failed = codewhale_engine::tools::subagent::MailboxMessage::Failed {
         agent_id: "agent_fail".to_string(),
         error: "tool failed".to_string(),
     };
@@ -17606,11 +17825,11 @@ fn subagent_terminal_projection_from_mailbox_maps_terminal_messages() {
     assert_eq!(result.as_deref(), Some("tool failed"));
     assert!(matches!(
         status,
-        crate::tools::subagent::SubAgentStatus::Failed(ref reason)
+        codewhale_engine::tools::subagent::SubAgentStatus::Failed(ref reason)
             if reason == "tool failed"
     ));
 
-    let interrupted = crate::tools::subagent::MailboxMessage::Interrupted {
+    let interrupted = codewhale_engine::tools::subagent::MailboxMessage::Interrupted {
         agent_id: "agent_wait".to_string(),
         reason: "needs input".to_string(),
     };
@@ -17619,21 +17838,24 @@ fn subagent_terminal_projection_from_mailbox_maps_terminal_messages() {
     assert_eq!(result.as_deref(), Some("needs input"));
     assert!(matches!(
         status,
-        crate::tools::subagent::SubAgentStatus::Interrupted(ref reason)
+        codewhale_engine::tools::subagent::SubAgentStatus::Interrupted(ref reason)
             if reason == "needs input"
     ));
 
-    let cancelled = crate::tools::subagent::MailboxMessage::Cancelled {
+    let cancelled = codewhale_engine::tools::subagent::MailboxMessage::Cancelled {
         agent_id: "agent_stop".to_string(),
     };
     let (_, status, result) =
         subagent_terminal_projection_from_mailbox(&cancelled).expect("cancelled projection");
-    assert_eq!(status, crate::tools::subagent::SubAgentStatus::Cancelled);
+    assert_eq!(
+        status,
+        codewhale_engine::tools::subagent::SubAgentStatus::Cancelled
+    );
     assert_eq!(result.as_deref(), Some("cancelled"));
 
     assert!(
         subagent_terminal_projection_from_mailbox(
-            &crate::tools::subagent::MailboxMessage::progress("agent_live", "step 1/2")
+            &codewhale_engine::tools::subagent::MailboxMessage::progress("agent_live", "step 1/2")
         )
         .is_none()
     );
@@ -17643,8 +17865,14 @@ fn subagent_terminal_projection_from_mailbox_maps_terminal_messages() {
 fn running_agent_count_unions_cache_and_progress() {
     let mut app = create_test_app();
     app.subagent_cache = vec![
-        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
-        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Completed),
+        make_subagent(
+            "agent_a",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
+        make_subagent(
+            "agent_b",
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
+        ),
     ];
     app.agent_progress
         .insert("agent_c".to_string(), "planning".to_string());
@@ -17656,8 +17884,14 @@ fn running_agent_count_unions_cache_and_progress() {
 fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
     let mut app = create_test_app();
     app.subagent_cache = vec![
-        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
-        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Completed),
+        make_subagent(
+            "agent_a",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
+        make_subagent(
+            "agent_b",
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
+        ),
     ];
     // Progress rows for ids the cache does not know survive reconciliation:
     // a progress-first agent whose AgentSpawned/AgentList delivery was
@@ -17674,10 +17908,13 @@ fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
     // Once the cache authoritatively knows both agents as terminal, their
     // progress rows are trimmed and the activity anchor clears.
     app.subagent_cache = vec![
-        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Completed),
+        make_subagent(
+            "agent_a",
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
+        ),
         make_subagent(
             "agent_pending",
-            crate::tools::subagent::SubAgentStatus::Completed,
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         ),
     ];
     reconcile_subagent_activity_state(&mut app);
@@ -17694,15 +17931,15 @@ fn reconcile_subagent_activity_state_expires_terminal_cards_but_keeps_running() 
     app.subagent_cache = vec![
         make_subagent(
             "agent_running",
-            crate::tools::subagent::SubAgentStatus::Running,
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
         ),
         make_subagent(
             "agent_old",
-            crate::tools::subagent::SubAgentStatus::Completed,
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         ),
         make_subagent(
             "agent_recent",
-            crate::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
+            codewhale_engine::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
         ),
     ];
     app.subagent_terminal_seen_at
@@ -17733,7 +17970,7 @@ fn reconcile_subagent_activity_state_caps_terminal_card_bursts() {
         let id = format!("agent_{idx:02}");
         app.subagent_cache.push(make_subagent(
             &id,
-            crate::tools::subagent::SubAgentStatus::Completed,
+            codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         ));
         app.subagent_terminal_seen_at
             .insert(id, now - Duration::from_secs(idx));
@@ -17747,7 +17984,7 @@ fn reconcile_subagent_activity_state_caps_terminal_card_bursts() {
         .filter(|agent| {
             !matches!(
                 agent.status,
-                crate::tools::subagent::SubAgentStatus::Running
+                codewhale_engine::tools::subagent::SubAgentStatus::Running
             )
         })
         .count();
@@ -17770,7 +18007,7 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
     handle_subagent_mailbox(
         &mut app,
         1,
-        &crate::tools::subagent::MailboxMessage::TokenUsage {
+        &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
             agent_id: "agent-a".to_string(),
             source_id: "response-a".to_string(),
             route: Box::new(test_mailbox_route(
@@ -17800,7 +18037,7 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
     handle_subagent_mailbox(
         &mut app,
         2,
-        &crate::tools::subagent::MailboxMessage::TokenUsage {
+        &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
             agent_id: "agent-codex".to_string(),
             source_id: "response-codex".to_string(),
             route: Box::new(test_mailbox_route(ProviderKind::OpenaiCodex, "gpt-5.5")),
@@ -17821,7 +18058,7 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
 #[test]
 fn subagent_token_usage_is_deduped_by_response_source() {
     let mut app = create_test_app();
-    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
         agent_id: "agent-a".to_string(),
         source_id: "response-a".to_string(),
         route: Box::new(test_mailbox_route(
@@ -17840,7 +18077,9 @@ fn subagent_token_usage_is_deduped_by_response_source() {
     handle_subagent_mailbox(&mut app, 8, &usage);
     assert_eq!(app.session.subagent_cost, first);
     let mut distinct = usage.clone();
-    let crate::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } = &mut distinct else {
+    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
+        &mut distinct
+    else {
         unreachable!()
     };
     *source_id = "response-b".to_string();
@@ -17850,12 +18089,13 @@ fn subagent_token_usage_is_deduped_by_response_source() {
 
 #[test]
 fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() {
-    let _cost_scope = crate::cost_status::test_scope();
+    let _cost_scope = codewhale_engine::cost_status::test_scope();
     let mut app = create_test_app();
     let tmp = tempfile::tempdir().expect("tempdir");
-    let manager = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
-        .expect("session manager");
-    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+    let manager =
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("session manager");
+    let session = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "active-deleted-origin".to_string(),
         &[],
         "deepseek-v4-flash",
@@ -17867,9 +18107,9 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     manager.save_session(&session).expect("save origin");
     app.current_session_id = Some(session.metadata.id.clone());
     app.current_session_metadata = Some(session.metadata.clone());
-    let origin_scope = crate::cost_status::scope_token();
+    let origin_scope = codewhale_engine::cost_status::scope_token();
     let owner = "interactive:active-deleted-origin:origin-turn";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
+    codewhale_engine::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
         owner,
         origin_scope,
         &session.metadata.id,
@@ -17889,7 +18129,7 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
             .is_some_and(|cost| cost.usd > 0.0)
     );
     let source_id = "subagent:deleted-origin:response";
-    let mailbox = crate::tools::subagent::MailboxMessage::token_usage(
+    let mailbox = codewhale_engine::tools::subagent::MailboxMessage::token_usage(
         "agent-deleted-origin",
         source_id,
         route.clone(),
@@ -17900,9 +18140,9 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
         .expect("delete active origin");
     // The generation and active App deliberately remain unchanged. This is
     // an active-origin callback, not the already-covered stale-scope path.
-    assert_eq!(crate::cost_status::scope_token(), origin_scope);
+    assert_eq!(codewhale_engine::cost_status::scope_token(), origin_scope);
     for seq in 1..=2 {
-        crate::cost_status::report_effective_route_for_runtime(
+        codewhale_engine::cost_status::report_effective_route_for_runtime(
             origin_scope,
             Some(owner),
             source_id,
@@ -17911,12 +18151,12 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
         );
         handle_subagent_mailbox_for_turn(&mut app, "origin-turn", seq, &mailbox);
     }
-    assert!(crate::cost_status::drain().is_empty());
-    let fallback = crate::cost_status::take_runtime_usage(owner);
+    assert!(codewhale_engine::cost_status::drain().is_empty());
+    let fallback = codewhale_engine::cost_status::take_runtime_usage(owner);
     assert!(fallback.records.is_empty());
     assert!(fallback.drop_records.is_empty());
     assert_eq!(fallback.dropped_records, 0);
-    crate::cost_status::finish_runtime_usage_owner(owner);
+    codewhale_engine::cost_status::finish_runtime_usage_owner(owner);
     assert_eq!(app.session.subagent_cost, 0.0);
     assert_eq!(app.session.subagent_cost_cny, 0.0);
     assert_eq!(app.session.cost_priced_turns, 0);
@@ -17926,7 +18166,7 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     assert!(app.session.subagent_usage_sources.is_empty());
     assert!(app.session.cost_route_receipts.is_empty());
     assert!(app.history.is_empty());
-    assert!(crate::cost_status::usage_source_seen(source_id));
+    assert!(codewhale_engine::cost_status::usage_source_seen(source_id));
     assert!(manager.list_sessions().expect("sessions").is_empty());
     assert!(
         !manager
@@ -17943,7 +18183,7 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
 #[test]
 fn subagent_token_usage_source_is_stable_across_engine_turns() {
     let mut app = create_test_app();
-    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
         agent_id: "agent-a".to_string(),
         source_id: "response-a".to_string(),
         route: Box::new(test_mailbox_route(
@@ -17962,7 +18202,9 @@ fn subagent_token_usage_source_is_stable_across_engine_turns() {
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-b", 1, &usage);
     assert_eq!(app.session.subagent_cost, first, "same response dedupes");
     let mut distinct = usage.clone();
-    let crate::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } = &mut distinct else {
+    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
+        &mut distinct
+    else {
         unreachable!()
     };
     *source_id = "response-b".to_string();
@@ -17981,7 +18223,7 @@ fn fanout_started_sibling_bumps_existing_card_revision() {
     handle_subagent_mailbox(
         &mut app,
         1,
-        &crate::tools::subagent::MailboxMessage::Started {
+        &codewhale_engine::tools::subagent::MailboxMessage::Started {
             agent_id: "fanout-a".to_string(),
             agent_type: "default".to_string(),
         },
@@ -17993,7 +18235,7 @@ fn fanout_started_sibling_bumps_existing_card_revision() {
     handle_subagent_mailbox(
         &mut app,
         2,
-        &crate::tools::subagent::MailboxMessage::Started {
+        &codewhale_engine::tools::subagent::MailboxMessage::Started {
             agent_id: "fanout-b".to_string(),
             agent_type: "default".to_string(),
         },
@@ -18017,8 +18259,8 @@ fn fanout_started_sibling_bumps_existing_card_revision() {
 /// agent never moves the running count or its Work-row activity back.
 #[test]
 fn late_or_completion_first_mailbox_never_reopens_a_settled_agent() {
-    use crate::tools::subagent::MailboxMessage;
     use crate::tui::app::AgentCurrentActivityStatus;
+    use codewhale_engine::tools::subagent::MailboxMessage;
     let mut app = create_test_app();
     app.pending_subagent_dispatch = Some("rlm".to_string());
 
@@ -18093,7 +18335,7 @@ fn fanout_interrupted_mailbox_drops_running_count() {
         handle_subagent_mailbox(
             &mut app,
             seq as u64 + 1,
-            &crate::tools::subagent::MailboxMessage::Started {
+            &codewhale_engine::tools::subagent::MailboxMessage::Started {
                 agent_id: (*id).to_string(),
                 agent_type: "default".to_string(),
             },
@@ -18107,7 +18349,7 @@ fn fanout_interrupted_mailbox_drops_running_count() {
     handle_subagent_mailbox(
         &mut app,
         3,
-        &crate::tools::subagent::MailboxMessage::Interrupted {
+        &codewhale_engine::tools::subagent::MailboxMessage::Interrupted {
             agent_id: "fanout-a".to_string(),
             reason: "API call timed out after 120000ms".to_string(),
         },
@@ -18129,7 +18371,7 @@ fn reconcile_syncs_stale_running_cards_with_interrupted_snapshots() {
         handle_subagent_mailbox(
             &mut app,
             seq as u64 + 1,
-            &crate::tools::subagent::MailboxMessage::Started {
+            &codewhale_engine::tools::subagent::MailboxMessage::Started {
                 agent_id: (*id).to_string(),
                 agent_type: "default".to_string(),
             },
@@ -18143,9 +18385,14 @@ fn reconcile_syncs_stale_running_cards_with_interrupted_snapshots() {
     app.subagent_cache = vec![
         make_subagent(
             "fanout-a",
-            crate::tools::subagent::SubAgentStatus::Interrupted("API call timed out".to_string()),
+            codewhale_engine::tools::subagent::SubAgentStatus::Interrupted(
+                "API call timed out".to_string(),
+            ),
         ),
-        make_subagent("fanout-b", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent(
+            "fanout-b",
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
+        ),
     ];
     reconcile_subagent_activity_state(&mut app);
 
@@ -18886,10 +19133,12 @@ fn context_meter_and_compaction_gate_share_one_estimator() {
     ]);
 
     let meter = estimated_context_tokens(&app).expect("context meter");
-    let gate = i64::try_from(crate::compaction::estimate_input_tokens_for_pressure(
-        &app.api_messages,
-        app.system_prompt.as_ref(),
-    ))
+    let gate = i64::try_from(
+        codewhale_engine::compaction::estimate_input_tokens_for_pressure(
+            &app.api_messages,
+            app.system_prompt.as_ref(),
+        ),
+    )
     .expect("fits i64");
     assert_eq!(
         meter, gate,
@@ -19174,6 +19423,7 @@ fn local_cancel_marks_late_stream_events_for_suppression() {
     ));
     assert!(suppress_engine_event_after_local_cancel(
         &EngineEvent::SessionUpdated {
+            source: None,
             checkpoint: None,
             session_id: "session".to_string(),
             messages: std::sync::Arc::new(Vec::new()),
@@ -19197,7 +19447,7 @@ fn local_cancel_marks_late_stream_events_for_suppression() {
             usage: Usage::default(),
             parent_route_usage: Usage::default(),
             routed_usage_dropped_records: 0,
-            status: crate::core::events::TurnOutcomeStatus::Interrupted,
+            status: codewhale_engine::core::events::TurnOutcomeStatus::Interrupted,
             error: None,
             tool_catalog: None,
             base_url: None,
@@ -19228,7 +19478,7 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
         usage: Usage::default(),
         parent_route_usage: Usage::default(),
         routed_usage_dropped_records: 0,
-        status: crate::core::events::TurnOutcomeStatus::Completed,
+        status: codewhale_engine::core::events::TurnOutcomeStatus::Completed,
         error: None,
         tool_catalog: None,
         base_url: None,
@@ -19249,7 +19499,7 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
         usage: Usage::default(),
         parent_route_usage: Usage::default(),
         routed_usage_dropped_records: 0,
-        status: crate::core::events::TurnOutcomeStatus::Failed,
+        status: codewhale_engine::core::events::TurnOutcomeStatus::Failed,
         error: Some("route rejected".to_string()),
         tool_catalog: None,
         base_url: None,
@@ -19270,7 +19520,7 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
         usage: Usage::default(),
         parent_route_usage: Usage::default(),
         routed_usage_dropped_records: 0,
-        status: crate::core::events::TurnOutcomeStatus::Completed,
+        status: codewhale_engine::core::events::TurnOutcomeStatus::Completed,
         error: None,
         tool_catalog: None,
         base_url: None,
@@ -19295,7 +19545,7 @@ fn an_engine_stopped_turn_keeps_its_reason_in_the_transcript() {
     let reason = "Per-turn wall-clock budget exhausted after 3600s (limit: 3600s). Send another message to continue.";
     super::event_loop::present_turn_failure(
         &mut app,
-        crate::core::events::TurnOutcomeStatus::Failed,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
         Some(reason),
     );
     assert!(
@@ -19316,7 +19566,7 @@ fn an_engine_stopped_turn_keeps_its_reason_in_the_transcript() {
     posted.turn_error_posted = true;
     super::event_loop::present_turn_failure(
         &mut posted,
-        crate::core::events::TurnOutcomeStatus::Failed,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
         Some(reason),
     );
     assert!(
@@ -19335,7 +19585,8 @@ fn an_engine_stopped_turn_keeps_its_reason_in_the_transcript() {
 fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "first question"));
@@ -19346,7 +19597,7 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
     let reason = "provider rejected the request: invalid key sk-live1234567890abcdef";
     super::event_loop::present_turn_failure(
         &mut app,
-        crate::core::events::TurnOutcomeStatus::Failed,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
         Some(reason),
     );
     let shown = app
@@ -19363,7 +19614,7 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
     let outcome = &snapshot.turn_outcomes[0];
     assert_eq!(
         outcome.status,
-        crate::core::events::TurnOutcomeStatus::Failed
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed
     );
     assert_eq!(outcome.after_message_count, 3);
     assert!(outcome.error.contains("provider rejected the request"));
@@ -19409,41 +19660,47 @@ fn turn_started_route_is_captured_before_cancel_suppression() {
     app.suppress_stream_events_until_turn_complete = true;
     app.ocean_completion_started_at = Some(Instant::now());
     app.pending_turn_route = Some((ProviderKind::Deepseek, "pending-model".to_string(), true));
-    app.pending_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-        tier: crate::model_routing::AutoRouteTier::Fast,
-        pair: crate::model_routing::AutoRoutePair {
+    app.pending_auto_route_receipt = Some(codewhale_engine::model_routing::AutoRouteReceipt {
+        tier: codewhale_engine::model_routing::AutoRouteTier::Fast,
+        pair: codewhale_engine::model_routing::AutoRoutePair {
             strong: "deepseek-v4-pro".to_string(),
             fast: Some("deepseek-v4-flash".to_string()),
         },
-        scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
-        data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
-        reason: crate::model_routing::AutoRouteReason::LocalFallback(
-            crate::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
+        scope: codewhale_engine::model_routing::AutoRouteScope::ResolvedProvider,
+        data_path: codewhale_engine::model_routing::AutoRouteDataPath::LocalHeuristic,
+        reason: codewhale_engine::model_routing::AutoRouteReason::LocalFallback(
+            codewhale_engine::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
         ),
         decision: None,
         router_failure: None,
     });
     let created_at = chrono::Utc::now();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_cancel_race".to_string(),
         created_at,
         submission_id: None,
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Openai,
             provider_identity: "openai".to_string(),
             model: "gpt-5.5".to_string(),
             auto_model: true,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: Some("openai-endpoint".to_string()),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: created_at,
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
     };
 
@@ -19461,7 +19718,7 @@ fn turn_started_route_is_captured_before_cancel_suppression() {
             .auto_route_receipt
             .as_ref()
             .map(|receipt| receipt.tier),
-        Some(crate::model_routing::AutoRouteTier::Fast)
+        Some(codewhale_engine::model_routing::AutoRouteTier::Fast)
     );
     assert!(app.pending_turn_route.is_none());
     assert!(app.pending_auto_route_receipt.is_none());
@@ -19484,7 +19741,7 @@ fn turn_started_route_is_captured_before_cancel_suppression() {
 #[test]
 fn turn_started_suggestion_authority_comes_from_the_route_receipt_not_config() {
     let mut app = create_test_app();
-    let receipt = crate::route_receipt::TurnRouteReceipt::new(
+    let receipt = codewhale_engine::route_receipt::TurnRouteReceipt::new(
         ProviderKind::Deepseek,
         "deepseek",
         "deepseek-chat",
@@ -19492,24 +19749,28 @@ fn turn_started_suggestion_authority_comes_from_the_route_receipt_not_config() {
         "sk-route-a-secret",
     );
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_route_receipt".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Deepseek,
             provider_identity: "deepseek".to_string(),
             model: "deepseek-chat".to_string(),
             auto_model: false,
             receipt: Some(receipt),
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
                 billing_surface: None,
                 endpoint_fingerprint: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         submission_id: None,
     };
@@ -19537,24 +19798,28 @@ fn turn_started_suggestion_authority_comes_from_the_route_receipt_not_config() {
 fn turn_started_without_a_route_receipt_captures_no_suggestion_authority() {
     let mut app = create_test_app();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "turn_no_receipt".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Deepseek,
             provider_identity: "deepseek".to_string(),
             model: "deepseek-chat".to_string(),
             auto_model: false,
             receipt: None,
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
                 billing_surface: None,
                 endpoint_fingerprint: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         submission_id: None,
     };
@@ -19576,30 +19841,36 @@ fn engine_error_health_accounting_uses_active_turn_route() {
     app.api_provider = ProviderKind::Deepseek;
     app.model = "current-model".to_string();
     let event = EngineEvent::TurnStarted {
+        previous_source: app
+            .session_write_owner
+            .as_ref()
+            .and_then(|owner| owner.snapshot_source()),
         turn_id: "routed-turn".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Openai,
             provider_identity: "openai".to_string(),
             model: "gpt-5.5".to_string(),
             auto_model: true,
-            receipt: Some(crate::route_receipt::TurnRouteReceipt::new(
+            receipt: Some(codewhale_engine::route_receipt::TurnRouteReceipt::new(
                 ProviderKind::Openai,
                 "openai",
                 "gpt-5.5",
                 "https://api.openai.com/v1",
                 "fixture-key",
             )),
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
                 endpoint_fingerprint: Some("openai-endpoint".to_string()),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: String::new(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         submission_id: None,
     };
@@ -19629,7 +19900,8 @@ fn completion_only_hook_metadata_is_synthetic_and_non_model() {
 fn issue_2739_stalled_turn_snapshot_preserves_api_messages() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "hello from user"));
@@ -19661,7 +19933,8 @@ fn issue_2739_esc_cancel_preserves_session_messages_before_clear() {
     let _home = SettingsHomeGuard::new();
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "esc cancel test"));
@@ -19700,7 +19973,8 @@ fn issue_2739_esc_cancel_preserves_session_messages_before_clear() {
 fn issue_2739_dispatch_timeout_preserves_user_prompt() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "prompt that never dispatched"));
@@ -20144,7 +20418,7 @@ fn slash_menu_down_wraps_from_last_to_first() {
 
 #[test]
 fn slash_menu_paging_clamps_instead_of_wrapping() {
-    use crate::tui::list_nav::Motion;
+    use codewhale_tui_kit::list_nav::Motion;
     let mut app = create_test_app();
     app.input = "/".to_string();
     app.cursor_position = 1;
@@ -20396,7 +20670,7 @@ fn workspace_context_refresh_respects_ttl_before_requerying_git() {
     std::fs::write(repo.path().join("dirty.txt"), "dirty").expect("write dirty marker");
     // #6565: the badge reads the shared git probe, which the chrome tick
     // keeps fresh; stand in for that tick.
-    crate::git_status::force_refresh(repo.path());
+    codewhale_engine::git_status::force_refresh(repo.path());
 
     let before_ttl = start + Duration::from_secs(crate::tui::workspace_context::REFRESH_SECS - 1);
     crate::tui::workspace_context::refresh_if_needed(&mut app, before_ttl, true);
@@ -20602,7 +20876,7 @@ fn completed_subagent_shell_tool_refreshes_workspace_context_before_ttl() {
     handle_subagent_mailbox(
         &mut app,
         42,
-        &crate::tools::subagent::MailboxMessage::ToolCallCompleted {
+        &codewhale_engine::tools::subagent::MailboxMessage::ToolCallCompleted {
             agent_id: "agent_branch".to_string(),
             tool_name: "exec_shell".to_string(),
             step: 1,
@@ -20686,7 +20960,7 @@ async fn dispatch_user_message_records_prompt_for_cancel_restore() {
     let mut app = create_test_app();
     app.show_thinking = false;
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = crate::tui::app::QueuedMessage::new("fix this typo\nthen retry".to_string(), None);
 
     dispatch_user_message(&mut app, &config, &engine.handle, queued)
@@ -20698,7 +20972,7 @@ async fn dispatch_user_message_records_prompt_for_cancel_restore() {
         Some("fix this typo\nthen retry")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "fix this typo\nthen retry");
             assert!(!app.show_thinking, "visibility remains TUI-owned");
         }
@@ -20714,7 +20988,7 @@ async fn startup_prompt_waits_for_onboarding_then_dispatches() {
     app.auto_submit_initial_input = true;
     app.onboarding = OnboardingState::Welcome;
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     submit_initial_input_if_ready(&mut app, &config, &engine.handle)
         .await
@@ -20740,7 +21014,7 @@ async fn startup_prompt_waits_for_onboarding_then_dispatches() {
         Some("阅读项目 and wait")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
+        codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert!(content.contains("阅读项目 and wait"));
         }
         other => panic!("expected SendMessage, got {other:?}"),
@@ -20935,7 +21209,7 @@ async fn redaction_confirmation_restores_history_before_first_local_provider_req
 #[tokio::test]
 async fn steer_user_message_records_prompt_for_cancel_restore() {
     let mut app = create_test_app();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = crate::tui::app::QueuedMessage::new(
         "adjust the active turn\nthen continue".to_string(),
         None,
@@ -20968,7 +21242,7 @@ async fn steer_user_message_detaches_session_shell_waits_before_dispatch() {
             manager.register_shell_wait_for_test("other-session"),
         )
     };
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     steer_user_message(
         &mut app,
         &Config::default(),
@@ -20994,7 +21268,7 @@ async fn empty_enter_sends_next_queued_message_into_running_turn() {
         None,
     ));
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     assert!(
         send_next_queued_message_now(&mut app, &config, &engine.handle)
@@ -21020,7 +21294,7 @@ async fn empty_enter_does_not_send_an_edited_queued_draft() {
     app.input = "edited queued follow-up".to_string();
     app.cursor_position = app.input.chars().count();
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     assert!(
         !send_next_queued_message_now(&mut app, &config, &engine.handle)
@@ -21060,7 +21334,7 @@ async fn queue_send_index_sends_selected_message_into_running_turn() {
         None,
     ));
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
     assert!(
         send_queued_message_at_index_now(&mut app, &config, &engine.handle, 1)
@@ -21085,7 +21359,7 @@ async fn enter_while_model_waiting_queues_instead_of_steering() {
     app.is_loading = true;
     app.streaming_message_index = None;
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = build_queued_message(&mut app, "adjust current turn".to_string());
 
     submit_or_steer_message(
@@ -21119,7 +21393,7 @@ async fn queue_disposition_echoes_user_turn_into_history() {
     app.is_loading = true;
     app.streaming_message_index = None;
     let config = Config::default();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = QueuedMessage::new("hello queued".to_string(), None);
 
     submit_or_steer_message(
@@ -21227,7 +21501,7 @@ fn hook_replaced_queued_message_keeps_one_user_cell() {
     assert!(apply_message_submit_outcome(
         &mut app,
         &mut message,
-        crate::hooks::MessageSubmitOutcome::replaced("draft as rewritten".to_string()),
+        codewhale_engine::hooks::MessageSubmitOutcome::replaced("draft as rewritten".to_string()),
     ));
 
     paint_user_turn_cell(&mut app, &message, message.display.clone());
@@ -21440,7 +21714,8 @@ fn engine_drain_budget_respects_event_and_time_limits() {
 fn throttled_recovery_snapshot_persists_during_loading_turns() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "in-progress turn"));
@@ -21476,7 +21751,7 @@ fn throttled_recovery_snapshot_persists_during_loading_turns() {
 async fn steer_failure_queues_message_and_surfaces_toast() {
     let mut app = create_test_app();
     app.is_loading = true;
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     drop(engine.rx_steer);
     let queued = crate::tui::app::QueuedMessage::new("follow up while busy".to_string(), None);
 
@@ -21501,7 +21776,7 @@ async fn streaming_enter_queue_pushes_visible_toast() {
     app.is_loading = true;
     app.streaming_message_index = Some(0);
     let config = Config::default();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = build_queued_message(&mut app, "follow up during stream".to_string());
 
     submit_or_steer_message(
@@ -21568,7 +21843,7 @@ async fn empty_enter_promotes_the_oldest_queued_message() {
     app.is_loading = true;
     app.streaming_message_index = Some(0);
     let config = Config::default();
-    let mut engine = crate::core::engine::mock_engine_handle();
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = build_queued_message(&mut app, "coordinate parallel tasks".to_string());
 
     submit_or_steer_message(
@@ -21602,7 +21877,7 @@ async fn operate_streaming_enter_queues_another_parallel_task() {
     app.is_loading = true;
     app.streaming_message_index = Some(0);
     let config = Config::default();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
     let queued = build_queued_message(&mut app, "check the docs too".to_string());
 
     submit_or_steer_message(
@@ -21629,7 +21904,7 @@ async fn inline_skill_request_keeps_instruction_when_busy_queueing() {
     app.streaming_message_index = Some(0);
     app.active_skill = Some("Use the test skill".to_string());
     let config = Config::default();
-    let engine = crate::core::engine::mock_engine_handle();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
 
     let queued = build_queued_message(&mut app, "do X".to_string());
     assert!(app.active_skill.is_none(), "skill must be consumed once");
@@ -22122,7 +22397,7 @@ fn visible_error_becomes_full_detail_target_ahead_of_adjacent_tool() {
         HistoryCell::Error {
             message: "Refusing insecure base URL.\nSet CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host."
                 .to_string(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
     ];
     app.resync_history_revisions();
@@ -22201,15 +22476,14 @@ fn tool_details_pager_frames_leaf_scope_and_preserves_raw_content() {
 fn tool_details_pager_keeps_exact_file_change_when_inline_diffs_are_off() {
     let mut app = create_test_app();
     app.inline_diff_mode = codewhale_runtime::settings::InlineDiffMode::Off;
-    let tool_result = crate::tools::spec::ToolResult::success("structured success").with_metadata(
-        serde_json::json!({
+    let tool_result = codewhale_engine::tools::spec::ToolResult::success("structured success")
+        .with_metadata(serde_json::json!({
             "mutation": {
                 "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+EXACT-SENTINEL\n",
                 "files": [{ "path": "src/lib.rs", "outcome": "updated" }],
                 "renames": []
             }
-        }),
-    );
+        }));
     let receipt =
         crate::tui::history::FileMutationReceipt::from_success(&app.workspace, &tool_result)
             .expect("receipt");
@@ -22253,6 +22527,32 @@ fn tool_details_empty_state_points_to_turn_inspector() {
     );
 }
 
+fn spillover_pager_section(app: &mut App, cell_index: usize) -> Option<String> {
+    use crate::tui::views::ViewAction;
+    spillover_pager_reference(app, cell_index)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            assert!(open_details_pager_for_cell(app, cell_index));
+            let mut view = app.view_stack.pop().expect("owned evidence pager");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !matches!(view.tick(), ViewAction::Redraw) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("owned evidence pager did not finish");
+            Some(
+                view.as_any_mut()
+                    .downcast_mut::<PagerView>()
+                    .expect("retained evidence uses existing pager")
+                    .body_text(),
+            )
+        })
+}
+
 #[test]
 fn spillover_pager_section_returns_none_when_no_spillover() {
     let mut app = create_test_app();
@@ -22267,29 +22567,34 @@ fn spillover_pager_section_returns_none_when_no_spillover() {
         is_diff: false,
     }))];
     app.resync_history_revisions();
-    assert!(spillover_pager_section(&app, 0).is_none());
+    assert!(spillover_pager_section(&mut app, 0).is_none());
 }
 
 #[test]
 fn spillover_pager_section_loads_file_when_present() {
-    let _spillover_guard = crate::tools::truncate::TEST_SPILLOVER_GUARD
+    let _spillover_guard = codewhale_engine::tools::truncate::TEST_SPILLOVER_GUARD
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let prior =
-        crate::tools::truncate::set_test_spillover_root(Some(dir.path().join("tool_outputs")));
+    let prior = codewhale_engine::tools::truncate::set_test_spillover_root(Some(
+        dir.path().join("tool_outputs"),
+    ));
     struct RestoreSpilloverRoot(Option<PathBuf>);
     impl Drop for RestoreSpilloverRoot {
         fn drop(&mut self) {
-            crate::tools::truncate::set_test_spillover_root(self.0.take());
+            codewhale_engine::tools::truncate::set_test_spillover_root(self.0.take());
         }
     }
     let _restore = RestoreSpilloverRoot(prior);
     let session_id = "session-pager";
     let body = "FULL_OUTPUT_BYTES_HERE\n";
-    let path = crate::tools::truncate::write_spillover("call-test", body).unwrap();
-    crate::tools::truncate::publish_legacy_spillover_ownership(&path, session_id, body.as_bytes())
-        .unwrap();
+    let path = codewhale_engine::tools::truncate::write_spillover("call-test", body).unwrap();
+    codewhale_engine::tools::truncate::publish_legacy_spillover_ownership(
+        &path,
+        session_id,
+        body.as_bytes(),
+    )
+    .unwrap();
 
     let mut app = create_test_app();
     app.current_session_id = Some(session_id.to_string());
@@ -22305,8 +22610,8 @@ fn spillover_pager_section_loads_file_when_present() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("section present");
-    assert!(section.contains("── Full output ──"));
+    let section = spillover_pager_section(&mut app, 0).expect("section present");
+    assert!(section.contains("Loaded byte range"));
     assert!(
         section.contains("FULL_OUTPUT_BYTES_HERE"),
         "section missing file body: {section}"
@@ -22320,6 +22625,7 @@ fn spillover_pager_section_loads_file_when_present() {
 #[test]
 fn spillover_pager_section_returns_notice_when_file_missing() {
     let mut app = create_test_app();
+    app.current_session_id = Some("session-pager-missing".to_string());
     let bogus = std::path::PathBuf::from("/private/sensitive/session/does-not-exist.txt");
     app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "exec_shell".to_string(),
@@ -22333,7 +22639,7 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
+    let section = spillover_pager_section(&mut app, 0).expect("still emits a notice section");
     assert!(section.contains("retained output is unavailable"));
     assert!(!section.contains("/private/sensitive"));
     assert!(!section.contains("No such file"));
@@ -22341,23 +22647,25 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
 
 #[test]
 fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
-    let _artifact_guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+    let _artifact_guard = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let prior =
-        crate::artifacts::set_test_artifact_sessions_root(Some(dir.path().join("sessions")));
+    let prior = codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+        dir.path().join("sessions"),
+    ));
     struct RestoreArtifactRoot(Option<PathBuf>);
     impl Drop for RestoreArtifactRoot {
         fn drop(&mut self) {
-            crate::artifacts::set_test_artifact_sessions_root(self.0.take());
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
         }
     }
     let _restore = RestoreArtifactRoot(prior);
     let session_id = "session-bash";
     let relative_path = PathBuf::from("artifacts/art_call-bash.txt");
-    let path = crate::artifacts::session_artifact_absolute_path(session_id, &relative_path)
-        .expect("isolated artifact path");
+    let path =
+        codewhale_runtime::artifacts::session_artifact_absolute_path(session_id, &relative_path)
+            .expect("isolated artifact path");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "BASH_EXACT_DEEP_SENTINEL\n").unwrap();
 
@@ -22389,9 +22697,9 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
             output: Some("head\n\n… 23 B of output omitted — view full output in the tool details view\n\n[tail]\ntail".to_string()),
         },
     );
-    let artifact = crate::artifacts::ArtifactRecord {
+    let artifact = codewhale_runtime::artifacts::ArtifactRecord {
         id: "art_call-bash".to_string(),
-        kind: crate::artifacts::ArtifactKind::ToolOutput,
+        kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
         session_id: session_id.to_string(),
         tool_call_id: "call-bash".to_string(),
         tool_name: "Bash".to_string(),
@@ -22403,22 +22711,22 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
     app.session_artifacts.push(artifact.clone());
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("session artifact section");
+    let section = spillover_pager_section(&mut app, 0).expect("session artifact section");
     assert!(section.contains("BASH_EXACT_DEEP_SENTINEL"));
     assert!(!section.contains(&path.display().to_string()));
 
     app.session_artifacts[0].storage_path = path.clone();
-    let absolute = spillover_pager_section(&app, 0).expect("unavailable absolute-path section");
-    assert!(absolute.contains("retained output is unavailable"));
-    assert!(!absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    let absolute = spillover_pager_section(&mut app, 0).expect("owned absolute-path section");
+    assert!(absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    assert!(!absolute.contains(&path.display().to_string()));
 
-    app.session_artifacts[0] = crate::artifacts::ArtifactRecord {
+    app.session_artifacts[0] = codewhale_runtime::artifacts::ArtifactRecord {
         session_id: "foreign-session".to_string(),
         storage_path: relative_path,
         ..artifact
     };
     assert!(
-        spillover_pager_section(&app, 0).is_none(),
+        spillover_pager_section(&mut app, 0).is_none(),
         "a foreign artifact record must not become an Option+V detail source"
     );
 }
@@ -23089,22 +23397,24 @@ fn apply_mention_menu_selection_with_no_entries_is_noop() {
 /// Build a minimal successful ToolResult with the given content.
 fn ok_result(
     content: &str,
-) -> Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
-    Ok(crate::tools::spec::ToolResult::success(content))
+) -> Result<codewhale_engine::tools::spec::ToolResult, codewhale_engine::tools::spec::ToolError> {
+    Ok(codewhale_engine::tools::spec::ToolResult::success(content))
 }
 
 fn hydrated_result(
     content: &str,
-) -> Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
+) -> Result<codewhale_engine::tools::spec::ToolResult, codewhale_engine::tools::spec::ToolError> {
     Ok(
-        crate::tools::spec::ToolResult::success(content).with_metadata(serde_json::json!({
-            "event": "tool.schema_hydrated",
-            "tool": "exec_shell",
-            "executed": false,
-            "retry_required": true,
-            "deferred_tool_loaded": true,
-            "tool_name": "exec_shell",
-        })),
+        codewhale_engine::tools::spec::ToolResult::success(content).with_metadata(
+            serde_json::json!({
+                "event": "tool.schema_hydrated",
+                "tool": "exec_shell",
+                "executed": false,
+                "retry_required": true,
+                "deferred_tool_loaded": true,
+                "tool_name": "exec_shell",
+            }),
+        ),
     )
 }
 
@@ -23175,7 +23485,7 @@ fn tool_output_hides_only_the_engine_stamped_approval_note() {
         "exec_shell",
         &serde_json::json!({"command": "cargo test"}),
     );
-    let stamped = crate::tools::spec::ToolResult::success(
+    let stamped = codewhale_engine::tools::spec::ToolResult::success(
         "[approval] This tool call required approval and was approved by the user before execution.\n\ntest result: ok",
     )
     .with_metadata(serde_json::json!({
@@ -23284,13 +23594,13 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
         "deferred_tool",
         &serde_json::json!({}),
     );
-    let result = Ok(crate::tools::spec::ToolResult::error("boom").with_metadata(
-        serde_json::json!({
+    let result = Ok(
+        codewhale_engine::tools::spec::ToolResult::error("boom").with_metadata(serde_json::json!({
             "event": "tool.schema_hydrated",
             "executed": false,
             "retry_required": true,
-        }),
-    ));
+        })),
+    );
     handle_tool_call_complete(&mut app, "generic-failed", "deferred_tool", &result);
 
     let generic = app
@@ -23347,7 +23657,7 @@ fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
                 .contains("<command>")
     );
 
-    let result = Ok(crate::tools::spec::ToolResult::success(
+    let result = Ok(codewhale_engine::tools::spec::ToolResult::success(
         "Background task running (no new output).",
     )
     .with_metadata(serde_json::json!({
@@ -23387,7 +23697,7 @@ fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "turn-child-usage".to_string(),
         created_at: chrono::Utc::now(),
-        route: Some(crate::core::events::TurnRoute {
+        route: Some(codewhale_engine::core::events::TurnRoute {
             provider: ProviderKind::Deepseek,
             provider_identity: "deepseek".to_string(),
             model: "deepseek-v4-flash".to_string(),
@@ -23397,32 +23707,34 @@ fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
             // a child that publishes no route receipt of its own must not
             // borrow it: the fail-closed answer is Unknown, reported as
             // missing spend rather than silently inherited.
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 openrouter_vendor: None,
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
-                endpoint_fingerprint: crate::cost_status::endpoint_fingerprint(
+                billing_surface: Some(
+                    codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+                ),
+                endpoint_fingerprint: codewhale_engine::cost_status::endpoint_fingerprint(
                     codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL,
                 ),
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL
                 .to_string(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }),
         auto_route_receipt: None,
         suggestion_authority: None,
     });
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
-        serde_json::json!({
+    let result = Ok(
+        codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(serde_json::json!({
             "child_model": "deepseek-v4-flash",
             "child_input_tokens": 10_000,
             "child_output_tokens": 1_000,
             "child_prompt_cache_hit_tokens": 7_000,
             "child_prompt_cache_miss_tokens": 3_000,
-        }),
-    ));
+        })),
+    );
 
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
@@ -23462,23 +23774,26 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     };
 
     // The shared producer emits every class.
-    let priced_route = crate::cost_status::EffectiveRouteEnvelope {
+    let priced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
         openrouter_vendor: None,
         provider: codewhale_config::ProviderKind::Anthropic,
         provider_identity: "anthropic-api".to_string(),
         model: "claude-haiku-4-5".to_string(),
-        billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+        billing_surface: Some(
+            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+        ),
         // Must be a real fingerprint: persistence and receipt boundaries drop
         // anything that is not one, and a dropped field would have made the
         // round-trip assertion below vacuously pass on both sides.
-        endpoint_fingerprint: crate::cost_status::endpoint_fingerprint(
+        endpoint_fingerprint: codewhale_engine::cost_status::endpoint_fingerprint(
             "https://api.anthropic.com/v1",
         ),
         provider_live_pricing: None,
-        billing_mode: crate::cost_status::RouteBillingMode::Metered,
+        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
         dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
     };
-    let fields = crate::cost_status::child_usage_metadata_fields(&priced_route, &child_usage);
+    let fields =
+        codewhale_engine::cost_status::child_usage_metadata_fields(&priced_route, &child_usage);
     assert_eq!(fields["child_prompt_cache_write_tokens"], 100_000);
     assert_eq!(fields["child_reasoning_tokens"], 40_000);
     assert_eq!(fields["child_reasoning_replay_tokens"], 12_345);
@@ -23495,15 +23810,20 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     // may control this price.
     let mut priced_app = create_test_app();
     priced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
-    priced_app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
+    priced_app.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
     let mut metadata = serde_json::json!({});
-    crate::cost_status::attach_child_usage_metadata(&mut metadata, &priced_route, &child_usage);
+    codewhale_engine::cost_status::attach_child_usage_metadata(
+        &mut metadata,
+        &priced_route,
+        &child_usage,
+    );
     assert_eq!(
-        crate::cost_status::child_route_envelope_from_metadata(&metadata),
+        codewhale_engine::cost_status::child_route_envelope_from_metadata(&metadata),
         Some(priced_route.clone()),
         "typed child route metadata must round-trip exactly"
     );
-    let priced = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(metadata));
+    let priced =
+        Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
     handle_tool_call_complete(&mut priced_app, "verify-1", "verify", &priced);
 
     // 0.7M input @1.00 + 0.1M output @5.00 + 0.2M read @0.10 + 0.1M write @1.25.
@@ -23521,21 +23841,29 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     // write tokens.
     let mut unpriced_app = create_test_app();
     unpriced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
-    unpriced_app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
-    let unpriced_route = crate::cost_status::EffectiveRouteEnvelope {
+    unpriced_app.billing_presentation =
+        codewhale_engine::route_billing::BillingPresentation::Metered;
+    let unpriced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
         openrouter_vendor: None,
         provider: codewhale_config::ProviderKind::Moonshot,
         provider_identity: "moonshot-api".to_string(),
         model: "kimi-k2.7-code".to_string(),
-        billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
+        billing_surface: Some(
+            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
+        ),
         endpoint_fingerprint: Some("test-moonshot-endpoint".to_string()),
         provider_live_pricing: None,
-        billing_mode: crate::cost_status::RouteBillingMode::Metered,
+        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
         dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
     };
     let mut metadata = serde_json::json!({});
-    crate::cost_status::attach_child_usage_metadata(&mut metadata, &unpriced_route, &child_usage);
-    let unpriced = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(metadata));
+    codewhale_engine::cost_status::attach_child_usage_metadata(
+        &mut metadata,
+        &unpriced_route,
+        &child_usage,
+    );
+    let unpriced =
+        Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
     handle_tool_call_complete(&mut unpriced_app, "rlm-1", "rlm", &unpriced);
 
     assert_eq!(unpriced_app.session.subagent_cost, 0.0);
@@ -23554,9 +23882,10 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     // invariant; the figure is discarded rather than inflating billable output.
     let mut pathological = create_test_app();
     pathological.api_provider = codewhale_config::ProviderKind::Deepseek;
-    pathological.billing_presentation = crate::route_billing::BillingPresentation::Metered;
+    pathological.billing_presentation =
+        codewhale_engine::route_billing::BillingPresentation::Metered;
     let mut metadata = serde_json::json!({});
-    crate::cost_status::attach_child_usage_metadata(
+    codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash"),
         &codewhale_models::Usage {
@@ -23566,10 +23895,11 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
             ..Default::default()
         },
     );
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(metadata));
+    let result =
+        Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
     handle_tool_call_complete(&mut pathological, "rlm-2", "rlm", &result);
     // Cost is that of 1000 input / 100 output, with no reasoning surcharge.
-    let sane = crate::pricing::calculate_turn_cost_estimate_for_provider(
+    let sane = codewhale_engine::pricing::calculate_turn_cost_estimate_for_provider(
         codewhale_config::ProviderKind::Deepseek,
         "deepseek-v4-flash",
         &codewhale_models::Usage {
@@ -23591,12 +23921,14 @@ fn zero_usage_model_child_still_records_priced_receipt() {
     let mut app = create_test_app();
     let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
     let mut metadata = serde_json::json!({});
-    crate::cost_status::attach_child_usage_metadata(
+    codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &route,
         &codewhale_models::Usage::default(),
     );
-    let result = Ok(crate::tools::spec::ToolResult::error("kernel closed").with_metadata(metadata));
+    let result = Ok(
+        codewhale_engine::tools::spec::ToolResult::error("kernel closed").with_metadata(metadata),
+    );
 
     handle_tool_call_complete(&mut app, "rlm-zero", "rlm", &result);
 
@@ -23610,22 +23942,22 @@ fn zero_usage_model_child_still_records_priced_receipt() {
 fn routed_missing_usage_batch_prices_exact_routes_and_only_residual_as_generic() {
     let mut app = create_test_app();
     let mut metered_route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
-    metered_route.billing_mode = crate::cost_status::RouteBillingMode::Metered;
+    metered_route.billing_mode = codewhale_engine::cost_status::RouteBillingMode::Metered;
     let mut local_route = metered_route.clone();
     local_route.provider = ProviderKind::Custom;
     local_route.provider_identity = "local-computer".to_string();
-    local_route.billing_mode = crate::cost_status::RouteBillingMode::Local;
-    let batch = crate::cost_status::RuntimeUsageBatch {
+    local_route.billing_mode = codewhale_engine::cost_status::RouteBillingMode::Local;
+    let batch = codewhale_engine::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
         records: Vec::new(),
         drop_records: vec![
-            crate::cost_status::RuntimeUsageDropRecord {
-                reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+            codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::default(),
                 source_id: "rlm:missing:metered".to_string(),
                 route: metered_route,
             },
-            crate::cost_status::RuntimeUsageDropRecord {
-                reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+            codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::default(),
                 source_id: "rlm:missing:local".to_string(),
                 route: local_route,
             },
@@ -23634,8 +23966,9 @@ fn routed_missing_usage_batch_prices_exact_routes_and_only_residual_as_generic()
         dropped_records: 3,
     };
     let mut metadata = serde_json::json!({});
-    crate::cost_status::attach_child_usage_batch_metadata(&mut metadata, &batch);
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(metadata));
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(&mut metadata, &batch);
+    let result =
+        Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
 
     handle_tool_call_complete(&mut app, "rlm-missing", "rlm", &result);
 
@@ -23662,7 +23995,7 @@ fn picker_renamed_active_title_survives_automatic_snapshot() {
     let mut app = create_test_app();
     let manager = SessionManager::new(tempfile::tempdir().expect("tempdir").path().to_path_buf())
         .expect("session manager");
-    let mut metadata = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut metadata = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "session-active".to_string(),
         &app.api_messages,
         &app.model,
@@ -23709,7 +24042,7 @@ fn stale_cached_placeholder_title_does_not_override_generated_title() {
     });
     // Cache pinned to the placeholder title — exactly what the old behavior
     // left behind when the first snapshot ran before any user message existed.
-    let mut cached = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut cached = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "session-title-bug".to_string(),
         &app.api_messages,
         &app.model,
@@ -23742,7 +24075,7 @@ fn persisted_placeholder_title_yields_to_computed_title_when_conversation_has_co
     // A session whose first save happened before any user message existed:
     // the old behavior pinned its title to the "New Session" placeholder on
     // disk, and a later snapshot must let the computed title win.
-    let stale = crate::session_manager::create_saved_session_with_id_and_mode(
+    let stale = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "session-stale-title".to_string(),
         &[],
         &app.model,
@@ -23777,7 +24110,7 @@ fn persisted_placeholder_title_yields_to_computed_title_when_conversation_has_co
 #[test]
 fn picker_rename_of_inactive_session_does_not_touch_active_metadata() {
     let mut app = create_test_app();
-    let mut active = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut active = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "session-active".to_string(),
         &app.api_messages,
         &app.model,
@@ -23812,15 +24145,15 @@ fn codex_tool_child_usage_does_not_inherit_public_api_pricing() {
     let mut app = create_test_app();
     app.api_provider = codewhale_config::ProviderKind::OpenaiCodex;
     app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
-        serde_json::json!({
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+    let result = Ok(
+        codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(serde_json::json!({
             "child_model": "gpt-5.5",
             "child_input_tokens": 10_000,
             "child_output_tokens": 1_000,
             "child_provider": "openai-codex",
-        }),
-    ));
+        })),
+    );
 
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
@@ -23834,7 +24167,7 @@ fn spilled_tool_completion_records_session_artifact_metadata() {
     let raw = "checking crate ... error[E0425]: cannot find value\n".repeat(20);
     std::fs::write(&spillover_path, &raw).expect("write spillover");
     let result = Ok(
-        crate::tools::spec::ToolResult::success("checking crate ...").with_metadata(
+        codewhale_engine::tools::spec::ToolResult::success("checking crate ...").with_metadata(
             serde_json::json!({
                 "spillover_path": spillover_path.display().to_string(),
                 "artifact_session_id": "session-123",
@@ -23851,7 +24184,10 @@ fn spilled_tool_completion_records_session_artifact_metadata() {
 
     assert_eq!(app.session_artifacts.len(), 1);
     let artifact = &app.session_artifacts[0];
-    assert_eq!(artifact.kind, crate::artifacts::ArtifactKind::ToolOutput);
+    assert_eq!(
+        artifact.kind,
+        codewhale_runtime::artifacts::ArtifactKind::ToolOutput
+    );
     assert_eq!(artifact.session_id, "session-123");
     assert_eq!(artifact.tool_call_id, "call-big");
     assert_eq!(artifact.tool_name, "exec_shell");
@@ -23863,7 +24199,8 @@ fn spilled_tool_completion_records_session_artifact_metadata() {
     assert!(artifact.preview.starts_with("checking crate"));
 
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
     assert_eq!(snapshot.artifacts, app.session_artifacts);
 }
@@ -23872,7 +24209,8 @@ fn spilled_tool_completion_records_session_artifact_metadata() {
 fn first_snapshot_preserves_current_session_id_for_artifact_ownership() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.current_session_id = Some("session-123".to_string());
     app.api_messages_mut().push(text_message("user", "hello"));
@@ -23886,7 +24224,8 @@ fn first_snapshot_preserves_current_session_id_for_artifact_ownership() {
 fn existing_session_snapshot_updates_model_selection() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut existing = saved_session_with_messages(vec![text_message("user", "hello")]);
     existing.metadata.model = "auto".to_string();
     manager
@@ -23908,7 +24247,8 @@ fn existing_session_snapshot_updates_model_selection() {
 fn automatic_session_snapshot_keeps_named_custom_identity_secret_free() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut config =
         named_custom_session_config("lm-studio", "http://127.0.0.1:1234/v1", "local-code-model");
     config
@@ -23939,7 +24279,8 @@ fn automatic_session_snapshot_keeps_named_custom_identity_secret_free() {
 fn automatic_session_snapshot_records_the_literal_custom_table_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let config =
         named_custom_session_config("custom", "http://127.0.0.1:18180/v1", "legacy-root-model");
     let mut app = App::new(create_test_options(), &config);
@@ -23963,8 +24304,10 @@ fn automatic_session_snapshot_records_the_literal_custom_table_id() {
 fn session_snapshot_and_resume_round_trip_work_state() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
+    app.current_session_id = None;
     app.api_messages_mut()
         .push(text_message("user", "keep my work"));
     app.api_messages_mut()
@@ -23973,28 +24316,34 @@ fn session_snapshot_and_resume_round_trip_work_state() {
         let mut todos = app.todos.try_lock().expect("todos lock");
         todos.add(
             "inspect".to_string(),
-            crate::tools::todo::TodoStatus::Completed,
+            codewhale_engine::tools::todo::TodoStatus::Completed,
         );
         todos.add(
             "patch".to_string(),
-            crate::tools::todo::TodoStatus::InProgress,
+            codewhale_engine::tools::todo::TodoStatus::InProgress,
         );
     }
     {
         let mut plan = app.plan_state.try_lock().expect("plan lock");
-        plan.update(crate::tools::plan::UpdatePlanArgs {
+        plan.update(codewhale_engine::tools::plan::UpdatePlanArgs {
             objective: Some("Ship continuity".to_string()),
-            plan: vec![crate::tools::plan::PlanItemArg {
+            plan: vec![codewhale_engine::tools::plan::PlanItemArg {
                 step: "verify".to_string(),
-                status: crate::tools::plan::StepStatus::InProgress,
+                status: codewhale_engine::tools::plan::StepStatus::InProgress,
             }],
-            ..crate::tools::plan::UpdatePlanArgs::default()
+            ..codewhale_engine::tools::plan::UpdatePlanArgs::default()
         });
     }
 
     let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
+    let projection = saved_work_projection(&app, &snapshot);
     let expected = snapshot.work_state.clone().expect("persisted Work state");
     manager.save_session(&snapshot).expect("save session");
+    app.current_session_id = Some(snapshot.metadata.id.clone());
+    assert!(
+        app.publish_saved_work_state(projection.owner.as_deref(), projection.state.as_ref())
+            .expect("publish the unsaved owner’s Work")
+    );
 
     let loaded = manager
         .load_session(&snapshot.metadata.id)
@@ -24012,12 +24361,13 @@ fn session_snapshot_and_resume_round_trip_work_state() {
 fn session_snapshot_preserves_last_work_state_when_lock_is_busy() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.current_session_id = Some("work-lock-session".to_string());
     app.todos.try_lock().expect("todos lock").add(
         "durable".to_string(),
-        crate::tools::todo::TodoStatus::InProgress,
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
     );
     let initial = build_session_snapshot(&mut app, &manager).expect("initial snapshot");
     let expected = initial.work_state.clone();
@@ -24033,27 +24383,32 @@ fn session_snapshot_preserves_last_work_state_when_lock_is_busy() {
 async fn session_snapshot_prefers_newer_memory_over_stale_disk_when_lock_is_busy() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.current_session_id = Some("work-cache-newer-than-disk".to_string());
     app.todos.try_lock().expect("todos lock").add(
         "disk state".to_string(),
-        crate::tools::todo::TodoStatus::Completed,
+        codewhale_engine::tools::todo::TodoStatus::Completed,
     );
     let disk_snapshot = build_session_snapshot(&mut app, &manager).expect("disk snapshot");
+    let stale_projection = saved_work_projection(&app, &disk_snapshot);
     manager
         .save_session(&disk_snapshot)
         .expect("save disk snapshot");
-    app.publish_pending_work_state()
-        .expect("publish saved disk state");
+    app.publish_saved_work_state(
+        Some("work-cache-newer-than-disk"),
+        disk_snapshot.work_state.as_ref(),
+    )
+    .expect("publish saved disk state");
 
-    let mut desired = crate::tools::todo::TodoList::from_snapshot(
+    let mut desired = codewhale_engine::tools::todo::TodoList::from_snapshot(
         &app.todos.try_lock().expect("todos lock").snapshot(),
     )
     .expect("current To-do state");
     desired.add(
         "newer memory state".to_string(),
-        crate::tools::todo::TodoStatus::InProgress,
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
     );
     app.runtime_services
         .work
@@ -24066,6 +24421,19 @@ async fn session_snapshot_prefers_newer_memory_over_stale_disk_when_lock_is_busy
         )
         .await
         .expect("graph-backed memory update");
+    assert!(
+        publish_saved_work_projection(&mut app, &stale_projection)
+            .await
+            .expect_err("newer Work must stay pending")
+            .contains("newer Work update")
+    );
+    assert!(
+        app.runtime_services
+            .work
+            .as_ref()
+            .expect("Work Graph runtime")
+            .has_pending_publish()
+    );
     let memory_snapshot = build_session_snapshot(&mut app, &manager).expect("memory snapshot");
     assert_ne!(memory_snapshot.work_state, disk_snapshot.work_state);
 
@@ -24080,8 +24448,8 @@ async fn session_snapshot_prefers_newer_memory_over_stale_disk_when_lock_is_busy
 fn automatic_session_snapshot_never_reloads_existing_json_on_ui_thread() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sessions_dir = tmp.path().join("sessions");
-    let manager =
-        crate::session_manager::SessionManager::new(sessions_dir.clone()).expect("manager");
+    let manager = codewhale_engine::session_manager::SessionManager::new(sessions_dir.clone())
+        .expect("manager");
     let mut app = create_test_app();
     app.current_session_id = Some("nonblocking-snapshot".to_string());
     app.api_messages_mut()
@@ -24117,7 +24485,8 @@ fn renamed_title_survives_next_in_memory_automatic_snapshot() {
     let _lock = crate::test_support::lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
-    let manager = crate::session_manager::SessionManager::default_location().expect("manager");
+    let manager =
+        codewhale_engine::session_manager::SessionManager::default_location().expect("manager");
     let mut session = saved_session_with_messages(vec![text_message("user", "original title")]);
     session.metadata.title = "Original Title".to_string();
     manager.save_session(&session).expect("save session");
@@ -24136,11 +24505,12 @@ fn renamed_title_survives_next_in_memory_automatic_snapshot() {
 fn session_snapshot_uses_last_known_work_before_first_file_flush() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.todos.try_lock().expect("todos lock").add(
         "queued durable state".to_string(),
-        crate::tools::todo::TodoStatus::InProgress,
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
     );
     let initial = build_session_snapshot(&mut app, &manager).expect("initial snapshot");
     let expected = initial.work_state.clone();
@@ -24169,11 +24539,12 @@ fn session_snapshot_uses_last_known_work_before_first_file_flush() {
 fn first_contended_snapshot_fails_instead_of_serializing_false_empty_work() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
     let mut app = create_test_app();
     app.todos.try_lock().expect("todos lock").add(
         "not empty".to_string(),
-        crate::tools::todo::TodoStatus::InProgress,
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
     );
     let todos = app.todos.clone();
     let _held = todos.try_lock().expect("hold todos lock");
@@ -24188,7 +24559,7 @@ fn legacy_session_without_work_state_clears_previous_todo_on_load() {
     let mut app = create_test_app();
     app.todos.try_lock().expect("todos lock").add(
         "old session".to_string(),
-        crate::tools::todo::TodoStatus::Pending,
+        codewhale_engine::tools::todo::TodoStatus::Pending,
     );
     let session = saved_session_with_messages(vec![text_message("user", "legacy")]);
     assert!(session.work_state.is_none());
@@ -24204,18 +24575,18 @@ fn contended_work_restore_leaves_current_session_wholly_unchanged() {
         .push(text_message("user", "current conversation"));
     app.current_session_id = Some("current-session".to_string());
     let mut session = saved_session_with_messages(vec![text_message("user", "replacement")]);
-    session.work_state = Some(crate::session_manager::SessionWorkState {
+    session.work_state = Some(codewhale_engine::session_manager::SessionWorkState {
         graph: None,
-        todos: crate::tools::todo::TodoListSnapshot {
-            items: vec![crate::tools::todo::TodoItem {
+        todos: codewhale_engine::tools::todo::TodoListSnapshot {
+            items: vec![codewhale_engine::tools::todo::TodoItem {
                 id: 1,
                 content: "replacement todo".to_string(),
-                status: crate::tools::todo::TodoStatus::Pending,
+                status: codewhale_engine::tools::todo::TodoStatus::Pending,
             }],
             completion_pct: 0,
             in_progress_id: None,
         },
-        plan: crate::tools::plan::PlanSnapshot::default(),
+        plan: codewhale_engine::tools::plan::PlanSnapshot::default(),
     });
     let plan_state = app.plan_state.clone();
     let _held = plan_state.try_lock().expect("hold plan lock");
@@ -24798,19 +25169,20 @@ fn apply_loaded_auto_session_releases_implicit_fixed_model_thinking() {
 fn auto_route_receipt_survives_session_snapshot_and_restore() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
-    let receipt = crate::model_routing::AutoRouteReceipt {
-        tier: crate::model_routing::AutoRouteTier::Strong,
-        pair: crate::model_routing::AutoRoutePair {
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
+    let receipt = codewhale_engine::model_routing::AutoRouteReceipt {
+        tier: codewhale_engine::model_routing::AutoRouteTier::Strong,
+        pair: codewhale_engine::model_routing::AutoRoutePair {
             strong: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string(),
             fast: Some(
                 codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string(),
             ),
         },
-        scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
-        data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
-        reason: crate::model_routing::AutoRouteReason::LocalFallback(
-            crate::model_routing::AutoRouteHeuristicReason::ComplexRequest,
+        scope: codewhale_engine::model_routing::AutoRouteScope::ResolvedProvider,
+        data_path: codewhale_engine::model_routing::AutoRouteDataPath::LocalHeuristic,
+        reason: codewhale_engine::model_routing::AutoRouteReason::LocalFallback(
+            codewhale_engine::model_routing::AutoRouteHeuristicReason::ComplexRequest,
         ),
         decision: None,
         router_failure: None,
@@ -25652,17 +26024,19 @@ fn apply_loaded_session_restores_artifact_registry() {
         text_message("user", "hello"),
         text_message("assistant", "hi"),
     ]);
-    session.artifacts.push(crate::artifacts::ArtifactRecord {
-        id: "art_call_big".to_string(),
-        kind: crate::artifacts::ArtifactKind::ToolOutput,
-        session_id: "session-123".to_string(),
-        tool_call_id: "call-big".to_string(),
-        tool_name: "exec_shell".to_string(),
-        created_at: chrono::Utc::now(),
-        byte_size: 128,
-        preview: "hello".to_string(),
-        storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
-    });
+    session
+        .artifacts
+        .push(codewhale_runtime::artifacts::ArtifactRecord {
+            id: "art_call_big".to_string(),
+            kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
+            session_id: "session-123".to_string(),
+            tool_call_id: "call-big".to_string(),
+            tool_name: "exec_shell".to_string(),
+            created_at: chrono::Utc::now(),
+            byte_size: 128,
+            preview: "hello".to_string(),
+            storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
+        });
 
     apply_loaded_session(&mut app, &mut Config::default(), &session).expect("restore session");
     assert_eq!(app.session_artifacts, session.artifacts);
@@ -26002,15 +26376,14 @@ fn mid_turn_history_insert_rebases_hide_without_changing_finalized_choices() {
 #[test]
 fn orphan_success_with_mutation_metadata_keeps_the_file_receipt() {
     let mut app = create_test_app();
-    let result = crate::tools::spec::ToolResult::success("structured success").with_metadata(
-        serde_json::json!({
+    let result = codewhale_engine::tools::spec::ToolResult::success("structured success")
+        .with_metadata(serde_json::json!({
             "mutation": {
                 "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
                 "files": [{ "path": "src/lib.rs", "outcome": "updated" }],
                 "renames": []
             }
-        }),
-    );
+        }));
 
     handle_tool_call_complete(&mut app, "orphan-file", "File", &Ok(result));
 
@@ -26019,7 +26392,9 @@ fn orphan_success_with_mutation_metadata_keeps_the_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
     assert_eq!(app.tool_details_by_cell[&0].tool_name, "File");
@@ -26121,7 +26496,7 @@ fn exploring_label_for_list_files_uses_progressive() {
 
 #[test]
 fn add_message_does_not_scroll_when_user_scrolled_away() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     // Pre-condition: user was following the tail, then scrolled up.
@@ -26140,7 +26515,7 @@ fn add_message_does_not_scroll_when_user_scrolled_away() {
 
 #[test]
 fn add_message_pins_to_tail_when_user_was_following() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
@@ -26160,7 +26535,7 @@ fn add_message_pins_to_tail_when_user_was_following() {
 fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
     // Tool-cell handlers must not sneak in a scroll_to_bottom — they go
     // through `mark_history_updated` which only bumps `history_version`.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
@@ -26181,7 +26556,7 @@ fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
 
 #[test]
 fn tool_call_complete_does_not_scroll_when_user_scrolled_away() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     handle_tool_call_started(
@@ -26208,7 +26583,7 @@ fn mark_history_updated_does_not_call_scroll_to_bottom() {
     // Behavior pin: future contributors must not add a scroll_to_bottom
     // here. The scroll-following logic lives only in `add_message` and
     // `flush_active_cell`, both gated on `user_scrolled_during_stream`.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(3);
@@ -26248,7 +26623,7 @@ async fn composer_send_anchors_new_message_at_tail() {
     let engine = mock_engine_handle();
 
     // The user deliberately scrolled up to read history mid-turn.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
     assert!(!app.viewport.transcript_scroll.is_at_tail());
@@ -26283,8 +26658,8 @@ async fn composer_send_anchors_new_message_at_tail() {
 #[tokio::test]
 async fn steer_send_keeps_local_scroll_context() {
     let mut app = create_test_app();
-    let mut engine = crate::core::engine::mock_engine_handle();
-    use crate::tui::scrolling::TranscriptScroll;
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
@@ -27118,7 +27493,7 @@ fn turn_handoff_markdown_degrades_empty_sections_without_panic() {
 
 #[test]
 fn engine_error_finalizes_active_thinking_block() {
-    use crate::error_taxonomy::StreamError;
+    use codewhale_error_taxonomy::StreamError;
 
     let mut app = create_test_app();
     let entry_idx = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
@@ -27309,13 +27684,14 @@ fn patch_approval_modal_does_not_displace_the_active_file_receipt() {
     );
     assert_eq!(app.tool_cells["file-ask"], active_index);
 
-    let result = crate::tools::spec::ToolResult::success("ok").with_metadata(serde_json::json!({
-        "mutation": {
-            "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
-            "files": [{ "path": "src/lib.rs", "outcome": "updated" }],
-            "renames": []
-        }
-    }));
+    let result =
+        codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(serde_json::json!({
+            "mutation": {
+                "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+                "files": [{ "path": "src/lib.rs", "outcome": "updated" }],
+                "renames": []
+            }
+        }));
     handle_tool_call_complete(&mut app, "file-ask", "apply_patch", &Ok(result));
 
     let active = app.active_cell.as_ref().expect("active File cell");
@@ -27324,7 +27700,9 @@ fn patch_approval_modal_does_not_displace_the_active_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
 }
@@ -27353,9 +27731,11 @@ async fn timed_out_approval_denial_reaches_the_engine_as_a_timeout() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::TimedOut {
-            id: "tool-timeout".to_string()
-        }),
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::TimedOut {
+                id: "tool-timeout".to_string()
+            }
+        ),
         "a bound expiry must reach the engine as a timeout, not an operator denial"
     );
     assert!(
@@ -27393,9 +27773,11 @@ async fn approval_decision_persists_ask_rules_to_permissions_file() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Approved {
-            id: "tool-1".to_string()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Approved {
+                id: "tool-1".to_string()
+            }
+        )
     );
     let store = codewhale_config::ConfigStore::load(Some(config_path)).expect("load config store");
     assert_eq!(store.permissions().rules, vec![rule]);
@@ -27449,9 +27831,11 @@ async fn approval_decision_persists_exact_workspace_allow_rule() {
 
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Approved {
-            id: "tool-allow".to_string()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Approved {
+                id: "tool-allow".to_string()
+            }
+        )
     );
     let store = codewhale_config::ConfigStore::load(Some(config_path)).expect("load config store");
     assert_eq!(store.permissions().rules, vec![rule]);
@@ -27670,7 +28054,7 @@ fn truncate_line_to_width_respects_display_width_for_tiny_budgets() {
 /// the session in offline mode with the next typed message queued.
 #[test]
 fn recoverable_engine_error_does_not_enter_offline_mode() {
-    use crate::error_taxonomy::{ErrorEnvelope, StreamError};
+    use codewhale_error_taxonomy::{ErrorEnvelope, StreamError};
     let mut app = create_test_app();
     assert!(!app.offline_mode);
 
@@ -27708,7 +28092,7 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
 
 #[test]
 fn recoverable_provider_error_advances_fallback_chain() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let config = {
         let __cw_config_init_60_0 = vec![ProviderKind::Openrouter];
@@ -27769,7 +28153,7 @@ fn recoverable_provider_error_advances_fallback_chain() {
 /// walk). A bad key requires user intervention, not a silent rotation.
 #[test]
 fn auth_error_does_not_trigger_provider_fallback() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut app = create_test_app();
     app.api_provider = ProviderKind::Deepseek;
@@ -27812,7 +28196,7 @@ fn auth_error_does_not_trigger_provider_fallback() {
 /// indexing in the fallback status).
 #[test]
 fn fallback_switch_status_shows_one_based_position_and_reason() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openrouter.api_key = Some("fixture-fallback-key".to_string());
@@ -27936,7 +28320,7 @@ async fn failed_fallback_restores_exact_literal_custom_identity_without_root_cro
 
 #[tokio::test]
 async fn provider_switch_auth_error_restores_previous_provider_and_model() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
 
     let _home = SettingsHomeGuard::new();
     let mut app = create_test_app();
@@ -28050,7 +28434,7 @@ async fn provider_switch_auth_error_restores_previous_provider_and_model() {
 
 #[tokio::test]
 async fn provider_switch_rollback_corrects_setup_receipt_when_persistence_fails() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
 
     let _home = SettingsHomeGuard::new();
     let bad_config_path = TempDir::new().expect("bad config path");
@@ -28154,8 +28538,8 @@ fn stream_drop_approval_event() -> EngineEvent {
 
 #[tokio::test]
 async fn recoverable_stream_error_keeps_active_turn_for_pending_approval() {
-    use crate::core::authority::ApprovalRequestDisposition;
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut app = create_test_app();
     app.is_loading = true;
@@ -28283,7 +28667,7 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
 
     apply_engine_error_to_app(
         &mut app,
-        crate::error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
+        codewhale_error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
     );
 
     assert!(!app.is_loading);
@@ -28295,9 +28679,11 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
     assert!(resolve_stale_parent_request(&app, &mock.handle, &stream_drop_approval_event()).await);
     assert_eq!(
         mock.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Unavailable {
-            id: "stream-drop-tool".to_string()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Unavailable {
+                id: "stream-drop-tool".to_string()
+            }
+        )
     );
     assert!(app.view_stack.is_empty());
     // A child agent's request in the same state is delivered.
@@ -28322,7 +28708,7 @@ fn child_approval_event(id: &str) -> EngineEvent {
 /// approval: the stale-request resolver, then the approval handler.
 async fn drain_approval_event(
     app: &mut App,
-    handle: &crate::core::engine::EngineHandle,
+    handle: &codewhale_engine::core::engine::EngineHandle,
     event: EngineEvent,
 ) {
     if resolve_stale_parent_request(app, handle, &event).await {
@@ -28364,8 +28750,8 @@ async fn drain_approval_event(
 /// answers. A receipt's "by you" depends on this.
 #[tokio::test]
 async fn auto_answered_approvals_name_their_decider() {
-    use crate::approval_log::ApprovalDecider;
-    use crate::core::engine::MockApprovalEvent;
+    use codewhale_engine::approval_log::ApprovalDecider;
+    use codewhale_engine::core::engine::MockApprovalEvent;
     const GROUP: &str = "shell:exec_shell:cargo test";
     let parent = |id: &str| EngineEvent::ApprovalRequired {
         id: id.to_string(),
@@ -28492,9 +28878,11 @@ async fn stale_parent_approval_is_resolved_unavailable_not_dropped() {
     // Answered explicitly, and never recorded as the person's denial.
     assert_eq!(
         mock.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Unavailable {
-            id: "stream-drop-tool".to_string()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Unavailable {
+                id: "stream-drop-tool".to_string()
+            }
+        )
     );
     assert!(
         app.view_stack.is_empty(),
@@ -28505,7 +28893,7 @@ async fn stale_parent_approval_is_resolved_unavailable_not_dropped() {
     // A stale parent question is cancelled the same way.
     let question = EngineEvent::UserInputRequired {
         id: "stale-question".to_string(),
-        request: crate::tools::user_input::UserInputRequest {
+        request: codewhale_engine::tools::user_input::UserInputRequest {
             require_typed_answers: false,
             questions: Vec::new(),
         },
@@ -28764,10 +29152,10 @@ fn second_quick_y_does_not_answer_the_card_it_reveals() {
 fn child_progress_event(
     owner_session_id: &str,
     agent_id: &str,
-    worker_status: crate::tools::subagent::AgentWorkerStatus,
+    worker_status: codewhale_engine::tools::subagent::AgentWorkerStatus,
     approval_id: Option<&str>,
 ) -> EngineEvent {
-    let mut activity = crate::core::events::AgentProgressEventMeta::new(worker_status);
+    let mut activity = codewhale_engine::core::events::AgentProgressEventMeta::new(worker_status);
     if let Some(approval_id) = approval_id {
         activity = activity.with_approval_id(approval_id);
     }
@@ -28807,7 +29195,7 @@ async fn withdrawal_retires_hidden_card_footer_and_web_mirror() {
     let withdrawal = child_progress_event(
         "some-other-session",
         "agent_a",
-        crate::tools::subagent::AgentWorkerStatus::Cancelled,
+        codewhale_engine::tools::subagent::AgentWorkerStatus::Cancelled,
         Some(child_id),
     );
     assert!(
@@ -28833,7 +29221,7 @@ async fn withdrawal_retires_hidden_card_footer_and_web_mirror() {
     let resumed = child_progress_event(
         "current",
         "agent_a",
-        crate::tools::subagent::AgentWorkerStatus::RunningTool,
+        codewhale_engine::tools::subagent::AgentWorkerStatus::RunningTool,
         Some(next_id),
     );
     assert!(!crate::tui::pending_requests::observe_engine_event(
@@ -28854,7 +29242,7 @@ async fn other_conversations_child_request_is_answered_unavailable_not_shown() {
         &child_progress_event(
             "previous",
             "agent_old",
-            crate::tools::subagent::AgentWorkerStatus::Running,
+            codewhale_engine::tools::subagent::AgentWorkerStatus::Running,
             None,
         ),
     );
@@ -28865,9 +29253,11 @@ async fn other_conversations_child_request_is_answered_unavailable_not_shown() {
         tokio::time::timeout(Duration::from_secs(2), mock.recv_approval_event())
             .await
             .expect("the old conversation's request is resolved promptly"),
-        Some(crate::core::engine::MockApprovalEvent::Unavailable {
-            id: foreign.to_string()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Unavailable {
+                id: foreign.to_string()
+            }
+        )
     );
     assert!(
         app.view_stack.is_empty(),
@@ -28881,7 +29271,7 @@ async fn other_conversations_child_request_is_answered_unavailable_not_shown() {
         &child_progress_event(
             "current",
             "agent_new",
-            crate::tools::subagent::AgentWorkerStatus::Running,
+            codewhale_engine::tools::subagent::AgentWorkerStatus::Running,
             None,
         ),
     );
@@ -28916,9 +29306,11 @@ async fn stale_elevation_is_resolved_unavailable_not_dropped() {
         assert!(resolve_stale_parent_request(&app, &mock.handle, &elevation).await);
         assert_eq!(
             mock.recv_approval_event().await,
-            Some(crate::core::engine::MockApprovalEvent::Unavailable {
-                id: "elevation-tool".to_string()
-            })
+            Some(
+                codewhale_engine::core::engine::MockApprovalEvent::Unavailable {
+                    id: "elevation-tool".to_string()
+                }
+            )
         );
         assert!(app.view_stack.is_empty());
     }
@@ -28979,9 +29371,11 @@ async fn web_decision_dismisses_buried_child_card() {
     let decision = tokio::time::timeout(Duration::from_secs(2), mock.recv_approval_event()).await;
     assert_eq!(
         decision.ok().flatten(),
-        Some(crate::core::engine::MockApprovalEvent::Approved {
-            id: child_id.to_string()
-        }),
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Approved {
+                id: child_id.to_string()
+            }
+        ),
         "status: {:?}",
         app.status_message
     );
@@ -28995,7 +29389,7 @@ async fn web_decision_dismisses_buried_child_card() {
 
 #[tokio::test]
 async fn child_progress_still_waiting_keeps_card() {
-    use crate::tools::subagent::AgentWorkerStatus;
+    use codewhale_engine::tools::subagent::AgentWorkerStatus;
     let mut app = ask_posture_app();
     let mock = mock_engine_handle();
     let child_id = "agent:agent_a:approval:boot:8";
@@ -29045,7 +29439,7 @@ async fn agent_complete_clears_child_pending() {
 /// TurnComplete must not strand subsequent messages offline.
 #[test]
 fn non_recoverable_engine_error_stays_online() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
     let mut app = create_test_app();
     assert!(!app.offline_mode);
     app.is_loading = true;
@@ -29077,9 +29471,9 @@ fn non_recoverable_engine_error_stays_online() {
 /// may replace the footer; the recovery must still be readable in the frame.
 #[tokio::test]
 async fn keyless_engine_error_stays_visible_after_a_config_ack() {
-    use crate::core::engine::{Engine, EngineConfig};
-    use crate::core::ops::{Op, TurnSpec, UserInputProvenance};
-    use crate::error_taxonomy::ErrorCategory;
+    use codewhale_engine::core::engine::{Engine, EngineConfig};
+    use codewhale_engine::core::ops::{Op, TurnSpec, UserInputProvenance};
+    use codewhale_error_taxonomy::ErrorCategory;
 
     let _home = SettingsHomeGuard::new();
     let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
@@ -29141,7 +29535,7 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
             max_output_tokens: None,
             goal_objective: None,
             goal_token_budget: None,
-            goal_status: crate::tools::goal::GoalStatus::Active,
+            goal_status: codewhale_engine::tools::goal::GoalStatus::Active,
             reasoning_effort: None,
             reasoning_effort_auto: false,
             auto_model: false,
@@ -29178,7 +29572,7 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
             break;
         }
     }
-    let mut compaction = crate::compaction::CompactionConfig::default();
+    let mut compaction = codewhale_engine::compaction::CompactionConfig::default();
     compaction.enabled = !compaction.enabled;
     handle
         .send(Op::SetCompaction { config: compaction })
@@ -29220,7 +29614,7 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
 
 #[test]
 fn env_only_auth_failure_reopens_provider_onboarding() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
     let mut app = create_test_app();
     app.ui_locale = codewhale_localization::Locale::Ja;
     app.api_provider = codewhale_config::ProviderKind::Anthropic;
@@ -29377,11 +29771,14 @@ fn restored_queued_message_crosses_bounded_message_submit_serialization() {
     let original = "restored 用户 \"quoted\"\n".repeat(8_000);
     let persisted = queued_ui_to_session(&QueuedMessage::new(original.clone(), None)).unwrap();
     let restored = queued_session_to_ui(persisted);
-    let payload = crate::hooks::message_submit_payload(&app.base_hook_context(), &restored.display);
+    let payload = codewhale_engine::hooks::message_submit_payload(
+        &app.base_hook_context(),
+        &restored.display,
+    );
     let encoded = serde_json::to_vec(&payload).expect("serialize restored payload");
 
     assert!(
-        encoded.len() <= crate::hooks::HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES,
+        encoded.len() <= codewhale_engine::hooks::HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES,
         "restored payload was {} bytes",
         encoded.len()
     );
@@ -29396,11 +29793,12 @@ fn merged_pending_steers_cross_bounded_message_submit_serialization() {
     app.push_pending_steer(QueuedMessage::new("first \"quoted\"\n".repeat(5_000), None));
     app.push_pending_steer(QueuedMessage::new("second 用户\n".repeat(5_000), None));
     let merged = merge_pending_steers(&mut app).expect("merged message");
-    let payload = crate::hooks::message_submit_payload(&app.base_hook_context(), &merged.display);
+    let payload =
+        codewhale_engine::hooks::message_submit_payload(&app.base_hook_context(), &merged.display);
     let encoded = serde_json::to_vec(&payload).expect("serialize merged payload");
 
     assert!(
-        encoded.len() <= crate::hooks::HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES,
+        encoded.len() <= codewhale_engine::hooks::HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES,
         "merged payload was {} bytes",
         encoded.len()
     );
@@ -29587,7 +29985,7 @@ fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
 #[test]
 fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
     let mut app = create_test_app();
-    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
         agent_id: "agent-x".to_string(),
         source_id: "response-x".to_string(),
         route: Box::new(test_mailbox_route(
@@ -29614,7 +30012,9 @@ fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
 
     // A distinct provider response must extend the displayed cost upward.
     let mut distinct = usage.clone();
-    let crate::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } = &mut distinct else {
+    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
+        &mut distinct
+    else {
         unreachable!()
     };
     *source_id = "response-y".to_string();
@@ -30350,7 +30750,7 @@ fn completed_turn_notification_leads_with_user_locale() {
 fn single_agent_payload(
     name: &str,
     result: &str,
-    status: &crate::tools::subagent::SubAgentStatus,
+    status: &codewhale_engine::tools::subagent::SubAgentStatus,
     include_summary: bool,
     elapsed: Duration,
 ) -> crate::tui::notifications::NotificationPayload {
@@ -30369,7 +30769,7 @@ fn subagent_completion_notification_uses_summary_line_not_sentinel() {
     let payload = single_agent_payload(
         "agent_live",
         "Finished the docs audit.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
-        &crate::tools::subagent::SubAgentStatus::Completed,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         false,
         Duration::from_secs(42),
     );
@@ -30385,7 +30785,7 @@ fn subagent_completion_notification_can_include_elapsed_summary() {
     let payload = single_agent_payload(
         "agent_live",
         "",
-        &crate::tools::subagent::SubAgentStatus::Completed,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         true,
         Duration::from_secs(65),
     );
@@ -30402,7 +30802,7 @@ fn subagent_notification_names_the_agent_and_previews_its_answer() {
     let payload = single_agent_payload(
         "audit docs",
         "## Summary\n\nThree links are stale. Two are in README.md.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
-        &crate::tools::subagent::SubAgentStatus::Completed,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         false,
         Duration::from_secs(5),
     );
@@ -30419,7 +30819,7 @@ fn subagent_cancelled_notification_never_claims_completion() {
     let payload = single_agent_payload(
         "agent_stopped",
         "Cancelled\n<codewhale:subagent.done>{\"status\":\"cancelled\"}</codewhale:subagent.done>",
-        &crate::tools::subagent::SubAgentStatus::Cancelled,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Cancelled,
         false,
         Duration::from_secs(2),
     );
@@ -30606,8 +31006,8 @@ fn toast_stack_overlay_respects_composer_boundary() {
 
 mod work_sidebar_projection_tests {
     use super::*;
-    use crate::task_manager::{TaskStatus, TaskSummary};
     use chrono::{Duration, TimeZone, Utc};
+    use codewhale_engine::task_manager::{TaskStatus, TaskSummary};
 
     fn sample_task(
         id: &str,
@@ -30863,7 +31263,7 @@ mod work_sidebar_projection_tests {
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&temp_dir);
-        let mut manager = crate::tools::shell::ShellManager::new(temp_dir.clone());
+        let mut manager = codewhale_engine::tools::shell::ShellManager::new(temp_dir.clone());
 
         // We can't easily spawn a real background process in a unit test
         // without a Tokio runtime, but we can verify that kill_running /
@@ -30872,7 +31272,12 @@ mod work_sidebar_projection_tests {
         let jobs = manager.list_jobs();
         let running = jobs
             .iter()
-            .filter(|j| matches!(j.status, crate::tools::shell::ShellStatus::Running))
+            .filter(|j| {
+                matches!(
+                    j.status,
+                    codewhale_engine::tools::shell::ShellStatus::Running
+                )
+            })
             .count();
         assert_eq!(running, 0, "empty manager should have zero running jobs");
 
@@ -31085,7 +31490,7 @@ fn status_animation_ticks_for_a_visible_background_task() {
         id: "shell_smooth".to_string(),
         status: "running".to_string(),
         prompt_summary: "shell: cargo test --locked".to_string(),
-        duration_ms: Some(crate::tui::spinner::LIVE_MARKER_DELAY_MS),
+        duration_ms: Some(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS),
         kind: TaskPanelEntryKind::Shell,
         stale: false,
         elapsed_since_output_ms: None,
@@ -31171,13 +31576,13 @@ fn background_notice_waits_for_finite_work_and_a_busy_parent() {
     let config = Config::default();
     let mut running = make_subagent(
         "agent_busy",
-        crate::tools::subagent::SubAgentStatus::Running,
+        codewhale_engine::tools::subagent::SubAgentStatus::Running,
     );
     running.started_at = Some(Instant::now());
     app.subagent_cache.push(running);
     app.background_finished.push(FinishedWork::agent(
         "explore",
-        &crate::tools::subagent::SubAgentStatus::Completed,
+        &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
         "Found it.",
         Duration::from_secs(3),
     ));
@@ -31209,7 +31614,7 @@ fn a_shell_finished_during_a_completed_turn_is_left_to_the_turn_notice() {
     // visible here instead of being flushed.
     let mut running = make_subagent(
         "agent_busy",
-        crate::tools::subagent::SubAgentStatus::Running,
+        codewhale_engine::tools::subagent::SubAgentStatus::Running,
     );
     running.started_at = Some(Instant::now());
     app.subagent_cache.push(running);
@@ -31264,7 +31669,7 @@ fn background_review_shell_prefixed_durable_task_holds_notice_unless_stale() {
     let finished = || {
         FinishedWork::agent(
             "explore",
-            &crate::tools::subagent::SubAgentStatus::Completed,
+            &codewhale_engine::tools::subagent::SubAgentStatus::Completed,
             "Found it.",
             Duration::from_secs(3),
         )
@@ -31807,13 +32212,20 @@ fn backtrack_cut_index_skips_tool_result_user_messages() {
             }],
         },
     ];
+    let mut app = create_test_app();
+    for msg in &msgs {
+        for cell in history_cells_from_message(msg) {
+            app.add_message(cell);
+        }
+    }
+    app.set_api_messages(Arc::new(msgs));
     // depth 0 = cut at the last real user prompt ("second", idx 4).
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 0), Some(4));
+    assert_eq!(super::backtrack_api_cut_index(&app, 0), Some(4));
     // depth 1 = cut at the first real user prompt ("first", idx 0) — NOT the
     // tool_result at idx 2 that a naive role=="user" count would have hit.
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 1), Some(0));
+    assert_eq!(super::backtrack_api_cut_index(&app, 1), Some(0));
     // depth beyond available prompts.
-    assert_eq!(super::backtrack_api_cut_index(&msgs, 2), None);
+    assert_eq!(super::backtrack_api_cut_index(&app, 2), None);
 }
 
 /// The idle BlueWhale needs 16 transcript rows. Everything above the
@@ -31881,7 +32293,7 @@ mod work_surface {
         let mut app = idle_rail_app(panel);
         let mut agent = make_subagent(
             "agent_rail_probe",
-            crate::tools::subagent::SubAgentStatus::Running,
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
         );
         agent.nickname = Some(AGENT_MARK.to_string());
         app.subagent_cache.push(agent);
@@ -31892,15 +32304,15 @@ mod work_surface {
         // compact than the old line list.
         app.subagent_cache.push(make_subagent(
             "agent_rail_probe_b",
-            crate::tools::subagent::SubAgentStatus::Running,
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
         ));
         app.subagent_cache.push(make_subagent(
             "agent_rail_probe_c",
-            crate::tools::subagent::SubAgentStatus::Running,
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
         ));
         app.subagent_cache.push(make_subagent(
             "agent_rail_probe_d",
-            crate::tools::subagent::SubAgentStatus::Running,
+            codewhale_engine::tools::subagent::SubAgentStatus::Running,
         ));
         assert!(
             should_render_empty_state(&app),
@@ -32105,7 +32517,7 @@ mod work_surface {
                     let mut app = busy_rail_app(panel);
                     app.todos.try_lock().expect("todos lock").add(
                         "rail-checklist-item".to_string(),
-                        crate::tools::todo::TodoStatus::InProgress,
+                        codewhale_engine::tools::todo::TodoStatus::InProgress,
                     );
                     let budget = rail_row_budget(&app, 80, rows, idle_empty);
                     let strip = crate::tui::work_surface::height(&mut app, 80, rows, budget);
@@ -32361,7 +32773,7 @@ mod work_surface {
             let mut app = idle_rail_app(panel);
             let mut agent = make_subagent(
                 "agent_rail_probe",
-                crate::tools::subagent::SubAgentStatus::Running,
+                codewhale_engine::tools::subagent::SubAgentStatus::Running,
             );
             agent.nickname = Some(AGENT_MARK.to_string());
             app.subagent_cache.push(agent);
@@ -32370,7 +32782,7 @@ mod work_surface {
             app.goal.objective = Some("keep the chrome off the strip".to_string());
             app.todos.try_lock().expect("todos lock").add(
                 "rail-checklist-item".to_string(),
-                crate::tools::todo::TodoStatus::InProgress,
+                codewhale_engine::tools::todo::TodoStatus::InProgress,
             );
 
             let strip = strip_height(&mut app, 100, 34);
@@ -32554,8 +32966,12 @@ fn a_message_added_mid_turn_does_not_strand_the_running_tool_row() {
         content: "Session and terminal tab renamed to \"v099-dogfood\"".to_string(),
     });
 
-    let result: Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> =
-        Ok(crate::tools::spec::ToolResult::success("slow-done"));
+    let result: Result<
+        codewhale_engine::tools::spec::ToolResult,
+        codewhale_engine::tools::spec::ToolError,
+    > = Ok(codewhale_engine::tools::spec::ToolResult::success(
+        "slow-done",
+    ));
     crate::tui::tool_routing::handle_tool_call_complete(&mut app, "bash-inflight", "Bash", &result);
 
     let active = app.active_cell.as_ref().expect("active cell still present");
@@ -32596,8 +33012,10 @@ fn several_mid_turn_messages_still_leave_the_tool_row_resolvable() {
         });
     }
 
-    let result: Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> =
-        Ok(crate::tools::spec::ToolResult::success("done"));
+    let result: Result<
+        codewhale_engine::tools::spec::ToolResult,
+        codewhale_engine::tools::spec::ToolError,
+    > = Ok(codewhale_engine::tools::spec::ToolResult::success("done"));
     crate::tui::tool_routing::handle_tool_call_complete(&mut app, "bash-inflight", "Bash", &result);
 
     let active = app.active_cell.as_ref().expect("active cell");
@@ -32777,7 +33195,7 @@ fn fresh_launch_engine_adopts_the_app_session_id() {
         Some(session_id.as_str()),
         "the engine config must carry the App session id"
     );
-    let (engine, _handle) = crate::core::engine::Engine::new(engine_config, &config);
+    let (engine, _handle) = codewhale_engine::core::engine::Engine::new(engine_config, &config);
     assert_eq!(
         engine.session_id(),
         session_id,
@@ -32804,14 +33222,19 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
     app.current_session_metadata = None;
     let config = Config::default();
     let store = TempDir::new().expect("sessions tempdir");
-    let manager = crate::session_manager::SessionManager::new(store.path().join("sessions"))
-        .expect("manager");
+    let manager =
+        codewhale_engine::session_manager::SessionManager::new(store.path().join("sessions"))
+            .expect("manager");
 
     // Fresh launch (event_loop::run_tui): the App claims the id, the engine
     // adopts it.
     let app_session_id = super::event_loop::ensure_runtime_session_id(&mut app);
+    app.session_write_receipt = Some(manager.expect_absent_session(&app_session_id).unwrap());
+    app.session_write_owner = Some(
+        codewhale_engine::session_manager::SessionWriteOwner::Submission("fresh-submission".into()),
+    );
     let (engine, _handle) =
-        crate::core::engine::Engine::new(build_engine_config(&app, &config), &config);
+        codewhale_engine::core::engine::Engine::new(build_engine_config(&app, &config), &config);
 
     // Turn start (dispatch.rs): crash checkpoint under the App id.
     app.api_messages_mut().push(codewhale_models::Message {
@@ -32821,11 +33244,16 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
             cache_control: None,
         }],
     });
-    let checkpoint = build_session_snapshot(&mut app, &manager).expect("turn-start snapshot");
+    let mut checkpoint = build_session_snapshot(&mut app, &manager).expect("turn-start snapshot");
     assert_eq!(checkpoint.metadata.id, app_session_id);
-    manager
-        .save_checkpoint(&checkpoint)
+    let receipt = checkpoint
+        .capture_publication(app.session_write_owner.clone().unwrap())
+        .unwrap();
+    let publication = manager
+        .publish_checkpoint_owned(checkpoint)
         .expect("save turn-start checkpoint");
+    assert_eq!(receipt.observation().unwrap(), *publication.observation());
+    app.session_write_receipt = Some(publication.write_receipt());
 
     // The engine reports its conversation id (`SessionUpdated` handler).
     app.current_session_id = Some(engine.session_id().to_string());
@@ -32839,14 +33267,23 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
             cache_control: None,
         }],
     });
-    let completed = build_session_snapshot(&mut app, &manager).expect("completed snapshot");
-    manager.save_session(&completed).expect("save session");
-    manager
-        .clear_session_checkpoint(&completed.metadata.id)
-        .expect("clear checkpoint");
+    let mut completed = build_session_snapshot(&mut app, &manager).expect("completed snapshot");
+    completed
+        .capture_publication(
+            codewhale_engine::session_manager::SessionWriteOwner::Engine(
+                codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                    "fresh-turn".into(),
+                    Some("fresh-submission".into()),
+                ),
+            ),
+        )
+        .unwrap();
+    let completed_id = completed.metadata.id.clone();
+    let (_, clear) = manager.publish_completed_session(completed).expect("save session");
+    clear.expect("clear checkpoint");
 
     assert_eq!(
-        completed.metadata.id, app_session_id,
+        completed_id, app_session_id,
         "the completed turn must commit under the id the checkpoint was written with"
     );
     let orphans = manager.list_checkpoints().expect("list checkpoints");
@@ -32859,7 +33296,7 @@ fn fresh_session_turn_lifecycle_leaves_no_orphan_checkpoint() {
     assert_eq!(sessions.len(), 1, "exactly one session file: {sessions:?}");
     assert_eq!(sessions[0].id, app_session_id);
     assert_eq!(sessions[0].message_count, 2);
-    crate::session_manager::set_live_session(None);
+    codewhale_engine::session_manager::set_live_session(None);
 }
 
 #[test]
@@ -32872,7 +33309,7 @@ fn resumed_launch_keeps_the_loaded_session_id_for_the_engine() {
     assert_eq!(session_id, "800596e6-56fd-477c-9a0f-13ada7846194");
 
     let (engine, _handle) =
-        crate::core::engine::Engine::new(build_engine_config(&app, &config), &config);
+        codewhale_engine::core::engine::Engine::new(build_engine_config(&app, &config), &config);
     assert_eq!(engine.session_id(), "800596e6-56fd-477c-9a0f-13ada7846194");
 }
 
@@ -33542,6 +33979,41 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
         assert_eq!(app.current_session_id, active);
         assert_eq!(app.input, "preserve on failed resume");
     }
+    let mut reset_app = create_test_app();
+    let reset_id = "reset-snapshot-build-failure";
+    reset_app.current_session_id = Some(reset_id.into());
+    let checkpoint = create_saved_session_with_id_and_mode(
+        reset_id.into(),
+        &[text_message("user", "recover this")],
+        &reset_app.model,
+        &reset_app.workspace,
+        0,
+        None,
+        None,
+    );
+    let checkpoint_path = manager
+        .save_checkpoint(&checkpoint)
+        .expect("save checkpoint");
+    let bad_home = directory.path().join("blocked-state-home");
+    std::fs::write(&bad_home, b"not a directory").unwrap();
+    {
+        let _bad_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &bad_home);
+        persist_full_reset_snapshot(&mut reset_app);
+    }
+    flush_offline_queue_test_actor(&handle).await;
+    assert!(
+        checkpoint_path.exists(),
+        "failed reset must retain recovery"
+    );
+    let failure = reset_app
+        .status_message
+        .as_deref()
+        .expect("failed reset status");
+    assert!(failure.contains("could not be saved"), "{failure}");
+    assert!(matches!(
+        reset_app.history.last(),
+        Some(HistoryCell::Error { message, .. }) if message == failure
+    ));
     assert!(handle.try_send(PersistRequest::Shutdown));
     task.await.expect("queue actor shutdown");
 }
@@ -33566,6 +34038,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: None,
             checkpoint: None,
             session_id: previous,
             messages: std::sync::Arc::new(vec![text_message("user", "stale transcript")]),
@@ -33591,8 +34064,21 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     assert_eq!(app.status_toasts.len(), notice_count);
     app.runtime_turn_id = Some("checkpoint-turn".into());
     app.is_loading = true;
+    app.session_write_owner = Some(
+        codewhale_engine::session_manager::SessionWriteOwner::Engine(
+            codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "checkpoint-turn".into(),
+                None,
+            ),
+        ),
+    );
     for invalid in ["session", "turn", "workspace", "child", "withdrawn"] {
-        let snapshot = std::sync::Arc::new(crate::core::ops::SessionSnapshot {
+        let snapshot = std::sync::Arc::new(codewhale_engine::core::ops::SessionSnapshot {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "checkpoint-turn".into(),
+                None,
+            )),
+
             session_id: if invalid == "session" {
                 "stale-session".into()
             } else {
@@ -33613,8 +34099,8 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             mode: "agent".into(),
         });
         let (reply, mut answer) = tokio::sync::oneshot::channel();
-        let request = crate::core::events::SessionCheckpointRequest::new(
-            crate::core::events::SessionCheckpointCaller {
+        let request = codewhale_engine::core::events::SessionCheckpointRequest::new(
+            codewhale_engine::core::events::SessionCheckpointCaller {
                 session_id: snapshot.session_id.clone(),
                 agent_id: (invalid == "child").then(|| "child".into()),
                 turn_id: if invalid == "turn" {
@@ -33626,8 +34112,11 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
                 workspace: snapshot.workspace.clone(),
             },
             snapshot.clone(),
-            crate::core::events::SessionCheckpointRequest::prefix_hash(&snapshot.messages).unwrap(),
-            crate::core::events::SessionCheckpointProjection::Exact,
+            codewhale_engine::core::events::SessionCheckpointRequest::prefix_hash(
+                &snapshot.messages,
+            )
+            .unwrap(),
+            codewhale_engine::core::events::SessionCheckpointProjection::Exact,
             tokio_util::sync::CancellationToken::new(),
             reply,
         );
@@ -33639,6 +34128,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
                 &mut app,
                 &Config::default(),
                 EngineEvent::SessionUpdated {
+                    source: snapshot.source.clone(),
                     checkpoint: Some(request),
                     session_id: snapshot.session_id.clone(),
                     messages: std::sync::Arc::new(snapshot.messages.clone()),
@@ -33674,10 +34164,22 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     }
     app.runtime_turn_id = None;
     app.is_loading = false;
+    let accepted_window = codewhale_engine::route_runtime::ContextWindowResolution {
+        tokens: 128_000,
+        source: codewhale_engine::route_runtime::ContextWindowSource::Fallback,
+    };
+    app.active_route_limits = None;
+    app.active_context_window = Some(accepted_window);
+    app.active_context_window_source = accepted_window.source;
+    app.pending_turn_route = Some((app.api_provider, "canonical-model".into(), false));
+    let projection_control = app.session_sync_control();
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
         EngineEvent::SessionUpdated {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                projection_control
+            )),
             checkpoint: None,
             session_id: current.clone(),
             messages: std::sync::Arc::new(vec![
@@ -33685,7 +34187,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             ]),
             system_prompt: None,
             instruction_assembly: None,
-            model,
+            model: "canonical-model".into(),
             workspace,
         }
     ));
@@ -33695,6 +34197,8 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         vec![text_message("user", "expected engine transcript")]
     );
     assert_eq!(app.input, "typing remains responsive");
+    assert_eq!(app.active_context_window, Some(accepted_window));
+    assert_eq!(app.effective_context_window(), 128_000);
 }
 
 #[test]
@@ -33800,9 +34304,11 @@ async fn notification_approval_settlement_retires_the_prompt_and_preserves_warni
     .await;
     assert_eq!(
         engine.recv_approval_event().await,
-        Some(crate::core::engine::MockApprovalEvent::Approved {
-            id: "approval-a".into()
-        })
+        Some(
+            codewhale_engine::core::engine::MockApprovalEvent::Approved {
+                id: "approval-a".into()
+            }
+        )
     );
     assert!(
         !app.status_toasts
@@ -33828,7 +34334,7 @@ fn notification_input_failure_keeps_the_request_and_success_retires_only_its_act
     let payload = notifications::input_needed_payload(app.ui_locale);
     app.pending_user_input_prompt = Some((
         "input-a".into(),
-        crate::tools::user_input::UserInputRequest {
+        codewhale_engine::tools::user_input::UserInputRequest {
             require_typed_answers: false,
             questions: Vec::new(),
         },
@@ -33878,7 +34384,7 @@ fn notification_input_result_never_reopens_or_clears_a_different_pending_questio
     let mut app = create_test_app();
     app.pending_user_input_prompt = Some((
         "input-b".into(),
-        crate::tools::user_input::UserInputRequest {
+        codewhale_engine::tools::user_input::UserInputRequest {
             require_typed_answers: false,
             questions: Vec::new(),
         },
@@ -33917,17 +34423,17 @@ fn notification_input_result_never_reopens_or_clears_a_different_pending_questio
 #[tokio::test]
 async fn background_review_fast_durable_completion_survives_inventory_failures()
 -> anyhow::Result<()> {
-    use crate::task_manager::{
+    use codewhale_engine::task_manager::{
         NewTaskRequest, TaskExecutionResult, TaskManager, TaskManagerConfig, TaskStatus,
         TaskTerminalReason,
     };
     struct Done;
     #[async_trait::async_trait]
-    impl crate::task_manager::TaskExecutor for Done {
+    impl codewhale_engine::task_manager::TaskExecutor for Done {
         async fn execute(
             &self,
-            _: crate::task_manager::ExecutionTask,
-            _: tokio::sync::mpsc::Sender<crate::task_manager::TaskExecutionEvent>,
+            _: codewhale_engine::task_manager::ExecutionTask,
+            _: tokio::sync::mpsc::Sender<codewhale_engine::task_manager::TaskExecutionEvent>,
             _: tokio_util::sync::CancellationToken,
         ) -> TaskExecutionResult {
             TaskExecutionResult {
@@ -33948,7 +34454,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
             default_mode: "plan".into(),
             allow_shell: false,
             trust_mode: false,
-            execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+            execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
         },
         Arc::new(Done),
     )
@@ -33959,8 +34465,12 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
             ..NewTaskRequest::from_prompt("session A receipt")
         })
         .await?;
-    crate::task_manager::wait_for_terminal_state(&tasks, &record.id, Duration::from_secs(5))
-        .await?;
+    codewhale_engine::task_manager::wait_for_terminal_state(
+        &tasks,
+        &record.id,
+        Duration::from_secs(5),
+    )
+    .await?;
     let mut app = create_test_app();
     app.current_session_id = Some("session-a".into());
     app.session_started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
@@ -34020,7 +34530,7 @@ fn credential_rejected_turn_restores_the_prompt_with_one_next_step() {
     });
 
     let mut envelope = ErrorEnvelope::fatal_auth("Authentication failed: invalid API key");
-    envelope.code = crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
+    envelope.code = codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
     apply_engine_error_to_app(&mut app, envelope);
 
     assert_eq!(app.input, "explain this repo");
@@ -34062,7 +34572,7 @@ fn credential_rejected_turn_keeps_a_started_draft_and_the_bubble() {
     app.input = "and the tests".to_string();
 
     let mut envelope = ErrorEnvelope::fatal_auth("Authentication failed: invalid API key");
-    envelope.code = crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
+    envelope.code = codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
     apply_engine_error_to_app(&mut app, envelope);
 
     assert_eq!(app.input, "and the tests");
@@ -34135,7 +34645,7 @@ fn pending_child_approval_drives_the_phase_to_waiting_on_you() {
 /// child got, and the status line, card owner and roster all read it.
 #[test]
 fn workflow_task_label_is_the_one_name_for_that_agent() {
-    use crate::tools::subagent::SubAgentStatus;
+    use codewhale_engine::tools::subagent::SubAgentStatus;
 
     let mut app = create_test_app();
     // Progress arrived first and assigned the placeholder.
@@ -34197,7 +34707,7 @@ fn the_git_probe_keeps_running_through_a_turn_while_the_git_view_shows() {
 #[test]
 fn background_review_shell_completion_survives_unobserved_live_and_missing_snapshots() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::ShellStatus;
+    use codewhale_engine::tools::shell::ShellStatus;
     let mut app = create_test_app();
     app.current_session_id = Some("a".into());
     let mut entries = Vec::new();
@@ -34219,7 +34729,7 @@ fn background_review_shell_completion_survives_unobserved_live_and_missing_snaps
         entries.is_empty(),
         "a lock miss hides this frame's shell rows"
     );
-    let terminal = crate::tools::shell::ShellJobSnapshot {
+    let terminal = codewhale_engine::tools::shell::ShellJobSnapshot {
         status: ShellStatus::Failed,
         exit_code: Some(2),
         ..contended
@@ -34243,8 +34753,8 @@ fn background_review_shell_completion_survives_unobserved_live_and_missing_snaps
 #[test]
 fn background_review_finished_shell_retention_is_capped_per_session() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::ShellStatus;
     use crate::tui::background_finished::MAX_FINISHED_SHELLS;
+    use codewhale_engine::tools::shell::ShellStatus;
     let mut app = create_test_app();
     let a = shell_job("shell_a", "true", ShellStatus::Completed, Some(0));
     let mut entries = Vec::new();
@@ -34286,8 +34796,8 @@ fn background_review_finished_shell_retention_is_capped_per_session() {
 #[tokio::test]
 async fn background_review_foreground_receipts_never_notify_but_fast_background_does() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::{BashTool, ShellStatus};
-    use crate::tools::spec::{ToolContext, ToolSpec};
+    use codewhale_engine::tools::shell::{BashTool, ShellStatus};
+    use codewhale_engine::tools::spec::{ToolContext, ToolSpec};
 
     let root = TempDir::new().unwrap();
     let mut app = create_test_app();
@@ -34351,7 +34861,7 @@ async fn background_review_foreground_receipts_never_notify_but_fast_background_
 #[test]
 fn background_review_old_shells_stay_quiet_after_restart_and_session_switch() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::ShellStatus;
+    use codewhale_engine::tools::shell::ShellStatus;
 
     let mut app = create_test_app();
     let mut old = shell_job("old", "echo old", ShellStatus::Completed, Some(0));
@@ -34394,7 +34904,7 @@ fn background_review_old_shells_stay_quiet_after_restart_and_session_switch() {
 #[test]
 fn background_review_failed_shell_receipt_uses_context_neutral_copy() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::ShellStatus;
+    use codewhale_engine::tools::shell::ShellStatus;
 
     let mut app = create_test_app();
     app.ui_locale = codewhale_localization::Locale::Fr;
@@ -34748,13 +35258,15 @@ fn background_skill_cache_refuses_stale_epoch_workspace_and_plugin_snapshot() {
     stale_dir.skills_dir = app.skills_dir.join("different");
     assert!(!app.install_skill_cache_if_current(&stale_dir, 7, result.clone()));
     let mut stale_mode = current.clone();
-    stale_mode.mode = if app.skills_discovery_mode == crate::skills::SkillDiscoveryMode::Compatible
-    {
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly
-    } else {
-        crate::skills::SkillDiscoveryMode::Compatible
-    };
+    let mut config = (*app.skills_config).clone();
+    config.scan_codewhale_only = Some(!config.scan_codewhale_only());
+    stale_mode.config = Arc::new(config);
     assert!(!app.install_skill_cache_if_current(&stale_mode, 7, result.clone()));
+    let mut stale_bundle = current.clone();
+    let mut config = (*app.skills_config).clone();
+    config.bundled.disabled = Some(vec!["debug".into()]);
+    stale_bundle.config = Arc::new(config);
+    assert!(!app.install_skill_cache_if_current(&stale_bundle, 7, result.clone()));
     let mut stale_plugins = current.clone();
     stale_plugins.plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&app.workspace));
     assert!(!app.install_skill_cache_if_current(&stale_plugins, 7, result.clone()));
@@ -34765,7 +35277,7 @@ fn background_skill_cache_refuses_stale_epoch_workspace_and_plugin_snapshot() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn persisted_queued_native_skill_is_denied_after_host_withdrawal() {
-    use crate::extension_host::tests::{FixturePlugins, node_for_tests};
+    use codewhale_engine::extension_host::test_support::{FixturePlugins, node_for_tests};
     let Some(node) =
         node_for_tests("persisted_queued_native_skill_is_denied_after_host_withdrawal")
     else {
@@ -34776,13 +35288,14 @@ async fn persisted_queued_native_skill_is_denied_after_host_withdrawal() {
     let fixture = FixturePlugins::new(&["skills-root"]).await;
     let plugins = fixture.registry();
     let manager = fixture.manager(node);
-    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+    let _manager =
+        codewhale_engine::extension_host::TestManagerGuard::install(Arc::clone(&manager));
     let engine = manager.attach(Arc::clone(&plugins));
     engine.sync().await.unwrap();
     let plugins = engine.plugin_view();
-    let catalog = crate::skills::discover_in_workspace_with_mode_and_plugins(
+    let catalog = codewhale_skills::discover_in_workspace_with_mode_and_plugins(
         fixture.workspace(),
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+        codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly,
         Some(&plugins),
     );
     let skill = catalog.get("skills-root:quick-check").unwrap();
@@ -34813,7 +35326,7 @@ async fn full_access_extension_calls_open_human_cards_despite_remembered_grants(
         app.approval_mode = ApprovalMode::Bypass;
         app.is_loading = true;
         let input = serde_json::json!({"command": "echo fixture"});
-        let (key, group) = crate::tools::approval_cache::extension_origin_approval_keys(
+        let (key, group) = codewhale_engine::tools::approval_cache::extension_origin_approval_keys(
             "ext:fixture@reviewed-hash",
             None,
             name,
@@ -34855,7 +35368,7 @@ async fn full_access_extension_calls_open_human_cards_despite_remembered_grants(
 
 #[test]
 fn extension_prompt_origin_keeps_denials_and_other_policy_holds() {
-    use crate::core::authority::ApprovalRequestDisposition as D;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition as D;
     let mut app = ask_posture_app();
     app.approval_mode = ApprovalMode::Bypass;
     let key = "extcall:ext:fixture@hash:shell:key";
@@ -34967,7 +35480,7 @@ fn engine_retry_receipt_projection_keeps_quiet_history_without_internal_status_r
 #[test]
 fn a_foreground_shell_wait_is_one_tool_card_not_also_a_background_job() {
     use super::task_projection::project_shell_jobs;
-    use crate::tools::shell::ShellStatus;
+    use codewhale_engine::tools::shell::ShellStatus;
     let mut app = create_test_app();
     app.current_session_id = Some("fg".into());
     let mut foreground = shell_job("shell_fg", "ls | head -40", ShellStatus::Running, None);
@@ -35193,11 +35706,11 @@ fn ended_parent_turn_retires_approvals_and_elevations_but_keeps_child_requests()
 /// the thinking card and the prose that follows it.
 #[test]
 fn issue_7123_reasoning_after_prose_stays_in_the_thinking_cell() {
-    use crate::tui::streaming::StreamDisplayClock;
     use crate::tui::ui::frame::{
         append_streaming_text, commit_streaming_display_tick,
         ensure_streaming_assistant_history_cell,
     };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
 
     let mut app = create_test_app();
 

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -211,7 +211,7 @@ revisar o acesso dele e ativá-lo
 | `codewhale` | O aplicativo interativo de terminal |
 | `codewhale exec "…"` | Uma tarefa sem a interface. Sozinho, ele responde sem usar ferramentas; `--auto` habilita ferramentas com Acesso total por padrão, `--sandbox workspace-write` as restringe, e `--output-format stream-json` transmite os eventos como JSON |
 | `codewhale web` | Uma interface web local em `127.0.0.1` ([guia](../WEB.md)) |
-| `codewhale review --pr N` | Uma revisão consultiva de um pull request do GitHub. Não publica nada a menos que você adicione `--post`; a [GitHub Action](../GITHUB_ACTION.md) executa a mesma revisão no CI |
+| `codewhale review --pr N` | Uma revisão consultiva de um pull request do GitHub. A [configuração do bot do GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) gera um workflow com versão fixada para revisões automáticas e `@codewhale review`, usando sua própria chave de modelo e uma identidade de App opcional |
 | `codewhale app-server --http` | A [Runtime API](../RUNTIME_API.md), uma API HTTP local para threads, eventos, aprovações e as alterações de arquivos de cada turno |
 | `codewhale serve --acp` | O Agent Client Protocol via stdio, para editores como o Zed |
 

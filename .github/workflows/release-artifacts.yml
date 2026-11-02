@@ -153,6 +153,17 @@ jobs:
             cli_artifact: codewhale-windows-arm64.exe
             shim_artifact: codew-windows-arm64.exe
             compat_tui_artifact: codewhale-tui-windows-arm64.exe
+          # Native HarmonyOS and OpenHarmony. The artifact is useless unsigned:
+          # the device refuses to execute an unsigned ELF (see
+          # docs/HarmonyOS.md), so this leg self-signs the binary before staging.
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-ohos
+            platform: ohos-arm64
+            cli_binary: codewhale
+            shim_binary: codew
+            cli_artifact: codewhale-ohos-arm64
+            shim_artifact: codew-ohos-arm64
+            compat_tui_artifact: codewhale-tui-ohos-arm64
     runs-on: ${{ matrix.os }}
     needs: pin
     steps:
@@ -237,9 +248,84 @@ jobs:
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=${ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           } >> "${GITHUB_ENV}"
       - name: Build
-        if: ${{ !endsWith(matrix.target, '-unknown-linux-musl') }}
+        if: ${{ !endsWith(matrix.target, '-unknown-linux-musl') && matrix.platform != 'ohos-arm64' }}
         shell: bash
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p codewhale-cli
+      - name: Install OpenHarmony native SDK
+        if: matrix.platform == 'ohos-arm64'
+        id: ohos-sdk
+        # Pin the action: it downloads a published OpenHarmony SDK and verifies
+        # the archive checksum, so a broken mirror fails here instead of
+        # producing a binary linked against host headers.
+        uses: openharmony-rs/setup-ohos-sdk@b312caf8a43bb836aa24c08f65f97e1f09a89cad
+        with:
+          version: '6.1'
+          # `toolchains` carries binary-sign-tool.jar, which signs the binary
+          # below; a release without it would ship an ELF the device refuses to
+          # execute.
+          components: 'native;toolchains'
+          # One download per release is cheaper than letting a tag save a 715 MB
+          # cache entry that main's jobs then compete with.
+          cache: false
+          mirror: true
+      - name: Install Java for the OpenHarmony binary signer
+        if: matrix.platform == 'ohos-arm64'
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Cross-compile and code-sign the OpenHarmony binary
+        if: matrix.platform == 'ohos-arm64'
+        shell: bash
+        env:
+          OHOS_NATIVE_SDK: ${{ steps.ohos-sdk.outputs.ohos_sdk_native }}
+        run: |
+          set -euo pipefail
+          test -x "${OHOS_NATIVE_SDK}/llvm/bin/clang"
+          test -d "${OHOS_NATIVE_SDK}/sysroot"
+          # ohos-env.sh also puts the SDK's cmake on PATH, which aws-lc-sys
+          # needs; without it the build dies inside its CMake probe.
+          . ./scripts/ohos-env.sh
+          cargo build --profile dist --locked --target "${{ matrix.target }}" -p codewhale-cli
+
+          bin="target/${{ matrix.target }}/dist/${{ matrix.cli_binary }}"
+          signer="$(dirname "${OHOS_NATIVE_SDK}")/toolchains/lib/binary-sign-tool.jar"
+          if [[ ! -f "${signer}" ]]; then
+            echo "binary-sign-tool.jar is missing from the SDK toolchains component" >&2
+            exit 1
+          fi
+          java -jar "${signer}" sign -inFile "${bin}" -outFile "${bin}" -selfSign 1
+
+          # Capture then match. `tool | grep -q` cannot be used under
+          # `pipefail`: grep exits at the first match, the tool takes SIGPIPE,
+          # and llvm-readelf reports that as exit 74, which reads as a failed
+          # verification of a good binary.
+          signature="$(java -jar "${signer}" display-sign -inFile "${bin}")"
+          case "${signature}" in
+            *'code signature is self-sign'*) ;;
+            *)
+              echo 'the staged binary is not self-signed; the device would refuse to execute it' >&2
+              exit 1
+              ;;
+          esac
+
+          kind="$(file -b "${bin}")"
+          case "${kind}" in
+            *'ARM aarch64'*) ;;
+            *)
+              echo "not an aarch64 ELF: ${kind}" >&2
+              exit 1
+              ;;
+          esac
+
+          headers="$("${OHOS_NATIVE_SDK}/llvm/bin/llvm-readelf" -l "${bin}")"
+          case "${headers}" in
+            *'/lib/ld-musl-aarch64.so.1'*) ;;
+            *)
+              echo "unexpected ELF interpreter for ${bin}" >&2
+              exit 1
+              ;;
+          esac
       - name: Materialize codew command alias
         shell: bash
         run: |

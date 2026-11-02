@@ -1,7 +1,7 @@
 //! Optional companion delivery through the existing updater's locked source.
 //! This is installation provenance, never a runtime or extension authority.
 use super::*;
-use codewhale_tui::delivery_files::GuardedFile;
+use codewhale_runtime::delivery_files::GuardedFile;
 use std::collections::HashSet;
 
 const CATALOG: &str = "codewhale-extension-hosts.json";

@@ -16,6 +16,10 @@ const LEGACY_TUI_BRIDGE_ASSET_NAMES = [
   "codewhale-tui-linux-x64",
   "codewhale-tui-linux-arm64",
   "codewhale-tui-android-arm64",
+  // Published for symmetry with every other platform: the name exists so
+  // release completeness stays one rule, not a case analysis. No shipped client
+  // requests it; nothing else references it.
+  "codewhale-tui-ohos-arm64",
   "codewhale-tui-macos-x64",
   "codewhale-tui-macos-arm64",
   "codewhale-tui-windows-x64.exe",
@@ -36,6 +40,7 @@ const BUNDLE_ASSET_NAMES = [
   "codewhale-linux-x64.tar.gz",
   "codewhale-linux-arm64.tar.gz",
   "codewhale-android-arm64.tar.gz",
+  "codewhale-ohos-arm64.tar.gz",
   "codewhale-macos-x64.tar.gz",
   "codewhale-macos-arm64.tar.gz",
   "codewhale-windows-x64.zip",
@@ -52,6 +57,12 @@ const ASSET_MATRIX = {
   android: {
     arm64: ["codewhale-android-arm64", "codew-android-arm64"],
   },
+  // Native HarmonyOS/OpenHarmony (aarch64-unknown-linux-ohos). These binaries
+  // only run on a device when they are code-signed, so the release build
+  // self-signs them; see docs/HarmonyOS.md.
+  openharmony: {
+    arm64: ["codewhale-ohos-arm64", "codew-ohos-arm64"],
+  },
   darwin: {
     x64: ["codewhale-macos-x64", "codew-macos-x64"],
     arm64: ["codewhale-macos-arm64", "codew-macos-arm64"],
@@ -62,21 +73,14 @@ const ASSET_MATRIX = {
   },
 };
 
-// Native HarmonyOS/OpenHarmony (openharmony) gets the static musl Linux build as
-// a best effort; that build is untested on native HarmonyOS.
-const PLATFORM_ALIASES = {
-  openharmony: "linux",
-};
-
 function detectBinaryNames() {
-  const rawPlatform = os.platform();
-  const platform = PLATFORM_ALIASES[rawPlatform] || rawPlatform;
+  const platform = os.platform();
   const arch = os.arch();
   const defaults = ASSET_MATRIX[platform];
   if (!defaults) {
     const supported = Object.keys(ASSET_MATRIX).map(p => `'${p}'`).join(', ');
     throw new Error(
-      `Unsupported platform: ${rawPlatform}. Supported platforms: ${supported}.\n\n` +
+      `Unsupported platform: ${platform}. Supported platforms: ${supported}.\n\n` +
       unsupportedBuildHint(),
     );
   }
@@ -179,10 +183,9 @@ function hasExplicitReleaseBase(env = process.env) {
 }
 
 function isCnbSupportedTarget(
-  rawPlatform = os.platform(),
+  platform = os.platform(),
   arch = os.arch(),
 ) {
-  const platform = PLATFORM_ALIASES[rawPlatform] || rawPlatform;
   return platform === "linux" && arch === "x64";
 }
 
@@ -208,11 +211,11 @@ function usesCnbMirror(env = process.env) {
 
 function shouldRaceFirstPartyMirrors(
   env = process.env,
-  rawPlatform = os.platform(),
+  platform = os.platform(),
   arch = os.arch(),
 ) {
   return (
-    isCnbSupportedTarget(rawPlatform, arch) &&
+    isCnbSupportedTarget(platform, arch) &&
     !hasExplicitReleaseBase(env) &&
     env.CODEWHALE_USE_CNB_MIRROR !== "1"
   );
@@ -234,15 +237,16 @@ function firstPartyReleaseSources(version, repo = "codewhale-hq/CodeWhale") {
 }
 
 function assertCnbMirrorSupportedPlatform(
-  rawPlatform = os.platform(),
+  platform = os.platform(),
   arch = os.arch(),
 ) {
-  if (isCnbSupportedTarget(rawPlatform, arch)) {
+  if (isCnbSupportedTarget(platform, arch)) {
     return;
   }
   throw new Error(
-    "CODEWHALE_USE_CNB_MIRROR=1 currently supports only Linux x64 " +
-      `(including OpenHarmony x64); detected ${rawPlatform} ${arch}. ` +
+    "CODEWHALE_USE_CNB_MIRROR=1 currently supports only Linux x64; " +
+      `detected ${platform} ${arch}. Native HarmonyOS has its own asset and ` +
+      "no CNB mirror. " +
       "Use the GitHub Release or set CODEWHALE_RELEASE_BASE_URL to a " +
       "complete mirror for this platform.",
   );

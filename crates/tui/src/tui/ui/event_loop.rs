@@ -31,6 +31,22 @@ pub(super) fn event_owner_is_active(
     !owner_session_id.is_empty() && current_session_id == Some(owner_session_id)
 }
 
+fn apply_recovery_messages(
+    app: &mut App,
+    session_id: &str,
+    workspace: &std::path::Path,
+    messages: Arc<Vec<Message>>,
+) -> bool {
+    if !event_owner_is_active(app.current_session_id.as_deref(), session_id)
+        || workspace != app.workspace
+        || !messages.starts_with(&app.api_messages)
+    {
+        return false;
+    }
+    app.set_api_messages(messages);
+    true
+}
+
 /// Terminal data captured directly from an engine completion event.
 ///
 /// `runtime_turn_id` deliberately survives a completed turn for saved-session
@@ -55,9 +71,9 @@ impl TurnEndLifecycleReceipt {
             return None;
         };
         let status = match status {
-            crate::core::events::TurnOutcomeStatus::Completed => "completed",
-            crate::core::events::TurnOutcomeStatus::Failed => "failed",
-            crate::core::events::TurnOutcomeStatus::Interrupted => "interrupted",
+            codewhale_engine::core::events::TurnOutcomeStatus::Completed => "completed",
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed => "failed",
+            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted => "interrupted",
         };
         Some(Self {
             turn_id: turn_id.clone(),
@@ -112,10 +128,21 @@ pub(super) fn apply_engine_session_projection(
         model,
         workspace,
         checkpoint,
+        source,
     } = event
     else {
         return false;
     };
+    if !app.owns_session_projection(source.as_ref()) {
+        if let Some(request) = checkpoint.as_ref() {
+            request.fail("checkpoint projection belongs to another native source");
+        }
+        tracing::debug!(
+            ?source,
+            "session projection did not match its admitted native owner"
+        );
+        return false;
+    }
     if let Some(request) = checkpoint.as_ref() {
         if request.is_stale()
             || request.caller.agent_id.is_some()
@@ -161,10 +188,24 @@ pub(super) fn apply_engine_session_projection(
     crate::tui::ui::dispatch::settle_accepted_steers(app);
     app.system_prompt = system_prompt;
     app.instruction_assembly = instruction_assembly;
-    if app.auto_model {
-        app.last_effective_model = Some(model);
-    } else {
+    if !app.auto_model {
+        let accepted_route =
+            app.pending_turn_route
+                .as_ref()
+                .is_some_and(|(provider, accepted_model, auto)| {
+                    !auto && *provider == app.api_provider && accepted_model == &model
+                });
+        let budget = accepted_route.then_some((
+            app.active_route_limits,
+            app.active_context_window,
+            app.active_context_window_source,
+        ));
         app.set_model_selection(model);
+        if let Some((limits, window, source)) = budget {
+            app.active_route_limits = limits;
+            app.active_context_window = window;
+            app.active_context_window_source = source;
+        }
     }
     app.update_model_compaction_budget();
     if app.workspace != workspace {
@@ -181,6 +222,7 @@ pub(super) fn apply_engine_session_projection(
                 return false;
             }
         };
+        let projection = saved_work_projection(app, &session);
         session.make_storage_compatible();
         if let Err(error) = request.validate_prefix(
             &session.metadata.id,
@@ -191,24 +233,36 @@ pub(super) fn apply_engine_session_projection(
             return false;
         }
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        if !crate::tui::persistence_actor::try_persist(PersistRequest::AcknowledgedCheckpoint {
+        if !super::session_state::try_persist_session(
+            app,
+            PersistRequest::AcknowledgedCheckpoint {
             session,
-            reply,
-        }) {
+            reply },
+        ) {
             request.fail("terminal persistence actor is unavailable");
             return false;
         }
-        if app
-            .runtime_services
-            .work
-            .as_ref()
-            .is_some_and(|work| work.has_pending_publish())
-            && let Err(error) = app.publish_pending_work_state()
+        if let Some(work) = app.runtime_services.work.as_ref()
+            && work.has_pending_publish()
         {
-            request.fail(format!(
-                "checkpoint queued but Work projection failed: {error}"
-            ));
-            return false;
+            match work.publish_pending_sync_matching(
+                projection.owner.as_deref(),
+                projection
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.graph.as_ref()),
+            ) {
+                Ok(false) if work.has_pending_publish() => {
+                    app.status_message = Some("A newer Work update remains pending".to_string());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    request.fail(format!(
+                        "checkpoint queued but Work projection failed: {error}"
+                    ));
+                    return false;
+                }
+            }
         }
         codewhale_util::utils::spawn_supervised(
             "terminal-session-checkpoint",
@@ -218,11 +272,7 @@ pub(super) fn apply_engine_session_projection(
                     biased;
                     () = request.withdraw.cancelled() => request.fail("checkpoint withdrawn; a write already in progress may have completed"),
                     result = receiver => match result {
-                        Ok(Ok(())) => request.succeed(crate::core::events::SessionCheckpointReceipt {
-                            persisted_sha256: request.prefix_sha256.clone(),
-                            messages_len: request.snapshot.messages.len(),
-                            projection: crate::core::events::SessionCheckpointProjection::Exact,
-                        }),
+                        Ok(Ok(publication)) => request.succeed(publication.checkpoint_receipt),
                         Ok(Err(error)) => request.fail(error),
                         Err(_) => request.fail("terminal persistence actor dropped checkpoint acknowledgement"),
                     },
@@ -235,15 +285,18 @@ pub(super) fn apply_engine_session_projection(
         && let Ok(manager) = SessionManager::default_location()
     {
         if let Ok(session) = build_session_snapshot(app, &manager) {
+            let projection = saved_work_projection(app, &session);
             app.session_title = Some(session.metadata.title.clone());
             // The engine's session id was pinned above, so
             // every checkpoint of this session lands in the
             // same per-session file.
-            if let Err(err) =
-                persist_with_pending_work_boundary(app, PersistRequest::SaveCheckpoint { session })
-            {
+            if let Err(err) = persist_with_pending_work_boundary(
+                app,
+                PersistRequest::SaveCheckpoint { session },
+                &projection,
+            ) {
                 app.status_message = Some(format!(
-                    "To-do list update pending: checkpoint could not be queued ({err})"
+                    "To-do list update pending while saving checkpoint ({err})"
                 ));
             }
         }
@@ -281,8 +334,8 @@ fn turn_unsettled_for_shutdown(app: &App) -> bool {
 }
 
 /// Host state can change without a model turn, including learning the Runtime
-/// binding of a resumed legacy session. Commit that state before clearing its
-/// recovery checkpoint; an unfinished turn keeps its checkpoint untouched.
+/// binding of a resumed legacy session. Save that state through its captured
+/// source; the shutdown snapshot retains its recovery checkpoint.
 pub(super) fn persist_settled_session_on_shutdown(
     app: &mut App,
     handle: &persistence_actor::PersistActorHandle,
@@ -292,7 +345,9 @@ pub(super) fn persist_settled_session_on_shutdown(
     }
     let manager = SessionManager::default_location().map_err(|error| error.to_string())?;
     let session = build_session_snapshot(app, &manager)?;
-    if !handle.try_send(PersistRequest::CompletedCommit { session }) {
+    let mut request = PersistRequest::SessionSnapshot(session);
+    super::session_state::prepare_session_publication(app, &mut request)?;
+    if !handle.try_send(request) {
         return Err("persistence actor is unavailable during shutdown".into());
     }
     Ok(true)
@@ -300,7 +355,7 @@ pub(super) fn persist_settled_session_on_shutdown(
 
 #[derive(Debug)]
 struct TranslationAccountingContext {
-    cost_scope: crate::cost_status::CostScopeToken,
+    cost_scope: codewhale_engine::cost_status::CostScopeToken,
     origin_session_id: Option<String>,
     origin_turn_id: Option<String>,
     source_id: String,
@@ -319,19 +374,19 @@ impl TranslationAccountingContext {
             app.runtime_turn_id.as_deref().unwrap_or("no-turn")
         );
         Self {
-            cost_scope: crate::cost_status::scope_token(),
+            cost_scope: codewhale_engine::cost_status::scope_token(),
             origin_session_id: app.current_session_id.clone(),
             origin_turn_id: app.runtime_turn_id.clone(),
             source_id: format!(
                 "translation:{}",
-                crate::cost_status::usage_source_fingerprint(&raw_source)
+                codewhale_engine::cost_status::usage_source_fingerprint(&raw_source)
             ),
         }
     }
 
     fn settle(
         self,
-        response: anyhow::Result<crate::client::TranslationProviderResponse>,
+        response: anyhow::Result<codewhale_engine::client::TranslationProviderResponse>,
     ) -> SettledTranslation {
         let response = match response {
             Ok(response) => response,
@@ -347,7 +402,7 @@ impl TranslationAccountingContext {
                 self.origin_session_id.as_deref(),
                 self.origin_turn_id.as_deref(),
             ) {
-                crate::usage_persistence::report_effective_route_for_interactive_origin(
+                codewhale_engine::usage_persistence::report_effective_route_for_interactive_origin(
                     self.cost_scope,
                     session_id,
                     turn_id,
@@ -356,7 +411,7 @@ impl TranslationAccountingContext {
                     usage,
                 );
             } else {
-                crate::cost_status::report_effective_route_for_runtime(
+                codewhale_engine::cost_status::report_effective_route_for_runtime(
                     self.cost_scope,
                     None,
                     &self.source_id,
@@ -369,7 +424,7 @@ impl TranslationAccountingContext {
                 self.origin_session_id.as_deref(),
                 self.origin_turn_id.as_deref(),
             ) {
-                crate::usage_persistence::report_unreceipted_for_interactive_origin(
+                codewhale_engine::usage_persistence::report_unreceipted_for_interactive_origin(
                     self.cost_scope,
                     session_id,
                     turn_id,
@@ -377,7 +432,7 @@ impl TranslationAccountingContext {
                     &response.route,
                 );
             } else {
-                crate::cost_status::report_unreceipted_provider_success(
+                codewhale_engine::cost_status::report_unreceipted_provider_success(
                     self.cost_scope,
                     None,
                     &self.source_id,
@@ -411,7 +466,7 @@ fn accrue_translation_usage(app: &mut App, usage: &codewhale_models::Usage) {
         || usage.prompt_cache_miss_tokens.is_some()
         || usage.prompt_cache_write_tokens.is_some()
     {
-        let classes = crate::pricing::token_usage_for_pricing(usage);
+        let classes = codewhale_engine::pricing::token_usage_for_pricing(usage);
         app.session.total_cache_hit_tokens = app
             .session
             .total_cache_hit_tokens
@@ -430,7 +485,8 @@ fn accrue_translation_usage(app: &mut App, usage: &codewhale_models::Usage) {
 fn translation_origin(app: &App) -> (Option<String>, Option<String>) {
     // Fixed-size one-way identities avoid retaining raw imported ids in a
     // detached completion envelope without introducing truncation aliases.
-    let fingerprint = |value: Option<&str>| value.map(crate::cost_status::usage_source_fingerprint);
+    let fingerprint =
+        |value: Option<&str>| value.map(codewhale_engine::cost_status::usage_source_fingerprint);
     (
         fingerprint(app.current_session_id.as_deref()),
         fingerprint(app.runtime_turn_id.as_deref()),
@@ -453,7 +509,7 @@ fn translation_session_is_current(app: &App, origin_session_fingerprint: Option<
 
 fn exact_translation_client(
     config: &Config,
-    route: &crate::core::events::TurnRoute,
+    route: &codewhale_engine::core::events::TurnRoute,
 ) -> anyhow::Result<Arc<CodewhaleClient>> {
     let identity = config
         .resolve_persisted_provider_identity(
@@ -461,7 +517,7 @@ fn exact_translation_client(
             Some(&route.provider_identity),
         )
         .map_err(anyhow::Error::msg)?;
-    let validated = crate::route_runtime::resolve_runtime_route_for_identity(
+    let validated = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         config,
         &identity,
         Some(&route.model),
@@ -501,7 +557,10 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
         return existing.to_string();
     }
     let session_id = uuid::Uuid::new_v4().to_string();
-    app.current_session_id = Some(session_id.clone());
+    app.set_current_session_id(Some(session_id.clone()));
+    if let Err(error) = super::session_state::expect_fresh_session(app, &session_id) {
+        tracing::warn!(%error, "new session publication source could not be established");
+    }
     session_id
 }
 
@@ -649,7 +708,7 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         return false;
     }
     match app.take_paste_burst_flush_if_enabled(now) {
-        crate::tui::paste_burst::FlushResult::Paste(text) => {
+        codewhale_tui_kit::paste_burst::FlushResult::Paste(text) => {
             // Terminals without bracketed paste deliver a dropped file the
             // same way; attach it exactly as `insert_paste_text` would.
             if !app.attach_pasted_image_paths(&text) {
@@ -657,20 +716,31 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
             }
             true
         }
-        crate::tui::paste_burst::FlushResult::Typed(' ')
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(' ')
             if app.input.is_empty() && handle_transcript_space(app) =>
         {
             true
         }
-        crate::tui::paste_burst::FlushResult::Typed(ch) => {
-            app.insert_char(ch);
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(_) if app.vim_is_visual_mode() => true,
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(ch) => {
+            let mention_menu_limit = app.mention_menu_limit;
+            if app.vim_is_normal_mode()
+                && visible_slash_menu_entries(app, SLASH_MENU_LIMIT).is_empty()
+                && crate::tui::file_mention::visible_mention_menu_entries(app, mention_menu_limit)
+                    .is_empty()
+            {
+                vim_mode::handle_vim_normal_key(app, ch);
+                app.needs_redraw = true;
+            } else {
+                app.insert_char(ch);
+            }
             true
         }
-        crate::tui::paste_burst::FlushResult::SuppressionExpired => {
+        codewhale_tui_kit::paste_burst::FlushResult::SuppressionExpired => {
             app.needs_redraw = true;
             true
         }
-        crate::tui::paste_burst::FlushResult::None => false,
+        codewhale_tui_kit::paste_burst::FlushResult::None => false,
     }
 }
 
@@ -849,6 +919,23 @@ pub(crate) fn coalesce_resize_burst(
 /// Toast identity for a failing session save, so recovery can retire it.
 const SESSION_SAVE_FAILURE_TOAST: &str = "session-save-failure";
 
+pub(crate) fn surface_session_save_failure(app: &mut App, session_id: Option<&str>, error: &str) {
+    let text = app
+        .tr(MessageId::SessionSaveFailed)
+        .replace(
+            "{id}",
+            session_id
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—"),
+        )
+        .replace("{error}", error);
+    app.push_status_toast_record(StatusToast::standing(
+        text,
+        StatusToastLevel::Error,
+        SESSION_SAVE_FAILURE_TOAST,
+    ));
+}
+
 /// Keep the save-failure notice in step with the persistence actor's session
 /// save health. Saves run off the UI thread, so a full disk or an unwritable
 /// sessions directory used to reach only the log while the user kept working
@@ -865,17 +952,9 @@ pub(crate) fn surface_session_save_health(
     *seen = reading.generation;
     app.retire_event_notices(SESSION_SAVE_FAILURE_TOAST);
     if let Some((session_id, kind)) = reading.failing {
-        let text = app
-            .tr(MessageId::SessionSaveFailed)
-            .replace("{id}", crate::session_manager::truncate_id(&session_id))
-            .replace("{error}", &kind.to_string());
         // Standing, not timed: it must outlast the failure, and only the
         // recovery reading above withdraws it.
-        app.push_status_toast_record(StatusToast::standing(
-            text,
-            StatusToastLevel::Error,
-            SESSION_SAVE_FAILURE_TOAST,
-        ));
+        surface_session_save_failure(app, Some(&session_id), &kind.to_string());
     }
 }
 
@@ -907,7 +986,7 @@ pub async fn run_tui(
     config: &Config,
     options: TuiOptions,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
-    pending_telemetry_notice: Option<crate::telemetry_notice::PendingTelemetryNotice>,
+    pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
 ) -> Result<()> {
     // Install notification, sound, category, and attention policy before any
     // producer (including the model-facing notify tool) can emit an event.
@@ -929,7 +1008,7 @@ pub async fn run_tui(
     // mishandle the terminator, so the default stays off there; opt in via
     // `[tui] osc8_links = true` on any platform.
     let osc8_default_on = !cfg!(target_os = "windows");
-    crate::tui::osc8::set_enabled(
+    codewhale_tui_kit::osc8::set_enabled(
         config
             .tui
             .as_ref()
@@ -988,7 +1067,7 @@ pub async fn run_tui(
     // messages reach the user's terminal. We accept the init failing (e.g.,
     // read-only $HOME) and continue without the redirect rather than refusing
     // to start the TUI.
-    let _tui_log_guard = match crate::runtime_log::init() {
+    let _tui_log_guard = match codewhale_runtime::runtime_log::init() {
         Ok(guard) => Some(guard),
         Err(err) => {
             tracing::warn!(target: "runtime_log", ?err, "TUI log init failed; stderr leaks may render as scroll-demon");
@@ -1046,10 +1125,10 @@ pub async fn run_tui(
     let background = palette::probe_terminal_background();
     // Same window, same reason: the kitty graphics capability query answers
     // on stdin, so it is asked before the input pump exists.
-    let kitty_graphics = crate::tui::mark::probe_kitty_graphics();
+    let kitty_graphics = codewhale_tui_kit::mark::probe_kitty_graphics();
     // Same window again: the sixel probe is a primary-DA query whose reply
     // also arrives on stdin. Keep both capability receipts before input starts.
-    let sixel_graphics = crate::tui::mark::probe_sixel_graphics();
+    let sixel_graphics = codewhale_tui_kit::mark::probe_sixel_graphics();
     crate::tui::composer_ui::probe_terminal_keyboard_enhancement();
     let palette_mode = background.mode();
     tracing::debug!(
@@ -1083,7 +1162,7 @@ pub async fn run_tui(
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new_with_plugin_registry(options.clone(), config, plugin_registry);
-    let _cursor_accent_guard = crate::tui::cursor_accent::CursorAccentGuard::install(
+    let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
         app.low_motion || !app.fancy_animations,
         app.ui_theme.accent_primary,
     );
@@ -1115,8 +1194,8 @@ pub async fn run_tui(
         // Try to load by prefix or full ID
         let load_result: std::io::Result<
             Option<(
-                crate::session_manager::SavedSession,
-                crate::session_manager::SessionLease,
+                codewhale_engine::session_manager::SavedSession,
+                codewhale_engine::session_manager::SessionLease,
             )>,
         > =
             // `attach_*` reserves the session's live lease first, and refuses
@@ -1147,7 +1226,7 @@ pub async fn run_tui(
                             lease.commit();
                             app.status_message = Some(format!(
                                 "Resumed session: {}",
-                                crate::session_manager::truncate_id(&saved_id)
+                                codewhale_engine::session_manager::truncate_id(&saved_id)
                             ));
                         }
                         Err(err) => {
@@ -1245,7 +1324,7 @@ pub async fn run_tui(
     // Repair the session store in the background now that this host holds
     // its own Runtime store — and any store it resumed or recovered into — so
     // those read as in use, never as candidates (#6144).
-    crate::session_reconcile::spawn_background_reconcile(app.current_session_id.clone());
+    codewhale_engine::session_reconcile::spawn_background_reconcile(app.current_session_id.clone());
     let mut automation_service = AutomationManager::default_location()?;
     automation_service.bind_task_manager(&task_manager)?;
     let automations = std::sync::Arc::new(tokio::sync::Mutex::new(automation_service));
@@ -1260,7 +1339,9 @@ pub async fn run_tui(
         .runtime_services
         .shell_manager
         .clone()
-        .unwrap_or_else(|| crate::tools::shell::new_shared_shell_manager(app.workspace.clone()));
+        .unwrap_or_else(|| {
+            codewhale_engine::tools::shell::new_shared_shell_manager(app.workspace.clone())
+        });
     // #2511: ensure hook_executor is initialized for fresh sessions — it is
     // only set by apply_workspace_runtime_state (session resume / workspace
     // switch), so a brand-new session would otherwise leave it None and both
@@ -1518,7 +1599,7 @@ pub async fn run_tui(
         drop(task_manager);
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(manager) = SessionManager::default_location() {
-                crate::session_reconcile::retire_unbound_store(
+                codewhale_engine::session_reconcile::retire_unbound_store(
                     &manager,
                     &store.data_dir,
                     "host exited without binding its store",
@@ -1529,7 +1610,7 @@ pub async fn run_tui(
     }
 
     cleanup_guard.defused = true;
-    crate::tui::cursor_accent::restore_cursor_accent();
+    codewhale_tui_kit::cursor_accent::restore_cursor_accent();
     pop_keyboard_enhancement_flags(terminal.backend_mut());
     disable_alternate_scroll_mode(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
@@ -1704,10 +1785,13 @@ async fn dispatch_launch_composer_submit(
 /// put the message in the transcript, nothing is repeated.
 pub(super) fn present_turn_failure(
     app: &mut App,
-    status: crate::core::events::TurnOutcomeStatus,
+    status: codewhale_engine::core::events::TurnOutcomeStatus,
     error: Option<&str>,
 ) {
-    let failed = matches!(status, crate::core::events::TurnOutcomeStatus::Failed);
+    let failed = matches!(
+        status,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed
+    );
     if failed
         && app.turn_error_posted
         && let Some(notice) = app.turn_error_notice.clone()
@@ -1719,7 +1803,7 @@ pub(super) fn present_turn_failure(
         })
         && let Some(HistoryCell::Error { severity, .. }) = app.cell_at_virtual_index_mut(index)
     {
-        *severity = crate::error_taxonomy::ErrorSeverity::Error;
+        *severity = codewhale_error_taxonomy::ErrorSeverity::Error;
     }
     // What the transcript shows for this turn's failure: the error cell an
     // earlier `Event::Error` already posted, or the notice added here.
@@ -1730,7 +1814,7 @@ pub(super) fn present_turn_failure(
         if failed {
             app.add_message(HistoryCell::Error {
                 message: notice.clone(),
-                severity: crate::error_taxonomy::ErrorSeverity::Error,
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
             });
         }
         app.set_sticky_status(notice.clone(), StatusToastLevel::Error, None);
@@ -1741,9 +1825,14 @@ pub(super) fn present_turn_failure(
     // Persist the failure with the session (redacted), so resume, export,
     // and the Runtime API can say why the turn stopped after the TUI closes.
     if failed && let Some(shown) = shown {
-        let outcome =
-            crate::session_manager::SavedTurnOutcome::failed(&shown, app.api_messages.len());
-        crate::session_manager::push_turn_outcome(&mut app.session_turn_outcomes, outcome);
+        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed(
+            &shown,
+            app.api_messages.len(),
+        );
+        codewhale_engine::session_manager::push_turn_outcome(
+            &mut app.session_turn_outcomes,
+            outcome,
+        );
     }
 }
 
@@ -1916,6 +2005,7 @@ pub(super) fn edit_replacement_result(
         message: None,
         action: Some(AppAction::ConversationUndo {
             sync,
+            restored_files: 0,
             retry_input: Some(input.to_string()),
             edit_replacement: true,
         }),
@@ -1959,10 +2049,13 @@ pub(crate) async fn run_event_loop(
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
     translation_client: Option<Arc<CodewhaleClient>>,
-    mut pending_telemetry_notice: Option<crate::telemetry_notice::PendingTelemetryNotice>,
+    mut pending_telemetry_notice: Option<
+        codewhale_engine::telemetry_notice::PendingTelemetryNotice,
+    >,
     mut dispatch_completion_rx: tokio::sync::mpsc::Receiver<crate::tui::app::DispatchApplyFn>,
 ) -> Result<()> {
     // Track streaming state
+    let mut signal_checkpoint = persistence_actor::register_signal_checkpoint();
     let mut current_streaming_text = String::new();
     let mut stream_display_clock = StreamDisplayClock::default();
     let (translation_tx, mut translation_rx) =
@@ -1972,7 +2065,7 @@ pub(crate) async fn run_event_loop(
     // disclosure recorded) by the first draw that paints it.
     let mut telemetry_notice_awaiting_render = false;
     let mut active_translation_client = fallback_translation_client.clone();
-    let mut active_translation_route: Option<crate::core::events::TurnRoute> = None;
+    let mut active_translation_route: Option<codewhale_engine::core::events::TurnRoute> = None;
     let mut translation_sequence = 0_u64;
     let mut pending_translations = 0usize;
     // #5931: the background runtime's own store faults arrive on its event
@@ -2081,12 +2174,7 @@ pub(crate) async fn run_event_loop(
         spawn_startup_version_check(config.update_config());
     // First-run / missing-key: if a live local Ollama catalog answers, adopt a
     // real /api/tags model into chrome instead of leaving the DeepSeek costume.
-    let mut local_ollama_probe: Option<
-        tokio::task::JoinHandle<Option<crate::local_ollama::LiveLocalOllamaCatalog>>,
-    > = crate::local_ollama::spawn_local_ollama_adoption_probe(
-        config,
-        app.should_adopt_live_local_ollama(),
-    );
+    app.start_local_ollama_probe(config, false);
 
     app.launch.whats_new =
         crate::whats_new::take_after_update(app.ui_locale, config.update_config().show_whats_new);
@@ -2140,7 +2228,7 @@ pub(crate) async fn run_event_loop(
         }
 
         // The background session-store repair's one-line result (#6144).
-        if let Some(notice) = crate::session_reconcile::take_pending_notice() {
+        if let Some(notice) = codewhale_engine::session_reconcile::take_pending_notice() {
             app.push_status_toast(notice, StatusToastLevel::Info, None);
             app.needs_redraw = true;
         }
@@ -2168,6 +2256,46 @@ pub(crate) async fn run_event_loop(
             app.add_message(HistoryCell::System { content: notice });
             app.needs_redraw = true;
             telemetry_notice_awaiting_render = true;
+        }
+
+        if let Ok(acknowledge) = signal_checkpoint.try_recv() {
+            persist_offline_queue_state(app);
+            if turn_unsettled_for_shutdown(app) {
+                app.cancel_in_flight_dispatch();
+                engine_handle
+                    .cancel_with_reason(codewhale_engine::core::engine::CancelReason::External);
+                let drain = async {
+                    let mut events = engine_handle.rx_event.write().await;
+                    while events.recv().await.is_some() {}
+                };
+                let snapshot = tokio::select! {
+                    biased;
+                    result = engine_handle.get_session_snapshot() => result.ok(),
+                    () = drain => None,
+                };
+                if let Some(snapshot) = snapshot
+                    && snapshot.source.as_ref().is_some_and(|source| {
+                        app.session_write_owner
+                            .as_ref()
+                            .is_some_and(|owner| owner.matches_source(source))
+                    })
+                    && !acknowledge.is_closed()
+                    && apply_recovery_messages(
+                        app,
+                        &snapshot.session_id,
+                        &snapshot.workspace,
+                        Arc::new(snapshot.messages),
+                    )
+                {
+                    persist_recovery_snapshot(app);
+                } else {
+                    tracing::warn!(
+                        "signal exit kept the preceding checkpoint because the Engine snapshot did not settle on this session"
+                    );
+                }
+            }
+            let _ = acknowledge.send(());
+            return std::future::pending().await;
         }
 
         // A manual compaction deferred by a full engine mailbox retries here
@@ -2256,13 +2384,33 @@ pub(crate) async fn run_event_loop(
         }
 
         // Adopt a live local Ollama tag into first-run / missing-key chrome.
-        let mut local_done = false;
-        if let Some(ref handle) = local_ollama_probe {
-            local_done = handle.is_finished();
-        }
-        if local_done && let Ok(Some(catalog)) = local_ollama_probe.take().unwrap().await {
-            app.local_runtime_detected = true;
-            adopt_live_local_ollama_catalog(app, &mut engine_handle, config, catalog).await;
+        if app
+            .local_ollama_probe
+            .as_ref()
+            .is_some_and(|probe| probe.task.is_finished())
+            && let Some(probe) = app.local_ollama_probe.take()
+        {
+            let retry_current = probe.requested
+                && app.api_provider == ProviderKind::Ollama
+                && app.should_adopt_live_local_ollama();
+            if let Ok(Some(catalog)) = probe.task.await {
+                app.local_runtime_detected = true;
+                if retry_current && catalog.preferred_tag().is_none() {
+                    app.push_status_toast(
+                        app.tr(MessageId::RouteNoModels),
+                        StatusToastLevel::Warning,
+                        None,
+                    );
+                } else if !probe.requested || retry_current {
+                    adopt_live_local_ollama_catalog(app, &mut engine_handle, config, catalog).await;
+                }
+            } else if retry_current {
+                app.push_status_toast(
+                    app.tr(MessageId::ModelsUpdatePartial),
+                    StatusToastLevel::Warning,
+                    None,
+                );
+            }
         }
 
         // Non-blocking startup-default writes (mode / thinking) report their
@@ -2594,7 +2742,10 @@ pub(crate) async fn run_event_loop(
                     apply_engine_session_projection(app, config, event);
                     continue;
                 }
-                capture_turn_started_metadata(app, &event);
+                if !capture_turn_started_metadata(app, &event) {
+                    tracing::debug!("ignored a start from another native source");
+                    continue;
+                }
                 observe_human_request_settlement(app, &event);
                 // Child approval bookkeeping runs before every filter: it is
                 // keyed by approval id and agent, not by the active session,
@@ -2611,6 +2762,22 @@ pub(crate) async fn run_event_loop(
                         // turn starts, then keep hiding its queued deltas.
                         engine_handle.cancel();
                         continue;
+                    }
+                    if let EngineEvent::SessionUpdated {
+                        session_id,
+                        workspace,
+                        messages,
+                        checkpoint: None,
+                        source,
+                        ..
+                    } = &event
+                        && app.owns_session_projection(source.as_ref())
+                        && messages.len().checked_sub(app.api_messages.len()) == Some(1)
+                        && messages
+                            .last()
+                            .is_some_and(|message| message.role == Role::InterruptedAssistant)
+                    {
+                        apply_recovery_messages(app, session_id, workspace, Arc::clone(messages));
                     }
                     if suppress_engine_event_after_local_cancel(&event) {
                         continue;
@@ -2655,7 +2822,7 @@ pub(crate) async fn run_event_loop(
                                 approval_key,
                                 *approval_force_prompt
                             ),
-                            crate::core::authority::ApprovalRequestDisposition::Prompt
+                            codewhale_engine::core::authority::ApprovalRequestDisposition::Prompt
                         )
                     }
                     _ => true,
@@ -2762,7 +2929,9 @@ pub(crate) async fn run_event_loop(
 
                         if app.translation_enabled
                             && !current_streaming_text.is_empty()
-                            && crate::tui::translation::needs_translation(&current_streaming_text)
+                            && codewhale_tui_kit::translation::needs_translation(
+                                &current_streaming_text,
+                            )
                             && let Some(translation_client) = active_translation_client.as_ref()
                         {
                             app.status_message = Some(
@@ -2872,7 +3041,9 @@ pub(crate) async fn run_event_loop(
                                 transcript_batch_updated = true;
                             }
                             if !original_thinking.is_empty()
-                                && crate::tui::translation::needs_translation(&original_thinking)
+                                && codewhale_tui_kit::translation::needs_translation(
+                                    &original_thinking,
+                                )
                                 && let Some(translation_client) = active_translation_client.as_ref()
                                 && let Some(cell_index) = cell_index
                             {
@@ -3024,7 +3195,7 @@ pub(crate) async fn run_event_loop(
                         }
                         handle_tool_call_complete(app, &id, &name, &result);
                         if name
-                            == crate::tools::request_plugin_install::REQUEST_PLUGIN_INSTALL_TOOL_NAME
+                            == codewhale_engine::tools::request_plugin_install::REQUEST_PLUGIN_INSTALL_TOOL_NAME
                             && let Ok(output) = &result
                             && output.success
                             && let Some(meta) = output.metadata.as_ref()
@@ -3042,7 +3213,7 @@ pub(crate) async fn run_event_loop(
                         if flush_gate_receipts_for(app, Some(&id)) {
                             transcript_batch_updated = true;
                         }
-                        if crate::mcp::McpPool::is_mcp_tool(&name)
+                        if codewhale_engine::mcp::McpPool::is_mcp_tool(&name)
                             && match &result {
                                 Ok(output) => !output.success,
                                 Err(_) => true,
@@ -3069,10 +3240,10 @@ pub(crate) async fn run_event_loop(
                             tracing::warn!(
                                 tool = %name,
                                 error = %err,
-                                "Work Graph checkpoint was not enqueued; projections remain unpublished"
+                                "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
                             app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint could not be queued ({err})"
+                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
                             ));
                         }
 
@@ -3215,7 +3386,9 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::TurnComplete {
-                        turn_id: _,
+                        turn_id,
+                        submission_id,
+                        compaction_id,
                         usage,
                         parent_route_usage,
                         routed_usage_dropped_records,
@@ -3225,6 +3398,18 @@ pub(crate) async fn run_event_loop(
                         base_url,
                         ..
                     } => {
+                        let terminal_source =
+                            codewhale_engine::core::ops::SessionSnapshotSource::terminal(
+                                turn_id.clone(),
+                                submission_id.clone(),
+                                compaction_id.clone(),
+                            );
+                        let terminal_owner_matches =
+                            terminal_source.as_ref().is_some_and(|source| {
+                                app.session_write_owner
+                                    .as_ref()
+                                    .is_some_and(|owner| owner.matches_source(source))
+                            });
                         // A decision whose tool never reported completion
                         // still gets its receipt before the turn closes.
                         if flush_gate_receipts_for(app, None) {
@@ -3235,16 +3420,6 @@ pub(crate) async fn run_event_loop(
                         // (#6190).
                         crate::tui::ui::dispatch::settle_unaccepted_steers_at_turn_end(app);
                         let completed_turn = app.active_turn.take();
-                        // TUI dispatches carry no submission id, so
-                        // TurnComplete cannot name the dispatch it closes.
-                        // After a local cancel the UI is idle, so `is_loading` can only be
-                        // true again because a newer dispatch set it: this
-                        // terminal event belongs to the cancelled turn and
-                        // must not close the newer one's loading, dispatch,
-                        // status or unanswered-submission state, nor drain
-                        // the queue ahead of it (U02-07). The engine runs one
-                        // turn at a time, so the newer turn's own TurnStarted
-                        // and TurnComplete follow this event.
                         let newer_dispatch_owns_turn_state =
                             app.suppress_stream_events_until_turn_complete && app.is_loading;
                         if !newer_dispatch_owns_turn_state {
@@ -3281,8 +3456,8 @@ pub(crate) async fn run_event_loop(
                         // hanging forever.
                         if matches!(
                             status,
-                            crate::core::events::TurnOutcomeStatus::Interrupted
-                                | crate::core::events::TurnOutcomeStatus::Failed
+                            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                                | codewhale_engine::core::events::TurnOutcomeStatus::Failed
                         ) {
                             app.finalize_active_cell_as_interrupted();
                             // Also mark the streaming Assistant cell (if any)
@@ -3326,18 +3501,18 @@ pub(crate) async fn run_event_loop(
                         // user opts out by scrolling up.
                         app.user_scrolled_during_stream = false;
                         let turn_status_label = match status {
-                            crate::core::events::TurnOutcomeStatus::Completed => {
+                            codewhale_engine::core::events::TurnOutcomeStatus::Completed => {
                                 app.ocean_completion_started_at = Some(Instant::now());
                                 app.ocean_receipt_settle_start =
                                     Some(app.ocean_turn_history_start.min(app.history.len()));
                                 "completed".to_string()
                             }
-                            crate::core::events::TurnOutcomeStatus::Interrupted => {
+                            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted => {
                                 app.ocean_completion_started_at = None;
                                 app.ocean_receipt_settle_start = None;
                                 "interrupted".to_string()
                             }
-                            crate::core::events::TurnOutcomeStatus::Failed => {
+                            codewhale_engine::core::events::TurnOutcomeStatus::Failed => {
                                 app.ocean_completion_started_at = None;
                                 app.ocean_receipt_settle_start = None;
                                 "failed".to_string()
@@ -3348,19 +3523,22 @@ pub(crate) async fn run_event_loop(
                         }
                         if matches!(
                             status,
-                            crate::core::events::TurnOutcomeStatus::Interrupted
-                                | crate::core::events::TurnOutcomeStatus::Failed
+                            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                                | codewhale_engine::core::events::TurnOutcomeStatus::Failed
                         ) {
                             subagent_list_refresh_requested = true;
                         }
                         // #6004: only a turn that *ended* failed is a session
                         // error; transient tool failures the agent absorbed
                         // never fire it.
-                        if matches!(status, crate::core::events::TurnOutcomeStatus::Failed) {
+                        if matches!(
+                            status,
+                            codewhale_engine::core::events::TurnOutcomeStatus::Failed
+                        ) {
                             execute_session_error_hook(app, error.as_deref());
                         }
                         crate::tui::notifications::clear_taskbar_progress();
-                        if status != crate::core::events::TurnOutcomeStatus::Completed {
+                        if status != codewhale_engine::core::events::TurnOutcomeStatus::Completed {
                             codewhale_runtime::retry_status::clear();
                             crate::tui::notifications::stop_title_animation_quietly();
                         }
@@ -3387,7 +3565,8 @@ pub(crate) async fn run_event_loop(
                             || usage.prompt_cache_miss_tokens.is_some()
                             || usage.prompt_cache_write_tokens.is_some()
                         {
-                            let classes = crate::pricing::token_usage_for_pricing(&usage);
+                            let classes =
+                                codewhale_engine::pricing::token_usage_for_pricing(&usage);
                             let hit_tokens = u32::try_from(classes.cache_read).unwrap_or(u32::MAX);
                             let miss_tokens = u32::try_from(classes.input).unwrap_or(u32::MAX);
                             let write_tokens =
@@ -3446,7 +3625,7 @@ pub(crate) async fn run_event_loop(
                         {
                             app.last_auto_route_receipt = None;
                         }
-                        if status == crate::core::events::TurnOutcomeStatus::Completed
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Completed
                             && let Some(receipt) = completed_turn
                                 .as_ref()
                                 .and_then(|turn| turn.route.as_ref())
@@ -3455,7 +3634,7 @@ pub(crate) async fn run_event_loop(
                                 .verify_provider_identity(receipt.admitted_identity())
                                 .is_ok()
                             && receipt.endpoint_identity()
-                                == crate::route_receipt::endpoint_identity(
+                                == codewhale_engine::route_receipt::endpoint_identity(
                                     &config.base_url_for_route(receipt.admitted_identity()),
                                 )
                         {
@@ -3475,7 +3654,8 @@ pub(crate) async fn run_event_loop(
                         let cost_audit = completed_turn
                             .as_ref()
                             .and_then(|turn| turn.route.as_ref())
-                            .and_then(crate::core::events::TurnRoute::cost_envelope)
+                            .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
+                            .filter(|_| parent_route_usage != codewhale_models::Usage::default())
                             .map(|route| route.audit(&parent_route_usage));
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             provider,
@@ -3543,12 +3723,12 @@ pub(crate) async fn run_event_loop(
                         settle_background_finished_at_turn_end(
                             app,
                             config,
-                            status == crate::core::events::TurnOutcomeStatus::Completed,
+                            status == codewhale_engine::core::events::TurnOutcomeStatus::Completed,
                         );
 
                         // Emit OSC 9 / BEL desktop notification for long turns, and
                         // always stop the title animation that began on TurnStarted.
-                        if status == crate::core::events::TurnOutcomeStatus::Completed {
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Completed {
                             if let Some((method, threshold, include_summary)) =
                                 notifications::settings(config)
                             {
@@ -3601,7 +3781,7 @@ pub(crate) async fn run_event_loop(
                             .and_then(|snapshot| {
                                 crate::tui::prompt_suggestion::plan_suggestion_launch_with_config(
                                     config,
-                                    status == crate::core::events::TurnOutcomeStatus::Completed,
+                                    status == codewhale_engine::core::events::TurnOutcomeStatus::Completed,
                                     config.prompt_suggestion_enabled(),
                                     app.api_messages.len(),
                                     Some(snapshot),
@@ -3640,7 +3820,7 @@ pub(crate) async fn run_event_loop(
                         // see the outcome in the footer (not just the 8-second
                         // composer receipt), regardless of notification method
                         // or platform.
-                        if status == crate::core::events::TurnOutcomeStatus::Completed {
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Completed {
                             let tool_count = app.tool_evidence.len();
                             let mut receipt = "✓ turn completed".to_string();
                             if tool_count > 0 {
@@ -3669,21 +3849,65 @@ pub(crate) async fn run_event_loop(
                         // Auto-save completed turn and clear crash checkpoint.
                         // Offloaded to the persistence actor so the UI
                         // stays responsive.
-                        if let Ok(manager) = SessionManager::default_location()
+                        let mut snapshot_error = None;
+                        let terminal_snapshot = if terminal_owner_matches
+                            && !newer_dispatch_owns_turn_state
+                        {
+                            let snapshot = match engine_handle.get_session_snapshot().await {
+                                Ok(snapshot) => Some(snapshot),
+                                Err(error) => {
+                                    tracing::warn!(%error, "terminal session snapshot could not be read; checkpoint retained");
+                                    snapshot_error = Some(error.to_string());
+                                    None
+                                }
+                            };
+                            snapshot.filter(|snapshot| {
+                                snapshot.source.as_ref() == terminal_source.as_ref()
+                                    && app.session_write_owner.as_ref().is_some_and(|owner| {
+                                        snapshot
+                                            .source
+                                            .as_ref()
+                                            .is_some_and(|source| owner.matches_source(source))
+                                    })
+                                    && app.current_session_id.as_deref()
+                                        == Some(snapshot.session_id.as_str())
+                                    && snapshot.workspace == app.workspace
+                                    && snapshot.messages.as_slice() == app.api_messages.as_slice()
+                            })
+                        } else {
+                            None
+                        };
+                        if terminal_owner_matches && terminal_snapshot.is_none() {
+                            tracing::warn!(
+                                ?terminal_source,
+                                "terminal session source no longer matches; checkpoint retained"
+                            );
+                            let session_id = app.current_session_id.clone();
+                            let error = snapshot_error.unwrap_or_else(|| {
+                                std::io::ErrorKind::ResourceBusy.to_string()
+                            });
+                            surface_session_save_failure(app, session_id.as_deref(), &error);
+                        }
+                        if terminal_snapshot.is_some()
+                            && let Ok(manager) = SessionManager::default_location()
                             && let Ok(session) = build_session_snapshot(app, &manager)
                         {
-                            app.current_session_id = Some(session.metadata.id.clone());
+                            let projection = saved_work_projection(app, &session);
+                            app.set_current_session_id(Some(session.metadata.id.clone()));
                             // Compound completion commit: the actor writes the
                             // completed snapshot and clears this session's
                             // crash checkpoint only after that write succeeds.
                             // A failed save now retains the checkpoint as the
                             // sole recovery record instead of erasing it.
-                            let queued =
-                                persistence_actor::try_persist(PersistRequest::CompletedCommit {
-                                    session,
-                                });
+                            let queued = super::session_state::try_persist_session(
+                                app,
+                                PersistRequest::CompletedCommit {
+                                    session },
+                            );
                             if queued {
-                                if let Err(err) = publish_pending_work_projection(app).await {
+                                if let Err(err) =
+                                    publish_saved_work_projection(app, &projection).await
+                                {
                                     tracing::warn!(
                                         error = %err,
                                         "completed-turn Work projections remain unpublished"
@@ -3720,13 +3944,14 @@ pub(crate) async fn run_event_loop(
                         // Legacy pending-steer recovery. Current keyboard
                         // handling keeps Esc as cancel-only, but older saved
                         // state may still carry pending steers.
-                        if status == crate::core::events::TurnOutcomeStatus::Interrupted
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
                             && app.submit_pending_steers_after_interrupt
                         {
                             if let Some(merged) = merge_pending_steers(&mut *app) {
                                 queued_to_send = Some(merged);
                             }
-                        } else if status == crate::core::events::TurnOutcomeStatus::Failed
+                        } else if status
+                            == codewhale_engine::core::events::TurnOutcomeStatus::Failed
                             && !app.pending_steers.is_empty()
                         {
                             // Hard-fail recovery: if the engine failed before
@@ -3843,7 +4068,7 @@ pub(crate) async fn run_event_loop(
                                 .and_then(|route| route.receipt.as_ref())
                                 .is_some_and(|receipt| {
                                     receipt.endpoint_identity()
-                                        == crate::route_receipt::endpoint_identity(
+                                        == codewhale_engine::route_receipt::endpoint_identity(
                                             &config.base_url_for_route(&identity),
                                         )
                                 })
@@ -3862,7 +4087,7 @@ pub(crate) async fn run_event_loop(
                         let rollback_after_auth_failure =
                             matches!(
                                 envelope.category,
-                                crate::error_taxonomy::ErrorCategory::Authentication
+                                codewhale_error_taxonomy::ErrorCategory::Authentication
                             ) && app.pending_provider_switch.is_some();
                         apply_engine_error_to_app(app, envelope);
                         if app.api_provider != provider_before_error
@@ -3893,10 +4118,11 @@ pub(crate) async fn run_event_loop(
                         omitted_tool_names,
                         omitted_tool_count,
                     } => {
-                        let tools = crate::core::events::tool_projection_warning_tool_list(
-                            &omitted_tool_names,
-                            omitted_tool_count,
-                        );
+                        let tools =
+                            codewhale_engine::core::events::tool_projection_warning_tool_list(
+                                &omitted_tool_names,
+                                omitted_tool_count,
+                            );
                         let message = app
                             .tr(MessageId::ToolProjectionWarning)
                             .replace("{provider}", &provider)
@@ -4463,7 +4689,7 @@ pub(crate) async fn run_event_loop(
                         } else if !should_refresh_subagents
                             && matches!(
                                 message,
-                                crate::tools::subagent::MailboxMessage::Progress { .. }
+                                codewhale_engine::tools::subagent::MailboxMessage::Progress { .. }
                             )
                         {
                             // Progress mailbox envelopes mirror AgentProgress.
@@ -4591,7 +4817,7 @@ pub(crate) async fn run_event_loop(
                                 .retry_tool_with_policy_by(
                                     tool_id,
                                     policy,
-                                    crate::approval_log::ApprovalDecider::Posture,
+                                    codewhale_engine::approval_log::ApprovalDecider::Posture,
                                 )
                                 .await;
                         } else {
@@ -4642,6 +4868,50 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::ProviderRequestReceipt { receipt } => {
+                        if receipt["primary"].as_bool() == Some(true)
+                            && receipt["session_id"].as_str() == app.current_session_id.as_deref()
+                        {
+                            let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                                serde_json::from_value::<
+                                    codewhale_engine::llm_client::ProviderUsageCoverage,
+                                >(value)
+                                .ok()
+                            });
+                            if let Some(source) = receipt["source_id"].as_str() {
+                                if receipt["usage_reported"].as_bool() == Some(true) {
+                                    app.session.subagent_usage_sources.insert(
+                                        codewhale_engine::cost_status::usage_source_fingerprint(
+                                            source,
+                                        ),
+                                    );
+                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                        codewhale_engine::cost_status::scope_token(),
+                                        source,
+                                    );
+                                }
+                                if matches!(coverage, Some(codewhale_engine::llm_client::ProviderUsageCoverage::Missing | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete))
+                                    && let Some(route) = receipt.get("route").cloned().and_then(|value| serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value).ok())
+                                {
+                                    let reason = if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                                    } else {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                                    };
+                                    let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(&codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                                        source_id: source.to_string(), route, reason,
+                                    });
+                                    app.absorb_pending_background_cost(&pool);
+                                }
+                            }
+                            let leaf = app.session_journal.leaf_id.clone();
+                            app.session_journal.append(
+                                codewhale_runtime::session_tree::SessionEntryKind::System {
+                                    content: format!("Provider request receipt: {receipt}"),
+                                },
+                            );
+                            app.session_journal.leaf_id = leaf;
+                        }
+
                         if receipt["outcome"] == "steered"
                             || receipt["outcome"] == "steered_before_stream"
                         {
@@ -4737,7 +5007,7 @@ pub(crate) async fn run_event_loop(
                             .active_turn
                             .as_ref()
                             .and_then(|turn| turn.route.as_ref())
-                            .and_then(crate::core::events::TurnRoute::cost_envelope)
+                            .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
                             .and_then(|route| route.audit(&usage).estimate);
                         if let Some(cost) = step_cost {
                             app.accrue_pending_turn_cost_estimate(cost);
@@ -4840,6 +5110,7 @@ pub(crate) async fn run_event_loop(
             if !app.api_messages.is_empty() {
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
                         system_prompt: app.system_prompt.clone(),
@@ -4857,7 +5128,7 @@ pub(crate) async fn run_event_loop(
                 .await;
             app.status_message = Some(rollback_warning);
         }
-        let current_skill_epoch = crate::extension_host::command::epoch();
+        let current_skill_epoch = codewhale_engine::extension_host::command::epoch();
         if skill_cache_refresh
             .as_ref()
             .is_some_and(|(_, job)| job.is_finished())
@@ -4876,18 +5147,18 @@ pub(crate) async fn run_event_loop(
             #[cfg(test)]
             let env_scope = crate::test_support::env_scope_ticket();
             #[cfg(test)]
-            let manager = crate::extension_host::manager();
+            let manager = codewhale_engine::extension_host::manager();
             let job = tokio::task::spawn_blocking(move || {
                 #[cfg(test)]
                 let _env_scope = crate::test_support::join_env_scope(env_scope);
                 #[cfg(test)]
-                let _manager = crate::extension_host::TestManagerGuard::install(manager);
+                let _manager = codewhale_engine::extension_host::TestManagerGuard::install(manager);
                 let _policy = codewhale_plugins::activation::PolicyScope::propagate(policy);
-                crate::skills::clear_skill_discovery_cache();
+                codewhale_skills::clear_skill_discovery_cache();
                 App::discover_cached_skills(
                     &scan.workspace,
                     &scan.skills_dir,
-                    scan.mode,
+                    &scan.config,
                     &scan.plugins,
                 )
             });
@@ -5131,12 +5402,12 @@ pub(crate) async fn run_event_loop(
             // clock, set every iteration so a stale back-off can never outlive
             // the activity that ended it (a turn does not reach the probe
             // block below).
-            crate::git_status::set_probe_backoff(crate::git_status::probe_is_backed_off(
-                git_probe_quiet_for(
+            codewhale_engine::git_status::set_probe_backoff(
+                codewhale_engine::git_status::probe_is_backed_off(git_probe_quiet_for(
                     app,
                     tick_now.saturating_duration_since(last_input_or_engine_event),
-                ),
-            ));
+                )),
+            );
         }
         let motion_policy = app.motion_policy();
         if animation_active && last_status_frame.elapsed() >= animation_interval {
@@ -5220,7 +5491,7 @@ pub(crate) async fn run_event_loop(
         // Money and its completeness are drained as one value, so the footer
         // total and the `/cost` coverage line can never come from different
         // observations of the pool (#4318).
-        let pending_bg = crate::cost_status::drain();
+        let pending_bg = codewhale_engine::cost_status::drain();
         if !pending_bg.is_empty() {
             let runtime_usage_arrived = app.absorb_pending_background_cost(&pending_bg);
             if pending_bg.estimate.is_positive() {
@@ -5234,8 +5505,15 @@ pub(crate) async fn run_event_loop(
                 && let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
-                app.current_session_id = Some(session.metadata.id.clone());
-                persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                app.set_current_session_id(Some(session.metadata.id.clone()));
+                if !super::session_state::try_persist_session(
+                    app,
+                    PersistRequest::SessionSnapshot(session),
+                ) {
+                    tracing::warn!(
+                        "late usage snapshot was not queued; canonical usage evidence retained"
+                    );
+                }
             }
         }
         // Drain completed file-tree walks (initial build / expands) so the
@@ -5280,7 +5558,10 @@ pub(crate) async fn run_event_loop(
             let should_probe = slot
                 .lock()
                 .map(|mut last| {
-                    let due = crate::git_status::probe_due(last.map(|t| t.elapsed()), quiet_for);
+                    let due = codewhale_engine::git_status::probe_due(
+                        last.map(|t| t.elapsed()),
+                        quiet_for,
+                    );
                     if due {
                         *last = Some(Instant::now());
                     }
@@ -5290,7 +5571,7 @@ pub(crate) async fn run_event_loop(
             if should_probe {
                 let workspace = app.workspace.clone();
                 std::thread::spawn(move || {
-                    crate::git_status::refresh_if_stale(&workspace);
+                    codewhale_engine::git_status::refresh_if_stale(&workspace);
                 });
             }
         }
@@ -5340,7 +5621,7 @@ pub(crate) async fn run_event_loop(
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
             if std::mem::take(&mut telemetry_notice_awaiting_render) {
-                crate::telemetry_notice::record_presented();
+                codewhale_engine::telemetry_notice::record_presented();
             }
         }
 
@@ -5460,7 +5741,8 @@ pub(crate) async fn run_event_loop(
                 && matches!(&evt, Event::Key(_) | Event::Paste(_) | Event::Resize(_, _))
             {
                 app.launch.mark_reveal_started_at = Some(
-                    Instant::now() - Duration::from_millis(crate::tui::mark::REVEAL_MS as u64),
+                    Instant::now()
+                        - Duration::from_millis(codewhale_tui_kit::mark::REVEAL_MS as u64),
                 );
             }
             app.needs_redraw = true;
@@ -6214,10 +6496,15 @@ pub(crate) async fn run_event_loop(
                             // the plan shed on a tiny stage).
                             let rows = crate::tui::underwater::launch_rows_for_app(app);
                             let entries = rows.len().max(1) as i32;
-                            // First arrow lands on the first (Up: last)
-                            // row; from there it moves.
+                            // First arrow lands on the first row; Up lands on
+                            // the newest recent session, else the last row.
                             app.launch.menu_selected = Some(match app.launch.menu_selected {
-                                None if delta < 0 => (entries - 1) as usize,
+                                None if delta < 0 => rows
+                                    .iter()
+                                    .position(|row| {
+                                        matches!(row.id, crate::tui::app::LaunchRowId::Recent(_))
+                                    })
+                                    .unwrap_or((entries - 1) as usize),
                                 None => 0,
                                 Some(current) => {
                                     (current as i32 + delta).rem_euclid(entries) as usize
@@ -6360,7 +6647,7 @@ pub(crate) async fn run_event_loop(
                     build_command_palette_entries(
                         app.ui_locale,
                         &app.skills_dir,
-                        app.skills_discovery_mode,
+                        &app.skills_config,
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
@@ -7068,14 +7355,14 @@ pub(crate) async fn run_event_loop(
                     move_slash_menu_selection(
                         app,
                         slash_menu_entries.len(),
-                        crate::tui::list_nav::Motion::PagePrev,
+                        codewhale_tui_kit::list_nav::Motion::PagePrev,
                     );
                 }
                 KeyCode::PageDown if key.modifiers.is_empty() && slash_menu_open => {
                     move_slash_menu_selection(
                         app,
                         slash_menu_entries.len(),
-                        crate::tui::list_nav::Motion::PageNext,
+                        codewhale_tui_kit::list_nav::Motion::PageNext,
                     );
                 }
                 // Home/End deliberately stay cursor keys while the menu is open:
@@ -7591,10 +7878,10 @@ pub(crate) async fn run_event_loop(
                 }
                 // Vim composer: Normal-mode motion / operator keys.
                 // Only fires when vim is enabled, the input is focused (no modal
-                // open on top), and the key has no modifier (pure char).
+                // open on top), and the key is a plain char (Shift allowed).
                 KeyCode::Char(c)
                     if app.vim_is_normal_mode()
-                        && key.modifiers.is_empty()
+                        && is_plain_char
                         && !slash_menu_open
                         && !mention_menu_open
                         && app.view_stack.is_empty() =>
@@ -7605,9 +7892,7 @@ pub(crate) async fn run_event_loop(
                 // Vim composer: in Visual mode plain chars are ignored
                 // (no text insertion until `i` / `a` enters Insert).
                 KeyCode::Char(_)
-                    if app.vim_is_visual_mode()
-                        && key.modifiers.is_empty()
-                        && app.view_stack.is_empty() =>
+                    if app.vim_is_visual_mode() && is_plain_char && app.view_stack.is_empty() =>
                 {
                     // absorb — Visual mode not yet fully implemented
                 }
@@ -7633,7 +7918,7 @@ pub(crate) async fn run_event_loop(
 pub(crate) fn apply_mcp_session_boot_event(
     app: &mut App,
     generation: u64,
-    snapshot: crate::mcp::McpManagerSnapshot,
+    snapshot: codewhale_engine::mcp::McpManagerSnapshot,
     connecting: Vec<String>,
     finished: bool,
 ) {
@@ -7725,7 +8010,7 @@ pub(super) async fn adopt_live_local_ollama_catalog(
     app: &mut App,
     engine_handle: &mut EngineHandle,
     config: &mut Config,
-    catalog: crate::local_ollama::LiveLocalOllamaCatalog,
+    catalog: codewhale_engine::local_ollama::LiveLocalOllamaCatalog,
 ) {
     if !app.should_adopt_live_local_ollama() {
         return;
@@ -7961,7 +8246,7 @@ pub(crate) async fn run_plugin_oauth_from_tui(
             )
             .await?;
         }
-        let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             identity.provider,
             &provider,
             &config.base_url_for_route(&identity),
@@ -7971,12 +8256,12 @@ pub(crate) async fn run_plugin_oauth_from_tui(
             scoped
                 .scope_to_provider_identity(&identity)
                 .map_err(anyhow::Error::msg)?;
-            let client = crate::client::CodewhaleClient::for_catalog_refresh(&scoped)?;
+            let client = codewhale_engine::client::CodewhaleClient::for_catalog_refresh(&scoped)?;
             let delta = client
                 .fetch_catalog_delta()
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-            crate::provider_catalog_live::record_success_if_current(&ticket, delta)
+            codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, delta)
                 .context("Catalog refresh superseded")?;
         }
         Ok(())
@@ -8197,7 +8482,9 @@ async fn open_agents_register(app: &mut App, engine_handle: &EngineHandle) {
 #[cfg(test)]
 mod session_boot_event_tests {
     use super::*;
-    use crate::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+    use codewhale_engine::mcp::{
+        McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot,
+    };
     use std::path::PathBuf;
 
     fn server(name: &str, connected: bool) -> McpServerSnapshot {
@@ -8363,29 +8650,29 @@ mod session_boot_event_tests {
         );
     }
 
-    fn translation_test_route() -> crate::cost_status::EffectiveRouteEnvelope {
-        crate::cost_status::EffectiveRouteEnvelope {
+    fn translation_test_route() -> codewhale_engine::cost_status::EffectiveRouteEnvelope {
+        codewhale_engine::cost_status::EffectiveRouteEnvelope {
             provider: codewhale_config::ProviderKind::Deepseek,
             provider_identity: "deepseek".to_string(),
             model: "deepseek-chat".to_string(),
             openrouter_vendor: None,
-            billing_surface: crate::pricing::billing_surface_for_route(
+            billing_surface: codewhale_engine::pricing::billing_surface_for_route(
                 codewhale_config::ProviderKind::Deepseek,
                 Some("https://api.deepseek.com/v1"),
             )
             .map(str::to_string),
-            endpoint_fingerprint: crate::cost_status::endpoint_fingerprint(
+            endpoint_fingerprint: codewhale_engine::cost_status::endpoint_fingerprint(
                 "https://api.deepseek.com/v1",
             ),
             provider_live_pricing: None,
-            billing_mode: crate::cost_status::RouteBillingMode::Metered,
+            billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
             dispatched_at: chrono::Utc::now(),
         }
     }
 
     #[test]
     fn assistant_and_thinking_translation_usage_each_accrue_once() {
-        let _scope = crate::cost_status::test_scope();
+        let _scope = codewhale_engine::cost_status::test_scope();
         let mut app = test_app();
         app.current_session_id = Some("session-translation".to_string());
         app.runtime_turn_id = Some("turn-translation".to_string());
@@ -8401,14 +8688,14 @@ mod session_boot_event_tests {
         };
 
         let assistant = TranslationAccountingContext::capture(&app, "assistant", 1).settle(Ok(
-            crate::client::TranslationProviderResponse {
+            codewhale_engine::client::TranslationProviderResponse {
                 translated: Ok("助理".to_string()),
                 route: translation_test_route(),
                 usage: Some(usage_a.clone()),
             },
         ));
         let thinking = TranslationAccountingContext::capture(&app, "thinking", 2).settle(Ok(
-            crate::client::TranslationProviderResponse {
+            codewhale_engine::client::TranslationProviderResponse {
                 translated: Err(anyhow::anyhow!("incomplete: max_tokens")),
                 route: translation_test_route(),
                 usage: Some(usage_b.clone()),
@@ -8427,7 +8714,7 @@ mod session_boot_event_tests {
         assert_eq!(app.session.total_output_tokens, 3);
         assert_eq!(app.session.total_tokens, 11);
 
-        let pending = crate::cost_status::drain();
+        let pending = codewhale_engine::cost_status::drain();
         assert_eq!(
             pending.priced_turns.saturating_add(pending.unpriced_turns),
             2,
@@ -8437,14 +8724,14 @@ mod session_boot_event_tests {
 
     #[test]
     fn translation_unreceipted_success_is_marked_once_but_transport_failure_is_not() {
-        let _scope = crate::cost_status::test_scope();
+        let _scope = codewhale_engine::cost_status::test_scope();
         let mut app = test_app();
         app.current_session_id = Some("session-translation-missing-usage".to_string());
         app.runtime_turn_id = Some("turn-translation-missing-usage".to_string());
 
         for _ in 0..2 {
             let settled = TranslationAccountingContext::capture(&app, "assistant", 7).settle(Ok(
-                crate::client::TranslationProviderResponse {
+                codewhale_engine::client::TranslationProviderResponse {
                     translated: Ok("translation remains usable".to_string()),
                     route: translation_test_route(),
                     usage: None,
@@ -8461,7 +8748,7 @@ mod session_boot_event_tests {
         assert!(transport.translated.is_err());
         assert_eq!(transport.usage, None);
 
-        let pending = crate::cost_status::drain();
+        let pending = codewhale_engine::cost_status::drain();
         assert_eq!(pending.priced_turns, 0);
         assert_eq!(
             pending.unpriced_turns, 1,
@@ -8539,12 +8826,12 @@ mod session_boot_event_tests {
 #[cfg(test)]
 mod launch_session_sync_tests {
     use super::await_engine_session_sync;
-    use crate::core::engine::{Engine, EngineConfig};
-    use crate::core::ops::Op;
-    use crate::extension_host::{
+    use codewhale_config::AppMode;
+    use codewhale_engine::core::engine::{Engine, EngineConfig};
+    use codewhale_engine::core::ops::Op;
+    use codewhale_engine::extension_host::{
         ExtensionHostManager, ExtensionHostOptions, TestManagerGuard, caller_view,
     };
-    use codewhale_config::AppMode;
     use codewhale_plugins::PluginRegistry;
     use codewhale_plugins::activation::TestPolicyGuard;
     use codewhale_runtime::config::Config;
@@ -8582,6 +8869,7 @@ mod launch_session_sync_tests {
 
         handle
             .send(Op::SyncSession {
+                control: codewhale_engine::core::ops::SessionControlId::new(),
                 session_id: Some("launch-session".to_string()),
                 messages: Vec::new(),
                 system_prompt: None,
@@ -8666,7 +8954,9 @@ const RUNTIME_STORE_FAILURE_DRAIN_BUDGET: usize = 64;
 /// consumers (the task timeline, SSE); this reads only the operator's fault.
 fn drain_runtime_store_failures(
     app: &mut App,
-    rx: &mut Option<tokio::sync::broadcast::Receiver<crate::runtime_threads::RuntimeEventRecord>>,
+    rx: &mut Option<
+        tokio::sync::broadcast::Receiver<codewhale_engine::runtime_threads::RuntimeEventRecord>,
+    >,
 ) -> bool {
     use tokio::sync::broadcast::error::TryRecvError;
     let Some(receiver) = rx.as_mut() else {
@@ -8696,14 +8986,15 @@ fn drain_runtime_store_failures(
 /// line that names the file and the next action. Any other event is ignored.
 pub(crate) fn show_runtime_store_failure(
     app: &mut App,
-    event: &crate::runtime_threads::RuntimeEventRecord,
+    event: &codewhale_engine::runtime_threads::RuntimeEventRecord,
 ) -> bool {
-    if event.event != crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT {
+    if event.event != codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT {
         return false;
     }
-    let notice = match serde_json::from_value::<crate::runtime_threads::RuntimeStoreFailureNotice>(
-        event.payload.clone(),
-    ) {
+    let notice = match serde_json::from_value::<
+        codewhale_engine::runtime_threads::RuntimeStoreFailureNotice,
+    >(event.payload.clone())
+    {
         Ok(notice) => notice,
         Err(error) => {
             tracing::warn!(%error, "runtime store failure notice had an unreadable payload");
@@ -8720,9 +9011,9 @@ pub(crate) fn show_runtime_store_failure(
 /// the remedy the failed operation calls for.
 pub(crate) fn runtime_store_failure_notice(
     app: &App,
-    notice: &crate::runtime_threads::RuntimeStoreFailureNotice,
+    notice: &codewhale_engine::runtime_threads::RuntimeStoreFailureNotice,
 ) -> String {
-    use crate::runtime_threads::RuntimeStoreOperation;
+    use codewhale_engine::runtime_threads::RuntimeStoreOperation;
     let id = match notice.failure.operation {
         RuntimeStoreOperation::Write => MessageId::RuntimeStoreUnwritableNotice,
         RuntimeStoreOperation::Read | RuntimeStoreOperation::Parse => {
@@ -8795,7 +9086,7 @@ pub(super) async fn handle_approval_required_event(
     } else {
         false
     };
-    use crate::core::authority::ApprovalRequestDisposition;
+    use codewhale_engine::core::authority::ApprovalRequestDisposition;
     // One disposition path for every ApprovalRequired (#4412):
     // session denial, Full Access policy hold, session/FA
     // auto-approve, Never posture, or modal prompt.
@@ -8823,7 +9114,10 @@ pub(super) async fn handle_approval_required_event(
                 }),
             );
             let _ = engine_handle
-                .deny_tool_call_by(id.clone(), crate::approval_log::ApprovalDecider::Posture)
+                .deny_tool_call_by(
+                    id.clone(),
+                    codewhale_engine::approval_log::ApprovalDecider::Posture,
+                )
                 .await;
             let notice = app
                 .tr(MessageId::ApprovalFullAccessPolicyBlocked)
@@ -8853,7 +9147,10 @@ pub(super) async fn handle_approval_required_event(
                 }),
             );
             let _ = engine_handle
-                .deny_tool_call_by(id.clone(), crate::approval_log::ApprovalDecider::Posture)
+                .deny_tool_call_by(
+                    id.clone(),
+                    codewhale_engine::approval_log::ApprovalDecider::Posture,
+                )
                 .await;
             let held =
                 crate::tui::gate_receipts::auto_review_held_receipt(app.ui_locale, &tool_name);
@@ -8875,7 +9172,10 @@ pub(super) async fn handle_approval_required_event(
                 }),
             );
             let _ = engine_handle
-                .deny_tool_call_by(id.clone(), crate::approval_log::ApprovalDecider::Posture)
+                .deny_tool_call_by(
+                    id.clone(),
+                    codewhale_engine::approval_log::ApprovalDecider::Posture,
+                )
                 .await;
             app.push_status_toast_record(
                 StatusToast::new(
@@ -8976,8 +9276,8 @@ pub(super) fn route_key_to_view_stack(
 /// Keep Engine retry and image request receipts in the existing transcript. Ordinary
 /// status/footer behavior and internal/model-only status projection stay intact.
 pub(super) fn apply_engine_status(app: &mut App, message: String) -> bool {
-    if crate::core::events::is_retry_status_receipt(&message)
-        || crate::core::events::is_request_image_status_receipt(&message)
+    if codewhale_engine::core::events::is_retry_status_receipt(&message)
+        || codewhale_engine::core::events::is_request_image_status_receipt(&message)
     {
         app.add_message(HistoryCell::System { content: message });
         return true;

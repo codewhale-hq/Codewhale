@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -219,7 +219,7 @@ bis du seine Zugriffsrechte geprüft und es aktiviert hast
 | `codewhale` | Die interaktive Terminal-App |
 | `codewhale exec "…"` | Eine Aufgabe ohne Oberfläche. Ohne weitere Optionen antwortet es, ohne Tools zu verwenden; `--auto` aktiviert Tools standardmäßig mit Full Access, `--sandbox workspace-write` schränkt sie ein, und `--output-format stream-json` streamt Ereignisse als JSON |
 | `codewhale web` | Eine lokale Web-Oberfläche auf `127.0.0.1` ([Anleitung](../WEB.md)) |
-| `codewhale review --pr N` | Ein beratendes Review eines GitHub-Pull-Requests. Es veröffentlicht nichts, solange du nicht `--post` angibst; die [GitHub Action](../GITHUB_ACTION.md) führt dasselbe Review in der CI aus |
+| `codewhale review --pr N` | Ein beratendes Review eines GitHub-Pull-Requests. Die [GitHub-Bot-Einrichtung](../GITHUB_ACTION.md#set-up-your-own-bot) erzeugt einen gepinnten Workflow für automatische Reviews und `@codewhale review`, mit deinem eigenen Modellschlüssel und optionaler App-Identität |
 | `codewhale app-server --http` | Die [Runtime API](../RUNTIME_API.md), eine lokale HTTP-API für Threads, Ereignisse, Freigaben und die Dateiänderungen jedes Turns |
 | `codewhale serve --acp` | Das Agent Client Protocol über stdio, für Editoren wie Zed |
 

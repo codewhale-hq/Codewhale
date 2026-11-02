@@ -111,7 +111,7 @@ impl CommandSessionStructcopyContext for SessionStructcopyAdapter<'_> {
 
     fn workflow_projection(&self, run_id: &str) -> Result<StructcopyWorkflow, StructcopyError> {
         let app = self.host.app.borrow();
-        let projection = crate::tools::workflow::structcopy_run_projection(
+        let projection = codewhale_engine::tools::workflow::structcopy_run_projection(
             &app.workspace,
             run_id,
             app.current_session_id.as_deref(),
@@ -163,7 +163,9 @@ fn project_result(
     StructcopyToolResult {
         content: content.into(),
         is_error,
-        content_blocks: crate::image_attach::safe_tool_result_content_blocks(content_blocks),
+        content_blocks: codewhale_engine::image_attach::safe_tool_result_content_blocks(
+            content_blocks,
+        ),
     }
 }
 

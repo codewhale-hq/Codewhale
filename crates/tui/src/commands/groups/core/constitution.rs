@@ -136,10 +136,11 @@ fn open_preview(app: &mut App) {
 
 fn open_repo_law(app: &mut App) {
     let locale = app.ui_locale;
-    let text = match crate::project_context::load_repo_constitution_block(&app.workspace).0 {
-        Some(block) => block,
-        None => no_repo_law_text(locale).to_string(),
-    };
+    let text =
+        match codewhale_engine::project_context::load_repo_constitution_block(&app.workspace).0 {
+            Some(block) => block,
+            None => no_repo_law_text(locale).to_string(),
+        };
     open_pager(app, repo_title(locale), &text);
 }
 
@@ -421,8 +422,9 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
                 assembly.warnings.clone(),
             ),
             None => {
-                let context =
-                    crate::project_context::load_project_context_with_parents(&app.workspace);
+                let context = codewhale_engine::project_context::load_project_context_with_parents(
+                    &app.workspace,
+                );
                 (
                     context.constitution_source_path,
                     context.source_path,
@@ -500,7 +502,9 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
             let _ = writeln!(out, "  - {warning}");
         }
     }
-    let handoff_path = app.workspace.join(crate::prompts::HANDOFF_RELATIVE_PATH);
+    let handoff_path = app
+        .workspace
+        .join(codewhale_engine::prompts::HANDOFF_RELATIVE_PATH);
     let _ = writeln!(
         out,
         "- {}: {} {}, {} {}",

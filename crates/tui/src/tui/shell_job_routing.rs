@@ -8,11 +8,11 @@
 //! agent's detail. Named PTY sessions (`tools/terminal_session.rs`) are not
 //! listed here or in `/jobs`; they live in the terminal dock (#6912).
 
-use crate::tools::shell::{ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus};
 use crate::tui::app::App;
 use crate::tui::history::{HistoryCell, ToolCell};
 use crate::tui::pager::PagerView;
 use crate::tui::views::{CommandPaletteAction, ViewEvent};
+use codewhale_engine::tools::shell::{ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus};
 use codewhale_localization::MessageId;
 
 fn status_label(status: &ShellStatus, stale: bool) -> &'static str {
@@ -96,7 +96,7 @@ pub(super) fn format_shell_poll(result: &ShellResult) -> String {
     ];
     if result.status == ShellStatus::Killed {
         lines.push(
-            crate::tools::shell_output::kill_outcome_note(&format!(
+            codewhale_engine::tools::shell_output::kill_outcome_note(&format!(
                 "{}{}",
                 result.stdout, result.stderr
             ))
@@ -226,11 +226,11 @@ pub(crate) fn refresh_live_shell_job_pager(app: &mut App) -> bool {
 }
 
 fn detail_status_label(job: &ShellJobSnapshot) -> String {
-    let quiet =
-        u64::try_from(crate::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis()).unwrap_or(u64::MAX);
+    let quiet = u64::try_from(codewhale_engine::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis())
+        .unwrap_or(u64::MAX);
     match job.elapsed_since_output_ms {
         Some(ms) if job.status == ShellStatus::Running && !job.stale && ms >= quiet => {
-            crate::tui::history::stale_shell_status_label(ms)
+            crate::tui::history::stale_shell_status_label(ms, codewhale_localization::Locale::En)
         }
         _ => status_label(&job.status, job.stale).to_string(),
     }

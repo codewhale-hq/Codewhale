@@ -82,6 +82,7 @@ default_text_model = "deepseek-flash"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Thinking Mode (DeepSeek V4 reasoning effort)
 # ─────────────────────────────────────────────────────────────────────────────────
+# "auto"   — the route chooses per request (default)
 # "off"    — disables chain-of-thought (thinking.type = disabled)
 # "low"    — compat-maps to "high" server-side
 # "medium" — compat-maps to "high" server-side
@@ -91,7 +92,7 @@ default_text_model = "deepseek-flash"
 # Ctrl+T in the TUI cycles the reasoning tier. The header shows the current
 # tier as a ⚡ chip. (Shift+Tab cycles the permission posture — Ask /
 # Auto-Review / Full Access — not the reasoning tier.)
-reasoning_effort = "max"
+reasoning_effort = "auto"
 
 # NOTE: `show_thinking`, `thinking_default_expanded`, `thinking_preview_lines`,
 # `help_expand_groups`, `pin_last_prompt`, and `cost_currency` live in
@@ -1179,9 +1180,9 @@ base_url = "https://api.deepseek.com/beta"
 [stream]
 open_timeout_secs = 45      # response headers, including connect (0 = env/default, 5-300)
 chunk_timeout_secs = 900    # per-SSE-chunk idle bound (0 = default, 1-3600)
-max_resumes = 3             # whole-request reissues after failed streams (0 = off, 0-10)
-max_transparent_retries = 2 # retry before any content (0 = off, 0-10)
-max_stream_errors = 5       # recoverable errors per stream (0 = default, 1-50)
+max_resumes = 3             # proven pre-dispatch connection recovery (0 = off, 0-10)
+max_transparent_retries = 2 # compatibility value; interrupted streams never reissue
+max_stream_errors = 5       # compatibility value; uncertain stream errors end the stream
 max_duration_secs = 1800    # one stream, not the whole turn (0 = default, 10-86400)
 max_content_mb = 10         # one stream's content (0 = default, 1-512)
 connect_timeout_secs = 30   # TCP/TLS setup (0 = default, 1-300)

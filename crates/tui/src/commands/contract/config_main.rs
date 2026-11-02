@@ -288,7 +288,7 @@ impl CommandTrustContext for TrustAdapter<'_> {
 
     fn trusted_paths(&self) -> Vec<PathBuf> {
         let workspace = self.host.app.borrow().workspace.clone();
-        crate::workspace_trust::WorkspaceTrust::load_for(&workspace)
+        codewhale_runtime::workspace_trust::WorkspaceTrust::load_for(&workspace)
             .paths()
             .to_vec()
     }
@@ -299,14 +299,14 @@ impl CommandTrustContext for TrustAdapter<'_> {
         if !path.exists() {
             return Err(TrustPathError::NotFound(path));
         }
-        crate::workspace_trust::add(&workspace, &path)
+        codewhale_runtime::workspace_trust::add(&workspace, &path)
             .map_err(|err| TrustPathError::UpdateFailed(err.to_string()))
     }
 
     fn remove_trusted_path(&mut self, raw: &str) -> Result<(PathBuf, bool), TrustPathError> {
         let workspace = self.host.app.borrow().workspace.clone();
         let path = PathBuf::from(crate::commands::config_main_host::expand_tilde(raw));
-        crate::workspace_trust::remove(&workspace, &path)
+        codewhale_runtime::workspace_trust::remove(&workspace, &path)
             .map(|removed| (path, removed))
             .map_err(|err| TrustPathError::UpdateFailed(err.to_string()))
     }

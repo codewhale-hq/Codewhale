@@ -65,39 +65,7 @@ pub fn ensure_snapshot_dir(workspace: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Strip a trailing `.worktrees/<name>` segment so all worktrees of the
-/// same checkout share a `project_hash`. If the path doesn't look like a
-/// worktree it's returned unchanged.
-pub fn strip_worktree_suffix(path: &Path) -> PathBuf {
-    let mut components: Vec<_> = path.components().collect();
-    if components.len() >= 2
-        && let Some(parent) = components.get(components.len() - 2)
-        && parent.as_os_str() == ".worktrees"
-    {
-        components.truncate(components.len() - 2);
-        let mut p = PathBuf::new();
-        for c in components {
-            p.push(c.as_os_str());
-        }
-        return p;
-    }
-    path.to_path_buf()
-}
-
-/// Hex-encoded deterministic FNV-1a digest. This is only a directory tag, not
-/// a security boundary, but it must remain stable across process launches.
-///
-/// `pub` because the workspace drive lease derives its own file layout
-/// from the same project/worktree split (`workspace_lease::WorkspaceDriveLease::lease_path`),
-/// and two copies of this hash would be two things to keep in step.
-pub fn stable_hex(path: &Path) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in path.to_string_lossy().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
+pub use codewhale_paths::{stable_hex, strip_worktree_suffix};
 
 #[cfg(test)]
 mod tests {

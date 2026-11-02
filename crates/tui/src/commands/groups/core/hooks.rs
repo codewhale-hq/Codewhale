@@ -55,7 +55,10 @@ pub fn hooks(app: &App, arg: Option<&str>) -> CommandResult {
     }
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     if let Some(digest) = sub.strip_prefix("approve ") {
-        return match crate::hooks::authority::approve_project_hooks(&app.workspace, digest.trim()) {
+        return match codewhale_engine::hooks::authority::approve_project_hooks(
+            &app.workspace,
+            digest.trim(),
+        ) {
             Ok(()) => CommandResult::message(
                 "Approved these exact project hooks. They will load on your next session. Changes require another review.",
             ),
@@ -65,14 +68,19 @@ pub fn hooks(app: &App, arg: Option<&str>) -> CommandResult {
     match sub.as_str() {
         "" | "list" | "ls" | "show" => list(app),
         "events" | "event" | "list-events" => events(),
-        "review" => match crate::hooks::authority::review_project_hooks(&app.workspace) {
-            Ok((authority, contents)) => CommandResult::message(format!(
-                "Project hooks can run shell commands, including scripts they reference. Review the file and those scripts before approval.\n\n{}\n\nTo approve these exact hooks: /hooks approve {}",
-                crate::hooks::sanitize_hook_text(&contents, contents.chars().count()),
-                authority.digest
-            )),
-            Err(error) => CommandResult::error(error),
-        },
+        "review" => {
+            match codewhale_engine::hooks::authority::review_project_hooks(&app.workspace) {
+                Ok((authority, contents)) => CommandResult::message(format!(
+                    "Project hooks can run shell commands, including scripts they reference. Review the file and those scripts before approval.\n\n{}\n\nTo approve these exact hooks: /hooks approve {}",
+                    codewhale_engine::hooks::sanitize_hook_text(
+                        &contents,
+                        contents.chars().count()
+                    ),
+                    authority.digest
+                )),
+                Err(error) => CommandResult::error(error),
+            }
+        }
         "revoke" => {
             match codewhale_runtime::config::save_workspace_hook_receipt(&app.workspace, "") {
                 Ok(_) => CommandResult::message(
@@ -203,7 +211,7 @@ fn list(app: &App) -> CommandResult {
             // `name` is operator-supplied and otherwise unbounded: a name made
             // of ANSI escapes would repaint this listing, and a long one would
             // push the rest of the row off screen.
-            let label = crate::hooks::sanitize_hook_label(hook.name.as_deref());
+            let label = codewhale_engine::hooks::sanitize_hook_label(hook.name.as_deref());
             // `[bg]` describes actual scheduling: `shell_env` ignores the flag
             // and always runs in the foreground, so it is not labelled.
             let bg = if hook.background && hook.event.honors_background() {
@@ -265,7 +273,7 @@ fn render_problems(problems: &[codewhale_config::hooks::HookConfigProblem]) -> S
     for problem in problems {
         out.push_str(&format!(
             "  - {}\n",
-            crate::hooks::config::problem_summary(problem)
+            codewhale_engine::hooks::config::problem_summary(problem)
         ));
     }
     out
@@ -313,7 +321,7 @@ fn condition_summary(condition: &codewhale_config::hooks::HookCondition) -> Stri
 /// and can contain escape sequences, so it goes through the shared sanitizer
 /// before the cap.
 fn preview_command(command: &str, max_chars: usize) -> String {
-    let single_line = crate::hooks::sanitize_hook_line(command, usize::MAX);
+    let single_line = codewhale_engine::hooks::sanitize_hook_line(command, usize::MAX);
     if single_line.chars().count() <= max_chars {
         return single_line;
     }
@@ -330,7 +338,10 @@ fn preview_command(command: &str, max_chars: usize) -> String {
 /// `tool_name`, `tool_category`, and `mode` come from config verbatim, so the
 /// same bound-and-de-fang rule that governs hook names governs these.
 fn condition_value(value: &str) -> String {
-    crate::hooks::sanitize_hook_line(value, crate::hooks::HOOK_LABEL_MAX_CHARS)
+    codewhale_engine::hooks::sanitize_hook_line(
+        value,
+        codewhale_engine::hooks::HOOK_LABEL_MAX_CHARS,
+    )
 }
 
 #[cfg(test)]
@@ -399,17 +410,23 @@ mod tests {
     #[test]
     fn hook_labels_are_bounded_and_defanged() {
         let noisy = format!("\u{1b}[31mgate\n{}", "x".repeat(500));
-        let label = crate::hooks::sanitize_hook_label(Some(&noisy));
+        let label = codewhale_engine::hooks::sanitize_hook_label(Some(&noisy));
         assert!(!label.contains('\u{1b}'), "{label}");
         assert!(!label.contains('\n'), "{label}");
         assert!(
-            label.chars().count() <= crate::hooks::HOOK_LABEL_MAX_CHARS + 16,
+            label.chars().count() <= codewhale_engine::hooks::HOOK_LABEL_MAX_CHARS + 16,
             "{} chars",
             label.chars().count()
         );
         // A name that is only whitespace, or absent, still renders something.
-        assert_eq!(crate::hooks::sanitize_hook_label(Some("   ")), "(unnamed)");
-        assert_eq!(crate::hooks::sanitize_hook_label(None), "(unnamed)");
+        assert_eq!(
+            codewhale_engine::hooks::sanitize_hook_label(Some("   ")),
+            "(unnamed)"
+        );
+        assert_eq!(
+            codewhale_engine::hooks::sanitize_hook_label(None),
+            "(unnamed)"
+        );
     }
 
     /// Condition values are config strings too, and they were being
@@ -421,7 +438,7 @@ mod tests {
         });
         assert!(!rendered.contains('\u{1b}'), "{rendered}");
         assert!(
-            rendered.chars().count() <= crate::hooks::HOOK_LABEL_MAX_CHARS + 32,
+            rendered.chars().count() <= codewhale_engine::hooks::HOOK_LABEL_MAX_CHARS + 32,
             "{} chars",
             rendered.chars().count()
         );

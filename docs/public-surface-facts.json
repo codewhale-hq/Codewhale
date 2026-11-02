@@ -22,7 +22,7 @@
   "sourceCandidate": {
     "version": "0.10.2",
     "providerCount": 50,
-    "toolCount": 79,
+    "toolCount": 81,
     "sandboxBackends": [
       "seatbelt (macOS, when available)",
       "bubblewrap (Linux, default when installed and working)"
@@ -112,7 +112,9 @@
       "get_goal",
       "update_goal",
       "task_shell_wait",
-      "load_skill"
+      "load_skill",
+      "context_archive_get",
+      "context_archive_search"
     ],
     "schemas": {
       "read": [
@@ -158,8 +160,8 @@
     "sources": [
       "docs/TOOL_SURFACE.md",
       "docs/RUNTIME_SIMPLIFICATION_DESIGN.md",
-      "crates/tui/src/core/engine/tool_catalog.rs",
-      "crates/tui/src/tools/registry.rs",
+      "crates/engine/src/core/engine/tool_catalog.rs",
+      "crates/engine/src/tools/registry.rs",
       "crates/runtime/src/config/subagent_limits.rs"
     ]
   },

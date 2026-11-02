@@ -19,7 +19,7 @@
 
 Codewhale 自带庞大的原生工具面。该面的首回合 *active* 分区是每个模型在运行任何一次 `tool_search_*` 调用之前都能看到的全部内容。如今这个 active 集合里包含若干**近乎重复的工具**，它们以不同名称映射到*同一个*实现：
 
-- `exec_wait` 和 `exec_shell_wait` 都是 `ShellWaitTool`（`crates/tui/src/tools/registry.rs:526,529`）。
+- `exec_wait` 和 `exec_shell_wait` 都是 `ShellWaitTool`（`crates/engine/src/tools/registry.rs:526,529`）。
 - `exec_interact` 和 `exec_shell_interact` 都是 `ShellInteractTool`（`registry.rs:527,530`）。
 - `tts` 和 `speech` 都是 `SpeechTool`（`registry.rs:787-792`，两者均被延迟）。
 - `todo_write` 是唯一的模型可见 `TodoWriteTool` 面；`todo_write`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update` 是它的隐藏兼容别名。
@@ -42,7 +42,7 @@ Codewhale 自带庞大的原生工具面。该面的首回合 *active* 分区是
 
 **任何请求都不会重述清单。** 模型了解 To-do 上有哪些内容的方式与其他任何信息相同：通过它自己的 `todo_write` 调用——调用的输入就是完整清单——以及该调用返回的简短回执（计数和进行中的条目）。两者都是普通的持久化历史。不会向父回合循环步骤或子智能体步骤追加任何内容。完整清单始终在 UI 中可见，而 UI 是与请求不同的另一个面。
 
-`crates/tui/src/todo_snapshot.rs` 渲染那唯一的受限主体——在条目数和字符数上都硬受限，进行中的条目被优先保留，任何省略都被标记——用于三个*一次性*显示快照的接缝，因为是人提出的要求：新分叉的智能体拿到的 `<codewhale:fork_state>` 块、`/relay` 以及转录内的智能体卡片。
+`crates/engine/src/todo_snapshot.rs` 渲染那唯一的受限主体——在条目数和字符数上都硬受限，进行中的条目被优先保留，任何省略都被标记——用于三个*一次性*显示快照的接缝，因为是人提出的要求：新分叉的智能体拿到的 `<codewhale:fork_state>` 块、`/relay` 以及转录内的智能体卡片。
 
 该渲染器的两个属性是承重的：
 
@@ -80,12 +80,12 @@ Codewhale 自带庞大的原生工具面。该面的首回合 *active* 分区是
 
 ## 3. 代码中的表示
 
-生命周期表示为 `crates/tui/src/core/engine/tool_catalog.rs` 中的 **const 名称集合加别名/清单表**，与现有的 `DEFAULT_ACTIVE_NATIVE_TOOLS`（`tool_catalog.rs:37-64`）和 `ARCEE_FIRST_TURN_NATIVE_TOOLS`（`tool_catalog.rs:106-115`）并列。
+生命周期表示为 `crates/engine/src/core/engine/tool_catalog.rs` 中的 **const 名称集合加别名/清单表**，与现有的 `DEFAULT_ACTIVE_NATIVE_TOOLS`（`tool_catalog.rs:37-64`）和 `ARCEE_FIRST_TURN_NATIVE_TOOLS`（`tool_catalog.rs:106-115`）并列。
 
 ### 3a. 名称集合与清单（草图）
 
 ```rust
-// crates/tui/src/core/engine/tool_catalog.rs  （计划中）
+// crates/engine/src/core/engine/tool_catalog.rs  （计划中）
 
 /// 从 active 集合和工具搜索中移除，但仍注册且可分发、行为逐字节相同的工具。静默。
 pub(super) const HIDDEN_COMPATIBILITY_TOOLS: &[&str] = &[
@@ -138,7 +138,7 @@ pub(super) fn is_hidden_or_deprecated(name: &str) -> bool {
 
 这是当初提议的清单。各列就是 #2681 的 AC 列。0.8.53 中没有条目被"removed"；清单中列出的每一项都计划支持回放。
 
-> **部分被取代。** `exec_wait` 和 `exec_interact` 已被移除（`crates/tui/src/tools/registry/tests.rs` 中的 `shell_surface_exposes_lowercase_bash_and_hides_legacy_handler`）；它们不可调用。工作进度行并未全部移除。`todo_write` 是规范的模型可见 `TodoWriteTool`；`ToolRegistryBuilder::with_todo_tool` 还注册了隐藏回放别名 `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`。`checklist_add`、`checklist_list`、`todo_add`、`todo_update`、`todo_list` 未注册（引擎测试断言它们"必须不可调用"）。`registry/tests.rs`（`rlm_is_the_only_registered_session_surface`）中的 `"must no longer be callable"` 断言适用于旧的 `rlm_*` 会话名称，而非 checklist/todo。`tts` 通过 `with_speech_tools` 仍然可分发。`replay_supported = Yes` 列对 `tts` 以及已注册的 todo/checklist 别名为 true；对 `exec_wait`/`exec_interact` 和未注册的 checklist/todo 名称为 false。
+> **部分被取代。** `exec_wait` 和 `exec_interact` 已被移除（`crates/engine/src/tools/registry/tests.rs` 中的 `shell_surface_exposes_lowercase_bash_and_hides_legacy_handler`）；它们不可调用。工作进度行并未全部移除。`todo_write` 是规范的模型可见 `TodoWriteTool`；`ToolRegistryBuilder::with_todo_tool` 还注册了隐藏回放别名 `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`。`checklist_add`、`checklist_list`、`todo_add`、`todo_update`、`todo_list` 未注册（引擎测试断言它们"必须不可调用"）。`registry/tests.rs`（`rlm_is_the_only_registered_session_surface`）中的 `"must no longer be callable"` 断言适用于旧的 `rlm_*` 会话名称，而非 checklist/todo。`tts` 通过 `with_speech_tools` 仍然可分发。`replay_supported = Yes` 列对 `tts` 以及已注册的 todo/checklist 别名为 true；对 `exec_wait`/`exec_interact` 和未注册的 checklist/todo 名称为 false。
 
 | 别名 | 替代品（规范） | 生命周期状态 | first_deprecated_version | planned_removal_version | replay_supported |
 |---|---|---|---|---|---|
@@ -207,7 +207,7 @@ active 集合就是首回合成本。不要在这里复述 `DEFAULT_ACTIVE_NATIV
 
 **非目标（本周期明确不是瘦身目标，按 #2681）：** `apply_patch` / `edit_file` / `write_file` / `fim_edit`；`grep_files` / `file_search` / `project_map`；`fetch_url` / `web.run` / `web_search`；`task_shell_*`；`handle_read` / `retrieve_tool_result`。它们生态位各不相同，只接受**规范指引**——没有生命周期变更。
 
-RLM 面（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` / `rlm_session_objects`，`crates/tui/src/tools/rlm.rs`）同样不在范围内；`handle_read` 检索 var 句柄，`finalize` / `FINAL` 是内核内 Python 函数，**不是工具**——因此那里没有可退役的东西。
+RLM 面（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` / `rlm_session_objects`，`crates/engine/src/tools/rlm.rs`）同样不在范围内；`handle_read` 检索 var 句柄，`finalize` / `FINAL` 是内核内 Python 函数，**不是工具**——因此那里没有可退役的东西。
 
 ---
 

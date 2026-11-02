@@ -473,7 +473,7 @@ path today):
 | --- | --- | --- | --- |
 | `codewhale-glyphs` | `crates/tui/src/tui/glyphs.rs` | Constant tables + pure fns; no crate-internal deps. | `crate::tui::glyphs` |
 | `codewhale-i18n` | `crates/localization/src/lib.rs` + `crates/localization/locales/*.json` | The `rust_i18n::i18n!` macro compiles all 15 packs into whichever crate hosts it; moving it out means locale-only edits no longer rebuild the TUI. `MessageId` is a plain enum. | `crate::localization` |
-| `codewhale-mcp-transport` | `crates/tui/src/mcp/{sse,stdio,external_import}.rs` | Already talks to `codewhale-mcp`; the reviewed-launch binding is the only tui coupling. | `crate::mcp` |
+| `codewhale-mcp-transport` | `crates/engine/src/mcp/{sse,stdio,external_import}.rs` | Already talks to `codewhale-mcp`; the reviewed-launch binding is the only tui coupling. | `crate::mcp` |
 
 Rules for the split: pure moves plus `pub use` re-exports at the old
 paths, no behavior change, one crate per PR, each PR measured with the

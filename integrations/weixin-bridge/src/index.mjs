@@ -34,7 +34,7 @@ import {
   parseQuestionAnswers,
 } from "./lib.mjs";
 import { renderQrToText } from "./qr.mjs";
-import { ThreadStore as CoreThreadStore, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
+import { ThreadStore as CoreThreadStore, readJsonSafe, readThreadEvents, writeFileDurable, ApprovalOwnershipError, decideApproval as decideRuntimeApproval } from "../../bridge-core/src/lib.mjs";
 
 // ============================================================================
 // 账号持久化
@@ -193,47 +193,18 @@ function authHeaders() {
   };
 }
 
-async function readJsonSafe(response) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
 async function runtimeJson(subPath, { method = "GET", body = null, auth = true } = {}) {
   const url = `${config.runtimeUrl}${subPath}`;
   const options = { method, headers: auth ? authHeaders() : {}, signal: AbortSignal.timeout(10000) };
   if (body) options.body = JSON.stringify(body);
   const response = await fetch(url, options);
-  const result = await readJsonSafe(response);
+  const result = await readJsonSafe(response, { jsonOnly: true });
   if (!response.ok) {
     const error = new Error(compactRuntimeError(response.status, result));
     error.status = response.status;
     throw error;
   }
   return result;
-}
-
-async function* readSse(response) {
-  let buffer = "";
-  const decoder = new TextDecoder();
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith("data:")) {
-        yield { data: trimmed.slice(5).trim() };
-      } else if (trimmed.startsWith("event:")) {
-        yield { event: trimmed.slice(6).trim() };
-      } else if (trimmed.startsWith("id:")) {
-        yield { id: trimmed.slice(3).trim() };
-      }
-    }
-  }
 }
 
 // ============================================================================
@@ -771,9 +742,7 @@ async function streamTurnEvents(chatId, controller) {
     const response = await fetch(`${config.runtimeUrl}/v1/threads/${encodeURIComponent(start.threadId)}/events?since_seq=${start.nextSeq}`,
       { headers: authHeaders(), signal: controller.signal });
     if (!response.ok) throw new Error("Engine event observation unavailable");
-    for await (const event of readSse(response)) {
-      if (!event.data) continue;
-      const record = JSON.parse(event.data);
+    for await (const record of readThreadEvents(response, start.threadId)) {
       if (record.event === "stream.end") {
         if (record.payload?.retryable === false || record.retryable === false) return false;
         break;

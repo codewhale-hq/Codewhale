@@ -13,7 +13,7 @@ use super::{HistoryCell, TRANSCRIPT_RAIL};
 /// well-formed `<archived_context>...</archived_context>` block, or `None`
 /// if the text is regular assistant content.
 pub(super) fn parse_archived_context(text: &str) -> Option<HistoryCell> {
-    let (tag, summary) = crate::runtime_handoff::archived_context_parts(text)?;
+    let (tag, summary) = codewhale_engine::runtime_handoff::archived_context_parts(text)?;
 
     let level = archived_context_attr(tag, "level")
         .and_then(|v| v.parse::<u8>().ok())
@@ -124,7 +124,7 @@ pub(super) fn render_archived_context(
         )));
     }
 
-    let rendered = crate::tui::markdown_render::render_markdown_tagged_with_palette(
+    let rendered = codewhale_tui_kit::markdown_render::render_markdown_tagged_with_palette(
         &body,
         content_width,
         body_style,

@@ -22,9 +22,9 @@ use crate::tui::history::{
     CellFoldAction, CellFoldActionTarget, HistoryCell, TranscriptActionOwner, TranscriptFold,
     TranscriptRenderOptions,
 };
-use crate::tui::scrolling::TranscriptLineMeta;
-use crate::tui::ui_text::CopyLineSeparator;
 use codewhale_localization::{MessageId, tr};
+use codewhale_tui_kit::scrolling::TranscriptLineMeta;
+use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 /// Revision-bound render output. Arcs keep cache enumeration O(cells) instead
 /// of deep-cloning every rendered line on ambient frames (issue #78); the
@@ -38,7 +38,7 @@ struct CachedCell {
     /// newlines while allowing copy to remove visual soft-wrap breaks; prefix
     /// widths strip visual rails. All four vectors remain index-aligned.
     lines: Arc<Vec<Line<'static>>>,
-    links: Arc<Vec<Vec<crate::tui::osc8::LineLink>>>,
+    links: Arc<Vec<Vec<codewhale_tui_kit::osc8::LineLink>>>,
     copy_separators: Arc<Vec<CopyLineSeparator>>,
     copy_prefix_widths: Arc<Vec<usize>>,
     /// Empty/blank facts keep spacing decisions independent of rendered text.
@@ -52,7 +52,8 @@ struct CachedCell {
     fold_action: Option<CellFoldAction>,
     /// Only the changing Assistant cell carries incremental parser state;
     /// stable lines stay above its replaceable-tail index.
-    incremental_markdown: Option<Box<crate::tui::markdown_render::IncrementalMarkdownRenderCache>>,
+    incremental_markdown:
+        Option<Box<codewhale_tui_kit::markdown_render::IncrementalMarkdownRenderCache>>,
     /// Settled form of the animation-mutated hot tail, restored on append so
     /// the stable prefix is not reparsed.
     hot_tail_original: Option<(usize, Line<'static>)>,
@@ -142,7 +143,7 @@ pub struct TranscriptViewCache {
     /// without touching a single cached render (#6652).
     seen_revisions: Vec<u64>,
     lines: Vec<Line<'static>>,
-    line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
+    line_links: Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
     line_meta: Vec<TranscriptLineMeta>,
     /// Visual-only prefix widths let selection copy strip rails without glyph guesses.
     rail_prefix_widths: Vec<usize>,
@@ -195,7 +196,7 @@ impl TranscriptViewCache {
     pub(crate) fn streaming_render_work(
         &self,
         cell_index: usize,
-    ) -> Option<crate::tui::markdown_render::MarkdownRenderWork> {
+    ) -> Option<codewhale_tui_kit::markdown_render::MarkdownRenderWork> {
         self.per_cell
             .get(cell_index)?
             .incremental_markdown
@@ -696,7 +697,7 @@ impl TranscriptViewCache {
         line_in_cell: usize,
     ) -> (
         Line<'static>,
-        Vec<crate::tui::osc8::LineLink>,
+        Vec<codewhale_tui_kit::osc8::LineLink>,
         usize,
         TranscriptLineMeta,
     ) {
@@ -924,7 +925,7 @@ impl TranscriptViewCache {
     }
 
     #[must_use]
-    pub fn line_links(&self) -> &[Vec<crate::tui::osc8::LineLink>] {
+    pub fn line_links(&self) -> &[Vec<codewhale_tui_kit::osc8::LineLink>] {
         &self.line_links
     }
 
@@ -1228,10 +1229,10 @@ fn line_with_group_rail(
 }
 
 fn links_with_group_rail(
-    links: &[crate::tui::osc8::LineLink],
+    links: &[codewhale_tui_kit::osc8::LineLink],
     rail: Option<crate::tui::widgets::tool_card::CardRail>,
     max_width: usize,
-) -> Vec<crate::tui::osc8::LineLink> {
+) -> Vec<codewhale_tui_kit::osc8::LineLink> {
     let shift = rail
         .map(crate::tui::widgets::tool_card::rail_glyph)
         .filter(|glyph| !glyph.is_empty())

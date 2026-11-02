@@ -10,10 +10,10 @@ show_in_empty_discovery: true
 ---
 name: cost
 aliases: []
-usage: /cost
+usage: /cost [details]
 description_en: Show session cost breakdown
 palette_en: Show session cost breakdown
-requires_argument: false
+requires_argument: true
 unlisted: false
 show_in_empty_discovery: true
 ---

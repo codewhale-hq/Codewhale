@@ -18,7 +18,7 @@ use super::*;
 /// whole update instead of applying the model without its budget (U03-05).
 pub(crate) fn try_apply_model_and_compaction_update(
     engine_handle: &EngineHandle,
-    compaction: crate::compaction::CompactionConfig,
+    compaction: codewhale_engine::compaction::CompactionConfig,
     mode: AppMode,
     route_limits: Option<codewhale_config::route::RouteLimits>,
 ) -> bool {
@@ -298,39 +298,41 @@ pub(crate) fn apply_compaction_completed(
         // after the rewrite the local estimate is the honest signal until
         // the next model call bills the new, smaller prompt (#5577).
         app.last_billed_input_tokens = None;
-        let keep = crate::compaction::inspect_compaction_keep(&app.api_messages);
+        let keep = codewhale_engine::compaction::inspect_compaction_keep(&app.api_messages);
         let path = if summary_prompt
             .as_deref()
             .is_some_and(|text| !text.trim().is_empty())
         {
-            crate::compaction::CompactionPath::Summary
+            codewhale_engine::compaction::CompactionPath::Summary
         } else {
-            crate::compaction::CompactionPath::PruneOnly
+            codewhale_engine::compaction::CompactionPath::PruneOnly
         };
         let after = messages_after.unwrap_or(app.api_messages.len());
         let before = messages_before.unwrap_or(after);
-        app.last_compaction = Some(crate::compaction::LastCompactionSnapshot {
+        app.last_compaction = Some(codewhale_engine::compaction::LastCompactionSnapshot {
             auto,
-            coverage: crate::compaction::CompactionCoverage {
+            coverage: codewhale_engine::compaction::CompactionCoverage {
                 path,
                 last_round_messages: keep.last_round_messages,
                 last_round_tool_results: keep.last_round_tool_results,
                 last_round_assistant: keep.last_round_assistant,
                 dropped_messages: before.saturating_sub(after),
-                anchors_chars: crate::compaction::pinned_anchors_text(Some(&app.workspace))
-                    .map(|text| text.chars().count())
-                    .unwrap_or(0),
+                anchors_chars: codewhale_engine::compaction::pinned_anchors_text(Some(
+                    &app.workspace,
+                ))
+                .map(|text| text.chars().count())
+                .unwrap_or(0),
                 // Only the summary path builds a replacement history, so only
                 // it spent a verbatim budget (#5956).
                 retained_user_message_tokens: match path {
-                    crate::compaction::CompactionPath::Summary => {
+                    codewhale_engine::compaction::CompactionPath::Summary => {
                         app.compaction_retained_user_message_tokens
                     }
-                    crate::compaction::CompactionPath::PruneOnly => 0,
+                    codewhale_engine::compaction::CompactionPath::PruneOnly => 0,
                 },
                 operator_instructions_applied: matches!(
                     path,
-                    crate::compaction::CompactionPath::Summary
+                    codewhale_engine::compaction::CompactionPath::Summary
                 ) && app.compaction_summary_instructions.is_some(),
             },
             messages_before: before,
@@ -428,20 +430,16 @@ pub(crate) fn maybe_warn_context_pressure(app: &mut App) {
 
 pub(crate) fn maybe_warn_context_pressure_for_config(
     app: &mut App,
-    config: &crate::compaction::CompactionConfig,
+    config: &codewhale_engine::compaction::CompactionConfig,
 ) {
     if config.enabled {
         app.dismiss_context_pressure_warning();
         app.context_pressure_warning_dismissed = None;
         return;
     }
-    let max = config.effective_context_window.unwrap_or_else(|| {
-        crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        )
-    });
+    let max = config
+        .effective_context_window
+        .unwrap_or_else(|| app.effective_context_window());
     let Some((used, max, percent)) = context_usage_snapshot_for_window(app, max) else {
         return;
     };
@@ -477,7 +475,7 @@ pub(crate) fn maybe_warn_context_pressure_for_config(
 
     // #5239: the meter drives real budgets off this window, so an unverified
     // one must say so next to the numbers that depend on it.
-    let window_note = if app.active_context_window_source.is_verified() {
+    let window_note = if app.effective_context_window_source().is_verified() {
         ""
     } else {
         ", unverified window"
@@ -538,13 +536,13 @@ fn set_context_pressure_status(
 #[cfg(test)]
 mod config_update_tests {
     use super::*;
-    use crate::core::engine::mock_engine_handle;
-    use crate::core::ops::Op;
+    use codewhale_engine::core::engine::mock_engine_handle;
+    use codewhale_engine::core::ops::Op;
 
     #[tokio::test]
     async fn live_compaction_update_queues_without_waiting_on_engine() {
         let mut mock = mock_engine_handle();
-        let compaction = crate::compaction::CompactionConfig {
+        let compaction = codewhale_engine::compaction::CompactionConfig {
             enabled: false,
             token_threshold: 123,
             model: "deepseek-v4-flash".to_string(),
@@ -553,7 +551,7 @@ mod config_update_tests {
             focus: None,
             runtime_cost_owner: None,
             workspace: None,
-            image_input: crate::model_profile::SupportState::Unknown,
+            image_input: codewhale_engine::model_profile::SupportState::Unknown,
             summary_instructions: None,
             retained_user_message_tokens:
                 codewhale_runtime::config::DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS,
@@ -593,9 +591,9 @@ mod config_update_tests {
                 .expect("filler op fits");
             fillers += 1;
         }
-        let compaction = crate::compaction::CompactionConfig {
+        let compaction = codewhale_engine::compaction::CompactionConfig {
             model: "deepseek-v4-flash".to_string(),
-            ..crate::compaction::CompactionConfig::default()
+            ..codewhale_engine::compaction::CompactionConfig::default()
         };
 
         assert!(!try_apply_model_and_compaction_update(

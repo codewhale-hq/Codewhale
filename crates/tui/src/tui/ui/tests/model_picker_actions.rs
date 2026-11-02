@@ -166,7 +166,7 @@ fn ctrl_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_pi
         .unwrap_or_else(|| provider.as_str().to_string());
     toggle_model_picker_fleet(&mut app, &config, &provider_key, picked);
 
-    let fleet = crate::fleet::members::fleet_models(&app.workspace).unwrap();
+    let fleet = codewhale_engine::fleet::members::fleet_models(&app.workspace).unwrap();
     assert!(
         fleet
             .iter()
@@ -191,7 +191,7 @@ fn ctrl_f_after_a_search_adds_the_highlighted_row_to_fleet_and_says_so_in_the_pi
         [ViewEvent::ModelPickerToggleFleet { model: again, .. }] if again == &model
     ));
     toggle_model_picker_fleet(&mut app, &config, &provider_key, &model);
-    let fleet = crate::fleet::members::fleet_models(&app.workspace).unwrap();
+    let fleet = codewhale_engine::fleet::members::fleet_models(&app.workspace).unwrap();
     assert!(
         !fleet
             .iter()

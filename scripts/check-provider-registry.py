@@ -37,7 +37,7 @@ WEB_FACTS_DRIFT = ROOT / "web" / "lib" / "facts-drift.ts"
 WEB_FACTS_GENERATED = ROOT / "web" / "lib" / "facts.generated.ts"
 README_MD = ROOT / "README.md"
 CONFIG_EXAMPLE_TOML = ROOT / "config.example.toml"
-TUI_PROVIDER_READINESS_RS = ROOT / "crates" / "tui" / "src" / "provider_readiness.rs"
+PROVIDER_READINESS_RS = ROOT / "crates" / "engine" / "src" / "provider_readiness.rs"
 TUI_LIB_RS = ROOT / "crates" / "tui" / "src" / "lib.rs"
 
 
@@ -236,7 +236,7 @@ def report_tui_catalog_contract(tui_config_rs: str) -> list[str]:
 
 
 def report_tombstone_runtime_contract(
-    provider_kind_rs: str, tui_provider_readiness_rs: str, tui_lib_rs: str
+    provider_kind_rs: str, provider_readiness_rs: str, tui_lib_rs: str
 ) -> list[str]:
     """The tombstone must resolve under every legacy spelling and never read
     as a credentialed or advertised slot on a running-product surface."""
@@ -259,7 +259,7 @@ def report_tombstone_runtime_contract(
 
     if (
         "provider == ProviderKind::Antigravity"
-        not in tui_provider_readiness_rs
+        not in provider_readiness_rs
     ):
         errors.append(
             "provider_readiness::credential_state_for_provider must classify "
@@ -583,7 +583,7 @@ def main() -> int:
         web_facts_generated = read(WEB_FACTS_GENERATED)
         readme_md = read(README_MD)
         config_example_toml = read(CONFIG_EXAMPLE_TOML)
-        tui_provider_readiness_rs = read(TUI_PROVIDER_READINESS_RS)
+        provider_readiness_rs = read(PROVIDER_READINESS_RS)
         tui_lib_rs = read(TUI_LIB_RS)
 
         variant_to_id = provider_kind_ids(config_rs)
@@ -603,7 +603,7 @@ def main() -> int:
         errors += report_provider_kind_selector_contract(provider_kind_rs)
         errors += report_tui_catalog_contract(tui_config_rs)
         errors += report_tombstone_runtime_contract(
-            provider_kind_rs, tui_provider_readiness_rs, tui_lib_rs
+            provider_kind_rs, provider_readiness_rs, tui_lib_rs
         )
         errors += report_set(
             "legacy provider identities in ProviderKind::ALL",

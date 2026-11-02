@@ -378,7 +378,7 @@ fn ambient_glyphs_are_ascii_or_have_fallbacks() {
     }
     for glyph in ["·", "˚", "°", "≈≈>", "≈", "～"] {
         assert!(
-            glyph.is_ascii() || crate::tui::glyphs::ascii_fallback(glyph).is_some(),
+            glyph.is_ascii() || codewhale_tui_kit::glyphs::ascii_fallback(glyph).is_some(),
             "ambient glyph {glyph:?} lacks an ASCII fallback"
         );
     }
@@ -1101,9 +1101,8 @@ fn native_pose_tables_have_fixed_cell_bounds_and_safe_glyphs() {
                 for dy in 0..2 {
                     let row = native_poses::fish(right, pose, dx, dy);
                     assert_eq!(row.width(), 4);
-                    assert!(row.chars().all(
-                        |c| c == ' ' || crate::tui::glyphs::braille_ascii_fallback(c).is_some()
-                    ));
+                    assert!(row.chars().all(|c| c == ' '
+                        || codewhale_tui_kit::glyphs::braille_ascii_fallback(c).is_some()));
                 }
             }
         }
@@ -1115,9 +1114,8 @@ fn native_pose_tables_have_fixed_cell_bounds_and_safe_glyphs() {
                 assert_eq!(rows.len(), 3);
                 for row in rows {
                     assert_eq!(row.width(), 5);
-                    assert!(row.chars().all(
-                        |c| c == ' ' || crate::tui::glyphs::braille_ascii_fallback(c).is_some()
-                    ));
+                    assert!(row.chars().all(|c| c == ' '
+                        || codewhale_tui_kit::glyphs::braille_ascii_fallback(c).is_some()));
                 }
                 assert!(rows.iter().all(|r| r.chars().count() == 5));
             }

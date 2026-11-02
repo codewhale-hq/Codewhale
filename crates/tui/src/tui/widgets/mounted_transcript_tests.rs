@@ -36,7 +36,7 @@ fn app(locale: Locale, case: usize) -> App {
             });
         }
         app.viewport.transcript_scroll =
-            crate::tui::scrolling::TranscriptScroll::at_line(if case == 4 { 3 } else { 0 });
+            codewhale_tui_kit::scrolling::TranscriptScroll::at_line(if case == 4 { 3 } else { 0 });
     }
     if case == 4 {
         app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
@@ -134,7 +134,7 @@ fn mounted_transcript_stream_resize_and_scroll_lock_preserve_cache_source() {
             app.bump_history_cell(1);
             if let Some(top) = top {
                 app.viewport.transcript_scroll =
-                    crate::tui::scrolling::TranscriptScroll::at_line(top);
+                    codewhale_tui_kit::scrolling::TranscriptScroll::at_line(top);
                 app.user_scrolled_during_stream = true;
             }
         }
@@ -208,7 +208,7 @@ fn mounted_transcript_links_never_hyperlink_jump_chrome_or_paint_targets() {
     });
     widget.jump_to_latest_button = codewhale_ratatui::transcript_jump_rect(area, true);
     widget.line_links = vec![
-        vec![crate::tui::osc8::LineLink {
+        vec![codewhale_tui_kit::osc8::LineLink {
             col_start: 0,
             col_end: 100,
             target: "https://example.test/opaque-target".into()
@@ -219,7 +219,7 @@ fn mounted_transcript_links_never_hyperlink_jump_chrome_or_paint_targets() {
     widget.render(area, &mut buf);
     let plan = widget.viewport().plan(area);
     let button = plan.jump.unwrap();
-    let regions = crate::tui::osc8::FRAME_LINKS.with(|regions| regions.borrow().clone());
+    let regions = codewhale_tui_kit::osc8::FRAME_LINKS.with(|regions| regions.borrow().clone());
     assert!(!regions.is_empty());
     for region in regions {
         let rect = Rect::new(

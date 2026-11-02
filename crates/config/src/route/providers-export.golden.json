@@ -476,6 +476,10 @@
         {
           "id": "MiniMax-M3",
           "default": true
+        },
+        {
+          "id": "MiniMax-M3.1-Flash",
+          "canonical": "minimax/MiniMax-M3.1-Flash"
         }
       ],
       "transport": "chat-completions"
@@ -506,6 +510,10 @@
         {
           "id": "MiniMax-M3",
           "default": true
+        },
+        {
+          "id": "MiniMax-M3.1-Flash",
+          "canonical": "minimax/MiniMax-M3.1-Flash"
         }
       ],
       "transport": "anthropic-messages"
@@ -764,6 +772,14 @@
         {
           "id": "kimi-k3",
           "canonical": "moonshotai/kimi-k3"
+        },
+        {
+          "id": "kimi-k3.1-pro",
+          "canonical": "moonshotai/kimi-k3.1-pro"
+        },
+        {
+          "id": "kimi-k3.1-pro-highspeed",
+          "canonical": "moonshotai/kimi-k3.1-pro"
         }
       ],
       "transport": "chat-completions"
@@ -907,6 +923,10 @@
         {
           "id": "gpt-6.1-sol",
           "canonical": "openai/gpt-6.1-sol"
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "canonical": "openai/gpt-6.1-terra"
         }
       ],
       "transport": "chat-completions"

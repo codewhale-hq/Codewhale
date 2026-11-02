@@ -308,7 +308,10 @@ const WORKFLOW_USAGE: &str =
 /workflow settings — the effective [workflow] configuration
 /workflows — the live run dashboard (opens in the TUI)";
 
-fn describe_run(line: &crate::tools::workflow::HostWorkflowRunLine, now_ms: u64) -> String {
+fn describe_run(
+    line: &codewhale_engine::tools::workflow::HostWorkflowRunLine,
+    now_ms: u64,
+) -> String {
     let elapsed = line
         .completed_at_ms
         .unwrap_or(now_ms)
@@ -334,7 +337,7 @@ fn describe_run(line: &crate::tools::workflow::HostWorkflowRunLine, now_ms: u64)
 }
 
 fn workflow_status(app: &App, run_id: &str) -> CommandResult {
-    let runs = crate::tools::workflow::host_workflow_runs(
+    let runs = codewhale_engine::tools::workflow::host_workflow_runs(
         &app.workspace,
         app.current_session_id.as_deref(),
     );
@@ -379,7 +382,7 @@ fn workflow_cancel(app: &App, run_id: &str) -> CommandResult {
         return CommandResult::error("Usage: /workflow cancel [run_id]");
     }
     let target = if run_id.is_empty() {
-        let running: Vec<_> = crate::tools::workflow::host_workflow_runs(
+        let running: Vec<_> = codewhale_engine::tools::workflow::host_workflow_runs(
             &app.workspace,
             app.current_session_id.as_deref(),
         )
@@ -401,7 +404,7 @@ fn workflow_cancel(app: &App, run_id: &str) -> CommandResult {
     } else {
         run_id.to_string()
     };
-    match crate::tools::workflow::host_cancel_workflow(
+    match codewhale_engine::tools::workflow::host_cancel_workflow(
         &app.workspace,
         &target,
         app.current_session_id.as_deref(),
@@ -788,7 +791,7 @@ mod tests {
         assert!(result.action.is_none());
 
         // A seeded run is listed and described from host state.
-        crate::tools::workflow::structcopy_test_seed_run(
+        codewhale_engine::tools::workflow::structcopy_test_seed_run(
             dir.path(),
             "workflow_seed",
             app.current_session_id
@@ -810,7 +813,7 @@ mod tests {
         let text = result.message.as_deref().unwrap();
         assert!(text.contains("workflow_seed"), "{text}");
         assert!(text.contains("cancelled"), "{text}");
-        let after = crate::tools::workflow::host_workflow_runs(
+        let after = codewhale_engine::tools::workflow::host_workflow_runs(
             &app.workspace,
             app.current_session_id.as_deref(),
         );
@@ -934,9 +937,9 @@ mod tests {
 
     #[test]
     fn workflow_settings_and_tool_share_a_refreshed_session_table() {
-        use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
-        use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
-        use crate::tools::workflow::WorkflowTool;
+        use codewhale_engine::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+        use codewhale_engine::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
+        use codewhale_engine::tools::workflow::WorkflowTool;
         use serde_json::json;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -947,7 +950,10 @@ mod tests {
         table.automatic = false;
         table.require_approval_for_writes = false;
         table.auto_start_read_only = false;
-        crate::tools::workflow::set_session_workflow_config(&app.workspace, table.clone());
+        codewhale_engine::tools::workflow::set_session_workflow_config(
+            &app.workspace,
+            table.clone(),
+        );
         app.workflow_config = table;
 
         let result = workflow(&mut app, Some("settings"));
@@ -960,7 +966,7 @@ mod tests {
         let ctx = ToolContext::new(dir.path().to_path_buf());
         let manager = new_shared_subagent_manager(dir.path().to_path_buf(), 2);
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = crate::client::CodewhaleClient::new(
+        let client = codewhale_engine::client::CodewhaleClient::new(
             &codewhale_runtime::config::Config::default()
                 .with_legacy_root(Some("test-key".to_string()), None),
         )

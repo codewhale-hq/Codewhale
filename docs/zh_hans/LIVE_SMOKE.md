@@ -173,5 +173,5 @@ unset CW_SMOKE_CODEWHALE_HOME CW_SMOKE_CRED_VAR \
 
 一次绿色的实时冒烟运行是证据，说明所配置的实时尝试今天完成了。它本身并不能证明端点身份、
 账号的持久权益，也不能证明不存在 harness 缺陷；那些主张需要另行旁证。它也没有说明技能选择、
-别名解析、语言区域（locale）路由或提示词预算——这些都由 `crates/tui/src/skills/catalog_matrix.rs`
+别名解析、语言区域（locale）路由或提示词预算——这些都由 `crates/skills/src/catalog_matrix.rs`
 以确定性、无提供商的方式覆盖。

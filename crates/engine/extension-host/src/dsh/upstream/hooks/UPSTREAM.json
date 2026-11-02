@@ -1,0 +1,50 @@
+{
+  "ref": "b830ec950faba0a46dda564be3e2d854afed94f1",
+  "files": {
+    "hook-protocol/src/matcher.ts": {
+      "source_sha256": "f2d9cd9640b902ba40be97746ba9c20365aea9de184456976ae64b41dfdbfe0b",
+      "candidate_sha256": "f2d9cd9640b902ba40be97746ba9c20365aea9de184456976ae64b41dfdbfe0b",
+      "adaptations": [],
+      "upstream_path": "packages/experimental/hook-protocol/src/matcher.ts"
+    },
+    "hook-protocol/src/codec.ts": {
+      "source_sha256": "beea043c7adbffaed1685381eb6bbd3779b52562891b213bedc8d8de0026e692",
+      "candidate_sha256": "beea043c7adbffaed1685381eb6bbd3779b52562891b213bedc8d8de0026e692",
+      "adaptations": [],
+      "upstream_path": "packages/experimental/hook-protocol/src/codec.ts"
+    },
+    "hook-protocol/src/types.ts": {
+      "source_sha256": "9a65503288c899a523e5178d475455dde7ecfda6f3bffd916a99bbe5f67c1f09",
+      "candidate_sha256": "3b4dd743d4f0b921447e42f53b356a344de40c1709e72e002410fe2bed09d488",
+      "adaptations": [
+        "removed session-writer-only declaration merging; core remains the event authority"
+      ],
+      "upstream_path": "packages/experimental/hook-protocol/src/types.ts"
+    },
+    "hook-protocol/src/merge.ts": {
+      "source_sha256": "2a429eef048ace4dd2dd2c83d598e0925f8783975e05bd158d4593486804756c",
+      "candidate_sha256": "2a429eef048ace4dd2dd2c83d598e0925f8783975e05bd158d4593486804756c",
+      "adaptations": [],
+      "upstream_path": "packages/experimental/hook-protocol/src/merge.ts"
+    },
+    "hooks-claude-code/src/config.ts": {
+      "source_sha256": "d4a35a4dfac9aaf482d940a86402265b58591ad9711c16673dcec82b00605b23",
+      "candidate_sha256": "9f4bb7e1fdbabb7bceb1206ca9440d6e47b7d062da99b0e0bbfae78e2d5bee13",
+      "adaptations": [
+        "local exact matcher/types imports, no algorithm change"
+      ],
+      "upstream_path": "packages/experimental/hooks-claude-code/src/config.ts"
+    },
+    "hooks-codex/src/config.ts": {
+      "source_sha256": "7ba4839204fd553b611aa4e3e85eb07cac2b0465acab0fc3439dbe4f9cf7962b",
+      "candidate_sha256": "8eb7b8f8de91ee23d2167c8394b4f712a1320b3b8f688d349276e26d21acb4b6",
+      "adaptations": [
+        "local exact matcher/types imports, no algorithm change"
+      ],
+      "upstream_path": "packages/experimental/hooks-codex/src/config.ts"
+    }
+  },
+  "license": "MIT",
+  "not_full_index": "Full upstream lifecycle index expects agent/session writers; only pure configuration/matcher/codec/merge are adopted. Core firepoints and scheduling are reused.",
+  "version": "0.2.1-rc.5"
+}

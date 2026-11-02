@@ -9,12 +9,12 @@ use std::time::Instant;
 use tempfile::TempDir;
 
 use crate::commands::CommandResult;
-use crate::reasoning_preference::ReasoningEffort;
-use crate::session_manager::create_saved_session_with_id_and_mode;
 use crate::test_support::SealedHome;
 use crate::tui::app::{App, AppAction, TuiOptions, TurnCacheRecord};
 use crate::tui::history::HistoryCell;
 use codewhale_config::AppMode;
+use codewhale_engine::reasoning_preference::ReasoningEffort;
+use codewhale_engine::session_manager::create_saved_session_with_id_and_mode;
 use codewhale_models::Role;
 use codewhale_runtime::config::Config;
 
@@ -84,9 +84,9 @@ fn save_preserves_artifact_registry() {
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     let save_path = tmpdir.path().join("artifact_session.json");
     app.session_artifacts
-        .push(crate::artifacts::ArtifactRecord {
+        .push(codewhale_runtime::artifacts::ArtifactRecord {
             id: "art_call_big".to_string(),
-            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
             session_id: "artifact-session".to_string(),
             tool_call_id: "call-big".to_string(),
             tool_name: "exec_shell".to_string(),
@@ -99,7 +99,7 @@ fn save_preserves_artifact_registry() {
     let result = save(&mut app, Some(save_path.to_str().unwrap()));
 
     assert!(!result.is_error);
-    let saved: crate::session_manager::SavedSession =
+    let saved: codewhale_engine::session_manager::SavedSession =
         serde_json::from_str(&std::fs::read_to_string(save_path).unwrap()).unwrap();
     assert_eq!(saved.artifacts, app.session_artifacts);
 }
@@ -110,18 +110,18 @@ fn save_preserves_latest_auto_route_receipt() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     let save_path = tmpdir.path().join("auto_route_session.json");
-    let receipt = crate::model_routing::AutoRouteReceipt {
-        tier: crate::model_routing::AutoRouteTier::Fast,
-        pair: crate::model_routing::AutoRoutePair {
+    let receipt = codewhale_engine::model_routing::AutoRouteReceipt {
+        tier: codewhale_engine::model_routing::AutoRouteTier::Fast,
+        pair: codewhale_engine::model_routing::AutoRoutePair {
             strong: codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL.to_string(),
             fast: Some(
                 codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string(),
             ),
         },
-        scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
-        data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
-        reason: crate::model_routing::AutoRouteReason::LocalFallback(
-            crate::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
+        scope: codewhale_engine::model_routing::AutoRouteScope::ResolvedProvider,
+        data_path: codewhale_engine::model_routing::AutoRouteDataPath::LocalHeuristic,
+        reason: codewhale_engine::model_routing::AutoRouteReason::LocalFallback(
+            codewhale_engine::model_routing::AutoRouteHeuristicReason::DeclaredDefault,
         ),
         decision: None,
         router_failure: None,
@@ -133,12 +133,12 @@ fn save_preserves_latest_auto_route_receipt() {
         Some(codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_TURBO_MODEL.to_string());
     app.last_auto_route_receipt = Some(receipt.clone());
     app.last_effective_reasoning_effort =
-        Some(crate::reasoning_preference::EffectiveReasoningEffort::ThinkingEnabledGranularityUnavailable);
+        Some(codewhale_engine::reasoning_preference::EffectiveReasoningEffort::ThinkingEnabledGranularityUnavailable);
 
     let result = save(&mut app, Some(save_path.to_str().unwrap()));
 
     assert!(!result.is_error);
-    let saved: crate::session_manager::SavedSession =
+    let saved: codewhale_engine::session_manager::SavedSession =
         serde_json::from_str(&std::fs::read_to_string(save_path).unwrap()).unwrap();
     let route = saved.last_auto_route.expect("latest Auto route");
     assert_eq!(route.provider, codewhale_config::ProviderKind::Zai);
@@ -161,6 +161,7 @@ fn fork_saves_parent_and_switches_to_child_session() {
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.set_provider_identity(codewhale_config::ProviderKind::Custom, "lm-studio");
     app.current_session_id = Some("parent-session".to_string());
+    app.capture_session_fixture_source();
     let mut cached_parent = create_saved_session_with_id_and_mode(
         "parent-session".to_string(),
         &[],
@@ -188,14 +189,14 @@ fn fork_saves_parent_and_switches_to_child_session() {
         let mut todos = app.todos.try_lock().expect("todos lock");
         todos.add(
             "preserve fork Work".to_string(),
-            crate::tools::todo::TodoStatus::InProgress,
+            codewhale_engine::tools::todo::TodoStatus::InProgress,
         );
     }
     {
         let mut plan = app.plan_state.try_lock().expect("plan lock");
-        plan.update(crate::tools::plan::UpdatePlanArgs {
+        plan.update(codewhale_engine::tools::plan::UpdatePlanArgs {
             objective: Some("Fork without Work drift".to_string()),
-            ..crate::tools::plan::UpdatePlanArgs::default()
+            ..codewhale_engine::tools::plan::UpdatePlanArgs::default()
         });
     }
     app.cycle_effort();
@@ -216,7 +217,7 @@ fn fork_saves_parent_and_switches_to_child_session() {
     assert!(result.message.as_deref().unwrap_or("").contains("Forked"));
     assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
 
-    let manager = crate::session_manager::SessionManager::default_location().unwrap();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().unwrap();
     let parent = manager
         .load_session("parent-session")
         .expect("parent saved");
@@ -264,6 +265,7 @@ fn fork_rejects_active_runtime_without_switching_sessions() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("parent-session".to_string());
+    app.capture_session_fixture_source();
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![codewhale_models::ContentBlock::Text {
@@ -287,6 +289,7 @@ fn new_session_from_resumed_state_creates_distinct_empty_session() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.session_title = Some("Old Session".to_string());
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
@@ -354,6 +357,7 @@ fn conversation_reset_forgets_approvals(command: &str) {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.approval_session_denied
         .insert("shell:rm -rf build:call-1".to_string());
     app.approval_session_approved
@@ -410,6 +414,7 @@ fn new_session_blocks_unsent_input_without_force() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.input = "draft text".to_string();
 
     let result = new_session(&mut app, None);
@@ -433,6 +438,7 @@ fn new_session_force_discards_unsent_input() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.input = "draft text".to_string();
 
     let result = new_session(&mut app, Some("--force"));
@@ -449,6 +455,7 @@ fn new_session_blocks_in_flight_turn_without_force() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.is_loading = true;
 
     let result = new_session(&mut app, None);
@@ -464,6 +471,7 @@ fn new_session_force_cannot_detach_an_in_flight_turn() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![],
@@ -494,6 +502,7 @@ fn load_rejects_an_active_runtime_before_reading_or_mutating() {
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
     app.api_messages_mut().push(codewhale_models::Message {
         role: Role::User,
         content: vec![],
@@ -630,8 +639,8 @@ fn test_load_valid_session_defers_state_restore_to_event_loop() {
     app2.system_prompt = Some(codewhale_models::SystemPrompt::Text(
         "stale prompt from prior session".to_string(),
     ));
-    app2.session_context_references
-        .push(crate::session_manager::SessionContextReference {
+    app2.session_context_references.push(
+        codewhale_engine::session_manager::SessionContextReference {
             message_index: 0,
             reference: codewhale_core::ContextReference {
                 kind: codewhale_core::ContextReferenceKind::File,
@@ -643,7 +652,8 @@ fn test_load_valid_session_defers_state_restore_to_event_loop() {
                 expanded: true,
                 detail: None,
             },
-        });
+        },
+    );
     let result = load(&mut app2, Some(save_path.to_str().unwrap()));
     assert_eq!(result.message, None);
     assert!(app2.api_messages.is_empty());
@@ -666,14 +676,14 @@ fn explicit_save_persists_work_state_and_load_defers_application() {
         let mut todos = saved_app.todos.try_lock().expect("todos lock");
         todos.add(
             "persist me".to_string(),
-            crate::tools::todo::TodoStatus::InProgress,
+            codewhale_engine::tools::todo::TodoStatus::InProgress,
         );
     }
     {
         let mut plan = saved_app.plan_state.try_lock().expect("plan lock");
-        plan.update(crate::tools::plan::UpdatePlanArgs {
+        plan.update(codewhale_engine::tools::plan::UpdatePlanArgs {
             objective: Some("Resume exactly".to_string()),
-            ..crate::tools::plan::UpdatePlanArgs::default()
+            ..codewhale_engine::tools::plan::UpdatePlanArgs::default()
         });
     }
     let expected = saved_app.work_state_snapshot().expect("snapshot");
@@ -689,7 +699,7 @@ fn explicit_save_persists_work_state_and_load_defers_application() {
         loaded.action,
         Some(AppAction::LoadSession(path)) if path == save_path
     ));
-    let saved_session: crate::session_manager::SavedSession =
+    let saved_session: codewhale_engine::session_manager::SavedSession =
         serde_json::from_str(&std::fs::read_to_string(&save_path).expect("saved session file"))
             .expect("saved session JSON");
     assert_eq!(saved_session.work_state, expected);
@@ -705,6 +715,7 @@ fn new_session_is_all_or_nothing_when_work_state_is_busy() {
         content: vec![],
     });
     app.current_session_id = Some("current-session".to_string());
+    app.capture_session_fixture_source();
     let todos = app.todos.clone();
     let _held = todos.try_lock().expect("hold todos lock");
 
@@ -724,7 +735,9 @@ fn load_auto_model_session_defers_model_restore_to_event_loop() {
     saved_app.set_model_selection("auto".to_string());
     saved_app.last_effective_model = Some("deepseek-v4-flash".to_string());
     saved_app.last_effective_reasoning_effort = Some(
-        crate::reasoning_preference::EffectiveReasoningEffort::Tier(ReasoningEffort::Low),
+        codewhale_engine::reasoning_preference::EffectiveReasoningEffort::Tier(
+            ReasoningEffort::Low,
+        ),
     );
     let save_path = tmpdir.path().join("auto_model.json");
     save(&mut saved_app, Some(save_path.to_str().unwrap()));
@@ -751,9 +764,9 @@ fn load_defers_artifact_registry_restore_to_event_loop() {
     let mut saved_app = create_test_app_with_tmpdir(&tmpdir);
     saved_app
         .session_artifacts
-        .push(crate::artifacts::ArtifactRecord {
+        .push(codewhale_runtime::artifacts::ArtifactRecord {
             id: "art_call_big".to_string(),
-            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
             session_id: "artifact-session".to_string(),
             tool_call_id: "call-big".to_string(),
             tool_name: "exec_shell".to_string(),
@@ -767,9 +780,9 @@ fn load_defers_artifact_registry_restore_to_event_loop() {
 
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.session_artifacts
-        .push(crate::artifacts::ArtifactRecord {
+        .push(codewhale_runtime::artifacts::ArtifactRecord {
             id: "art_stale".to_string(),
-            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            kind: codewhale_runtime::artifacts::ArtifactKind::ToolOutput,
             session_id: "stale-session".to_string(),
             tool_call_id: "stale".to_string(),
             tool_name: "exec_shell".to_string(),
@@ -813,11 +826,9 @@ fn load_defers_telemetry_reset_to_event_loop() {
     app.session.session_cost_cny = 9.13;
     app.session.subagent_cost = 0.75;
     app.session.subagent_cost_cny = 5.48;
-    app.session
-        .subagent_usage_sources
-        .insert(crate::cost_status::usage_source_fingerprint(
-            "response-test",
-        ));
+    app.session.subagent_usage_sources.insert(
+        codewhale_engine::cost_status::usage_source_fingerprint("response-test"),
+    );
     app.session.displayed_cost_high_water = 2.0;
     app.session.displayed_cost_high_water_cny = 14.61;
     app.session.last_prompt_tokens = Some(120);
@@ -987,7 +998,7 @@ fn branch_snapshot_roundtrip_preserves_siblings_ids_stamps_and_engine_projection
     }
     assert!(!save(&mut app, None).is_error);
     let id = app.current_session_id.clone().unwrap();
-    let manager = crate::session_manager::SessionManager::default_location().unwrap();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().unwrap();
     let initial = manager.load_session(&id).unwrap();
     let original = initial.journal.as_ref().unwrap().entries.clone();
     let chosen = original[1].id.clone();

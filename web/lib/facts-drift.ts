@@ -12,6 +12,7 @@
  * fixes itself within one cron tick — no redeploy. Semantic drift (a new
  * feature should be advertised on the homepage) is still left to humans.
  */
+import { withGenerationLease, type DraftClaimLockNamespace } from "./draft-claim-lock";
 import { parseModelCatalog } from "./model-catalog.mjs";
 import { parseProviderDescriptors } from "./provider-descriptors.mjs";
 import { fetchBoundedText } from "./bounded-body";
@@ -272,10 +273,27 @@ export interface FactsDriftResult {
   reason?: string;
 }
 
-export async function runFactsDrift(env: { CURATED_KV?: KVNamespace; GITHUB_TOKEN?: string }): Promise<FactsDriftResult> {
-  if (!env.CURATED_KV) return { ok: false, reason: "CURATED_KV not bound" };
+export async function runFactsDrift(env: {
+  CURATED_KV?: KVNamespace;
+  DRAFT_CLAIM_LOCK?: DraftClaimLockNamespace;
+  GITHUB_TOKEN?: string;
+}): Promise<FactsDriftResult> {
+  const kv = env.CURATED_KV;
+  if (!kv) return { ok: false, reason: "CURATED_KV not bound" };
+  const result = env.DRAFT_CLAIM_LOCK
+    ? await withGenerationLease(env.DRAFT_CLAIM_LOCK, "facts-drift", () => refreshFacts(kv, env.GITHUB_TOKEN))
+    : "unavailable";
+  if (result === "busy") return { ok: true, changed: false, reason: "facts refresh already in progress or recently completed" };
+  if (result === "unavailable") {
+    const reason = "facts refresh claim unavailable";
+    console.warn(`[facts-drift] ${reason}`);
+    return { ok: false, reason };
+  }
+  return result;
+}
 
-  const remote = await deriveFactsFromRemote(env.GITHUB_TOKEN);
+async function refreshFacts(kv: KVNamespace, githubToken?: string): Promise<FactsDriftResult> {
+  const remote = await deriveFactsFromRemote(githubToken);
   if (!remote) return { ok: false, reason: "remote derivation failed" };
   // getFacts() discards a snapshot isRepoFacts rejects, so never store one.
   // The scheduled handler drops this result, so say it here: otherwise the
@@ -291,7 +309,7 @@ export async function runFactsDrift(env: { CURATED_KV?: KVNamespace; GITHUB_TOKE
     return { ok: false, reason };
   }
 
-  const cachedRaw = await env.CURATED_KV.get(KV_KEY);
+  const cachedRaw = await kv.get(KV_KEY);
   let cached: RepoFacts = BUILD_FACTS;
   if (cachedRaw) {
     try {
@@ -304,9 +322,6 @@ export async function runFactsDrift(env: { CURATED_KV?: KVNamespace; GITHUB_TOKE
     }
   }
 
-  // Overlapping runs can finish out of order; a snapshot from an older source
-  // commit never replaces a newer one (KV has no compare-and-set, so this
-  // narrows the race to the read-to-write window rather than closing it).
   const cachedAt = Date.parse(String(cached.sourceCommittedAt ?? ""));
   if (cachedRaw && Number.isFinite(cachedAt) && cachedAt > Date.parse(String(remote.sourceCommittedAt))) {
     return { ok: true, changed: false };
@@ -318,14 +333,14 @@ export async function runFactsDrift(env: { CURATED_KV?: KVNamespace; GITHUB_TOKE
   }
 
   // Write new facts. No TTL — they live until next drift overwrites them.
-  await env.CURATED_KV.put(KV_KEY, JSON.stringify(remote));
+  await kv.put(KV_KEY, JSON.stringify(remote));
 
   // Append to drift log (last 20 entries).
   try {
-    const logRaw = await env.CURATED_KV.get(LOG_KEY);
+    const logRaw = await kv.get(LOG_KEY);
     const log = logRaw ? (JSON.parse(logRaw) as Array<{ at: string; diffs: DriftDiff[] }>) : [];
     log.unshift({ at: remote.generatedAt, diffs });
-    await env.CURATED_KV.put(LOG_KEY, JSON.stringify(log.slice(0, 20)));
+    await kv.put(LOG_KEY, JSON.stringify(log.slice(0, 20)));
   } catch {
     /* non-fatal */
   }

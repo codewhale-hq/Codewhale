@@ -24,9 +24,9 @@ pub const ACTIVATION_POLICY_VERSION: u32 = 5;
 /// Policy version selected when `[features] extension_host` is on: `Native`
 /// (host code run by the TypeScript extension host) moves from inactive to
 /// supported. Every receipt reviewed under v5 fails closed as
-/// `CapabilitiesChanged` under v7 and the reverse, so toggling the flag in
+/// `CapabilitiesChanged` under v8 and the reverse, so toggling the flag in
 /// either direction re-reviews every plugin. That is intended.
-pub const EXTENSION_HOST_POLICY_VERSION: u32 = 7;
+pub const EXTENSION_HOST_POLICY_VERSION: u32 = 8;
 
 pub const DSH_COMPATIBILITY: &[u8] = include_bytes!("../assets/dsh-compatibility.json");
 
@@ -47,7 +47,7 @@ static EXTENSION_HOST_POLICY: std::sync::OnceLock<bool> = std::sync::OnceLock::n
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Test-only per-thread override so one test can exercise v7 without
+    /// Test-only per-thread override so one test can exercise v8 without
     /// changing the policy every other (parallel) test observes.
     static TEST_POLICY_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
@@ -92,7 +92,7 @@ impl PolicyScope {
     }
 }
 
-/// Test guard selecting the v7 (or v5) policy on the current thread only.
+/// Test guard selecting the v8 (or v5) policy on the current thread only.
 #[cfg(any(test, feature = "test-support"))]
 pub struct TestPolicyGuard {
     previous: Option<bool>,
@@ -174,7 +174,7 @@ pub struct PluginActivationPolicy {
 }
 
 impl PluginActivationPolicy {
-    /// The policy this process runs under: v5, or v7 when the experimental
+    /// The policy this process runs under: v5, or v8 when the experimental
     /// extension host is enabled (see [`install_extension_host_policy`]).
     #[must_use]
     pub fn current() -> Self {
@@ -185,7 +185,7 @@ impl PluginActivationPolicy {
         }
     }
 
-    /// v7: v5 capabilities plus `Native`, with namespaced command collisions.
+    /// v8: v5 capabilities plus `Native`, namespaced commands and brokered Git metadata.
     #[must_use]
     pub const fn extension_host() -> Self {
         Self {
@@ -314,7 +314,7 @@ mod tests {
             policy_digest(PluginActivationPolicy::v3())
         );
         let previous_native = PluginActivationPolicy {
-            version: 6,
+            version: 7,
             ..current
         };
         assert_ne!(policy_digest(current), policy_digest(previous_native));
@@ -324,7 +324,7 @@ mod tests {
         };
         assert_ne!(policy_digest(current), policy_digest(changed));
         let table: serde_json::Value = serde_json::from_slice(DSH_COMPATIBILITY).unwrap();
-        assert_eq!(table["version"], 2);
+        assert_eq!(table["version"], 3);
         assert!(dsh_row_bridge("@deepseek-ai/dsh-persona"));
         assert!(!dsh_row_bridge("@deepseek-ai/dsh-agent-loop"));
         for capability in PluginActivationCapability::ALL {

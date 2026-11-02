@@ -73,7 +73,7 @@ fn expired_external_grok_grant_reads_as_missing_key_despite_refresh_token() {
         "an expired external access token is not usable material"
     );
     assert!(
-        !crate::provider_readiness::has_api_key_for(
+        !codewhale_engine::provider_readiness::has_api_key_for(
             &config,
             &(config).test_identity_for_kind(ProviderKind::Xai)
         ),
@@ -106,12 +106,8 @@ fn expired_external_grok_grant_reads_as_missing_key_despite_refresh_token() {
     )
     .unwrap();
     assert!(credentials_present(OAuthProvider::Xai, &config));
-    assert!(crate::provider_readiness::has_api_key_for(
+    assert!(codewhale_engine::provider_readiness::has_api_key_for(
         &config,
         &(config).test_identity_for_kind(ProviderKind::Xai)
     ));
-}
-#[test]
-fn siwc_refresh_rotates_atomically_and_rejects_a_different_account() {
-    codewhale_runtime::oauth::test_support::siwc_refresh_rotates_atomically_and_rejects_a_different_account(|config| crate::client::CodewhaleClient::new(config).unwrap().chatgpt_reasoning_api);
 }

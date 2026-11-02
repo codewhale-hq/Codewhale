@@ -28,9 +28,9 @@ use axum::extract::{Path, Query, State};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::runtime_threads::{TurnItemLifecycleStatus, TurnItemRecord};
-use crate::tools::plan::{PlanItemArg, PlanSnapshot};
-use crate::tools::todo::TodoStatus;
+use codewhale_engine::runtime_threads::{TurnItemLifecycleStatus, TurnItemRecord};
+use codewhale_engine::tools::plan::{PlanItemArg, PlanSnapshot};
+use codewhale_engine::tools::todo::TodoStatus;
 
 use super::{ApiError, RuntimeApiState, ThreadsQuery, map_thread_err, resolve_thread_filter};
 
@@ -224,7 +224,7 @@ fn latest_todo(items: &[TurnItemRecord]) -> Option<ThreadTodoView> {
             let status = todo
                 .get("status")
                 .and_then(Value::as_str)
-                .and_then(TodoStatus::from_str)
+                .and_then(TodoStatus::parse)
                 .unwrap_or(TodoStatus::Pending);
             let id = todo
                 .get("id")
@@ -420,8 +420,8 @@ pub(super) async fn list_todos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_threads::TurnItemKind;
     use chrono::Utc;
+    use codewhale_engine::runtime_threads::TurnItemKind;
     use serde_json::json;
 
     fn receipt(id: &str, tool: &str, input: &Value) -> TurnItemRecord {
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(revisions[1].steps.len(), 2);
         assert_eq!(
             revisions[1].steps[1].status,
-            crate::tools::plan::StepStatus::InProgress
+            codewhale_engine::tools::plan::StepStatus::InProgress
         );
     }
 

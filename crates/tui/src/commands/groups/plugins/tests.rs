@@ -25,10 +25,12 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
     append_host_owner_report(
         &Presentation(Locale::En),
         &mut output,
-        &crate::extension_host::OwnerReport {
-            state: Some(crate::extension_host::registry::OwnerState::Failed(
-                "\u{1b}[31m<script>".into(),
-            )),
+        &codewhale_engine::extension_host::OwnerReport {
+            state: Some(
+                codewhale_engine::extension_host::registry::OwnerState::Failed(
+                    "\u{1b}[31m<script>".into(),
+                ),
+            ),
             tools: vec!["[tool](https://example.invalid)".into()],
             diagnostics: vec!["\n# approved\u{202e}".into()],
         },
@@ -46,7 +48,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
     append_host_owner_report(
         &Presentation(Locale::ZhHans),
         &mut localized,
-        &crate::extension_host::OwnerReport {
+        &codewhale_engine::extension_host::OwnerReport {
             state: None,
             tools: vec![],
             diagnostics: vec![],

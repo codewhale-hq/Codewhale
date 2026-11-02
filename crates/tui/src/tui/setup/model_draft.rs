@@ -21,7 +21,7 @@
 
 use codewhale_config::{UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN};
 
-use crate::llm_client::LlmClient;
+use codewhale_engine::llm_client::LlmClient;
 use codewhale_localization::Locale;
 use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
@@ -197,9 +197,9 @@ pub(crate) async fn draft_constitution_with_model<C: LlmClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::mock::MockLlmClient;
     use codewhale_config::AutonomyPreference;
     use codewhale_config::user_constitution::MAX_NOTES_LEN;
+    use codewhale_engine::llm_client::mock::MockLlmClient;
     use codewhale_models::{MessageResponse, Usage};
 
     fn text_response(text: &str) -> MessageResponse {

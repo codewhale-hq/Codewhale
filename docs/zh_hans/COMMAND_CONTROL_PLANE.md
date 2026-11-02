@@ -12,7 +12,7 @@ Codewhale 在三个表面上暴露同一套生命周期操作：输入到输入�
 
 契约就是一张类型化的描述符表，加上每个域一个执行器，位于
 [`crates/lane/src/control.rs`](../../crates/lane/src/control.rs) 和
-[`crates/tui/src/fleet/control.rs`](../../crates/tui/src/fleet/control.rs)。
+[`crates/engine/src/fleet/control.rs`](../../crates/engine/src/fleet/control.rs)。
 `codewhale-lane` 是薄 CLI 门面和 TUI 都已经依赖的最低层 crate，
 所以契约放在这里，既只有一份，又不必分叉。
 
@@ -121,7 +121,7 @@ Lane 动词上的 `--json` 输出的也是同一个结构体。
   跨表面的 authority/persistence/target 一致性、可用性规则、目标解析与生命周期栅栏、
   回执往返、边界限制与脱敏；另有执行器测试，证明三个表面针对同一个持久 Lane
   得到逐字节相同的结果，以及 interrupt 是幂等且带栅栏的。
-- `crates/tui/src/fleet/control.rs`——带类型化未知的路由/用量 DTO 投影、有界分页与行、
+- `crates/engine/src/fleet/control.rs`——带类型化未知的路由/用量 DTO 投影、有界分页与行、
   在账本缺失时如实报告而不创建、仅 CLI 的 `fleet.restart`，以及 `fleet.status`
   的跨表面身份一致。
 - `crates/tui/src/commands/groups/core/lane.rs` 和 `…/fleet.rs`——斜杠动词映射到共享操作，

@@ -5,8 +5,8 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::App;
-use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::work_surface::model::{AgentRowFacts, WorkRow, WorkTone};
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Gap between the agent-type column and the objective.
 pub(super) const AGENT_ROLE_GUTTER: usize = 2;

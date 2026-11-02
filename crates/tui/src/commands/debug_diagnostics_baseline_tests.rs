@@ -428,8 +428,8 @@ fn diagnostics_slice_inventory_is_exactly_the_declared_eight() {
     }
 }
 
-fn snapshot() -> crate::tool_inspection::ToolInspectionSnapshot {
-    crate::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
+fn snapshot() -> codewhale_engine::tool_inspection::ToolInspectionSnapshot {
+    codewhale_engine::tool_inspection::ToolInspectionSnapshot::from_prepared_request(
         "turn-1",
         2,
         Some(&[tool("read_file"), tool("write_file")]),

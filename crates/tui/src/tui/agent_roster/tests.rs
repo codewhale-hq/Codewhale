@@ -1,12 +1,12 @@
 use super::*;
 
-use crate::agent_roster::{RosterState, build_agent_roster};
-use crate::tools::subagent::{
+use codewhale_agent_contract::role::FleetRole;
+use codewhale_agent_contract::worker_profile::WorkerRuntimeProfile;
+use codewhale_engine::agent_roster::{RosterState, build_agent_roster};
+use codewhale_engine::tools::subagent::{
     AgentRunUsage, AgentWorkerEvent, AgentWorkerRecord, AgentWorkerSpec, AgentWorkerStatus,
     AgentWorkerToolProfile,
 };
-use codewhale_agent_contract::role::FleetRole;
-use codewhale_agent_contract::worker_profile::WorkerRuntimeProfile;
 
 fn usage_none() -> AgentRunUsage {
     AgentRunUsage {
@@ -497,7 +497,7 @@ fn a_re_dispatched_record_stops_reading_as_parked() {
 
 #[test]
 fn result_headline_skips_scaffolding_and_returns_the_first_sentence() {
-    use crate::agent_roster::result_headline;
+    use codewhale_engine::agent_roster::result_headline;
     // #6565: the first line of a report is usually a heading or a rule, and
     // showing it hid the answer.
     let report = "\n## Summary\n\n---\n```text\nThe docs audit found 3 stale links. Two are in README.md.\n```\n<codewhale:subagent.done>{\"event\":\"subagent.completed\"}</codewhale:subagent.done>";

@@ -18,8 +18,9 @@ use codewhale_release::install::GITHUB_MIGRATION_HELP;
 use codewhale_release::{
     CHECKSUM_MANIFEST_ASSET, InstallMethod, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
     cnb_mirror_override_active, cnb_mirror_supports_target, cnb_release_base_url,
-    compare_release_versions, is_beta_tag, mirror_asset_url, resolve_release_query,
-    update_is_needed, update_network_fallback_hint,
+    compare_release_versions, is_beta_tag, mirror_asset_url, parse_release_json,
+    read_release_metadata, read_update_response, resolve_release_query, update_is_needed,
+    update_network_fallback_hint,
 };
 use reqwest::Proxy;
 use std::io::Write;
@@ -1882,7 +1883,7 @@ const UPDATE_MAX_REDIRECTS: usize = 10;
 /// Largest update response held in memory. Release archives are tens of
 /// megabytes; a server that keeps sending is cut off instead of exhausting
 /// memory before the checksum is ever compared.
-const UPDATE_MAX_RESPONSE_BYTES: u64 = 512 * 1024 * 1024;
+const UPDATE_MAX_RESPONSE_BYTES: usize = 512 * 1024 * 1024;
 
 /// Hosts an update may contact without any operator configuration: GitHub's
 /// API and release pages, and the three hosts GitHub has served release
@@ -2124,8 +2125,7 @@ fn fetch_release_json_once(
         .send()
         .with_context(|| format!("failed to fetch {description} from {url}"))?;
     let status = response.status();
-    let body = response
-        .text()
+    let body = read_release_metadata(response)
         .with_context(|| format!("failed to read {description} response body from {url}"))?;
     Ok((status, body))
 }
@@ -2169,11 +2169,7 @@ fn sleep_before_update_retry(attempt: usize) {
 
 fn fetch_latest_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Release> {
     let body = fetch_release_json(url, "release info", proxy)?;
-    let release: Release = serde_json::from_str(&body).with_context(|| {
-        format!("failed to parse release JSON from GitHub API. Response: {body}")
-    })?;
-
-    Ok(release)
+    parse_release_json(&body, "release")
 }
 
 fn fetch_latest_stable_release_from_redirect(proxy: Option<&Proxy>) -> Result<Release> {
@@ -2220,23 +2216,18 @@ fn fetch_latest_stable_tag_from_redirect_url_once(
     policy
         .check_url(&final_url)
         .map_err(|message| anyhow!(message))?;
-    if status.is_success() {
-        if let Some(tag_name) = release_tag_from_github_release_url(&final_url) {
-            return Ok(tag_name);
-        }
-        let body = response
-            .text()
-            .with_context(|| format!("failed to read release redirect response from {url}"))?;
-        if let Some(tag_name) = release_tag_from_github_release_html(&body) {
-            return Ok(tag_name);
-        }
-        bail!("release redirect did not resolve to a tag URL: {final_url}");
+    if status.is_success()
+        && let Some(tag_name) = release_tag_from_github_release_url(&final_url)
+    {
+        return Ok(tag_name);
     }
-
-    let body = response
-        .text()
+    let body = read_release_metadata(response)
         .with_context(|| format!("failed to read release redirect response from {url}"))?;
-    bail!("failed to fetch release redirect from {url}: HTTP {status}\n{body}");
+    if !status.is_success() {
+        bail!("failed to fetch release redirect from {url}: HTTP {status}\n{body}");
+    }
+    release_tag_from_github_release_html(&body)
+        .with_context(|| format!("release redirect did not resolve to a tag URL: {final_url}"))
 }
 
 fn release_tag_from_github_release_url(url: &reqwest::Url) -> Option<String> {
@@ -2282,9 +2273,7 @@ fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Resul
     let body = fetch_release_json(url, "release list", proxy)?;
     // GitHub caps this endpoint at 100 releases per page. Codewhale uses the
     // first page as the latest-beta search window, matching GitHub's ordering.
-    let releases: Vec<Release> = serde_json::from_str(&body).with_context(|| {
-        format!("failed to parse release list JSON from GitHub API. Response: {body}")
-    })?;
+    let releases: Vec<Release> = parse_release_json(&body, "release list")?;
 
     releases
         .into_iter()
@@ -2342,7 +2331,7 @@ fn download_url_once(
 
 fn download_url_once_with(
     policy: &UpdateTransportPolicy,
-    max_bytes: u64,
+    max_bytes: usize,
     url: &str,
     proxy: Option<&Proxy>,
     timeout: Duration,
@@ -2354,16 +2343,8 @@ fn download_url_once_with(
         .send()
         .with_context(|| format!("failed to download {url}"))?;
     let status = response.status();
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(response, max_bytes + 1),
-        &mut bytes,
-    )
-    .with_context(|| format!("failed to read response body from {url}"))?;
-    if bytes.len() as u64 > max_bytes {
-        bail!("response from {url} exceeds the {max_bytes}-byte update limit");
-    }
-
+    let bytes = read_update_response(response, max_bytes)
+        .with_context(|| format!("failed to read response body from {url}"))?;
     Ok((status, bytes))
 }
 

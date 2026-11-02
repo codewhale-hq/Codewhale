@@ -12,11 +12,12 @@ import { ORGANIZATION_ID } from "./site-schema";
  * or be absent when no published release receipt is available.
  */
 export function buildSoftwareApplicationJsonLd(
-  publishedRelease: Pick<PublishedReleaseFact, "version"> | null,
+  publishedRelease: (Pick<PublishedReleaseFact, "version"> & Partial<Pick<PublishedReleaseFact, "publishedAt" | "url">>) | null,
 ) {
   return {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
+    "@id": `${SITE_URL}/#software`,
     name: SITE_NAME,
     url: SITE_URL,
     description: IDENTITY_PHRASE,
@@ -24,6 +25,12 @@ export function buildSoftwareApplicationJsonLd(
     operatingSystem: "macOS, Linux, Windows, Android",
     ...(publishedRelease?.version ? { softwareVersion: publishedRelease.version } : {}),
     ...(publishedRelease?.version ? { featureList: publishedFeatureNames(publishedRelease.version) } : {}),
+    ...(publishedRelease?.version && publishedRelease.url ? { releaseNotes: publishedRelease.url } : {}),
+    ...(publishedRelease?.version && publishedRelease.publishedAt ? { dateModified: publishedRelease.publishedAt } : {}),
+    isAccessibleForFree: true,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    installUrl: `${SITE_URL}/en/install`,
+    sameAs: [REPO_URL, "https://www.npmjs.com/package/codewhale", "https://crates.io/crates/codewhale-cli"],
     license: `${REPO_URL}/blob/main/LICENSE`,
     codeRepository: REPO_URL,
     downloadUrl: `${SITE_URL}/en/install`,

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -206,7 +206,7 @@ Codewhale은 따로 설정하지 않아도 `AGENTS.md`를 읽습니다. `CLAUDE.
 | `codewhale` | 대화형 터미널 앱 |
 | `codewhale exec "…"` | 인터페이스 없이 작업 하나를 실행합니다. 옵션 없이 쓰면 도구를 사용하지 않고 답변만 하고, `--auto`는 기본적으로 전체 접근 권한으로 도구를 활성화하고, `--sandbox workspace-write`는 도구를 제한하며, `--output-format stream-json`은 이벤트를 JSON으로 스트리밍합니다 |
 | `codewhale web` | `127.0.0.1`에서 동작하는 로컬 웹 UI([안내서](../WEB.md)) |
-| `codewhale review --pr N` | GitHub 풀 리퀘스트에 대한 참고용 리뷰. `--post`를 추가하지 않으면 아무것도 게시하지 않으며, [GitHub Action](../GITHUB_ACTION.md)이 CI에서 같은 리뷰를 실행합니다 |
+| `codewhale review --pr N` | GitHub 풀 리퀘스트에 대한 참고용 리뷰. [GitHub 봇 설정](../GITHUB_ACTION.md#set-up-your-own-bot)은 자동 리뷰와 `@codewhale review`를 위한 버전이 고정된 워크플로를 생성하며, 직접 모델 키와 선택적인 App 신원을 사용합니다 |
 | `codewhale app-server --http` | 스레드, 이벤트, 승인, 각 턴의 파일 변경을 다루는 로컬 HTTP API인 [Runtime API](../RUNTIME_API.md) |
 | `codewhale serve --acp` | Zed 같은 에디터를 위한 stdio 기반 Agent Client Protocol |
 

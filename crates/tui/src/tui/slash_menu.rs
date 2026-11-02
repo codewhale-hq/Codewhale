@@ -70,31 +70,31 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
                 effort_entries.push(SlashMenuEntry {
                     name: format!("/effort {}", label),
                     description: match eff {
-                        crate::reasoning_preference::ReasoningEffort::Auto => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Auto => {
                             "choose per turn".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Off => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Off => {
                             "no extra reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Minimal => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Minimal => {
                             "minimal reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Low => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Low => {
                             "lighter reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Medium => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Medium => {
                             "balanced reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::High => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::High => {
                             "deeper reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::XHigh => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::XHigh => {
                             "extra-high reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Ultra => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Ultra => {
                             "ultra reasoning".into()
                         }
-                        crate::reasoning_preference::ReasoningEffort::Max => {
+                        codewhale_engine::reasoning_preference::ReasoningEffort::Max => {
                             "maximum reasoning".into()
                         }
                     },

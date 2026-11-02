@@ -11,9 +11,9 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tracing::debug;
 
-use crate::core::events::TurnRoute;
-use crate::route_receipt::{TurnRouteReceipt, endpoint_identity};
 use codewhale_config::ProviderKind;
+use codewhale_engine::core::events::TurnRoute;
+use codewhale_engine::route_receipt::{TurnRouteReceipt, endpoint_identity};
 use codewhale_runtime::config::Config;
 
 /// The exact route authority a turn was launched against.
@@ -160,7 +160,7 @@ impl fmt::Debug for SuggestionLaunch {
 /// OpenAI Responses API are different request shapes and stay out.
 #[must_use]
 pub fn route_is_supported_suggestion_provider(provider: ProviderKind) -> bool {
-    crate::client::provider_speaks_chat_completions(provider)
+    codewhale_engine::client::provider_speaks_chat_completions(provider)
 }
 
 /// Resolve credentials for exactly one configured route identity.
@@ -190,9 +190,12 @@ fn resolve_credentials_for_identity(
         return None;
     }
     config.verify_provider_identity(identity).ok()?;
-    let resolved =
-        crate::route_runtime::resolve_runtime_route_for_identity(config, identity, Some(model))
-            .ok()?;
+    let resolved = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+        config,
+        identity,
+        Some(model),
+    )
+    .ok()?;
     if resolved.identity.provider != provider {
         return None;
     }
@@ -399,7 +402,7 @@ pub async fn generate_suggestion(
     // attached CWC run even though this narrow adapter owns a raw reqwest
     // client instead of a `CodewhaleClient`. Retain the permit through decode
     // so Runtime Chat cannot overlap or project a second inference lifecycle.
-    let _inference = crate::client::acquire_remote_control_inference_participant().await;
+    let _inference = codewhale_engine::client::acquire_remote_control_inference_participant().await;
     let client = suggestion_client();
     let mut body = serde_json::json!({
         "model": model,
@@ -424,9 +427,9 @@ pub async fn generate_suggestion(
         "temperature": 0.3,
         "stream": false
     });
-    crate::client::apply_openrouter_vendor(&mut body, openrouter_vendor);
+    codewhale_engine::client::apply_openrouter_vendor(&mut body, openrouter_vendor);
 
-    let url = crate::client::api_url(base_url, "chat/completions");
+    let url = codewhale_engine::client::api_url(base_url, "chat/completions");
     // Never log the raw request URL: a base URL can carry credentials in its
     // userinfo or in a query token. The redacted endpoint identity keeps the
     // line diagnosable without carrying either.
@@ -582,7 +585,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ownership = crate::client::acquire_runtime_chat_inference_ownership().await;
+        let ownership = codewhale_engine::client::acquire_runtime_chat_inference_ownership().await;
         let base_url = format!("{}/v1", server.uri());
         let mut suggestion = tokio::spawn(async move {
             generate_suggestion(
@@ -1335,7 +1338,7 @@ mod tests {
             __cw_config_init_1_value.providers = __cw_config_init_1_1;
             __cw_config_init_1_value
         };
-        let client = crate::client::CodewhaleClient::new(&config).unwrap();
+        let client = codewhale_engine::client::CodewhaleClient::new(&config).unwrap();
         let authority =
             SuggestionRouteAuthority::from_receipt_for_test(client.turn_route_receipt());
         let route = SuggestionRouteSnapshot {
@@ -1373,7 +1376,7 @@ mod tests {
         let identity = config
             .resolve_provider_identity("deepseek")
             .expect("test config must expose the deepseek identity");
-        let resolved = crate::route_runtime::resolve_runtime_route_for_identity(
+        let resolved = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
             config,
             &identity,
             Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
@@ -1389,17 +1392,17 @@ mod tests {
             model,
             auto_model: false,
             receipt: Some(validated.client.turn_route_receipt()),
-            billing: Some(crate::core::events::RouteBillingEnvelope {
+            billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                 billing_surface: None,
                 endpoint_fingerprint: None,
                 openrouter_vendor: None,
                 provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                 dispatched_at: chrono::Utc::now(),
             }),
             base_url: codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL
                 .to_string(),
-            billing_product: crate::route_billing::RouteProduct::Unproven,
+            billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
         }
     }
 
@@ -1506,7 +1509,7 @@ mod tests {
         let identity = config
             .resolve_provider_identity("deepseek")
             .expect("deepseek identity");
-        let actual_base_url = crate::route_runtime::resolve_runtime_route_for_identity(
+        let actual_base_url = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
             &config,
             &identity,
             Some(&route.model),
@@ -1743,16 +1746,16 @@ mod tests {
                     DEEPSEEK_BASE,
                     DEEPSEEK_KEY,
                 )),
-                billing: Some(crate::core::events::RouteBillingEnvelope {
+                billing: Some(codewhale_engine::core::events::RouteBillingEnvelope {
                     billing_surface: None,
                     endpoint_fingerprint: None,
                     openrouter_vendor: None,
                     provider_live_pricing: None,
-                    billing_mode: crate::cost_status::RouteBillingMode::Unknown,
+                    billing_mode: codewhale_engine::cost_status::RouteBillingMode::Unknown,
                     dispatched_at: chrono::Utc::now(),
                 }),
                 base_url: DEEPSEEK_BASE.to_string(),
-                billing_product: crate::route_billing::RouteProduct::Unproven,
+                billing_product: codewhale_engine::route_billing::RouteProduct::Unproven,
             };
             assert!(
                 capture_route_authority(&route).is_none(),

@@ -2,15 +2,15 @@
 //! replaces the old full-screen tank layout; the companion still owns its
 //! durable world and audio. No prompt, worker or execution authority lives here.
 use super::{PetWatch, avatars, habitat};
-use crate::{
+use crate::tui::{
+    app::App,
+    history::HistoryCell,
+    shell_key_routing::{self, ShellBindingId as Id},
+    underwater::ShellPhase,
+};
+use codewhale_engine::{
     agent_roster::{AgentRosterRow, RosterState},
     tools::subagent::AgentWorkerStatus,
-    tui::{
-        app::App,
-        history::HistoryCell,
-        shell_key_routing::{self, ShellBindingId as Id},
-        underwater::ShellPhase,
-    },
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_protocol::engine_owner::{OwnerActivityKind, OwnerFreshness, OwnerPresence};
@@ -811,7 +811,7 @@ mod tests {
         let mut app = app();
         app.current_session_id = Some("foreground".into());
         app.agent_roster_session_id = Some("other-session".into());
-        app.agent_roster = vec![crate::agent_roster::AgentRosterRow {
+        app.agent_roster = vec![codewhale_engine::agent_roster::AgentRosterRow {
             worker_id: "retained-worker".into(),
             display_name: "Retained worker".into(),
             model: "reported-model".into(),
@@ -975,7 +975,7 @@ mod tests {
         app.runtime_turn_status = Some("failed".into());
         app.add_message(HistoryCell::Error {
             message: "Actual failure receipt".into(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         });
         assert!(paint(&mut app, 40, 12).contains("Actual failure receipt"));
         assert_eq!(app.input, "retained draft");

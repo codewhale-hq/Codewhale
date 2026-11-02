@@ -14,7 +14,7 @@ actor should be read as "the Codewhale TUI" throughout.
 
 ## 0. Implementation status
 
-Verified against `crates/tui/src/hooks/` and its call sites:
+Verified against `crates/engine/src/hooks/` and its call sites:
 
 | Item | Status | Where |
 | --- | --- | --- |
@@ -200,7 +200,7 @@ Multiple hooks:
 
 ### 3.2 Implementation steps
 
-1. Add structured submit outcome types in `crates/tui/src/hooks.rs`:
+1. Add structured submit outcome types in `crates/engine/src/hooks.rs`:
 
 ```rust
 pub enum MessageSubmitOutcome {
@@ -263,7 +263,7 @@ This method should:
 
 ### 3.3 Test plan
 
-Unit tests in `crates/tui/src/hooks.rs`:
+Unit tests in `crates/engine/src/hooks.rs`:
 
 - parses stdout `{"text":"changed"}` as replacement
 - empty stdout means unchanged

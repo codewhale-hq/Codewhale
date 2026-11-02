@@ -238,7 +238,7 @@ fn a_session_end_built_without_arming_writes_nothing() {
 
 #[test]
 fn canceled_run_reports_exit_class_error_not_signal() {
-    use crate::core::termination::RunTerminationReason;
+    use codewhale_engine::core::termination::RunTerminationReason;
     assert_eq!(RunTerminationReason::Canceled.process_exit_code(), 130);
     assert_eq!(
         codewhale_telemetry::ExitClass::Signal.as_str(),

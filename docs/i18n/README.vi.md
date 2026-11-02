@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -209,7 +209,7 @@ quyền truy cập của nó và bật nó lên
 | `codewhale` | Ứng dụng terminal tương tác |
 | `codewhale exec "…"` | Một tác vụ không có giao diện. Khi không kèm cờ, nó trả lời mà không dùng công cụ; `--auto` bật công cụ với Full Access theo mặc định, `--sandbox workspace-write` giới hạn chúng, còn `--output-format stream-json` phát trực tiếp các sự kiện dưới dạng JSON |
 | `codewhale web` | Giao diện web cục bộ tại `127.0.0.1` ([hướng dẫn](../WEB.md)) |
-| `codewhale review --pr N` | Đánh giá mang tính tham khảo cho một pull request trên GitHub. Nó không đăng gì trừ khi bạn thêm `--post`; [GitHub Action](../GITHUB_ACTION.md) chạy cùng kiểu đánh giá đó trong CI |
+| `codewhale review --pr N` | Đánh giá mang tính tham khảo cho một pull request trên GitHub. [Thiết lập bot GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) tạo một workflow được ghim phiên bản cho các đánh giá tự động và `@codewhale review`, dùng khóa mô hình của riêng bạn và danh tính App tùy chọn |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md), một API HTTP cục bộ cho thread, sự kiện, phê duyệt và các thay đổi tệp của từng lượt |
 | `codewhale serve --acp` | Agent Client Protocol qua stdio, dành cho các trình soạn thảo như Zed |
 
